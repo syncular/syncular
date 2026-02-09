@@ -29,5 +29,3 @@ test-results/
 # Local artifacts (should never be committed)
 demo/a/
 demo-*.png
-**/dist-client/
-**/dist-server/

@@ -12,13 +12,10 @@
     ".claude/**",
     "**/generated/**",
     "types/**",
-    "env.ts",
     ".source/**",
     ".next/**",
     "tests/load/**",
-    "demo/src/cf/**",
-    "demo/dist-client/**",
-    "demo/dist-server/**"
+    "**/dist/**"
   ],
   "ignoreDependencies": [
     "@cloudflare/workers-types",
