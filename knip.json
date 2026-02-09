@@ -15,7 +15,6 @@
     "types/**",
     ".source/**",
     ".next/**",
-    "tests/load/**",
     "**/dist/**"
   ],
   "ignoreDependencies": [
@@ -97,7 +96,8 @@
       "entry": ["**/*.ts"]
     },
     "tests/load": {
-      "entry": ["server.ts"]
+      "entry": ["server.ts", "lib/*.js", "scripts/*.js"],
+      "ignoreDependencies": ["k6"]
     },
     "tests/integration": {
       "entry": ["**/*.ts"]
