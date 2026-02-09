@@ -1,5 +1,5 @@
 {
-  "extends": "@sync/config/tsconfig.bun.json",
+  "extends": "@syncular/config/tsconfig.bun.json",
   "include": [
     "src/**/*"
   ],
