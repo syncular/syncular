@@ -7,7 +7,6 @@
     "dev": "bun src/server/index.ts",
     "dev:cf": "wrangler dev --config wrangler.toml",
     "build": "bun build --target=browser --outdir=dist-client index.html && bun build --target=bun --packages external --outfile=dist-server/server.js src/server/server.ts",
-    "start": "NODE_ENV=production bun dist-server/server.js",
     "deploy:cf": "bun run --cwd .. build && wrangler deploy",
     "deploy:cf:dry-run": "bun run --cwd .. build && wrangler deploy --dry-run",
     "generate:types": "node --import tsx scripts/generate-types.ts",

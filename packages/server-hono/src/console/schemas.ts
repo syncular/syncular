@@ -44,7 +44,7 @@ export const ConsoleChangeSchema = z.object({
   op: z.enum(['upsert', 'delete']),
   rowJson: z.unknown().nullable(),
   rowVersion: z.number().int().nullable(),
-  scopes: z.record(z.unknown()),
+  scopes: z.record(z.string(), z.unknown()),
 });
 
 export type ConsoleChange = z.infer<typeof ConsoleChangeSchema>;
@@ -72,7 +72,7 @@ export const ConsoleClientSchema = z.object({
   lastRequestAt: z.string().nullable(),
   lastRequestType: z.enum(['push', 'pull']).nullable(),
   lastRequestOutcome: z.string().nullable(),
-  effectiveScopes: z.record(z.unknown()),
+  effectiveScopes: z.record(z.string(), z.unknown()),
   updatedAt: z.string(),
 });
 
@@ -324,7 +324,7 @@ export type LatencyQuery = z.infer<typeof LatencyQuerySchema>;
 export const LiveEventSchema = z.object({
   type: z.enum(['push', 'pull', 'commit', 'client_update']),
   timestamp: z.string(),
-  data: z.record(z.unknown()),
+  data: z.record(z.string(), z.unknown()),
 });
 
 export type LiveEvent = z.infer<typeof LiveEventSchema>;

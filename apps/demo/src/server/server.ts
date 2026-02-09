@@ -4,7 +4,6 @@
  * Serves prebuilt demo frontend assets from `dist-client` and API routes from Hono.
  */
 
-import { join, normalize } from 'node:path';
 import { getPgliteAssetPaths } from '@syncular/dialect-pglite';
 import {
   getWaSqliteWasmPaths,
@@ -13,6 +12,7 @@ import {
 import type { BuildArtifact } from 'bun';
 import { serve } from 'bun';
 import { createBunWebSocket } from 'hono/bun';
+import indexHtml from '../../index.html';
 import { createDemoApp } from './app';
 
 async function main() {
@@ -20,15 +20,6 @@ async function main() {
   const portParsed = portRaw ? Number(portRaw) : Number.NaN;
   const port = Number.isFinite(portParsed) ? portParsed : 9811;
   const consoleToken = process.env.SYNC_CONSOLE_TOKEN ?? 'demo-token';
-
-  const demoDistDir = join(process.cwd(), 'dist-client');
-  const demoIndexPath = join(demoDistDir, 'index.html');
-  const hasDemoBuild = await Bun.file(demoIndexPath).exists();
-  if (!hasDemoBuild) {
-    throw new Error(
-      '[demo] Missing dist-client/index.html. Run `bun --cwd apps/demo build` before starting production server.'
-    );
-  }
 
   const { moduleWorkerPath } = getWaSqliteWorkerEntrypointPaths();
   const wasqliteAssets = await buildWasqliteWorkerAssets(moduleWorkerPath);
@@ -76,7 +67,7 @@ async function main() {
         if (!asset) return new Response('Not found', { status: 404 });
         return responseForBuildArtifact(asset);
       },
-      '/*': (req) => serveDemoClientAsset(req as Request, demoDistDir),
+      '/*': indexHtml,
     },
     fetch() {
       return new Response('Not found', { status: 404 });
@@ -91,41 +82,6 @@ async function main() {
 }
 
 await main();
-
-async function serveDemoClientAsset(
-  request: Request,
-  distDir: string
-): Promise<Response> {
-  const url = new URL(request.url);
-  const assetPath = resolveClientPath(distDir, url.pathname);
-
-  if (assetPath) {
-    const asset = Bun.file(assetPath);
-    if (await asset.exists()) {
-      return responseForFile(asset, contentTypeFromPath(assetPath));
-    }
-  }
-
-  const indexFile = Bun.file(join(distDir, 'index.html'));
-  if (await indexFile.exists()) {
-    return responseForFile(indexFile, 'text/html; charset=utf-8');
-  }
-
-  return new Response('Demo UI build missing', { status: 500 });
-}
-
-function resolveClientPath(distDir: string, pathname: string): string | null {
-  const decodedPath = decodeURIComponent(pathname);
-  const relative = decodedPath === '/' ? 'index.html' : decodedPath.slice(1);
-  const resolved = normalize(join(distDir, relative));
-  const root = normalize(`${distDir}/`);
-
-  if (!resolved.startsWith(root) && resolved !== normalize(distDir)) {
-    return null;
-  }
-
-  return resolved;
-}
 
 function responseForBuildArtifact(artifact: BuildArtifact): Response {
   const headers = new Headers();
@@ -149,19 +105,6 @@ function responseForFile(file: BunFileLike, contentType: string): Response {
   headers.set('cross-origin-embedder-policy', 'require-corp');
   headers.set('cross-origin-resource-policy', 'cross-origin');
   return new Response(file, { status: 200, headers });
-}
-
-function contentTypeFromPath(path: string): string {
-  if (path.endsWith('.html')) return 'text/html; charset=utf-8';
-  if (path.endsWith('.css')) return 'text/css; charset=utf-8';
-  if (path.endsWith('.js')) return 'text/javascript; charset=utf-8';
-  if (path.endsWith('.svg')) return 'image/svg+xml';
-  if (path.endsWith('.wasm')) return 'application/wasm';
-  if (path.endsWith('.json')) return 'application/json; charset=utf-8';
-  if (path.endsWith('.png')) return 'image/png';
-  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
-  if (path.endsWith('.ico')) return 'image/x-icon';
-  return 'application/octet-stream';
 }
 
 function contentTypeFromLoader(loader: BuildArtifact['loader']): string | null {
