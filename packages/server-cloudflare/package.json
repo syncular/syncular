@@ -44,7 +44,7 @@
     "hono": "^4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260203.0",
+    "@cloudflare/workers-types": "^4.20260207.0",
     "@syncular/config": "workspace:*"
   },
   "files": [

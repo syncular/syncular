@@ -31,16 +31,14 @@
     "tsgo": "tsgo --noEmit",
     "test": "bun test ."
   },
-  "dependencies": {
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-better-sqlite3": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
     "@syncular/dialect-libsql": "workspace:*",
     "@syncular/dialect-pglite": "workspace:*",
     "@syncular/dialect-sqlite3": "workspace:*",
-    "kysely": "^0.28.0"
-  },
-  "devDependencies": {
-    "@syncular/config": "workspace:*"
+    "kysely": "*"
   }
 }

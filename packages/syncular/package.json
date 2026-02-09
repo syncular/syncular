@@ -218,7 +218,7 @@
     "@syncular/dialect-react-native-nitro-sqlite": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260206.0",
+    "@cloudflare/workers-types": "^4.20260207.0",
     "@syncular/config": "workspace:*"
   }
 }

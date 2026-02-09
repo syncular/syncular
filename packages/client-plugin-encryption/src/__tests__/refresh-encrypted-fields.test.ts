@@ -1,6 +1,9 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { SyncClientDb } from '@syncular/client';
-import type { Kysely } from 'kysely';
+import { Kysely } from 'kysely';
+import { BunSqliteDialect } from 'kysely-bun-sqlite';
+
 import {
   createFieldEncryptionPlugin,
   createStaticFieldEncryptionKeys,
@@ -20,10 +23,6 @@ interface TestDb extends SyncClientDb {
 }
 
 async function createTestDb(): Promise<Kysely<TestDb>> {
-  const { Kysely } = await import('kysely');
-  const { BunSqliteDialect } = await import('kysely-bun-sqlite');
-  const { Database } = await import('bun:sqlite');
-
   const db = new Kysely<TestDb>({
     dialect: new BunSqliteDialect({
       database: new Database(':memory:'),
@@ -60,7 +59,7 @@ describe('refreshEncryptedFields', () => {
       scope: 'shared_tasks',
       table: 'shared_tasks',
       fields: ['title'],
-    } as const;
+    };
 
     const ownerPlugin = createFieldEncryptionPlugin({
       rules: [rule],
@@ -92,7 +91,7 @@ describe('refreshEncryptedFields', () => {
       ],
     };
 
-    const encryptedRequest = await ownerPlugin.beforePush(
+    const encryptedRequest = await ownerPlugin.beforePush!(
       { actorId: 'alice', clientId: 'alice-client' },
       pushRequest
     );

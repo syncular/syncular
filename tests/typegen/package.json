@@ -5,12 +5,10 @@
   "scripts": {
     "test": "bun test ."
   },
-  "dependencies": {
+  "devDependencies": {
     "@syncular/typegen": "workspace:*",
     "@syncular/migrations": "workspace:*",
-    "kysely": "^0.28.0"
-  },
-  "devDependencies": {
+    "kysely": "*",
     "@syncular/config": "workspace:*"
   }
 }

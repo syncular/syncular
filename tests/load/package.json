@@ -13,7 +13,20 @@
     "k6:dashboard": "k6 run --out dashboard scripts/mixed-workload.js"
   },
   "devDependencies": {
-    "@syncular/config": "workspace:*"
+    "@syncular/config": "workspace:*",
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-libsql": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/tests-dialects": "workspace:*",
+    "@syncular/tests-shared": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/server-dialect-postgres": "workspace:*",
+    "hono": "*",
+    "kysely": "*"
   }
 }
 

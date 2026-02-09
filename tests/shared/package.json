@@ -30,7 +30,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit"
   },
-  "dependencies": {
+  "devDependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
@@ -40,9 +40,7 @@
     "@syncular/server": "workspace:*",
     "@syncular/server-dialect-postgres": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
-    "kysely": "^0.28.0"
-  },
-  "devDependencies": {
+    "kysely": "*",
     "@syncular/config": "workspace:*"
   }
 }

@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
-    "@types/react": "^19.2.10"
+    "@types/react": "^19.2.13"
   },
   "scripts": {
     "tsgo": "tsgo --noEmit"

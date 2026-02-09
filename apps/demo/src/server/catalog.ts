@@ -8,7 +8,7 @@
 import type { Kysely } from 'kysely';
 import type { ServerDb } from './db';
 
-export interface CatalogSeedResult {
+interface CatalogSeedResult {
   targetRows: number;
   insertedRows: number;
   totalRows: number;

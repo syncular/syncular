@@ -7,7 +7,7 @@
     "tsgo": "tsgo --noEmit",
     "test": "bun test __tests__"
   },
-  "dependencies": {
+  "devDependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",
     "@syncular/core": "workspace:*",
@@ -18,10 +18,8 @@
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/transport-http": "workspace:*",
-    "hono": "^4.11.7",
-    "kysely": "^0.28.11"
-  },
-  "devDependencies": {
+    "hono": "*",
+    "kysely": "*",
     "@syncular/config": "workspace:*"
   }
 }

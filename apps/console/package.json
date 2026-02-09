@@ -16,7 +16,7 @@
     "@syncular/transport-http": "workspace:*",
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.20",
-    "@tanstack/react-router": "^1.158.0",
+    "@tanstack/react-router": "^1.159.5",
     "lucide-react": "^0.563.0",
     "react": "^19",
     "react-dom": "^19"

@@ -26,12 +26,14 @@
     "@noble/hashes": "^2.0.1",
     "@scure/bip39": "^2.0.1",
     "@syncular/client": "workspace:*",
-    "@syncular/core": "workspace:*",
-    "kysely": "^0.28.11",
-    "kysely-bun-sqlite": "^0.4.0"
+    "@syncular/core": "workspace:*"
   },
   "devDependencies": {
-    "@syncular/config": "workspace:*"
+    "@syncular/config": "workspace:*",
+    "kysely-bun-sqlite": "^0.4.0"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0"
   },
   "files": [
     "dist",

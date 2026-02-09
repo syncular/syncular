@@ -28,11 +28,11 @@
     "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.5.0",
+    "@happy-dom/global-registrator": "^20.5.4",
     "@testing-library/react": "^16.3.2",
     "@syncular/core": "workspace:*",
-    "@types/react": "^19.2.10",
-    "happy-dom": "^20.5.0",
+    "@types/react": "^19.2.13",
+    "happy-dom": "^20.5.4",
     "kysely": "*",
     "kysely-bun-sqlite": "^0.4.0",
     "react": "^19.2.4",

@@ -27,7 +27,7 @@ import {
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { createSyncRoutes } from '@syncular/server-hono';
 import { Hono } from 'hono';
-import { createBunWebSocket } from 'hono/bun';
+import { upgradeWebSocket, websocket } from 'hono/bun';
 import { cors } from 'hono/cors';
 import type { Kysely } from 'kysely';
 
@@ -346,7 +346,6 @@ async function main() {
 
   // Create Hono app
   const app = new Hono();
-  const { upgradeWebSocket, websocket } = createBunWebSocket();
 
   // Enable CORS
   app.use(

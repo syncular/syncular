@@ -29,6 +29,6 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
-    "hono": "^4.11.7"
+    "hono": "*"
   }
 }

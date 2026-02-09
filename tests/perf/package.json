@@ -8,7 +8,7 @@
     "test": "bun test .",
     "update-baseline": "bun run update-baseline.ts"
   },
-  "dependencies": {
+  "devDependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
@@ -17,9 +17,7 @@
     "@syncular/dialect-sqlite3": "workspace:*",
     "@syncular/tests-dialects": "workspace:*",
     "@syncular/tests-shared": "workspace:*",
-    "kysely": "^0.28.0"
-  },
-  "devDependencies": {
+    "kysely": "*",
     "@syncular/config": "workspace:*"
   }
 }

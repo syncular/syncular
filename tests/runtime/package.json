@@ -10,20 +10,18 @@
     "test:node": "bun test __tests__/node.runtime.test.ts",
     "test:d1": "SYNCULAR_TEST_RUN_D1=true bun test __tests__/d1.runtime.test.ts"
   },
-  "dependencies": {
+  "devDependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-better-sqlite3": "workspace:*",
     "@syncular/dialect-d1": "workspace:*",
     "@syncular/dialect-wa-sqlite": "workspace:*",
     "@syncular/transport-http": "workspace:*",
-    "kysely": "^0.28.11"
-  },
-  "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260205.0",
-    "@playwright/test": "^1.58.1",
+    "kysely": "*",
+    "@cloudflare/workers-types": "^4.20260207.0",
+    "@playwright/test": "^1.58.2",
     "@syncular/config": "workspace:*",
     "tsx": "^4.21.0",
-    "wrangler": "^4.62.0"
+    "wrangler": "^4.63.0"
   }
 }

@@ -4,7 +4,7 @@
 
 import { useLocalStorage } from './useLocalStorage';
 
-export interface ConsolePreferences {
+interface ConsolePreferences {
   /** Refresh interval for auto-updating data (in seconds) */
   refreshInterval: number;
   /** Time format: 'relative' (e.g., "5 minutes ago") or 'absolute' (e.g., "2024-01-15 10:30") */

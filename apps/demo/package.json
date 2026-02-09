@@ -31,14 +31,14 @@
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.20",
     "@tanstack/react-router": "^1.159.5",
-    "hono": "^4",
-    "kysely": "^0.28.11",
     "lucide-react": "^0.563.0",
     "react": "^19",
     "react-dom": "^19"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260206.0",
+    "hono": "*",
+    "kysely": "*",
+    "@cloudflare/workers-types": "^4.20260207.0",
     "@syncular/typegen": "workspace:*",
     "@types/bun": "latest",
     "@types/react": "^19",

@@ -39,7 +39,7 @@ async function deriveKey(
   return new Uint8Array(derivedBits);
 }
 
-export interface ScopedPassphrases {
+interface ScopedPassphrases {
   get(scope: string): string | undefined;
   set(scope: string, passphrase: string): void;
   delete(scope: string): void;
