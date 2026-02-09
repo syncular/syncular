@@ -2,9 +2,9 @@ name: Checks
 
 on:
   push:
-    branches: [next, latest]
+    branches: [main, release]
   pull_request:
-    branches: [next, latest]
+    branches: [main, release]
   workflow_dispatch:
 
 concurrency:

@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: ["Checks"]
     types: [completed]
-    branches: [latest, next]
+    branches: [main, release]
   workflow_dispatch:
 
 permissions:
@@ -46,7 +46,8 @@ jobs:
         uses: changesets/action@v1
         with:
           version: bun run version-packages
-          publish: ${{ (github.event.workflow_run.head_branch || github.ref_name) == 'next' && 'bun run release:next' || 'bun run release' }}
+          # publish: ${{ (github.event.workflow_run.head_branch || github.ref_name) == 'main' && 'bun run release:next' || 'bun run release' }}
+          publish: bun run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
