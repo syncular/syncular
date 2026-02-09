@@ -44,6 +44,7 @@
     "@syncular/demo",
     "syncular-docs",
     "@syncular/e2e",
-    "@syncular/tests"
+    "@syncular/tests",
+    "@syncular/ui"
   ]
 }
