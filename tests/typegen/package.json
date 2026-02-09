@@ -1,0 +1,16 @@
+{
+  "name": "@syncular/tests-typegen",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test ."
+  },
+  "dependencies": {
+    "@syncular/typegen": "workspace:*",
+    "@syncular/migrations": "workspace:*",
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  }
+}

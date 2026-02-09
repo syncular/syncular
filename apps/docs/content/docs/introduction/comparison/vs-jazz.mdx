@@ -1,0 +1,152 @@
+---
+title: Syncular vs Jazz
+description: SQL/relational sync vs CRDT-based collaboration
+lastVerified: 2026-02-03
+---
+
+# Syncular vs Jazz
+
+[Jazz](https://jazz.tools) is a distributed database that uses CRDTs (Conflict-free Replicated Data Types) with the CoJSON protocol. It's fully open-source (MIT) and self-hostable.
+
+> **Last verified:** February 2026. Jazz is actively evolving — check their docs for the latest.
+
+## Methodology
+
+This comparison focuses on the *data model* trade-off:
+
+- SQL tables + joins vs CRDT object graphs
+- “app-defined conflicts” vs CRDT convergence
+- How collaboration features fit (presence, cursors, sharing)
+
+## The trade-off
+
+| | Syncular | Jazz |
+|---|----------|------|
+| **Data model** | SQL/relational | CRDTs/CoJSON |
+| **Open source** | Yes (MIT) | Yes (MIT) |
+| **Conflict resolution** | App-defined | Automatic (CRDT merge) |
+| **Collaboration** | Realtime + presence available | Native-first (collaboration is core) |
+| **Encryption** | Optional plugin | Built-in E2EE |
+| **Self-hosted** | Yes | Yes |
+| **Managed option** | No | Yes (Jazz Cloud) |
+
+## What Jazz does well
+
+**True conflict-free merging**: CRDTs converge by design. Instead of “detect conflicts and pick a winner”, you model data so concurrent edits merge.
+
+**Real-time collaboration native**: Cursors, presence, and live indicators are built-in.
+
+**End-to-end encryption**: E2EE by default. Data is encrypted on the device.
+
+**Fully open source**: MIT license, fully self-hostable.
+
+**Different data model**: CoJSON is a fresh take on distributed data. Worth learning for collaborative apps.
+
+## Where Jazz has limits
+
+**Different mental model**: CoJSON isn't SQL. You need to learn new patterns:
+
+```typescript
+import { co, z } from 'jazz-tools';
+
+// Jazz models data as CRDT objects (not tables)
+export const Project = co.map({
+  name: z.string(),
+  // References instead of foreign keys
+  // tasks: co.ref(ListOfTasks),
+});
+```
+
+**Not relational**: No SQL joins or complex queries. You traverse object graphs.
+
+**Ecosystem**: Newer ecosystem compared to SQL tooling.
+
+## Where Syncular differs
+
+**SQL/relational**: Use the database patterns you already know:
+
+```typescript
+const { data: tasks } = useSyncQuery(({ selectFrom }) =>
+  selectFrom('tasks')
+    .selectAll()
+    .innerJoin('users', 'users.id', 'tasks.user_id')
+    .where('completed', '=', 0)
+);
+```
+
+**Explicit conflict semantics**: You decide how to handle conflicts (per table/field), instead of relying on CRDT convergence.
+
+**Works with existing Postgres**: Use your existing database infrastructure.
+
+**Type safety with Kysely**: End-to-end TypeScript types.
+
+## Data model comparison
+
+### Jazz (CoJSON)
+
+```typescript
+// Collaborative object model
+class Task extends CoMap {
+  title = co.string;
+  completed = co.boolean;
+  assignee = co.ref(User);
+}
+
+class Project extends CoMap {
+  name = co.string;
+  tasks = co.ref(ListOfTasks);
+}
+
+// Traverse the object graph
+const project = await Project.load(id);
+const tasks = project.tasks;
+```
+
+### Syncular (SQL)
+
+```typescript
+type Task = {
+  id: string;
+  title: string;
+  user_id: string;
+  server_version: number;
+};
+
+// SQL queries
+const { data: tasks } = useSyncQuery(({ selectFrom }) =>
+  selectFrom('tasks')
+    .selectAll()
+    .innerJoin('users', 'users.id', 'tasks.user_id')
+    .where('project_id', '=', projectId)
+);
+```
+
+## When to choose Jazz
+
+- Building Google Docs-style collaborative editing
+- Real-time cursors and presence are core features
+- You want automatic conflict resolution
+- End-to-end encryption by default
+- You're excited to learn new paradigms
+
+## When to choose Syncular
+
+- You prefer SQL/relational data models
+- You have existing Postgres infrastructure
+- You need explicit control over conflict resolution
+- Your team is already comfortable with SQL
+- You need complex queries (joins, aggregations)
+
+## Summary
+
+| Choose Jazz if... | Choose Syncular if... |
+|-------------------|----------------------|
+| Real-time collaboration is core | Structured data with relationships |
+| Automatic conflict resolution | Explicit conflict handling |
+| Learning new paradigms excites you | SQL familiarity is important |
+| Document-like data | Relational data |
+| E2EE by default | Optional encryption |
+
+---
+
+*Sources: [Jazz Documentation](https://jazz.tools/docs), [Jazz GitHub](https://github.com/garden-co/jazz)*

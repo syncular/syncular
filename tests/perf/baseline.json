@@ -1,0 +1,37 @@
+{
+  "bootstrap_1k": {
+    "median": 15,
+    "p95": 25,
+    "p99": 35,
+    "timestamp": "2025-01-30T00:00:00.000Z",
+    "commit": "baseline"
+  },
+  "bootstrap_10k": {
+    "median": 45,
+    "p95": 60,
+    "p99": 80,
+    "timestamp": "2025-01-30T00:00:00.000Z",
+    "commit": "baseline"
+  },
+  "push_single_row": {
+    "median": 1,
+    "p95": 2,
+    "p99": 3,
+    "timestamp": "2025-01-30T00:00:00.000Z",
+    "commit": "baseline"
+  },
+  "push_batch_100": {
+    "median": 10,
+    "p95": 15,
+    "p99": 20,
+    "timestamp": "2025-01-30T00:00:00.000Z",
+    "commit": "baseline"
+  },
+  "incremental_pull": {
+    "median": 0.5,
+    "p95": 1,
+    "p99": 2,
+    "timestamp": "2025-01-30T00:00:00.000Z",
+    "commit": "baseline"
+  }
+}

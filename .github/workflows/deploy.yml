@@ -1,0 +1,209 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["Checks"]
+    types: [completed]
+    branches: [latest, next]
+
+concurrency:
+  group: deploy-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-docs:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.event.workflow_run.head_sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+      - run: bun build
+
+      - name: Build docs
+        working-directory: apps/docs
+        run: bunx opennextjs-cloudflare build
+
+      - name: Deploy (production)
+        if: github.event.workflow_run.event == 'push'
+        working-directory: apps/docs
+        run: bunx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy (preview)
+        if: github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/docs
+        run: |
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          cat wrangler.jsonc | \
+            jq "del(.routes) | .name = \"syncular-docs-pr-${PR_NUMBER}\" | .workers_dev = true" \
+            > wrangler.preview.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  deploy-console:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.event.workflow_run.head_sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+      - run: bun build
+
+      - name: Build console
+        working-directory: apps/console
+        run: SYNCULAR_CONSOLE_BASE=/ bunx vite build
+
+      - name: Deploy (production)
+        if: github.event.workflow_run.event == 'push'
+        working-directory: apps/console
+        run: bunx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy (preview)
+        if: github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/console
+        run: |
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          cat wrangler.jsonc | \
+            jq "del(.routes) | .name = \"syncular-console-pr-${PR_NUMBER}\" | .workers_dev = true" \
+            > wrangler.preview.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  deploy-demo:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.event.workflow_run.head_sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+      - run: bun build
+
+      - name: Deploy (production)
+        if: github.event.workflow_run.event == 'push'
+        working-directory: apps/demo
+        run: bunx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy (preview)
+        if: github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/demo
+        run: |
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          cat wrangler.jsonc | \
+            jq "del(.routes) | .name = \"syncular-demo-pr-${PR_NUMBER}\" | .workers_dev = true" \
+            > wrangler.preview.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  comment-urls:
+    if: github.event.workflow_run.event == 'pull_request'
+    needs: [deploy-docs, deploy-console, deploy-demo]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment preview URLs on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          number: ${{ github.event.workflow_run.pull_requests[0].number }}
+          header: deploy-preview
+          message: |
+            ## Deploy Previews
+
+            | App | URL |
+            |-----|-----|
+            | Docs | ${{ needs.deploy-docs.outputs.url || 'N/A' }} |
+            | Console | ${{ needs.deploy-console.outputs.url || 'N/A' }} |
+            | Demo | ${{ needs.deploy-demo.outputs.url || 'N/A' }} |
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

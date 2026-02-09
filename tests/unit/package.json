@@ -1,0 +1,22 @@
+{
+  "name": "@syncular/tests-unit",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "test": "bun test ."
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/migrations": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-dialect-sqlite": "workspace:*",
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  }
+}

@@ -1,0 +1,384 @@
+/**
+ * Tests for React hooks
+ *
+ * These tests use `autoStart={false}` to prevent the SyncProvider from
+ * auto-starting the engine, allowing tests to control the lifecycle.
+ */
+
+import { beforeEach, describe, expect, it } from 'bun:test';
+import type { SyncClientDb } from '@syncular/client';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import type { Kysely } from 'kysely';
+import type { ReactNode } from 'react';
+import { createSyncularReact } from '../index';
+import {
+  createMockDb,
+  createMockShapeRegistry,
+  createMockTransport,
+} from './test-utils';
+
+const {
+  SyncProvider,
+  useConflicts,
+  useOutbox,
+  useResolveConflict,
+  useSyncConnection,
+  useSyncEngine,
+  useSyncStatus,
+} = createSyncularReact<SyncClientDb>();
+
+describe('React Hooks', () => {
+  let db: Kysely<SyncClientDb>;
+
+  beforeEach(async () => {
+    db = await createMockDb();
+  });
+
+  function createWrapper(options?: { autoStart?: boolean }) {
+    const transport = createMockTransport();
+    const shapes = createMockShapeRegistry();
+
+    const Wrapper = ({ children }: { children: ReactNode }) => (
+      <SyncProvider
+        db={db}
+        transport={transport}
+        shapes={shapes}
+        actorId="test-actor"
+        clientId="test-client"
+        subscriptions={[]}
+        pollIntervalMs={999999} // Long poll interval to prevent continuous polling
+        autoStart={options?.autoStart ?? false} // Disable auto-start for tests
+      >
+        {children}
+      </SyncProvider>
+    );
+
+    return Wrapper;
+  }
+
+  describe('useSyncEngine', () => {
+    it('should return engine state', async () => {
+      const { result } = renderHook(() => useSyncEngine(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(result.current.state).toBeDefined();
+      expect(result.current.state.enabled).toBe(true);
+    });
+
+    it('should provide sync function', async () => {
+      const { result } = renderHook(() => useSyncEngine(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(typeof result.current.sync).toBe('function');
+    });
+
+    it('should provide control functions', () => {
+      const { result } = renderHook(() => useSyncEngine(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(typeof result.current.reconnect).toBe('function');
+      expect(typeof result.current.disconnect).toBe('function');
+      expect(typeof result.current.start).toBe('function');
+    });
+  });
+
+  describe('useSyncStatus', () => {
+    it('should return status object', () => {
+      const { result } = renderHook(() => useSyncStatus(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(result.current).toMatchObject({
+        enabled: true,
+        isOnline: expect.any(Boolean),
+        isSyncing: expect.any(Boolean),
+        pendingCount: expect.any(Number),
+        error: null,
+        isRetrying: false,
+        retryCount: 0,
+      });
+    });
+
+    it('should show lastSyncAt after manual sync', async () => {
+      const { result } = renderHook(
+        () => ({
+          status: useSyncStatus(),
+          engine: useSyncEngine(),
+        }),
+        { wrapper: createWrapper() }
+      );
+
+      // Start the engine manually
+      await act(async () => {
+        await result.current.engine.start();
+      });
+
+      // Trigger a sync
+      await act(async () => {
+        await result.current.engine.sync();
+      });
+
+      expect(result.current.status.lastSyncAt).not.toBe(null);
+    });
+  });
+
+  describe('useSyncConnection', () => {
+    it('should return connection state', () => {
+      const { result } = renderHook(() => useSyncConnection(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(result.current.state).toBeDefined();
+      expect(result.current.mode).toBe('polling');
+      expect(typeof result.current.isConnected).toBe('boolean');
+      expect(typeof result.current.isReconnecting).toBe('boolean');
+    });
+
+    it('should provide reconnect and disconnect functions', () => {
+      const { result } = renderHook(() => useSyncConnection(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(typeof result.current.reconnect).toBe('function');
+      expect(typeof result.current.disconnect).toBe('function');
+    });
+
+    // Note: Connection lifecycle tests are covered in integration tests
+    // The SyncEngine.test.ts tests the engine directly
+    // These hook tests verify the React binding works
+  });
+
+  describe('useOutbox', () => {
+    it('should return outbox stats', async () => {
+      const { result } = renderHook(() => useOutbox(), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      expect(result.current.stats).toMatchObject({
+        pending: 0,
+        sending: 0,
+        failed: 0,
+        acked: 0,
+        total: 0,
+      });
+      expect(result.current.hasUnsent).toBe(false);
+    });
+
+    it('should return empty pending and failed arrays initially', async () => {
+      const { result } = renderHook(() => useOutbox(), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      expect(result.current.pending).toEqual([]);
+      expect(result.current.failed).toEqual([]);
+    });
+  });
+
+  describe('useConflicts', () => {
+    it('should return empty conflicts initially', async () => {
+      const { result } = renderHook(() => useConflicts(), {
+        wrapper: createWrapper(),
+      });
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      expect(result.current.conflicts).toEqual([]);
+      expect(result.current.count).toBe(0);
+      expect(result.current.hasConflicts).toBe(false);
+    });
+  });
+
+  describe('useResolveConflict', () => {
+    it('should return resolve function and state', () => {
+      const { result } = renderHook(() => useResolveConflict(), {
+        wrapper: createWrapper(),
+      });
+
+      expect(typeof result.current.resolve).toBe('function');
+      expect(result.current.isPending).toBe(false);
+      expect(result.current.error).toBe(null);
+      expect(typeof result.current.reset).toBe('function');
+    });
+
+    it('should set isPending during resolution', async () => {
+      const { result } = renderHook(() => useResolveConflict(), {
+        wrapper: createWrapper(),
+      });
+
+      // Try to resolve a non-existent conflict (will throw but we test the pending state)
+      const resolvePromise = act(async () => {
+        try {
+          await result.current.resolve('non-existent', 'accept');
+        } catch {
+          // Expected to fail - conflict doesn't exist
+        }
+      });
+
+      await resolvePromise;
+
+      // After resolution attempt, isPending should be false
+      expect(result.current.isPending).toBe(false);
+    });
+
+    it('should handle accept resolution type', async () => {
+      // Create a conflict in the database first
+      await db
+        .insertInto('sync_conflicts')
+        .values({
+          id: 'test-conflict-1',
+          outbox_commit_id: 'commit-1',
+          client_commit_id: 'client-commit-1',
+          op_index: 0,
+          result_status: 'conflict',
+          message: 'Version conflict',
+          code: 'VERSION_MISMATCH',
+          server_version: 2,
+          server_row_json: JSON.stringify({
+            id: 'row-1',
+            title: 'Server Title',
+          }),
+          created_at: Date.now(),
+          resolved_at: null,
+          resolution: null,
+        })
+        .execute();
+
+      const { result } = renderHook(
+        () => ({
+          resolve: useResolveConflict({ syncAfterResolve: false }),
+          conflicts: useConflicts(),
+        }),
+        { wrapper: createWrapper() }
+      );
+
+      // Wait for conflicts to load
+      await waitFor(() => {
+        expect(result.current.conflicts.isLoading).toBe(false);
+      });
+
+      // Resolve the conflict
+      await act(async () => {
+        await result.current.resolve.resolve('test-conflict-1', 'accept');
+      });
+
+      // Verify conflict was resolved
+      const resolved = await db
+        .selectFrom('sync_conflicts')
+        .where('id', '=', 'test-conflict-1')
+        .selectAll()
+        .executeTakeFirst();
+
+      expect(resolved?.resolution).toBe('accept');
+      expect(resolved?.resolved_at).not.toBe(null);
+    });
+
+    it('should handle reject resolution type', async () => {
+      // Create a conflict
+      await db
+        .insertInto('sync_conflicts')
+        .values({
+          id: 'test-conflict-2',
+          outbox_commit_id: 'commit-2',
+          client_commit_id: 'client-commit-2',
+          op_index: 0,
+          result_status: 'conflict',
+          message: 'Version conflict',
+          code: 'VERSION_MISMATCH',
+          server_version: 3,
+          server_row_json: null,
+          created_at: Date.now(),
+          resolved_at: null,
+          resolution: null,
+        })
+        .execute();
+
+      const { result } = renderHook(
+        () => useResolveConflict({ syncAfterResolve: false }),
+        { wrapper: createWrapper() }
+      );
+
+      await act(async () => {
+        await result.current.resolve('test-conflict-2', 'reject');
+      });
+
+      const resolved = await db
+        .selectFrom('sync_conflicts')
+        .where('id', '=', 'test-conflict-2')
+        .selectAll()
+        .executeTakeFirst();
+
+      expect(resolved?.resolution).toBe('reject');
+    });
+
+    it('should call onSuccess callback on successful resolution', async () => {
+      await db
+        .insertInto('sync_conflicts')
+        .values({
+          id: 'test-conflict-3',
+          outbox_commit_id: 'commit-3',
+          client_commit_id: 'client-commit-3',
+          op_index: 0,
+          result_status: 'conflict',
+          message: 'Version conflict',
+          code: null,
+          server_version: 1,
+          server_row_json: null,
+          created_at: Date.now(),
+          resolved_at: null,
+          resolution: null,
+        })
+        .execute();
+
+      let successId: string | null = null;
+      const onSuccess = (id: string) => {
+        successId = id;
+      };
+
+      const { result } = renderHook(
+        () => useResolveConflict({ onSuccess, syncAfterResolve: false }),
+        { wrapper: createWrapper() }
+      );
+
+      await act(async () => {
+        await result.current.resolve('test-conflict-3', 'accept');
+      });
+
+      expect(successId!).toBe('test-conflict-3');
+    });
+
+    it('should reset error state', async () => {
+      const { result } = renderHook(() => useResolveConflict(), {
+        wrapper: createWrapper(),
+      });
+
+      // Trigger an error by resolving non-existent conflict
+      await act(async () => {
+        try {
+          await result.current.resolve('non-existent', 'accept');
+        } catch {
+          // Expected
+        }
+      });
+
+      // Reset should clear the error
+      act(() => {
+        result.current.reset();
+      });
+
+      expect(result.current.error).toBe(null);
+    });
+  });
+});

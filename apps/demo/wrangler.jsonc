@@ -1,0 +1,52 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "syncular-demo",
+	"main": "src/cf/index.ts",
+	"compatibility_date": "2026-02-06",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": false,
+	"routes": [
+		{ "pattern": "demo.syncular.dev", "custom_domain": true }
+	],
+	"observability": {
+		"enabled": true,
+		"logs": {
+			"invocation_logs": true
+		}
+	},
+	"build": {
+		"command": "bun plugins/build-cf.ts"
+	},
+	"assets": {
+		"directory": "./dist-cf",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "syncular-demo",
+			"database_id": "a2b9e6ab-07ac-4a98-99e2-d23021344b23"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BLOBS",
+			"bucket_name": "syncular-demo-blobs"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "SYNC_DO", "class_name": "SyncDO" }
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_classes": ["SyncDO"]
+		}
+	],
+	"vars": {
+		"BLOB_SECRET": "demo-blob-secret"
+	}
+}

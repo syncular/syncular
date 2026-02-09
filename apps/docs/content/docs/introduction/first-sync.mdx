@@ -1,0 +1,210 @@
+---
+title: First Sync
+description: Understand the sync lifecycle and how data flows
+---
+
+This guide walks through what happens during your first sync cycle.
+
+## The Sync Lifecycle
+
+When a client connects and syncs for the first time:
+
+```
+1. Client adds subscription (cursor: -1)
+2. Server builds snapshot for the scopes
+3. Client applies snapshot to local SQLite
+4. Client sets cursor to snapshot's asOfCommitSeq
+5. Subsequent syncs fetch incremental changes
+```
+
+## Initial Bootstrap
+
+When a subscription has `cursor: -1`, the server knows to bootstrap:
+
+```typescript
+// Client subscription request
+{
+  id: 'my-tasks',
+  shape: 'tasks',
+  cursor: -1,  // -1 means "bootstrap me"
+  scopes: { user_id: '123' }
+}
+```
+
+The server:
+1. Calls `resolveScopes` to get allowed scopes
+2. Intersects with requested scopes to get effective scopes
+3. Calls the table handler's `snapshot()` method
+4. Returns snapshot pages (optionally chunked) with an `asOfCommitSeq`
+
+```typescript
+// Server response
+{
+  id: 'my-tasks',
+  status: 'active',
+  scopes: { user_id: '123' },
+  bootstrap: true,
+  bootstrapState: null,
+  nextCursor: 42,
+  commits: [],
+  snapshots: [
+    {
+      table: 'tasks',
+      rows: [],
+      chunks: [
+        { id: 'chunk-1', byteLength: 1234, sha256: '…', encoding: 'ndjson', compression: 'gzip' },
+      ],
+      isFirstPage: true,
+      isLastPage: true,
+    },
+  ],
+}
+```
+
+## Client Applies Snapshot
+
+The client applies the snapshot using default handlers (upsert all rows). You only need custom client handlers for special behavior:
+
+```typescript
+// Client handlers are optional - the system provides defaults.
+// Define custom handlers only when you need special behavior:
+
+import { createClientHandler } from '@syncular/client';
+
+export const tasksClientHandler = createClientHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+});
+```
+
+After applying, the client updates its cursor:
+
+```typescript
+// Client now tracks
+{
+  id: 'my-tasks',
+  cursor: 42,  // Last seen commit
+  scopes: { user_id: '123' },
+  status: 'active'
+}
+```
+
+## Incremental Sync
+
+On subsequent syncs, the client sends its cursor:
+
+```typescript
+// Client request
+{
+  id: 'my-tasks',
+  cursor: 42,  // "Give me changes after 42"
+  shape: 'tasks',
+  scopes: { user_id: '123' }
+}
+```
+
+The server returns only new commits:
+
+```typescript
+// Server response
+{
+  id: 'my-tasks',
+  status: 'active',
+  scopes: { user_id: '123' },
+  nextCursor: 47,
+  commits: [
+    { commitSeq: 43, changes: [...] },
+    { commitSeq: 44, changes: [...] },
+    { commitSeq: 47, changes: [...] },
+  ]
+}
+```
+
+The client applies each change via `applyChange`:
+
+```typescript
+async applyChange(ctx, change) {
+  if (change.op === 'delete') {
+    await ctx.trx.deleteFrom('tasks').where('id', '=', change.row_id).execute();
+  } else {
+    await ctx.trx
+      .insertInto('tasks')
+      .values(change.row_json)
+      .onConflict(oc => oc.column('id').doUpdateSet(change.row_json))
+      .execute();
+  }
+}
+```
+
+## Push Flow
+
+When the user makes a change:
+
+```typescript
+// User clicks to add task
+await m.tasks.insert({ title: 'New Task', completed: 0 });
+```
+
+The change goes through:
+
+1. **Local Apply**: Immediately written to SQLite
+2. **Outbox Queue**: Added to `sync_outbox` table
+3. **Push Request**: Sent to server on next sync
+4. **Server Apply**: Table handler processes it
+5. **Commit Log**: Written to `sync_commits`
+6. **Ack**: Client marks outbox entry as acked
+
+```
+[User Action] → [Local SQLite] → [Outbox] → [Server] → [Commit Log]
+                                    ↑                        ↓
+                                    └──────── Ack ──────────┘
+```
+
+## Conflict Detection
+
+If two clients edit the same row:
+
+```
+Client A: reads task at version 5
+Client B: reads task at version 5
+Client B: pushes update with base_version: 5 → succeeds, now version 6
+Client A: pushes update with base_version: 5 → CONFLICT (server is at 6)
+```
+
+The server returns a conflict result:
+
+```typescript
+{
+  opIndex: 0,
+  status: 'conflict',
+  message: 'Version conflict',
+  server_version: 6,
+  server_row: { ... }  // Current server state
+}
+```
+
+The client stores this in `sync_conflicts` for resolution.
+
+## Realtime Updates
+
+When WebSocket is enabled:
+
+1. Client connects to `GET /sync/realtime` WebSocket
+2. Server tracks which scopes the client subscribes to
+3. When a commit affects those scopes, server sends wake-up
+4. Client triggers an immediate pull
+
+```
+Server: [new commit for scopes { user_id: '123' }]
+        → [find connected clients with matching scopes]
+        → [send wake-up signal]
+Client: [receives wake-up]
+        → [triggers pull]
+        → [applies new changes]
+```
+
+## Next Steps
+
+- [Architecture](/docs/introduction/architecture) - Deep dive into the commit log
+- [Scopes](/docs/introduction/scopes) - Understand authorization
+- [Conflict Resolution](/docs/introduction/conflict-resolution) - Handle conflicts

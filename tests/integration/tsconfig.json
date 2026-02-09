@@ -1,0 +1,4 @@
+{
+  "extends": "@syncular/config/tsconfig.bun.json",
+  "include": ["**/*.ts"]
+}

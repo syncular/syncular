@@ -1,0 +1,137 @@
+---
+title: Comparison Overview
+description: How Syncular compares to Electric SQL, Zero, PowerSync, and Jazz
+lastVerified: 2026-02-03
+---
+
+# Comparison Overview
+
+Choosing a sync solution depends on your constraints: SQL vs CRDTs, “reads only” vs offline writes, self-hosted vs managed, and how much control you want over authorization and conflict handling.
+
+> **Last verified:** February 2026. If you spot anything outdated or unfair, please open an issue — we’ll fix it.
+
+## Methodology (what we mean by each row)
+
+This page compares **how data gets onto a device**, and **what happens when the device changes data while offline**:
+
+- **Data selection**: how you decide *which subset* of server data is replicated to a client.
+- **Write path**: whether a client can write offline and later sync, and what the “source of truth” is.
+- **Conflict semantics**: where conflicts are handled (CRDT merge vs server-authoritative replay vs app-defined logic).
+- **Auth/permissions**: where access control is enforced (server-side logic, query/rule layers, or “bring your own”).
+
+It intentionally does **not** try to rank “DX” or “best” — each system optimizes for a different shape of product.
+
+## At a glance
+
+| | Syncular | Electric SQL | Zero | Jazz | PowerSync |
+|---|----------|--------------|------|------|-----------|
+| **Primary model** | Commit-log sync | Postgres → client “shapes” over HTTP | Reactive queries + “zero-cache” | CRDT objects (CoJSON) | DB → client sync rules |
+| **Server storage** | Postgres | Postgres | Postgres | CoJSON (non-SQL) | Postgres + others (e.g. MongoDB, MySQL) |
+| **Local storage** | SQLite / PGlite | Client-defined (e.g. TanStack DB) | SQLite (local cache) | CoJSON | SQLite |
+| **Data selection** | Scopes + subscriptions | Shapes (filtered table queries) | Queries (reactive) | Object graph | Sync Rules (SQL-like) |
+| **Writes** | Offline writes + push/pull | Usually via your API/DB (Electric streams resulting changes) | Optimistic mutators; server executes transaction | Native offline writes | Uploads + server processing |
+| **Conflict semantics** | App-defined per table/field | Your backend/database | Server authoritative reconciliation | CRDT merge | Default LWW per-field; configurable |
+| **License (core)** | MIT | Apache 2.0 | Apache 2.0 | MIT | SDKs Apache 2.0; service source-available |
+| **Hosting** | Self-hosted | Self-hosted + managed option | Self-hosted + managed option | Self-hosted + managed option | Self-hosted + managed option
+
+## Key differences
+
+### Syncular vs Electric SQL
+
+Both are Postgres-first and open-source, but optimized for different things:
+
+- **Electric SQL** focuses on efficiently streaming **server changes to clients** using “shapes” (filtered queries). It’s great when you want a fast, scalable *read path* and you’re comfortable keeping writes in your existing API.
+
+- **Syncular** is a commit-log sync engine with an explicit push/pull model. It’s a good fit when you want offline writes, programmatic authorization, and “no magic” debugging.
+
+[Full comparison →](/docs/introduction/comparison/vs-electric)
+
+### Syncular vs Zero
+
+Both can give you a “query-first” experience, but the architecture differs:
+
+- **Zero** gives you reactive queries against a local cache and keeps it in sync via a **zero-cache** service. Mutations run optimistically on the client and then run on the server; clients reconcile to server results.
+
+- **Syncular** keeps the replication boundary explicit: you define what’s replicated (subscriptions/scopes), and you query local SQLite with SQL (Kysely).
+
+[Full comparison →](/docs/introduction/comparison/vs-zero)
+
+### Syncular vs Jazz
+
+Both are fully open-source and self-hostable:
+
+- **Jazz** uses CRDTs and an object-graph data model (CoJSON). Automatic merging and built-in collaboration primitives (and encryption) are the big wins — but it’s not SQL.
+
+- **Syncular** uses SQL/relational. Familiar queries, works with existing Postgres, explicit conflict resolution.
+
+[Full comparison →](/docs/introduction/comparison/vs-jazz)
+
+### Syncular vs PowerSync
+
+Both sync to SQLite clients:
+
+- **PowerSync** has strong mobile SDKs and supports multiple backend databases. The client SDKs are open-source; the service is source-available (and becomes Apache 2.0 after a time delay).
+
+- **Syncular** is fully MIT-licensed. No distinction between client and server licensing.
+
+[Full comparison →](/docs/introduction/comparison/vs-powersync)
+
+### Other approaches (not apples-to-apples)
+
+If you’re early in evaluation, it helps to scan other categories too (CRDT libraries, replication systems, “offline cache + subscriptions”, etc.).
+
+[Other approaches →](/docs/introduction/comparison/other-approaches)
+
+## By use case
+
+| Use case | Best options | Why |
+|----------|--------------|-----|
+| Offline-first mobile app | Syncular, PowerSync, Electric | SQLite on device, sync when online |
+| Existing Postgres + sync | Electric, Syncular, PowerSync, Zero | Work with your current database |
+| Real-time collaboration | Jazz, Electric | Built-in presence, cursors, auto-merge |
+| Managed infrastructure | Electric Cloud, Rocicorp managed Zero hosting, PowerSync | Less ops work, support options |
+| Full control/self-hosted | Syncular, Electric, Zero, Jazz | Open source, run on your infrastructure |
+| CRDT-based merging | Jazz | Automatic conflict resolution |
+| SQL/relational model | Syncular, Electric, PowerSync, Zero | Familiar queries, existing tools |
+
+## By priority
+
+| Your priority | A good fit | Why |
+|---------------|------------|-----|
+| **Control** | Syncular | Explicit scopes, app-defined write/conflict logic |
+| **Fast read-path replication** | Electric | Shapes over HTTP, proxy-able behind your API |
+| **Reactive query-first DX** | Zero | Query-driven local cache + reconciliation |
+| **Collaboration + merging** | Jazz | CRDT convergence + collaboration primitives |
+| **Mobile SDK breadth** | PowerSync | Strong mobile SDKs + multiple backend DBs |
+
+## When to choose Syncular
+
+Choose Syncular when:
+
+- You want **full control** over sync behavior and authorization
+- You're already using **Kysely** and value end-to-end type safety
+- You need **self-hosted** infrastructure for compliance or cost reasons
+- Your authorization model is **complex** (multi-tenant, hierarchical permissions)
+- You prefer **explicit conflict resolution** over automatic merging
+
+Choose something else when:
+
+- You want the simplest possible setup (consider [Electric Cloud](/docs/introduction/comparison/vs-electric))
+- You need arbitrary reactive queries across your entire database (consider [Zero](/docs/introduction/comparison/vs-zero))
+- You're building real-time collaborative editing like Google Docs (consider [Jazz](/docs/introduction/comparison/vs-jazz))
+- You need professional support and SLA guarantees (consider [PowerSync](/docs/introduction/comparison/vs-powersync))
+
+## Detailed comparisons
+
+- [Syncular vs Electric SQL](/docs/introduction/comparison/vs-electric)
+- [Syncular vs Zero](/docs/introduction/comparison/vs-zero)
+- [Syncular vs Jazz](/docs/introduction/comparison/vs-jazz)
+- [Syncular vs PowerSync](/docs/introduction/comparison/vs-powersync)
+- [Other approaches](/docs/introduction/comparison/other-approaches)
+
+## Sources
+
+- [Electric SQL docs](https://electric-sql.com/docs) and [Electric Shape API](https://electric-sql.com/api/openapi)
+- [Zero docs](https://zero.rocicorp.dev/docs) and [Zero open source](https://zero.rocicorp.dev/docs/open-source)
+- [Jazz docs](https://jazz.tools/docs) and [Jazz GitHub](https://github.com/garden-co/jazz)
+- [PowerSync docs](https://docs.powersync.com) and [PowerSync open source](https://www.powersync.com/open-source)

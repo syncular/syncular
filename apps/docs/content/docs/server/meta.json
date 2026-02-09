@@ -1,0 +1,14 @@
+{
+  "root": true,
+  "title": "Server",
+  "pages": [
+    "index",
+    "overview",
+    "table-registry",
+    "subscription-registry",
+    "hono-adapter",
+    "cloudflare-adapter",
+    "dialects",
+    "realtime-bridge"
+  ]
+}

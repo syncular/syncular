@@ -1,0 +1,525 @@
+/**
+ * @syncular/server - Declarative server handler helper
+ */
+
+import type {
+  ScopePattern,
+  ScopeValues,
+  ScopeDefinition as SimpleScopeDefinition,
+  StoredScopes,
+  SyncOperation,
+} from '@syncular/core';
+import { extractScopeVars, normalizeScopes } from '@syncular/core';
+import type {
+  DeleteQueryBuilder,
+  DeleteResult,
+  Insertable,
+  InsertQueryBuilder,
+  InsertResult,
+  Selectable,
+  SelectQueryBuilder,
+  Updateable,
+  UpdateQueryBuilder,
+  UpdateResult,
+} from 'kysely';
+import type { SyncCoreDb } from '../schema';
+import type {
+  ApplyOperationResult,
+  EmittedChange,
+  ServerApplyOperationContext,
+  ServerContext,
+  ServerSnapshotContext,
+  ServerTableHandler,
+} from './types';
+
+/**
+ * Authorization result from authorize callback.
+ */
+type AuthorizeResult =
+  | true
+  | { error: string; code: string; retriable?: boolean };
+
+/**
+ * Scope definition for a column - maps scope variable to column name.
+ */
+export type ScopeColumnMap = Record<string, string>;
+
+/**
+ * Options for creating a declarative server handler.
+ */
+export interface CreateServerHandlerOptions<
+  ServerDB extends SyncCoreDb,
+  ClientDB,
+  TableName extends keyof ServerDB & keyof ClientDB & string,
+> {
+  /** Table name in the database */
+  table: TableName;
+
+  /**
+   * Scope definitions for this table.
+   * Can be simple strings (column auto-derived) or objects with explicit mapping.
+   *
+   * @example
+   * ```typescript
+   * // Simple: column auto-derived from placeholder
+   * scopes: ['user:{user_id}', 'org:{org_id}']
+   *
+   * // Explicit: when column differs from pattern variable
+   * scopes: [
+   *   { pattern: 'user:{user_id}', column: 'owner_id' }
+   * ]
+   * ```
+   */
+  scopes: SimpleScopeDefinition[];
+
+  /** Primary key column name (default: 'id') */
+  primaryKey?: string;
+
+  /** Version column name (default: 'server_version') */
+  versionColumn?: string;
+
+  /** Tables this handler depends on (for bootstrap ordering) */
+  dependsOn?: string[];
+
+  /** TTL for cached snapshot chunks in ms */
+  snapshotChunkTtlMs?: number;
+
+  /**
+   * Resolve allowed scope values for the current actor.
+   * Called per request to determine what the actor can access.
+   *
+   * @example
+   * resolveScopes: async (ctx) => ({
+   *   user_id: [ctx.actorId],
+   *   project_id: await getProjectsForUser(ctx.db, ctx.actorId),
+   * })
+   */
+  resolveScopes: (ctx: ServerContext<ServerDB>) => Promise<ScopeValues>;
+
+  /**
+   * Transform inbound row from client to server format.
+   * Use ctx.schemaVersion to handle older client versions.
+   */
+  transformInbound?: (
+    row: ClientDB[TableName],
+    ctx: { schemaVersion?: number }
+  ) => Updateable<ServerDB[TableName]>;
+
+  /**
+   * Transform outbound row from server to client format.
+   */
+  transformOutbound?: (
+    row: Selectable<ServerDB[TableName]>
+  ) => ClientDB[TableName];
+
+  /**
+   * Authorize an operation before applying.
+   * Return true to allow, or an error object to reject.
+   */
+  authorize?: (
+    ctx: ServerApplyOperationContext<ServerDB>,
+    op: SyncOperation
+  ) => Promise<AuthorizeResult>;
+
+  /**
+   * Override: Build snapshot query.
+   */
+  snapshot?: ServerTableHandler<ServerDB>['snapshot'];
+
+  /**
+   * Override: Apply operation.
+   */
+  applyOperation?: ServerTableHandler<ServerDB>['applyOperation'];
+
+  /**
+   * Custom scope extraction from row (for complex scope logic).
+   */
+  extractScopes?: (row: Record<string, unknown>) => StoredScopes;
+}
+
+/**
+ * Create a declarative server table handler with sensible defaults.
+ *
+ * @example
+ * ```typescript
+ * import { createServerHandler } from '@syncular/server';
+ * import type { ServerDb } from '../db';
+ * import type { ClientDb } from '../../shared/client-db.generated';
+ *
+ * export const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+ *   table: 'tasks',
+ *   scopes: ['user:{user_id}'],  // column auto-derived from placeholder
+ *   resolveScopes: async (ctx) => ({
+ *     user_id: [ctx.actorId],
+ *   }),
+ * });
+ *
+ * // With custom column mapping:
+ * export const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+ *   table: 'tasks',
+ *   scopes: [{ pattern: 'user:{user_id}', column: 'owner_id' }],
+ *   resolveScopes: async (ctx) => ({
+ *     user_id: [ctx.actorId],
+ *   }),
+ * });
+ * ```
+ */
+export function createServerHandler<
+  ServerDB extends SyncCoreDb,
+  ClientDB,
+  TableName extends keyof ServerDB & keyof ClientDB & string,
+>(
+  options: CreateServerHandlerOptions<ServerDB, ClientDB, TableName>
+): ServerTableHandler<ServerDB> {
+  type OverloadParameters<T> = T extends (...args: infer A) => unknown
+    ? A
+    : never;
+
+  type UpdateSetObject = Extract<
+    OverloadParameters<
+      UpdateQueryBuilder<ServerDB, TableName, TableName, UpdateResult>['set']
+    >,
+    [unknown]
+  >[0];
+
+  const {
+    table,
+    scopes: scopeDefs,
+    primaryKey = 'id',
+    versionColumn = 'server_version',
+    dependsOn,
+    snapshotChunkTtlMs,
+    resolveScopes,
+    transformInbound,
+    transformOutbound,
+    authorize,
+    extractScopes: customExtractScopes,
+  } = options;
+
+  // Normalize scopes to pattern map and extract patterns/columns
+  const scopeColumnMap = normalizeScopes(scopeDefs);
+  const scopePatterns = Object.keys(scopeColumnMap) as ScopePattern[];
+  const scopeColumns: ScopeColumnMap = {};
+
+  for (const [pattern, columnName] of Object.entries(scopeColumnMap)) {
+    const vars = extractScopeVars(pattern);
+    if (vars.length !== 1) {
+      throw new Error(
+        `Scope pattern "${pattern}" must contain exactly one placeholder (got ${vars.length}).`
+      );
+    }
+    const varName = vars[0]!;
+    const existing = scopeColumns[varName];
+    if (existing && existing !== columnName) {
+      throw new Error(
+        `Scope variable "${varName}" is mapped to multiple columns: "${existing}" and "${columnName}".`
+      );
+    }
+    scopeColumns[varName] = columnName;
+  }
+
+  // Default extractScopes from scope columns
+  const defaultExtractScopes = (row: Record<string, unknown>): StoredScopes => {
+    const scopes: StoredScopes = {};
+    for (const [varName, columnName] of Object.entries(scopeColumns)) {
+      const raw = row[columnName];
+      if (raw === null || raw === undefined) continue;
+      const value = String(raw);
+      if (value.length > 0) {
+        scopes[varName] = value;
+      }
+    }
+    return scopes;
+  };
+
+  const extractScopesImpl = customExtractScopes ?? defaultExtractScopes;
+
+  // Default snapshot implementation
+  const defaultSnapshot = async (
+    ctx: ServerSnapshotContext<ServerDB>,
+    _params: Record<string, unknown> | undefined
+  ): Promise<{ rows: unknown[]; nextCursor: string | null }> => {
+    const trx = ctx.db;
+    const { ref } = trx.dynamic;
+    const scopeValues = ctx.scopeValues;
+
+    const pageSize = Math.max(1, Math.min(10_000, ctx.limit));
+
+    // Build dynamic WHERE conditions
+    const whereConditions: Array<{ column: string; values: string[] }> = [];
+    for (const [varName, columnName] of Object.entries(scopeColumns)) {
+      const values = scopeValues[varName];
+      if (values === undefined) continue;
+      const normalized = Array.isArray(values) ? values : [values];
+      if (normalized.length === 0) continue;
+      whereConditions.push({ column: columnName, values: normalized });
+    }
+
+    let q = trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+      ServerDB,
+      keyof ServerDB & string,
+      Record<string, unknown>
+    >;
+
+    for (const cond of whereConditions) {
+      if (cond.values.length === 1) {
+        q = q.where(ref<string>(cond.column), '=', cond.values[0]);
+      } else {
+        q = q.where(ref<string>(cond.column), 'in', cond.values);
+      }
+    }
+
+    if (ctx.cursor !== null) {
+      q = q.where(ref<string>(primaryKey), '>', ctx.cursor);
+    }
+
+    const rows = await q
+      .orderBy(ref<string>(primaryKey), 'asc')
+      .limit(pageSize + 1)
+      .execute();
+
+    const hasMore = rows.length > pageSize;
+    const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
+    const lastRow = pageRows[pageRows.length - 1] as
+      | (typeof rows)[number]
+      | undefined;
+    const nextCursor = hasMore
+      ? ((lastRow as Record<string, unknown> | undefined)?.[primaryKey] as
+          | string
+          | undefined)
+      : null;
+
+    // Transform outbound if provided
+    const outputRows = transformOutbound
+      ? pageRows.map((r) =>
+          transformOutbound(r as Selectable<ServerDB[TableName]>)
+        )
+      : pageRows;
+
+    return {
+      rows: outputRows,
+      nextCursor:
+        typeof nextCursor === 'string' && nextCursor.length > 0
+          ? nextCursor
+          : null,
+    };
+  };
+
+  // Default applyOperation implementation
+  const defaultApplyOperation = async (
+    ctx: ServerApplyOperationContext<ServerDB>,
+    op: SyncOperation,
+    opIndex: number
+  ): Promise<ApplyOperationResult> => {
+    const trx = ctx.trx;
+    const { ref } = trx.dynamic;
+
+    if (op.table !== table) {
+      return {
+        result: {
+          opIndex,
+          status: 'error',
+          error: `UNKNOWN_TABLE:${op.table}`,
+          code: 'UNKNOWN_TABLE',
+          retriable: false,
+        },
+        emittedChanges: [],
+      };
+    }
+
+    // Run authorization if provided
+    if (authorize) {
+      const authResult = await authorize(ctx, op);
+      if (authResult !== true) {
+        return {
+          result: {
+            opIndex,
+            status: 'error',
+            error: authResult.error,
+            code: authResult.code,
+            retriable: authResult.retriable ?? false,
+          },
+          emittedChanges: [],
+        };
+      }
+    }
+
+    // Handle delete
+    if (op.op === 'delete') {
+      const existing = await (
+        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+          ServerDB,
+          keyof ServerDB & string,
+          Record<string, unknown>
+        >
+      )
+        .where(ref<string>(primaryKey), '=', op.row_id)
+        .executeTakeFirst();
+
+      if (!existing) {
+        return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
+      }
+
+      // Extract scopes from existing row for the delete emission
+      const scopes = extractScopesImpl(existing as Record<string, unknown>);
+
+      await (
+        trx.deleteFrom(table) as DeleteQueryBuilder<
+          ServerDB,
+          keyof ServerDB & string,
+          DeleteResult
+        >
+      )
+        .where(ref<string>(primaryKey), '=', op.row_id)
+        .execute();
+
+      const emitted: EmittedChange = {
+        table,
+        row_id: op.row_id,
+        op: 'delete',
+        row_json: null,
+        row_version: null,
+        scopes,
+      };
+
+      return {
+        result: { opIndex, status: 'applied' },
+        emittedChanges: [emitted],
+      };
+    }
+
+    // Handle upsert
+    const rawPayload = op.payload ?? {};
+    const payload = transformInbound
+      ? transformInbound(rawPayload as ClientDB[TableName], {
+          schemaVersion: ctx.schemaVersion,
+        })
+      : (rawPayload as Updateable<ServerDB[TableName]>);
+
+    // Check for existing row
+    const existing = await (
+      trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+        ServerDB,
+        keyof ServerDB & string,
+        Record<string, unknown>
+      >
+    )
+      .where(ref<string>(primaryKey), '=', op.row_id)
+      .executeTakeFirst();
+
+    const existingRow = existing as Record<string, unknown> | undefined;
+    const existingVersion =
+      (existingRow?.[versionColumn] as number | undefined) ?? 0;
+
+    // Check version conflict
+    if (
+      existing &&
+      op.base_version != null &&
+      existingVersion !== op.base_version
+    ) {
+      return {
+        result: {
+          opIndex,
+          status: 'conflict',
+          message: `Version conflict: server=${existingVersion}, base=${op.base_version}`,
+          server_version: existingVersion,
+          server_row: transformOutbound
+            ? transformOutbound(existing as Selectable<ServerDB[TableName]>)
+            : existing,
+        },
+        emittedChanges: [],
+      };
+    }
+
+    const nextVersion = existingVersion + 1;
+
+    if (existing) {
+      // Update - merge payload with existing
+      const updateSet: Record<string, unknown> = {
+        ...payload,
+        [versionColumn]: nextVersion,
+      };
+      // Don't update primary key or scope columns
+      delete updateSet[primaryKey];
+      for (const col of Object.values(scopeColumns)) {
+        delete updateSet[col];
+      }
+
+      await (
+        trx.updateTable(table) as UpdateQueryBuilder<
+          ServerDB,
+          TableName,
+          TableName,
+          UpdateResult
+        >
+      )
+        .set(updateSet as UpdateSetObject)
+        .where(ref<string>(primaryKey), '=', op.row_id)
+        .execute();
+    } else {
+      // Insert
+      const insertValues: Record<string, unknown> = {
+        ...payload,
+        [primaryKey]: op.row_id,
+        [versionColumn]: 1,
+      };
+
+      await (
+        trx.insertInto(table) as InsertQueryBuilder<
+          ServerDB,
+          TableName,
+          InsertResult
+        >
+      )
+        .values(insertValues as Insertable<ServerDB[TableName]>)
+        .execute();
+    }
+
+    // Read back the updated row
+    const updated = await (
+      trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+        ServerDB,
+        keyof ServerDB & string,
+        Record<string, unknown>
+      >
+    )
+      .where(ref<string>(primaryKey), '=', op.row_id)
+      .executeTakeFirstOrThrow();
+
+    const updatedRow = updated as Record<string, unknown>;
+    const rowVersion = (updatedRow[versionColumn] as number) ?? 1;
+
+    // Extract scopes from updated row
+    const scopes = extractScopesImpl(updatedRow);
+
+    // Transform outbound for emitted change
+    const rowJson = transformOutbound
+      ? transformOutbound(updated as Selectable<ServerDB[TableName]>)
+      : updated;
+
+    const emitted: EmittedChange = {
+      table,
+      row_id: op.row_id,
+      op: 'upsert',
+      row_json: rowJson,
+      row_version: rowVersion,
+      scopes,
+    };
+
+    return {
+      result: { opIndex, status: 'applied' },
+      emittedChanges: [emitted],
+    };
+  };
+
+  return {
+    table,
+    scopePatterns,
+    dependsOn,
+    snapshotChunkTtlMs,
+    resolveScopes,
+    extractScopes: extractScopesImpl,
+    snapshot: options.snapshot ?? defaultSnapshot,
+    applyOperation: options.applyOperation ?? defaultApplyOperation,
+  };
+}

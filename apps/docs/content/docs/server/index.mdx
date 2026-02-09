@@ -1,0 +1,66 @@
+---
+title: Server Reference
+description: Syncular server configuration and APIs
+---
+
+# Server Reference
+
+The Syncular server handles commit storage, conflict detection, and real-time distribution.
+
+<Cards>
+  <Card title="Overview" href="/docs/server/overview">
+    Server architecture and concepts
+  </Card>
+  <Card title="Table Registry" href="/docs/server/table-registry">
+    Configure table handlers
+  </Card>
+  <Card title="Subscription Registry" href="/docs/server/subscription-registry">
+    Define subscription types
+  </Card>
+  <Card title="Hono Adapter" href="/docs/server/hono-adapter">
+    HTTP server integration
+  </Card>
+  <Card title="Dialects" href="/docs/server/dialects">
+    Database dialect configuration
+  </Card>
+  <Card title="Realtime Bridge" href="/docs/server/realtime-bridge">
+    WebSocket and real-time setup
+  </Card>
+</Cards>
+
+## Installation
+
+```bash
+npm install @syncular/server @syncular/server-hono
+npm install @syncular/server-dialect-postgres kysely pg hono
+```
+
+## Quick Setup
+
+```typescript
+import { Hono } from 'hono';
+import { createSyncRoutes } from '@syncular/server-hono';
+import { ensureSyncSchema } from '@syncular/server';
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+const app = new Hono();
+
+// 1) Create a sync dialect and ensure the sync tables exist
+const dialect = createPostgresServerDialect();
+await ensureSyncSchema(db, dialect);
+
+// 2) Register your server table handlers
+const handlers = [tasksHandler];
+
+// 3) Mount the sync routes
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers,
+  authenticate: async (ctx) => ({ actorId: 'user-123' }),
+});
+
+app.route('/sync', syncRoutes);
+
+export default app;
+```

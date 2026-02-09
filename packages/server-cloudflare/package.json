@@ -1,0 +1,54 @@
+{
+  "name": "@syncular/server-cloudflare",
+  "version": "0.0.1",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./worker": {
+      "bun": "./src/worker.ts",
+      "import": {
+        "types": "./dist/worker.d.ts",
+        "default": "./dist/worker.js"
+      }
+    },
+    "./durable-object": {
+      "bun": "./src/durable-object.ts",
+      "import": {
+        "types": "./dist/durable-object.d.ts",
+        "default": "./dist/durable-object.js"
+      }
+    },
+    "./r2": {
+      "bun": "./src/r2.ts",
+      "import": {
+        "types": "./dist/r2.d.ts",
+        "default": "./dist/r2.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && tsgo"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260203.0",
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

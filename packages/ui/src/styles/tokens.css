@@ -1,0 +1,47 @@
+@theme {
+  /* ── Surface ── */
+  --color-background: #0c0c0c;
+  --color-surface: #0c0c0c;
+  --color-panel: #111111;
+  --color-panel-alt: #0e0e0e;
+  --color-border: #1e1e1e;
+  --color-border-bright: #2a2a2a;
+
+  /* ── Status ── */
+  --color-healthy: #22c55e;
+  --color-syncing: #f59e0b;
+  --color-offline: #ef4444;
+
+  /* ── Flow ── */
+  --color-flow: #3b82f6;
+  --color-relay: #8b5cf6;
+  --color-encrypt: #f472b6;
+
+  /* ── Text ── */
+  --color-foreground: #e5e5e5;
+  --color-foreground-muted: #737373;
+
+  /* ── Semantic ── */
+  --color-primary: #22c55e;
+  --color-destructive: #ef4444;
+  --color-secondary: #1e1e1e;
+
+  /* ── Fonts ── */
+  --font-display: 'Inter Tight', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
+
+  /* ── Radii ── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+
+  /* ── Glows ── */
+  --sync-glow-healthy: 0 0 6px #22c55e;
+  --sync-glow-syncing: 0 0 6px #f59e0b;
+  --sync-glow-offline: 0 0 6px #ef4444;
+  --sync-glow-flow: 0 0 6px #3b82f6;
+  --sync-glow-relay: 0 0 6px #8b5cf6;
+  --sync-glow-encrypt: 0 0 6px #f472b6;
+}

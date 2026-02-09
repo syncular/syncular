@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 10: Binary Stars</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Satoshi:wght@300;400;500;700;900&family=Commit+Mono&display=swap" rel="stylesheet">
+<style>
+  @font-face {
+    font-family: 'Satoshi';
+    src: url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;700;900&display=swap');
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Outfit', sans-serif;
+    background: #000;
+    color: #fff;
+    overflow-x: hidden;
+  }
+  code, .mono { font-family: 'Commit Mono', 'Courier New', monospace; }
+
+  /* Binary star system — two bodies exchanging matter */
+  #binary-canvas {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+
+  /* Lagrange point — the sync boundary */
+  .lagrange {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 2px;
+    height: 2px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(255,255,255,0.5);
+    box-shadow: 0 0 20px 5px rgba(255,255,255,0.1);
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  /* Labels for the two bodies */
+  .body-label {
+    position: fixed;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 4;
+    pointer-events: none;
+  }
+  .body-label-client {
+    left: calc(50% - 200px);
+    text-align: right;
+  }
+  .body-label-server {
+    left: calc(50% + 160px);
+  }
+
+  /* Title */
+  .hero-title {
+    font-size: clamp(3.5rem, 10vw, 8rem);
+    font-weight: 900;
+    line-height: 0.9;
+    letter-spacing: -0.03em;
+  }
+
+  /* Split gradient */
+  .gradient-split {
+    background: linear-gradient(90deg, #60a5fa 0%, #fff 50%, #f472b6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Animations */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fi { animation: fade-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .fi1 { animation-delay: 0.1s; }
+  .fi2 { animation-delay: 0.25s; }
+  .fi3 { animation-delay: 0.4s; }
+  .fi4 { animation-delay: 0.6s; }
+  .fi5 { animation-delay: 0.8s; }
+  .fi6 { animation-delay: 1s; }
+
+  /* Two-sided feature layout */
+  .feature-side {
+    padding: 24px;
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 12px;
+    transition: all 0.3s ease;
+  }
+  .feature-side.client-side:hover {
+    border-color: rgba(96, 165, 250, 0.1);
+    background: rgba(96, 165, 250, 0.02);
+  }
+  .feature-side.server-side:hover {
+    border-color: rgba(244, 114, 182, 0.1);
+    background: rgba(244, 114, 182, 0.02);
+  }
+
+  /* Sync bridge visualization */
+  .bridge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 0;
+  }
+  .bridge-dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    animation: bridge-flow 2s ease-in-out infinite;
+  }
+  .bridge-dot:nth-child(1) { animation-delay: 0s; }
+  .bridge-dot:nth-child(2) { animation-delay: 0.2s; }
+  .bridge-dot:nth-child(3) { animation-delay: 0.4s; }
+  .bridge-dot:nth-child(4) { animation-delay: 0.6s; }
+  .bridge-dot:nth-child(5) { animation-delay: 0.8s; }
+
+  @keyframes bridge-flow {
+    0%, 100% { opacity: 0.1; transform: scale(0.5); }
+    50% { opacity: 0.8; transform: scale(1); }
+  }
+
+  /* CTA */
+  .cta-binary {
+    background: linear-gradient(90deg, rgba(96,165,250,0.1), rgba(244,114,182,0.1));
+    border: 1px solid rgba(255,255,255,0.08);
+    transition: all 0.3s ease;
+  }
+  .cta-binary:hover {
+    border-color: rgba(255,255,255,0.15);
+    box-shadow: 0 0 40px rgba(255,255,255,0.03);
+  }
+
+  /* Status indicator */
+  .sync-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(163, 230, 53, 0.15);
+    background: rgba(163, 230, 53, 0.03);
+  }
+  .sync-status .indicator {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #a3e635;
+    animation: status-blink 2s ease-in-out infinite;
+  }
+  @keyframes status-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="binary-canvas"></canvas>
+<div class="lagrange"></div>
+
+<!-- Nav -->
+<header class="fixed top-0 left-0 right-0 z-50 px-8 py-6">
+  <nav class="max-w-6xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <!-- Two dots representing binary system -->
+      <div class="flex items-center gap-1.5">
+        <div class="w-2 h-2 rounded-full bg-blue-400/50"></div>
+        <div class="w-1 h-1 rounded-full bg-white/20"></div>
+        <div class="w-2 h-2 rounded-full bg-pink-400/50"></div>
+      </div>
+      <span class="text-xs font-bold tracking-wider text-white/50">SYNCULAR</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="sync-status">
+        <div class="indicator"></div>
+        <span class="mono text-[8px] text-lime-400/50">synced</span>
+      </div>
+      <a href="#" class="mono text-[9px] text-white/20 hover:text-white/50 transition-colors">docs</a>
+      <a href="#" class="mono text-[9px] text-white/20 hover:text-white/50 transition-colors">github</a>
+    </div>
+  </nav>
+</header>
+
+<!-- Hero -->
+<section class="relative min-h-screen flex flex-col items-center justify-center z-10 px-8 text-center">
+  <div class="flex items-center gap-6 mb-8 fi fi1">
+    <div class="flex items-center gap-2">
+      <div class="w-3 h-3 rounded-full bg-blue-400/30 border border-blue-400/30"></div>
+      <span class="mono text-[9px] text-blue-400/40">client</span>
+    </div>
+    <div class="bridge">
+      <div class="bridge-dot bg-blue-400/60"></div>
+      <div class="bridge-dot bg-blue-300/50"></div>
+      <div class="bridge-dot bg-white/40"></div>
+      <div class="bridge-dot bg-pink-300/50"></div>
+      <div class="bridge-dot bg-pink-400/60"></div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="mono text-[9px] text-pink-400/40">server</span>
+      <div class="w-3 h-3 rounded-full bg-pink-400/30 border border-pink-400/30"></div>
+    </div>
+  </div>
+
+  <h1 class="hero-title fi fi2">
+    <span class="gradient-split">Two bodies.</span><br>
+    <span class="text-white/20">One truth.</span>
+  </h1>
+
+  <p class="mt-8 text-sm font-light text-white/20 max-w-lg leading-relaxed fi fi3">
+    Like a binary star system — client and server orbit each other,
+    exchanging data through gravitational attraction. Write on either side.
+    Both converge at the Lagrange point.
+  </p>
+
+  <div class="mt-12 flex items-center gap-4 fi fi4">
+    <a href="#" class="cta-binary px-8 py-3 rounded-lg text-sm font-medium text-white/70">
+      Get Started
+    </a>
+    <a href="#" class="px-8 py-3 text-sm font-light text-white/20 hover:text-white/50 transition-colors">
+      GitHub →
+    </a>
+  </div>
+</section>
+
+<!-- Client vs Server — mirror layout -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-5xl mx-auto">
+    <div class="grid grid-cols-2 gap-8">
+      <!-- Client side -->
+      <div>
+        <div class="flex items-center gap-3 mb-8">
+          <div class="w-2.5 h-2.5 rounded-full bg-blue-400/40"></div>
+          <span class="text-xs font-bold tracking-wider text-blue-400/40">CLIENT</span>
+        </div>
+        <div class="space-y-3">
+          <div class="feature-side client-side">
+            <h3 class="text-sm font-bold text-white/60 mb-1">Local SQLite</h3>
+            <p class="mono text-[9px] text-white/15 leading-relaxed">All writes land in local database. Sub-ms reads. Always available.</p>
+          </div>
+          <div class="feature-side client-side">
+            <h3 class="text-sm font-bold text-white/60 mb-1">Outbox Queue</h3>
+            <p class="mono text-[9px] text-white/15 leading-relaxed">Mutations queued as commits. Pushed when connected.</p>
+          </div>
+          <div class="feature-side client-side">
+            <h3 class="text-sm font-bold text-white/60 mb-1">React Bindings</h3>
+            <p class="mono text-[9px] text-white/15 leading-relaxed">useSyncQuery, SyncProvider. Reactive by default.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Server side -->
+      <div>
+        <div class="flex items-center gap-3 mb-8 justify-end">
+          <span class="text-xs font-bold tracking-wider text-pink-400/40">SERVER</span>
+          <div class="w-2.5 h-2.5 rounded-full bg-pink-400/40"></div>
+        </div>
+        <div class="space-y-3">
+          <div class="feature-side server-side">
+            <h3 class="text-sm font-bold text-white/60 mb-1">Postgres Backend</h3>
+            <p class="mono text-[9px] text-white/15 leading-relaxed">Server-side Postgres. Scalable, battle-tested, reliable.</p>
+          </div>
+          <div class="feature-side server-side">
+            <h3 class="text-sm font-bold text-white/60 mb-1">Merge Engine</h3>
+            <p class="mono text-[9px] text-white/15 leading-relaxed">Commits from all clients merged. Conflicts detected, resolved.</p>
+          </div>
+          <div class="feature-side server-side">
+            <h3 class="text-sm font-bold text-white/60 mb-1">Scope-Based Auth</h3>
+            <p class="mono text-[9px] text-white/15 leading-relaxed">Row-level security. Subscription scopes filter what syncs.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- The bridge between them -->
+    <div class="mt-12 text-center">
+      <div class="inline-flex items-center gap-4 px-6 py-3 rounded-full border border-white/[0.04]">
+        <span class="mono text-[9px] text-blue-400/30">push</span>
+        <div class="flex gap-1">
+          <div class="w-1 h-1 rounded-full bg-blue-400/30"></div>
+          <div class="w-1 h-1 rounded-full bg-white/20"></div>
+          <div class="w-1 h-1 rounded-full bg-pink-400/30"></div>
+        </div>
+        <span class="mono text-[9px] text-pink-400/30">pull</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Shared properties -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-4xl mx-auto text-center">
+    <h2 class="text-3xl font-bold mb-4">
+      <span class="text-white/20">Shared</span> <span class="text-white/60">gravity</span>
+    </h2>
+    <p class="mono text-[10px] text-white/15 mb-12">Properties that bind the system together</p>
+    <div class="grid grid-cols-4 gap-3">
+      <div class="p-4 border border-white/[0.03] rounded-xl text-center hover:border-white/[0.08] transition-colors">
+        <div class="text-sm font-bold text-white/50 mb-1">Commit-Log</div>
+        <div class="mono text-[8px] text-white/15">ordered history</div>
+      </div>
+      <div class="p-4 border border-white/[0.03] rounded-xl text-center hover:border-white/[0.08] transition-colors">
+        <div class="text-sm font-bold text-white/50 mb-1">Type-Safe</div>
+        <div class="mono text-[8px] text-white/15">Kysely + TS</div>
+      </div>
+      <div class="p-4 border border-white/[0.03] rounded-xl text-center hover:border-white/[0.08] transition-colors">
+        <div class="text-sm font-bold text-white/50 mb-1">Self-Hosted</div>
+        <div class="mono text-[8px] text-white/15">MIT license</div>
+      </div>
+      <div class="p-4 border border-white/[0.03] rounded-xl text-center hover:border-white/[0.08] transition-colors">
+        <div class="text-sm font-bold text-white/50 mb-1">Conflicts</div>
+        <div class="mono text-[8px] text-white/15">detect + resolve</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section class="relative z-10 px-8 py-24">
+  <div class="max-w-2xl mx-auto text-center">
+    <h2 class="text-3xl font-bold mb-12">
+      <span class="text-white/60">Start the</span> <span class="gradient-split">orbit</span>
+    </h2>
+    <div class="border border-white/[0.04] rounded-xl p-6 text-left bg-white/[0.01]">
+      <div class="flex items-center gap-2 mb-4">
+        <div class="w-1.5 h-1.5 rounded-full bg-red-500/30"></div>
+        <div class="w-1.5 h-1.5 rounded-full bg-yellow-500/30"></div>
+        <div class="w-1.5 h-1.5 rounded-full bg-green-500/30"></div>
+      </div>
+      <code class="mono text-xs text-white/25 block">
+        <span class="text-white/10">// both sides of the binary</span><br>
+        bun add @syncular/client @syncular/server
+      </code>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="relative z-10 px-8 py-12 border-t border-white/[0.03]">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-1.5">
+      <div class="w-1.5 h-1.5 rounded-full bg-blue-400/30"></div>
+      <div class="w-1 h-1 rounded-full bg-white/10"></div>
+      <div class="w-1.5 h-1.5 rounded-full bg-pink-400/30"></div>
+      <span class="mono text-[9px] text-white/15 ml-2">syncular — MIT</span>
+    </div>
+    <div class="flex gap-6">
+      <a href="#" class="mono text-[9px] text-white/15 hover:text-white/40 transition-colors">docs</a>
+      <a href="#" class="mono text-[9px] text-white/15 hover:text-white/40 transition-colors">github</a>
+      <a href="#" class="mono text-[9px] text-white/15 hover:text-white/40 transition-colors">discord</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Binary star system — two luminous bodies orbiting center, exchanging matter stream
+const canvas = document.getElementById('binary-canvas');
+const ctx = canvas.getContext('2d');
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+let time = 0;
+const particles = [];
+const STREAM_COUNT = 150;
+
+// Matter stream particles
+for (let i = 0; i < STREAM_COUNT; i++) {
+  particles.push({
+    t: Math.random(), // position along stream (0=body1, 1=body2)
+    speed: 0.002 + Math.random() * 0.004,
+    offset: (Math.random() - 0.5) * 20,
+    size: 0.5 + Math.random() * 1,
+    direction: Math.random() > 0.5 ? 1 : -1, // which way the particle flows
+  });
+}
+
+// Background stars
+const stars = [];
+for (let i = 0; i < 150; i++) {
+  stars.push({
+    x: Math.random() * 2000,
+    y: Math.random() * 2000,
+    size: Math.random() * 1.2 + 0.2,
+    opacity: Math.random() * 0.3 + 0.05,
+  });
+}
+
+function animate() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
+  time += 0.008;
+
+  // Draw stars
+  stars.forEach(s => {
+    ctx.beginPath();
+    ctx.arc(s.x % canvas.width, s.y % canvas.height, s.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${s.opacity})`;
+    ctx.fill();
+  });
+
+  // Binary positions (orbit around center)
+  const orbitRadius = 150;
+  const body1X = cx + Math.cos(time * 0.5) * orbitRadius;
+  const body1Y = cy + Math.sin(time * 0.5) * orbitRadius * 0.3;
+  const body2X = cx + Math.cos(time * 0.5 + Math.PI) * orbitRadius;
+  const body2Y = cy + Math.sin(time * 0.5 + Math.PI) * orbitRadius * 0.3;
+
+  // Draw body glows
+  const g1 = ctx.createRadialGradient(body1X, body1Y, 0, body1X, body1Y, 50);
+  g1.addColorStop(0, 'rgba(96, 165, 250, 0.15)');
+  g1.addColorStop(1, 'transparent');
+  ctx.fillStyle = g1;
+  ctx.fillRect(body1X - 50, body1Y - 50, 100, 100);
+
+  const g2 = ctx.createRadialGradient(body2X, body2Y, 0, body2X, body2Y, 50);
+  g2.addColorStop(0, 'rgba(244, 114, 182, 0.15)');
+  g2.addColorStop(1, 'transparent');
+  ctx.fillStyle = g2;
+  ctx.fillRect(body2X - 50, body2Y - 50, 100, 100);
+
+  // Draw bodies
+  ctx.beginPath();
+  ctx.arc(body1X, body1Y, 4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(96, 165, 250, 0.7)';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(body2X, body2Y, 4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(244, 114, 182, 0.7)';
+  ctx.fill();
+
+  // Draw matter stream between bodies
+  particles.forEach(p => {
+    p.t += p.speed * p.direction;
+    if (p.t > 1) p.t = 0;
+    if (p.t < 0) p.t = 1;
+
+    const t = p.t;
+    // Bezier-ish curve between the two bodies
+    const midX = cx;
+    const midY = cy + p.offset;
+
+    // Quadratic interpolation
+    const x = (1-t)*(1-t)*body1X + 2*(1-t)*t*midX + t*t*body2X;
+    const y = (1-t)*(1-t)*body1Y + 2*(1-t)*t*midY + t*t*body2Y;
+
+    // Color blend from blue to pink
+    const r = Math.floor(96 + (244 - 96) * t);
+    const g = Math.floor(165 + (114 - 165) * t);
+    const b = Math.floor(250 + (182 - 250) * t);
+    const alpha = 0.15 + Math.sin(t * Math.PI) * 0.2; // brightest in middle
+
+    ctx.beginPath();
+    ctx.arc(x, y, p.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    ctx.fill();
+  });
+
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>

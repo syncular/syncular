@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 14: Redshift</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,200;0,300;0,400;0,700;0,800;1,300&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Hanken Grotesk', sans-serif;
+    background: #020202;
+    color: #fff;
+    overflow-x: hidden;
+  }
+
+  /* Full-page gradient that shifts from blue (client/near) to red (server/far) */
+  .redshift-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      135deg,
+      rgba(59, 130, 246, 0.03) 0%,
+      transparent 30%,
+      transparent 70%,
+      rgba(239, 68, 68, 0.03) 100%
+    );
+  }
+
+  /* Horizontal spectrum bar */
+  .spectrum {
+    height: 2px;
+    background: linear-gradient(90deg,
+      #3b82f6 0%, #60a5fa 15%, #93c5fd 25%, #fff 40%,
+      #fca5a5 60%, #f87171 75%, #ef4444 90%, #dc2626 100%
+    );
+    opacity: 0.15;
+  }
+
+  /* Title with color shift */
+  .hero-title {
+    font-size: clamp(4rem, 12vw, 10rem);
+    font-weight: 800;
+    line-height: 0.88;
+    letter-spacing: -0.04em;
+  }
+  .text-blueshift {
+    color: rgba(96, 165, 250, 0.7);
+  }
+  .text-redshift {
+    color: rgba(248, 113, 113, 0.7);
+  }
+
+  /* Animations */
+  @keyframes shift-in {
+    from { opacity: 0; transform: translateX(-30px); filter: blur(4px); }
+    to { opacity: 1; transform: translateX(0); filter: blur(0); }
+  }
+  @keyframes shift-out {
+    from { opacity: 0; transform: translateX(30px); filter: blur(4px); }
+    to { opacity: 1; transform: translateX(0); filter: blur(0); }
+  }
+  .si { animation: shift-in 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .so { animation: shift-out 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .d1 { animation-delay: 0.15s; }
+  .d2 { animation-delay: 0.3s; }
+  .d3 { animation-delay: 0.5s; }
+  .d4 { animation-delay: 0.7s; }
+  .d5 { animation-delay: 0.9s; }
+
+  /* Data in transit — shows the "shift" */
+  .transit-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 3px;
+  }
+  .transit-cell {
+    flex: 1;
+    padding: 14px 16px;
+    border: 1px solid rgba(255,255,255,0.02);
+    transition: all 0.3s ease;
+  }
+  .transit-cell:hover {
+    background: rgba(255,255,255,0.01);
+    border-color: rgba(255,255,255,0.05);
+  }
+  .transit-arrow {
+    width: 60px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .arrow-dots {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .arrow-dots .dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    animation: arrow-flow 1.5s ease-in-out infinite;
+  }
+  .arrow-dots .dot:nth-child(2) { animation-delay: 0.2s; }
+  .arrow-dots .dot:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes arrow-flow {
+    0%, 100% { opacity: 0.1; }
+    50% { opacity: 0.8; }
+  }
+
+  /* Feature cards with spectrum gradient border */
+  .spectrum-card {
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 12px;
+    padding: 20px;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .spectrum-card::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #3b82f6, #ef4444);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  .spectrum-card:hover {
+    border-color: rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.01);
+  }
+  .spectrum-card:hover::after { opacity: 0.15; }
+
+  /* CTA */
+  .cta-spectrum {
+    background: linear-gradient(90deg, rgba(59,130,246,0.08), rgba(239,68,68,0.08));
+    border: 1px solid rgba(255,255,255,0.06);
+    transition: all 0.3s ease;
+  }
+  .cta-spectrum:hover {
+    background: linear-gradient(90deg, rgba(59,130,246,0.15), rgba(239,68,68,0.15));
+    border-color: rgba(255,255,255,0.12);
+    box-shadow: 0 0 40px rgba(255,255,255,0.02);
+  }
+</style>
+</head>
+<body>
+
+<div class="redshift-bg"></div>
+
+<!-- Nav -->
+<header class="fixed top-0 left-0 right-0 z-50 px-8 py-6">
+  <nav class="max-w-6xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-0.5">
+        <div class="w-2 h-2 rounded-full bg-blue-400/40"></div>
+        <div class="w-4 h-0.5 bg-gradient-to-r from-blue-400/20 to-red-400/20"></div>
+        <div class="w-2 h-2 rounded-full bg-red-400/40"></div>
+      </div>
+      <span class="text-xs font-bold tracking-wider text-white/50">SYNCULAR</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="#" class="text-[10px] font-medium text-white/25 hover:text-white/60 transition-colors">Docs</a>
+      <a href="#" class="text-[10px] font-medium text-white/25 hover:text-white/60 transition-colors">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<!-- Hero -->
+<section class="relative min-h-screen flex flex-col justify-center z-10 px-8">
+  <div class="max-w-6xl mx-auto w-full">
+    <!-- Spectrum bar -->
+    <div class="spectrum max-w-2xl mb-12 si d1"></div>
+
+    <h1 class="hero-title si d2">
+      <span class="text-blueshift">Data leaves</span><br>
+      <span class="text-white/60">the client.</span>
+    </h1>
+    <h1 class="hero-title mt-4 so d3">
+      <span class="text-white/60">Truth reaches</span><br>
+      <span class="text-redshift">the server.</span>
+    </h1>
+
+    <p class="mt-10 text-sm text-white/20 leading-relaxed max-w-lg si d4">
+      Like light redshifting as it escapes a gravity well — data transforms
+      as it travels between client and server. Mutations shift into commits.
+      Commits shift into merged truth. The spectrum of sync.
+    </p>
+
+    <div class="mt-10 flex items-center gap-4 si d5">
+      <a href="#" class="cta-spectrum px-8 py-3 rounded-lg text-sm font-semibold text-white/70">
+        Get Started
+      </a>
+      <a href="#" class="px-8 py-3 text-sm text-white/20 hover:text-white/50 transition-colors">
+        Source Code →
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- The shift — data transformation pipeline -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-4xl mx-auto">
+    <h2 class="text-3xl font-bold mb-4">
+      <span class="text-blueshift">Blue</span><span class="text-white/30">shift → </span><span class="text-redshift">Red</span><span class="text-white/30">shift</span>
+    </h2>
+    <p class="text-[11px] text-white/15 mb-12">How data transforms as it traverses the sync spectrum.</p>
+
+    <div class="transit-row">
+      <div class="transit-cell rounded-l-xl" style="border-color: rgba(59,130,246,0.06);">
+        <span class="text-[10px] font-bold text-blue-400/50">CLIENT</span>
+        <p class="text-[9px] text-white/20 mt-1">Write mutation to SQLite</p>
+      </div>
+      <div class="transit-arrow">
+        <div class="arrow-dots">
+          <div class="dot bg-blue-400"></div>
+          <div class="dot bg-white/40"></div>
+          <div class="dot bg-red-400"></div>
+        </div>
+      </div>
+      <div class="transit-cell rounded-r-xl" style="border-color: rgba(239,68,68,0.06);">
+        <span class="text-[10px] font-bold text-red-400/50">SERVER</span>
+        <p class="text-[9px] text-white/20 mt-1">Receive & merge commit</p>
+      </div>
+    </div>
+
+    <div class="transit-row">
+      <div class="transit-cell rounded-l-xl" style="border-color: rgba(59,130,246,0.06);">
+        <span class="text-[10px] text-white/30">Mutation → local commit</span>
+      </div>
+      <div class="transit-arrow">
+        <span class="text-[8px] text-white/10">shift</span>
+      </div>
+      <div class="transit-cell rounded-r-xl" style="border-color: rgba(239,68,68,0.06);">
+        <span class="text-[10px] text-white/30">Commit → merged state</span>
+      </div>
+    </div>
+
+    <div class="transit-row">
+      <div class="transit-cell rounded-l-xl" style="border-color: rgba(59,130,246,0.06);">
+        <span class="text-[10px] text-white/30">Query local data (&lt;1ms)</span>
+      </div>
+      <div class="transit-arrow">
+        <span class="text-[8px] text-white/10">shift</span>
+      </div>
+      <div class="transit-cell rounded-r-xl" style="border-color: rgba(239,68,68,0.06);">
+        <span class="text-[10px] text-white/30">Broadcast to all clients</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-5xl mx-auto">
+    <h2 class="text-3xl font-bold text-white/60 mb-12">Spectral lines</h2>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="spectrum-card">
+        <h3 class="text-sm font-bold text-white/50 mb-2">Offline-First</h3>
+        <p class="text-[10px] text-white/15 leading-relaxed">Client operates in its own reference frame. No network dependency.</p>
+      </div>
+      <div class="spectrum-card">
+        <h3 class="text-sm font-bold text-white/50 mb-2">Commit-Log</h3>
+        <p class="text-[10px] text-white/15 leading-relaxed">Every mutation is a spectral line in the history. Ordered, traceable.</p>
+      </div>
+      <div class="spectrum-card">
+        <h3 class="text-sm font-bold text-white/50 mb-2">Scoped Auth</h3>
+        <p class="text-[10px] text-white/15 leading-relaxed">Not all frequencies pass through. Scopes are your filter.</p>
+      </div>
+      <div class="spectrum-card">
+        <h3 class="text-sm font-bold text-white/50 mb-2">Type-Safe SQL</h3>
+        <p class="text-[10px] text-white/15 leading-relaxed">Kysely. TypeScript inference. Zero codegen.</p>
+      </div>
+      <div class="spectrum-card">
+        <h3 class="text-sm font-bold text-white/50 mb-2">Self-Hosted</h3>
+        <p class="text-[10px] text-white/15 leading-relaxed">Your observatory. MIT license.</p>
+      </div>
+      <div class="spectrum-card">
+        <h3 class="text-sm font-bold text-white/50 mb-2">Conflict Detection</h3>
+        <p class="text-[10px] text-white/15 leading-relaxed">When spectral lines overlap, we resolve them.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section class="relative z-10 px-8 py-24">
+  <div class="max-w-2xl mx-auto text-center">
+    <div class="spectrum mb-8 mx-auto max-w-xs"></div>
+    <h2 class="text-3xl font-bold mb-12">
+      <span class="text-blueshift">Start</span> <span class="text-white/30">the</span> <span class="text-redshift">shift</span>
+    </h2>
+    <div class="spectrum-card p-6 text-left">
+      <code class="text-[11px] text-white/25">
+        <span class="text-blue-400/25">$</span> bun add @syncular/client @syncular/server
+      </code>
+    </div>
+  </div>
+</section>
+
+<footer class="relative z-10 px-8 py-12 border-t border-white/[0.03]">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
+    <span class="text-[9px] text-white/12">Syncular — MIT License</span>
+    <div class="flex gap-6">
+      <a href="#" class="text-[9px] text-white/12 hover:text-white/30 transition-colors">Docs</a>
+      <a href="#" class="text-[9px] text-white/12 hover:text-white/30 transition-colors">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

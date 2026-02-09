@@ -1,0 +1,40 @@
+{
+  "name": "@syncular/client-plugin-encryption",
+  "version": "0.0.1",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && tsgo"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@scure/bip39": "^2.0.1",
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "kysely": "^0.28.11",
+    "kysely-bun-sqlite": "^0.4.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

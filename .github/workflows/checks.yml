@@ -1,0 +1,284 @@
+name: Checks
+
+on:
+  push:
+    branches: [next, latest]
+  pull_request:
+    branches: [next, latest]
+  workflow_dispatch:
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
+      expo: ${{ steps.filter.outputs.expo }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            runtime:
+              - 'tests/runtime/**'
+              - 'packages/dialect-wa-sqlite/**'
+              - 'packages/dialect-better-sqlite3/**'
+              - 'packages/dialect-d1/**'
+              - 'packages/client/**'
+              - 'packages/transport-http/**'
+            expo:
+              - 'tests/expo-app/**'
+              - 'packages/dialect-expo-sqlite/**'
+              - 'packages/core/src/kysely-serialize.ts'
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Type checks and linting
+        run: bun check:fix
+
+      - name: Unit and integration tests
+        run: bun test --coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  perf:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run performance tests
+        id: perf
+        run: bun test tests/perf 2>&1 | tee perf-results.txt
+
+      - name: Extract regression report
+        id: report
+        run: |
+          if grep -q "Performance Regression Detected" perf-results.txt; then
+            echo "has_regression=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_regression=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR with performance results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('perf-results.txt', 'utf8');
+
+            const lines = results.split('\n');
+            const tableStart = lines.findIndex(l => l.includes('| Benchmark |'));
+            const reportStart = lines.findIndex(l => l.includes('Performance'));
+
+            let body = '## Performance Test Results\n\n';
+
+            if (tableStart >= 0) {
+              let tableEnd = tableStart;
+              while (tableEnd < lines.length && lines[tableEnd].startsWith('|')) {
+                tableEnd++;
+              }
+              body += lines.slice(tableStart, tableEnd).join('\n') + '\n\n';
+            }
+
+            if (reportStart >= 0) {
+              body += lines.slice(reportStart).join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('Performance Test Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                comment_id: botComment.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body
+              });
+            }
+
+  runtime-browser:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: bunx playwright install chromium
+
+      - name: Run browser runtime tests
+        run: bun test:runtime:browser
+
+  runtime-node:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run Node runtime tests
+        run: bun test:runtime:node
+
+  runtime-d1:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Run D1 runtime tests
+        run: bun test:runtime:d1
+
+  maestro-ios:
+    needs: changes
+    if: needs.changes.outputs.expo == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lockb') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Install Maestro
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Start Metro (dev client)
+        working-directory: tests/expo-app
+        run: |
+          bun run start:dev-client > metro.log 2>&1 &
+          echo $! > metro.pid
+          for i in {1..60}; do
+            if nc -z 127.0.0.1 8081; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat metro.log
+          exit 1
+
+      - name: Build + install iOS app
+        working-directory: tests/expo-app
+        run: bun run ios:build
+
+      - name: Run Maestro flows
+        working-directory: tests/expo-app
+        run: bun run maestro:test
+
+      - name: Stop Metro
+        if: always()
+        working-directory: tests/expo-app
+        run: |
+          if [ -f metro.pid ]; then
+            kill "$(cat metro.pid)" || true
+          fi
+          cat metro.log || true

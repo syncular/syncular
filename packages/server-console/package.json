@@ -1,0 +1,34 @@
+{
+  "name": "@syncular/server-console",
+  "version": "0.0.1",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "prepack": "bun scripts/prepack-console-ui.ts",
+    "build": "rm -rf dist && tsgo"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "hono": "^4.11.7"
+  }
+}

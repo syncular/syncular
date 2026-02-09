@@ -1,0 +1,39 @@
+{
+  "name": "@syncular/dialect-wa-sqlite",
+  "version": "0.0.1",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && tsgo"
+  },
+  "dependencies": {
+    "@subframe7536/sqlite-wasm": "^0.5.8",
+    "@syncular/core": "workspace:*",
+    "kysely-generic-sqlite": "^1.2.1",
+    "kysely-wasqlite-worker": "^1.2.1"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

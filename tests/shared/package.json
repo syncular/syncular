@@ -1,0 +1,48 @@
+{
+  "name": "@syncular/tests-shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "import": "./index.ts"
+    },
+    "./assertions": {
+      "types": "./assertions.ts",
+      "import": "./assertions.ts"
+    },
+    "./error-transport": {
+      "types": "./error-transport.ts",
+      "import": "./error-transport.ts"
+    },
+    "./scenario-builder": {
+      "types": "./scenario-builder.ts",
+      "import": "./scenario-builder.ts"
+    },
+    "./test-setup": {
+      "types": "./test-setup.ts",
+      "import": "./test-setup.ts"
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-libsql": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-dialect-postgres": "workspace:*",
+    "@syncular/server-dialect-sqlite": "workspace:*",
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "includeEntryExports": true,
+  "ignoreExportsUsedInFile": false,
+  "bun": true,
+  "expo": true,
+  "metro": true,
+  "postcss": true,
+  "storybook": true,
+  "tailwind": true,
+  "vite": true,
+  "vitest": true,
+  "playwright": true,
+  "ignore": [
+    ".claude/**",
+    "**/generated/**",
+    "types/**",
+    "env.ts",
+    ".source/**",
+    ".next/**",
+    "tests/load/**",
+    "demo/src/cf/**",
+    "demo/dist-client/**",
+    "demo/dist-server/**"
+  ],
+  "ignoreDependencies": [
+    "@cloudflare/workers-types",
+    "@syncular/config",
+    "@syncular/dialect-d1",
+    "@syncular/server-cloudflare",
+    "@syncular/server-dialect-sqlite",
+    "@syncular/typegen",
+    "@webgpu/types",
+    "dotenv",
+    "@happy-dom/global-registrator",
+    "happy-dom",
+    "bun-plugin-tailwind",
+    "tailwindcss",
+    "tsx",
+    "wrangler"
+  ],
+  "ignoreBinaries": ["dist-server/server.js", "k6", "maestro", "tsx", "wrangler"],
+  "workspaces": {
+    "packages/core": {
+      "entry": [
+        "src/index.ts",
+        "src/**/*.test.ts"
+      ]
+    },
+    "packages/client-react": {
+      "entry": [
+        "src/index.ts",
+        "src/**/*.test.ts",
+        "src/**/*.test.tsx"
+      ]
+    },
+    "packages/server-hono": {
+      "entry": [
+        "src/index.ts",
+        "src/**/*.test.ts"
+      ]
+    },
+    "apps/demo": {
+      "entry": [
+        "src/main.tsx!",
+        "src/server/index.ts!",
+        "src/server/server.ts!",
+        "scripts/**/*.ts!",
+        "src/cf/index.ts!",
+        "plugins/**/*.ts!"
+      ],
+      "ignore": [
+        "src/cf/**",
+        "plugins/**",
+        "src/server/server.ts"
+      ]
+    },
+    "apps/console": {
+      "entry": [
+        "src/main.tsx!"
+      ],
+      "paths": {
+        "@/*": [
+          "src/*"
+        ]
+      }
+    },
+    "tests/shared": {
+      "entry": ["**/*.ts"]
+    },
+    "tests/unit": {
+      "entry": ["**/*.test.ts"]
+    },
+    "tests/dialects": {
+      "entry": ["**/*.ts"]
+    },
+    "tests/perf": {
+      "entry": ["**/*.ts"]
+    },
+    "tests/load": {
+      "entry": ["server.ts"]
+    },
+    "tests/integration": {
+      "entry": ["**/*.ts"]
+    },
+    "tests/runtime": {
+      "entry": ["**/*.ts"]
+    },
+    "tests/expo-app": {
+      "entry": ["**/*.ts", "**/*.tsx"]
+    },
+    "apps/docs": {
+      "entry": [
+        "source.config.ts",
+        "next.config.mjs",
+        "open-next.config.ts",
+        "scripts/**/*.ts"
+      ]
+    }
+  }
+}

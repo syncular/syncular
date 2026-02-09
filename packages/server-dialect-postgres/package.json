@@ -1,0 +1,37 @@
+{
+  "name": "@syncular/server-dialect-postgres",
+  "version": "0.0.1",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && tsgo"
+  },
+  "dependencies": {
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

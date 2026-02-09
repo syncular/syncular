@@ -1,0 +1,315 @@
+/**
+ * R2 blob storage adapter using native R2Bucket binding.
+ *
+ * This adapter stores blobs in Cloudflare R2 using the native binding,
+ * without requiring the AWS SDK. Since R2 bindings don't support presigned URLs,
+ * this adapter generates signed tokens that allow uploads/downloads through
+ * the Worker's blob routes (similar to the database adapter).
+ */
+
+// ============================================================================
+// Blob Storage Types (locally defined to avoid DOM/Workers lib conflicts)
+// These match @syncular/core BlobStorageAdapter interface.
+// ============================================================================
+
+/**
+ * Options for signing an upload URL.
+ */
+export interface BlobSignUploadOptions {
+  /** SHA-256 hash (for naming and checksum validation) */
+  hash: string;
+  /** Content size in bytes */
+  size: number;
+  /** MIME type */
+  mimeType: string;
+  /** URL expiration in seconds */
+  expiresIn: number;
+}
+
+/**
+ * Result of signing an upload URL.
+ */
+export interface BlobSignedUpload {
+  /** The URL to upload to */
+  url: string;
+  /** HTTP method */
+  method: 'PUT' | 'POST';
+  /** Required headers */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Options for signing a download URL.
+ */
+export interface BlobSignDownloadOptions {
+  /** SHA-256 hash */
+  hash: string;
+  /** URL expiration in seconds */
+  expiresIn: number;
+}
+
+/**
+ * Adapter for blob storage backends.
+ * Implements the same interface as @syncular/core BlobStorageAdapter.
+ */
+export interface BlobStorageAdapter {
+  /** Adapter name for logging/debugging */
+  readonly name: string;
+
+  /**
+   * Generate a presigned URL for uploading a blob.
+   */
+  signUpload(options: BlobSignUploadOptions): Promise<BlobSignedUpload>;
+
+  /**
+   * Generate a presigned URL for downloading a blob.
+   */
+  signDownload(options: BlobSignDownloadOptions): Promise<string>;
+
+  /**
+   * Check if a blob exists in storage.
+   */
+  exists(hash: string): Promise<boolean>;
+
+  /**
+   * Delete a blob (for garbage collection).
+   */
+  delete(hash: string): Promise<void>;
+
+  /**
+   * Get blob metadata from storage (optional).
+   */
+  getMetadata?(
+    hash: string
+  ): Promise<{ size: number; mimeType?: string } | null>;
+
+  /**
+   * Store blob data directly (for adapters that support direct storage).
+   */
+  put?(
+    hash: string,
+    data: Uint8Array,
+    metadata?: Record<string, unknown>
+  ): Promise<void>;
+
+  /**
+   * Get blob data directly (for adapters that support direct retrieval).
+   */
+  get?(hash: string): Promise<Uint8Array | null>;
+}
+
+/**
+ * Token signer interface for creating/verifying upload/download tokens.
+ */
+export interface BlobTokenSigner {
+  /**
+   * Sign a token for blob upload/download authorization.
+   * @param payload The data to sign
+   * @param expiresIn Expiration time in seconds
+   * @returns A signed token string
+   */
+  sign(
+    payload: { hash: string; action: 'upload' | 'download'; expiresAt: number },
+    expiresIn: number
+  ): Promise<string>;
+
+  /**
+   * Verify and decode a signed token.
+   * @returns The payload if valid, null if invalid/expired
+   */
+  verify(token: string): Promise<{
+    hash: string;
+    action: 'upload' | 'download';
+    expiresAt: number;
+  } | null>;
+}
+
+/**
+ * Create a simple HMAC-based token signer.
+ */
+export function createHmacTokenSigner(secret: string): BlobTokenSigner {
+  const encoder = new TextEncoder();
+
+  async function hmacSign(data: string): Promise<string> {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    const signature = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      encoder.encode(data)
+    );
+    return bufferToHex(new Uint8Array(signature));
+  }
+
+  return {
+    async sign(payload, _expiresIn) {
+      const data = JSON.stringify(payload);
+      const dataB64 = btoa(data);
+      const sig = await hmacSign(dataB64);
+      return `${dataB64}.${sig}`;
+    },
+
+    async verify(token) {
+      const [dataB64, sig] = token.split('.');
+      if (!dataB64 || !sig) return null;
+
+      const expectedSig = await hmacSign(dataB64);
+      if (sig !== expectedSig) return null;
+
+      try {
+        const data = JSON.parse(atob(dataB64)) as {
+          hash: string;
+          action: 'upload' | 'download';
+          expiresAt: number;
+        };
+
+        if (Date.now() > data.expiresAt) return null;
+
+        return data;
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+function bufferToHex(buffer: Uint8Array): string {
+  return Array.from(buffer)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export interface R2BlobStorageAdapterOptions {
+  /** R2 bucket binding */
+  bucket: R2Bucket;
+  /** Optional key prefix for all blobs */
+  keyPrefix?: string;
+  /** Base URL for the blob routes (e.g., "https://api.example.com/api/sync") */
+  baseUrl: string;
+  /** Token signer for authorization */
+  tokenSigner: BlobTokenSigner;
+}
+
+/**
+ * Create an R2 blob storage adapter using native R2Bucket binding.
+ *
+ * Since R2 bindings don't support presigned URLs, this adapter generates
+ * signed tokens and uses Worker-proxied uploads/downloads.
+ *
+ * @example
+ * ```typescript
+ * import { createR2BlobStorageAdapter, createHmacTokenSigner } from '@syncular/server-cloudflare/r2';
+ *
+ * type Env = { BLOBS: R2Bucket };
+ *
+ * const adapter = createR2BlobStorageAdapter({
+ *   bucket: env.BLOBS,
+ *   baseUrl: 'https://api.example.com/sync',
+ *   tokenSigner: createHmacTokenSigner(env.BLOB_SECRET),
+ * });
+ * ```
+ */
+export function createR2BlobStorageAdapter(
+  options: R2BlobStorageAdapterOptions
+): BlobStorageAdapter {
+  const { bucket, keyPrefix = '', baseUrl, tokenSigner } = options;
+
+  // Normalize base URL (remove trailing slash)
+  const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+
+  function getKey(hash: string): string {
+    // Remove "sha256:" prefix and use hex as key
+    const hex = hash.startsWith('sha256:') ? hash.slice(7) : hash;
+    return `${keyPrefix}${hex}`;
+  }
+
+  return {
+    name: 'r2',
+
+    async signUpload(opts: BlobSignUploadOptions): Promise<BlobSignedUpload> {
+      const expiresAt = Date.now() + opts.expiresIn * 1000;
+      const token = await tokenSigner.sign(
+        { hash: opts.hash, action: 'upload', expiresAt },
+        opts.expiresIn
+      );
+
+      // URL points to server's blob upload endpoint
+      const url = `${normalizedBaseUrl}/blobs/${encodeURIComponent(opts.hash)}/upload?token=${encodeURIComponent(token)}`;
+
+      return {
+        url,
+        method: 'PUT',
+        headers: {
+          'Content-Type': opts.mimeType,
+          'Content-Length': String(opts.size),
+        },
+      };
+    },
+
+    async signDownload(opts: BlobSignDownloadOptions): Promise<string> {
+      const expiresAt = Date.now() + opts.expiresIn * 1000;
+      const token = await tokenSigner.sign(
+        { hash: opts.hash, action: 'download', expiresAt },
+        opts.expiresIn
+      );
+
+      return `${normalizedBaseUrl}/blobs/${encodeURIComponent(opts.hash)}/download?token=${encodeURIComponent(token)}`;
+    },
+
+    async exists(hash: string): Promise<boolean> {
+      const key = getKey(hash);
+      const head = await bucket.head(key);
+      return head !== null;
+    },
+
+    async delete(hash: string): Promise<void> {
+      const key = getKey(hash);
+      await bucket.delete(key);
+    },
+
+    async getMetadata(
+      hash: string
+    ): Promise<{ size: number; mimeType?: string } | null> {
+      const key = getKey(hash);
+      const head = await bucket.head(key);
+      if (!head) return null;
+
+      return {
+        size: head.size,
+        mimeType: head.httpMetadata?.contentType,
+      };
+    },
+
+    async put(
+      hash: string,
+      data: Uint8Array,
+      metadata?: Record<string, unknown>
+    ): Promise<void> {
+      const key = getKey(hash);
+      const mimeType =
+        typeof metadata?.mimeType === 'string'
+          ? metadata.mimeType
+          : 'application/octet-stream';
+
+      await bucket.put(key, data, {
+        httpMetadata: {
+          contentType: mimeType,
+        },
+        sha256: hash.startsWith('sha256:') ? hash.slice(7) : undefined,
+      });
+    },
+
+    async get(hash: string): Promise<Uint8Array | null> {
+      const key = getKey(hash);
+      const object = await bucket.get(key);
+      if (!object) return null;
+
+      return new Uint8Array(await object.arrayBuffer());
+    },
+  };
+}

@@ -1,0 +1,49 @@
+{
+  "changelog": [
+    "@changesets/changelog-github",
+    { "repo": "bkniffler/sync" }
+  ],
+  "commit": false,
+  "fixed": [
+    [
+      "@syncular/client",
+      "@syncular/client-plugin-encryption",
+      "@syncular/client-react",
+      "@syncular/core",
+      "@syncular/dialect-better-sqlite3",
+      "@syncular/dialect-bun-sqlite",
+      "@syncular/dialect-d1",
+      "@syncular/dialect-libsql",
+      "@syncular/dialect-neon",
+      "@syncular/dialect-pglite",
+      "@syncular/dialect-sqlite3",
+      "@syncular/dialect-wa-sqlite",
+      "@syncular/migrations",
+      "@syncular/relay",
+      "@syncular/server",
+      "@syncular/server-cloudflare",
+      "@syncular/server-dialect-postgres",
+      "@syncular/server-dialect-sqlite",
+      "@syncular/server-hono",
+      "@syncular/transport-http",
+      "@syncular/transport-ws",
+      "@syncular/typegen",
+      "@syncular/dialect-expo-sqlite",
+      "@syncular/dialect-react-native-nitro-sqlite",
+      "@syncular/server-console",
+      "syncular"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "next",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@syncular/config",
+    "@syncular/console",
+    "@syncular/demo",
+    "syncular-docs",
+    "@syncular/e2e",
+    "@syncular/tests"
+  ]
+}

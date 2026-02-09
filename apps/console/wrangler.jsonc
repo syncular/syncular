@@ -1,0 +1,13 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "syncular-console",
+	"compatibility_date": "2026-01-16",
+	"workers_dev": false,
+	"routes": [
+		{ "pattern": "console.syncular.dev", "custom_domain": true }
+	],
+	"assets": {
+		"directory": "dist",
+		"not_found_handling": "single-page-application"
+	}
+}

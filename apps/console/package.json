@@ -1,0 +1,35 @@
+{
+  "name": "@syncular/console-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:portable": "vite build --base ./",
+    "build:spa": "vite build --base /",
+    "build:embedded": "vite build --base /console/",
+    "preview": "vite preview",
+    "deploy": "SYNCULAR_CONSOLE_BASE=/ vite build && wrangler deploy",
+    "tsgo": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@syncular/transport-http": "workspace:*",
+    "@syncular/ui": "workspace:*",
+    "@tanstack/react-query": "^5.90.20",
+    "@tanstack/react-router": "^1.158.0",
+    "lucide-react": "^0.563.0",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5",
+    "tailwindcss": "^4.1.18",
+    "vite": "^7",
+    "wrangler": "^4.63.0"
+  }
+}

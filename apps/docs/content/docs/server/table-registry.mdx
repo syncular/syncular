@@ -1,0 +1,223 @@
+---
+title: Table Registry
+description: Register server-side table handlers
+---
+
+The `TableRegistry` registers server-side table handlers (shapes) that define how data syncs.
+
+## Basic Usage
+
+```typescript
+import { TableRegistry } from '@syncular/server';
+
+const shapes = new TableRegistry()
+  .register(tasksHandler)
+  .register(projectsHandler);
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `register(handler)` | Register a table handler |
+| `get(name)` | Get table handler by name |
+| `has(name)` | Check if table handler exists |
+| `getAll()` | Get all registered handlers |
+
+## ServerTableHandler Interface
+
+```typescript
+interface ServerTableHandler {
+  table: string;
+  scopePatterns: string[];
+
+  resolveScopes(ctx: ResolveScopesContext): Promise<ScopeValues>;
+  extractScopes(row: Record<string, unknown>): ScopeValues;
+  snapshot(ctx: SnapshotContext): Promise<SnapshotResult>;
+  applyOperation(ctx: ApplyContext, op: SyncOperation, opIndex: number): Promise<ApplyOperationResult>;
+}
+
+type ScopeValues = Record<string, string | string[]>;
+```
+
+## resolveScopes Context
+
+The resolveScopes method determines what scopes the user can access.
+
+```typescript
+interface ResolveScopesContext {
+  db: Kysely<any>;
+  actorId: string;
+}
+```
+
+## Snapshot Context
+
+The snapshot method receives context for querying data.
+
+```typescript
+interface SnapshotContext {
+  db: Transaction<any>;
+  actorId: string;
+  scopeValues: ScopeValues;  // Effective scopes for this subscription
+  cursor: string | null;
+  limit: number;
+}
+```
+
+## Apply Context
+
+The applyOperation method receives context for applying changes.
+
+```typescript
+interface ApplyContext {
+  trx: Transaction<any>;
+  actorId: string;
+  clientId: string;
+  commitId: string;
+}
+```
+
+## Result Types
+
+### SnapshotResult
+
+```typescript
+interface SnapshotResult {
+  rows: unknown[];
+  nextCursor: string | null;
+}
+```
+
+### ApplyOperationResult
+
+```typescript
+interface ApplyOperationResult {
+  result: SyncOperationResult;
+  emittedChanges: EmittedChange[];
+}
+```
+
+## Example Handler
+
+```typescript
+import type { ServerTableHandler, EmittedChange, ScopeValues } from '@syncular/server';
+
+export const tasksHandler: ServerTableHandler = {
+  table: 'tasks',
+  scopePatterns: ['user:{user_id}'],
+
+  async resolveScopes(ctx) {
+    return { user_id: ctx.actorId };
+  },
+
+  extractScopes(row) {
+    return { user_id: String(row.user_id) };
+  },
+
+  async snapshot(ctx) {
+    const userId = ctx.scopeValues.user_id;
+    if (!userId) return { rows: [], nextCursor: null };
+
+    const rows = await ctx.db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('user_id', '=', userId as string)
+      .orderBy('id', 'asc')
+      .execute();
+
+    return { rows, nextCursor: null };
+  },
+
+  async applyOperation(ctx, op, opIndex) {
+    if (op.op === 'delete') {
+      await ctx.trx
+        .deleteFrom('tasks')
+        .where('id', '=', op.row_id)
+        .where('user_id', '=', ctx.actorId)
+        .execute();
+
+      return {
+        result: { opIndex, status: 'applied' },
+        emittedChanges: [{
+          table: 'tasks',
+          row_id: op.row_id,
+          op: 'delete',
+          row_json: null,
+          row_version: null,
+          scopes: { user_id: ctx.actorId },
+        }],
+      };
+    }
+
+    // Handle upsert
+    const payload = op.payload as { title?: string; completed?: number };
+    const existing = await ctx.trx
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', op.row_id)
+      .executeTakeFirst();
+
+    if (existing) {
+      await ctx.trx
+        .updateTable('tasks')
+        .set({
+          title: payload.title ?? existing.title,
+          completed: payload.completed ?? existing.completed,
+          server_version: existing.server_version + 1,
+        })
+        .where('id', '=', op.row_id)
+        .execute();
+    } else {
+      await ctx.trx
+        .insertInto('tasks')
+        .values({
+          id: op.row_id,
+          title: payload.title ?? '',
+          completed: payload.completed ?? 0,
+          user_id: ctx.actorId,
+          server_version: 1,
+        })
+        .execute();
+    }
+
+    const updated = await ctx.trx
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', op.row_id)
+      .executeTakeFirstOrThrow();
+
+    return {
+      result: { opIndex, status: 'applied' },
+      emittedChanges: [{
+        table: 'tasks',
+        row_id: op.row_id,
+        op: 'upsert',
+        row_json: updated,
+        row_version: updated.server_version,
+        scopes: { user_id: ctx.actorId },
+      }],
+    };
+  },
+};
+```
+
+## Scopes in Handlers
+
+When emitting changes, include scopes so the realtime system knows which clients to notify.
+
+```typescript
+emittedChanges.push({
+  table: 'tasks',
+  row_id: op.row_id,
+  op: 'upsert',
+  row_json: updated,
+  row_version: updated.server_version,
+  scopes: { user_id: row.user_id, project_id: row.project_id },
+});
+```
+
+## Next Steps
+
+- [Shape Handlers & Scopes](/docs/server/subscription-registry) - Configure scopes
+- [Table Handlers Guide](/docs/guides/table-handlers) - Complete table handlers guide

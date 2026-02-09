@@ -1,0 +1,59 @@
+{
+  "name": "@syncular/server",
+  "version": "0.0.1",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./dialect/types": {
+      "bun": "./src/dialect/types.ts",
+      "import": {
+        "types": "./dist/dialect/types.d.ts",
+        "default": "./dist/dialect/types.js"
+      }
+    },
+    "./schema": {
+      "bun": "./src/schema.ts",
+      "import": {
+        "types": "./dist/schema.d.ts",
+        "default": "./dist/schema.js"
+      }
+    },
+    "./snapshot-chunks": {
+      "bun": "./src/snapshot-chunks/index.ts",
+      "import": {
+        "types": "./dist/snapshot-chunks/index.d.ts",
+        "default": "./dist/snapshot-chunks/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && tsgo"
+  },
+  "dependencies": {
+    "@syncular/core": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

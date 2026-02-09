@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 3: Typographic Void</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'IBM Plex Mono', monospace;
+    background: #000;
+    color: #fff;
+    overflow-x: hidden;
+  }
+  .display { font-family: 'Playfair Display', serif; }
+
+  .the-void {
+    position: fixed;
+    top: 45%;
+    left: 50%;
+    width: 100vmax;
+    height: 100vmax;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(circle at 50% 50%, #000 3%, transparent 4%),
+      radial-gradient(circle at 50% 50%, rgba(255,255,255,0.008) 5%, transparent 7%),
+      radial-gradient(circle at 50% 50%, rgba(255,255,255,0.004) 8%, transparent 12%),
+      radial-gradient(circle at 50% 50%, rgba(255,255,255,0.002) 15%, transparent 25%);
+  }
+
+  .ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.02);
+    transform: translate(-50%, -50%);
+  }
+
+  .mega-title {
+    font-size: clamp(6rem, 20vw, 18rem);
+    line-height: 0.85;
+    letter-spacing: -0.06em;
+    font-weight: 400;
+    font-style: italic;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+  .shimmer-text {
+    background: linear-gradient(90deg,
+      rgba(255,255,255,0.6) 0%, rgba(255,255,255,0.9) 25%,
+      rgba(255,255,255,0.6) 50%, rgba(255,255,255,0.3) 75%,
+      rgba(255,255,255,0.6) 100%
+    );
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: shimmer 8s linear infinite;
+  }
+
+  @keyframes fade-in-scale {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes draw-line {
+    from { width: 0; }
+    to { width: 100%; }
+  }
+  .anim-scale { animation: fade-in-scale 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .anim-fade { animation: fade-in 1s ease forwards; opacity: 0; }
+  .anim-d1 { animation-delay: 0.2s; }
+  .anim-d2 { animation-delay: 0.6s; }
+  .anim-d3 { animation-delay: 1s; }
+  .anim-d4 { animation-delay: 1.4s; }
+  .anim-d5 { animation-delay: 1.8s; }
+
+  .expand-line {
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+    animation: draw-line 2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    animation-delay: 0.8s;
+    width: 0;
+  }
+
+  .editorial-card {
+    border-left: 1px solid rgba(255,255,255,0.04);
+    transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .editorial-card:hover {
+    border-left-color: rgba(255,255,255,0.15);
+    padding-left: 2.5rem;
+  }
+
+  .btn-void {
+    position: relative;
+    overflow: hidden;
+    transition: all 0.4s ease;
+  }
+  .btn-void::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.05);
+    transform: translate(-50%, -50%);
+    transition: all 0.5s ease;
+  }
+  .btn-void:hover::before { width: 300px; height: 300px; }
+  .btn-void:hover { border-color: rgba(255,255,255,0.2); }
+</style>
+</head>
+<body>
+
+<div class="the-void"></div>
+
+<div class="fixed inset-0 pointer-events-none z-0">
+  <div class="ring" style="width: 200px; height: 200px; opacity: 0.4;"></div>
+  <div class="ring" style="width: 400px; height: 400px; opacity: 0.3;"></div>
+  <div class="ring" style="width: 700px; height: 700px; opacity: 0.2;"></div>
+  <div class="ring" style="width: 1100px; height: 1100px; opacity: 0.1;"></div>
+  <div class="ring" style="width: 1600px; height: 1600px; opacity: 0.05;"></div>
+</div>
+
+<header class="fixed top-0 left-0 right-0 z-50 px-8 py-8">
+  <nav class="max-w-7xl mx-auto flex items-center justify-between">
+    <span class="text-[10px] tracking-[0.6em] uppercase text-white/20 anim-fade anim-d1">Syncular</span>
+    <div class="flex items-center gap-10 anim-fade anim-d2">
+      <a href="#" class="text-[10px] tracking-[0.3em] uppercase text-white/15 hover:text-white/50 transition-colors duration-500">Documentation</a>
+      <a href="#" class="text-[10px] tracking-[0.3em] uppercase text-white/15 hover:text-white/50 transition-colors duration-500">Source</a>
+    </div>
+  </nav>
+</header>
+
+<section class="relative min-h-screen flex flex-col justify-center z-10 px-8">
+  <div class="max-w-7xl mx-auto w-full">
+    <div class="mb-6 anim-fade anim-d2">
+      <span class="text-[10px] tracking-[0.4em] uppercase text-white/15">Offline-first sync engine for the</span>
+    </div>
+    <h1 class="display mega-title shimmer-text anim-scale anim-d3">
+      Singular<br>Point
+    </h1>
+    <div class="expand-line mt-12 max-w-2xl"></div>
+    <div class="mt-8 flex items-start justify-between max-w-2xl anim-fade anim-d4">
+      <p class="text-[11px] text-white/20 leading-loose max-w-xs">
+        All data collapses to a single source of truth.
+        Write locally. Sync inevitably. Query instantly.
+      </p>
+      <div class="flex items-center gap-4">
+        <a href="#" class="btn-void px-6 py-2.5 rounded-full border border-white/10 text-[10px] tracking-[0.3em] uppercase text-white/50 relative z-10">
+          Begin
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="relative z-10 px-8 py-40">
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-2 gap-20">
+      <div>
+        <span class="text-[10px] tracking-[0.4em] uppercase text-white/10 block mb-12">What it does</span>
+        <div class="space-y-10">
+          <div class="editorial-card pl-6">
+            <h3 class="display text-3xl italic text-white/60 mb-3">Offline-First</h3>
+            <p class="text-[11px] text-white/15 leading-relaxed">Every mutation persists to local SQLite before syncing. Works without network. Always.</p>
+          </div>
+          <div class="editorial-card pl-6">
+            <h3 class="display text-3xl italic text-white/60 mb-3">Commit-Log</h3>
+            <p class="text-[11px] text-white/15 leading-relaxed">Git-inspired ordered history. Every change is a commit. Merge with confidence.</p>
+          </div>
+          <div class="editorial-card pl-6">
+            <h3 class="display text-3xl italic text-white/60 mb-3">Scoped Auth</h3>
+            <p class="text-[11px] text-white/15 leading-relaxed">Row-level security through subscription scopes. Fine-grained by design.</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <span class="text-[10px] tracking-[0.4em] uppercase text-white/10 block mb-12">How it feels</span>
+        <div class="space-y-10">
+          <div class="editorial-card pl-6">
+            <h3 class="display text-3xl italic text-white/60 mb-3">Instant</h3>
+            <p class="text-[11px] text-white/15 leading-relaxed">Sub-millisecond queries against local data. No spinners. No loading states.</p>
+          </div>
+          <div class="editorial-card pl-6">
+            <h3 class="display text-3xl italic text-white/60 mb-3">Type-Safe</h3>
+            <p class="text-[11px] text-white/15 leading-relaxed">Kysely-powered queries with full TypeScript inference. Catch errors at compile time.</p>
+          </div>
+          <div class="editorial-card pl-6">
+            <h3 class="display text-3xl italic text-white/60 mb-3">Sovereign</h3>
+            <p class="text-[11px] text-white/15 leading-relaxed">Self-hosted. Open source. MIT licensed. Your infrastructure, your rules.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-3xl mx-auto">
+    <div class="flex items-end justify-between mb-12">
+      <h2 class="display text-5xl italic text-white/40">Cross the<br>threshold</h2>
+      <span class="text-[10px] tracking-[0.4em] uppercase text-white/10">Installation</span>
+    </div>
+    <div class="border border-white/[0.04] p-8">
+      <code class="text-xs text-white/25 block leading-loose">
+        <span class="text-white/10">// install</span><br>
+        bun add @syncular/client @syncular/server<br><br>
+        <span class="text-white/10">// that's it. you're past the event horizon.</span>
+      </code>
+    </div>
+  </div>
+</section>
+
+<footer class="relative z-10 px-8 py-16 border-t border-white/[0.02]">
+  <div class="max-w-6xl mx-auto flex items-end justify-between">
+    <div>
+      <span class="display text-lg italic text-white/20">Syncular</span>
+      <p class="text-[10px] text-white/10 mt-2">Open source. MIT License.</p>
+    </div>
+    <div class="flex gap-8">
+      <a href="#" class="text-[10px] tracking-[0.3em] uppercase text-white/10 hover:text-white/30 transition-colors">Docs</a>
+      <a href="#" class="text-[10px] tracking-[0.3em] uppercase text-white/10 hover:text-white/30 transition-colors">GitHub</a>
+      <a href="#" class="text-[10px] tracking-[0.3em] uppercase text-white/10 hover:text-white/30 transition-colors">Discord</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
