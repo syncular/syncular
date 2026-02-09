@@ -1,0 +1,254 @@
+---
+title: Commits
+description: Understanding the commit log structure
+---
+
+# Commits
+
+<Callout title="What you'll learn">
+- What a commit is and why it matters for offline-first sync
+- How push and pull lifecycles work end-to-end
+- How scope matching determines which clients receive which changes
+- How to read the commit log for debugging
+</Callout>
+
+## A Concrete Example
+
+When you add a task in your app, here is what happens under the hood:
+
+```typescript
+// 1. You call a mutation in your app
+await m.tasks.create({
+  id: 'task-123',
+  title: 'Buy groceries',
+  completed: false,
+  user_id: 'user-456',
+});
+
+// 2. Syncular writes to the local SQLite DB immediately (optimistic)
+// 3. An outbox commit is created with one operation:
+//    { table: 'tasks', op: 'upsert', row_id: 'task-123', payload: { ... } }
+// 4. When online, the client pushes to the server
+// 5. Server validates, applies in a transaction, assigns commit_seq: 42
+// 6. Other clients with matching scopes pull commit_seq: 42
+```
+
+The user sees the task instantly. The sync happens in the background. If the device is offline, the outbox holds the commit until connectivity returns.
+
+## Operations
+
+Every commit contains one or more **operations**. Each operation targets a single row in a single table.
+
+### Upsert
+
+Creates or updates a row:
+
+```typescript
+{
+  table: 'tasks',
+  op: 'upsert',
+  row_id: 'task-123',
+  base_version: 5,           // Version we last saw (for conflict detection)
+  payload: {
+    title: 'Buy groceries',
+    completed: false,
+    user_id: 'user-456'
+  }
+}
+```
+
+### Delete
+
+Removes a row:
+
+```typescript
+{
+  table: 'tasks',
+  op: 'delete',
+  row_id: 'task-123',
+  base_version: 5
+}
+```
+
+## Push Lifecycle (Client to Server)
+
+```
+  Client                                Server
+  ------                                ------
+  User edits data
+       |
+       v
+  Write to local SQLite
+       |
+       v
+  Create outbox commit
+  (operations array)
+       |
+       v
+  POST /sync (push)  ────────────────>  Idempotency check
+                                        (client_id + client_commit_id)
+                                              |
+                                        ┌─────┴─────┐
+                                        | New?       | Duplicate?
+                                        v            v
+                                   Open TX      Return cached
+                                        |       response
+                                        v
+                                   For each operation:
+                                     - Look up table handler
+                                     - Call applyOperation()
+                                     - Extract scopes
+                                     - Detect conflicts
+                                        |
+                                   ┌────┴────┐
+                                   | All OK?  | Any conflict?
+                                   v          v
+                              Assign      Rollback app writes,
+                              commit_seq  cache rejected response
+                                   |
+                                   v
+  Receive response  <────────────  Return { status, commitSeq, results }
+       |
+       v
+  Mark outbox commit as acked
+  (or store conflicts for resolution)
+```
+
+**Step by step:**
+
+1. **Create** -- Client creates an outbox commit with one or more operations.
+2. **Push** -- Client POSTs to `/sync` with `clientId` and `push: { clientCommitId, operations, schemaVersion }`.
+3. **Idempotency** -- Server checks `(client_id, client_commit_id)`. If the commit already exists, it returns the cached result. No duplicates, even with network retries.
+4. **Apply** -- Server runs each operation through the table handler inside a single database transaction.
+5. **Scopes** -- Each emitted change must have scopes attached. The server enforces this.
+6. **Ack** -- Server returns `commitSeq` (the global position in the commit log) and per-operation results.
+7. **Confirm** -- Client marks the outbox commit as acknowledged, or stores conflicts for resolution.
+
+## Pull Lifecycle (Server to Client)
+
+```
+  Client                                Server
+  ------                                ------
+  POST /sync (pull)
+  (subscriptions + cursors)  ────────>  Resolve scopes
+                                        (call resolveScopes per subscription)
+                                              |
+                                        ┌─────┴──────┐
+                                        | cursor < 0  | cursor >= 0
+                                        | or too old? | (valid)
+                                        v             v
+                                   Bootstrap      Incremental
+                                   (full snapshot  (commits since
+                                    as chunks)      cursor)
+                                        |             |
+                                        v             v
+  Receive response  <────────────  Return subscriptions[]
+       |                           with commits + snapshots
+       v
+  Apply changes to local SQLite
+       |
+       v
+  Advance cursor to nextCursor
+```
+
+**Step by step:**
+
+1. **Request** -- Client POSTs `/sync` with `pull: { subscriptions, limitCommits }`. Each subscription has a `table`, `scopes`, and a `cursor` (position in the commit log).
+2. **Resolve** -- Server calls `resolveScopes` on each subscription's table handler to determine the effective scopes for the authenticated user.
+3. **Bootstrap or Incremental** -- If the cursor is `-1` (first sync) or too old (pruned), the server sends a full snapshot. Otherwise, it sends only commits since the cursor.
+4. **Return** -- Server returns an array of subscription responses, each with `nextCursor`, `commits`, and optionally `snapshots`.
+5. **Apply** -- Client applies changes to local SQLite inside a transaction.
+6. **Advance** -- Client updates its cursor to `nextCursor`, so the next pull starts where this one left off.
+
+## Scope Matching
+
+Scopes are key-value pairs attached to every change. They determine which clients receive which data. When the server pulls commits for a subscription, it filters by scope overlap.
+
+A change's scopes match a subscription if **all** subscription scope keys exist in the change's scopes, and **at least one value overlaps** for each key.
+
+```typescript
+// Change scopes (stored on each row in sync_changes)
+{ user_id: 'user-123', project_id: 'proj-a' }
+
+// Subscription scopes { user_id: 'user-123' }
+// --> MATCH (user_id overlaps, no other keys required)
+
+// Subscription scopes { project_id: 'proj-a' }
+// --> MATCH (project_id overlaps)
+
+// Subscription scopes { user_id: 'user-123', project_id: 'proj-a' }
+// --> MATCH (both keys overlap)
+
+// Subscription scopes { user_id: 'user-456' }
+// --> NO MATCH (user_id does not overlap)
+
+// Subscription scopes { team_id: 'team-1' }
+// --> NO MATCH (team_id not present in change scopes)
+```
+
+This means clients only receive data they are authorized to access, and the server never sends changes outside the client's scope boundaries.
+
+For a deeper dive, see [Scopes](/docs/introduction/scopes).
+
+## Reading the Commit Log (Debugging)
+
+When something is not syncing as expected, query the server's commit log directly. The two key tables are `sync_commits` and `sync_changes`.
+
+**Find the latest commits:**
+
+```sql
+SELECT commit_seq, actor_id, client_id, client_commit_id,
+       created_at, change_count, affected_tables
+FROM sync_commits
+ORDER BY commit_seq DESC
+LIMIT 10;
+```
+
+**Inspect changes for a specific commit:**
+
+```sql
+SELECT change_id, table_name, row_id, op, row_version, scopes
+FROM sync_changes
+WHERE commit_seq = 42;
+```
+
+**Check why a client is not receiving a change:**
+
+```sql
+-- Look at the scopes on the change
+SELECT scopes FROM sync_changes
+WHERE table_name = 'tasks' AND row_id = 'task-123'
+ORDER BY commit_seq DESC LIMIT 1;
+
+-- Compare with what the client is subscribing to
+-- (check the client's pull request in your logs)
+```
+
+**Common issues:**
+
+- **Missing scopes** -- The table handler's `extractScopes` is not returning the expected keys. Every emitted change must have scopes.
+- **Cursor ahead of server** -- The client's cursor is higher than `max(commit_seq)`. This triggers a re-bootstrap.
+- **Duplicate commit** -- The same `(client_id, client_commit_id)` was pushed twice. The server returns the cached response (idempotency).
+
+## Ordering
+
+### Server Ordering
+
+Commits have a global order via `commit_seq`:
+- Monotonically increasing integer assigned at commit time
+- Used as the cursor for incremental pulls
+- Guarantees a total order across all clients
+
+### Client Ordering
+
+Clients maintain local order via `prev_client_commit_id`:
+- Linked list of outbox commits
+- Enables causal ordering within a single client
+- Handles commits created while offline
+
+## Next Steps
+
+- [Architecture](/docs/introduction/architecture) -- How commits fit into the sync system
+- [Scopes](/docs/introduction/scopes) -- Authorization and data partitioning
+- [Conflict Resolution](/docs/introduction/conflict-resolution) -- What happens when two clients edit the same row
+- [Glossary](/docs/introduction/glossary) -- Definitions of key terms

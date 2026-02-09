@@ -1,0 +1,276 @@
+---
+title: Quick Start
+description: See Syncular running in 30 seconds, then build your own app
+---
+
+# Quick Start
+
+## See it running (30 seconds)
+
+The fastest way to understand Syncular is to watch it sync:
+
+```bash
+bun install
+bun --cwd demo dev
+```
+
+Open `http://localhost:5173`. You'll see two sync clients side-by-side. Add a task in the left panel — it appears on the right within a second. That's two independent SQLite databases syncing through a commit log.
+
+## Build your own app
+
+This walkthrough creates a synced task app from scratch. You'll set up a server with Postgres, a React client with SQLite, and watch data flow between them.
+
+### What you'll build
+
+```
+┌──────────────────────┐         ┌──────────────────────┐
+│  React + SQLite      │◀──sync──▶│  Hono + Postgres    │
+│  (client)            │         │  (server)            │
+│                      │         │                      │
+│  - Instant queries   │         │  - Commit log        │
+│  - Works offline     │         │  - Scope filtering   │
+│  - Outbox for writes │         │  - Conflict detection│
+└──────────────────────┘         └──────────────────────┘
+```
+
+### Prerequisites
+
+- Node.js 18+ or Bun
+- A Postgres database (or use PGlite for development — no install needed)
+
+### Packages
+
+> **Note:** Most packages are currently distributed via the monorepo (not yet published to npm). Clone the repo to get started.
+
+Server-side:
+- `@syncular/server` — core sync engine
+- `@syncular/server-hono` — Hono HTTP adapter
+- `@syncular/server-dialect-postgres` — Postgres dialect
+
+Client-side:
+- `@syncular/client` — core client engine
+- `@syncular/client-react` — React hooks
+- `@syncular/transport-http` — HTTP transport
+- `@syncular/dialect-wa-sqlite` — SQLite for the browser (or another [client dialect](/docs/introduction/installation#client-database-dialects))
+
+### Step 1: Server
+
+Set up the database, define a table handler, and mount sync routes:
+
+```typescript
+// server.ts
+import { Hono } from 'hono';
+import { Kysely, PostgresDialect } from 'kysely';
+import { Pool } from 'pg';
+import { createSyncServer } from '@syncular/server-hono';
+import { ensureSyncSchema, createServerHandler } from '@syncular/server';
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+// 1. Connect to Postgres
+const db = new Kysely({
+  dialect: new PostgresDialect({
+    pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+  }),
+});
+const dialect = createPostgresServerDialect();
+
+// 2. Create sync infrastructure tables
+await ensureSyncSchema(db, dialect);
+
+// 3. Create your app table
+await db.schema
+  .createTable('tasks')
+  .ifNotExists()
+  .addColumn('id', 'text', (col) => col.primaryKey())
+  .addColumn('title', 'text', (col) => col.notNull())
+  .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+  .addColumn('user_id', 'text', (col) => col.notNull())
+  .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(1))
+  .execute();
+
+// 4. Define how 'tasks' syncs
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],                          // Auto-extract user_id from rows
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }), // User sees their own data
+});
+
+// 5. Create sync routes
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate: async (c) => {
+    const userId = c.req.header('x-user-id');
+    return userId ? { actorId: userId } : null;
+  },
+});
+
+// 6. Mount and serve
+const app = new Hono();
+app.route('/api/sync', syncRoutes);
+
+Bun.serve({ fetch: app.fetch, port: 3001 });
+console.log('Server running on http://localhost:3001');
+```
+
+**What's happening:** The server stores your app data in Postgres alongside a commit log. The `tasksHandler` defines scope patterns — when a task with `user_id: '123'` is inserted, the change is automatically tagged with `{ user_id: '123' }`. Only clients subscribed to that scope receive it.
+
+### Step 2: Client
+
+Create a local database, transport, and React provider:
+
+```tsx
+// App.tsx
+import { useState, useEffect } from 'react';
+import { createSyncularReact } from '@syncular/client-react';
+import { createHttpTransport } from '@syncular/transport-http';
+import { ClientTableRegistry, createClientHandler, ensureClientSyncSchema } from '@syncular/client';
+import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
+import { Button } from '@syncular/ui/primitives';
+import type { Kysely } from 'kysely';
+
+// Your database type (matches server schema)
+type DB = {
+  tasks: { id: string; title: string; completed: number; user_id: string; server_version: number };
+};
+
+const USER_ID = 'demo-user';
+const CLIENT_ID = `device-${crypto.randomUUID().slice(0, 8)}`;
+
+// 1. Create typed React hooks
+const { SyncProvider, useSyncQuery, useMutations, useSyncStatus } =
+  createSyncularReact<DB>();
+
+// 2. HTTP transport — points to your server
+const transport = createHttpTransport({
+  baseUrl: 'http://localhost:3001/api',
+  getHeaders: () => ({ 'x-user-id': USER_ID }),
+});
+
+// 3. Client table handler (defaults are fine for most cases)
+const handlers = new ClientTableRegistry().register(
+  createClientHandler({ table: 'tasks', scopes: ['user:{user_id}'] })
+);
+
+function App() {
+  const [db, setDb] = useState<Kysely<DB> | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      // 4. Create local SQLite database
+      const database = createWaSqliteDb({ fileName: 'app.db' });
+      await ensureClientSyncSchema(database);
+      await database.schema
+        .createTable('tasks')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+        .addColumn('user_id', 'text', (col) => col.notNull())
+        .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+        .execute();
+      setDb(database);
+    })();
+  }, []);
+
+  if (!db) return <div>Loading database...</div>;
+
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      handlers={handlers}
+      actorId={USER_ID}
+      clientId={CLIENT_ID}
+      subscriptions={[
+        { id: 'my-tasks', table: 'tasks', scopes: { user_id: USER_ID } },
+      ]}
+    >
+      <TaskList />
+    </SyncProvider>
+  );
+}
+
+function TaskList() {
+  const { isOnline, isSyncing } = useSyncStatus();
+  const { data: tasks } = useSyncQuery(({ selectFrom }) =>
+    selectFrom('tasks').selectAll()
+  );
+  const m = useMutations();
+
+  return (
+    <div>
+      <p>
+        {isOnline ? 'Online' : 'Offline'}
+        {isSyncing && ' (syncing...)'}
+      </p>
+      <Button onClick={() => m.tasks.insert({ title: 'New task', user_id: USER_ID })}>
+        Add Task
+      </Button>
+      <ul>
+        {tasks?.map((task) => (
+          <li key={task.id}>
+            <span
+              style={{ textDecoration: task.completed ? 'line-through' : 'none' }}
+              onClick={() => m.tasks.update(task.id, { completed: task.completed ? 0 : 1 })}
+            >
+              {task.title}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default App;
+```
+
+### Step 3: Try it
+
+Start both your server and client dev server. Then:
+
+1. **Add a task** — it appears immediately (written to local SQLite)
+2. **Go offline** — the app keeps working, changes queue in the outbox
+3. **Go online** — changes sync automatically
+4. **Open another tab** — data syncs between tabs through the server
+
+## What just happened?
+
+Here's the full lifecycle of adding a task:
+
+```
+  You click "Add Task"
+       │
+       ▼
+  ┌─────────────────┐
+  │ 1. Local write   │  Task inserted into SQLite → UI updates instantly
+  │ 2. Outbox queue  │  Commit added to outbox table
+  └────────┬────────┘
+           │  (next sync cycle, or immediately if online)
+           ▼
+  ┌─────────────────┐
+  │ 3. Push to server│  POST /api/sync with `push` commit payload
+  │ 4. Server applies│  Handler validates, inserts row, extracts scopes
+  │ 5. Commit log    │  Change written to sync_commits + sync_changes
+  │ 6. Ack           │  Server returns commit_seq, client marks acked
+  └────────┬────────┘
+           │  (other clients pull)
+           ▼
+  ┌─────────────────┐
+  │ 7. Other clients │  Pull returns new commits since their cursor
+  │    apply changes │  Rows upserted/deleted in their local SQLite
+  └─────────────────┘
+```
+
+**First-time bootstrap:** When a client subscribes for the first time, the server sends a snapshot of all matching data (not just new commits). After the initial snapshot, only incremental commits are sent.
+
+**Conflict detection:** If two clients edit the same row, the server detects the version mismatch and returns a conflict. Your app decides how to resolve it. See [Conflict Resolution](/docs/introduction/conflict-resolution).
+
+## Next steps
+
+- [Try the Demo](/docs/introduction/demo) — explore all demo features (encryption, large datasets, presence)
+- [How Sync Works](/docs/introduction/architecture) — deep dive into the commit log
+- [Server Setup](/docs/guides/server-setup) — full server configuration guide
+- [Client Setup](/docs/guides/client-setup) — all client options and handlers

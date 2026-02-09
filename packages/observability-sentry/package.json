@@ -1,0 +1,55 @@
+{
+  "name": "@syncular/observability-sentry",
+  "version": "0.0.1",
+  "description": "Sentry adapters for Syncular telemetry",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/observability-sentry"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "observability",
+    "sentry",
+    "telemetry"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test src",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@sentry/cloudflare": "^10.38.0",
+    "@sentry/react": "^10.38.0",
+    "@syncular/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

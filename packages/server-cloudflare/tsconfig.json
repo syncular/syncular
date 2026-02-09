@@ -1,0 +1,21 @@
+{
+  "extends": "@syncular/config/tsconfig.bun.json",
+  "compilerOptions": {
+    "types": [
+      "@cloudflare/workers-types"
+    ],
+    "lib": [
+      "ES2022"
+    ],
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**"
+  ]
+}

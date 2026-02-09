@@ -1,0 +1,357 @@
+---
+title: Testing
+description: Test your Syncular sync logic, scopes, and conflict handling
+---
+
+# Testing
+
+## What you'll learn
+
+- How to set up in-memory test infrastructure
+- How to test table handlers and scope authorization
+- How to test conflict detection and resolution
+- How to test offline/online transitions
+- How to test the full push/pull lifecycle
+
+## Prerequisites
+
+- Familiarity with [Table Handlers](/docs/guides/table-handlers) and [Scopes](/docs/introduction/scopes)
+
+## Test infrastructure
+
+Use in-memory SQLite for fast, isolated tests. No external database needed.
+
+```typescript
+import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { ensureSyncSchema } from '@syncular/server';
+import { ensureClientSyncSchema } from '@syncular/client';
+
+// Server database (in-memory)
+const dialect = createSqliteServerDialect();
+const serverDb = createBunSqliteDb({ path: ':memory:' });
+await ensureSyncSchema(serverDb, dialect);
+
+// Client database (in-memory)
+const clientDb = createBunSqliteDb({ path: ':memory:' });
+await ensureClientSyncSchema(clientDb);
+```
+
+## Full integration test
+
+This test runs a real HTTP server and client, verifying the complete sync lifecycle:
+
+```typescript
+import { describe, it, expect, afterEach } from 'bun:test';
+import { Hono } from 'hono';
+import { createSyncServer } from '@syncular/server-hono';
+import { createHttpTransport } from '@syncular/transport-http';
+import {
+  Client,
+  ClientTableRegistry,
+  createClientHandler,
+  ensureClientSyncSchema,
+} from '@syncular/client';
+import { ensureSyncSchema, createServerHandler } from '@syncular/server';
+import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+
+describe('sync integration', () => {
+  let server: ReturnType<typeof Bun.serve>;
+  let client: Client<any>;
+
+  afterEach(async () => {
+    server?.stop();
+    await client?.destroy();
+  });
+
+  it('bootstraps data from server to client', async () => {
+    // --- Server ---
+    const dialect = createSqliteServerDialect();
+    const serverDb = createBunSqliteDb({ path: ':memory:' });
+    await ensureSyncSchema(serverDb, dialect);
+
+    // Create and seed app table
+    await serverDb.schema
+      .createTable('tasks')
+      .addColumn('id', 'text', (c) => c.primaryKey())
+      .addColumn('title', 'text', (c) => c.notNull())
+      .addColumn('user_id', 'text', (c) => c.notNull())
+      .addColumn('server_version', 'integer', (c) => c.notNull().defaultTo(1))
+      .execute();
+
+    await serverDb
+      .insertInto('tasks')
+      .values([
+        { id: 't1', title: 'Task 1', user_id: 'u1', server_version: 1 },
+        { id: 't2', title: 'Task 2', user_id: 'u1', server_version: 1 },
+        { id: 't3', title: 'Other user', user_id: 'u2', server_version: 1 },
+      ])
+      .execute();
+
+    const handler = createServerHandler({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const { syncRoutes } = createSyncServer({
+      db: serverDb,
+      dialect,
+      handlers: [handler],
+      authenticate: async () => ({ actorId: 'u1' }),
+    });
+
+    const app = new Hono();
+    app.route('/sync', syncRoutes);
+    server = Bun.serve({ fetch: app.fetch, port: 0 });
+
+    // --- Client ---
+    const clientDb = createBunSqliteDb({ path: ':memory:' });
+    await ensureClientSyncSchema(clientDb);
+    await clientDb.schema
+      .createTable('tasks')
+      .addColumn('id', 'text', (c) => c.primaryKey())
+      .addColumn('title', 'text', (c) => c.notNull())
+      .addColumn('user_id', 'text', (c) => c.notNull())
+      .addColumn('server_version', 'integer', (c) => c.notNull().defaultTo(0))
+      .execute();
+
+    const transport = createHttpTransport({
+      baseUrl: `http://localhost:${server.port}`,
+    });
+
+    const handlers = new ClientTableRegistry().register(
+      createClientHandler({ table: 'tasks', scopes: ['user:{user_id}'] })
+    );
+
+    client = new Client({
+      db: clientDb,
+      transport,
+      tableHandlers: handlers,
+      clientId: 'test-device',
+      actorId: 'u1',
+      subscriptions: [
+        { id: 'my-tasks', table: 'tasks', scopes: { user_id: 'u1' } },
+      ],
+    });
+
+    // --- Test ---
+    await client.start();
+    await client.sync();
+
+    const tasks = await clientDb.selectFrom('tasks').selectAll().execute();
+
+    // Only u1's tasks — scopes filtered out u2's data
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map((t) => t.title).sort()).toEqual(['Task 1', 'Task 2']);
+  });
+
+  it('pushes client changes to server', async () => {
+    // (setup as above, then:)
+    // ... setup server + client ...
+
+    await client.start();
+    await client.sync();
+
+    // Make a local change
+    await client.mutations.tasks.insert({
+      title: 'New task',
+      user_id: 'u1',
+    });
+
+    // Sync pushes it to server
+    await client.sync();
+
+    const serverTasks = await serverDb
+      .selectFrom('tasks')
+      .selectAll()
+      .execute();
+    expect(serverTasks.some((t) => t.title === 'New task')).toBe(true);
+  });
+});
+```
+
+## Testing scope authorization
+
+Verify that users only see data they're authorized to access:
+
+```typescript
+it('rejects unauthorized scope access', async () => {
+  // User u1 subscribes to user_id: 'u2' (not their data)
+  const client = new Client({
+    // ...
+    actorId: 'u1',
+    subscriptions: [
+      { id: 'other-user', table: 'tasks', scopes: { user_id: 'u2' } },
+    ],
+  });
+
+  await client.start();
+  await client.sync();
+
+  // Should get no data (scope intersection is empty → revoked)
+  const tasks = await clientDb.selectFrom('tasks').selectAll().execute();
+  expect(tasks).toHaveLength(0);
+});
+
+it('returns data for all allowed scopes', async () => {
+  // Handler resolves project memberships
+  const handler = createServerHandler({
+    table: 'tasks',
+    scopes: ['user:{user_id}', 'project:{project_id}'],
+    resolveScopes: async (ctx) => ({
+      user_id: [ctx.actorId],
+      project_id: ['proj-a', 'proj-b'], // u1 is in both projects
+    }),
+  });
+
+  // Client subscribes to one project
+  const client = new Client({
+    // ...
+    subscriptions: [
+      { id: 'proj-a', table: 'tasks', scopes: { project_id: 'proj-a' } },
+    ],
+  });
+
+  await client.start();
+  await client.sync();
+
+  const tasks = await clientDb.selectFrom('tasks').selectAll().execute();
+  // Only proj-a tasks (not proj-b, even though user has access)
+  expect(tasks.every((t) => t.project_id === 'proj-a')).toBe(true);
+});
+```
+
+## Testing conflict detection
+
+```typescript
+it('detects concurrent edits as conflicts', async () => {
+  // Setup: two clients, same server
+  const clientA = createTestClient({ clientId: 'A', actorId: 'u1' });
+  const clientB = createTestClient({ clientId: 'B', actorId: 'u1' });
+
+  await clientA.start();
+  await clientB.start();
+
+  // Both sync to get the same data
+  await clientA.sync();
+  await clientB.sync();
+
+  // Both edit the same task (both have server_version: 1)
+  await clientA.mutations.tasks.update('t1', { title: 'From A' });
+  await clientB.mutations.tasks.update('t1', { title: 'From B' });
+
+  // A pushes first — succeeds
+  await clientA.sync();
+
+  // B pushes second — conflict (base_version: 1, but server is now 2)
+  await clientB.sync();
+
+  const conflicts = await clientB.getConflicts();
+  expect(conflicts).toHaveLength(1);
+  expect(conflicts[0].table).toBe('tasks');
+  expect(conflicts[0].rowId).toBe('t1');
+});
+```
+
+## Testing offline behavior
+
+```typescript
+it('queues mutations when offline and syncs when back online', async () => {
+  await client.start();
+  await client.sync();
+
+  // Simulate offline by stopping the server
+  server.stop();
+
+  // Mutations still work locally
+  await client.mutations.tasks.insert({ title: 'Offline task', user_id: 'u1' });
+
+  // Verify local data exists
+  const localTasks = await clientDb.selectFrom('tasks').selectAll().execute();
+  expect(localTasks.some((t) => t.title === 'Offline task')).toBe(true);
+
+  // Verify outbox has pending commit
+  const stats = await client.getOutboxStats();
+  expect(stats.pending).toBeGreaterThan(0);
+
+  // Restart server
+  server = Bun.serve({ fetch: app.fetch, port: server.port });
+
+  // Sync should push the queued changes
+  await client.sync();
+
+  const serverTasks = await serverDb.selectFrom('tasks').selectAll().execute();
+  expect(serverTasks.some((t) => t.title === 'Offline task')).toBe(true);
+});
+```
+
+## What to test checklist
+
+### Table handlers
+- [ ] `snapshot()` returns only rows for effective scopes
+- [ ] `applyOperation()` emits correct scopes on changes
+- [ ] Conflict detection works (version mismatch returns conflict)
+- [ ] Delete operations emit delete changes
+
+### Scope authorization
+- [ ] User only receives their own data
+- [ ] Cross-user access is denied (revoked subscription)
+- [ ] Project membership scopes resolve correctly
+- [ ] Scope intersection works with multi-value scopes
+
+### Sync lifecycle
+- [ ] Bootstrap delivers initial snapshot
+- [ ] Incremental sync delivers only new commits
+- [ ] Push sends outbox commits to server
+- [ ] Ack marks outbox commits as completed
+- [ ] Idempotent pushes return cached results
+
+### Conflict handling
+- [ ] Concurrent edits detected via version numbers
+- [ ] Conflict stored in sync_conflicts table
+- [ ] Resolution (accept/reject) works correctly
+- [ ] Post-resolution sync succeeds
+
+### Offline/online
+- [ ] Mutations work offline (local SQLite + outbox)
+- [ ] Queued changes sync when connection restored
+- [ ] Multiple offline commits sync in order
+
+## Test utilities
+
+```typescript
+// Helper to create test clients quickly
+function createTestClient(opts: { clientId: string; actorId: string }) {
+  const db = createBunSqliteDb({ path: ':memory:' });
+  // ... run migrations, create tables ...
+
+  return new Client({
+    db,
+    transport: createHttpTransport({ baseUrl: `http://localhost:${port}` }),
+    tableHandlers: handlers,
+    ...opts,
+    subscriptions: [
+      { id: 'tasks', table: 'tasks', scopes: { user_id: opts.actorId } },
+    ],
+  });
+}
+```
+
+## Repo test examples
+
+Reference tests in the Syncular repo:
+
+| Test suite | Path | What it covers |
+|-----------|------|---------------|
+| Matrix tests | `tests/matrix/` | End-to-end scenarios across dialects |
+| E2E tests | `e2e/src/__tests__/` | Bootstrap, conflicts, large datasets |
+| React hooks | `packages/client-react/src/__tests__/` | Hook integration tests |
+| Server routes | `packages/server-hono/src/__tests__/` | Route + realtime tests |
+
+## Next steps
+
+- [Table Handlers](/docs/guides/table-handlers) — handler patterns
+- [Conflict Resolution](/docs/introduction/conflict-resolution) — resolution strategies
+- [Troubleshooting](/docs/guides/troubleshooting) — debugging sync issues

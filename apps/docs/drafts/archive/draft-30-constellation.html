@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — Continuous Coverage</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"Instrument Sans"', 'system-ui', 'sans-serif'],
+            mono: ['"IBM Plex Mono"', 'monospace'],
+          },
+          colors: {
+            blue: {
+              electric: '#3b82f6',
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Instrument Sans', system-ui, sans-serif;
+      background: #000;
+      color: #fff;
+      overflow-x: hidden;
+    }
+    .font-mono { font-family: 'IBM Plex Mono', monospace !important; }
+
+    /* Scanline overlay */
+    .scanline::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(59, 130, 246, 0.015) 2px,
+        rgba(59, 130, 246, 0.015) 4px
+      );
+      pointer-events: none;
+    }
+
+    /* Status indicator blink */
+    @keyframes statusBlink {
+      0%, 90%, 100% { opacity: 1; }
+      95% { opacity: 0.3; }
+    }
+    .status-nominal {
+      animation: statusBlink 3s ease-in-out infinite;
+    }
+    .status-nominal:nth-child(2) { animation-delay: 0.5s; }
+    .status-nominal:nth-child(3) { animation-delay: 1s; }
+    .status-nominal:nth-child(4) { animation-delay: 1.5s; }
+
+    /* Telemetry fade-in */
+    @keyframes telemetryIn {
+      0% { opacity: 0; transform: translateX(-12px); }
+      100% { opacity: 1; transform: translateX(0); }
+    }
+    .telemetry-line {
+      opacity: 0;
+      animation: telemetryIn 0.5s ease-out forwards;
+    }
+
+    /* Uplink pulse */
+    @keyframes uplinkPulse {
+      0% { opacity: 0.2; }
+      50% { opacity: 1; }
+      100% { opacity: 0.2; }
+    }
+    .uplink-active {
+      animation: uplinkPulse 1.5s ease-in-out infinite;
+    }
+
+    /* Ground pulse */
+    @keyframes groundPulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
+      50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+    }
+    .ground-pulse {
+      animation: groundPulse 2s ease-out infinite;
+    }
+
+    /* Data packet travel */
+    @keyframes packetUp {
+      0% { transform: translateY(0); opacity: 1; }
+      100% { transform: translateY(-40px); opacity: 0; }
+    }
+    @keyframes packetDown {
+      0% { transform: translateY(0); opacity: 1; }
+      100% { transform: translateY(40px); opacity: 0; }
+    }
+
+    /* Handoff step reveal */
+    .handoff-step {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: all 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .handoff-step.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* Glow effects */
+    .glow-blue {
+      text-shadow: 0 0 20px rgba(59, 130, 246, 0.5), 0 0 60px rgba(59, 130, 246, 0.2);
+    }
+    .box-glow {
+      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2), 0 0 20px rgba(59, 130, 246, 0.05);
+    }
+    .box-glow:hover {
+      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.5), 0 0 30px rgba(59, 130, 246, 0.1);
+    }
+
+    /* Mission time counter */
+    @keyframes counterIncrement {
+      0% { opacity: 0.5; }
+      10% { opacity: 1; }
+      100% { opacity: 1; }
+    }
+
+    /* Grid background */
+    .grid-bg {
+      background-image:
+        linear-gradient(rgba(59, 130, 246, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(59, 130, 246, 0.05) 1px, transparent 1px);
+      background-size: 40px 40px;
+    }
+
+    /* Canvas container */
+    #orbital-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #000; }
+    ::-webkit-scrollbar-thumb { background: rgba(59, 130, 246, 0.3); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.5); }
+
+    /* Selection */
+    ::selection { background: rgba(59, 130, 246, 0.3); color: #fff; }
+  </style>
+</head>
+<body class="bg-black text-white antialiased">
+
+  <!-- ===== NAV ===== -->
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/5 bg-black/80 backdrop-blur-xl">
+    <div class="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-2 h-2 rounded-full bg-blue-electric ground-pulse"></div>
+        <span class="font-mono text-sm font-semibold tracking-wider text-white/90">SYNCULAR</span>
+        <span class="font-mono text-[10px] text-white/30 ml-1">v0.1.0</span>
+      </div>
+      <div class="hidden md:flex items-center gap-8">
+        <a href="#telemetry" class="font-mono text-xs text-white/40 hover:text-blue-electric transition-colors tracking-wide">TELEMETRY</a>
+        <a href="#handoff" class="font-mono text-xs text-white/40 hover:text-blue-electric transition-colors tracking-wide">HANDOFF</a>
+        <a href="#mission-control" class="font-mono text-xs text-white/40 hover:text-blue-electric transition-colors tracking-wide">MISSION CTRL</a>
+        <a href="#install" class="font-mono text-xs text-white/40 hover:text-blue-electric transition-colors tracking-wide">DEPLOY</a>
+      </div>
+      <div class="flex items-center gap-4">
+        <div class="font-mono text-[10px] text-white/20 hidden sm:block">
+          MET <span id="met-clock" class="text-white/40">000:00:00:00</span>
+        </div>
+        <a href="https://github.com/puredata-ec/syncular" target="_blank" class="font-mono text-xs text-white/40 hover:text-white transition-colors">GitHub</a>
+        <a href="#install" class="font-mono text-xs bg-blue-electric/10 border border-blue-electric/30 text-blue-electric px-3 py-1.5 rounded hover:bg-blue-electric/20 transition-all">Docs</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ===== HERO ===== -->
+  <section class="relative min-h-screen flex items-center justify-center overflow-hidden scanline">
+    <canvas id="orbital-canvas"></canvas>
+
+    <!-- Subtle radial gradient overlay -->
+    <div class="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black z-10 pointer-events-none"></div>
+
+    <div class="relative z-20 text-center px-6 max-w-4xl mx-auto">
+      <!-- Mission designation -->
+      <div class="font-mono text-[11px] tracking-[0.3em] text-blue-electric/60 mb-6 uppercase">
+        Mission Syncular &mdash; Continuous Coverage Protocol
+      </div>
+
+      <h1 class="font-display text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-bold tracking-tight leading-[0.95] mb-6">
+        <span class="text-white">Always</span><br />
+        <span class="glow-blue text-blue-electric">in orbit.</span>
+      </h1>
+
+      <p class="font-display text-lg sm:text-xl text-white/50 max-w-2xl mx-auto mb-4 leading-relaxed">
+        Your clients are ground stations &mdash; they always work locally.
+        The sync server is the constellation, always overhead,
+        always ready when a client looks up.
+      </p>
+
+      <p class="font-mono text-xs text-white/25 mb-10">
+        Offline-first sync framework for apps that never go down.
+      </p>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="#install" class="group font-mono text-sm bg-blue-electric text-black px-6 py-3 rounded hover:bg-blue-400 transition-all flex items-center gap-2">
+          <span>Deploy Now</span>
+          <svg class="w-4 h-4 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
+        <a href="#telemetry" class="font-mono text-sm text-white/40 border border-white/10 px-6 py-3 rounded hover:border-white/25 hover:text-white/60 transition-all">
+          View Telemetry
+        </a>
+      </div>
+
+      <!-- Live uplink status bar -->
+      <div class="mt-16 flex items-center justify-center gap-6 font-mono text-[10px] text-white/30">
+        <span class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500 status-nominal"></span>
+          UPLINK NOMINAL
+        </span>
+        <span class="text-white/10">|</span>
+        <span>SATS: <span class="text-white/50" id="sat-count">9</span>/9</span>
+        <span class="text-white/10">|</span>
+        <span>GROUND: <span class="text-white/50" id="ground-count">5</span> ACTIVE</span>
+        <span class="text-white/10">|</span>
+        <span>HANDOFFS: <span class="text-white/50 uplink-active" id="handoff-count">0</span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== TELEMETRY (Features as status lines) ===== -->
+  <section id="telemetry" class="relative py-32 border-t border-white/5">
+    <div class="max-w-5xl mx-auto px-6">
+      <!-- Section header -->
+      <div class="flex items-center gap-4 mb-4">
+        <div class="w-1.5 h-1.5 rounded-full bg-blue-electric"></div>
+        <span class="font-mono text-[11px] tracking-[0.25em] text-blue-electric/70 uppercase">System Telemetry</span>
+      </div>
+      <h2 class="font-display text-3xl sm:text-4xl font-bold mb-3 tracking-tight">All systems nominal.</h2>
+      <p class="font-display text-white/40 max-w-xl mb-16">Real-time subsystem status for the Syncular constellation. Every capability, verified and operational.</p>
+
+      <!-- Telemetry readout -->
+      <div class="space-y-0 border border-white/5 rounded-lg overflow-hidden bg-white/[0.01]">
+        <!-- Header row -->
+        <div class="grid grid-cols-12 gap-4 px-6 py-3 border-b border-white/5 bg-white/[0.02]">
+          <div class="col-span-1 font-mono text-[10px] text-white/20 uppercase tracking-wider">Status</div>
+          <div class="col-span-3 font-mono text-[10px] text-white/20 uppercase tracking-wider">Subsystem</div>
+          <div class="col-span-5 font-mono text-[10px] text-white/20 uppercase tracking-wider">Description</div>
+          <div class="col-span-3 font-mono text-[10px] text-white/20 uppercase tracking-wider text-right">Metric</div>
+        </div>
+
+        <!-- Telemetry lines -->
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.1s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">OFFLINE-FIRST</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Ground stations operate independently. Full read/write without uplink.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">LATENCY 0ms</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.2s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">REALTIME SYNC</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">WebSocket uplink delivers delta patches the moment a satellite passes.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">THROUGHPUT HIGH</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.3s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">CONFLICT RES</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Automatic last-write-wins with custom resolution strategies per table.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">RESOLVED 100%</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.4s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">E2E ENCRYPT</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Plugin-based encryption. Payloads encrypted on ground, opaque to constellation.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">AES-256-GCM</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.5s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">BLOB STORAGE</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Binary payloads travel alongside structured data. Chunked transfer protocol.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">CAPACITY MAX</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.6s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">SCOPE KEYS</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Per-user data partitioning. Each ground station receives only its orbital slice.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">ISOLATED OK</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.7s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">REACT BINDINGS</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Hooks and providers. Reactive queries update as data arrives from orbit.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">HOOKS READY</div>
+        </div>
+
+        <div class="telemetry-line grid grid-cols-12 gap-4 px-6 py-4 hover:bg-white/[0.02] transition-colors" style="animation-delay: 0.8s">
+          <div class="col-span-1 flex items-center"><span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span></div>
+          <div class="col-span-3 font-mono text-sm text-white/80">EDGE RELAY</div>
+          <div class="col-span-5 font-mono text-xs text-white/40">Deploy relay nodes at the edge. Reduce round-trip to constellation by 10x.</div>
+          <div class="col-span-3 font-mono text-xs text-green-500/80 text-right">NODES ONLINE</div>
+        </div>
+      </div>
+
+      <!-- Summary bar -->
+      <div class="mt-6 flex items-center justify-between font-mono text-[10px] text-white/20 px-2">
+        <span>8 SUBSYSTEMS CHECKED</span>
+        <span>ALL NOMINAL</span>
+        <span>LAST CHECK: <span class="text-white/40" id="telemetry-time">--:--:--</span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== HANDOFF PROTOCOL (Sync flow) ===== -->
+  <section id="handoff" class="relative py-32 border-t border-white/5 grid-bg">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex items-center gap-4 mb-4">
+        <div class="w-1.5 h-1.5 rounded-full bg-blue-electric"></div>
+        <span class="font-mono text-[11px] tracking-[0.25em] text-blue-electric/70 uppercase">Handoff Protocol</span>
+      </div>
+      <h2 class="font-display text-3xl sm:text-4xl font-bold mb-3 tracking-tight">Seamless orbital handoff.</h2>
+      <p class="font-display text-white/40 max-w-xl mb-20">When one satellite moves beyond horizon, the next picks up. Zero interruption. Zero data loss. The ground station never stops working.</p>
+
+      <!-- Handoff sequence visualization -->
+      <div class="relative">
+        <!-- Timeline line -->
+        <div class="absolute left-6 top-0 bottom-0 w-px bg-gradient-to-b from-blue-electric/40 via-blue-electric/20 to-transparent"></div>
+
+        <!-- Steps -->
+        <div class="space-y-16">
+          <!-- Step 1 -->
+          <div class="handoff-step relative pl-16" data-step>
+            <div class="absolute left-4 top-1 w-5 h-5 rounded-full border-2 border-blue-electric/50 bg-black flex items-center justify-center">
+              <span class="w-2 h-2 rounded-full bg-blue-electric"></span>
+            </div>
+            <div class="font-mono text-[10px] text-blue-electric/50 mb-2 tracking-wider">PHASE 01 &mdash; ACQUISITION</div>
+            <h3 class="font-display text-xl font-semibold mb-2">Satellite enters coverage zone</h3>
+            <p class="font-mono text-xs text-white/35 max-w-lg leading-relaxed">Client detects server availability. WebSocket connection established. Authentication handshake completes in &lt;50ms.</p>
+            <div class="mt-4 p-4 bg-white/[0.02] border border-white/5 rounded-lg font-mono text-xs">
+              <div class="text-white/20 mb-2">// Transport negotiation</div>
+              <div class="text-blue-electric/70">ws.connect</div><span class="text-white/30">(serverUrl, { auth: token })</span><br/>
+              <div class="text-green-500/60 mt-1">// UPLINK ESTABLISHED &mdash; RTT: 12ms</div>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="handoff-step relative pl-16" data-step>
+            <div class="absolute left-4 top-1 w-5 h-5 rounded-full border-2 border-blue-electric/50 bg-black flex items-center justify-center">
+              <span class="w-2 h-2 rounded-full bg-blue-electric"></span>
+            </div>
+            <div class="font-mono text-[10px] text-blue-electric/50 mb-2 tracking-wider">PHASE 02 &mdash; UPLINK</div>
+            <h3 class="font-display text-xl font-semibold mb-2">Push local changes to constellation</h3>
+            <p class="font-mono text-xs text-white/35 max-w-lg leading-relaxed">Outbox mutations accumulated while offline are transmitted. Server applies changes, resolves conflicts, updates commit log.</p>
+            <div class="mt-4 p-4 bg-white/[0.02] border border-white/5 rounded-lg font-mono text-xs">
+              <div class="text-white/20 mb-2">// Push queued mutations</div>
+              <div><span class="text-blue-electric/70">POST</span> <span class="text-white/50">/sync/push</span> <span class="text-white/20">&rarr;</span> <span class="text-green-500/60">200 OK</span></div>
+              <div class="text-white/20 mt-1">// 47 mutations pushed, 0 conflicts</div>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="handoff-step relative pl-16" data-step>
+            <div class="absolute left-4 top-1 w-5 h-5 rounded-full border-2 border-blue-electric/50 bg-black flex items-center justify-center">
+              <span class="w-2 h-2 rounded-full bg-blue-electric"></span>
+            </div>
+            <div class="font-mono text-[10px] text-blue-electric/50 mb-2 tracking-wider">PHASE 03 &mdash; DOWNLINK</div>
+            <h3 class="font-display text-xl font-semibold mb-2">Pull remote changes from orbit</h3>
+            <p class="font-mono text-xs text-white/35 max-w-lg leading-relaxed">Server sends delta since last sync cursor. Client merges changes into local store. Reactive queries update instantly.</p>
+            <div class="mt-4 p-4 bg-white/[0.02] border border-white/5 rounded-lg font-mono text-xs">
+              <div class="text-white/20 mb-2">// Pull deltas</div>
+              <div><span class="text-blue-electric/70">POST</span> <span class="text-white/50">/sync/pull</span> <span class="text-white/20">&rarr;</span> <span class="text-green-500/60">200 OK</span></div>
+              <div class="text-white/20 mt-1">// 132 changes received, cursor advanced to #4,891</div>
+            </div>
+          </div>
+
+          <!-- Step 4 -->
+          <div class="handoff-step relative pl-16" data-step>
+            <div class="absolute left-4 top-1 w-5 h-5 rounded-full border-2 border-blue-electric/50 bg-black flex items-center justify-center">
+              <span class="w-2 h-2 rounded-full bg-blue-electric"></span>
+            </div>
+            <div class="font-mono text-[10px] text-blue-electric/50 mb-2 tracking-wider">PHASE 04 &mdash; HANDOFF</div>
+            <h3 class="font-display text-xl font-semibold mb-2">Satellite passes, next acquires</h3>
+            <p class="font-mono text-xs text-white/35 max-w-lg leading-relaxed">Connection gracefully closes. Client continues operating from local store. When the next satellite rises above horizon, the cycle repeats. No data lost. No interruption.</p>
+            <div class="mt-4 p-4 bg-white/[0.02] border border-white/5 rounded-lg font-mono text-xs">
+              <div class="text-white/20 mb-2">// Connection lifecycle</div>
+              <div class="text-yellow-500/60">UPLINK LOST</div> <span class="text-white/20">&mdash; satellite beyond horizon</span><br/>
+              <div class="text-white/30 mt-1">LOCAL OPS: <span class="text-green-500/60">CONTINUING</span></div>
+              <div class="text-blue-electric/70 mt-1">NEXT SAT ETA: <span class="text-white/50">~2s</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== MISSION CONTROL (Client status dashboard) ===== -->
+  <section id="mission-control" class="relative py-32 border-t border-white/5">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex items-center gap-4 mb-4">
+        <div class="w-1.5 h-1.5 rounded-full bg-blue-electric"></div>
+        <span class="font-mono text-[11px] tracking-[0.25em] text-blue-electric/70 uppercase">Mission Control</span>
+      </div>
+      <h2 class="font-display text-3xl sm:text-4xl font-bold mb-3 tracking-tight">Fleet status overview.</h2>
+      <p class="font-display text-white/40 max-w-xl mb-16">Monitor every ground station in your constellation. Real-time sync status, connectivity, and operational metrics.</p>
+
+      <!-- Dashboard -->
+      <div class="border border-white/5 rounded-lg overflow-hidden bg-white/[0.01]">
+        <!-- Dashboard header -->
+        <div class="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-white/[0.02]">
+          <div class="flex items-center gap-3">
+            <span class="w-2 h-2 rounded-full bg-green-500 status-nominal"></span>
+            <span class="font-mono text-xs text-white/50">CONSTELLATION STATUS: OPERATIONAL</span>
+          </div>
+          <div class="font-mono text-[10px] text-white/20" id="dashboard-time">UTC --:--:--</div>
+        </div>
+
+        <!-- Summary stats row -->
+        <div class="grid grid-cols-4 border-b border-white/5">
+          <div class="p-5 border-r border-white/5">
+            <div class="font-mono text-[10px] text-white/20 uppercase tracking-wider mb-1">Connected</div>
+            <div class="font-mono text-2xl font-bold text-green-500" id="stat-connected">3</div>
+          </div>
+          <div class="p-5 border-r border-white/5">
+            <div class="font-mono text-[10px] text-white/20 uppercase tracking-wider mb-1">Offline</div>
+            <div class="font-mono text-2xl font-bold text-white/30" id="stat-offline">2</div>
+          </div>
+          <div class="p-5 border-r border-white/5">
+            <div class="font-mono text-[10px] text-white/20 uppercase tracking-wider mb-1">Mutations/min</div>
+            <div class="font-mono text-2xl font-bold text-blue-electric" id="stat-mutations">847</div>
+          </div>
+          <div class="p-5">
+            <div class="font-mono text-[10px] text-white/20 uppercase tracking-wider mb-1">Uptime</div>
+            <div class="font-mono text-2xl font-bold text-white/70">99.97%</div>
+          </div>
+        </div>
+
+        <!-- Client rows -->
+        <div id="client-rows">
+          <!-- Client 1 -->
+          <div class="grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.015] transition-colors">
+            <div class="col-span-1 flex items-center">
+              <span class="w-2.5 h-2.5 rounded-full bg-green-500 ground-pulse"></span>
+            </div>
+            <div class="col-span-3">
+              <div class="font-mono text-sm text-white/80">GS-ALPHA</div>
+              <div class="font-mono text-[10px] text-white/20">iPad Pro &mdash; Safari 18</div>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-xs text-green-500/80">SYNCED</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/30">cursor #4,891</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/30">12 pending</span>
+            </div>
+            <div class="col-span-2 flex items-center justify-end">
+              <div class="flex gap-0.5">
+                <div class="w-1 h-3 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-4 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-3 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-5 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-4 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-3 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-5 bg-green-500/80 rounded-sm"></div>
+                <div class="w-1 h-4 bg-green-500/80 rounded-sm"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Client 2 -->
+          <div class="grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.015] transition-colors">
+            <div class="col-span-1 flex items-center">
+              <span class="w-2.5 h-2.5 rounded-full bg-green-500 ground-pulse" style="animation-delay: 0.3s"></span>
+            </div>
+            <div class="col-span-3">
+              <div class="font-mono text-sm text-white/80">GS-BRAVO</div>
+              <div class="font-mono text-[10px] text-white/20">MacBook &mdash; Chrome 126</div>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-xs text-green-500/80">SYNCED</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/30">cursor #4,891</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/30">0 pending</span>
+            </div>
+            <div class="col-span-2 flex items-center justify-end">
+              <div class="flex gap-0.5">
+                <div class="w-1 h-4 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-3 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-5 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-4 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-3 bg-green-500/60 rounded-sm"></div>
+                <div class="w-1 h-4 bg-green-500/80 rounded-sm"></div>
+                <div class="w-1 h-5 bg-green-500/80 rounded-sm"></div>
+                <div class="w-1 h-3 bg-green-500/80 rounded-sm"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Client 3 -->
+          <div class="grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.015] transition-colors">
+            <div class="col-span-1 flex items-center">
+              <span class="w-2.5 h-2.5 rounded-full bg-green-500 ground-pulse" style="animation-delay: 0.7s"></span>
+            </div>
+            <div class="col-span-3">
+              <div class="font-mono text-sm text-white/80">GS-CHARLIE</div>
+              <div class="font-mono text-[10px] text-white/20">Pixel 8 &mdash; Chrome 126</div>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-xs text-blue-electric/80">PUSHING</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/30">cursor #4,887</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/30">4 pending</span>
+            </div>
+            <div class="col-span-2 flex items-center justify-end">
+              <div class="flex gap-0.5">
+                <div class="w-1 h-3 bg-blue-electric/40 rounded-sm"></div>
+                <div class="w-1 h-2 bg-blue-electric/40 rounded-sm"></div>
+                <div class="w-1 h-4 bg-blue-electric/50 rounded-sm"></div>
+                <div class="w-1 h-5 bg-blue-electric/60 rounded-sm"></div>
+                <div class="w-1 h-4 bg-blue-electric/70 rounded-sm"></div>
+                <div class="w-1 h-5 bg-blue-electric/80 rounded-sm"></div>
+                <div class="w-1 h-6 bg-blue-electric rounded-sm"></div>
+                <div class="w-1 h-5 bg-blue-electric rounded-sm"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Client 4 - Offline -->
+          <div class="grid grid-cols-12 gap-4 px-6 py-4 border-b border-white/5 hover:bg-white/[0.015] transition-colors">
+            <div class="col-span-1 flex items-center">
+              <span class="w-2.5 h-2.5 rounded-full bg-white/20"></span>
+            </div>
+            <div class="col-span-3">
+              <div class="font-mono text-sm text-white/40">GS-DELTA</div>
+              <div class="font-mono text-[10px] text-white/15">iPhone 15 &mdash; Safari 18</div>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-xs text-white/25">OFFLINE</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/15">cursor #4,802</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-yellow-500/50">89 queued</span>
+            </div>
+            <div class="col-span-2 flex items-center justify-end">
+              <div class="flex gap-0.5">
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+                <div class="w-1 h-2 bg-white/10 rounded-sm"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Client 5 - Offline but working -->
+          <div class="grid grid-cols-12 gap-4 px-6 py-4 hover:bg-white/[0.015] transition-colors">
+            <div class="col-span-1 flex items-center">
+              <span class="w-2.5 h-2.5 rounded-full bg-yellow-500/60 ground-pulse" style="animation-delay: 1.2s"></span>
+            </div>
+            <div class="col-span-3">
+              <div class="font-mono text-sm text-white/50">GS-ECHO</div>
+              <div class="font-mono text-[10px] text-white/15">Laptop &mdash; Firefox 128</div>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-xs text-yellow-500/60">LOCAL OPS</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-white/15">cursor #4,756</span>
+            </div>
+            <div class="col-span-2 flex items-center">
+              <span class="font-mono text-[11px] text-yellow-500/50">215 queued</span>
+            </div>
+            <div class="col-span-2 flex items-center justify-end">
+              <div class="flex gap-0.5">
+                <div class="w-1 h-3 bg-yellow-500/30 rounded-sm"></div>
+                <div class="w-1 h-4 bg-yellow-500/30 rounded-sm"></div>
+                <div class="w-1 h-3 bg-yellow-500/40 rounded-sm"></div>
+                <div class="w-1 h-5 bg-yellow-500/40 rounded-sm"></div>
+                <div class="w-1 h-4 bg-yellow-500/50 rounded-sm"></div>
+                <div class="w-1 h-3 bg-yellow-500/50 rounded-sm"></div>
+                <div class="w-1 h-5 bg-yellow-500/60 rounded-sm"></div>
+                <div class="w-1 h-4 bg-yellow-500/60 rounded-sm"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dashboard footer -->
+        <div class="px-6 py-3 border-t border-white/5 bg-white/[0.02] flex items-center justify-between">
+          <div class="font-mono text-[10px] text-white/20">5 GROUND STATIONS REGISTERED</div>
+          <div class="font-mono text-[10px] text-white/20">NEXT PASS: <span class="text-blue-electric/60" id="next-pass">~2s</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== INSTALL ===== -->
+  <section id="install" class="relative py-32 border-t border-white/5 grid-bg">
+    <div class="max-w-3xl mx-auto px-6 text-center">
+      <div class="flex items-center justify-center gap-4 mb-4">
+        <div class="w-1.5 h-1.5 rounded-full bg-blue-electric"></div>
+        <span class="font-mono text-[11px] tracking-[0.25em] text-blue-electric/70 uppercase">Deploy</span>
+      </div>
+      <h2 class="font-display text-3xl sm:text-4xl font-bold mb-3 tracking-tight">Launch your constellation.</h2>
+      <p class="font-display text-white/40 max-w-lg mx-auto mb-12">Two packages. One command. Ground station and constellation server, ready for orbit.</p>
+
+      <!-- Install command -->
+      <div class="relative max-w-xl mx-auto mb-8">
+        <div class="bg-white/[0.03] border border-white/10 rounded-lg p-6 text-left box-glow transition-all">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-red-500/60"></span>
+              <span class="w-2 h-2 rounded-full bg-yellow-500/60"></span>
+              <span class="w-2 h-2 rounded-full bg-green-500/60"></span>
+            </div>
+            <span class="font-mono text-[10px] text-white/15">terminal</span>
+          </div>
+          <div class="font-mono text-sm">
+            <div class="text-white/25 mb-3"># Install the constellation</div>
+            <div class="flex items-center gap-2">
+              <span class="text-blue-electric/60 select-none">$</span>
+              <span class="text-white/80">bun add @syncular/client @syncular/server</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick setup code blocks -->
+      <div class="grid md:grid-cols-2 gap-4 max-w-2xl mx-auto mb-12">
+        <!-- Server -->
+        <div class="bg-white/[0.02] border border-white/5 rounded-lg p-5 text-left">
+          <div class="font-mono text-[10px] text-blue-electric/50 uppercase tracking-wider mb-3">Constellation Server</div>
+          <pre class="font-mono text-xs text-white/50 leading-relaxed overflow-x-auto"><code><span class="text-blue-electric/60">import</span> { createServer } <span class="text-blue-electric/60">from</span> <span class="text-green-500/60">'@syncular/server'</span>
+
+<span class="text-blue-electric/60">const</span> server = <span class="text-white/70">createServer</span>({
+  <span class="text-white/40">shapes</span>: { todos, users },
+  <span class="text-white/40">database</span>: db,
+})</code></pre>
+        </div>
+
+        <!-- Client -->
+        <div class="bg-white/[0.02] border border-white/5 rounded-lg p-5 text-left">
+          <div class="font-mono text-[10px] text-blue-electric/50 uppercase tracking-wider mb-3">Ground Station Client</div>
+          <pre class="font-mono text-xs text-white/50 leading-relaxed overflow-x-auto"><code><span class="text-blue-electric/60">import</span> { createClient } <span class="text-blue-electric/60">from</span> <span class="text-green-500/60">'@syncular/client'</span>
+
+<span class="text-blue-electric/60">const</span> client = <span class="text-white/70">createClient</span>({
+  <span class="text-white/40">transport</span>: httpTransport,
+  <span class="text-white/40">storage</span>: indexedDB,
+})</code></pre>
+        </div>
+      </div>
+
+      <a href="https://syncular.dev/docs" class="inline-flex items-center gap-2 font-mono text-sm text-blue-electric border border-blue-electric/30 px-6 py-3 rounded hover:bg-blue-electric/10 transition-all">
+        Read the Docs
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+      </a>
+    </div>
+  </section>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="border-t border-white/5 py-12">
+    <div class="max-w-5xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row items-center justify-between gap-6">
+        <div class="flex items-center gap-3">
+          <div class="w-2 h-2 rounded-full bg-blue-electric ground-pulse"></div>
+          <span class="font-mono text-sm font-semibold tracking-wider text-white/70">SYNCULAR</span>
+        </div>
+        <div class="flex items-center gap-8">
+          <a href="https://github.com/puredata-ec/syncular" class="font-mono text-xs text-white/25 hover:text-white/50 transition-colors">GitHub</a>
+          <a href="https://syncular.dev/docs" class="font-mono text-xs text-white/25 hover:text-white/50 transition-colors">Documentation</a>
+          <a href="https://discord.gg/syncular" class="font-mono text-xs text-white/25 hover:text-white/50 transition-colors">Discord</a>
+        </div>
+        <div class="font-mono text-[10px] text-white/15">
+          Offline-first sync for the modern web.
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ===== ORBITAL CANVAS SCRIPT ===== -->
+  <script>
+  (function() {
+    const canvas = document.getElementById('orbital-canvas');
+    const ctx = canvas.getContext('2d');
+
+    let width, height, centerX, centerY, earthRadius;
+    let handoffCount = 0;
+
+    // Satellite config
+    const satellites = [];
+    const orbitCount = 4;
+    const satsPerOrbit = [3, 2, 2, 2];
+    const orbitRadiiMap = [1.8, 2.5, 3.2, 4.0];
+    const orbitSpeeds = [0.0004, 0.00028, 0.00018, 0.00012];
+
+    function resize() {
+      width = canvas.width = canvas.offsetWidth * window.devicePixelRatio;
+      height = canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      centerX = canvas.offsetWidth / 2;
+      centerY = canvas.offsetHeight * 0.42;
+      earthRadius = Math.min(canvas.offsetWidth, canvas.offsetHeight) * 0.14;
+      for (const sat of satellites) {
+        sat.radius = earthRadius * orbitRadiiMap[sat.orbit];
+      }
+    }
+
+    // Initial sizing (before satellites exist, to get earthRadius)
+    resize();
+
+    // Create satellites
+    for (let o = 0; o < orbitCount; o++) {
+      for (let s = 0; s < satsPerOrbit[o]; s++) {
+        satellites.push({
+          orbit: o,
+          radius: earthRadius * orbitRadiiMap[o],
+          angle: (Math.PI * 2 / satsPerOrbit[o]) * s + Math.random() * 0.5,
+          speed: orbitSpeeds[o] * (0.9 + Math.random() * 0.2),
+          size: 2.5 + Math.random() * 1.5,
+        });
+      }
+    }
+
+    window.addEventListener('resize', () => {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      resize();
+    });
+
+    // Ground stations (positioned around the lower hemisphere of Earth)
+    const groundStations = [
+      { angle: Math.PI * 0.6, label: 'GS-A', activity: 0, lastActive: 0 },
+      { angle: Math.PI * 0.75, label: 'GS-B', activity: 0, lastActive: 0 },
+      { angle: Math.PI * 0.9, label: 'GS-C', activity: 0, lastActive: 0 },
+      { angle: Math.PI * 0.45, label: 'GS-D', activity: 0, lastActive: 0 },
+      { angle: Math.PI * 1.05, label: 'GS-E', activity: 0, lastActive: 0 },
+    ];
+
+    // Active connections
+    let connections = [];
+
+    const COVERAGE_ANGLE = 0.45; // radians, how wide the "coverage cone" is
+    const CONNECTION_FADE = 0.03;
+
+    function getGroundPos(gs) {
+      return {
+        x: centerX + Math.cos(gs.angle) * (earthRadius + 4),
+        y: centerY + Math.sin(gs.angle) * (earthRadius + 4),
+      };
+    }
+
+    function getSatPos(sat) {
+      return {
+        x: centerX + Math.cos(sat.angle) * sat.radius,
+        y: centerY + Math.sin(sat.angle) * sat.radius,
+      };
+    }
+
+    function angleDiff(a, b) {
+      let d = ((a - b) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+      return Math.abs(d);
+    }
+
+    // Data packets (visual flourish)
+    let packets = [];
+
+    function spawnPacket(from, to, color) {
+      packets.push({
+        x: from.x, y: from.y,
+        tx: to.x, ty: to.y,
+        progress: 0,
+        speed: 0.015 + Math.random() * 0.01,
+        color: color || 'rgba(59, 130, 246, 0.7)',
+      });
+    }
+
+    function drawFrame(time) {
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      ctx.clearRect(0, 0, w, h);
+
+      // Draw orbital rings (very faint)
+      for (let o = 0; o < orbitCount; o++) {
+        const r = earthRadius * orbitRadiiMap[o];
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, r, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(59, 130, 246, 0.04)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // Draw Earth
+      const earthGrad = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, earthRadius);
+      earthGrad.addColorStop(0, 'rgba(59, 130, 246, 0.08)');
+      earthGrad.addColorStop(0.7, 'rgba(59, 130, 246, 0.03)');
+      earthGrad.addColorStop(1, 'rgba(59, 130, 246, 0.01)');
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, earthRadius, 0, Math.PI * 2);
+      ctx.fillStyle = earthGrad;
+      ctx.fill();
+
+      // Earth outline
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, earthRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Move satellites
+      for (const sat of satellites) {
+        sat.angle += sat.speed;
+      }
+
+      // Check connections: for each ground station, find closest satellite in coverage
+      for (const gs of groundStations) {
+        const gp = getGroundPos(gs);
+        let bestSat = null;
+        let bestDist = Infinity;
+
+        for (const sat of satellites) {
+          const diff = angleDiff(sat.angle, gs.angle);
+          if (diff < COVERAGE_ANGLE) {
+            const sp = getSatPos(sat);
+            const dx = sp.x - gp.x;
+            const dy = sp.y - gp.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestSat = sat;
+            }
+          }
+        }
+
+        // Find or create connection for this ground station
+        let conn = connections.find(c => c.gs === gs);
+        if (bestSat) {
+          if (!conn) {
+            conn = { gs, sat: bestSat, alpha: 0 };
+            connections.push(conn);
+            handoffCount++;
+            document.getElementById('handoff-count').textContent = handoffCount;
+          } else if (conn.sat !== bestSat) {
+            // Handoff!
+            conn.sat = bestSat;
+            conn.alpha = Math.max(conn.alpha * 0.5, 0.1);
+            handoffCount++;
+            document.getElementById('handoff-count').textContent = handoffCount;
+          }
+          conn.alpha = Math.min(conn.alpha + CONNECTION_FADE, 0.6);
+          gs.activity = 1;
+          gs.lastActive = time;
+
+          // Occasionally spawn data packets
+          if (Math.random() < 0.02) {
+            const sp = getSatPos(bestSat);
+            spawnPacket(gp, sp, 'rgba(59, 130, 246, 0.6)');
+          }
+          if (Math.random() < 0.02) {
+            const sp = getSatPos(bestSat);
+            spawnPacket(sp, gp, 'rgba(34, 197, 94, 0.6)');
+          }
+        } else {
+          if (conn) {
+            conn.alpha -= CONNECTION_FADE;
+            if (conn.alpha <= 0) {
+              connections = connections.filter(c => c !== conn);
+            }
+          }
+          // Ground station still shows activity even when disconnected
+          gs.activity = 0.3 + Math.sin(time * 0.003) * 0.15;
+        }
+      }
+
+      // Draw connections
+      for (const conn of connections) {
+        if (conn.alpha <= 0) continue;
+        const gp = getGroundPos(conn.gs);
+        const sp = getSatPos(conn.sat);
+
+        ctx.beginPath();
+        ctx.moveTo(gp.x, gp.y);
+        ctx.lineTo(sp.x, sp.y);
+        ctx.strokeStyle = `rgba(59, 130, 246, ${conn.alpha * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // Draw & update packets
+      for (let i = packets.length - 1; i >= 0; i--) {
+        const p = packets[i];
+        p.progress += p.speed;
+        if (p.progress >= 1) {
+          packets.splice(i, 1);
+          continue;
+        }
+        const x = p.x + (p.tx - p.x) * p.progress;
+        const y = p.y + (p.ty - p.y) * p.progress;
+        const alpha = Math.sin(p.progress * Math.PI);
+        ctx.beginPath();
+        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = p.color.replace(/[\d.]+\)$/, alpha * 0.8 + ')');
+        ctx.fill();
+      }
+
+      // Draw satellites
+      for (const sat of satellites) {
+        const sp = getSatPos(sat);
+        // Glow
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, sat.size * 3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(59, 130, 246, 0.04)';
+        ctx.fill();
+        // Dot
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, sat.size, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(59, 130, 246, 0.7)';
+        ctx.fill();
+      }
+
+      // Draw ground stations
+      for (const gs of groundStations) {
+        const gp = getGroundPos(gs);
+        const isConnected = connections.some(c => c.gs === gs && c.alpha > 0.1);
+
+        // Activity pulse ring
+        const pulseAlpha = gs.activity * (0.3 + Math.sin(time * 0.005 + groundStations.indexOf(gs)) * 0.15);
+        const pulseRadius = 6 + (isConnected ? Math.sin(time * 0.003) * 3 : Math.sin(time * 0.002) * 2);
+        ctx.beginPath();
+        ctx.arc(gp.x, gp.y, pulseRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = isConnected
+          ? `rgba(34, 197, 94, ${pulseAlpha * 0.4})`
+          : `rgba(234, 179, 8, ${pulseAlpha * 0.3})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Dot
+        ctx.beginPath();
+        ctx.arc(gp.x, gp.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = isConnected
+          ? `rgba(34, 197, 94, ${0.6 + gs.activity * 0.4})`
+          : `rgba(234, 179, 8, ${0.3 + gs.activity * 0.3})`;
+        ctx.fill();
+      }
+
+      requestAnimationFrame(drawFrame);
+    }
+
+    requestAnimationFrame(drawFrame);
+
+    // Mission Elapsed Time counter
+    const startTime = Date.now();
+    function updateMET() {
+      const elapsed = Date.now() - startTime;
+      const days = Math.floor(elapsed / 86400000);
+      const hrs = Math.floor((elapsed % 86400000) / 3600000);
+      const mins = Math.floor((elapsed % 3600000) / 60000);
+      const secs = Math.floor((elapsed % 60000) / 1000);
+      const pad = n => String(n).padStart(2, '0');
+      document.getElementById('met-clock').textContent =
+        `${String(days).padStart(3, '0')}:${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+    }
+    setInterval(updateMET, 1000);
+
+    // Dashboard time
+    function updateDashboardTime() {
+      const now = new Date();
+      const utc = now.toISOString().substr(11, 8);
+      const el = document.getElementById('dashboard-time');
+      if (el) el.textContent = `UTC ${utc}`;
+      const tel = document.getElementById('telemetry-time');
+      if (tel) tel.textContent = utc;
+    }
+    setInterval(updateDashboardTime, 1000);
+    updateDashboardTime();
+
+    // Mutations counter (slowly incrementing)
+    let mutCount = 847;
+    setInterval(() => {
+      mutCount += Math.floor(Math.random() * 5);
+      const el = document.getElementById('stat-mutations');
+      if (el) el.textContent = mutCount.toLocaleString();
+    }, 2000);
+
+    // Handoff step reveal on scroll
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.2 });
+
+    document.querySelectorAll('[data-step]').forEach(el => observer.observe(el));
+
+    // Telemetry line reveal
+    const telObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.style.animationPlayState = 'running';
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.telemetry-line').forEach(el => {
+      el.style.animationPlayState = 'paused';
+      telObserver.observe(el);
+    });
+
+    // Simulate client status changes in Mission Control
+    const statuses = ['SYNCED', 'PUSHING', 'PULLING', 'SYNCED', 'SYNCED'];
+    const statusColors = {
+      'SYNCED': 'text-green-500/80',
+      'PUSHING': 'text-blue-electric/80',
+      'PULLING': 'text-blue-electric/80',
+      'OFFLINE': 'text-white/25',
+      'LOCAL OPS': 'text-yellow-500/60',
+    };
+
+    function cycleClientStatus() {
+      const rows = document.querySelectorAll('#client-rows > div');
+      // Only cycle the first 3 (connected) clients
+      for (let i = 0; i < 3; i++) {
+        if (Math.random() < 0.3) {
+          const statusEl = rows[i].querySelector('.col-span-2 span');
+          const newStatus = statuses[Math.floor(Math.random() * statuses.length)];
+          if (statusEl) {
+            statusEl.textContent = newStatus;
+            statusEl.className = `font-mono text-xs ${statusColors[newStatus] || 'text-green-500/80'}`;
+          }
+        }
+      }
+    }
+    setInterval(cycleClientStatus, 3000);
+
+    // Next pass countdown
+    let nextPassSec = 2;
+    setInterval(() => {
+      nextPassSec = Math.max(0, nextPassSec - 1);
+      if (nextPassSec === 0) nextPassSec = Math.floor(Math.random() * 8) + 1;
+      const el = document.getElementById('next-pass');
+      if (el) el.textContent = `~${nextPassSec}s`;
+    }, 1000);
+  })();
+  </script>
+
+</body>
+</html>

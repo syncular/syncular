@@ -1,0 +1,61 @@
+/**
+ * @syncular/dialect-better-sqlite3 - better-sqlite3 dialect for sync
+ *
+ * Provides a Kysely dialect for better-sqlite3 (Node.js) with SerializePlugin
+ * for automatic JSON serialization/deserialization.
+ * SQLite-compatible — use with @syncular/server-dialect-sqlite.
+ */
+
+import { SerializePlugin } from '@syncular/core';
+import type { Database as BetterSqlite3Database } from 'better-sqlite3';
+import Database from 'better-sqlite3';
+import { Kysely, SqliteDialect } from 'kysely';
+
+export interface BetterSqlite3PathOptions {
+  /** Path to SQLite database file, or ':memory:' for in-memory */
+  path: string;
+}
+
+export interface BetterSqlite3InstanceOptions {
+  /** An existing better-sqlite3 Database instance */
+  database: BetterSqlite3Database;
+}
+
+export type BetterSqlite3Options =
+  | BetterSqlite3PathOptions
+  | BetterSqlite3InstanceOptions;
+
+/**
+ * Create a Kysely instance with better-sqlite3 dialect and SerializePlugin.
+ *
+ * @example
+ * const db = createBetterSqlite3Db<MyDb>({ path: './data.db' });
+ * const db = createBetterSqlite3Db<MyDb>({ path: ':memory:' });
+ *
+ * // Existing instance
+ * import Database from 'better-sqlite3';
+ * const db = createBetterSqlite3Db<MyDb>({ database: new Database(':memory:') });
+ */
+export function createBetterSqlite3Db<T>(
+  options: BetterSqlite3Options
+): Kysely<T> {
+  return new Kysely<T>({
+    dialect: createBetterSqlite3Dialect(options),
+    plugins: [new SerializePlugin()],
+  });
+}
+
+/**
+ * Create the better-sqlite3 dialect directly (without SerializePlugin).
+ */
+export function createBetterSqlite3Dialect(
+  options: BetterSqlite3Options
+): SqliteDialect {
+  const database =
+    'database' in options ? options.database : new Database(options.path);
+  return new SqliteDialect({ database });
+}
+
+export function createSerializePlugin(): SerializePlugin {
+  return new SerializePlugin();
+}

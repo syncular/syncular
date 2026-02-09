@@ -1,0 +1,20 @@
+{
+  "root": true,
+  "title": "Introduction",
+  "pages": [
+    "index",
+    "what-is-syncular",
+    "quick-start",
+    "demo",
+    "installation",
+    "---Concepts---",
+    "architecture",
+    "scopes",
+    "subscriptions",
+    "commits",
+    "conflict-resolution",
+    "---Reference---",
+    "glossary",
+    "comparison"
+  ]
+}

@@ -1,0 +1,87 @@
+---
+title: Other Approaches (Not Apples-to-Apples)
+description: Related options that come up when evaluating local-first sync
+lastVerified: 2026-02-03
+---
+
+# Other Approaches (Not Apples-to-Apples)
+
+It’s easy to compare everything that “works offline” as if it’s the same category. In practice, many solutions solve **different parts** of the problem:
+
+- Offline reads vs offline writes
+- Single-user cache vs multi-user data sync
+- “Eventually consistent replication” vs “conflict-free merge” vs “server-authoritative replay”
+
+This page is a quick map of nearby approaches you might consider — and when they’re a better fit than a sync framework.
+
+## Methodology
+
+This is **not** a “winner” chart. It’s a taxonomy of adjacent categories that often get mixed together:
+
+- Offline cache vs replication
+- CRDT merge vs server-authoritative sync
+- Document/object graphs vs relational tables
+
+## 1) Offline cache + revalidation
+
+If you mostly need **fast reads** and can tolerate “offline = read-only”, you may not need replication at all.
+
+Common patterns:
+
+- Persisted HTTP/GraphQL cache (e.g. TanStack Query, Apollo)
+- Background revalidation and optimistic UI
+- Server push (WebSocket/SSE) to invalidate/refetch
+
+**When this wins**: consumer apps, dashboards, internal tools, or any product where offline writes are not required.
+
+**Where it breaks down**: multi-device “true offline-first” workflows (field work, mobile, intermittent networks) where writes must be durable offline.
+
+## 2) CRDT libraries (embed collaboration)
+
+CRDT libraries are fantastic when you have a **shared document/object graph** and want conflict-free merging.
+
+Examples:
+
+- Yjs
+- Automerge
+
+**When this wins**: multiplayer text/board editors, collaborative canvases, rich presence/cursors, shared documents.
+
+**Where it breaks down**: large relational datasets, complex joins/aggregations, or when you want to keep Postgres as the primary store without reshaping your data model.
+
+## 3) Classic replication stacks
+
+Some systems replicate a database (or a subset) using a built-in replication protocol.
+
+Examples:
+
+- CouchDB + PouchDB (document replication)
+
+**When this wins**: you’re happy with a document model and want a battle-tested replication story.
+
+**Where it breaks down**: if you need SQL/relational modeling, or you need fine-grained, app-defined authorization semantics tied to an existing Postgres schema.
+
+## 4) “Local-first backend platforms”
+
+Some platforms give you a managed backend + SDK with offline persistence, and you trade control for convenience.
+
+**When this wins**: you want a single vendor to own auth, storage, sync, and scaling.
+
+**Where it breaks down**: strict self-hosting requirements, custom authorization logic, or wanting to keep your existing Postgres schema untouched.
+
+## How to decide (quick questions)
+
+- Do you need **offline writes** that are durable across app restarts?
+- Is your data best represented as **relational tables** or **documents/objects**?
+- Do you need **multi-user sync** across devices, or just a local cache?
+- Where must **authorization** be enforced — and how custom is it?
+- Do you want **automatic merge**, or do you need domain-specific conflict rules?
+
+If you answer “yes” to offline writes + multi-user + custom auth, you’re usually in “sync framework” territory.
+
+## Sources
+
+- [Yjs](https://yjs.dev)
+- [Automerge](https://automerge.org)
+- [CouchDB](https://couchdb.apache.org)
+- [PouchDB](https://pouchdb.com)

@@ -1,0 +1,8 @@
+appId: dev.syncular.tests.expoapp
+---
+- launchApp
+- assertVisible: "Syncular Expo Tests"
+- tapOn:
+    id: "run-db-smoke"
+- assertVisible: "DB_SMOKE_OK"
+

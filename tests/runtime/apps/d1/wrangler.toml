@@ -1,0 +1,9 @@
+name = "runtime-d1-test"
+main = "worker.ts"
+compatibility_date = "2026-02-06"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "test-db"
+database_id = "local-test-id"

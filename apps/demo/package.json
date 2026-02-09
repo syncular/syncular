@@ -1,0 +1,47 @@
+{
+  "name": "@syncular/demo-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/server/index.ts",
+    "build": "rm -rf dist && bun run build.ts",
+    "pub": "bun scripts/publish.ts",
+    "generate:types": "bun scripts/generate-types.ts"
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/client-plugin-encryption": "workspace:*",
+    "@syncular/client-react": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-d1": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-wa-sqlite": "workspace:*",
+    "@syncular/migrations": "workspace:*",
+    "@syncular/observability-sentry": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-cloudflare": "workspace:*",
+    "@syncular/server-dialect-postgres": "workspace:*",
+    "@syncular/server-dialect-sqlite": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/transport-ws": "workspace:*",
+    "@syncular/ui": "workspace:*",
+    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-router": "^1.159.5",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@syncular/console-app": "workspace:*",
+    "hono": "*",
+    "kysely": "*",
+    "@cloudflare/workers-types": "*",
+    "@syncular/typegen": "workspace:*",
+    "@types/bun": "latest",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "bun-plugin-tailwind": "^0.1.2",
+    "tailwindcss": "^4",
+    "wrangler": "*"
+  }
+}

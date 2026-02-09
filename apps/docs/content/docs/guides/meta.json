@@ -1,0 +1,30 @@
+{
+  "root": true,
+  "title": "Guides",
+  "pages": [
+    "index",
+    "server-setup",
+    "client-setup",
+    "table-handlers",
+    "---Features---",
+    "auth",
+    "data-modeling",
+    "external-changes",
+    "realtime",
+    "presence",
+    "blob-storage",
+    "encryption",
+    "---Production---",
+    "error-handling",
+    "migrations",
+    "performance",
+    "deployment",
+    "observability",
+    "testing",
+    "troubleshooting",
+    "---Advanced---",
+    "relay",
+    "proxy",
+    "operations"
+  ]
+}
