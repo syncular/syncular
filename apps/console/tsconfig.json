@@ -1,4 +1,5 @@
 {
+  "extends": "@syncular/config/tsconfig.bun.json",
   "compilerOptions": {
     // Environment setup & latest features
     "lib": ["ESNext", "DOM"],

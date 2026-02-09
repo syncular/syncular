@@ -8,6 +8,7 @@
   "storybook": true,
   "tailwind": true,
   "playwright": true,
+  "typescript": true,
   "ignore": [
     ".claude/**",
     "**/generated/**",
@@ -18,11 +19,7 @@
     "**/dist/**"
   ],
   "ignoreDependencies": [
-    "@cloudflare/workers-types",
     "@syncular/config",
-    "@syncular/dialect-d1",
-    "@syncular/server-cloudflare",
-    "@syncular/server-dialect-sqlite",
     "@syncular/typegen",
     "@webgpu/types",
     "@happy-dom/global-registrator",
@@ -32,7 +29,7 @@
     "tsx",
     "wrangler"
   ],
-  "ignoreBinaries": ["dist-server/server.js", "k6", "maestro", "tsx", "wrangler"],
+  "ignoreBinaries": ["k6", "maestro", "tsx", "wrangler"],
   "workspaces": {
     ".": {
       "entry": [
