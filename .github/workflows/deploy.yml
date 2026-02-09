@@ -22,12 +22,6 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
       - uses: ./.github/actions/setup-environment
 
-      - uses: actions/cache@v4
-        with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-${{ github.event.workflow_run.head_sha }}
-          restore-keys: turbo-${{ runner.os }}-
-
       - run: bun build
 
       - name: Build docs
@@ -72,12 +66,6 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
       - uses: ./.github/actions/setup-environment
 
-      - uses: actions/cache@v4
-        with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-${{ github.event.workflow_run.head_sha }}
-          restore-keys: turbo-${{ runner.os }}-
-
       - run: bun build
 
       - name: Build console
@@ -121,12 +109,6 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
       - uses: ./.github/actions/setup-environment
-
-      - uses: actions/cache@v4
-        with:
-          path: .turbo
-          key: turbo-${{ runner.os }}-${{ github.event.workflow_run.head_sha }}
-          restore-keys: turbo-${{ runner.os }}-
 
       - run: bun build
 
