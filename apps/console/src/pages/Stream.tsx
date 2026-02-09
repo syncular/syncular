@@ -12,12 +12,8 @@ import {
   StreamLog,
 } from '@syncular/ui';
 import { useMemo, useState } from 'react';
-import { useCommits } from '@/hooks/useConsoleApi';
-import {
-  useClearEventsMutation,
-  useRequestEvents,
-} from '@/hooks/useRequestEvents';
-import type { ConsoleCommitListItem, ConsoleRequestEvent } from '@/lib/types';
+import { useClearEventsMutation, useCommits, useRequestEvents } from '../hooks';
+import type { ConsoleCommitListItem, ConsoleRequestEvent } from '../lib/types';
 
 type ViewMode = 'all' | 'commits' | 'events';
 type EventTypeFilter = 'all' | 'push' | 'pull';

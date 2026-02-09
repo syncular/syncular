@@ -16,7 +16,7 @@ import {
 } from '@syncular/ui/demo';
 import type { Kysely } from 'kysely';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createSqliteClient } from '@/client/db-sqlite';
+import { createSqliteClient } from '../client/db-sqlite';
 import { migrateClientDb } from '../client/migrate';
 import {
   SyncProvider,

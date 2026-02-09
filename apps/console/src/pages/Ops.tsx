@@ -19,11 +19,11 @@ import { type ReactNode, useState } from 'react';
 import {
   useCompactMutation,
   useHandlers,
+  useLocalStorage,
   usePruneMutation,
   usePrunePreview,
   useStats,
-} from '@/hooks/useConsoleApi';
-import { useLocalStorage } from '@/hooks/useLocalStorage';
+} from '../hooks';
 
 interface AlertConfig {
   latencyThresholdMs: number;

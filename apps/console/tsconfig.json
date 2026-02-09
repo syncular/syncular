@@ -23,11 +23,6 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
 
-    // Path aliases - resolved by Bun bundler
-    "paths": {
-      "@/*": ["./src/*"]
-    },
-
     // Some stricter flags (disabled by default)
     "noUnusedLocals": false,
     "noUnusedParameters": false,

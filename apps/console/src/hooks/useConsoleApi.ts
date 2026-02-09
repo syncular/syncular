@@ -15,7 +15,7 @@ import type {
   TimeseriesInterval,
   TimeseriesRange,
   TimeseriesStatsResponse,
-} from '@/lib/types';
+} from '../lib/types';
 import { useApiClient, useConnection } from './ConnectionContext';
 
 const queryKeys = {

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRouter, RouterProvider } from '@tanstack/react-router';
 import { ConnectionProvider } from './hooks/ConnectionContext';
-import { routeTree } from './routeTree.gen';
+import { routeTree } from './routeTree';
 
 function getInjectedBasepath(): string {
   if (typeof document === 'undefined') return '/';

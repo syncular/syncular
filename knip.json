@@ -59,29 +59,16 @@
         "src/main.tsx!",
         "src/server/index.ts!",
         "src/server/server.ts!",
-        "scripts/**/*.ts!",
         "src/cf/index.ts!",
-        "plugins/**/*.ts!"
-      ],
-      "ignore": [
-        "src/cf/**",
-        "plugins/**",
-        "src/server/server.ts"
+        "plugins/*.ts",
+        "scripts/*.ts"
       ]
     },
     "apps/console": {
       "entry": [
         "src/main.tsx!",
-        "plugins/**/*.ts!"
-      ],
-      "ignore": [
-        "plugins/**"
-      ],
-      "paths": {
-        "@/*": [
-          "src/*"
-        ]
-      }
+        "plugins/*.ts"
+      ]
     },
     "tests/shared": {
       "entry": ["**/*.ts"]
@@ -113,7 +100,7 @@
         "source.config.ts",
         "next.config.mjs",
         "open-next.config.ts",
-        "scripts/**/*.ts"
+        "scripts/*.ts"
       ]
     }
   }

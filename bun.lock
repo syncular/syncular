@@ -64,6 +64,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20260207.0",
+        "@syncular/console-app": "workspace:*",
         "@syncular/typegen": "workspace:*",
         "@types/bun": "latest",
         "@types/react": "^19",

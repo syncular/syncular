@@ -3,7 +3,7 @@
  */
 
 import { createContext } from 'react';
-import type { TimeseriesRange } from '@/lib/types';
+import type { TimeseriesRange } from '../lib/types';
 import { useLocalStorage } from './useLocalStorage';
 
 interface TimeRangeContextValue {

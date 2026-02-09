@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LiveEvent } from '@/lib/types';
+import type { LiveEvent } from '../lib/types';
 import { useConnection } from './ConnectionContext';
 
 interface UseLiveEventsOptions {

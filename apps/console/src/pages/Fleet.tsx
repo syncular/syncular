@@ -14,11 +14,7 @@ import {
   SyncHorizon,
 } from '@syncular/ui';
 import { useState } from 'react';
-import {
-  useClients,
-  useEvictClientMutation,
-  useStats,
-} from '@/hooks/useConsoleApi';
+import { useClients, useEvictClientMutation, useStats } from '../hooks';
 
 const PAGE_SIZE = 20;
 

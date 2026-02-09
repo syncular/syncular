@@ -20,16 +20,17 @@ import {
 import { useNavigate } from '@tanstack/react-router';
 import { useMemo, useState } from 'react';
 import {
+  TimeRangeContext,
   useClients,
   useCommits,
   useLatencyStats,
+  useLiveEvents,
+  useLocalStorage,
   useStats,
+  useTimeRangeState,
   useTimeseriesStats,
-} from '@/hooks/useConsoleApi';
-import { useLiveEvents } from '@/hooks/useLiveEvents';
-import { useLocalStorage } from '@/hooks/useLocalStorage';
-import { TimeRangeContext, useTimeRangeState } from '@/hooks/useTimeRange';
-import { adaptConsoleClientsToTopology } from '@/lib/topology';
+} from '../hooks';
+import { adaptConsoleClientsToTopology } from '../lib/topology';
 
 interface AlertConfig {
   enabled: boolean;
@@ -61,8 +62,22 @@ function formatTime(iso: string): string {
   return `${Math.floor(diffS / 86400)}d ago`;
 }
 
+function resolveStreamHref(pathname: string): string {
+  const normalized =
+    pathname.length > 1 && pathname.endsWith('/')
+      ? pathname.slice(0, -1)
+      : pathname;
+  return normalized === '/console' || normalized.startsWith('/console/')
+    ? '/console/stream'
+    : '/stream';
+}
+
 function CommandInner() {
   const navigate = useNavigate();
+  const streamHref = useMemo(() => {
+    if (typeof window === 'undefined') return '/stream';
+    return resolveStreamHref(window.location.pathname);
+  }, []);
   const timeRangeState = useTimeRangeState();
   const { range } = timeRangeState;
 
@@ -294,7 +309,7 @@ function CommandInner() {
             <div className="border-r border-border">
               <CommitTable
                 commits={commitEntries}
-                onViewAll={() => navigate({ to: '/stream' })}
+                onViewAll={() => navigate({ href: streamHref })}
               />
             </div>
           </div>

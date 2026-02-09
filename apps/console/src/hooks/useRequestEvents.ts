@@ -4,7 +4,7 @@
 
 import { unwrap } from '@syncular/transport-http';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ConsoleRequestEvent, PaginatedResponse } from '@/lib/types';
+import type { ConsoleRequestEvent, PaginatedResponse } from '../lib/types';
 import { useApiClient } from './ConnectionContext';
 
 const queryKeys = {

@@ -9,23 +9,59 @@ import {
 } from '@syncular/ui';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { Settings } from 'lucide-react';
+import { useMemo } from 'react';
 import { useConnection } from './hooks/ConnectionContext';
 import { useStats } from './hooks/useConsoleApi';
 
-const navItems = [
-  { id: '/console', label: 'Command' },
-  { id: '/console/stream', label: 'Stream' },
-  { id: '/console/fleet', label: 'Fleet' },
-  { id: '/console/ops', label: 'Ops' },
-  { id: '/console/config', label: 'Config' },
-] as const;
+interface ConsoleLayoutProps {
+  basePath?: string;
+}
 
-export function ConsoleLayout() {
+type ConsoleNavSuffix = '' | '/stream' | '/fleet' | '/ops' | '/config';
+
+interface ConsoleNavItem {
+  suffix: ConsoleNavSuffix;
+  label: string;
+}
+
+const NAV_ITEMS: ConsoleNavItem[] = [
+  { suffix: '', label: 'Command' },
+  { suffix: '/stream', label: 'Stream' },
+  { suffix: '/fleet', label: 'Fleet' },
+  { suffix: '/ops', label: 'Ops' },
+  { suffix: '/config', label: 'Config' },
+];
+
+function normalizeBasePath(basePath?: string): string {
+  const value = basePath?.trim() ?? '';
+  if (!value || value === '/') return '';
+  const withSlash = value.startsWith('/') ? value : `/${value}`;
+  return withSlash.replace(/\/+$/g, '');
+}
+
+function resolvePath(basePath: string, suffix: ConsoleNavSuffix): string {
+  if (!basePath) return suffix || '/';
+  return suffix ? `${basePath}${suffix}` : basePath;
+}
+
+export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
   const { isConnected, isConnecting, config } = useConnection();
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
   const { data: stats } = useStats();
+
+  const normalizedBasePath = normalizeBasePath(basePath);
+  const resolvedNavItems = useMemo(
+    () =>
+      NAV_ITEMS.map((item) => ({
+        ...item,
+        id: resolvePath(normalizedBasePath, item.suffix),
+      })),
+    [normalizedBasePath]
+  );
+  const commandPath = resolvePath(normalizedBasePath, '');
+  const configPath = resolvePath(normalizedBasePath, '/config');
 
   const connectionState = isConnecting
     ? 'connecting'
@@ -36,11 +72,11 @@ export function ConsoleLayout() {
         : 'not-configured';
 
   const activeId =
-    navItems.find((item) =>
-      item.id === '/console'
-        ? pathname === '/console' || pathname === '/console/'
+    resolvedNavItems.find((item) =>
+      item.suffix === ''
+        ? pathname === commandPath || pathname === `${commandPath}/`
         : pathname.startsWith(item.id)
-    )?.id ?? '/console';
+    )?.id ?? commandPath;
 
   const bottomMetrics = stats
     ? [
@@ -58,13 +94,13 @@ export function ConsoleLayout() {
     <div className="h-screen bg-background text-foreground flex flex-col">
       <TopNavigation
         brand={
-          <Link to="/console">
+          <Link to={commandPath}>
             <SyncularBrand label="console" />
           </Link>
         }
         center={
           <NavPillGroup
-            items={navItems}
+            items={resolvedNavItems}
             activeId={activeId}
             renderItem={(item, { active }) => (
               <Link key={item.id} to={item.id}>
@@ -76,11 +112,9 @@ export function ConsoleLayout() {
         right={
           <div className="flex items-center gap-2">
             <ConnectionStatusBadge state={connectionState} />
-            <Link to="/console/config">
+            <Link to={configPath}>
               <Button
-                variant={
-                  pathname.startsWith('/console/config') ? 'secondary' : 'ghost'
-                }
+                variant={pathname === configPath ? 'secondary' : 'ghost'}
                 size="icon"
               >
                 <Settings />
@@ -92,12 +126,12 @@ export function ConsoleLayout() {
 
       <main className="flex-1 overflow-auto pt-[42px] pb-[32px]">
         <div className="min-h-full">
-          {isConnected || pathname.startsWith('/console/config') ? (
+          {isConnected || pathname === configPath ? (
             <div key={pathname} style={{ animation: 'pageIn 0.3s ease-out' }}>
               <Outlet />
             </div>
           ) : (
-            <NotConnectedFallback />
+            <NotConnectedFallback configPath={configPath} />
           )}
         </div>
       </main>
@@ -109,13 +143,13 @@ export function ConsoleLayout() {
   );
 }
 
-function NotConnectedFallback() {
+function NotConnectedFallback({ configPath }: { configPath: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-16">
       <p className="mb-4 text-foreground-muted">
         Not connected to a @syncular server
       </p>
-      <Link to="/console/config">
+      <Link to={configPath}>
         <Button variant="link">Configure connection</Button>
       </Link>
     </div>

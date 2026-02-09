@@ -1,5 +1,5 @@
+import { Ops } from '@syncular/console-app';
 import { createRoute } from '@tanstack/react-router';
-import { Ops } from '../../console/pages/Ops';
 import { Route as consoleRoute } from '../console';
 
 export const Route = createRoute({

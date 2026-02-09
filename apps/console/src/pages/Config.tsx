@@ -29,16 +29,14 @@ import {
 } from '@syncular/ui';
 import { useEffect, useState } from 'react';
 import {
-  useApiKeys,
-  useCreateApiKeyMutation,
-  useRevokeApiKeyMutation,
-  useRotateApiKeyMutation,
-} from '@/hooks/useConsoleApi';
-import {
   PAGE_SIZE_OPTIONS,
   REFRESH_INTERVAL_OPTIONS,
+  useApiKeys,
+  useCreateApiKeyMutation,
   usePreferences,
-} from '@/hooks/usePreferences';
+  useRevokeApiKeyMutation,
+  useRotateApiKeyMutation,
+} from '../hooks';
 import { useConnection } from '../hooks/ConnectionContext';
 
 export function Config() {

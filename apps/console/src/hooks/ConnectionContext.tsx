@@ -16,7 +16,7 @@ import {
   type ConnectionConfig,
   createConsoleClient,
   testConnection,
-} from '@/lib/api';
+} from '../lib/api';
 import { useLocalStorage } from './useLocalStorage';
 
 interface ConnectionState {
@@ -38,9 +38,17 @@ interface ConnectionContextValue {
   clearError: () => void;
 }
 
+interface ConnectionProviderProps {
+  children: ReactNode;
+  defaultConfig?: ConnectionConfig | null;
+}
+
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
 
-export function ConnectionProvider({ children }: { children: ReactNode }) {
+export function ConnectionProvider({
+  children,
+  defaultConfig = null,
+}: ConnectionProviderProps) {
   const [config, setConfigStorage] = useLocalStorage<ConnectionConfig | null>(
     'sync-console-connection',
     null
@@ -53,7 +61,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     client: null,
   });
 
-  // Handle URL query params on mount
+  // Resolve initial config: URL params -> saved config -> provided defaults -> env
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -66,13 +74,25 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    if (config?.serverUrl?.trim() && config.token?.trim()) {
+      return;
+    }
+
+    if (defaultConfig?.serverUrl?.trim() && defaultConfig.token?.trim()) {
+      setConfigStorage({
+        serverUrl: defaultConfig.serverUrl.trim(),
+        token: defaultConfig.token.trim(),
+      });
+      return;
+    }
+
     const envServerUrl = process.env.SYNCULAR_SERVER_URL;
     const envToken = process.env.SYNCULAR_CONSOLE_TOKEN;
 
-    if (!config && envServerUrl?.trim() && envToken?.trim()) {
+    if (envServerUrl?.trim() && envToken?.trim()) {
       setConfigStorage({ serverUrl: envServerUrl, token: envToken });
     }
-  }, [setConfigStorage, config]);
+  }, [setConfigStorage, config, defaultConfig]);
 
   const connect = useCallback(
     async (overrideConfig?: ConnectionConfig) => {

@@ -36,6 +36,7 @@
     "react-dom": "^19"
   },
   "devDependencies": {
+    "@syncular/console-app": "workspace:*",
     "hono": "*",
     "kysely": "*",
     "@cloudflare/workers-types": "^4.20260207.0",
