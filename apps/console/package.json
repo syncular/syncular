@@ -4,13 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "build:portable": "vite build --base ./",
-    "build:spa": "vite build --base /",
-    "build:embedded": "vite build --base /console/",
-    "preview": "vite preview",
-    "deploy": "SYNCULAR_CONSOLE_BASE=/ vite build && wrangler deploy",
+    "dev": "bun ./index.html",
+    "build": "bun build ./index.html --outdir=dist --minify",
+    "build:portable": "bun build ./index.html --outdir=dist --minify --public-path=./",
+    "build:spa": "bun build ./index.html --outdir=dist --minify --public-path=/",
+    "build:embedded": "bun build ./index.html --outdir=dist --minify --public-path=/console/",
+    "deploy": "bun build ./index.html --outdir=dist --minify --public-path=/ && wrangler deploy",
     "tsgo": "tsgo --noEmit"
   },
   "dependencies": {
@@ -24,12 +23,10 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
-    "@tailwindcss/vite": "^4.1.18",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@vitejs/plugin-react": "^5",
+    "bun-plugin-tailwind": "^0.1.2",
     "tailwindcss": "^4.1.18",
-    "vite": "^7",
     "wrangler": "^4.63.0"
   }
 }

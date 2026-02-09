@@ -22,7 +22,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
 
-    // Path aliases - resolved by Vite
+    // Path aliases - resolved by Bun bundler
     "paths": {
       "@/*": ["./src/*"]
     },

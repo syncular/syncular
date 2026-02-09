@@ -66,8 +66,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const envServerUrl = import.meta.env.VITE_SYNCULAR_SERVER_URL;
-    const envToken = import.meta.env.VITE_SYNCULAR_CONSOLE_TOKEN;
+    const envServerUrl = process.env.SYNCULAR_SERVER_URL;
+    const envToken = process.env.SYNCULAR_CONSOLE_TOKEN;
 
     if (!config && envServerUrl?.trim() && envToken?.trim()) {
       setConfigStorage({ serverUrl: envServerUrl, token: envToken });

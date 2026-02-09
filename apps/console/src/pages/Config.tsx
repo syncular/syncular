@@ -55,8 +55,8 @@ function ConnectionTab() {
   const { config, disconnect, isConnected, error } = useConnection();
 
   const defaultServerUrl =
-    import.meta.env.VITE_SYNCULAR_SERVER_URL ?? 'http://localhost:3001/api';
-  const defaultToken = import.meta.env.VITE_SYNCULAR_CONSOLE_TOKEN ?? '';
+    process.env.SYNCULAR_SERVER_URL ?? 'http://localhost:3001/api';
+  const defaultToken = process.env.SYNCULAR_CONSOLE_TOKEN ?? '';
 
   const [serverUrl, setServerUrl] = useState(
     config?.serverUrl ?? defaultServerUrl

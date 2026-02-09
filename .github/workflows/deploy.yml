@@ -70,7 +70,7 @@ jobs:
 
       - name: Build console
         working-directory: apps/console
-        run: SYNCULAR_CONSOLE_BASE=/ bunx vite build
+        run: bun build ./index.html --outdir=dist --minify --public-path=/
 
       - name: Deploy (production)
         if: github.event.workflow_run.event == 'push'
