@@ -393,17 +393,6 @@
         "hono": "^4.0.0",
       },
     },
-    "packages/server-console": {
-      "name": "@syncular/server-console",
-      "version": "0.0.1",
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "hono": "*",
-      },
-      "peerDependencies": {
-        "hono": "^4.0.0",
-      },
-    },
     "packages/server-dialect-postgres": {
       "name": "@syncular/server-dialect-postgres",
       "version": "0.0.1",
@@ -481,7 +470,6 @@
         "@syncular/relay": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-cloudflare": "workspace:*",
-        "@syncular/server-console": "workspace:*",
         "@syncular/server-dialect-postgres": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
         "@syncular/server-hono": "workspace:*",
@@ -1725,8 +1713,6 @@
     "@syncular/server": ["@syncular/server@workspace:packages/server"],
 
     "@syncular/server-cloudflare": ["@syncular/server-cloudflare@workspace:packages/server-cloudflare"],
-
-    "@syncular/server-console": ["@syncular/server-console@workspace:packages/server-console"],
 
     "@syncular/server-dialect-postgres": ["@syncular/server-dialect-postgres@workspace:packages/server-dialect-postgres"],
 
