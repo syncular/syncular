@@ -30,21 +30,11 @@
       "@syncular/typegen",
       "@syncular/dialect-expo-sqlite",
       "@syncular/dialect-react-native-nitro-sqlite",
-      "@syncular/server-console",
       "syncular"
     ]
   ],
   "linked": [],
   "access": "public",
   "baseBranch": "main",
-  "updateInternalDependencies": "patch",
-  "ignore": [
-    "@syncular/config",
-    "@syncular/console",
-    "@syncular/demo",
-    "syncular-docs",
-    "@syncular/e2e",
-    "@syncular/tests",
-    "@syncular/ui"
-  ]
+  "updateInternalDependencies": "patch"
 }
