@@ -19,55 +19,39 @@
   ],
   "ignoreDependencies": [
     "@syncular/config",
-    "@syncular/typegen",
-    "@webgpu/types",
-    "@happy-dom/global-registrator",
     "happy-dom",
-    "bun-plugin-tailwind",
     "tailwindcss",
-    "tsx",
     "wrangler"
   ],
-  "ignoreBinaries": ["k6", "maestro", "tsx", "wrangler"],
+  "ignoreBinaries": ["k6", "maestro"],
   "workspaces": {
-    ".": {
-      "entry": [
-        "env.ts"
-      ]
-    },
     "packages/core": {
       "entry": [
-        "src/index.ts",
         "src/**/*.test.ts"
       ]
     },
     "packages/client-react": {
       "entry": [
-        "src/index.ts",
         "src/**/*.test.ts",
         "src/**/*.test.tsx"
       ]
     },
     "packages/server-hono": {
       "entry": [
-        "src/index.ts",
         "src/**/*.test.ts"
       ]
     },
     "apps/demo": {
       "entry": [
         "src/main.tsx!",
-        "src/server/index.ts!",
         "src/server/server.ts!",
         "src/cf/index.ts!",
-        "plugins/*.ts",
         "scripts/*.ts"
       ]
     },
     "apps/console": {
       "entry": [
-        "src/main.tsx!",
-        "plugins/*.ts"
+        "src/main.tsx!"
       ]
     },
     "tests/shared": {
@@ -83,7 +67,7 @@
       "entry": ["**/*.ts"]
     },
     "tests/load": {
-      "entry": ["server.ts", "lib/*.js", "scripts/*.js"],
+      "entry": ["lib/*.js", "scripts/*.js"],
       "ignoreDependencies": ["k6"]
     },
     "tests/integration": {
@@ -98,7 +82,6 @@
     "apps/docs": {
       "entry": [
         "source.config.ts",
-        "next.config.mjs",
         "open-next.config.ts",
         "scripts/*.ts"
       ]

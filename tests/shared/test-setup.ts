@@ -60,7 +60,7 @@ export interface ServerDb extends SyncCoreDb {
 /**
  * Client database schema for tests
  */
-export interface ClientDb extends SyncClientDb {
+interface ClientDb extends SyncClientDb {
   tasks: {
     id: string;
     title: string;
@@ -83,7 +83,7 @@ export interface TestServer {
 /**
  * Test client instance
  */
-export interface TestClient {
+interface TestClient {
   db: Kysely<ClientDb>;
   transport: SyncTransport;
   shapes: ClientTableRegistry<ClientDb>;

@@ -23,13 +23,11 @@
     "@syncular/server-dialect-postgres": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
-    "@syncular/transport-http": "workspace:*",
     "@syncular/transport-ws": "workspace:*",
     "@syncular/migrations": "workspace:*",
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.20",
     "@tanstack/react-router": "^1.159.5",
-    "lucide-react": "^0.563.0",
     "react": "^19",
     "react-dom": "^19"
   },
