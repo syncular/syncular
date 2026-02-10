@@ -8,7 +8,7 @@ on:
 
 env:
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-  CLOUDFLARE_ACCOUNT_ID: 8a26e174dc76465f7517d24e5ab945e2
+  CLOUDFLARE_ACCOUNT_ID: 336bfd20ccb2f56e24ac0afeca6b4837
 
 concurrency:
   group: deploy-${{ github.event.workflow_run.head_branch }}
