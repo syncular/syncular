@@ -46,9 +46,9 @@
     "test:perf": "bun --cwd tests/perf test",
     "test:perf:update-baseline": "bun --cwd tests/perf update-baseline",
     "test:runtime": "bun --cwd tests/runtime test",
-    "test:runtime:browser": "bun --cwd tests/runtime test __tests__/browser.runtime.test.ts",
-    "test:runtime:node": "bun --cwd tests/runtime test __tests__/node.runtime.test.ts",
-    "test:runtime:d1": "SYNCULAR_TEST_RUN_D1=true bun --cwd tests/runtime test __tests__/d1.runtime.test.ts",
+    "test:runtime:browser": "bun --cwd tests/runtime test:browser",
+    "test:runtime:node": "bun --cwd tests/runtime test:node",
+    "test:runtime:d1": "bun --cwd tests/runtime test:d1",
     "test:all": "bun test && bun test:runtime && bun test:perf"
   },
   "devDependencies": {
