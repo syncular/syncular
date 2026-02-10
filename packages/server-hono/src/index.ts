@@ -9,13 +9,17 @@
 export * from './api-key-auth';
 
 // Blob routes
-export { createBlobRoutes } from './blobs';
+export { type CreateBlobRoutesOptions, createBlobRoutes } from './blobs';
 
 // Console
 export * from './console';
 
 // Simplified server factory
-export { createSyncServer } from './create-server';
+export {
+  createSyncServer,
+  type SyncServerOptions,
+  type SyncServerResult,
+} from './create-server';
 
 // OpenAPI utilities
 export * from './openapi';
@@ -27,7 +31,12 @@ export * from './proxy';
 export * from './rate-limit';
 
 // Route types and factory
-export { createSyncRoutes } from './routes';
+export {
+  type CreateSyncRoutesOptions,
+  createSyncRoutes,
+  getSyncRealtimeUnsubscribe,
+  getSyncWebSocketConnectionManager,
+} from './routes';
 
 // WebSocket helpers for realtime sync
 export * from './ws';

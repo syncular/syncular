@@ -23,68 +23,153 @@
     "tailwindcss",
     "wrangler"
   ],
-  "ignoreBinaries": ["k6", "maestro"],
+  "ignoreBinaries": ["k6", "maestro", "expo"],
   "workspaces": {
+    ".": {
+      "entry": ["scripts/*.ts"]
+    },
     "packages/core": {
-      "entry": [
-        "src/**/*.test.ts"
-      ]
+      "includeEntryExports": false,
+      "entry": ["src/**/*.test.ts"]
+    },
+    "packages/client": {
+      "includeEntryExports": false
     },
     "packages/client-react": {
+      "includeEntryExports": false,
       "entry": [
         "src/**/*.test.ts",
-        "src/**/*.test.tsx"
+        "src/**/*.test.tsx",
+        "src/__tests__/setup.ts",
+        "src/__tests__/test-utils.ts",
+        "src/__tests__/integration/test-setup.ts"
       ]
+    },
+    "packages/client-plugin-encryption": {
+      "includeEntryExports": false
+    },
+    "packages/server": {
+      "includeEntryExports": false
     },
     "packages/server-hono": {
-      "entry": [
-        "src/**/*.test.ts"
-      ]
+      "includeEntryExports": false,
+      "entry": ["src/**/*.test.ts", "scripts/*.ts"]
+    },
+    "packages/server-cloudflare": {
+      "includeEntryExports": false
+    },
+    "packages/server-dialect-sqlite": {
+      "includeEntryExports": false
+    },
+    "packages/server-dialect-postgres": {
+      "includeEntryExports": false
+    },
+    "packages/transport-http": {
+      "includeEntryExports": false
+    },
+    "packages/transport-ws": {
+      "includeEntryExports": false
+    },
+    "packages/relay": {
+      "includeEntryExports": false
+    },
+    "packages/migrations": {
+      "includeEntryExports": false
+    },
+    "packages/typegen": {
+      "includeEntryExports": false
+    },
+    "packages/syncular": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-bun-sqlite": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-better-sqlite3": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-pglite": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-sqlite3": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-neon": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-libsql": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-d1": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-wa-sqlite": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-expo-sqlite": {
+      "includeEntryExports": false
+    },
+    "packages/dialect-react-native-nitro-sqlite": {
+      "includeEntryExports": false
+    },
+    "packages/ui": {
+      "includeEntryExports": false
     },
     "apps/demo": {
+      "includeEntryExports": false,
       "entry": [
         "src/main.tsx!",
         "src/server/server.ts!",
+        "src/server/index.ts!",
         "src/cf/index.ts!",
+        "build.ts",
         "scripts/*.ts"
       ]
     },
     "apps/console": {
+      "entry": ["src/main.tsx!", "build.ts"]
+    },
+    "apps/docs": {
+      "includeEntryExports": false,
       "entry": [
-        "src/main.tsx!"
+        "source.config.ts",
+        "open-next.config.ts",
+        "scripts/*.ts"
       ]
     },
     "tests/shared": {
+      "includeEntryExports": false,
       "entry": ["**/*.ts"]
     },
     "tests/unit": {
       "entry": ["**/*.test.ts"]
     },
     "tests/dialects": {
+      "includeEntryExports": false,
       "entry": ["**/*.ts"]
     },
     "tests/perf": {
       "entry": ["**/*.ts"]
     },
     "tests/load": {
-      "entry": ["lib/*.js", "scripts/*.js"],
+      "includeEntryExports": false,
+      "entry": ["lib/*.js", "scripts/*.js", "server.ts"],
       "ignoreDependencies": ["k6"]
     },
     "tests/integration": {
+      "includeEntryExports": false,
       "entry": ["**/*.ts"]
     },
     "tests/runtime": {
+      "includeEntryExports": false,
+      "entry": ["**/*.ts"]
+    },
+    "tests/typegen": {
+      "includeEntryExports": false,
       "entry": ["**/*.ts"]
     },
     "tests/expo-app": {
       "entry": ["**/*.ts", "**/*.tsx"]
-    },
-    "apps/docs": {
-      "entry": [
-        "source.config.ts",
-        "open-next.config.ts",
-        "scripts/*.ts"
-      ]
     }
   }
 }

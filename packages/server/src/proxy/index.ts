@@ -6,11 +6,12 @@
 
 // Query execution
 export {
+  type ExecuteProxyQueryArgs,
   type ExecuteProxyQueryResult,
   executeProxyQuery,
 } from './handler';
 // Mutation detection
-export { detectMutation } from './mutation-detector';
+export { type DetectedMutation, detectMutation } from './mutation-detector';
 // Oplog creation
 // Registry
 export { ProxyTableRegistry } from './registry';

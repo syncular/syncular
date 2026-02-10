@@ -78,19 +78,3 @@ export function createSyncTimer(): () => number {
   const start = performance.now();
   return () => Math.round(performance.now() - start);
 }
-
-/**
- * Create a scoped logger that automatically adds context to all events.
- *
- * @example
- * const log = createScopedLogger({ userId: 'user123', shape: 'teams' });
- * log({ event: 'pull_start' }); // Includes userId and shape
- */
-export function createScopedLogger(
-  context: Record<string, unknown>,
-  baseLogger: SyncLogger = logSyncEvent
-): SyncLogger {
-  return (event: SyncLogEvent) => {
-    baseLogger({ ...context, ...event });
-  };
-}

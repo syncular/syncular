@@ -146,17 +146,6 @@ export const ConsoleRequestEventSchema = z.object({
 
 export type ConsoleRequestEvent = z.infer<typeof ConsoleRequestEventSchema>;
 
-const ConsoleRequestEventFiltersSchema = z.object({
-  eventType: z.enum(['push', 'pull']).optional(),
-  actorId: z.string().optional(),
-  clientId: z.string().optional(),
-  outcome: z.string().optional(),
-});
-
-export type ConsoleRequestEventFilters = z.infer<
-  typeof ConsoleRequestEventFiltersSchema
->;
-
 export const ConsoleClearEventsResultSchema = z.object({
   deletedCount: z.number().int(),
 });
@@ -203,10 +192,6 @@ export const ConsoleApiKeyCreateRequestSchema = z.object({
   expiresInDays: z.number().int().positive().optional(),
 });
 
-export type ConsoleApiKeyCreateRequest = z.infer<
-  typeof ConsoleApiKeyCreateRequestSchema
->;
-
 export const ConsoleApiKeyCreateResponseSchema = z.object({
   key: ConsoleApiKeySchema,
   secretKey: z.string(),
@@ -220,10 +205,6 @@ export const ConsoleApiKeyRevokeResponseSchema = z.object({
   revoked: z.boolean(),
 });
 
-export type ConsoleApiKeyRevokeResponse = z.infer<
-  typeof ConsoleApiKeyRevokeResponseSchema
->;
-
 // ============================================================================
 // Pagination Schemas (Console-specific)
 // ============================================================================
@@ -232,10 +213,6 @@ export const ConsolePaginationQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
-
-export type ConsolePaginationQuery = z.infer<
-  typeof ConsolePaginationQuerySchema
->;
 
 export const ConsolePaginatedResponseSchema = <T extends z.ZodTypeAny>(
   itemSchema: T
@@ -259,17 +236,11 @@ export type ConsolePaginatedResponse<T> = {
 // ============================================================================
 
 const TimeseriesIntervalSchema = z.enum(['minute', 'hour', 'day']);
-export type TimeseriesInterval = z.infer<typeof TimeseriesIntervalSchema>;
-
 const TimeseriesRangeSchema = z.enum(['1h', '6h', '24h', '7d', '30d']);
-export type TimeseriesRange = z.infer<typeof TimeseriesRangeSchema>;
-
 export const TimeseriesQuerySchema = z.object({
   interval: TimeseriesIntervalSchema.default('hour'),
   range: TimeseriesRangeSchema.default('24h'),
 });
-
-export type TimeseriesQuery = z.infer<typeof TimeseriesQuerySchema>;
 
 export const TimeseriesBucketSchema = z.object({
   timestamp: z.string(),
@@ -314,8 +285,6 @@ export type LatencyStatsResponse = z.infer<typeof LatencyStatsResponseSchema>;
 export const LatencyQuerySchema = z.object({
   range: TimeseriesRangeSchema.default('24h'),
 });
-
-export type LatencyQuery = z.infer<typeof LatencyQuerySchema>;
 
 // ============================================================================
 // Live Events Schemas (for WebSocket)

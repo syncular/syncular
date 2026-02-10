@@ -83,31 +83,6 @@ import {
   TimeseriesStatsResponseSchema,
 } from './schemas';
 
-// Re-export types for backwards compatibility
-export type {
-  ApiKeyType,
-  ConsoleApiKey,
-  ConsoleChange,
-  ConsoleClearEventsResult,
-  ConsoleClient,
-  ConsoleCommitDetail,
-  ConsoleCommitListItem,
-  ConsoleCompactResult,
-  ConsoleEvictResult,
-  ConsolePaginatedResponse,
-  ConsolePruneEventsResult,
-  ConsolePrunePreview,
-  ConsolePruneResult,
-  ConsoleRequestEvent,
-  ConsoleHandler,
-  LatencyPercentiles,
-  LatencyStatsResponse,
-  LiveEvent,
-  SyncStats,
-  TimeseriesBucket,
-  TimeseriesStatsResponse,
-};
-
 export interface ConsoleAuthResult {
   /** Identifier for the console user (for audit logging). */
   consoleUserId?: string;

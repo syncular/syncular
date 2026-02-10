@@ -196,7 +196,7 @@ class BaseSerializePlugin implements KyselyPlugin {
   }
 }
 
-export interface SerializePluginOptions {
+interface SerializePluginOptions {
   serializer?: Serializer;
   deserializer?: Deserializer;
   skipNodeKind?: Array<RootOperationNode['kind']>;

@@ -24,6 +24,7 @@ export {
   parseBlobHash,
 } from './blobs';
 // Conflict detection utilities
+export { performFieldLevelMerge } from './conflict';
 // Kysely plugin utilities
 export { SerializePlugin } from './kysely-serialize';
 // Logging utilities

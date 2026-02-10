@@ -185,17 +185,3 @@ export function parseBlobHash(hash: string): string | null {
 export function createBlobHash(hexHash: string): string {
   return `sha256:${hexHash.toLowerCase()}`;
 }
-
-/**
- * Check if a value looks like a BlobRef.
- */
-export function isBlobRef(value: unknown): value is BlobRef {
-  if (typeof value !== 'object' || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return (
-    typeof obj.hash === 'string' &&
-    obj.hash.startsWith('sha256:') &&
-    typeof obj.size === 'number' &&
-    typeof obj.mimeType === 'string'
-  );
-}

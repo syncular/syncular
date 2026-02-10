@@ -35,16 +35,6 @@ export interface ProxyResponse {
 }
 
 /**
- * Options for establishing a proxy connection.
- */
-export interface ProxyConnectOptions {
-  /** Actor ID for oplog tracking */
-  actorId: string;
-  /** Client ID for oplog tracking */
-  clientId: string;
-}
-
-/**
  * Handshake message sent when connection is established.
  */
 export interface ProxyHandshake {

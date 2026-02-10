@@ -18,6 +18,7 @@ import type { ClientDb } from './types.generated';
 
 import { defineMigrations } from '@syncular/migrations';
 
+/** @public Used by scripts/generate-types.ts */
 export const clientMigrations = defineMigrations<ClientDb>({
   v1: async (db) => {
     // Create tasks table

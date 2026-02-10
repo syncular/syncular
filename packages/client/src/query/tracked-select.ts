@@ -10,7 +10,7 @@ import type { Kysely } from 'kysely';
 import type { FingerprintCollector } from './FingerprintCollector';
 
 /** Portable type alias for Kysely's selectFrom method signature */
-export type TrackedSelectFrom<DB> = Kysely<DB>['selectFrom'];
+type TrackedSelectFrom<DB> = Kysely<DB>['selectFrom'];
 
 import {
   computeRowFingerprint,

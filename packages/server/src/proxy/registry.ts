@@ -4,7 +4,6 @@
  * Registry for proxy table handlers.
  */
 
-import type { TableRegistry } from '../shapes/registry';
 import type { ProxyTableHandler } from './types';
 
 /**
@@ -54,36 +53,4 @@ export class ProxyTableRegistry {
   getAll(): ProxyTableHandler[] {
     return Array.from(this.handlers.values());
   }
-}
-
-/**
- * Create a ProxyTableRegistry from existing ServerTableHandlers.
- *
- * This helper extracts extractScopes from ServerTableHandlers that define it,
- * avoiding duplication of scope extraction logic.
- *
- * @param tables - The existing table registry
- * @param tableNameMap - Map from table name to database table name
- */
-export function createProxyRegistryFromTables(
-  tables: TableRegistry,
-  tableNameMap: Record<string, string>
-): ProxyTableRegistry {
-  const registry = new ProxyTableRegistry();
-
-  for (const [tableName, dbTableName] of Object.entries(tableNameMap)) {
-    const handler = tables.get(tableName);
-    if (
-      handler &&
-      'extractScopes' in handler &&
-      typeof handler.extractScopes === 'function'
-    ) {
-      registry.register({
-        table: dbTableName,
-        computeScopes: handler.extractScopes,
-      });
-    }
-  }
-
-  return registry;
 }

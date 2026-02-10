@@ -8,6 +8,7 @@
 export type {
   ConsoleAuthResult,
   ConsoleEventEmitter,
+  CreateConsoleRoutesOptions,
 } from './routes';
 export {
   createConsoleEventEmitter,
