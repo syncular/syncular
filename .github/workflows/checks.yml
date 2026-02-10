@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       runtime: ${{ steps.filter.outputs.runtime }}
       expo: ${{ steps.filter.outputs.expo }}
@@ -36,7 +36,7 @@ jobs:
               - 'packages/core/src/kysely-serialize.ts'
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment
@@ -56,7 +56,7 @@ jobs:
 
   perf:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment
@@ -129,7 +129,7 @@ jobs:
   runtime-browser:
     needs: changes
     if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -144,7 +144,7 @@ jobs:
   runtime-node:
     needs: changes
     if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -157,7 +157,7 @@ jobs:
 
   runtime-d1:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
