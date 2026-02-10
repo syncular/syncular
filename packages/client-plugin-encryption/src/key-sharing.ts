@@ -247,7 +247,7 @@ export function base64UrlToKey(encoded: string): Uint8Array {
 // X25519 Keypair Utilities
 // ============================================================================
 
-export interface KeyPair {
+interface KeyPair {
   publicKey: Uint8Array;
   privateKey: Uint8Array;
 }
@@ -284,7 +284,7 @@ export function mnemonicToPublicKey(phrase: string): Uint8Array {
 // Key Wrapping (Envelope Encryption)
 // ============================================================================
 
-export interface WrappedKey {
+interface WrappedKey {
   /** Sender's ephemeral public key (32 bytes) */
   ephemeralPublic: Uint8Array;
   /** Encrypted symmetric key + auth tag (48 bytes) */
@@ -429,7 +429,7 @@ interface PublicKeyShare {
   publicKey: Uint8Array;
 }
 
-export type ParsedShare = SymmetricKeyShare | PublicKeyShare;
+type ParsedShare = SymmetricKeyShare | PublicKeyShare;
 
 /**
  * Encode a symmetric key as a shareable URL.
@@ -495,18 +495,18 @@ export function parseShareUrl(url: string): ParsedShare {
 // JSON Format
 // ============================================================================
 
-export interface SymmetricKeyJson {
+interface SymmetricKeyJson {
   type: 'symmetric';
   kid?: string;
   k: string;
 }
 
-export interface PublicKeyJson {
+interface PublicKeyJson {
   type: 'publicKey';
   pk: string;
 }
 
-export type KeyShareJson = SymmetricKeyJson | PublicKeyJson;
+type KeyShareJson = SymmetricKeyJson | PublicKeyJson;
 
 /**
  * Encode a symmetric key as JSON.

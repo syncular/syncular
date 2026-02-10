@@ -18,7 +18,7 @@ export interface BenchmarkResult {
   memoryDelta?: number; // bytes
 }
 
-export interface BenchmarkOptions {
+interface BenchmarkOptions {
   /** Number of measured iterations (default: 10) */
   iterations?: number;
   /** Number of warmup iterations (default: 2) */

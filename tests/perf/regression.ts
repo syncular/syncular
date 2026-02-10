@@ -18,7 +18,7 @@ export interface Baseline {
   };
 }
 
-export interface RegressionResult {
+interface RegressionResult {
   metric: string;
   baseline: number;
   current: number;

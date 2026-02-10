@@ -18,9 +18,9 @@ export * from './key-sharing';
 
 type EncryptOrDecrypt = 'encrypt' | 'decrypt';
 
-export type FieldDecryptionErrorMode = 'throw' | 'keepCiphertext';
+type FieldDecryptionErrorMode = 'throw' | 'keepCiphertext';
 
-export interface FieldEncryptionRule {
+interface FieldEncryptionRule {
   scope: string;
   /**
    * Optional table selector. Strongly recommended for correctness:
@@ -53,7 +53,7 @@ export interface FieldEncryptionKeys {
   ) => string | Promise<string>;
 }
 
-export interface FieldEncryptionPluginOptions {
+interface FieldEncryptionPluginOptions {
   name?: string;
   rules: FieldEncryptionRule[];
   keys: FieldEncryptionKeys;
@@ -69,7 +69,7 @@ export interface FieldEncryptionPluginOptions {
   envelopePrefix?: string;
 }
 
-export interface RefreshEncryptedFieldsTarget {
+interface RefreshEncryptedFieldsTarget {
   scope: string;
   table: string;
   fields?: string[];
@@ -82,7 +82,7 @@ export interface RefreshEncryptedFieldsResult {
   fieldsUpdated: number;
 }
 
-export interface RefreshEncryptedFieldsOptions<
+interface RefreshEncryptedFieldsOptions<
   DB extends SyncClientDb = SyncClientDb,
 > {
   db: Kysely<DB>;
@@ -679,9 +679,7 @@ function resolveRefreshTargets(args: {
   }));
 }
 
-export async function refreshEncryptedFields<
-  DB extends SyncClientDb = SyncClientDb,
->(
+async function refreshEncryptedFields<DB extends SyncClientDb = SyncClientDb>(
   options: RefreshEncryptedFieldsOptions<DB>
 ): Promise<RefreshEncryptedFieldsResult> {
   const prefix = options.envelopePrefix ?? DEFAULT_PREFIX;

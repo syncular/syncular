@@ -9,7 +9,7 @@ import type { DialectConformanceDb } from './conformance-db';
 import type { ConformanceDialectKind } from './schema';
 import { createConformanceSerializePlugin } from './serialize';
 
-export interface DialectHarness {
+interface DialectHarness {
   name: string;
   kind: ConformanceDialectKind;
   supportsStreaming: boolean;
