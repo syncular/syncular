@@ -1,6 +1,25 @@
 {
   "name": "@syncular/core",
   "version": "0.0.1",
+  "description": "Core protocol types and shared utilities for the Syncular sync framework",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

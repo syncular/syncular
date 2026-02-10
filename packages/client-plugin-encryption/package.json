@@ -1,6 +1,28 @@
 {
   "name": "@syncular/client-plugin-encryption",
   "version": "0.0.1",
+  "description": "End-to-end encryption plugin for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/client-plugin-encryption"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "encryption",
+    "e2ee",
+    "security"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

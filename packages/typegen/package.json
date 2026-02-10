@@ -1,6 +1,27 @@
 {
   "name": "@syncular/typegen",
   "version": "0.0.1",
+  "description": "TypeScript type generator for Syncular schemas",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/typegen"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "codegen",
+    "typescript"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

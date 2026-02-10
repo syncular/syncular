@@ -1,6 +1,28 @@
 {
   "name": "@syncular/dialect-neon",
   "version": "0.0.1",
+  "description": "Neon serverless Postgres dialect for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/dialect-neon"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "neon",
+    "postgres",
+    "serverless"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

@@ -1,6 +1,27 @@
 {
   "name": "@syncular/relay",
   "version": "0.0.1",
+  "description": "Edge relay for Syncular distributed sync",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/relay"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "relay",
+    "edge"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

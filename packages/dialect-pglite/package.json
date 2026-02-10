@@ -1,6 +1,28 @@
 {
   "name": "@syncular/dialect-pglite",
   "version": "0.0.1",
+  "description": "PGLite dialect for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/dialect-pglite"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "pglite",
+    "postgres",
+    "wasm"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

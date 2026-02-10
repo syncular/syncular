@@ -1,6 +1,25 @@
 {
   "name": "@syncular/server",
   "version": "0.0.1",
+  "description": "Server-side sync engine with push/pull, pruning, and snapshot support",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

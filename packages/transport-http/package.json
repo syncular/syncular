@@ -1,6 +1,27 @@
 {
   "name": "@syncular/transport-http",
   "version": "0.0.1",
+  "description": "HTTP transport for Syncular client-server communication",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/transport-http"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "http",
+    "fetch"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

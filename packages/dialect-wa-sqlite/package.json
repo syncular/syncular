@@ -1,6 +1,28 @@
 {
   "name": "@syncular/dialect-wa-sqlite",
   "version": "0.0.1",
+  "description": "WA-SQLite (WASM) dialect for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/dialect-wa-sqlite"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "wa-sqlite",
+    "wasm",
+    "sqlite"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

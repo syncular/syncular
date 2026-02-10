@@ -1,6 +1,27 @@
 {
   "name": "@syncular/server-hono",
   "version": "0.0.1",
+  "description": "Hono adapter for the Syncular server with OpenAPI support",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server-hono"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "hono",
+    "openapi"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

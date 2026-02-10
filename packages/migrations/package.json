@@ -1,6 +1,27 @@
 {
   "name": "@syncular/migrations",
   "version": "0.0.1",
+  "description": "Database migration utilities for Syncular",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/migrations"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "migrations",
+    "database"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

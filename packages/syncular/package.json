@@ -1,6 +1,25 @@
 {
   "name": "syncular",
   "version": "0.0.1",
+  "description": "Offline-first sync framework for TypeScript",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/syncular"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -50,13 +69,6 @@
       "import": {
         "types": "./dist/server-cloudflare.d.ts",
         "default": "./dist/server-cloudflare.js"
-      }
-    },
-    "./server-console": {
-      "bun": "./src/server-console.ts",
-      "import": {
-        "types": "./dist/server-console.d.ts",
-        "default": "./dist/server-console.js"
       }
     },
     "./server-dialect-sqlite": {
@@ -198,7 +210,6 @@
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/server-cloudflare": "workspace:*",
-    "@syncular/server-console": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-dialect-postgres": "workspace:*",
     "@syncular/transport-http": "workspace:*",

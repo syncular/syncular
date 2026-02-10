@@ -1,12 +1,34 @@
 {
   "name": "@syncular/client",
   "version": "0.0.1",
+  "description": "Client-side sync engine with offline-first support, outbox, and conflict resolution",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/client"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"
   },
   "type": "module",
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "exports": {
     ".": {
       "bun": "./src/index.ts",
