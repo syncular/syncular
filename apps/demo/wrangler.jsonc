@@ -14,11 +14,8 @@
 			"invocation_logs": true
 		}
 	},
-	"build": {
-		"command": "bun plugins/build-cf.ts"
-	},
 	"assets": {
-		"directory": "./dist-cf",
+		"directory": "./dist",
 		"not_found_handling": "single-page-application",
 		"run_worker_first": ["/api/*"]
 	},

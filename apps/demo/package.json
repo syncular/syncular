@@ -5,10 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun src/server/index.ts",
-    "dev:cf": "wrangler dev --config wrangler.toml",
-    "build": "bun build index.html --outdir=dist --minify",
-    "deploy:cf": "bun run --cwd .. build && wrangler deploy",
-    "deploy:cf:dry-run": "bun run --cwd .. build && wrangler deploy --dry-run",
+    "build": "rm -rf dist && bun run build.ts",
+    "pub": "bun run build && wrangler deploy",
     "generate:types": "node --import tsx scripts/generate-types.ts",
     "tsgo": "tsgo --noEmit"
   },

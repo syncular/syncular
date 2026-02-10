@@ -1,2 +1,2 @@
 [serve.static]
-plugins = ["bun-plugin-tailwind", "./plugins/workspace-source.ts"]
+plugins = ["bun-plugin-tailwind"]

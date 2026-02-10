@@ -8,11 +8,8 @@
   },
   "scripts": {
     "dev": "bun ./index.html",
-    "build": "bun build ./index.html --outdir=dist --minify",
-    "build:portable": "bun build ./index.html --outdir=dist --minify --public-path=./",
-    "build:spa": "bun build ./index.html --outdir=dist --minify --public-path=/",
-    "build:embedded": "bun build ./index.html --outdir=dist --minify --public-path=/console/",
-    "deploy": "bun build ./index.html --outdir=dist --minify --public-path=/ && wrangler deploy",
+    "build": "rm -rf dist && bun run build.ts",
+    "pub": "bun run build && wrangler deploy",
     "tsgo": "tsgo --noEmit"
   },
   "dependencies": {

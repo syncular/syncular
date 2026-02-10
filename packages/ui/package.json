@@ -12,8 +12,7 @@
     "./observable-universe": "./src/observable-universe/index.ts",
     "./demo": "./src/demo/index.ts",
     "./navigation": "./src/navigation/index.ts",
-    "./styles.css": "./src/styles/styles.css",
-    "./styles/tokens.css": "./src/styles/tokens.css"
+    "./styles.css": "./src/styles/styles.css"
   },
   "peerDependencies": {
     "react": "^19.0.0",

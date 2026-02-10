@@ -15,10 +15,9 @@ import {
 } from '@syncular/dialect-wa-sqlite';
 import type { BunPlugin } from 'bun';
 import tailwind from 'bun-plugin-tailwind';
-import workspaceSource from './workspace-source';
 
-const ROOT = resolve(import.meta.dirname, '..');
-const OUT = join(ROOT, 'dist-cf');
+const ROOT = resolve(import.meta.dirname);
+const OUT = join(ROOT, 'dist');
 
 // 1. Build SPA
 const result = await Bun.build({
@@ -26,7 +25,7 @@ const result = await Bun.build({
   outdir: OUT,
   target: 'browser',
   minify: true,
-  plugins: [tailwind as BunPlugin, workspaceSource],
+  plugins: [tailwind as BunPlugin],
 });
 
 if (!result.success) {

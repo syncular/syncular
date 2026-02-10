@@ -52,14 +52,8 @@ export function Config() {
 function ConnectionTab() {
   const { config, disconnect, isConnected, error } = useConnection();
 
-  const defaultServerUrl =
-    process.env.SYNCULAR_SERVER_URL ?? 'http://localhost:3001/api';
-  const defaultToken = process.env.SYNCULAR_CONSOLE_TOKEN ?? '';
-
-  const [serverUrl, setServerUrl] = useState(
-    config?.serverUrl ?? defaultServerUrl
-  );
-  const [token, setToken] = useState(config?.token ?? defaultToken);
+  const [serverUrl, setServerUrl] = useState(config?.serverUrl);
+  const [token, setToken] = useState(config?.token);
   const [testLatency, setTestLatency] = useState<number | null>(null);
   const [_isTesting, setIsTesting] = useState(false);
 
@@ -108,9 +102,9 @@ function ConnectionTab() {
   return (
     <ConnectionForm
       isConnected={isConnected}
-      serverUrl={serverUrl}
+      serverUrl={serverUrl ?? '/api'}
       onServerUrlChange={setServerUrl}
-      consoleToken={token}
+      consoleToken={token ?? 'demo-token'}
       onConsoleTokenChange={setToken}
       onDisconnect={disconnect}
       onTestConnection={handleTestConnection}

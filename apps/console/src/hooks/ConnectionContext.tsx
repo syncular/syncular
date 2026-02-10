@@ -85,13 +85,6 @@ export function ConnectionProvider({
       });
       return;
     }
-
-    const envServerUrl = process.env.SYNCULAR_SERVER_URL;
-    const envToken = process.env.SYNCULAR_CONSOLE_TOKEN;
-
-    if (envServerUrl?.trim() && envToken?.trim()) {
-      setConfigStorage({ serverUrl: envServerUrl, token: envToken });
-    }
   }, [setConfigStorage, config, defaultConfig]);
 
   const connect = useCallback(
