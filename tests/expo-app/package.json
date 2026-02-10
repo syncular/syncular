@@ -14,8 +14,6 @@
     "ios:build": "expo run:ios --no-install --no-bundler --no-build-cache --device \"iPhone 15\"",
     "maestro:test": "maestro test ./maestro"
   },
-  "dependencies": {
-  },
   "devDependencies": {
     "@syncular/dialect-expo-sqlite": "workspace:*",
     "expo": "~54.0.33",

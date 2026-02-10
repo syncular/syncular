@@ -4,7 +4,7 @@ Offline-first sync for TypeScript apps: **local SQLite/PGlite on the client**, *
 
 ## Status
 
-**Alpha.** Breaking changes are expected (no backward compatibility guarantees).
+> **Pre-stable (alpha).** Syncular is under active development and has **not** reached v1 yet. APIs, wire formats, and storage layouts **will** change and break without notice between releases. Do not use in production unless you are comfortable pinning versions and migrating manually.
 
 ## What Syncular is (in one minute)
 
@@ -36,9 +36,9 @@ bun check:fix
 bun test
 ```
 
-## Packaging note
+## Packages
 
-This repo is the current source of truth. Most workspace packages are marked `private` today (not published to npm yet).
+All packages are published to npm under the `@syncular` scope. Install individual packages (e.g. `@syncular/client`, `@syncular/server`) or the umbrella `syncular` package.
 
 ## License
 
