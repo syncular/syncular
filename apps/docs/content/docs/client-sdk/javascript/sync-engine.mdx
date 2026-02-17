@@ -151,6 +151,39 @@ await upsertSubscriptionState(db, {
 });
 ```
 
+### listSubscriptionStates
+
+List subscription state rows without coupling to raw table shape:
+
+```typescript
+import { listSubscriptionStates } from '@syncular/client';
+
+const all = await listSubscriptionStates(db, { stateId: 'default' });
+```
+
+## Operational APIs
+
+These are available on `SyncEngine` and surfaced by `Client`.
+
+```typescript
+const progress = await engine.getProgress();
+const diagnostics = await engine.getDiagnostics();
+await engine.awaitPhase('live', { timeoutMs: 60_000 });
+await engine.awaitBootstrapComplete({ stateId: 'default' });
+
+await engine.reset({
+  scope: 'subscription',
+  stateId: 'default',
+  subscriptionIds: ['my-tasks'],
+  clearSyncedTables: true,
+});
+
+await engine.repair({
+  mode: 'rebootstrap-missing-chunks',
+  stateId: 'default',
+});
+```
+
 ## Types
 
 ### SyncSubscriptionRequest

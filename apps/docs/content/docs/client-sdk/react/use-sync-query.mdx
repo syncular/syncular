@@ -70,6 +70,9 @@ interface UseSyncQueryOptions {
   enabled?: boolean;      // Enable/disable query (default: true)
   deps?: unknown[];       // Additional dependencies that trigger re-fetch
   keyField?: string;      // Primary key field for fingerprinting (default: 'id')
+  watchTables?: string[]; // Additional tables to invalidate on data:change
+  pollIntervalMs?: number; // Optional local polling interval in ms
+  staleAfterMs?: number;  // Mark result stale after this many ms since last sync
 }
 ```
 
@@ -99,6 +102,24 @@ const { data } = useSyncQuery(
 );
 ```
 
+### Watch Additional Tables
+
+```tsx
+const { data } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('sync_subscription_state').selectAll(),
+  { watchTables: ['tasks', 'projects'] }
+);
+```
+
+### Local Polling
+
+```tsx
+const { data } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('sync_subscription_state').selectAll(),
+  { pollIntervalMs: 500 }
+);
+```
+
 ## Result
 
 ```typescript
@@ -106,8 +127,19 @@ interface UseSyncQueryResult<T> {
   data: T | undefined;
   isLoading: boolean;
   error: Error | null;
+  isStale: boolean;
+  lastSyncAt: number | null;
   refetch: () => Promise<void>;
 }
+```
+
+### Staleness Metadata
+
+```tsx
+const { data, isStale, lastSyncAt } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('tasks').selectAll(),
+  { staleAfterMs: 60_000 }
+);
 ```
 
 ## Fingerprinting

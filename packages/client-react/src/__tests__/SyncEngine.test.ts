@@ -659,6 +659,70 @@ describe('SyncEngine', () => {
     });
   });
 
+  describe('await utilities', () => {
+    it('awaitPhase resolves when phase is reached', async () => {
+      const engine = createEngine();
+      await engine.start();
+
+      const progress = await engine.awaitPhase('live', { timeoutMs: 1000 });
+      expect(progress.channelPhase).toBe('live');
+    });
+
+    it('awaitPhase times out when phase is not reached', async () => {
+      const engine = createEngine();
+      await expect(
+        engine.awaitPhase('bootstrapping', { timeoutMs: 30 })
+      ).rejects.toThrow('Timed out');
+    });
+
+    it('awaitBootstrapComplete resolves after bootstrap state clears', async () => {
+      const engine = createEngine();
+      await engine.start();
+
+      const now = Date.now();
+      await db
+        .insertInto('sync_subscription_state')
+        .values({
+          state_id: 'default',
+          subscription_id: 'team-members',
+          table: 'tasks',
+          scopes_json: '{}',
+          params_json: '{}',
+          cursor: -1,
+          bootstrap_state_json: JSON.stringify({
+            asOfCommitSeq: 0,
+            tables: ['tasks'],
+            tableIndex: 0,
+            rowCursor: null,
+          }),
+          status: 'active',
+          created_at: now,
+          updated_at: now,
+        })
+        .execute();
+
+      const awaiting = engine.awaitBootstrapComplete({
+        subscriptionId: 'team-members',
+        timeoutMs: 1000,
+      });
+
+      await db
+        .updateTable('sync_subscription_state')
+        .set({
+          bootstrap_state_json: null,
+          updated_at: Date.now(),
+        })
+        .where('state_id', '=', 'default')
+        .where('subscription_id', '=', 'team-members')
+        .execute();
+
+      await engine.sync();
+
+      const progress = await awaiting;
+      expect(progress.channelPhase).not.toBe('error');
+    });
+  });
+
   describe('event subscriptions', () => {
     it('should allow subscribing to events', async () => {
       const engine = createEngine();

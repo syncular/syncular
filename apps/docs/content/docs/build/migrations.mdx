@@ -345,6 +345,26 @@ async function resetSyncState(db: Kysely<MyDb>) {
 
 This removes `sync_conflicts`, `sync_outbox_commits`, and `sync_subscription_state`. The next app startup will recreate them fresh via `ensureClientSyncSchema`.
 
+### Scoped reset and repair from the engine
+
+For operational recovery without dropping the whole database, use `engine.reset()` or `engine.repair()`:
+
+```typescript
+// Clear one subscription and re-bootstrap it
+await engine.reset({
+  scope: 'subscription',
+  subscriptionIds: ['app-team-members'],
+  clearSyncedTables: true,
+});
+
+// Built-in repair flow for missing snapshot chunks
+await engine.repair({
+  mode: 'rebootstrap-missing-chunks',
+});
+```
+
+This is useful when bootstrap metadata is stale/corrupt and you need a controlled re-bootstrap.
+
 ## Type Generation with @syncular/typegen
 
 `@syncular/typegen` introspects your migrations and generates TypeScript interfaces for your database:

@@ -23,8 +23,17 @@ import type {
   ConflictInfo,
   OutboxStats,
   PresenceEntry,
+  SubscriptionProgress,
+  SyncAwaitBootstrapOptions,
+  SyncAwaitPhaseOptions,
+  SyncDiagnostics,
   SyncEngineState,
+  SyncProgress,
+  SyncRepairOptions,
+  SyncResetOptions,
+  SyncResetResult,
   SyncResult,
+  TransportHealth,
 } from './engine/types';
 import type { ClientTableRegistry } from './handlers/registry';
 import { ensureClientSyncSchema } from './migrate';
@@ -35,6 +44,7 @@ import {
 } from './mutations';
 import type { SyncClientPlugin } from './plugins/types';
 import type { SyncClientDb } from './schema';
+import type { SubscriptionState } from './subscription-state';
 
 // ============================================================================
 // Types
@@ -216,7 +226,11 @@ export interface MigrationInfo {
 type ClientEventType =
   | 'sync:start'
   | 'sync:complete'
+  | 'sync:live'
   | 'sync:error'
+  | 'bootstrap:start'
+  | 'bootstrap:progress'
+  | 'bootstrap:complete'
   | 'connection:change'
   | 'data:change'
   | 'outbox:change'
@@ -229,7 +243,25 @@ type ClientEventType =
 type ClientEventPayloads = {
   'sync:start': { timestamp: number };
   'sync:complete': SyncResult;
+  'sync:live': { timestamp: number };
   'sync:error': { code: string; message: string };
+  'bootstrap:start': {
+    timestamp: number;
+    stateId: string;
+    subscriptionId: string;
+  };
+  'bootstrap:progress': {
+    timestamp: number;
+    stateId: string;
+    subscriptionId: string;
+    progress: SubscriptionProgress;
+  };
+  'bootstrap:complete': {
+    timestamp: number;
+    stateId: string;
+    subscriptionId: string;
+    durationMs: number;
+  };
   'connection:change': { previous: string; current: string };
   'data:change': { scopes: string[]; timestamp: number };
   'outbox:change': OutboxStats;
@@ -464,6 +496,29 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
     }));
   }
 
+  /**
+   * List persisted subscription metadata rows.
+   */
+  async listSubscriptionStates(args?: {
+    stateId?: string;
+    table?: string;
+    status?: 'active' | 'revoked';
+  }): Promise<SubscriptionState[]> {
+    if (!this.engine) return [];
+    return this.engine.listSubscriptionStates(args);
+  }
+
+  /**
+   * Read one persisted subscription metadata row.
+   */
+  async getSubscriptionState(
+    subscriptionId: string,
+    options?: { stateId?: string }
+  ): Promise<SubscriptionState | null> {
+    if (!this.engine) return null;
+    return this.engine.getSubscriptionState(subscriptionId, options);
+  }
+
   // ===========================================================================
   // State
   // ===========================================================================
@@ -486,6 +541,81 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
         : null,
       outbox: this.outboxStats,
     };
+  }
+
+  /**
+   * Get current transport health details.
+   */
+  getTransportHealth(): TransportHealth | null {
+    if (!this.engine) return null;
+    return this.engine.getTransportHealth();
+  }
+
+  /**
+   * Get computed sync progress across subscriptions.
+   */
+  async getProgress(): Promise<SyncProgress | null> {
+    if (!this.engine) return null;
+    return this.engine.getProgress();
+  }
+
+  /**
+   * Get a diagnostics snapshot for support/debug flows.
+   */
+  async getDiagnostics(): Promise<SyncDiagnostics | null> {
+    if (!this.engine) return null;
+    return this.engine.getDiagnostics();
+  }
+
+  /**
+   * Reset local sync metadata (and optionally synced app rows/outbox/conflicts).
+   */
+  async reset(options: SyncResetOptions): Promise<SyncResetResult> {
+    if (!this.engine) {
+      return {
+        deletedSubscriptionStates: 0,
+        deletedOutboxCommits: 0,
+        deletedConflicts: 0,
+        clearedTables: [],
+      };
+    }
+    return this.engine.reset(options);
+  }
+
+  /**
+   * Run a built-in repair flow for common corruption scenarios.
+   */
+  async repair(options: SyncRepairOptions): Promise<SyncResetResult> {
+    if (!this.engine) {
+      return {
+        deletedSubscriptionStates: 0,
+        deletedOutboxCommits: 0,
+        deletedConflicts: 0,
+        clearedTables: [],
+      };
+    }
+    return this.engine.repair(options);
+  }
+
+  /**
+   * Wait until the channel reaches a target phase.
+   */
+  async awaitPhase(
+    phase: SyncProgress['channelPhase'],
+    options: SyncAwaitPhaseOptions = {}
+  ): Promise<SyncProgress | null> {
+    if (!this.engine) return null;
+    return this.engine.awaitPhase(phase, options);
+  }
+
+  /**
+   * Wait until bootstrap completes for the default state or a specific subscription.
+   */
+  async awaitBootstrapComplete(
+    options: SyncAwaitBootstrapOptions = {}
+  ): Promise<SyncProgress | null> {
+    if (!this.engine) return null;
+    return this.engine.awaitBootstrapComplete(options);
   }
 
   /**
@@ -783,11 +913,27 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       });
     });
 
+    this.engine.on('sync:live', (payload) => {
+      this.emit('sync:live', payload);
+    });
+
     this.engine.on('sync:error', (error) => {
       this.emit('sync:error', { code: error.code, message: error.message });
 
       // Check for new conflicts after sync error
       this.checkForNewConflicts();
+    });
+
+    this.engine.on('bootstrap:start', (payload) => {
+      this.emit('bootstrap:start', payload);
+    });
+
+    this.engine.on('bootstrap:progress', (payload) => {
+      this.emit('bootstrap:progress', payload);
+    });
+
+    this.engine.on('bootstrap:complete', (payload) => {
+      this.emit('bootstrap:complete', payload);
     });
 
     this.engine.on('connection:change', (payload) => {

@@ -28,9 +28,20 @@ Every sync error is represented by the `SyncError` interface:
 ```typescript
 interface SyncError {
   /** Error classification */
-  code: 'NETWORK_ERROR' | 'SYNC_ERROR' | 'CONFLICT' | 'UNKNOWN';
+  code:
+    | 'NETWORK_ERROR'
+    | 'AUTH_FAILED'
+    | 'SNAPSHOT_CHUNK_NOT_FOUND'
+    | 'MIGRATION_FAILED'
+    | 'CONFLICT'
+    | 'SYNC_ERROR'
+    | 'UNKNOWN';
   /** Human-readable error message */
   message: string;
+  /** Whether automatic retry should continue */
+  retryable: boolean;
+  /** HTTP status if the error came from transport */
+  httpStatus?: number;
   /** Original error if available */
   cause?: Error;
   /** Timestamp when the error occurred */
@@ -43,8 +54,11 @@ interface SyncError {
 | Code | When it occurs |
 |------|---------------|
 | `NETWORK_ERROR` | Transport-level failure (fetch failed, timeout, DNS) |
-| `SYNC_ERROR` | Server returned an error, migration failed, or sync logic error |
+| `AUTH_FAILED` | Transport returned `401`/`403` |
+| `SNAPSHOT_CHUNK_NOT_FOUND` | Snapshot bootstrap chunk returned `404` |
+| `MIGRATION_FAILED` | Client migration function failed before sync start |
 | `CONFLICT` | Push operation rejected due to version conflict |
+| `SYNC_ERROR` | Generic sync error outside specific categories |
 | `UNKNOWN` | Unexpected error that does not match other categories |
 
 ## Automatic Retry Behavior
@@ -58,7 +72,7 @@ The sync engine retries failed sync operations automatically using exponential b
 
 The retry sequence is: 1s, 2s, 4s, 8s, 16s (capped at 60s).
 
-After each successful sync, the retry counter resets to 0.
+After each successful sync, the retry counter resets to 0. Non-retryable errors (for example auth failures) stop automatic retry and require explicit remediation.
 
 ### Configuring retries
 

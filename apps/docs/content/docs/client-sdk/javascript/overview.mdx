@@ -99,17 +99,30 @@ interface ClientOptions<DB> {
 | `getState()` | Get current client state |
 | `subscribe(callback)` | Subscribe to state changes |
 | `on(event, handler)` | Subscribe to events |
+| `getTransportHealth()` | Get transport mode/fallback health |
+| `getProgress()` | Get computed channel + subscription progress |
+| `getDiagnostics()` | Get a support/debug diagnostics snapshot |
+| `awaitPhase(phase, options?)` | Wait until the channel reaches a target phase |
+| `awaitBootstrapComplete(options?)` | Wait for bootstrap completion (state/subscription scoped) |
+| `listSubscriptionStates()` | List persisted subscription state metadata |
+| `getSubscriptionState(id)` | Get one persisted subscription state row |
 | `getConflicts()` | Get pending conflicts |
 | `resolveConflict(id, resolution)` | Resolve a conflict |
 | `getOutboxStats()` | Get outbox statistics |
 | `clearFailedCommits()` | Clear failed commits |
+| `reset(options)` | Reset sync metadata/data with scoped options |
+| `repair(options)` | Run built-in repair flows (for example rebootstrap) |
 
 ### Events
 
 ```typescript
 client.on('sync:start', ({ timestamp }) => {});
 client.on('sync:complete', (result) => {});
+client.on('sync:live', ({ timestamp }) => {});
 client.on('sync:error', ({ code, message }) => {});
+client.on('bootstrap:start', ({ stateId, subscriptionId }) => {});
+client.on('bootstrap:progress', ({ progress }) => {});
+client.on('bootstrap:complete', ({ durationMs }) => {});
 client.on('connection:change', ({ previous, current }) => {});
 client.on('data:change', ({ scopes, timestamp }) => {});
 client.on('outbox:change', (stats) => {});

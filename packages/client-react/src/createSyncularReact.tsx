@@ -15,11 +15,20 @@ import type {
   MutationsCommitFn,
   MutationsTx,
   OutboxCommitMeta,
+  SubscriptionState,
+  SyncAwaitBootstrapOptions,
+  SyncAwaitPhaseOptions,
   SyncClientDb,
   SyncClientPlugin,
+  SyncDiagnostics,
   SyncOperation,
+  SyncProgress,
+  SyncRepairOptions,
+  SyncResetOptions,
+  SyncResetResult,
   SyncSubscriptionRequest,
   SyncTransport,
+  TransportHealth,
 } from '@syncular/client';
 import {
   type ConflictInfo,
@@ -126,6 +135,27 @@ export interface UseSyncEngineResult {
   disconnect: () => void;
   start: () => Promise<void>;
   resetLocalState: () => void;
+  getTransportHealth: () => Readonly<TransportHealth>;
+  getProgress: () => Promise<SyncProgress>;
+  getDiagnostics: () => Promise<SyncDiagnostics>;
+  listSubscriptionStates: (args?: {
+    stateId?: string;
+    table?: string;
+    status?: 'active' | 'revoked';
+  }) => Promise<SubscriptionState[]>;
+  getSubscriptionState: (
+    subscriptionId: string,
+    options?: { stateId?: string }
+  ) => Promise<SubscriptionState | null>;
+  reset: (options: SyncResetOptions) => Promise<SyncResetResult>;
+  repair: (options: SyncRepairOptions) => Promise<SyncResetResult>;
+  awaitPhase: (
+    phase: SyncProgress['channelPhase'],
+    options?: SyncAwaitPhaseOptions
+  ) => Promise<SyncProgress>;
+  awaitBootstrapComplete: (
+    options?: SyncAwaitBootstrapOptions
+  ) => Promise<SyncProgress>;
 }
 
 export interface SyncStatus {
@@ -133,10 +163,20 @@ export interface SyncStatus {
   isOnline: boolean;
   isSyncing: boolean;
   lastSyncAt: number | null;
+  lastSyncAgeMs: number | null;
+  isStale: boolean;
   pendingCount: number;
   error: SyncError | null;
   isRetrying: boolean;
   retryCount: number;
+}
+
+export interface UseSyncStatusOptions {
+  /**
+   * Mark status as stale when `Date.now() - lastSyncAt` exceeds this value.
+   * If omitted, `isStale` is always false.
+   */
+  staleAfterMs?: number;
 }
 
 export interface UseSyncConnectionResult {
@@ -146,6 +186,45 @@ export interface UseSyncConnectionResult {
   isReconnecting: boolean;
   reconnect: () => void;
   disconnect: () => void;
+}
+
+export interface UseTransportHealthResult {
+  health: TransportHealth;
+}
+
+export interface UseSyncProgressOptions {
+  /**
+   * Polling interval while bootstrapping.
+   * Set to 0 to disable interval refresh.
+   */
+  pollIntervalMs?: number;
+}
+
+export interface UseSyncProgressResult {
+  progress: SyncProgress | null;
+  isLoading: boolean;
+  error: Error | null;
+  refresh: () => Promise<void>;
+}
+
+export interface UseSyncSubscriptionsOptions {
+  stateId?: string;
+  table?: string;
+  status?: 'active' | 'revoked';
+}
+
+export interface UseSyncSubscriptionsResult {
+  subscriptions: SubscriptionState[];
+  isLoading: boolean;
+  error: Error | null;
+  refresh: () => Promise<void>;
+}
+
+export interface UseSyncSubscriptionResult {
+  subscription: SubscriptionState | null;
+  isLoading: boolean;
+  error: Error | null;
+  refresh: () => Promise<void>;
 }
 
 export interface UseConflictsResult {
@@ -179,6 +258,8 @@ export interface UseSyncQueryResult<T> {
   data: T | undefined;
   isLoading: boolean;
   error: Error | null;
+  isStale: boolean;
+  lastSyncAt: number | null;
   refetch: () => Promise<void>;
 }
 
@@ -186,6 +267,9 @@ export interface UseSyncQueryOptions {
   enabled?: boolean;
   deps?: unknown[];
   keyField?: string;
+  watchTables?: string[];
+  pollIntervalMs?: number;
+  staleAfterMs?: number;
 }
 
 export interface UseQueryResult<T> {
@@ -506,6 +590,43 @@ export function createSyncularReact<DB extends SyncClientDb>() {
       () => engine.resetLocalState(),
       [engine]
     );
+    const getTransportHealth = useCallback(
+      () => engine.getTransportHealth(),
+      [engine]
+    );
+    const getProgress = useCallback(() => engine.getProgress(), [engine]);
+    const getDiagnostics = useCallback(() => engine.getDiagnostics(), [engine]);
+    const listSubscriptionStates = useCallback(
+      (args?: {
+        stateId?: string;
+        table?: string;
+        status?: 'active' | 'revoked';
+      }) => engine.listSubscriptionStates(args),
+      [engine]
+    );
+    const getSubscriptionState = useCallback(
+      (subscriptionId: string, options?: { stateId?: string }) =>
+        engine.getSubscriptionState(subscriptionId, options),
+      [engine]
+    );
+    const reset = useCallback(
+      (options: SyncResetOptions) => engine.reset(options),
+      [engine]
+    );
+    const repair = useCallback(
+      (options: SyncRepairOptions) => engine.repair(options),
+      [engine]
+    );
+    const awaitPhase = useCallback(
+      (phase: SyncProgress['channelPhase'], options?: SyncAwaitPhaseOptions) =>
+        engine.awaitPhase(phase, options),
+      [engine]
+    );
+    const awaitBootstrapComplete = useCallback(
+      (options?: SyncAwaitBootstrapOptions) =>
+        engine.awaitBootstrapComplete(options),
+      [engine]
+    );
 
     return {
       state,
@@ -514,10 +635,20 @@ export function createSyncularReact<DB extends SyncClientDb>() {
       disconnect,
       start,
       resetLocalState,
+      getTransportHealth,
+      getProgress,
+      getDiagnostics,
+      listSubscriptionStates,
+      getSubscriptionState,
+      reset,
+      repair,
+      awaitPhase,
+      awaitBootstrapComplete,
     };
   }
 
-  function useSyncStatus(): SyncStatus {
+  function useSyncStatus(options: UseSyncStatusOptions = {}): SyncStatus {
+    const { staleAfterMs } = options;
     const engine = useEngine();
 
     const state = useSyncExternalStore(
@@ -526,19 +657,44 @@ export function createSyncularReact<DB extends SyncClientDb>() {
       useCallback(() => engine.getState(), [engine])
     );
 
-    return useMemo<SyncStatus>(
-      () => ({
+    const [staleClock, setStaleClock] = useState<number>(Date.now());
+
+    useEffect(() => {
+      if (staleAfterMs === undefined || staleAfterMs <= 0) return;
+
+      const intervalMs = Math.min(
+        1000,
+        Math.max(100, Math.floor(staleAfterMs / 2))
+      );
+      const timer = setInterval(() => {
+        setStaleClock(Date.now());
+      }, intervalMs);
+
+      return () => clearInterval(timer);
+    }, [staleAfterMs]);
+
+    return useMemo<SyncStatus>(() => {
+      const now = staleAfterMs !== undefined ? staleClock : Date.now();
+      const lastSyncAgeMs =
+        state.lastSyncAt === null ? null : Math.max(0, now - state.lastSyncAt);
+      const isStale =
+        staleAfterMs !== undefined && staleAfterMs > 0
+          ? state.lastSyncAt === null || (lastSyncAgeMs ?? 0) > staleAfterMs
+          : false;
+
+      return {
         enabled: state.enabled,
         isOnline: state.connectionState === 'connected',
         isSyncing: state.isSyncing,
         lastSyncAt: state.lastSyncAt,
+        lastSyncAgeMs,
+        isStale,
         pendingCount: state.pendingCount,
         error: state.error,
         isRetrying: state.isRetrying,
         retryCount: state.retryCount,
-      }),
-      [state]
-    );
+      };
+    }, [state, staleAfterMs, staleClock]);
   }
 
   function useSyncConnection(): UseSyncConnectionResult {
@@ -568,6 +724,220 @@ export function createSyncularReact<DB extends SyncClientDb>() {
         reconnect,
         disconnect,
       ]
+    );
+  }
+
+  function useTransportHealth(): UseTransportHealthResult {
+    const engine = useEngine();
+
+    const health = useSyncExternalStore(
+      useCallback(
+        (callback) => {
+          const unsubscribers = [
+            engine.subscribe(callback),
+            engine.on('connection:change', callback),
+            engine.on('sync:complete', callback),
+            engine.on('sync:error', callback),
+          ];
+          return () => {
+            for (const unsubscribe of unsubscribers) unsubscribe();
+          };
+        },
+        [engine]
+      ),
+      useCallback(() => engine.getTransportHealth(), [engine]),
+      useCallback(() => engine.getTransportHealth(), [engine])
+    );
+
+    return useMemo(() => ({ health }), [health]);
+  }
+
+  function useSyncProgress(
+    options: UseSyncProgressOptions = {}
+  ): UseSyncProgressResult {
+    const engine = useEngine();
+    const { pollIntervalMs = 500 } = options;
+
+    const [progress, setProgress] = useState<SyncProgress | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<Error | null>(null);
+    const loadedRef = useRef(false);
+
+    const refresh = useCallback(async () => {
+      if (!loadedRef.current) {
+        setIsLoading(true);
+      }
+
+      try {
+        const next = await engine.getProgress();
+        setProgress(next);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        loadedRef.current = true;
+        setIsLoading(false);
+      }
+    }, [engine]);
+
+    useEffect(() => {
+      void refresh();
+    }, [refresh]);
+
+    useEffect(() => {
+      const unsubscribers = [
+        engine.on('sync:start', refresh),
+        engine.on('sync:complete', refresh),
+        engine.on('sync:error', refresh),
+        engine.on('bootstrap:start', refresh),
+        engine.on('bootstrap:progress', refresh),
+        engine.on('bootstrap:complete', refresh),
+      ];
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    }, [engine, refresh]);
+
+    useEffect(() => {
+      if (pollIntervalMs <= 0) return;
+      if (progress?.channelPhase !== 'bootstrapping') return;
+
+      const timer = setInterval(() => {
+        void refresh();
+      }, pollIntervalMs);
+
+      return () => clearInterval(timer);
+    }, [pollIntervalMs, progress?.channelPhase, refresh]);
+
+    return useMemo(
+      () => ({
+        progress,
+        isLoading,
+        error,
+        refresh,
+      }),
+      [progress, isLoading, error, refresh]
+    );
+  }
+
+  function useSyncSubscriptions(
+    options: UseSyncSubscriptionsOptions = {}
+  ): UseSyncSubscriptionsResult {
+    const engine = useEngine();
+    const { stateId, table, status } = options;
+
+    const [subscriptions, setSubscriptions] = useState<SubscriptionState[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<Error | null>(null);
+    const loadedRef = useRef(false);
+
+    const refresh = useCallback(async () => {
+      if (!loadedRef.current) {
+        setIsLoading(true);
+      }
+
+      try {
+        const next = await engine.listSubscriptionStates({
+          stateId,
+          table,
+          status,
+        });
+        setSubscriptions(next);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        loadedRef.current = true;
+        setIsLoading(false);
+      }
+    }, [engine, stateId, table, status]);
+
+    useEffect(() => {
+      void refresh();
+    }, [refresh]);
+
+    useEffect(() => {
+      const unsubscribers = [
+        engine.on('sync:complete', refresh),
+        engine.on('sync:error', refresh),
+        engine.on('bootstrap:start', refresh),
+        engine.on('bootstrap:progress', refresh),
+        engine.on('bootstrap:complete', refresh),
+      ];
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    }, [engine, refresh]);
+
+    return useMemo(
+      () => ({
+        subscriptions,
+        isLoading,
+        error,
+        refresh,
+      }),
+      [subscriptions, isLoading, error, refresh]
+    );
+  }
+
+  function useSyncSubscription(
+    subscriptionId: string,
+    options: { stateId?: string } = {}
+  ): UseSyncSubscriptionResult {
+    const engine = useEngine();
+    const { stateId } = options;
+
+    const [subscription, setSubscription] = useState<SubscriptionState | null>(
+      null
+    );
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<Error | null>(null);
+    const loadedRef = useRef(false);
+
+    const refresh = useCallback(async () => {
+      if (!loadedRef.current) {
+        setIsLoading(true);
+      }
+
+      try {
+        const next = await engine.getSubscriptionState(subscriptionId, {
+          stateId,
+        });
+        setSubscription(next);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        loadedRef.current = true;
+        setIsLoading(false);
+      }
+    }, [engine, stateId, subscriptionId]);
+
+    useEffect(() => {
+      void refresh();
+    }, [refresh]);
+
+    useEffect(() => {
+      const unsubscribers = [
+        engine.on('sync:complete', refresh),
+        engine.on('sync:error', refresh),
+        engine.on('bootstrap:start', refresh),
+        engine.on('bootstrap:progress', refresh),
+        engine.on('bootstrap:complete', refresh),
+      ];
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    }, [engine, refresh]);
+
+    return useMemo(
+      () => ({
+        subscription,
+        isLoading,
+        error,
+        refresh,
+      }),
+      [subscription, isLoading, error, refresh]
     );
   }
 
@@ -694,9 +1064,17 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     ) => ExecutableQuery<TResult> | Promise<TResult>,
     options: UseSyncQueryOptions = {}
   ): UseSyncQueryResult<TResult> {
-    const { enabled = true, deps = [], keyField = 'id' } = options;
+    const {
+      enabled = true,
+      deps = [],
+      keyField = 'id',
+      watchTables = [],
+      pollIntervalMs,
+      staleAfterMs,
+    } = options;
     const { db } = useSyncContext();
     const engine = useEngine();
+    const watchTablesSet = useMemo(() => new Set(watchTables), [watchTables]);
 
     const queryFnRef = useRef<typeof queryFn>(queryFn);
     queryFnRef.current = queryFn;
@@ -704,6 +1082,10 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     const [data, setData] = useState<TResult | undefined>(undefined);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
+    const [lastSyncAt, setLastSyncAt] = useState<number | null>(
+      () => engine.getState().lastSyncAt
+    );
+    const [staleClock, setStaleClock] = useState<number>(Date.now());
 
     const versionRef = useRef(0);
     const watchedScopesRef = useRef<Set<string>>(new Set());
@@ -717,6 +1099,7 @@ export function createSyncularReact<DB extends SyncClientDb>() {
           previousFingerprintRef.current = 'disabled';
           setData(undefined);
         }
+        setLastSyncAt(engine.getState().lastSyncAt);
         setIsLoading(false);
         hasLoadedRef.current = true;
         return;
@@ -746,6 +1129,7 @@ export function createSyncularReact<DB extends SyncClientDb>() {
 
         if (version === versionRef.current) {
           watchedScopesRef.current = scopeCollector;
+          setLastSyncAt(engine.getState().lastSyncAt);
 
           const fingerprint = fingerprintCollectorRef.current.getCombined();
           if (
@@ -775,9 +1159,19 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     }, [executeQuery, ...deps]);
 
     useEffect(() => {
+      const unsubscribe = engine.subscribe(() => {
+        const nextLastSyncAt = engine.getState().lastSyncAt;
+        setLastSyncAt((previous) =>
+          previous === nextLastSyncAt ? previous : nextLastSyncAt
+        );
+      });
+      return unsubscribe;
+    }, [engine]);
+
+    useEffect(() => {
       if (!enabled) return;
       const unsubscribe = engine.on('sync:complete', () => {
-        executeQuery();
+        void executeQuery();
       });
       return unsubscribe;
     }, [engine, enabled, executeQuery]);
@@ -786,35 +1180,75 @@ export function createSyncularReact<DB extends SyncClientDb>() {
       if (!enabled) return;
 
       const unsubscribe = engine.on('data:change', (event) => {
-        const changedScopes = event.scopes || [];
+        const changedScopes = event.scopes ?? [];
         const watchedScopes = watchedScopesRef.current;
+        const hasDynamicFilter = watchedScopes.size > 0;
+        const hasTableFilter = watchTablesSet.size > 0;
 
-        if (watchedScopes.size > 0) {
-          const hasWatchedScope = changedScopes.some((s) =>
-            watchedScopes.has(s)
+        if (hasDynamicFilter || hasTableFilter) {
+          const matchesDynamic = changedScopes.some((scope) =>
+            watchedScopes.has(scope)
           );
-          if (!hasWatchedScope) return;
+          const matchesConfigured = changedScopes.some((scope) =>
+            watchTablesSet.has(scope)
+          );
+
+          if (!matchesDynamic && !matchesConfigured) {
+            return;
+          }
         }
 
-        executeQuery();
+        void executeQuery();
       });
 
       return unsubscribe;
-    }, [engine, enabled, executeQuery]);
+    }, [engine, enabled, executeQuery, watchTablesSet]);
+
+    useEffect(() => {
+      if (!enabled) return;
+      if (pollIntervalMs === undefined || pollIntervalMs <= 0) return;
+
+      const timer = setInterval(() => {
+        void executeQuery();
+      }, pollIntervalMs);
+
+      return () => clearInterval(timer);
+    }, [enabled, pollIntervalMs, executeQuery]);
+
+    useEffect(() => {
+      if (staleAfterMs === undefined || staleAfterMs <= 0) return;
+
+      const intervalMs = Math.min(
+        1000,
+        Math.max(100, Math.floor(staleAfterMs / 2))
+      );
+      const timer = setInterval(() => {
+        setStaleClock(Date.now());
+      }, intervalMs);
+
+      return () => clearInterval(timer);
+    }, [staleAfterMs]);
 
     const refetch = useCallback(async () => {
       await executeQuery();
     }, [executeQuery]);
 
-    return useMemo(
-      () => ({
+    return useMemo(() => {
+      const now = staleAfterMs !== undefined ? staleClock : Date.now();
+      const isStale =
+        staleAfterMs !== undefined && staleAfterMs > 0
+          ? lastSyncAt === null || now - lastSyncAt > staleAfterMs
+          : false;
+
+      return {
         data,
         isLoading,
         error,
+        isStale,
+        lastSyncAt,
         refetch,
-      }),
-      [data, isLoading, error, refetch]
-    );
+      };
+    }, [data, isLoading, error, staleAfterMs, staleClock, lastSyncAt, refetch]);
   }
 
   function useQuery<TResult>(
@@ -1382,6 +1816,10 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     useSyncEngine,
     useSyncStatus,
     useSyncConnection,
+    useTransportHealth,
+    useSyncProgress,
+    useSyncSubscriptions,
+    useSyncSubscription,
     useSyncQuery,
     useQuery,
     useMutation,

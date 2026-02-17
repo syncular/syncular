@@ -29,8 +29,22 @@ export type {
   UseResolveConflictResult,
   UseSyncConnectionResult,
   UseSyncEngineResult,
+  UseSyncProgressOptions,
+  UseSyncProgressResult,
   UseSyncQueryOptions,
   UseSyncQueryResult,
+  UseSyncStatusOptions,
+  UseSyncSubscriptionResult,
+  UseSyncSubscriptionsOptions,
+  UseSyncSubscriptionsResult,
+  UseTransportHealthResult,
 } from './createSyncularReact';
 // Re-export core client types for convenience.
 export { createSyncularReact } from './createSyncularReact';
+export type {
+  SyncGroupChannel,
+  SyncGroupChannelSnapshot,
+  SyncGroupStatus,
+  UseSyncGroupResult,
+} from './useSyncGroup';
+export { useSyncGroup } from './useSyncGroup';

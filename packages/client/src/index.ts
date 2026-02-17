@@ -21,5 +21,6 @@ export * from './pull-engine';
 export * from './push-engine';
 export * from './query';
 export * from './schema';
+export * from './subscription-state';
 export * from './sync-loop';
 export * from './utils/id';

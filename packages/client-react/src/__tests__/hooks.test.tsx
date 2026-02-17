@@ -26,6 +26,7 @@ const {
   useResolveConflict,
   useSyncConnection,
   useSyncEngine,
+  useSyncQuery,
   useSyncStatus,
 } = createSyncularReact<SyncClientDb>();
 
@@ -125,6 +126,29 @@ describe('React Hooks', () => {
 
       expect(result.current.status.lastSyncAt).not.toBe(null);
     });
+
+    it('marks status as stale after staleAfterMs', async () => {
+      const { result } = renderHook(
+        () => ({
+          status: useSyncStatus({ staleAfterMs: 120 }),
+          engine: useSyncEngine(),
+        }),
+        { wrapper: createWrapper() }
+      );
+
+      await act(async () => {
+        await result.current.engine.start();
+      });
+
+      await act(async () => {
+        await result.current.engine.sync();
+      });
+
+      expect(result.current.status.isStale).toBe(false);
+      await waitFor(() => {
+        expect(result.current.status.isStale).toBe(true);
+      });
+    });
   });
 
   describe('useSyncConnection', () => {
@@ -151,6 +175,102 @@ describe('React Hooks', () => {
     // Note: Connection lifecycle tests are covered in integration tests
     // The SyncEngine.test.ts tests the engine directly
     // These hook tests verify the React binding works
+  });
+
+  describe('useSyncQuery', () => {
+    it('supports watchTables invalidation on matching data:change scopes', async () => {
+      const transport = createMockTransport();
+      const handlers = createMockHandlerRegistry();
+      handlers.register({
+        table: 'tasks',
+        applySnapshot: async () => {},
+        clearAll: async () => {},
+        applyChange: async () => {},
+      });
+
+      const Wrapper = ({ children }: { children: ReactNode }) => (
+        <SyncProvider
+          db={db}
+          transport={transport}
+          handlers={handlers}
+          actorId="test-actor"
+          clientId="test-client"
+          subscriptions={[]}
+          pollIntervalMs={999999}
+          autoStart={false}
+        >
+          {children}
+        </SyncProvider>
+      );
+
+      let executions = 0;
+      const { result } = renderHook(
+        () => {
+          const engine = useEngine();
+          const query = useSyncQuery(
+            async ({ selectFrom }) => {
+              executions += 1;
+              const row = await selectFrom('sync_outbox_commits')
+                .select((eb) => [eb.fn.count('id').as('total')])
+                .executeTakeFirst();
+              return Number(row?.total ?? 0);
+            },
+            { watchTables: ['tasks'] }
+          );
+
+          return { engine, query };
+        },
+        { wrapper: Wrapper }
+      );
+
+      await waitFor(() => {
+        expect(result.current.query.isLoading).toBe(false);
+      });
+
+      const initialExecutions = executions;
+
+      await act(async () => {
+        await result.current.engine.applyLocalMutation([
+          {
+            table: 'tasks',
+            rowId: 'task-1',
+            op: 'upsert',
+            payload: { id: 'task-1' },
+          },
+        ]);
+      });
+
+      await waitFor(() => {
+        expect(executions).toBeGreaterThan(initialExecutions);
+      });
+    });
+
+    it('supports pollIntervalMs', async () => {
+      let executions = 0;
+
+      const { result } = renderHook(
+        () =>
+          useSyncQuery(
+            async ({ selectFrom }) => {
+              executions += 1;
+              const row = await selectFrom('sync_outbox_commits')
+                .select((eb) => [eb.fn.count('id').as('total')])
+                .executeTakeFirst();
+              return Number(row?.total ?? 0);
+            },
+            { pollIntervalMs: 20 }
+          ),
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      await waitFor(() => {
+        expect(executions).toBeGreaterThanOrEqual(2);
+      });
+    });
   });
 
   describe('usePresenceWithJoin', () => {

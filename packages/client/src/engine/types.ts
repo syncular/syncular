@@ -15,6 +15,7 @@ import type { Kysely } from 'kysely';
 import type { ClientTableRegistry } from '../handlers/registry';
 import type { SyncClientPlugin } from '../plugins/types';
 import type { SyncClientDb } from '../schema';
+import type { SubscriptionState } from '../subscription-state';
 
 /**
  * Connection state for the sync engine
@@ -29,6 +30,8 @@ export type SyncConnectionState =
  * Transport mode (detected or configured)
  */
 export type SyncTransportMode = 'polling' | 'realtime';
+
+export type TransportFallbackReason = 'network' | 'auth' | 'server' | 'manual';
 
 /**
  * Sync engine state
@@ -54,18 +57,78 @@ export interface SyncEngineState {
   isRetrying: boolean;
 }
 
+export interface TransportHealth {
+  mode: 'realtime' | 'polling' | 'disconnected';
+  connected: boolean;
+  lastSuccessfulPollAt: number | null;
+  lastRealtimeMessageAt: number | null;
+  fallbackReason: TransportFallbackReason | null;
+}
+
+export type SubscriptionProgressPhase =
+  | 'idle'
+  | 'bootstrapping'
+  | 'catching_up'
+  | 'live'
+  | 'error';
+
+export type SyncChannelPhase =
+  | 'idle'
+  | 'starting'
+  | 'bootstrapping'
+  | 'catching_up'
+  | 'live'
+  | 'error';
+
+export interface SubscriptionProgress {
+  stateId: string;
+  id: string;
+  table?: string;
+  phase: SubscriptionProgressPhase;
+  progressPercent: number;
+  rowsProcessed?: number;
+  rowsTotal?: number;
+  tablesProcessed?: number;
+  tablesTotal?: number;
+  startedAt?: number;
+  completedAt?: number;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+}
+
+export interface SyncProgress {
+  channelPhase: SyncChannelPhase;
+  progressPercent: number;
+  subscriptions: SubscriptionProgress[];
+}
+
 /**
  * Sync error with context
  */
 export interface SyncError {
   /** Error code */
-  code: 'NETWORK_ERROR' | 'SYNC_ERROR' | 'CONFLICT' | 'UNKNOWN';
+  code:
+    | 'NETWORK_ERROR'
+    | 'AUTH_FAILED'
+    | 'SNAPSHOT_CHUNK_NOT_FOUND'
+    | 'MIGRATION_FAILED'
+    | 'CONFLICT'
+    | 'SYNC_ERROR'
+    | 'UNKNOWN';
   /** Error message */
   message: string;
   /** Original error if available */
   cause?: Error;
   /** Timestamp when error occurred */
   timestamp: number;
+  /** Whether retrying this error is expected to succeed */
+  retryable: boolean;
+  /** HTTP status code when available */
+  httpStatus?: number;
+  /** Related subscription id when available */
+  subscriptionId?: string;
+  /** Related state id when available */
+  stateId?: string;
 }
 
 /**
@@ -75,7 +138,11 @@ export type SyncEventType =
   | 'state:change'
   | 'sync:start'
   | 'sync:complete'
+  | 'sync:live'
   | 'sync:error'
+  | 'bootstrap:start'
+  | 'bootstrap:progress'
+  | 'bootstrap:complete'
   | 'connection:change'
   | 'outbox:change'
   | 'data:change'
@@ -103,7 +170,25 @@ export interface SyncEventPayloads {
     pullRounds: number;
     pullResponse: SyncPullResponse;
   };
+  'sync:live': { timestamp: number };
   'sync:error': SyncError;
+  'bootstrap:start': {
+    timestamp: number;
+    stateId: string;
+    subscriptionId: string;
+  };
+  'bootstrap:progress': {
+    timestamp: number;
+    stateId: string;
+    subscriptionId: string;
+    progress: SubscriptionProgress;
+  };
+  'bootstrap:complete': {
+    timestamp: number;
+    stateId: string;
+    subscriptionId: string;
+    durationMs: number;
+  };
   'connection:change': {
     previous: SyncConnectionState;
     current: SyncConnectionState;
@@ -267,4 +352,50 @@ export interface OutboxStats {
   failed: number;
   acked: number;
   total: number;
+}
+
+export type SyncResetScope = 'state' | 'subscription' | 'all';
+
+export interface SyncResetOptions {
+  scope: SyncResetScope;
+  stateId?: string;
+  subscriptionIds?: string[];
+  clearOutbox?: boolean;
+  clearConflicts?: boolean;
+  clearSyncedTables?: boolean;
+}
+
+export interface SyncResetResult {
+  deletedSubscriptionStates: number;
+  deletedOutboxCommits: number;
+  deletedConflicts: number;
+  clearedTables: string[];
+}
+
+export interface SyncRepairOptions {
+  mode: 'rebootstrap-missing-chunks';
+  stateId?: string;
+  subscriptionIds?: string[];
+  clearOutbox?: boolean;
+  clearConflicts?: boolean;
+}
+
+export interface SyncAwaitPhaseOptions {
+  timeoutMs?: number;
+}
+
+export interface SyncAwaitBootstrapOptions {
+  timeoutMs?: number;
+  stateId?: string;
+  subscriptionId?: string;
+}
+
+export interface SyncDiagnostics {
+  timestamp: number;
+  state: SyncEngineState;
+  transport: TransportHealth;
+  progress: SyncProgress;
+  outbox: OutboxStats;
+  conflictCount: number;
+  subscriptions: SubscriptionState[];
 }

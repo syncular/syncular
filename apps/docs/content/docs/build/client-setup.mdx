@@ -109,6 +109,18 @@ Transport operations also accept per-call options:
 - `signal` to cancel an in-flight request
 - `onAuthError` to refresh credentials and retry once after `401`/`403`
 
+Example token refresh flow:
+
+```typescript
+const syncCall = () =>
+  transport.sync(request, {
+    onAuthError: async () => {
+      const refreshed = await auth.refreshToken();
+      return refreshed; // true => retry once, false => fail fast
+    },
+  });
+```
+
 For realtime wake-ups:
 
 ```typescript

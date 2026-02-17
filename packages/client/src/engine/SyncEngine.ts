@@ -12,31 +12,48 @@ import {
   isRecord,
   type SyncChange,
   type SyncPullResponse,
+  type SyncPullSubscriptionResponse,
   type SyncSubscriptionRequest,
+  SyncTransportError,
   startSyncSpan,
 } from '@syncular/core';
-import { type Kysely, sql } from 'kysely';
+import { type Kysely, sql, type Transaction } from 'kysely';
 import { syncPushOnce } from '../push-engine';
 import type {
   ConflictResultStatus,
   OutboxCommitStatus,
   SyncClientDb,
 } from '../schema';
+import {
+  DEFAULT_SYNC_STATE_ID,
+  getSubscriptionState as readSubscriptionState,
+  listSubscriptionStates as readSubscriptionStates,
+  type SubscriptionState,
+} from '../subscription-state';
 import { syncOnce } from '../sync-loop';
 import type {
   ConflictInfo,
   OutboxStats,
   PresenceEntry,
   RealtimeTransportLike,
+  SubscriptionProgress,
+  SyncAwaitBootstrapOptions,
+  SyncAwaitPhaseOptions,
   SyncConnectionState,
+  SyncDiagnostics,
   SyncEngineConfig,
   SyncEngineState,
   SyncError,
   SyncEventListener,
   SyncEventPayloads,
   SyncEventType,
+  SyncProgress,
+  SyncRepairOptions,
+  SyncResetOptions,
+  SyncResetResult,
   SyncResult,
   SyncTransportMode,
+  TransportHealth,
 } from './types';
 
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
@@ -45,6 +62,7 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 60000;
 const EXPONENTIAL_FACTOR = 2;
 const REALTIME_RECONNECT_CATCHUP_DELAY_MS = 500;
+const DEFAULT_AWAIT_TIMEOUT_MS = 60_000;
 
 function calculateRetryDelay(attemptIndex: number): number {
   return Math.min(
@@ -63,16 +81,113 @@ function isRealtimeTransport(
   );
 }
 
-function createSyncError(
-  code: SyncError['code'],
-  message: string,
-  cause?: Error
-): SyncError {
+function createSyncError(args: {
+  code: SyncError['code'];
+  message: string;
+  cause?: Error;
+  retryable?: boolean;
+  httpStatus?: number;
+  subscriptionId?: string;
+  stateId?: string;
+}): SyncError {
   return {
-    code,
+    code: args.code,
+    message: args.message,
+    cause: args.cause,
+    timestamp: Date.now(),
+    retryable: args.retryable ?? false,
+    httpStatus: args.httpStatus,
+    subscriptionId: args.subscriptionId,
+    stateId: args.stateId,
+  };
+}
+
+function classifySyncFailure(error: unknown): {
+  code: SyncError['code'];
+  message: string;
+  cause: Error;
+  retryable: boolean;
+  httpStatus?: number;
+} {
+  const cause = error instanceof Error ? error : new Error(String(error));
+  const message = cause.message || 'Sync failed';
+  const normalized = message.toLowerCase();
+
+  if (cause instanceof SyncTransportError) {
+    if (cause.status === 401 || cause.status === 403) {
+      return {
+        code: 'AUTH_FAILED',
+        message,
+        cause,
+        retryable: false,
+        httpStatus: cause.status,
+      };
+    }
+
+    if (
+      cause.status === 404 &&
+      normalized.includes('snapshot') &&
+      normalized.includes('chunk')
+    ) {
+      return {
+        code: 'SNAPSHOT_CHUNK_NOT_FOUND',
+        message,
+        cause,
+        retryable: false,
+        httpStatus: cause.status,
+      };
+    }
+
+    if (
+      cause.status !== undefined &&
+      (cause.status >= 500 || cause.status === 408 || cause.status === 429)
+    ) {
+      return {
+        code: 'NETWORK_ERROR',
+        message,
+        cause,
+        retryable: true,
+        httpStatus: cause.status,
+      };
+    }
+
+    return {
+      code: 'SYNC_ERROR',
+      message,
+      cause,
+      retryable: false,
+      httpStatus: cause.status,
+    };
+  }
+
+  if (
+    normalized.includes('network') ||
+    normalized.includes('fetch') ||
+    normalized.includes('timeout') ||
+    normalized.includes('offline')
+  ) {
+    return {
+      code: 'NETWORK_ERROR',
+      message,
+      cause,
+      retryable: true,
+    };
+  }
+
+  if (normalized.includes('conflict')) {
+    return {
+      code: 'CONFLICT',
+      message,
+      cause,
+      retryable: false,
+    };
+  }
+
+  return {
+    code: 'SYNC_ERROR',
     message,
     cause,
-    timestamp: Date.now(),
+    retryable: false,
   };
 }
 
@@ -109,6 +224,15 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   private retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private realtimeCatchupTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private hasRealtimeConnectedOnce = false;
+  private transportHealth: TransportHealth = {
+    mode: 'disconnected',
+    connected: false,
+    lastSuccessfulPollAt: null,
+    lastRealtimeMessageAt: null,
+    fallbackReason: null,
+  };
+  private activeBootstrapSubscriptions = new Set<string>();
+  private bootstrapStartedAt = new Map<string, number>();
 
   /**
    * In-memory map tracking local mutation timestamps by rowId.
@@ -134,6 +258,13 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.config = config;
     this.listeners = new Map();
     this.state = this.createInitialState();
+    this.transportHealth = {
+      mode: this.state.transportMode === 'polling' ? 'polling' : 'disconnected',
+      connected: false,
+      lastSuccessfulPollAt: null,
+      lastRealtimeMessageAt: null,
+      fallbackReason: null,
+    };
   }
 
   /**
@@ -309,6 +440,185 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   }
 
   /**
+   * Get transport health details (realtime/polling/fallback).
+   */
+  getTransportHealth(): Readonly<TransportHealth> {
+    return this.transportHealth;
+  }
+
+  /**
+   * Get subscription state metadata for the current profile.
+   */
+  async listSubscriptionStates(args?: {
+    stateId?: string;
+    table?: string;
+    status?: 'active' | 'revoked';
+  }): Promise<SubscriptionState[]> {
+    return readSubscriptionStates(this.config.db, {
+      stateId: args?.stateId ?? this.getStateId(),
+      table: args?.table,
+      status: args?.status,
+    });
+  }
+
+  /**
+   * Get a single subscription state by id.
+   */
+  async getSubscriptionState(
+    subscriptionId: string,
+    options?: { stateId?: string }
+  ): Promise<SubscriptionState | null> {
+    return readSubscriptionState(this.config.db, {
+      stateId: options?.stateId ?? this.getStateId(),
+      subscriptionId,
+    });
+  }
+
+  /**
+   * Get normalized progress for all active subscriptions in this state profile.
+   */
+  async getProgress(): Promise<SyncProgress> {
+    const subscriptions = await this.listSubscriptionStates();
+    const progress = subscriptions.map((sub) =>
+      this.mapSubscriptionToProgress(sub)
+    );
+
+    const channelPhase = this.resolveChannelPhase(progress);
+    const hasSubscriptions = progress.length > 0;
+    const basePercent = hasSubscriptions
+      ? Math.round(
+          progress.reduce((sum, item) => sum + item.progressPercent, 0) /
+            progress.length
+        )
+      : this.state.lastSyncAt !== null
+        ? 100
+        : 0;
+
+    const progressPercent =
+      channelPhase === 'live'
+        ? 100
+        : Math.max(0, Math.min(100, Math.trunc(basePercent)));
+
+    return {
+      channelPhase,
+      progressPercent,
+      subscriptions: progress,
+    };
+  }
+
+  /**
+   * Wait until the channel reaches a target phase.
+   */
+  async awaitPhase(
+    phase: SyncProgress['channelPhase'],
+    options: SyncAwaitPhaseOptions = {}
+  ): Promise<SyncProgress> {
+    const timeoutMs = Math.max(
+      0,
+      options.timeoutMs ?? DEFAULT_AWAIT_TIMEOUT_MS
+    );
+    const deadline = Date.now() + timeoutMs;
+
+    while (true) {
+      const progress = await this.getProgress();
+
+      if (progress.channelPhase === phase) {
+        return progress;
+      }
+
+      if (progress.channelPhase === 'error') {
+        const message = this.state.error?.message ?? 'Sync entered error state';
+        throw new Error(
+          `[SyncEngine.awaitPhase] Failed while waiting for "${phase}": ${message}`
+        );
+      }
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error(
+          `[SyncEngine.awaitPhase] Timed out after ${timeoutMs}ms waiting for phase "${phase}"`
+        );
+      }
+
+      await this.waitForProgressSignal(remainingMs);
+    }
+  }
+
+  /**
+   * Wait until bootstrap finishes for a state or a specific subscription.
+   */
+  async awaitBootstrapComplete(
+    options: SyncAwaitBootstrapOptions = {}
+  ): Promise<SyncProgress> {
+    const timeoutMs = Math.max(
+      0,
+      options.timeoutMs ?? DEFAULT_AWAIT_TIMEOUT_MS
+    );
+    const stateId = options.stateId ?? this.getStateId();
+    const deadline = Date.now() + timeoutMs;
+
+    while (true) {
+      const states = await this.listSubscriptionStates({ stateId });
+      const relevantStates =
+        options.subscriptionId === undefined
+          ? states
+          : states.filter(
+              (state) => state.subscriptionId === options.subscriptionId
+            );
+
+      const hasPendingBootstrap = relevantStates.some(
+        (state) => state.status === 'active' && state.bootstrapState !== null
+      );
+
+      if (!hasPendingBootstrap) {
+        return this.getProgress();
+      }
+
+      if (this.state.error) {
+        throw new Error(
+          `[SyncEngine.awaitBootstrapComplete] Failed while waiting for bootstrap completion: ${this.state.error.message}`
+        );
+      }
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        const target =
+          options.subscriptionId === undefined
+            ? `state "${stateId}"`
+            : `subscription "${options.subscriptionId}" in state "${stateId}"`;
+
+        throw new Error(
+          `[SyncEngine.awaitBootstrapComplete] Timed out after ${timeoutMs}ms waiting for ${target}`
+        );
+      }
+
+      await this.waitForProgressSignal(remainingMs);
+    }
+  }
+
+  /**
+   * Get a diagnostics snapshot suitable for debug UIs and bug reports.
+   */
+  async getDiagnostics(): Promise<SyncDiagnostics> {
+    const [subscriptions, progress, outbox, conflicts] = await Promise.all([
+      this.listSubscriptionStates(),
+      this.getProgress(),
+      this.refreshOutboxStats({ emit: false }),
+      this.getConflicts(),
+    ]);
+
+    return {
+      timestamp: Date.now(),
+      state: this.state,
+      transport: this.transportHealth,
+      progress,
+      outbox,
+      conflictCount: conflicts.length,
+      subscriptions,
+    };
+  }
+
+  /**
    * Get database instance
    */
   getDb(): Kysely<DB> {
@@ -327,6 +637,444 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    */
   getClientId(): string | null | undefined {
     return this.config.clientId;
+  }
+
+  private getStateId(): string {
+    return this.config.stateId ?? DEFAULT_SYNC_STATE_ID;
+  }
+
+  private makeBootstrapKey(stateId: string, subscriptionId: string): string {
+    return `${stateId}:${subscriptionId}`;
+  }
+
+  private updateTransportHealth(partial: Partial<TransportHealth>): void {
+    this.transportHealth = {
+      ...this.transportHealth,
+      ...partial,
+    };
+    this.emit('state:change', {});
+  }
+
+  private waitForProgressSignal(timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const cleanups: Array<() => void> = [];
+      let settled = false;
+
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        for (const cleanup of cleanups) cleanup();
+        resolve();
+      };
+
+      const listen = (event: SyncEventType) => {
+        cleanups.push(this.on(event, finish));
+      };
+
+      listen('sync:start');
+      listen('sync:complete');
+      listen('sync:error');
+      listen('sync:live');
+      listen('bootstrap:start');
+      listen('bootstrap:progress');
+      listen('bootstrap:complete');
+
+      const timeoutId = setTimeout(finish, Math.max(1, timeoutMs));
+    });
+  }
+
+  private mapSubscriptionToProgress(
+    subscription: SubscriptionState
+  ): SubscriptionProgress {
+    if (subscription.status === 'revoked') {
+      return {
+        stateId: subscription.stateId,
+        id: subscription.subscriptionId,
+        table: subscription.table,
+        phase: 'error',
+        progressPercent: 0,
+        startedAt: subscription.createdAt,
+        completedAt: subscription.updatedAt,
+        lastErrorCode: 'SUBSCRIPTION_REVOKED',
+        lastErrorMessage: 'Subscription is revoked',
+      };
+    }
+
+    if (subscription.bootstrapState) {
+      const tableCount = Math.max(0, subscription.bootstrapState.tables.length);
+      const tableIndex = Math.max(0, subscription.bootstrapState.tableIndex);
+      const tablesProcessed = Math.min(tableCount, tableIndex);
+      const progressPercent =
+        tableCount === 0
+          ? 0
+          : Math.max(
+              0,
+              Math.min(100, Math.round((tablesProcessed / tableCount) * 100))
+            );
+
+      return {
+        stateId: subscription.stateId,
+        id: subscription.subscriptionId,
+        table: subscription.table,
+        phase: 'bootstrapping',
+        progressPercent,
+        tablesProcessed,
+        tablesTotal: tableCount,
+        startedAt: this.bootstrapStartedAt.get(
+          this.makeBootstrapKey(
+            subscription.stateId,
+            subscription.subscriptionId
+          )
+        ),
+      };
+    }
+
+    if (this.state.error) {
+      return {
+        stateId: subscription.stateId,
+        id: subscription.subscriptionId,
+        table: subscription.table,
+        phase: 'error',
+        progressPercent: subscription.cursor >= 0 ? 100 : 0,
+        startedAt: subscription.createdAt,
+        lastErrorCode: this.state.error.code,
+        lastErrorMessage: this.state.error.message,
+      };
+    }
+
+    if (this.state.isSyncing) {
+      return {
+        stateId: subscription.stateId,
+        id: subscription.subscriptionId,
+        table: subscription.table,
+        phase: 'catching_up',
+        progressPercent: subscription.cursor >= 0 ? 90 : 0,
+        startedAt: subscription.createdAt,
+      };
+    }
+
+    if (subscription.cursor >= 0 || this.state.lastSyncAt !== null) {
+      return {
+        stateId: subscription.stateId,
+        id: subscription.subscriptionId,
+        table: subscription.table,
+        phase: 'live',
+        progressPercent: 100,
+        startedAt: subscription.createdAt,
+        completedAt: subscription.updatedAt,
+      };
+    }
+
+    return {
+      stateId: subscription.stateId,
+      id: subscription.subscriptionId,
+      table: subscription.table,
+      phase: 'idle',
+      progressPercent: 0,
+      startedAt: subscription.createdAt,
+    };
+  }
+
+  private resolveChannelPhase(
+    subscriptions: SubscriptionProgress[]
+  ): SyncProgress['channelPhase'] {
+    if (this.state.error) return 'error';
+    if (subscriptions.some((sub) => sub.phase === 'error')) return 'error';
+    if (subscriptions.some((sub) => sub.phase === 'bootstrapping')) {
+      return 'bootstrapping';
+    }
+    if (this.state.isSyncing) {
+      return this.state.lastSyncAt === null ? 'starting' : 'catching_up';
+    }
+    if (this.state.lastSyncAt !== null) return 'live';
+    return 'idle';
+  }
+
+  private deriveProgressFromPullSubscription(
+    sub: SyncPullSubscriptionResponse
+  ): SubscriptionProgress {
+    const stateId = this.getStateId();
+    const key = this.makeBootstrapKey(stateId, sub.id);
+    const startedAt = this.bootstrapStartedAt.get(key);
+
+    if (sub.status === 'revoked') {
+      return {
+        stateId,
+        id: sub.id,
+        phase: 'error',
+        progressPercent: 0,
+        startedAt,
+        completedAt: Date.now(),
+        lastErrorCode: 'SUBSCRIPTION_REVOKED',
+        lastErrorMessage: 'Subscription is revoked',
+      };
+    }
+
+    if (sub.bootstrap && sub.bootstrapState) {
+      const tableCount = Math.max(0, sub.bootstrapState.tables.length);
+      const tableIndex = Math.max(0, sub.bootstrapState.tableIndex);
+      const tablesProcessed = Math.min(tableCount, tableIndex);
+      const progressPercent =
+        tableCount === 0
+          ? 0
+          : Math.max(
+              0,
+              Math.min(100, Math.round((tablesProcessed / tableCount) * 100))
+            );
+
+      return {
+        stateId,
+        id: sub.id,
+        phase: 'bootstrapping',
+        progressPercent,
+        tablesProcessed,
+        tablesTotal: tableCount,
+        startedAt,
+      };
+    }
+
+    return {
+      stateId,
+      id: sub.id,
+      phase: this.state.isSyncing ? 'catching_up' : 'live',
+      progressPercent: this.state.isSyncing ? 90 : 100,
+      startedAt,
+      completedAt: this.state.isSyncing ? undefined : Date.now(),
+    };
+  }
+
+  private handleBootstrapLifecycle(response: SyncPullResponse): void {
+    const stateId = this.getStateId();
+    const now = Date.now();
+    const seenKeys = new Set<string>();
+
+    for (const sub of response.subscriptions ?? []) {
+      const key = this.makeBootstrapKey(stateId, sub.id);
+      seenKeys.add(key);
+      const isBootstrapping = sub.bootstrap === true;
+      const wasBootstrapping = this.activeBootstrapSubscriptions.has(key);
+
+      if (isBootstrapping && !wasBootstrapping) {
+        this.activeBootstrapSubscriptions.add(key);
+        this.bootstrapStartedAt.set(key, now);
+        this.emit('bootstrap:start', {
+          timestamp: now,
+          stateId,
+          subscriptionId: sub.id,
+        });
+      }
+
+      if (isBootstrapping) {
+        this.emit('bootstrap:progress', {
+          timestamp: now,
+          stateId,
+          subscriptionId: sub.id,
+          progress: this.deriveProgressFromPullSubscription(sub),
+        });
+      }
+
+      if (!isBootstrapping && wasBootstrapping) {
+        const startedAt = this.bootstrapStartedAt.get(key) ?? now;
+        this.activeBootstrapSubscriptions.delete(key);
+        this.bootstrapStartedAt.delete(key);
+        this.emit('bootstrap:complete', {
+          timestamp: now,
+          stateId,
+          subscriptionId: sub.id,
+          durationMs: Math.max(0, now - startedAt),
+        });
+      }
+    }
+
+    for (const key of Array.from(this.activeBootstrapSubscriptions)) {
+      if (seenKeys.has(key)) continue;
+      if (!key.startsWith(`${stateId}:`)) continue;
+      const subscriptionId = key.slice(stateId.length + 1);
+      if (!subscriptionId) continue;
+
+      const startedAt = this.bootstrapStartedAt.get(key) ?? now;
+      this.activeBootstrapSubscriptions.delete(key);
+      this.bootstrapStartedAt.delete(key);
+      this.emit('bootstrap:complete', {
+        timestamp: now,
+        stateId,
+        subscriptionId,
+        durationMs: Math.max(0, now - startedAt),
+      });
+    }
+
+    if (this.activeBootstrapSubscriptions.size === 0 && !this.state.error) {
+      this.emit('sync:live', { timestamp: now });
+    }
+  }
+
+  private async resolveResetTargets(
+    options: SyncResetOptions
+  ): Promise<SubscriptionState[]> {
+    const stateId = options.stateId ?? this.getStateId();
+
+    if (options.scope === 'all') {
+      return readSubscriptionStates(this.config.db);
+    }
+
+    if (options.scope === 'state') {
+      return readSubscriptionStates(this.config.db, { stateId });
+    }
+
+    const subscriptionIds = options.subscriptionIds ?? [];
+    if (subscriptionIds.length === 0) {
+      throw new Error(
+        '[SyncEngine.reset] subscriptionIds is required when scope="subscription"'
+      );
+    }
+
+    const allInState = await readSubscriptionStates(this.config.db, {
+      stateId,
+    });
+    const wanted = new Set(subscriptionIds);
+    return allInState.filter((state) => wanted.has(state.subscriptionId));
+  }
+
+  private async clearSyncedTablesForReset(
+    trx: Transaction<DB>,
+    options: SyncResetOptions,
+    targets: SubscriptionState[]
+  ): Promise<string[]> {
+    const clearedTables: string[] = [];
+
+    if (!options.clearSyncedTables) {
+      return clearedTables;
+    }
+
+    if (options.scope === 'all') {
+      for (const handler of this.config.handlers.getAll()) {
+        await handler.clearAll({ trx, scopes: {} });
+        clearedTables.push(handler.table);
+      }
+      return clearedTables;
+    }
+
+    const seen = new Set<string>();
+    for (const target of targets) {
+      const handler = this.config.handlers.get(target.table);
+      if (!handler) continue;
+
+      const key = `${target.table}:${JSON.stringify(target.scopes)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      await handler.clearAll({ trx, scopes: target.scopes });
+      clearedTables.push(target.table);
+    }
+
+    return clearedTables;
+  }
+
+  async reset(options: SyncResetOptions): Promise<SyncResetResult> {
+    const resetOptions: SyncResetOptions = {
+      clearOutbox: false,
+      clearConflicts: false,
+      clearSyncedTables: false,
+      ...options,
+    };
+    const targets = await this.resolveResetTargets(resetOptions);
+    const stateId = resetOptions.stateId ?? this.getStateId();
+
+    this.stop();
+
+    const result = await this.config.db.transaction().execute(async (trx) => {
+      const clearedTables = await this.clearSyncedTablesForReset(
+        trx,
+        resetOptions,
+        targets
+      );
+
+      let deletedSubscriptionStates = 0;
+      if (resetOptions.scope === 'all') {
+        const res = await sql`
+          delete from ${sql.table('sync_subscription_state')}
+        `.execute(trx);
+        deletedSubscriptionStates = Number(res.numAffectedRows ?? 0);
+      } else if (resetOptions.scope === 'state') {
+        const res = await sql`
+          delete from ${sql.table('sync_subscription_state')}
+          where ${sql.ref('state_id')} = ${sql.val(stateId)}
+        `.execute(trx);
+        deletedSubscriptionStates = Number(res.numAffectedRows ?? 0);
+      } else {
+        const subscriptionIds = resetOptions.subscriptionIds ?? [];
+        const res = await sql`
+          delete from ${sql.table('sync_subscription_state')}
+          where
+            ${sql.ref('state_id')} = ${sql.val(stateId)}
+            and ${sql.ref('subscription_id')} in (${sql.join(
+              subscriptionIds.map((id) => sql.val(id))
+            )})
+        `.execute(trx);
+        deletedSubscriptionStates = Number(res.numAffectedRows ?? 0);
+      }
+
+      let deletedOutboxCommits = 0;
+      if (resetOptions.clearOutbox) {
+        const res = await sql`
+          delete from ${sql.table('sync_outbox_commits')}
+        `.execute(trx);
+        deletedOutboxCommits = Number(res.numAffectedRows ?? 0);
+      }
+
+      let deletedConflicts = 0;
+      if (resetOptions.clearConflicts) {
+        const res = await sql`
+          delete from ${sql.table('sync_conflicts')}
+        `.execute(trx);
+        deletedConflicts = Number(res.numAffectedRows ?? 0);
+      }
+
+      return {
+        deletedSubscriptionStates,
+        deletedOutboxCommits,
+        deletedConflicts,
+        clearedTables,
+      };
+    });
+
+    if (resetOptions.scope === 'all') {
+      this.activeBootstrapSubscriptions.clear();
+      this.bootstrapStartedAt.clear();
+    } else {
+      for (const target of targets) {
+        const key = this.makeBootstrapKey(
+          target.stateId,
+          target.subscriptionId
+        );
+        this.activeBootstrapSubscriptions.delete(key);
+        this.bootstrapStartedAt.delete(key);
+      }
+    }
+
+    this.resetLocalState();
+    await this.refreshOutboxStats();
+    this.updateState({ error: null });
+
+    return result;
+  }
+
+  async repair(options: SyncRepairOptions): Promise<SyncResetResult> {
+    if (options.mode !== 'rebootstrap-missing-chunks') {
+      throw new Error(
+        `[SyncEngine.repair] Unsupported repair mode: ${options.mode}`
+      );
+    }
+
+    return this.reset({
+      scope: options.subscriptionIds ? 'subscription' : 'state',
+      stateId: options.stateId,
+      subscriptionIds: options.subscriptionIds,
+      clearOutbox: options.clearOutbox ?? false,
+      clearConflicts: options.clearConflicts ?? false,
+      clearSyncedTables: true,
+    });
   }
 
   /**
@@ -441,11 +1189,17 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         const migrationError =
           err instanceof Error ? err : new Error(String(err));
         this.config.onMigrationError?.(migrationError);
-        const error = createSyncError(
-          'SYNC_ERROR',
-          'Migration failed',
-          migrationError
-        );
+        const error = createSyncError({
+          code: 'MIGRATION_FAILED',
+          message: 'Migration failed',
+          cause: migrationError,
+          retryable: false,
+          stateId: this.getStateId(),
+        });
+        this.updateState({
+          isSyncing: false,
+          error,
+        });
         this.handleError(error);
         return;
       }
@@ -513,7 +1267,12 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         pushedCommits: 0,
         pullRounds: 0,
         pullResponse: { ok: true, subscriptions: [] },
-        error: createSyncError('SYNC_ERROR', 'Sync not enabled'),
+        error: createSyncError({
+          code: 'SYNC_ERROR',
+          message: 'Sync not enabled',
+          retryable: false,
+          stateId: this.getStateId(),
+        }),
       };
     }
 
@@ -533,7 +1292,12 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       pushedCommits: 0,
       pullRounds: 0,
       pullResponse: { ok: true, subscriptions: [] },
-      error: createSyncError('SYNC_ERROR', 'Sync not started'),
+      error: createSyncError({
+        code: 'SYNC_ERROR',
+        message: 'Sync not started',
+        retryable: false,
+        stateId: this.getStateId(),
+      }),
     };
 
     do {
@@ -614,6 +1378,9 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         retryCount: 0,
         isRetrying: false,
       });
+      this.updateTransportHealth({
+        lastSuccessfulPollAt: Date.now(),
+      });
 
       this.emit('sync:complete', {
         timestamp: Date.now(),
@@ -631,6 +1398,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         });
         this.config.onDataChange?.(changedTables);
       }
+      this.handleBootstrapLifecycle(result.pullResponse);
 
       // Refresh outbox stats (fire-and-forget — don't block sync:complete)
       this.refreshOutboxStats().catch((error) => {
@@ -671,11 +1439,15 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
       return syncResult;
     } catch (err) {
-      const error = createSyncError(
-        'SYNC_ERROR',
-        err instanceof Error ? err.message : 'Sync failed',
-        err instanceof Error ? err : undefined
-      );
+      const classified = classifySyncFailure(err);
+      const error = createSyncError({
+        code: classified.code,
+        message: classified.message,
+        cause: classified.cause,
+        retryable: classified.retryable,
+        httpStatus: classified.httpStatus,
+        stateId: this.getStateId(),
+      });
 
       this.updateState({
         isSyncing: false,
@@ -707,7 +1479,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
       // Schedule retry if under max retries
       const maxRetries = this.config.maxRetries ?? DEFAULT_MAX_RETRIES;
-      if (this.state.retryCount < maxRetries) {
+      if (error.retryable && this.state.retryCount < maxRetries) {
         this.scheduleRetry();
       }
 
@@ -886,6 +1658,12 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       retryCount: 0,
       isRetrying: false,
     });
+    this.updateTransportHealth({
+      mode: 'realtime',
+      connected: true,
+      fallbackReason: null,
+      lastSuccessfulPollAt: Date.now(),
+    });
 
     this.emit('sync:complete', {
       timestamp: Date.now(),
@@ -893,6 +1671,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       pullRounds: 0,
       pullResponse: { ok: true, subscriptions: [] },
     });
+    this.emit('sync:live', { timestamp: Date.now() });
 
     this.refreshOutboxStats().catch((error) => {
       console.warn(
@@ -1041,6 +1820,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }, interval);
 
     this.setConnectionState('connected');
+    this.updateTransportHealth({
+      mode: 'polling',
+      connected: true,
+      fallbackReason: null,
+    });
   }
 
   private stopPolling(): void {
@@ -1061,6 +1845,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
 
     this.setConnectionState('connecting');
+    this.updateTransportHealth({
+      mode: 'disconnected',
+      connected: false,
+      fallbackReason: null,
+    });
 
     const transport = this.config.transport as RealtimeTransportLike;
 
@@ -1089,6 +1878,9 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       { clientId: this.config.clientId! },
       (event) => {
         if (event.event === 'sync') {
+          this.updateTransportHealth({
+            lastRealtimeMessageAt: Date.now(),
+          });
           countSyncMetric('sync.client.ws.events', 1, {
             attributes: { type: 'sync' },
           });
@@ -1114,6 +1906,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
             const wasConnectedBefore = this.hasRealtimeConnectedOnce;
             this.hasRealtimeConnectedOnce = true;
             this.setConnectionState('connected');
+            this.updateTransportHealth({
+              mode: 'realtime',
+              connected: true,
+              fallbackReason: null,
+            });
             this.stopFallbackPolling();
             this.triggerSyncInBackground(undefined, 'realtime connected state');
             if (wasConnectedBefore) {
@@ -1123,9 +1920,17 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
           }
           case 'connecting':
             this.setConnectionState('connecting');
+            this.updateTransportHealth({
+              mode: 'disconnected',
+              connected: false,
+            });
             break;
           case 'disconnected':
             this.setConnectionState('reconnecting');
+            this.updateTransportHealth({
+              mode: 'disconnected',
+              connected: false,
+            });
             this.startFallbackPolling();
             break;
         }
@@ -1147,6 +1952,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       this.realtimeDisconnect = null;
     }
     this.stopFallbackPolling();
+    this.updateTransportHealth({
+      mode: 'disconnected',
+      connected: false,
+    });
   }
 
   private scheduleRealtimeReconnectCatchupSync(): void {
@@ -1168,6 +1977,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     if (this.fallbackPollerId) return;
 
     const interval = this.config.realtimeFallbackPollMs ?? 30_000;
+    this.updateTransportHealth({
+      mode: 'polling',
+      connected: false,
+      fallbackReason: 'network',
+    });
     this.fallbackPollerId = setInterval(() => {
       if (!this.state.isSyncing && !this.isDestroyed) {
         this.triggerSyncInBackground(undefined, 'realtime fallback poll');
@@ -1180,6 +1994,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       clearInterval(this.fallbackPollerId);
       this.fallbackPollerId = null;
     }
+    this.updateTransportHealth({ fallbackReason: null });
   }
 
   /**
