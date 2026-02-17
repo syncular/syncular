@@ -147,11 +147,10 @@ describe('console timeline route filters', () => {
   let db: Kysely<TestDb>;
   let dialect: ReturnType<typeof createPostgresServerDialect>;
   let app: Hono;
+  let baseTimeMs: number;
 
   function atIso(minutes: number): string {
-    return new Date(
-      `2026-02-16T11:${String(minutes).padStart(2, '0')}:00.000Z`
-    ).toISOString();
+    return new Date(baseTimeMs + minutes * 60_000).toISOString();
   }
 
   async function requestTimeline(args: {
@@ -445,6 +444,11 @@ describe('console timeline route filters', () => {
   }
 
   beforeEach(async () => {
+    // Keep fixture events within the current metrics windows (for example 24h).
+    baseTimeMs =
+      Math.floor(Date.now() / (60 * 60 * 1000)) * (60 * 60 * 1000) -
+      60 * 60 * 1000;
+
     dialect = createPostgresServerDialect();
     db = createPgliteDb<TestDb>();
     await ensureSyncSchema(db, dialect);
