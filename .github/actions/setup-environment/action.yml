@@ -8,10 +8,40 @@ runs:
       with:
         node-version: 24
 
+    - name: Resolve Bun download URL
+      id: setup-bun-url
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        bun_version="1.3.9"
+
+        case "$(uname -s)/$(uname -m)" in
+          Linux/x86_64)
+            bun_target="linux-x64"
+            ;;
+          Linux/aarch64|Linux/arm64)
+            bun_target="linux-aarch64"
+            ;;
+          Darwin/x86_64)
+            bun_target="darwin-x64"
+            ;;
+          Darwin/arm64)
+            bun_target="darwin-aarch64"
+            ;;
+          *)
+            echo "Unsupported runner platform for Bun: $(uname -s)/$(uname -m)" >&2
+            exit 1
+            ;;
+        esac
+
+        echo "url=https://github.com/oven-sh/bun/releases/download/bun-v${bun_version}/bun-${bun_target}.zip" >> "$GITHUB_OUTPUT"
+
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
       with:
         bun-version: 1.3.9
+        bun-download-url: ${{ steps.setup-bun-url.outputs.url }}
 
     - name: Install Dependencies
       shell: bash
