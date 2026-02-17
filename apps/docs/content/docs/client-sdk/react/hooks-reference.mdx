@@ -54,6 +54,7 @@ function SyncControls() {
     reconnect,
     start,
     getDiagnostics,
+    getInspectorSnapshot,
     awaitPhase,
     awaitBootstrapComplete,
   } = useSyncEngine();
@@ -72,6 +73,9 @@ function SyncControls() {
       </Button>
       <Button onClick={async () => console.log(await getDiagnostics())}>
         Dump Diagnostics
+      </Button>
+      <Button onClick={async () => console.log(await getInspectorSnapshot())}>
+        Dump Inspector Snapshot
       </Button>
     </div>
   );
@@ -147,6 +151,33 @@ function BootstrapProgress() {
     <div>
       <p>Phase: {progress.channelPhase}</p>
       <p>{progress.progressPercent}%</p>
+    </div>
+  );
+}
+```
+
+## useSyncInspector
+
+Get a serializable debug payload (diagnostics + recent events) for in-app devtools.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncInspector } = createSyncularReact<AppDb>();
+
+function InspectorDump() {
+  const { snapshot, isLoading, refresh } = useSyncInspector({
+    pollIntervalMs: 2000,
+    eventLimit: 200,
+  });
+
+  if (isLoading || !snapshot) return <div>Loading inspector...</div>;
+
+  return (
+    <div>
+      <button onClick={() => refresh()}>Refresh</button>
+      <pre>{JSON.stringify(snapshot, null, 2)}</pre>
     </div>
   );
 }

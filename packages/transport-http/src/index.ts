@@ -5,6 +5,9 @@
  */
 
 import type {
+  SyncAuthErrorContext,
+  SyncAuthLifecycle,
+  SyncAuthOperation,
   SyncCombinedRequest,
   SyncCombinedResponse,
   SyncTransport,
@@ -16,6 +19,9 @@ import createClient from 'openapi-fetch';
 import type { paths } from './generated/api';
 
 export type {
+  SyncAuthErrorContext,
+  SyncAuthLifecycle,
+  SyncAuthOperation,
   SyncTransport,
   SyncTransportBlobs,
   SyncTransportOptions,
@@ -66,24 +72,30 @@ type ApiResult<T> = {
   response: Response;
 };
 
+type ResolveAuthRetry = (
+  context: SyncAuthErrorContext,
+  options?: SyncTransportOptions
+) => Promise<boolean>;
+
 async function executeWithAuthRetry<T>(
   execute: (signal?: AbortSignal) => Promise<ApiResult<T>>,
-  options?: SyncTransportOptions
+  options: SyncTransportOptions | undefined,
+  operation: SyncAuthOperation,
+  resolveAuthRetry: ResolveAuthRetry
 ): Promise<ApiResult<T>> {
   const first = await execute(options?.signal);
   if (first.response.status !== 401 && first.response.status !== 403) {
     return first;
   }
-  if (!options?.onAuthError) {
-    return first;
-  }
-
-  const shouldRetry = await options.onAuthError();
+  const shouldRetry = await resolveAuthRetry(
+    { operation, status: first.response.status },
+    options
+  );
   if (!shouldRetry) {
     return first;
   }
 
-  return execute(options.signal);
+  return execute(options?.signal);
 }
 
 // Re-export useful types from the generated API
@@ -95,6 +107,8 @@ export interface ClientOptions {
   baseUrl: string;
   /** Function to get headers for requests (e.g., for auth tokens) */
   getHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
+  /** Shared auth lifecycle for all transport operations. */
+  authLifecycle?: SyncAuthLifecycle;
   /** Custom fetch implementation (defaults to globalThis.fetch) */
   fetch?: typeof globalThis.fetch;
   /**
@@ -209,15 +223,58 @@ export function createHttpTransport(
       : createApiClient(clientOrOptions);
   const transportOptions =
     'GET' in clientOrOptions ? undefined : clientOrOptions;
+  const defaultAuthLifecycle = transportOptions?.authLifecycle;
+
+  let refreshInFlight: Promise<boolean> | null = null;
+
+  const runRefreshSingleFlight = async (
+    lifecycle: SyncAuthLifecycle,
+    context: SyncAuthErrorContext
+  ): Promise<boolean> => {
+    if (!lifecycle.refreshToken) return false;
+
+    if (!refreshInFlight) {
+      refreshInFlight = Promise.resolve(lifecycle.refreshToken(context))
+        .then((result) => Boolean(result))
+        .finally(() => {
+          refreshInFlight = null;
+        });
+    }
+
+    return refreshInFlight;
+  };
+
+  const resolveAuthRetry: ResolveAuthRetry = async (context, options) => {
+    if (options?.onAuthError) {
+      return Boolean(await options.onAuthError());
+    }
+
+    const lifecycle = options?.authLifecycle ?? defaultAuthLifecycle;
+    if (!lifecycle) return false;
+
+    await lifecycle.onAuthExpired?.(context);
+
+    const refreshResult = await runRefreshSingleFlight(lifecycle, context);
+    if (lifecycle.retryWithFreshToken) {
+      return Boolean(
+        await lifecycle.retryWithFreshToken({ ...context, refreshResult })
+      );
+    }
+    return refreshResult;
+  };
 
   // Create blob operations using the typed OpenAPI client
   const blobs: SyncTransportBlobs = {
     async initiateUpload(args) {
-      const { data, error, response } = await client.POST(
-        '/sync/blobs/upload',
-        {
-          body: args,
-        }
+      const { data, error, response } = await executeWithAuthRetry(
+        (signal) =>
+          client.POST('/sync/blobs/upload', {
+            body: args,
+            ...(signal ? { signal } : {}),
+          }),
+        undefined,
+        'blobInitiateUpload',
+        resolveAuthRetry
       );
 
       if (error || !data) {
@@ -231,9 +288,16 @@ export function createHttpTransport(
     },
 
     async completeUpload(hash) {
-      const { data, error } = await client.POST('/sync/blobs/{hash}/complete', {
-        params: { path: { hash } },
-      });
+      const { data, error } = await executeWithAuthRetry(
+        (signal) =>
+          client.POST('/sync/blobs/{hash}/complete', {
+            params: { path: { hash } },
+            ...(signal ? { signal } : {}),
+          }),
+        undefined,
+        'blobCompleteUpload',
+        resolveAuthRetry
+      );
 
       if (error || !data) {
         return {
@@ -246,11 +310,15 @@ export function createHttpTransport(
     },
 
     async getDownloadUrl(hash) {
-      const { data, error, response } = await client.GET(
-        '/sync/blobs/{hash}/url',
-        {
-          params: { path: { hash } },
-        }
+      const { data, error, response } = await executeWithAuthRetry(
+        (signal) =>
+          client.GET('/sync/blobs/{hash}/url', {
+            params: { path: { hash } },
+            ...(signal ? { signal } : {}),
+          }),
+        undefined,
+        'blobGetDownloadUrl',
+        resolveAuthRetry
       );
 
       if (error || !data) {
@@ -278,7 +346,9 @@ export function createHttpTransport(
             body: request,
             ...(signal ? { signal } : {}),
           }),
-        transportOptions
+        transportOptions,
+        'sync',
+        resolveAuthRetry
       );
 
       if (error || !data) {
@@ -302,7 +372,9 @@ export function createHttpTransport(
             parseAs: 'blob',
             ...(signal ? { signal } : {}),
           }),
-        transportOptions
+        transportOptions,
+        'snapshotChunk',
+        resolveAuthRetry
       );
 
       if (error || !data) {
@@ -354,13 +426,16 @@ export function createHttpTransport(
       };
 
       let response = await performRequest(options?.signal);
-      if (
-        (response.status === 401 || response.status === 403) &&
-        options?.onAuthError
-      ) {
-        const shouldRetry = await options.onAuthError();
+      if (response.status === 401 || response.status === 403) {
+        const shouldRetry = await resolveAuthRetry(
+          {
+            operation: 'snapshotChunkStream',
+            status: response.status,
+          },
+          options
+        );
         if (shouldRetry) {
-          response = await performRequest(options.signal);
+          response = await performRequest(options?.signal);
         }
       }
 

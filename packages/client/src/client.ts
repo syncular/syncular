@@ -28,6 +28,8 @@ import type {
   SyncAwaitPhaseOptions,
   SyncDiagnostics,
   SyncEngineState,
+  SyncInspectorOptions,
+  SyncInspectorSnapshot,
   SyncProgress,
   SyncRepairOptions,
   SyncResetOptions,
@@ -565,6 +567,16 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
   async getDiagnostics(): Promise<SyncDiagnostics | null> {
     if (!this.engine) return null;
     return this.engine.getDiagnostics();
+  }
+
+  /**
+   * Get a serializable inspector snapshot for in-app debug tooling.
+   */
+  async getInspectorSnapshot(
+    options?: SyncInspectorOptions
+  ): Promise<SyncInspectorSnapshot | null> {
+    if (!this.engine) return null;
+    return this.engine.getInspectorSnapshot(options);
   }
 
   /**

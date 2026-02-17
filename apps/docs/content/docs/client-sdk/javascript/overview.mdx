@@ -102,6 +102,7 @@ interface ClientOptions<DB> {
 | `getTransportHealth()` | Get transport mode/fallback health |
 | `getProgress()` | Get computed channel + subscription progress |
 | `getDiagnostics()` | Get a support/debug diagnostics snapshot |
+| `getInspectorSnapshot(options?)` | Get a serializable inspector payload (diagnostics + recent events) |
 | `awaitPhase(phase, options?)` | Wait until the channel reaches a target phase |
 | `awaitBootstrapComplete(options?)` | Wait for bootstrap completion (state/subscription scoped) |
 | `listSubscriptionStates()` | List persisted subscription state metadata |

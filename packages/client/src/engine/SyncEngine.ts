@@ -47,6 +47,9 @@ import type {
   SyncEventListener,
   SyncEventPayloads,
   SyncEventType,
+  SyncInspectorEvent,
+  SyncInspectorOptions,
+  SyncInspectorSnapshot,
   SyncProgress,
   SyncRepairOptions,
   SyncResetOptions,
@@ -63,6 +66,8 @@ const MAX_RETRY_DELAY_MS = 60000;
 const EXPONENTIAL_FACTOR = 2;
 const REALTIME_RECONNECT_CATCHUP_DELAY_MS = 500;
 const DEFAULT_AWAIT_TIMEOUT_MS = 60_000;
+const DEFAULT_INSPECTOR_EVENT_LIMIT = 100;
+const MAX_INSPECTOR_EVENT_LIMIT = 500;
 
 function calculateRetryDelay(attemptIndex: number): number {
   return Math.min(
@@ -197,6 +202,33 @@ function resolveSyncTriggerLabel(
   return trigger ?? 'auto';
 }
 
+function serializeInspectorValue(value: unknown): unknown {
+  const encoded = JSON.stringify(value, (_key, nextValue) => {
+    if (nextValue instanceof Error) {
+      return {
+        name: nextValue.name,
+        message: nextValue.message,
+        stack: nextValue.stack,
+      };
+    }
+    if (typeof nextValue === 'bigint') {
+      return nextValue.toString();
+    }
+    return nextValue;
+  });
+
+  if (!encoded) return null;
+  return JSON.parse(encoded) as unknown;
+}
+
+function serializeInspectorRecord(value: unknown): Record<string, unknown> {
+  const serialized = serializeInspectorValue(value);
+  if (isRecord(serialized)) {
+    return serialized;
+  }
+  return { value: serialized };
+}
+
 /**
  * Sync engine that orchestrates push/pull cycles with proper lifecycle management.
  *
@@ -233,6 +265,8 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   };
   private activeBootstrapSubscriptions = new Set<string>();
   private bootstrapStartedAt = new Map<string, number>();
+  private inspectorEvents: SyncInspectorEvent[] = [];
+  private nextInspectorEventId = 1;
 
   /**
    * In-memory map tracking local mutation timestamps by rowId.
@@ -615,6 +649,29 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       outbox,
       conflictCount: conflicts.length,
       subscriptions,
+    };
+  }
+
+  /**
+   * Get a serializable inspector snapshot for app debug UIs and support tooling.
+   */
+  async getInspectorSnapshot(
+    options: SyncInspectorOptions = {}
+  ): Promise<SyncInspectorSnapshot> {
+    const diagnostics = await this.getDiagnostics();
+    const requestedLimit = options.eventLimit ?? DEFAULT_INSPECTOR_EVENT_LIMIT;
+    const eventLimit = Math.max(
+      0,
+      Math.min(MAX_INSPECTOR_EVENT_LIMIT, requestedLimit)
+    );
+    const recentEvents =
+      eventLimit === 0 ? [] : this.inspectorEvents.slice(-eventLimit);
+
+    return {
+      version: 1,
+      generatedAt: Date.now(),
+      diagnostics: serializeInspectorRecord(diagnostics),
+      recentEvents,
     };
   }
 
@@ -1109,6 +1166,19 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     event: T,
     payload: SyncEventPayloads[T]
   ): void {
+    this.inspectorEvents.push({
+      id: this.nextInspectorEventId++,
+      event,
+      timestamp: Date.now(),
+      payload: serializeInspectorRecord(payload),
+    });
+    if (this.inspectorEvents.length > MAX_INSPECTOR_EVENT_LIMIT) {
+      this.inspectorEvents.splice(
+        0,
+        this.inspectorEvents.length - MAX_INSPECTOR_EVENT_LIMIT
+      );
+    }
+
     const eventListeners = this.listeners.get(event);
     if (eventListeners) {
       for (const listener of eventListeners) {

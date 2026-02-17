@@ -107,19 +107,25 @@ const transport = createHttpTransport({
 
 Transport operations also accept per-call options:
 - `signal` to cancel an in-flight request
-- `onAuthError` to refresh credentials and retry once after `401`/`403`
+- `authLifecycle` to provide `onAuthExpired`, `refreshToken`, and `retryWithFreshToken`
 
-Example token refresh flow:
+Recommended auth refresh flow (shared lifecycle):
 
 ```typescript
-const syncCall = () =>
-  transport.sync(request, {
-    onAuthError: async () => {
-      const refreshed = await auth.refreshToken();
-      return refreshed; // true => retry once, false => fail fast
+const transport = createHttpTransport({
+  baseUrl: API_BASE,
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+  authLifecycle: {
+    onAuthExpired: ({ operation, status }) => {
+      console.warn('Auth expired', operation, status);
     },
-  });
+    refreshToken: async () => auth.refreshToken(),
+    retryWithFreshToken: async ({ refreshResult }) => refreshResult,
+  },
+});
 ```
+
+Legacy per-call override (`onAuthError`) is still supported when you need one-off behavior for a specific request.
 
 For realtime wake-ups:
 

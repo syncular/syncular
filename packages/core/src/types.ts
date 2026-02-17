@@ -69,12 +69,55 @@ export type MergeResult = MergeResultOk | MergeResultConflict;
  * Options for transport operations.
  * Provides hooks for auth errors and cancellation support.
  */
+export type SyncAuthOperation =
+  | 'sync'
+  | 'snapshotChunk'
+  | 'snapshotChunkStream'
+  | 'blobInitiateUpload'
+  | 'blobCompleteUpload'
+  | 'blobGetDownloadUrl';
+
+export interface SyncAuthErrorContext {
+  operation: SyncAuthOperation;
+  status: 401 | 403;
+}
+
+export interface SyncAuthRetryContext extends SyncAuthErrorContext {
+  refreshResult: boolean;
+}
+
+export interface SyncAuthLifecycle {
+  /**
+   * Called when a request receives 401/403.
+   * Useful for marking auth/session as stale in app state.
+   */
+  onAuthExpired?: (context: SyncAuthErrorContext) => Promise<void> | void;
+  /**
+   * Refresh credentials.
+   * Return true when refresh succeeded and a retry should be considered.
+   */
+  refreshToken?: (context: SyncAuthErrorContext) => Promise<boolean> | boolean;
+  /**
+   * Final retry decision after refresh completes.
+   * Defaults to `refreshResult` when omitted.
+   */
+  retryWithFreshToken?: (
+    context: SyncAuthRetryContext
+  ) => Promise<boolean> | boolean;
+}
+
 export interface SyncTransportOptions {
   /**
-   * Called when auth fails (401/403).
-   * Return true to retry the request after refreshing auth.
+   * Legacy per-call auth retry callback.
+   * Return true to retry once after refreshing auth.
+   * If provided, this takes precedence over `authLifecycle`.
    */
   onAuthError?: () => Promise<boolean>;
+  /**
+   * First-class auth lifecycle callbacks.
+   * Use this to centralize auth refresh behavior.
+   */
+  authLifecycle?: SyncAuthLifecycle;
   /**
    * Abort signal for cancellation support.
    */

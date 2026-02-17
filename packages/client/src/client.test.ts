@@ -367,3 +367,42 @@ describe('Client blob upload queue recovery', () => {
     expect(row.error).toContain('Upload timed out while in uploading state');
   });
 });
+
+describe('Client inspector snapshot', () => {
+  let db: Kysely<TestDb>;
+  let client: Client<TestDb>;
+
+  beforeEach(async () => {
+    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    await ensureClientSyncSchema(db);
+
+    const handlers = new ClientTableRegistry<TestDb>();
+    client = new Client<TestDb>({
+      db,
+      transport: noopTransport,
+      tableHandlers: handlers,
+      clientId: 'client-inspector',
+      actorId: 'u1',
+      subscriptions: [],
+    });
+  });
+
+  afterEach(async () => {
+    client.destroy();
+    await db.destroy();
+  });
+
+  it('returns a serializable inspector snapshot', async () => {
+    await client.start();
+    await client.sync();
+
+    const snapshot = await client.getInspectorSnapshot({ eventLimit: 20 });
+
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.version).toBe(1);
+    expect(snapshot?.generatedAt).toBeGreaterThan(0);
+    expect(Array.isArray(snapshot?.recentEvents)).toBe(true);
+    expect(snapshot?.recentEvents.length).toBeGreaterThan(0);
+    expect(snapshot?.diagnostics).toBeDefined();
+  });
+});

@@ -16,6 +16,13 @@ import { createHttpTransport } from '@syncular/transport-http';
 const transport = createHttpTransport({
   baseUrl: 'https://api.example.com',
   getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+  authLifecycle: {
+    onAuthExpired: ({ operation, status }) => {
+      console.warn('Auth expired', operation, status);
+    },
+    refreshToken: async () => auth.refreshToken(),
+    retryWithFreshToken: ({ refreshResult }) => refreshResult,
+  },
 });
 ```
 

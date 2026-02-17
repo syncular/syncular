@@ -154,4 +154,43 @@ describe('SyncEngine WS inline apply', () => {
       .executeTakeFirstOrThrow();
     expect(state.cursor).toBe(0);
   });
+
+  it('returns a bounded inspector snapshot with serializable events', async () => {
+    const handlers = new ClientTableRegistry<TestDb>().register({
+      table: 'tasks',
+      async applySnapshot() {},
+      async clearAll() {},
+      async applyChange() {},
+    });
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-inspector',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    await engine.start();
+    await engine.sync();
+
+    const snapshot = await engine.getInspectorSnapshot({ eventLimit: 5 });
+
+    expect(snapshot.version).toBe(1);
+    expect(snapshot.generatedAt).toBeGreaterThan(0);
+    expect(snapshot.recentEvents.length).toBeLessThanOrEqual(5);
+    expect(snapshot.recentEvents.length).toBeGreaterThan(0);
+
+    const first = snapshot.recentEvents[0];
+    if (!first) {
+      throw new Error('Expected at least one inspector event');
+    }
+    expect(typeof first.id).toBe('number');
+    expect(typeof first.event).toBe('string');
+    expect(typeof first.timestamp).toBe('number');
+    expect(typeof first.payload).toBe('object');
+    expect(snapshot.diagnostics).toBeDefined();
+  });
 });

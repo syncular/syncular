@@ -29,6 +29,8 @@ export type {
   UseResolveConflictResult,
   UseSyncConnectionResult,
   UseSyncEngineResult,
+  UseSyncInspectorOptions,
+  UseSyncInspectorResult,
   UseSyncProgressOptions,
   UseSyncProgressResult,
   UseSyncQueryOptions,

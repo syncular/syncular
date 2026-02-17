@@ -399,3 +399,21 @@ export interface SyncDiagnostics {
   conflictCount: number;
   subscriptions: SubscriptionState[];
 }
+
+export interface SyncInspectorEvent {
+  id: number;
+  event: SyncEventType;
+  timestamp: number;
+  payload: Record<string, unknown>;
+}
+
+export interface SyncInspectorOptions {
+  eventLimit?: number;
+}
+
+export interface SyncInspectorSnapshot {
+  version: 1;
+  generatedAt: number;
+  diagnostics: Record<string, unknown>;
+  recentEvents: SyncInspectorEvent[];
+}

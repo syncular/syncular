@@ -168,6 +168,7 @@ These are available on `SyncEngine` and surfaced by `Client`.
 ```typescript
 const progress = await engine.getProgress();
 const diagnostics = await engine.getDiagnostics();
+const inspector = await engine.getInspectorSnapshot({ eventLimit: 200 });
 await engine.awaitPhase('live', { timeoutMs: 60_000 });
 await engine.awaitBootstrapComplete({ stateId: 'default' });
 

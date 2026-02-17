@@ -21,6 +21,8 @@ import type {
   SyncClientDb,
   SyncClientPlugin,
   SyncDiagnostics,
+  SyncInspectorOptions,
+  SyncInspectorSnapshot,
   SyncOperation,
   SyncProgress,
   SyncRepairOptions,
@@ -138,6 +140,9 @@ export interface UseSyncEngineResult {
   getTransportHealth: () => Readonly<TransportHealth>;
   getProgress: () => Promise<SyncProgress>;
   getDiagnostics: () => Promise<SyncDiagnostics>;
+  getInspectorSnapshot: (
+    options?: SyncInspectorOptions
+  ) => Promise<SyncInspectorSnapshot>;
   listSubscriptionStates: (args?: {
     stateId?: string;
     table?: string;
@@ -202,6 +207,25 @@ export interface UseSyncProgressOptions {
 
 export interface UseSyncProgressResult {
   progress: SyncProgress | null;
+  isLoading: boolean;
+  error: Error | null;
+  refresh: () => Promise<void>;
+}
+
+export interface UseSyncInspectorOptions {
+  /**
+   * Polling interval for refreshing inspector snapshots.
+   * Set to 0 to disable interval refresh.
+   */
+  pollIntervalMs?: number;
+  /**
+   * Max number of recent events in the snapshot.
+   */
+  eventLimit?: number;
+}
+
+export interface UseSyncInspectorResult {
+  snapshot: SyncInspectorSnapshot | null;
   isLoading: boolean;
   error: Error | null;
   refresh: () => Promise<void>;
@@ -596,6 +620,10 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     );
     const getProgress = useCallback(() => engine.getProgress(), [engine]);
     const getDiagnostics = useCallback(() => engine.getDiagnostics(), [engine]);
+    const getInspectorSnapshot = useCallback(
+      (options?: SyncInspectorOptions) => engine.getInspectorSnapshot(options),
+      [engine]
+    );
     const listSubscriptionStates = useCallback(
       (args?: {
         stateId?: string;
@@ -638,6 +666,7 @@ export function createSyncularReact<DB extends SyncClientDb>() {
       getTransportHealth,
       getProgress,
       getDiagnostics,
+      getInspectorSnapshot,
       listSubscriptionStates,
       getSubscriptionState,
       reset,
@@ -817,6 +846,76 @@ export function createSyncularReact<DB extends SyncClientDb>() {
         refresh,
       }),
       [progress, isLoading, error, refresh]
+    );
+  }
+
+  function useSyncInspector(
+    options: UseSyncInspectorOptions = {}
+  ): UseSyncInspectorResult {
+    const engine = useEngine();
+    const { pollIntervalMs = 2_000, eventLimit } = options;
+
+    const [snapshot, setSnapshot] = useState<SyncInspectorSnapshot | null>(
+      null
+    );
+    const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<Error | null>(null);
+    const loadedRef = useRef(false);
+
+    const refresh = useCallback(async () => {
+      if (!loadedRef.current) {
+        setIsLoading(true);
+      }
+
+      try {
+        const next = await engine.getInspectorSnapshot({ eventLimit });
+        setSnapshot(next);
+        setError(null);
+      } catch (err) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        loadedRef.current = true;
+        setIsLoading(false);
+      }
+    }, [engine, eventLimit]);
+
+    useEffect(() => {
+      void refresh();
+    }, [refresh]);
+
+    useEffect(() => {
+      const unsubscribers = [
+        engine.on('sync:start', refresh),
+        engine.on('sync:complete', refresh),
+        engine.on('sync:error', refresh),
+        engine.on('bootstrap:start', refresh),
+        engine.on('bootstrap:progress', refresh),
+        engine.on('bootstrap:complete', refresh),
+        engine.on('connection:change', refresh),
+        engine.on('outbox:change', refresh),
+        engine.on('data:change', refresh),
+      ];
+      return () => {
+        for (const unsubscribe of unsubscribers) unsubscribe();
+      };
+    }, [engine, refresh]);
+
+    useEffect(() => {
+      if (pollIntervalMs <= 0) return;
+      const timer = setInterval(() => {
+        void refresh();
+      }, pollIntervalMs);
+      return () => clearInterval(timer);
+    }, [pollIntervalMs, refresh]);
+
+    return useMemo(
+      () => ({
+        snapshot,
+        isLoading,
+        error,
+        refresh,
+      }),
+      [snapshot, isLoading, error, refresh]
     );
   }
 
@@ -1818,6 +1917,7 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     useSyncConnection,
     useTransportHealth,
     useSyncProgress,
+    useSyncInspector,
     useSyncSubscriptions,
     useSyncSubscription,
     useSyncQuery,

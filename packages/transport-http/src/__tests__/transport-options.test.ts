@@ -195,4 +195,195 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(requestCount).toBe(2);
     expect(authErrorCount).toBe(1);
   });
+
+  it('supports auth lifecycle callbacks on 401/403', async () => {
+    let requestCount = 0;
+    let authExpiredCount = 0;
+    let refreshCount = 0;
+    let retryCount = 0;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      authLifecycle: {
+        onAuthExpired: async (context) => {
+          authExpiredCount += 1;
+          expect(context.operation).toBe('sync');
+          expect(context.status).toBe(401);
+        },
+        refreshToken: async (context) => {
+          refreshCount += 1;
+          expect(context.operation).toBe('sync');
+          expect(context.status).toBe(401);
+          return true;
+        },
+        retryWithFreshToken: async (context) => {
+          retryCount += 1;
+          expect(context.operation).toBe('sync');
+          expect(context.status).toBe(401);
+          expect(context.refreshResult).toBe(true);
+          return context.refreshResult;
+        },
+      },
+      fetch: async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(
+          JSON.stringify({ ok: true, pull: { ok: true, subscriptions: [] } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        );
+      },
+    });
+
+    const response = await transport.sync({
+      clientId: 'client-1',
+      pull: { limitCommits: 10, subscriptions: [] },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(requestCount).toBe(2);
+    expect(authExpiredCount).toBe(1);
+    expect(refreshCount).toBe(1);
+    expect(retryCount).toBe(1);
+  });
+
+  it('deduplicates concurrent token refresh requests', async () => {
+    let requestCount = 0;
+    let refreshCount = 0;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      authLifecycle: {
+        refreshToken: async () => {
+          refreshCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return true;
+        },
+      },
+      fetch: async () => {
+        requestCount += 1;
+        if (requestCount <= 2) {
+          return new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(
+          JSON.stringify({ ok: true, pull: { ok: true, subscriptions: [] } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        );
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      transport.sync({
+        clientId: 'client-a',
+        pull: { limitCommits: 10, subscriptions: [] },
+      }),
+      transport.sync({
+        clientId: 'client-b',
+        pull: { limitCommits: 10, subscriptions: [] },
+      }),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(refreshCount).toBe(1);
+    expect(requestCount).toBe(4);
+  });
+
+  it('prioritizes per-call onAuthError over shared auth lifecycle', async () => {
+    let legacyCount = 0;
+    let refreshCount = 0;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      authLifecycle: {
+        refreshToken: async () => {
+          refreshCount += 1;
+          return true;
+        },
+      },
+      fetch: async () =>
+        new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+
+    await expect(
+      transport.sync(
+        {
+          clientId: 'client-1',
+          pull: { limitCommits: 10, subscriptions: [] },
+        },
+        {
+          onAuthError: async () => {
+            legacyCount += 1;
+            return false;
+          },
+        }
+      )
+    ).rejects.toMatchObject({ status: 401 });
+
+    expect(legacyCount).toBe(1);
+    expect(refreshCount).toBe(0);
+  });
+
+  it('retries streamed snapshot chunk fetch via shared auth lifecycle', async () => {
+    let requestCount = 0;
+    let refreshCount = 0;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      authLifecycle: {
+        refreshToken: async () => {
+          refreshCount += 1;
+          return true;
+        },
+      },
+      fetch: async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(new Uint8Array([5, 4, 3]), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      },
+    });
+
+    const stream = await transport.fetchSnapshotChunkStream?.({
+      chunkId: 'chunk-shared-auth',
+    });
+    expect(stream).toBeDefined();
+
+    const reader = stream!.getReader();
+    const collected: number[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      collected.push(...value);
+    }
+    reader.releaseLock();
+
+    expect(collected).toEqual([5, 4, 3]);
+    expect(refreshCount).toBe(1);
+    expect(requestCount).toBe(2);
+  });
 });

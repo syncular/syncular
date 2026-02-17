@@ -26,6 +26,7 @@ const {
   useResolveConflict,
   useSyncConnection,
   useSyncEngine,
+  useSyncInspector,
   useSyncQuery,
   useSyncStatus,
 } = createSyncularReact<SyncClientDb>();
@@ -85,6 +86,37 @@ describe('React Hooks', () => {
       expect(typeof result.current.reconnect).toBe('function');
       expect(typeof result.current.disconnect).toBe('function');
       expect(typeof result.current.start).toBe('function');
+      expect(typeof result.current.getInspectorSnapshot).toBe('function');
+    });
+  });
+
+  describe('useSyncInspector', () => {
+    it('returns a serializable inspector snapshot', async () => {
+      const { result } = renderHook(
+        () => ({
+          inspector: useSyncInspector({ eventLimit: 20 }),
+          engine: useSyncEngine(),
+        }),
+        { wrapper: createWrapper() }
+      );
+
+      await act(async () => {
+        await result.current.engine.start();
+      });
+
+      await act(async () => {
+        await result.current.engine.sync();
+      });
+
+      await waitFor(() => {
+        expect(result.current.inspector.isLoading).toBe(false);
+      });
+
+      const snapshot = result.current.inspector.snapshot;
+      expect(snapshot).toBeDefined();
+      expect(snapshot?.version).toBe(1);
+      expect(Array.isArray(snapshot?.recentEvents)).toBe(true);
+      expect(snapshot?.recentEvents.length).toBeGreaterThan(0);
     });
   });
 

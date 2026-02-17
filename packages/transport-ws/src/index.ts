@@ -203,6 +203,7 @@ export function createWebSocketTransport(
   const httpTransport = createHttpTransport({
     baseUrl: options.baseUrl,
     getHeaders: options.getHeaders,
+    authLifecycle: options.authLifecycle,
     fetch: options.fetch,
     transportPath: telemetryTransportPath,
   });
