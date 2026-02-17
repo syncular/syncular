@@ -1,0 +1,29 @@
+---
+title: Cloudflare
+description: Deploy the Syncular server on Cloudflare Workers + Durable Objects and choose a database + blob storage backend
+---
+
+# Cloudflare
+
+Syncular can run on the edge with Cloudflare Workers + Durable Objects via `@syncular/server-cloudflare`.
+
+This is a good fit when you want:
+- Low-latency sync endpoints near users
+- Cloudflare-native networking and auth
+- Blob storage on R2
+
+## How the pieces fit
+
+Cloudflare deployment is **adapter + dialect**:
+
+- **Adapter:** `@syncular/server-cloudflare` (Workers + Durable Objects + R2 helpers)
+- **Database dialect:** choose one based on your DB:
+  - D1/SQLite: `@syncular/dialect-d1` + `@syncular/server-dialect-sqlite`
+  - Neon/Postgres: `@syncular/dialect-neon` + `@syncular/server-dialect-postgres`
+
+## Next steps
+
+- [Cloudflare Adapter](/docs/server/cloudflare-adapter)
+- [Server Dialects](/docs/server/dialects)
+- [Blob Storage](/docs/build/blob-storage)
+

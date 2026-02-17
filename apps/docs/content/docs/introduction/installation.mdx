@@ -1,0 +1,117 @@
+---
+title: Installation
+description: Install Syncular packages for server and client
+---
+
+# Installation
+
+> **Status:** Syncular is **alpha**. Packages are published on npm under the `@syncular` scope. If you want to run the full demo locally, clone the monorepo and follow the [Quick Start](/docs/introduction/quick-start). This page documents the packages you'll use.
+
+Not sure which runtime/dialect you need? Start with [Runtimes](/docs/build/runtimes).
+
+## Recommended starting point
+
+For web apps with a Postgres backend:
+
+```bash
+# Server
+npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install kysely pg hono
+
+# Client (React + browser SQLite)
+npm install @syncular/client @syncular/client-react @syncular/transport-http
+npm install @syncular/dialect-wa-sqlite kysely
+```
+
+## Server packages
+
+| Package | Description |
+|---------|-------------|
+| `@syncular/server` | Core sync engine (push, pull, pruning, compaction) |
+| `@syncular/server-hono` | Hono adapter with HTTP routes, WebSocket, and console |
+| `@syncular/server-dialect-postgres` | Postgres dialect for sync SQL |
+| `@syncular/server-dialect-sqlite` | SQLite dialect for sync SQL |
+| `@syncular/server-cloudflare` | Cloudflare Workers + Durable Objects adapter |
+
+### Server database
+
+You need Kysely + a database driver:
+
+```bash
+# Postgres (production)
+npm install kysely pg
+
+# SQLite (development/testing)
+npm install @syncular/dialect-better-sqlite3
+```
+
+## Client packages
+
+| Package | Description |
+|---------|-------------|
+| `@syncular/client` | Core sync engine (outbox, handlers, mutations, plugins) |
+| `@syncular/client-react` | React hooks (`useSyncQuery`, `useMutations`, etc.) |
+| `@syncular/transport-http` | HTTP transport for push/pull |
+| `@syncular/transport-ws` | WebSocket transport for real-time wake-ups |
+| `@syncular/client-plugin-encryption` | E2E field encryption plugin |
+
+### Client database dialects
+
+Choose one based on your runtime:
+
+| Package | Runtime | Best for |
+|---------|---------|----------|
+| `@syncular/dialect-wa-sqlite` | Browser (WebAssembly) | **Web apps** — recommended for most projects |
+| `@syncular/dialect-pglite` | Browser (WebAssembly) | Web apps that want Postgres locally |
+| `@syncular/dialect-bun-sqlite` | Bun | Desktop apps, Bun server scripts |
+| `@syncular/dialect-better-sqlite3` | Node.js | Desktop apps (Electron), Node scripts |
+| `@syncular/dialect-sqlite3` | Node.js | Node.js apps that already use `node-sqlite3` |
+| `@syncular/dialect-electron-sqlite` | Electron (Renderer) | Electron apps that run SQLite in main process over IPC |
+| `@syncular/dialect-libsql` | Node.js / Edge | Turso/LibSQL deployments |
+| `@syncular/dialect-d1` | Cloudflare Workers | Cloudflare D1 deployments |
+| `@syncular/dialect-neon` | Serverless / Edge | Neon Postgres deployments |
+| `@syncular/dialect-expo-sqlite` | Expo / React Native | Expo apps using `expo-sqlite` |
+| `@syncular/dialect-react-native-nitro-sqlite` | React Native | React Native apps using Nitro SQLite |
+
+**How to choose:**
+- Building a web app? Use **wa-sqlite** (widest browser support) or **PGlite** (Postgres compatibility)
+- Building with Bun? Use **bun-sqlite**
+- Building for Node scripts? Use **better-sqlite3** (or **sqlite3** if you already use `node-sqlite3`)
+- Building for Electron with DB access in main process? Use **dialect-electron-sqlite**
+- Building for Expo? Use **dialect-expo-sqlite** (or **Nitro SQLite** for non-Expo RN)
+- Deploying on Cloudflare? Use **D1** (client) or **Neon** (Postgres)
+
+## Optional packages
+
+```bash
+# Real-time WebSocket wake-ups
+npm install @syncular/transport-ws
+
+# End-to-end encryption
+npm install @syncular/client-plugin-encryption
+
+# Edge relay server
+npm install @syncular/relay
+
+# Type generation from server schema
+npm install @syncular/typegen
+```
+
+## TypeScript setup
+
+Syncular is written in TypeScript and ships full type definitions. For best results, enable strict mode:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+## Next steps
+
+- [Quick Start](/docs/introduction/quick-start) — build your first sync app
+- [Server Setup](/docs/build/server-setup) — full server configuration
+- [Client Setup](/docs/build/client-setup) — all client options

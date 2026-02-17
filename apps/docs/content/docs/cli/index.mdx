@@ -1,0 +1,54 @@
+---
+title: CLI
+description: Scaffold projects, run migrations, and inspect local setup with the Syncular CLI.
+---
+
+# CLI
+
+The Syncular CLI provides two core workflows:
+
+- scaffold projects (`create`, `create demo`)
+- run migration adapter operations (`migrate status`, `migrate up`)
+
+## Run the CLI
+
+Global install:
+
+```bash
+syncular --help
+```
+
+Run without global install:
+
+```bash
+npx @syncular/cli --help
+bunx @syncular/cli --help
+```
+
+From the monorepo root:
+
+```bash
+bun run cli --help
+```
+
+## Command reference
+
+| Command | What it does |
+|---|---|
+| `syncular create` | Scaffold integration libraries (interactive in TTY) |
+| `syncular create demo` | Scaffold a runnable full demo (Hono + Vite React + WA-SQLite) |
+| `syncular migrate status` | Show current/target/pending migration versions via adapter |
+| `syncular migrate up` | Apply migrations via adapter |
+| `syncular doctor` | Run local checks (runtime + workspace + git) |
+| `syncular interactive` | Open the full TUI menu |
+
+## Guides
+
+<Cards>
+  <Card title="Create Commands" href="/docs/cli/create">
+    Libraries scaffolding, demo scaffolding, targets, and dialect selection
+  </Card>
+  <Card title="Migrate Commands" href="/docs/cli/migrate">
+    Adapter contract, config wiring, and migration command flags
+  </Card>
+</Cards>

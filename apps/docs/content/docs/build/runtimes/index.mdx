@@ -1,0 +1,43 @@
+---
+title: Runtimes
+description: Choose a SQLite dialect and runtime setup for web, Electron, Expo/React Native, Bun/Node, and Cloudflare
+---
+
+# Runtimes
+
+Syncular is designed for **universal TypeScript apps**. This section helps you pick the right database dialect and understand runtime-specific setup and constraints.
+
+> Start here if you’re unsure which dialect to use. If you already chose a runtime, follow [Client Setup](/docs/build/client-setup) and then come back for runtime caveats.
+
+## Quick recommendations
+
+- **Web:** `@syncular/dialect-wa-sqlite` (default) or `@syncular/dialect-pglite`
+- **Electron:** `@syncular/dialect-electron-sqlite` (renderer → main IPC) or `@syncular/dialect-better-sqlite3`
+- **Expo / React Native:** `@syncular/dialect-expo-sqlite` or `@syncular/dialect-react-native-nitro-sqlite`
+- **Bun / Node:** `@syncular/dialect-bun-sqlite`, `@syncular/dialect-better-sqlite3`, or `@syncular/dialect-sqlite3`
+- **Cloudflare:** run the server with `@syncular/server-cloudflare` and pair it with a dialect (D1/SQLite or Neon/Postgres)
+
+<Cards>
+  <Card title="Web" href="/docs/build/runtimes/web">
+    Browser SQLite (WASM), persistence, bundlers, and gotchas
+  </Card>
+  <Card title="Electron" href="/docs/build/runtimes/electron">
+    Renderer/main split, IPC dialect, and local DB file placement
+  </Card>
+  <Card title="Expo / React Native" href="/docs/build/runtimes/expo">
+    expo-sqlite, Nitro SQLite, persistence, and mobile constraints
+  </Card>
+  <Card title="Bun / Node" href="/docs/build/runtimes/bun-node">
+    Desktop/CLI/testing runtimes and native SQLite drivers
+  </Card>
+  <Card title="Cloudflare" href="/docs/build/runtimes/cloudflare">
+    Deploy the server on Workers + Durable Objects, and choose DB + blob storage
+  </Card>
+</Cards>
+
+## Next steps
+
+- [Installation](/docs/introduction/installation) — package selection
+- [Client Setup](/docs/build/client-setup) — end-to-end client configuration
+- [Server Setup](/docs/build/server-setup) — end-to-end server configuration
+

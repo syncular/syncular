@@ -1,0 +1,270 @@
+---
+title: Presence
+description: Track who's online with scope-based presence
+---
+
+# Presence
+
+## What you'll learn
+
+- How scope-based presence works
+- How to set up presence on the server (single and multi-instance)
+- How to read presence with `usePresence`
+- How to join and update presence with `usePresenceWithJoin`
+- Use cases: collaborative editing, online indicators, typing indicators
+
+## Prerequisites
+
+- [Realtime](/docs/build/realtime) set up (WebSocket required for presence)
+- `@syncular/transport-ws` installed
+
+---
+
+Presence enables real-time awareness of who's connected and what they're doing within specific scopes (e.g. `project:123`). The system is fully wired end-to-end: React hooks, client engine, WebSocket transport, server.
+
+## Overview
+
+Syncular's presence system is scope-based -- clients join presence for specific scopes (like `project:123`) and receive updates when others join, leave, or update their metadata within that scope.
+
+## Server Setup
+
+Presence state is managed by the `WebSocketConnectionManager` (in-memory per process). You can provide your own instance to `createSyncRoutes`:
+
+```typescript
+import { createSyncRoutes, WebSocketConnectionManager } from '@syncular/server-hono';
+
+const wsConnectionManager = new WebSocketConnectionManager({
+  heartbeatIntervalMs: 30000,
+  onPresenceChange: (event) => {
+    // Optional: broadcast presence changes across server instances
+    broadcaster.publish({ type: 'presence', ...event });
+  },
+});
+
+app.route('/api/sync', createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  wsConnectionManager,
+}));
+```
+
+### Multi-Instance Support
+
+For distributed deployments, presence changes can be broadcast across server instances:
+
+```typescript
+const wsConnectionManager = new WebSocketConnectionManager({
+  onPresenceChange: (event) => {
+    broadcaster.publish({ type: 'presence', ...event });
+  },
+});
+
+// Handle presence events from other instances
+broadcaster.subscribe((event) => {
+  if (event.type === 'presence') {
+    wsConnectionManager.handleRemotePresenceEvent(event);
+  }
+});
+```
+
+## Client Usage
+
+### Reading Presence
+
+Use `usePresence` to observe who's in a scope:
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { usePresence, usePresenceWithJoin } = createSyncularReact<AppDb>();
+
+function CollaboratorsList({ projectId }: { projectId: string }) {
+  const { presence, isLoading } = usePresence<{
+    cursor?: { x: number; y: number };
+  }>(`project:${projectId}`);
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <div className="collaborators">
+      {presence.map((entry) => (
+        <div key={entry.clientId} className="collaborator">
+          <Avatar userId={entry.actorId} />
+          <span>Joined {new Date(entry.joinedAt).toLocaleTimeString()}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### Joining Presence
+
+Use `usePresenceWithJoin` to both observe and participate:
+
+```tsx
+interface EditorMetadata {
+  cursorPosition?: number;
+  isEditing?: boolean;
+  selection?: { start: number; end: number };
+}
+
+function DocumentEditor({ docId }: { docId: string }) {
+  const { presence, updateMetadata, isJoined } = usePresenceWithJoin<EditorMetadata>(
+    `document:${docId}`,
+    {
+      metadata: { isEditing: false },
+      autoJoin: true,
+    }
+  );
+
+  const handleSelectionChange = (position: number) => {
+    updateMetadata({ cursorPosition: position, isEditing: true });
+  };
+
+  return (
+    <div>
+      <div className="presence-bar">
+        {presence.map((entry) => (
+          <Avatar
+            key={entry.clientId}
+            userId={entry.actorId}
+            isEditing={entry.metadata?.isEditing}
+            cursorColor={getColorForUser(entry.actorId)}
+          />
+        ))}
+      </div>
+      <Editor onSelectionChange={handleSelectionChange} />
+    </div>
+  );
+}
+```
+
+### Manual Join/Leave Control
+
+For more control over when presence is active:
+
+```tsx
+import { Button } from '@syncular/ui/primitives';
+
+function ConditionalPresence({ roomId }: { roomId: string }) {
+  const { presence, join, leave, isJoined } = usePresenceWithJoin(
+    `room:${roomId}`,
+    { autoJoin: false }
+  );
+
+  return (
+    <div>
+      <Button onClick={() => (isJoined ? leave() : join())}>
+        {isJoined ? 'Leave Room' : 'Join Room'}
+      </Button>
+      <div>{presence.length} people in room</div>
+    </div>
+  );
+}
+```
+
+## Presence Entry Structure
+
+Each presence entry contains:
+
+```typescript
+interface PresenceEntry<TMetadata = Record<string, unknown>> {
+  clientId: string;      // Device/app installation identifier
+  actorId: string;       // User/actor identifier
+  joinedAt: number;      // Timestamp when client joined
+  metadata?: TMetadata;  // Custom metadata
+}
+```
+
+## Use Cases
+
+### Collaborative Editing
+
+Track cursor positions and selections:
+
+```tsx
+const { presence, updateMetadata } = usePresenceWithJoin<{
+  cursor: { line: number; column: number };
+  selection?: { start: Position; end: Position };
+}>(`document:${docId}`, {
+  metadata: { cursor: { line: 0, column: 0 } },
+});
+
+// Render remote cursors
+{presence
+  .filter((p) => p.clientId !== myClientId)
+  .map((p) => (
+    <RemoteCursor
+      key={p.clientId}
+      position={p.metadata?.cursor}
+      color={getUserColor(p.actorId)}
+    />
+  ))}
+```
+
+### Online Status Indicators
+
+Show who's currently active:
+
+```tsx
+function OnlineUsers({ teamId }: { teamId: string }) {
+  const { presence } = usePresence(`team:${teamId}`);
+
+  // Deduplicate by actorId (same user, multiple devices)
+  const uniqueUsers = [...new Map(
+    presence.map((p) => [p.actorId, p])
+  ).values()];
+
+  return (
+    <div>
+      <span className="online-dot" />
+      {uniqueUsers.length} online
+    </div>
+  );
+}
+```
+
+### Typing Indicators
+
+Show when users are actively typing:
+
+```tsx
+const { updateMetadata } = usePresenceWithJoin<{ isTyping: boolean }>(
+  `chat:${channelId}`,
+  { metadata: { isTyping: false } }
+);
+
+// Debounced typing indicator
+const handleInput = useMemo(
+  () =>
+    debounce(() => {
+      updateMetadata({ isTyping: false });
+    }, 1000),
+  [updateMetadata]
+);
+
+const onKeyDown = () => {
+  updateMetadata({ isTyping: true });
+  handleInput();
+};
+```
+
+## How It Works
+
+Presence flows through four layers:
+
+1. **React hooks** (`usePresence`, `usePresenceWithJoin`) call the sync engine
+2. **Sync engine** (`joinPresence`, `leavePresence`, `updatePresenceMetadata`) delegates to the transport
+3. **WebSocket transport** sends/receives JSON presence messages over the WebSocket connection
+4. **Server** (`WebSocketConnectionManager`) tracks presence state and broadcasts changes to other clients in the same scope
+
+On reconnect, the transport automatically re-joins all active presence scopes.
+
+## Next Steps
+
+- [Realtime Guide](/docs/build/realtime) - WebSocket setup for instant updates
+- [Scopes](/docs/introduction/scopes) - Understanding scope-based authorization

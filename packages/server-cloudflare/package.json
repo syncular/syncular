@@ -1,0 +1,77 @@
+{
+  "name": "@syncular/server-cloudflare",
+  "version": "0.0.0",
+  "description": "Cloudflare Workers adapter for the Syncular server",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server-cloudflare"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "cloudflare",
+    "workers",
+    "edge"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./worker": {
+      "bun": "./src/worker.ts",
+      "import": {
+        "types": "./dist/worker.d.ts",
+        "default": "./dist/worker.js"
+      }
+    },
+    "./durable-object": {
+      "bun": "./src/durable-object.ts",
+      "import": {
+        "types": "./dist/durable-object.d.ts",
+        "default": "./dist/durable-object.js"
+      }
+    },
+    "./r2": {
+      "bun": "./src/r2.ts",
+      "import": {
+        "types": "./dist/r2.d.ts",
+        "default": "./dist/r2.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

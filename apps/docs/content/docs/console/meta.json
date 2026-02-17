@@ -1,0 +1,16 @@
+{
+  "root": true,
+  "title": "Console",
+  "icon": "Monitor",
+  "pages": [
+    "index",
+    "connect-and-auth",
+    "command",
+    "stream-investigation",
+    "fleet",
+    "operations",
+    "config-and-api-keys",
+    "incident-playbooks",
+    "troubleshooting"
+  ]
+}

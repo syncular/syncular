@@ -1,0 +1,186 @@
+---
+title: Realtime
+description: Enable instant updates with WebSocket wake-ups
+---
+
+# Realtime
+
+## What you'll learn
+
+- How WebSocket wake-ups work (signals, not data)
+- How to set up the server with `upgradeWebSocket`
+- How to configure the client with `createWebSocketTransport`
+- How to monitor connection state in React
+- Multi-instance broadcasting for production
+- Fallback polling when WebSocket is unavailable
+
+## Prerequisites
+
+- A working [Server Setup](/docs/build/server-setup) and [Client Setup](/docs/build/client-setup)
+
+---
+
+Syncular uses WebSockets for realtime "wake-up" notifications. The actual data still flows through HTTP pull requests.
+
+## How It Works
+
+```
+Server                              Client
+  │                                    │
+  │  [new commit matching              │
+  │   client's scopes]                │
+  │                                    │
+  │  wake-up signal (WebSocket)        │
+  │ ──────────────────────────────────▶│
+  │                                    │  trigger HTTP pull
+  │                                    │  (same pull path)
+  │◀────────────────────────────────── │
+  │                                    │
+```
+
+WebSocket carries only wake-up signals. All data transfer stays on the HTTP pull path. This keeps the data flow simple and the protocol easy to debug.
+
+## Server Setup
+
+```typescript
+import { createBunWebSocket } from 'hono/bun';
+
+const { upgradeWebSocket } = createBunWebSocket();
+
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    websocket: {
+      enabled: true,
+      upgradeWebSocket,
+      heartbeatIntervalMs: 30000,
+      maxConnectionsTotal: 5000,
+      maxConnectionsPerClient: 3,
+    },
+  },
+});
+```
+
+### WebSocket Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | false | Enable WebSocket endpoint |
+| `upgradeWebSocket` | required | Framework's WebSocket upgrader |
+| `heartbeatIntervalMs` | 30000 | Heartbeat interval |
+| `maxConnectionsTotal` | 5000 | Max concurrent connections |
+| `maxConnectionsPerClient` | 3 | Max per client ID |
+
+## Client Setup
+
+### Create WebSocket Transport
+
+```typescript
+import { createWebSocketTransport } from '@syncular/transport-ws';
+
+const transport = createWebSocketTransport({
+  baseUrl: '/api',
+  // wsUrl defaults to `${baseUrl}/sync/realtime`
+  getHeaders: () => ({
+    Authorization: `Bearer ${getToken()}`,
+  }),
+  getRealtimeParams: () => ({
+    token: getShortLivedRealtimeToken(),
+  }),
+});
+```
+
+> **Browser note**: WebSocket can't send custom headers. Use cookies (same-origin) or pass short-lived non-sensitive values via `getRealtimeParams`.
+>
+> `@syncular/server-hono` authenticates realtime WebSocket requests during the HTTP upgrade (`authenticate(c)`) and does **not** consume `{ type: 'auth', token }` first-message auth payloads.
+
+### Enable in SyncProvider
+
+```tsx
+<SyncProvider
+  transport={transport}
+  realtimeEnabled={true}
+  realtimeFallbackPollMs={10000}
+  ...
+/>
+```
+
+## Connection States
+
+Monitor the connection:
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { Button } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useSyncConnection } = createSyncularReact<AppDb>();
+
+function ConnectionStatus() {
+  const { state, isConnected, reconnect } = useSyncConnection();
+
+  return (
+    <div>
+      {state === 'connected' && '● Connected'}
+      {state === 'connecting' && '◐ Connecting...'}
+      {state === 'disconnected' && '○ Disconnected'}
+      {!isConnected && (
+        <Button onClick={reconnect}>Reconnect</Button>
+      )}
+    </div>
+  );
+}
+```
+
+## Multi-Instance Servers
+
+For multiple server instances, use a broadcaster:
+
+```typescript
+import { InMemorySyncRealtimeBroadcaster } from '@syncular/server';
+
+const broadcaster = new InMemorySyncRealtimeBroadcaster();
+
+const syncRoutes = createSyncRoutes({
+  sync: {
+    websocket: { enabled: true, upgradeWebSocket },
+    realtime: { broadcaster },
+  },
+});
+```
+
+For production with multiple instances, implement `SyncRealtimeBroadcaster` using Redis, NATS, or your message bus.
+
+## Fallback Polling
+
+When WebSocket is unavailable:
+
+```tsx
+<SyncProvider
+  realtimeEnabled={true}
+  realtimeFallbackPollMs={10000}
+  ...
+/>
+```
+
+The client automatically falls back to polling.
+
+## When to Use Realtime
+
+**Use WebSocket when:**
+- Users collaborate in real-time
+- Data changes frequently
+- You want the "instant" feel
+
+**Skip WebSocket when:**
+- Data changes infrequently
+- Polling is sufficient
+- You want to reduce server load
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) — Full server configuration
+- [Client Setup](/docs/build/client-setup) — Client configuration

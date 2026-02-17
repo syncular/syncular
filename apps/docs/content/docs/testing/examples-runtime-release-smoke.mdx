@@ -1,0 +1,94 @@
+---
+title: Runtime Release Smoke
+description: Reuse one protocol test flow across node, deno, and cloudflare runtime suites.
+---
+
+# Runtime Release Smoke
+
+When you ship support for multiple runtimes, keep one shared protocol smoke flow and run it in each runtime package.
+
+## What this test should prove
+
+- health endpoint is available
+- push+pull protocol works for a scoped subscription
+- response shape is validated with protocol schema parsers
+
+## Example shared flow
+
+```ts
+import {
+  createSyncCombinedRequest,
+  createSyncSubscription,
+  createSyncUpsertOperation,
+  findSubscriptionChange,
+  postSyncCombinedRequest,
+  subscriptionChangeRow,
+} from '@syncular/testkit';
+
+export async function runRuntimeSmoke(args: {
+  fetch: typeof fetch;
+  baseUrl: string;
+  actorId: string;
+  actorHeader?: string;
+}) {
+  const sub = createSyncSubscription({
+    id: 'tasks',
+    table: 'tasks',
+    scopes: { user_id: args.actorId, project_id: 'p0' },
+  });
+
+  const taskId = `smoke-${crypto.randomUUID()}`;
+
+  const push = await postSyncCombinedRequest({
+    fetch: args.fetch,
+    url: `${args.baseUrl}/sync`,
+    actorId: args.actorId,
+    actorHeader: args.actorHeader,
+    body: createSyncCombinedRequest({
+      clientId: 'smoke-client-a',
+      push: {
+        clientCommitId: `commit-${taskId}`,
+        schemaVersion: 1,
+        operations: [
+          createSyncUpsertOperation({
+            table: 'tasks',
+            rowId: taskId,
+            payload: { title: 'Runtime smoke', completed: 0, project_id: 'p0' },
+          }),
+        ],
+      },
+    }),
+  });
+
+  if (push.response.status !== 200 || push.json.push?.status !== 'applied') {
+    throw new Error('Push failed in runtime smoke flow');
+  }
+
+  const pull = await postSyncCombinedRequest({
+    fetch: args.fetch,
+    url: `${args.baseUrl}/sync`,
+    actorId: args.actorId,
+    actorHeader: args.actorHeader,
+    body: createSyncCombinedRequest({
+      clientId: 'smoke-client-b',
+      pull: { limitCommits: 50, subscriptions: [sub] },
+    }),
+  });
+
+  const row = subscriptionChangeRow(
+    findSubscriptionChange(pull.json.pull?.subscriptions, 'tasks', taskId)
+  );
+
+  if (!row) {
+    throw new Error('Pull did not include pushed task');
+  }
+}
+```
+
+## Runtime wrappers
+
+- Node runtime suite: spawn node server, call `runRuntimeSmoke`.
+- Deno runtime suite: spawn deno server, call `runRuntimeSmoke`.
+- Cloudflare runtime suite: spawn `wrangler dev --local`, call `runRuntimeSmoke`.
+
+Keep only process lifecycle/runtime bootstrap code runtime-specific; keep protocol assertions shared.

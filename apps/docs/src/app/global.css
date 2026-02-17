@@ -1,0 +1,194 @@
+@import 'tailwindcss';
+@import '@syncular/ui/styles/tokens.css';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@source '../../../../packages/ui/src';
+
+@theme {
+  --color-background: #000000;
+  --color-foreground: #fafafa;
+  --color-card: #09090b;
+  --color-card-foreground: #fafafa;
+  --color-primary: #a855f7;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #27272a;
+  --color-secondary-foreground: #fafafa;
+  --color-muted: #18181b;
+  --color-muted-foreground: #a1a1aa;
+  --color-border: #27272a;
+  --color-input: #18181b;
+  --color-ring: #a855f7;
+  --radius: 0.5rem;
+
+}
+
+/* Fumadocs theme overrides — match Syncular dark aesthetic */
+.dark {
+  --color-fd-background: #000000;
+  --color-fd-foreground: #fafafa;
+  --color-fd-muted: #18181b;
+  --color-fd-muted-foreground: #a1a1aa;
+  --color-fd-popover: #0a0a0a;
+  --color-fd-popover-foreground: #e4e4e7;
+  --color-fd-card: #09090b;
+  --color-fd-card-foreground: #fafafa;
+  --color-fd-border: #27272a;
+  --color-fd-primary: #a855f7;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-secondary: #18181b;
+  --color-fd-secondary-foreground: #fafafa;
+  --color-fd-accent: #27272a;
+  --color-fd-accent-foreground: #fafafa;
+  --color-fd-ring: #a855f7;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 50%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.font-display {
+  font-family: var(--font-syne), sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes spin-reverse {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 30s linear infinite;
+}
+
+.animate-spin-reverse {
+  animation: spin-reverse 45s linear infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 6s ease-in-out infinite;
+}
+
+/* Blog editorial typography */
+.blog-prose {
+  font-family: var(--font-inter-tight), sans-serif;
+  font-size: 1.0625rem;
+  line-height: 1.8;
+  color: #d4d4d8;
+  letter-spacing: 0.005em;
+}
+
+.blog-prose h2,
+.blog-prose h3,
+.blog-prose h4 {
+  font-family: var(--font-syne), sans-serif;
+  color: #fafafa;
+  letter-spacing: -0.02em;
+  margin-top: 2.5em;
+  margin-bottom: 0.75em;
+}
+
+.blog-prose h2 {
+  font-size: 1.625rem;
+  font-weight: 700;
+  padding-bottom: 0.5em;
+  border-bottom: 1px solid #27272a;
+}
+
+.blog-prose h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.blog-prose p {
+  margin-bottom: 1.5em;
+}
+
+.blog-prose a {
+  color: #a78bfa;
+  text-decoration: underline;
+  text-decoration-color: #a78bfa40;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.2s;
+}
+
+.blog-prose a:hover {
+  text-decoration-color: #a78bfa;
+}
+
+.blog-prose strong {
+  color: #fafafa;
+  font-weight: 600;
+}
+
+.blog-prose ul,
+.blog-prose ol {
+  margin-bottom: 1.5em;
+  padding-left: 1.5em;
+}
+
+.blog-prose li {
+  margin-bottom: 0.5em;
+}
+
+.blog-prose li::marker {
+  color: #52525b;
+}
+
+.blog-prose blockquote {
+  border-left: 3px solid #a855f7;
+  padding-left: 1.25em;
+  color: #a1a1aa;
+  font-style: italic;
+  margin: 2em 0;
+}
+
+.blog-prose pre {
+  border: 1px solid #27272a;
+  border-radius: 0.75rem;
+  margin: 2em 0;
+}
+
+.blog-prose code:not(pre code) {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 0.375rem;
+  padding: 0.125em 0.375em;
+  font-size: 0.875em;
+  font-family: var(--font-jetbrains-mono), monospace;
+}
+
+.blog-prose hr {
+  border-color: #27272a;
+  margin: 3em 0;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.5s ease-out both;
+}

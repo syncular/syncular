@@ -1,0 +1,17 @@
+{
+  "title": "Syncular",
+  "pages": [
+    "index",
+    "introduction",
+    "---Build---",
+    "build",
+    "---Tooling---",
+    "cli",
+    "testing",
+    "---Reference---",
+    "client-sdk",
+    "server",
+    "console",
+    "api"
+  ]
+}

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 20: Quantum Entanglement</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:ital,wght@0,400;0,500;0,700;0,900;1,400&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Schibsted Grotesk', sans-serif;
+    background: #000;
+    color: #fff;
+    overflow-x: hidden;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  /* Entangled particles — two particles that mirror each other */
+  #entangle-canvas {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+
+  /* Title */
+  .hero-title {
+    font-size: clamp(3rem, 8vw, 6.5rem);
+    font-weight: 900;
+    line-height: 0.95;
+    letter-spacing: -0.03em;
+  }
+
+  /* Entanglement indicator — two mirrored elements */
+  .entangled-pair {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+  .particle-a, .particle-b {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .particle-a {
+    border: 1px solid rgba(129, 140, 248, 0.2);
+    background: rgba(129, 140, 248, 0.03);
+  }
+  .particle-b {
+    border: 1px solid rgba(52, 211, 153, 0.2);
+    background: rgba(52, 211, 153, 0.03);
+  }
+  .particle-a .spin, .particle-b .spin {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .particle-a .spin {
+    background: rgba(129, 140, 248, 0.5);
+    box-shadow: 0 0 8px rgba(129, 140, 248, 0.3);
+    animation: spin-up 2s ease-in-out infinite;
+  }
+  .particle-b .spin {
+    background: rgba(52, 211, 153, 0.5);
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.3);
+    animation: spin-down 2s ease-in-out infinite;
+  }
+
+  @keyframes spin-up {
+    0%, 100% { transform: translateY(-4px); }
+    50% { transform: translateY(4px); }
+  }
+  @keyframes spin-down {
+    0%, 100% { transform: translateY(4px); }
+    50% { transform: translateY(-4px); }
+  }
+
+  /* Entanglement connector */
+  .entangle-link {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .entangle-link .wave {
+    width: 4px;
+    height: 1px;
+    background: rgba(255,255,255,0.08);
+    animation: wave-flow 1.5s ease-in-out infinite;
+  }
+  .entangle-link .wave:nth-child(odd) { animation-delay: 0.3s; height: 2px; background: rgba(255,255,255,0.12); }
+
+  @keyframes wave-flow {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* Animations */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fi { animation: fade-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .fi1 { animation-delay: 0.15s; }
+  .fi2 { animation-delay: 0.3s; }
+  .fi3 { animation-delay: 0.5s; }
+  .fi4 { animation-delay: 0.7s; }
+  .fi5 { animation-delay: 0.9s; }
+
+  /* Mirrored cards — changes on one appear on the other */
+  .mirror-group {
+    display: grid;
+    grid-template-columns: 1fr 40px 1fr;
+    gap: 0;
+    align-items: stretch;
+  }
+  .mirror-card {
+    padding: 20px;
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 12px;
+    transition: all 0.3s ease;
+  }
+  .mirror-card.card-a:hover,
+  .mirror-group:has(.card-a:hover) .card-b {
+    border-color: rgba(129, 140, 248, 0.1);
+    background: rgba(129, 140, 248, 0.02);
+  }
+  .mirror-card.card-b:hover,
+  .mirror-group:has(.card-b:hover) .card-a {
+    border-color: rgba(52, 211, 153, 0.1);
+    background: rgba(52, 211, 153, 0.02);
+  }
+  .mirror-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .mirror-connector .vert-link {
+    width: 1px;
+    height: 100%;
+    background: linear-gradient(180deg, rgba(129,140,248,0.06), rgba(52,211,153,0.06));
+  }
+
+  /* Feature cards */
+  .entangle-card {
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 10px;
+    padding: 16px;
+    transition: all 0.3s ease;
+  }
+  .entangle-card:hover {
+    border-color: rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.01);
+  }
+
+  /* CTA */
+  .cta-entangle {
+    background: linear-gradient(135deg, rgba(129,140,248,0.08), rgba(52,211,153,0.08));
+    border: 1px solid rgba(255,255,255,0.08);
+    transition: all 0.3s ease;
+  }
+  .cta-entangle:hover {
+    background: linear-gradient(135deg, rgba(129,140,248,0.15), rgba(52,211,153,0.15));
+    border-color: rgba(255,255,255,0.15);
+    box-shadow: 0 0 40px rgba(129,140,248,0.05);
+  }
+</style>
+</head>
+<body>
+
+<canvas id="entangle-canvas"></canvas>
+
+<!-- Nav -->
+<header class="fixed top-0 left-0 right-0 z-50 px-8 py-6">
+  <nav class="max-w-6xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-1">
+        <div class="w-2 h-2 rounded-full bg-indigo-400/40"></div>
+        <div class="w-1 h-[1px] bg-white/10"></div>
+        <div class="w-2 h-2 rounded-full bg-emerald-400/40"></div>
+      </div>
+      <span class="text-xs font-bold tracking-wider text-white/50">SYNCULAR</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="#" class="text-[10px] font-medium text-white/25 hover:text-white/60 transition-colors">Docs</a>
+      <a href="#" class="text-[10px] font-medium text-white/25 hover:text-white/60 transition-colors">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<!-- Hero -->
+<section class="relative min-h-screen flex flex-col items-center justify-center z-10 px-8 text-center">
+  <!-- Entangled pair visualization -->
+  <div class="entangled-pair mb-12 fi fi1">
+    <div>
+      <div class="particle-a"><div class="spin"></div></div>
+      <span class="mono text-[8px] text-indigo-400/30 mt-2 block">client</span>
+    </div>
+    <div class="entangle-link">
+      <div class="wave"></div><div class="wave"></div><div class="wave"></div>
+      <div class="wave"></div><div class="wave"></div><div class="wave"></div>
+      <div class="wave"></div><div class="wave"></div><div class="wave"></div>
+    </div>
+    <div>
+      <div class="particle-b"><div class="spin"></div></div>
+      <span class="mono text-[8px] text-emerald-400/30 mt-2 block">server</span>
+    </div>
+  </div>
+
+  <h1 class="hero-title fi fi2">
+    <span class="text-white/80">Change one.</span><br>
+    <span class="text-white/25">Both update.</span>
+  </h1>
+
+  <p class="mt-8 text-sm font-light text-white/20 max-w-lg leading-relaxed fi fi3">
+    Quantum entanglement: measure one particle, the other responds instantly
+    regardless of distance. Syncular works the same way — write on the client,
+    the server knows. Change on the server, every client reflects it.
+  </p>
+
+  <div class="mt-10 flex items-center gap-4 fi fi4">
+    <a href="#" class="cta-entangle px-8 py-3 rounded-lg text-sm font-semibold text-white/70">
+      Entangle
+    </a>
+    <a href="#" class="px-8 py-3 text-sm text-white/20 hover:text-white/50 transition-colors">
+      Source Code →
+    </a>
+  </div>
+</section>
+
+<!-- Mirrored state — hover one, both change -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-4xl mx-auto">
+    <h2 class="text-2xl font-bold text-white/60 mb-3">Spooky action at a distance</h2>
+    <p class="mono text-[10px] text-white/15 mb-10">Hover either side. Both react. That's entanglement.</p>
+
+    <div class="space-y-3">
+      <div class="mirror-group">
+        <div class="mirror-card card-a">
+          <span class="mono text-[9px] text-indigo-400/30">CLIENT</span>
+          <h3 class="text-sm font-semibold text-white/50 mt-2">Write mutation</h3>
+          <p class="mono text-[9px] text-white/15 mt-1">INSERT INTO tasks (title) VALUES ('Ship it')</p>
+        </div>
+        <div class="mirror-connector"><div class="vert-link"></div></div>
+        <div class="mirror-card card-b">
+          <span class="mono text-[9px] text-emerald-400/30">SERVER</span>
+          <h3 class="text-sm font-semibold text-white/50 mt-2">Receives commit</h3>
+          <p class="mono text-[9px] text-white/15 mt-1">Merge → broadcast to all entangled clients</p>
+        </div>
+      </div>
+      <div class="mirror-group">
+        <div class="mirror-card card-a">
+          <span class="mono text-[9px] text-indigo-400/30">CLIENT</span>
+          <h3 class="text-sm font-semibold text-white/50 mt-2">Query locally</h3>
+          <p class="mono text-[9px] text-white/15 mt-1">SELECT * FROM tasks — &lt;0.1ms</p>
+        </div>
+        <div class="mirror-connector"><div class="vert-link"></div></div>
+        <div class="mirror-card card-b">
+          <span class="mono text-[9px] text-emerald-400/30">SERVER</span>
+          <h3 class="text-sm font-semibold text-white/50 mt-2">State is consistent</h3>
+          <p class="mono text-[9px] text-white/15 mt-1">All clients entangled with same truth</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-5xl mx-auto">
+    <h2 class="text-2xl font-bold text-white/60 mb-12">Quantum properties</h2>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="entangle-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Offline-First</h3>
+        <p class="mono text-[9px] text-white/12">Particles exist independently. Measure anytime.</p>
+      </div>
+      <div class="entangle-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Commit-Log</h3>
+        <p class="mono text-[9px] text-white/12">Measurement history. Every observation recorded.</p>
+      </div>
+      <div class="entangle-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Scoped Auth</h3>
+        <p class="mono text-[9px] text-white/12">Only entangled pairs share state.</p>
+      </div>
+      <div class="entangle-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Type-Safe SQL</h3>
+        <p class="mono text-[9px] text-white/12">Kysely. Compile-time uncertainty eliminated.</p>
+      </div>
+      <div class="entangle-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Self-Hosted</h3>
+        <p class="mono text-[9px] text-white/12">Your lab. Your particles. MIT.</p>
+      </div>
+      <div class="entangle-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Conflict Detection</h3>
+        <p class="mono text-[9px] text-white/12">Superposition collapses. One state wins.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section class="relative z-10 px-8 py-24">
+  <div class="max-w-2xl mx-auto text-center">
+    <h2 class="text-3xl font-bold mb-12">
+      <span class="text-indigo-300/40">Create</span>
+      <span class="text-white/20">the</span>
+      <span class="text-emerald-300/40">pair</span>
+    </h2>
+    <div class="entangle-card p-6 text-left">
+      <code class="mono text-[11px] text-white/25">
+        <span class="text-indigo-400/20">$</span> bun add @syncular/client @syncular/server
+      </code>
+    </div>
+  </div>
+</section>
+
+<footer class="relative z-10 px-8 py-12 border-t border-white/[0.03]">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
+    <span class="mono text-[9px] text-white/12">syncular — MIT license</span>
+    <div class="flex gap-6">
+      <a href="#" class="mono text-[9px] text-white/12 hover:text-white/30 transition-colors">docs</a>
+      <a href="#" class="mono text-[9px] text-white/12 hover:text-white/30 transition-colors">github</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Entangled particles — two particles connected by a wavy line, mirroring movements
+const canvas = document.getElementById('entangle-canvas');
+const ctx = canvas.getContext('2d');
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+let time = 0;
+
+// Background quantum foam
+const foam = [];
+for (let i = 0; i < 80; i++) {
+  foam.push({
+    x: Math.random() * 2000,
+    y: Math.random() * 2000,
+    size: 0.5 + Math.random() * 1,
+    phase: Math.random() * Math.PI * 2,
+    freq: 0.5 + Math.random() * 2,
+  });
+}
+
+// Entangled pairs — pairs of particles that mirror each other
+const pairs = [];
+for (let i = 0; i < 15; i++) {
+  const cx = Math.random() * 1600 + 200;
+  const cy = Math.random() * 1200 + 100;
+  const dist = 60 + Math.random() * 120;
+  const angle = Math.random() * Math.PI * 2;
+  pairs.push({
+    ax: cx - Math.cos(angle) * dist / 2,
+    ay: cy - Math.sin(angle) * dist / 2,
+    bx: cx + Math.cos(angle) * dist / 2,
+    by: cy + Math.sin(angle) * dist / 2,
+    phase: Math.random() * Math.PI * 2,
+    freq: 0.3 + Math.random() * 0.5,
+    dist,
+    angle,
+  });
+}
+
+function animate() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  time += 0.01;
+
+  // Quantum foam
+  foam.forEach(f => {
+    const opacity = 0.03 + Math.sin(time * f.freq + f.phase) * 0.02;
+    ctx.beginPath();
+    ctx.arc(f.x % canvas.width, f.y % canvas.height, f.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${Math.max(0, opacity)})`;
+    ctx.fill();
+  });
+
+  // Entangled pairs
+  pairs.forEach(p => {
+    const oscillation = Math.sin(time * p.freq + p.phase) * 8;
+
+    const ax = p.ax + Math.cos(p.angle + Math.PI/2) * oscillation;
+    const ay = p.ay + Math.sin(p.angle + Math.PI/2) * oscillation;
+    const bx = p.bx - Math.cos(p.angle + Math.PI/2) * oscillation; // mirror!
+    const by = p.by - Math.sin(p.angle + Math.PI/2) * oscillation;
+
+    // Connection line (wavy)
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    const steps = 20;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = ax + (bx - ax) * t;
+      const y = ay + (by - ay) * t;
+      const waveOffset = Math.sin(t * Math.PI * 3 + time * 2) * 3 * Math.sin(t * Math.PI);
+      const perpX = -(by - ay) / p.dist;
+      const perpY = (bx - ax) / p.dist;
+      ctx.lineTo(x + perpX * waveOffset, y + perpY * waveOffset);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.02)';
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    // Particle A (indigo)
+    ctx.beginPath();
+    ctx.arc(ax, ay, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(129, 140, 248, 0.15)';
+    ctx.fill();
+
+    // Particle B (emerald)
+    ctx.beginPath();
+    ctx.arc(bx, by, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(52, 211, 153, 0.15)';
+    ctx.fill();
+  });
+
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>

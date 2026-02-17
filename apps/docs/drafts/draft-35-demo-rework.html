@@ -1,0 +1,2213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — Interactive Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"Inter Tight"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            surface: '#0c0c0c',
+            panel: '#111111',
+            'panel-alt': '#0e0e0e',
+            border: '#1e1e1e',
+            'border-bright': '#2a2a2a',
+            healthy: '#22c55e',
+            syncing: '#f59e0b',
+            offline: '#ef4444',
+            flow: '#3b82f6',
+            relay: '#8b5cf6',
+            encrypt: '#f472b6',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter Tight', system-ui, sans-serif;
+      background: #0c0c0c;
+      color: #e5e5e5;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace !important; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+    /* ── Panel ── */
+    .panel {
+      border: 1px solid #1e1e1e;
+      background: #111111;
+      border-radius: 10px;
+      transition: border-color 0.25s;
+    }
+    .panel:hover { border-color: #2a2a2a; }
+    .panel-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid #1e1e1e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .panel-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #666;
+    }
+
+    /* ── Dot pulse ── */
+    @keyframes dotPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .dot-pulse { animation: dotPulse 1.4s ease-in-out infinite; }
+
+    /* ── Nav pills (tabs) ── */
+    .nav-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: #555;
+      background: transparent;
+      border: none;
+      padding: 4px 14px;
+      cursor: pointer;
+      position: relative;
+      transition: color 0.2s;
+    }
+    .nav-pill:hover { color: #999; }
+    .nav-pill.active { color: #fff; }
+    .nav-pill.active::after {
+      content: '';
+      position: absolute;
+      bottom: -10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 16px;
+      height: 2px;
+      background: #3b82f6;
+      border-radius: 1px;
+      box-shadow: 0 0 8px rgba(59,130,246,0.5);
+    }
+
+    /* ── Demo section visibility ── */
+    .demo-section { display: none; }
+    .demo-section.active { display: block; animation: pageIn 0.3s ease-out; }
+
+    @keyframes pageIn {
+      0% { opacity: 0; transform: translateY(6px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Task item ── */
+    .task-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0 0.75rem;
+      height: 40px;
+      border-bottom: 1px solid #161616;
+      transition: background 0.12s;
+      cursor: default;
+      position: relative;
+    }
+    .task-item:last-child { border-bottom: none; }
+    .task-item:hover { background: rgba(255,255,255,0.018); }
+    .task-item::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      border-radius: 1px;
+      background: transparent;
+      transition: background 0.15s;
+    }
+    .task-item:hover::before { background: #3b82f6; }
+    .task-item.done-row:hover::before { background: #22c55e; }
+
+    .task-checkbox {
+      width: 15px;
+      height: 15px;
+      border: 1.5px solid #333;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .task-checkbox:hover { border-color: #666; transform: scale(1.15); }
+    .task-checkbox.checked {
+      background: #22c55e;
+      border-color: #22c55e;
+      box-shadow: 0 0 6px rgba(34,197,94,0.3);
+    }
+    .task-checkbox.checked svg { opacity: 1; }
+
+    .task-text {
+      font-family: 'Inter Tight', system-ui;
+      font-size: 12.5px;
+      color: #b0b0b0;
+      line-height: 1.4;
+      transition: color 0.2s, opacity 0.2s;
+    }
+    .task-text.done {
+      text-decoration: line-through;
+      text-decoration-color: #333;
+      color: #444;
+    }
+
+    .task-meta {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      color: #333;
+      margin-left: auto;
+      flex-shrink: 0;
+      letter-spacing: 0.5px;
+    }
+
+    .task-delete {
+      opacity: 0;
+      transition: opacity 0.15s;
+      padding: 2px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      color: #555;
+      flex-shrink: 0;
+    }
+    .task-delete:hover { color: #ef4444; }
+    .task-item:hover .task-delete { opacity: 1; }
+
+    /* ── Sync flow line ── */
+    @keyframes dashFlow {
+      0% { stroke-dashoffset: 20; }
+      100% { stroke-dashoffset: 0; }
+    }
+    .line-active {
+      stroke-dasharray: 4 2;
+      animation: dashFlow 1s linear infinite;
+    }
+
+    /* ── Data stream ── */
+    @keyframes streamSlide {
+      0% { opacity: 0; transform: translateY(-6px); }
+      10% { opacity: 1; transform: translateY(0); }
+      90% { opacity: 1; }
+      100% { opacity: 0.2; }
+    }
+    .stream-entry { animation: streamSlide 10s ease-out forwards; }
+
+    /* ── Stagger reveal ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .reveal {
+      opacity: 0;
+      animation: fadeUp 0.5s ease-out forwards;
+    }
+    .reveal-d1 { animation-delay: 0.05s; }
+    .reveal-d2 { animation-delay: 0.1s; }
+    .reveal-d3 { animation-delay: 0.15s; }
+    .reveal-d4 { animation-delay: 0.2s; }
+    .reveal-d5 { animation-delay: 0.25s; }
+
+    /* ── Key mnemonic word chip ── */
+    .word-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      background: rgba(244, 114, 182, 0.08);
+      border: 1px solid rgba(244, 114, 182, 0.15);
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #f472b6;
+    }
+    .word-chip .word-num {
+      font-size: 9px;
+      color: rgba(244, 114, 182, 0.4);
+    }
+
+    /* ── Encryption badge ── */
+    .encrypted-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .encrypted-badge.locked {
+      background: rgba(244, 114, 182, 0.1);
+      border: 1px solid rgba(244, 114, 182, 0.2);
+      color: #f472b6;
+    }
+    .encrypted-badge.unlocked {
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+
+    /* ── Progress bar ── */
+    .progress-track {
+      height: 3px;
+      background: #1e1e1e;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.8s ease-out;
+    }
+
+    /* ── Catalog row ── */
+    .catalog-row {
+      display: grid;
+      grid-template-columns: 80px 1fr 100px 80px;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid #161616;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #888;
+      transition: background 0.1s;
+    }
+    .catalog-row:hover { background: rgba(255,255,255,0.015); }
+    .catalog-row .cat-id { color: #555; }
+    .catalog-row .cat-name { color: #ccc; }
+    .catalog-row .cat-sku { color: #666; }
+    .catalog-row .cat-price { color: #22c55e; }
+
+    /* ── Patient note card ── */
+    .note-card {
+      background: #0e0e0e;
+      border: 1px solid #1a1a1a;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      transition: border-color 0.15s;
+    }
+    .note-card:hover { border-color: #282828; }
+
+    /* ── Media gallery ── */
+    .media-thumb {
+      position: relative;
+      aspect-ratio: 1;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid #1e1e1e;
+      cursor: default;
+      transition: border-color 0.15s;
+    }
+    .media-thumb:hover { border-color: #2a2a2a; }
+    .media-thumb .thumb-bg {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .media-thumb .thumb-label {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 3px 6px;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 8px;
+      color: #999;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .media-thumb .thumb-status {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    @keyframes mediaLoad {
+      0% { opacity: 0; transform: scale(0.92); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+    .media-thumb.loading {
+      animation: mediaLoad 0.4s ease-out;
+    }
+    .media-transfer-row {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      line-height: 26px;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #141414;
+      color: #666;
+    }
+    .media-transfer-row:last-child { border-bottom: none; }
+
+    /* ── Passphrase input ── */
+    .passphrase-input {
+      background: #0e0e0e;
+      border: 1px solid #1e1e1e;
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      color: #ccc;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.2s;
+      width: 100%;
+    }
+    .passphrase-input:focus { border-color: #3b82f6; }
+    .passphrase-input::placeholder { color: #333; }
+
+    /* ── Action button ── */
+    .action-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0.375rem 0.75rem;
+      background: transparent;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      color: #999;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .action-btn:hover {
+      border-color: #444;
+      color: #e5e5e5;
+      background: rgba(255,255,255,0.03);
+    }
+    .action-btn.primary {
+      border-color: rgba(59, 130, 246, 0.3);
+      color: #3b82f6;
+    }
+    .action-btn.primary:hover {
+      border-color: rgba(59, 130, 246, 0.5);
+      background: rgba(59, 130, 246, 0.08);
+    }
+    .action-btn.danger {
+      border-color: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+    .action-btn.danger:hover {
+      border-color: rgba(239, 68, 68, 0.4);
+      background: rgba(239, 68, 68, 0.06);
+    }
+
+    /* ── Input field ── */
+    .input-field {
+      background: #0c0c0c;
+      border: 1px solid #1e1e1e;
+      border-radius: 6px;
+      padding: 0.5rem 0.75rem;
+      color: #ccc;
+      font-family: 'Inter Tight', system-ui;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+      width: 100%;
+    }
+    .input-field:focus { border-color: #3b82f6; }
+    .input-field::placeholder { color: #333; }
+
+    /* ── Dot grid background ── */
+    .dot-grid {
+      background-image: radial-gradient(circle at 1px 1px, #1a1a1a 1px, transparent 0);
+      background-size: 24px 24px;
+    }
+
+    /* ── Metric card ── */
+    .metric-card {
+      background: #111;
+      border: 1px solid #1e1e1e;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+    }
+
+    /* ── Sync flow arrow animation ── */
+    @keyframes flowPulse {
+      0% { opacity: 0.15; }
+      50% { opacity: 0.6; }
+      100% { opacity: 0.15; }
+    }
+    .flow-arrow { animation: flowPulse 2s ease-in-out infinite; }
+
+    /* ── Actor badge ── */
+    .actor-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* ── Tooltip ── */
+    .info-tooltip {
+      position: relative;
+      cursor: help;
+    }
+    .info-tooltip .tip-text {
+      visibility: hidden;
+      opacity: 0;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: #aaa;
+      white-space: nowrap;
+      z-index: 99;
+      transition: opacity 0.15s;
+    }
+    .info-tooltip:hover .tip-text { visibility: visible; opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <!-- ========== NAV ========== -->
+  <nav class="fixed top-0 left-0 right-0 z-50 h-[42px] border-b border-border flex items-center justify-between px-5" style="background: rgba(12,12,12,0.88); backdrop-filter: blur(16px);">
+    <div class="flex items-center gap-3">
+      <span class="w-2 h-2 rounded-full bg-healthy flex-shrink-0" style="box-shadow: 0 0 6px #22c55e;"></span>
+      <span class="font-display font-bold text-white text-sm tracking-tight">syncular</span>
+      <span class="font-mono text-[9px] text-neutral-600 uppercase tracking-widest">demo</span>
+    </div>
+    <div class="flex items-center gap-0.5">
+      <button class="nav-pill active" data-tab="split-screen">Split Screen</button>
+      <button class="nav-pill" data-tab="media">Media Sync</button>
+      <button class="nav-pill" data-tab="catalog">Large Catalog</button>
+      <button class="nav-pill" data-tab="keyshare">E2EE Key Share</button>
+      <button class="nav-pill" data-tab="symmetric">Symmetric E2EE</button>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="w-1.5 h-1.5 rounded-full bg-healthy" style="box-shadow: 0 0 4px #22c55e;"></span>
+      <span class="font-mono text-[10px] text-healthy">Live</span>
+      <a href="draft-36-console-rework.html" class="font-mono text-[10px] px-2.5 py-1 rounded border border-flow/40 text-flow hover:bg-flow/10 hover:border-flow/60 transition-all" style="letter-spacing: 0.5px;">Console →</a>
+    </div>
+  </nav>
+
+  <!-- ========== MAIN ========== -->
+  <main class="pt-[42px] min-h-screen">
+
+    <!-- ================================================================= -->
+    <!-- DEMO 1: SPLIT-SCREEN SYNC                                         -->
+    <!-- ================================================================= -->
+    <section class="demo-section active" id="demo-split-screen">
+      <div class="max-w-[1440px] mx-auto px-6 py-6">
+
+        <!-- Context bar -->
+        <div class="flex items-center justify-between mb-5 reveal">
+          <div>
+            <h2 class="font-display font-semibold text-lg text-white">Dual-Client Sync</h2>
+            <p class="font-mono text-[11px] text-neutral-500 mt-0.5">Two independent SQLite clients syncing to the same server in real-time</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-flow inline-block"></span>
+              <span class="font-mono text-[10px] text-neutral-500">wa-sqlite (OPFS)</span>
+            </div>
+            <span class="font-mono text-[10px] text-neutral-700">+</span>
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-relay inline-block"></span>
+              <span class="font-mono text-[10px] text-neutral-500">PGlite (IndexedDB)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sync topology visualization -->
+        <div class="panel mb-5 overflow-hidden reveal reveal-d1">
+          <div class="panel-header">
+            <span class="panel-label">Sync Topology</span>
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Latency</span>
+                <span class="font-mono text-xs text-white" id="splitLatency">34ms</span>
+              </div>
+              <div class="w-px h-3 bg-border"></div>
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Commits</span>
+                <span class="font-mono text-xs text-white" id="splitCommits">847</span>
+              </div>
+              <div class="w-px h-3 bg-border"></div>
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Conflicts</span>
+                <span class="font-mono text-xs text-healthy" id="splitConflicts">0</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center justify-center relative dot-grid" style="min-height: 220px;">
+            <svg id="splitTopology" viewBox="0 0 700 200" class="w-full max-w-[700px] h-auto" style="min-height: 200px;"></svg>
+          </div>
+        </div>
+
+        <!-- Two panels side by side -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          <!-- CLIENT A: wa-sqlite -->
+          <div class="panel reveal reveal-d2">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-flow"></div>
+                <span class="panel-label">Client A &middot; wa-sqlite</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-healthy">synced</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+              </div>
+            </div>
+            <div class="p-3">
+              <!-- Add task input -->
+              <div class="flex items-center gap-2 mb-3">
+                <input type="text" class="input-field flex-1" placeholder="Add a task..." id="taskInputA" />
+                <button class="action-btn primary" onclick="addTask('A')">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  Add
+                </button>
+              </div>
+              <!-- Task list -->
+              <div class="space-y-0.5" id="taskListA"></div>
+              <!-- Conflicts -->
+              <div class="mt-3 hidden" id="conflictsA">
+                <div class="font-mono text-[10px] text-syncing uppercase tracking-wider mb-2">Pending Conflicts</div>
+                <div id="conflictListA" class="space-y-1"></div>
+              </div>
+            </div>
+            <div class="border-t border-border px-3 py-2 flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <button class="action-btn" onclick="toggleOffline('A')" id="toggleA">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.94M10.71 5.05A16 16 0 0122.56 9M1.42 9a16 16 0 014.29-2.95M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>
+                  Go Offline
+                </button>
+                <button class="action-btn danger" onclick="resetDb('A')">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                  Reset
+                </button>
+              </div>
+              <div class="font-mono text-[10px] text-neutral-600">
+                <span id="taskCountA">0</span> tasks &middot; v<span id="versionA">1</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- CLIENT B: PGlite -->
+          <div class="panel reveal reveal-d3">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-relay"></div>
+                <span class="panel-label">Client B &middot; PGlite</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-healthy">synced</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+              </div>
+            </div>
+            <div class="p-3">
+              <!-- Add task input -->
+              <div class="flex items-center gap-2 mb-3">
+                <input type="text" class="input-field flex-1" placeholder="Add a task..." id="taskInputB" />
+                <button class="action-btn primary" onclick="addTask('B')">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  Add
+                </button>
+              </div>
+              <!-- Task list -->
+              <div class="space-y-0.5" id="taskListB"></div>
+              <!-- Conflicts -->
+              <div class="mt-3 hidden" id="conflictsB">
+                <div class="font-mono text-[10px] text-syncing uppercase tracking-wider mb-2">Pending Conflicts</div>
+                <div id="conflictListB" class="space-y-1"></div>
+              </div>
+            </div>
+            <div class="border-t border-border px-3 py-2 flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <button class="action-btn" onclick="toggleOffline('B')" id="toggleB">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.94M10.71 5.05A16 16 0 0122.56 9M1.42 9a16 16 0 014.29-2.95M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>
+                  Go Offline
+                </button>
+                <button class="action-btn danger" onclick="resetDb('B')">
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                  Reset
+                </button>
+              </div>
+              <div class="font-mono text-[10px] text-neutral-600">
+                <span id="taskCountB">0</span> tasks &middot; v<span id="versionB">1</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- How it works -->
+        <div class="mt-5 panel p-6 reveal reveal-d4">
+          <div class="flex items-start gap-6">
+            <div class="w-10 h-10 rounded-lg bg-flow/10 border border-flow/20 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-flow" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+            </div>
+            <div>
+              <h3 class="font-display font-semibold text-white text-sm mb-1">What you're seeing</h3>
+              <p class="text-neutral-400 text-sm leading-relaxed max-w-2xl">
+                Two completely independent database clients — one using <span class="text-flow">wa-sqlite (OPFS)</span> and the other using <span class="text-relay">PGlite (IndexedDB)</span> — are both syncing to the same Syncular server over WebSocket. Create a task in one panel and watch it appear in the other. Go offline, make changes, come back online, and observe conflict-free convergence.
+              </p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- DEMO 2: MEDIA SYNC                                                -->
+    <!-- ================================================================= -->
+    <section class="demo-section" id="demo-media">
+      <div class="max-w-[1440px] mx-auto px-6 py-6">
+
+        <div class="flex items-center justify-between mb-5 reveal">
+          <div>
+            <h2 class="font-display font-semibold text-lg text-white">Media Sync</h2>
+            <p class="font-mono text-[11px] text-neutral-500 mt-0.5">Blob storage with chunked transfer &middot; deduplication &middot; content-addressed hashing</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-flow inline-block"></span>
+              <span class="font-mono text-[10px] text-neutral-500">Uploader</span>
+            </div>
+            <span class="font-mono text-[10px] text-neutral-700">→</span>
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-relay inline-block"></span>
+              <span class="font-mono text-[10px] text-neutral-500">Receiver</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sync topology for media -->
+        <div class="panel mb-5 overflow-hidden reveal reveal-d1">
+          <div class="panel-header">
+            <span class="panel-label">Blob Transfer Topology</span>
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Blobs</span>
+                <span class="font-mono text-xs text-white" id="mediaBlobCount">7</span>
+              </div>
+              <div class="w-px h-3 bg-border"></div>
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-syncing"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Size</span>
+                <span class="font-mono text-xs text-white" id="mediaTotalSize">24.3 MB</span>
+              </div>
+              <div class="w-px h-3 bg-border"></div>
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Deduped</span>
+                <span class="font-mono text-xs text-healthy" id="mediaDedupe">2</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center justify-center relative dot-grid" style="min-height: 200px;">
+            <svg id="mediaTopology" viewBox="0 0 700 180" class="w-full max-w-[700px] h-auto" style="min-height: 180px;"></svg>
+          </div>
+        </div>
+
+        <!-- Two client panels -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          <!-- Client A: Uploader -->
+          <div class="panel reveal reveal-d2">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-flow"></div>
+                <span class="panel-label">Client A &middot; Uploader</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-healthy">synced</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+              </div>
+            </div>
+            <div class="p-3">
+              <!-- Upload area -->
+              <div class="border border-dashed border-border-bright rounded-lg p-4 mb-3 text-center cursor-pointer transition-colors hover:border-flow/40 hover:bg-flow/[0.02]" onclick="simulateUpload('A')">
+                <svg class="w-6 h-6 mx-auto mb-2 text-neutral-600" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0l-4 4m4-4l4 4M4 20h16"/></svg>
+                <div class="font-mono text-[10px] text-neutral-500">Click to upload media</div>
+              </div>
+              <!-- Gallery grid -->
+              <div class="grid grid-cols-3 gap-2" id="mediaGalleryA"></div>
+            </div>
+            <div class="border-t border-border px-3 py-2 flex items-center justify-between">
+              <span class="font-mono text-[10px] text-neutral-600"><span id="mediaCountA">0</span> items &middot; <span id="mediaSizeA">0 MB</span></span>
+              <button class="action-btn danger" onclick="clearMedia()">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <!-- Client B: Receiver -->
+          <div class="panel reveal reveal-d3">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-relay"></div>
+                <span class="panel-label">Client B &middot; Receiver</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-healthy">synced</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+              </div>
+            </div>
+            <div class="p-3">
+              <div class="grid grid-cols-3 gap-2" id="mediaGalleryB"></div>
+              <div class="mt-3 text-center py-4 border border-dashed border-border-bright rounded-lg" id="mediaEmptyB">
+                <span class="font-mono text-[10px] text-neutral-500">Media syncs from Client A</span>
+              </div>
+            </div>
+            <div class="border-t border-border px-3 py-2 flex items-center justify-between">
+              <span class="font-mono text-[10px] text-neutral-600"><span id="mediaCountB">0</span> items &middot; <span id="mediaSizeB">0 MB</span></span>
+              <span class="font-mono text-[10px] text-neutral-700">read-only</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Transfer log -->
+        <div class="panel mt-5 reveal reveal-d4">
+          <div class="panel-header">
+            <span class="panel-label">Blob Transfer Log</span>
+            <span class="font-mono text-[10px] text-neutral-600"><span id="mediaTransferCount">0</span> transfers</span>
+          </div>
+          <div class="overflow-auto" style="max-height: 180px;" id="mediaTransferLog">
+            <div class="text-center py-6">
+              <span class="font-mono text-[10px] text-neutral-600">Upload media to see transfer activity</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Explanation -->
+        <div class="mt-5 panel p-6 reveal reveal-d5">
+          <div class="flex items-start gap-6">
+            <div class="w-10 h-10 rounded-lg bg-flow/10 border border-flow/20 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-flow" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+            </div>
+            <div>
+              <h3 class="font-display font-semibold text-white text-sm mb-1">Content-addressed blob storage</h3>
+              <p class="text-neutral-400 text-sm leading-relaxed max-w-2xl">
+                Media files are split into chunks, hashed with <span class="text-flow">SHA-256</span>, and stored as content-addressed blobs. When Client B syncs, only missing chunks are transferred — if two files share identical blocks, they're <span class="text-healthy">automatically deduplicated</span>. Blob metadata (hash, size, mime type) syncs through the normal commit log, while the binary data transfers via a separate blob endpoint with <span class="text-syncing">streaming upload/download</span>.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- DEMO 3: LARGE CATALOG                                             -->
+    <!-- ================================================================= -->
+    <section class="demo-section" id="demo-catalog">
+      <div class="max-w-[1440px] mx-auto px-6 py-6">
+
+        <div class="flex items-center justify-between mb-5 reveal">
+          <div>
+            <h2 class="font-display font-semibold text-lg text-white">Bootstrap Observatory</h2>
+            <p class="font-mono text-[11px] text-neutral-500 mt-0.5">Sync 1,000,000+ rows with chunked snapshot bootstrapping</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <button class="action-btn primary" id="seedBtn" onclick="seedCatalog()">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2v6m0 0l3-3m-3 3L9 5M12 22v-6m0 0l3 3m-3-3l-3 3"/></svg>
+              Seed 1M Rows
+            </button>
+            <button class="action-btn" onclick="clearCatalog()">Clear</button>
+          </div>
+        </div>
+
+        <!-- Metric cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5 reveal reveal-d1">
+          <div class="metric-card">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-mono text-[10px] text-neutral-500 uppercase tracking-wider">Server Rows</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+            </div>
+            <div class="font-display text-2xl font-bold text-white" id="serverRows">1,000,000</div>
+            <div class="font-mono text-[10px] text-neutral-600 mt-1">catalog_items table</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-mono text-[10px] text-neutral-500 uppercase tracking-wider">Local Rows</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-syncing dot-pulse"></span>
+            </div>
+            <div class="font-display text-2xl font-bold text-white" id="localRows">742,891</div>
+            <div class="mt-2">
+              <div class="progress-track">
+                <div class="progress-fill bg-syncing" id="syncProgress" style="width: 74.3%;"></div>
+              </div>
+              <div class="font-mono text-[10px] text-neutral-600 mt-1"><span id="syncPercent">74.3</span>% synced</div>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-mono text-[10px] text-neutral-500 uppercase tracking-wider">Snapshot Chunks</span>
+              <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+            </div>
+            <div class="font-display text-2xl font-bold text-white"><span id="chunksLoaded">37</span><span class="text-neutral-600 text-lg">/50</span></div>
+            <div class="font-mono text-[10px] text-neutral-600 mt-1">json-row-frame-v1 + gzip &middot; ~20k rows/chunk</div>
+          </div>
+        </div>
+
+        <!-- Search + catalog table -->
+        <div class="panel reveal reveal-d2">
+          <div class="panel-header">
+            <span class="panel-label">Catalog Items</span>
+            <div class="flex items-center gap-3">
+              <input type="text" class="passphrase-input" style="width: 240px;" placeholder="Search items..." id="catalogSearch" oninput="filterCatalog()" />
+              <span class="font-mono text-[10px] text-neutral-500"><span id="queryTime">0.8</span>ms</span>
+            </div>
+          </div>
+
+          <!-- Table header -->
+          <div class="catalog-row" style="border-bottom: 1px solid #1e1e1e; background: #0e0e0e;">
+            <span class="font-mono text-[9px] text-neutral-500 uppercase">ID</span>
+            <span class="font-mono text-[9px] text-neutral-500 uppercase">Name</span>
+            <span class="font-mono text-[9px] text-neutral-500 uppercase">SKU</span>
+            <span class="font-mono text-[9px] text-neutral-500 uppercase">Price</span>
+          </div>
+
+          <!-- Catalog rows -->
+          <div class="overflow-auto" style="max-height: 400px;" id="catalogBody">
+            <!-- Generated by JS -->
+          </div>
+
+          <div class="border-t border-border px-4 py-2 flex items-center justify-between">
+            <span class="font-mono text-[10px] text-neutral-600">Showing <span id="showingCount">50</span> of <span id="totalCount">742,891</span> (virtualized)</span>
+            <span class="font-mono text-[10px] text-neutral-500">Query: <span class="text-flow" id="queryTimeBottom">0.8ms</span></span>
+          </div>
+        </div>
+
+        <!-- Explanation -->
+        <div class="mt-5 panel p-6 reveal reveal-d3">
+          <div class="flex items-start gap-6">
+            <div class="w-10 h-10 rounded-lg bg-syncing/10 border border-syncing/20 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-syncing" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"/></svg>
+            </div>
+            <div>
+              <h3 class="font-display font-semibold text-white text-sm mb-1">Chunked bootstrap snapshots</h3>
+              <p class="text-neutral-400 text-sm leading-relaxed max-w-2xl">
+                When a client first connects (or after a reset), it doesn't download the entire dataset at once. Instead, the server sends <span class="text-flow">json-row-frame-v1 + gzip compressed chunks</span> (~20,000 rows each). The client streams and inserts them progressively. After bootstrap completes, only incremental commits flow. The virtualized list renders only visible rows — so even 1M items stay snappy.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- DEMO 3: E2EE KEY SHARE                                            -->
+    <!-- ================================================================= -->
+    <section class="demo-section" id="demo-keyshare">
+      <div class="max-w-[1440px] mx-auto px-6 py-6">
+
+        <div class="flex items-center justify-between mb-5 reveal">
+          <div>
+            <h2 class="font-display font-semibold text-lg text-white">Encrypted Channel</h2>
+            <p class="font-mono text-[11px] text-neutral-500 mt-0.5">End-to-end encryption with key sharing &middot; XChaCha20-Poly1305</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="encrypted-badge locked">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              E2EE Active
+            </span>
+          </div>
+        </div>
+
+        <!-- Key exchange topology -->
+        <div class="panel mb-5 overflow-hidden reveal reveal-d1">
+          <div class="panel-header">
+            <span class="panel-label">Key Exchange Topology</span>
+            <div class="flex items-center gap-3">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Status</span>
+                <span class="font-mono text-xs text-healthy">complete</span>
+              </div>
+              <div class="w-px h-3 bg-border"></div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-neutral-600 uppercase">Cipher</span>
+                <span class="font-mono text-xs text-encrypt">XChaCha20</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center justify-center relative dot-grid" style="min-height: 230px;">
+            <svg id="keyShareTopology" viewBox="0 0 700 210" class="w-full max-w-[700px] h-auto" style="min-height: 210px;"></svg>
+          </div>
+        </div>
+
+        <!-- Mnemonic display -->
+        <div class="panel mb-5 reveal reveal-d2">
+          <div class="panel-header">
+            <span class="panel-label">Key Mnemonic (BIP39)</span>
+            <div class="flex items-center gap-2">
+              <button class="action-btn" onclick="regenerateKey()">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+                Regenerate
+              </button>
+              <button class="action-btn primary">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                Copy
+              </button>
+            </div>
+          </div>
+          <div class="p-4 flex flex-wrap gap-2" id="mnemonicWords">
+            <!-- Generated by JS -->
+          </div>
+        </div>
+
+        <!-- Two panels: Alice and Bob tasks -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 reveal reveal-d3">
+          <!-- Alice (decrypted) -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-flow"></div>
+                <span class="panel-label">Alice &middot; Owner</span>
+              </div>
+              <span class="encrypted-badge unlocked">decrypted</span>
+            </div>
+            <div class="p-3">
+              <div class="flex items-center gap-2 mb-3">
+                <input type="text" class="input-field flex-1" placeholder="Add encrypted task..." id="e2eeInputA" />
+                <button class="action-btn primary" onclick="addE2eeTask('A')">Add</button>
+              </div>
+              <div class="space-y-0.5" id="e2eeTasksA"></div>
+            </div>
+          </div>
+
+          <!-- Bob (decrypted after key import) -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-2 h-2 rounded-full bg-relay"></div>
+                <span class="panel-label">Bob &middot; Recipient</span>
+              </div>
+              <span class="encrypted-badge unlocked">decrypted</span>
+            </div>
+            <div class="p-3">
+              <div class="space-y-0.5" id="e2eeTasksB"></div>
+              <div class="mt-3 text-center py-4 border border-dashed border-border-bright rounded-lg">
+                <span class="font-mono text-[10px] text-neutral-500">Read-only &middot; Tasks sync from Alice's client</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Explanation -->
+        <div class="mt-5 panel p-6 reveal reveal-d4">
+          <div class="flex items-start gap-6">
+            <div class="w-10 h-10 rounded-lg bg-encrypt/10 border border-encrypt/20 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-encrypt" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            </div>
+            <div>
+              <h3 class="font-display font-semibold text-white text-sm mb-1">Zero-knowledge encryption</h3>
+              <p class="text-neutral-400 text-sm leading-relaxed max-w-2xl">
+                Alice generates an encryption key and shares it with Bob via a <span class="text-encrypt">24-word BIP39 mnemonic</span> or QR code. The server only sees ciphertext — it cannot read task content. Each field is encrypted with row-specific AAD (table, row ID, field name). The key never touches the server. XChaCha20-Poly1305 provides authenticated encryption with a 192-bit nonce.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================= -->
+    <!-- DEMO 4: SYMMETRIC E2EE                                            -->
+    <!-- ================================================================= -->
+    <section class="demo-section" id="demo-symmetric">
+      <div class="max-w-[1440px] mx-auto px-6 py-6">
+
+        <div class="flex items-center justify-between mb-5 reveal">
+          <div>
+            <h2 class="font-display font-semibold text-lg text-white">Multi-Party Vault</h2>
+            <p class="font-mono text-[11px] text-neutral-500 mt-0.5">Per-channel scope isolation with passphrase-derived keys &middot; PBKDF2 + XChaCha20</p>
+          </div>
+        </div>
+
+        <!-- Encryption Topology -->
+        <div class="panel mb-5 overflow-hidden reveal reveal-d1">
+          <div class="panel-header">
+            <span class="panel-label">Encryption Topology</span>
+            <div class="flex items-center gap-3">
+              <button class="action-btn primary" id="channelAlpha" onclick="selectChannel('alpha')" style="border-color: rgba(59,130,246,0.4); background: rgba(59,130,246,0.08);">
+                <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+                #alpha-launch
+              </button>
+              <button class="action-btn" id="channelBeta" onclick="selectChannel('beta')">
+                <span class="w-1.5 h-1.5 rounded-full bg-neutral-600"></span>
+                #beta-feedback
+              </button>
+              <button class="action-btn" id="channelInternal" onclick="selectChannel('internal')">
+                <span class="w-1.5 h-1.5 rounded-full bg-neutral-600"></span>
+                #internal-ops
+              </button>
+            </div>
+          </div>
+          <div class="flex items-center justify-center relative dot-grid" style="min-height: 260px;">
+            <svg id="symmetricTopology" viewBox="0 0 700 280" class="w-full max-w-[700px] h-auto" style="min-height: 270px;"></svg>
+          </div>
+        </div>
+
+        <!-- Three actor panels -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 reveal reveal-d2">
+
+          <!-- Designer -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-5 h-5 rounded-full bg-flow/15 flex items-center justify-center">
+                  <svg class="w-3 h-3 text-flow" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/></svg>
+                </div>
+                <span class="panel-label">Designer</span>
+              </div>
+              <span class="encrypted-badge unlocked">decrypted</span>
+            </div>
+            <div class="p-3">
+              <div class="mb-3">
+                <label class="font-mono text-[9px] text-neutral-500 uppercase tracking-wider block mb-1">Passphrase</label>
+                <input type="password" class="passphrase-input" placeholder="Enter passphrase..." value="team-secret-2024" />
+              </div>
+              <div class="space-y-2" id="designerNotes">
+                <!-- Generated by JS -->
+              </div>
+              <div class="mt-3">
+                <div class="flex items-center gap-2">
+                  <input type="text" class="input-field flex-1" placeholder="Add a note..." />
+                  <button class="action-btn primary">Add</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Developer -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-5 h-5 rounded-full bg-healthy/15 flex items-center justify-center">
+                  <svg class="w-3 h-3 text-healthy" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                </div>
+                <span class="panel-label">Developer</span>
+              </div>
+              <span class="encrypted-badge unlocked">decrypted</span>
+            </div>
+            <div class="p-3">
+              <div class="mb-3">
+                <label class="font-mono text-[9px] text-neutral-500 uppercase tracking-wider block mb-1">Passphrase</label>
+                <input type="password" class="passphrase-input" placeholder="Enter passphrase..." value="team-secret-2024" />
+              </div>
+              <div class="space-y-2" id="developerNotes">
+                <!-- Generated by JS -->
+              </div>
+              <div class="mt-3">
+                <div class="flex items-center gap-2">
+                  <input type="text" class="input-field flex-1" placeholder="Add a note..." />
+                  <button class="action-btn primary">Add</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Viewer -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="flex items-center gap-2">
+                <div class="w-5 h-5 rounded-full bg-syncing/15 flex items-center justify-center">
+                  <svg class="w-3 h-3 text-syncing" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                </div>
+                <span class="panel-label">Viewer</span>
+              </div>
+              <span class="encrypted-badge locked">no passphrase</span>
+            </div>
+            <div class="p-3">
+              <div class="mb-3">
+                <label class="font-mono text-[9px] text-neutral-500 uppercase tracking-wider block mb-1">Passphrase</label>
+                <input type="password" class="passphrase-input" placeholder="Enter passphrase to decrypt..." />
+              </div>
+              <div class="space-y-2" id="viewerNotes">
+                <!-- Generated by JS (encrypted/ciphertext) -->
+              </div>
+              <div class="mt-3 text-center py-3 border border-dashed border-encrypt/20 rounded-lg">
+                <span class="font-mono text-[10px] text-encrypt/50">Enter passphrase to decrypt notes</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Encryption flow diagram -->
+        <div class="mt-5 panel reveal reveal-d3">
+          <div class="panel-header">
+            <span class="panel-label">Encryption Architecture</span>
+          </div>
+          <div class="p-6">
+            <div class="flex items-center justify-center gap-4 flex-wrap">
+              <div class="text-center">
+                <div class="font-mono text-[10px] text-neutral-400 mb-1">Passphrase</div>
+                <div class="px-3 py-1.5 border border-border rounded font-mono text-xs text-white" style="background: #0e0e0e;">●●●●●●●</div>
+              </div>
+              <svg class="w-8 h-6 text-neutral-600 flow-arrow" viewBox="0 0 32 24"><path d="M4 12h20m-5-5l5 5-5 5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+              <div class="text-center">
+                <div class="font-mono text-[10px] text-neutral-400 mb-1">PBKDF2</div>
+                <div class="px-3 py-1.5 border border-syncing/30 rounded font-mono text-xs text-syncing" style="background: rgba(245,158,11,0.05);">100k iterations</div>
+              </div>
+              <svg class="w-8 h-6 text-neutral-600 flow-arrow" viewBox="0 0 32 24"><path d="M4 12h20m-5-5l5 5-5 5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+              <div class="text-center">
+                <div class="font-mono text-[10px] text-neutral-400 mb-1">Derived Key</div>
+                <div class="px-3 py-1.5 border border-encrypt/30 rounded font-mono text-xs text-encrypt" style="background: rgba(244,114,182,0.05);">256-bit</div>
+              </div>
+              <svg class="w-8 h-6 text-neutral-600 flow-arrow" viewBox="0 0 32 24"><path d="M4 12h20m-5-5l5 5-5 5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+              <div class="text-center">
+                <div class="font-mono text-[10px] text-neutral-400 mb-1">XChaCha20</div>
+                <div class="px-3 py-1.5 border border-flow/30 rounded font-mono text-xs text-flow" style="background: rgba(59,130,246,0.05);">encrypt/decrypt</div>
+              </div>
+              <svg class="w-8 h-6 text-neutral-600 flow-arrow" viewBox="0 0 32 24"><path d="M4 12h20m-5-5l5 5-5 5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+              <div class="text-center">
+                <div class="font-mono text-[10px] text-neutral-400 mb-1">Server</div>
+                <div class="px-3 py-1.5 border border-border rounded font-mono text-xs text-neutral-500" style="background: #0e0e0e;">ciphertext only</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Explanation -->
+        <div class="mt-5 panel p-6 reveal reveal-d4">
+          <div class="flex items-start gap-6">
+            <div class="w-10 h-10 rounded-lg bg-relay/10 border border-relay/20 flex items-center justify-center flex-shrink-0">
+              <svg class="w-5 h-5 text-relay" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            </div>
+            <div>
+              <h3 class="font-display font-semibold text-white text-sm mb-1">Deterministic key derivation</h3>
+              <p class="text-neutral-400 text-sm leading-relaxed max-w-2xl">
+                Each team member derives their encryption key from a passphrase + channel-specific salt using <span class="text-syncing">PBKDF2 with 100,000 iterations</span>. Same passphrase + same channel = same key. No key exchange protocol needed — team members who share the same passphrase can independently decrypt each other's notes. Different channels use different salt values (<code class="text-neutral-500">sync-e2ee:channel:{id}</code>), ensuring <span class="text-relay">complete scope isolation</span>.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ========== FOOTER ========== -->
+  <footer class="border-t border-border py-8 mt-8">
+    <div class="max-w-[1440px] mx-auto px-6 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="font-display font-bold text-white text-sm">syncular</span>
+        <span class="w-1.5 h-1.5 rounded-full bg-healthy inline-block" style="box-shadow: 0 0 4px #22c55e;"></span>
+      </div>
+      <div class="font-mono text-[11px] text-neutral-600">
+        Offline-first sync for SQLite &middot; Open source
+      </div>
+    </div>
+  </footer>
+
+  <!-- ========== JAVASCRIPT ========== -->
+  <script>
+    // ──────────── TAB NAVIGATION ────────────
+    const tabBtns = document.querySelectorAll('.nav-pill');
+    const demoSections = document.querySelectorAll('.demo-section');
+
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        tabBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        demoSections.forEach(s => {
+          s.classList.remove('active');
+          if (s.id === `demo-${tab}`) s.classList.add('active');
+        });
+      });
+    });
+
+    // ──────────── SPLIT-SCREEN DEMO DATA ────────────
+    const tasks = {
+      A: [
+        { id: '1', title: 'Implement offline sync queue', done: true },
+        { id: '2', title: 'Add WebSocket reconnection logic', done: true },
+        { id: '3', title: 'Write conflict resolution tests', done: false },
+        { id: '4', title: 'Ship the first beta release', done: false },
+      ],
+      B: [] // Will be "synced" from A
+    };
+
+    // Simulate B having the same tasks (synced)
+    tasks.B = JSON.parse(JSON.stringify(tasks.A));
+
+    let nextId = 5;
+    const offlineState = { A: false, B: false };
+
+    function renderTasks(client) {
+      const el = document.getElementById(`taskList${client}`);
+      const list = tasks[client];
+
+      if (list.length === 0) {
+        el.innerHTML = `
+          <div class="text-center py-8">
+            <div class="font-mono text-[10px] text-neutral-600">No tasks yet</div>
+          </div>`;
+        return;
+      }
+
+      el.innerHTML = list.map((t, i) => `
+        <div class="task-item ${t.done ? 'done-row' : ''}">
+          <div class="task-checkbox ${t.done ? 'checked' : ''}" onclick="toggleTask('${client}', '${t.id}')">
+            ${t.done ? '<svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+          </div>
+          <span class="task-text ${t.done ? 'done' : ''}">${t.title}</span>
+          <span class="task-meta">#${t.id}</span>
+          <button class="task-delete" onclick="deleteTask('${client}', '${t.id}')">
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      `).join('');
+
+      document.getElementById(`taskCount${client}`).textContent = list.length;
+    }
+
+    function addTask(client) {
+      const input = document.getElementById(`taskInput${client}`);
+      const title = input.value.trim();
+      if (!title) return;
+
+      const task = { id: String(nextId++), title, done: false };
+      tasks[client].push(task);
+      input.value = '';
+      renderTasks(client);
+
+      // Simulate sync to other client
+      if (!offlineState[client]) {
+        const other = client === 'A' ? 'B' : 'A';
+        if (!offlineState[other]) {
+          setTimeout(() => {
+            tasks[other].push(JSON.parse(JSON.stringify(task)));
+            renderTasks(other);
+            flashSync();
+          }, 300 + Math.random() * 200);
+        }
+      }
+    }
+
+    function toggleTask(client, id) {
+      const task = tasks[client].find(t => t.id === id);
+      if (task) {
+        task.done = !task.done;
+        renderTasks(client);
+
+        // Sync toggle
+        if (!offlineState[client]) {
+          const other = client === 'A' ? 'B' : 'A';
+          if (!offlineState[other]) {
+            setTimeout(() => {
+              const otherTask = tasks[other].find(t => t.id === id);
+              if (otherTask) {
+                otherTask.done = task.done;
+                renderTasks(other);
+                flashSync();
+              }
+            }, 200 + Math.random() * 150);
+          }
+        }
+      }
+    }
+
+    function deleteTask(client, id) {
+      tasks[client] = tasks[client].filter(t => t.id !== id);
+      renderTasks(client);
+
+      if (!offlineState[client]) {
+        const other = client === 'A' ? 'B' : 'A';
+        if (!offlineState[other]) {
+          setTimeout(() => {
+            tasks[other] = tasks[other].filter(t => t.id !== id);
+            renderTasks(other);
+            flashSync();
+          }, 250);
+        }
+      }
+    }
+
+    function toggleOffline(client) {
+      offlineState[client] = !offlineState[client];
+      const btn = document.getElementById(`toggle${client}`);
+      if (offlineState[client]) {
+        btn.innerHTML = `
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0114.08 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>
+          Go Online`;
+        // Update status indicator
+        const header = btn.closest('.panel').querySelector('.panel-header');
+        header.querySelector('.font-mono').textContent = 'offline';
+        header.querySelector('.font-mono').className = 'font-mono text-[10px] text-offline';
+        header.querySelector('span:last-child').className = 'w-1.5 h-1.5 rounded-full bg-offline';
+      } else {
+        btn.innerHTML = `
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0119 12.55M5 12.55a10.94 10.94 0 015.17-2.94M10.71 5.05A16 16 0 0122.56 9M1.42 9a16 16 0 014.29-2.95M8.53 16.11a6 6 0 016.95 0M12 20h.01"/></svg>
+          Go Offline`;
+        // Sync pending changes
+        const other = client === 'A' ? 'B' : 'A';
+        syncClients(client, other);
+        // Update status
+        const header = btn.closest('.panel').querySelector('.panel-header');
+        header.querySelector('.font-mono').textContent = 'synced';
+        header.querySelector('.font-mono').className = 'font-mono text-[10px] text-healthy';
+        header.querySelector('span:last-child').className = 'w-1.5 h-1.5 rounded-full bg-healthy';
+      }
+    }
+
+    function syncClients(from, to) {
+      // Merge task lists (simple last-write-wins simulation)
+      const merged = new Map();
+      tasks[to].forEach(t => merged.set(t.id, t));
+      tasks[from].forEach(t => merged.set(t.id, t));
+      const mergedList = Array.from(merged.values());
+      tasks.A = JSON.parse(JSON.stringify(mergedList));
+      tasks.B = JSON.parse(JSON.stringify(mergedList));
+      renderTasks('A');
+      renderTasks('B');
+      flashSync();
+    }
+
+    function resetDb(client) {
+      tasks[client] = [];
+      renderTasks(client);
+    }
+
+    function flashSync() {
+      const commitCount = parseInt(document.getElementById('splitCommits').textContent) + 1;
+      document.getElementById('splitCommits').textContent = commitCount;
+      const latency = Math.floor(20 + Math.random() * 40);
+      document.getElementById('splitLatency').textContent = latency + 'ms';
+    }
+
+    // Handle Enter key
+    document.getElementById('taskInputA').addEventListener('keydown', e => { if (e.key === 'Enter') addTask('A'); });
+    document.getElementById('taskInputB').addEventListener('keydown', e => { if (e.key === 'Enter') addTask('B'); });
+
+    // ──────────── CATALOG DEMO DATA ────────────
+    const catalogData = [];
+    const categories = ['Electronics', 'Clothing', 'Home & Garden', 'Sports', 'Books', 'Toys', 'Automotive', 'Health'];
+    const adjectives = ['Premium', 'Ultra', 'Classic', 'Pro', 'Lite', 'Max', 'Elite', 'Basic', 'Deluxe', 'Compact'];
+    const nouns = ['Widget', 'Gadget', 'Device', 'Module', 'Unit', 'Pack', 'Set', 'Kit', 'Tool', 'Gear'];
+
+    for (let i = 0; i < 200; i++) {
+      const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+      const noun = nouns[Math.floor(Math.random() * nouns.length)];
+      const cat = categories[Math.floor(Math.random() * categories.length)];
+      catalogData.push({
+        id: String(100000 + i),
+        name: `${adj} ${noun} ${cat.substring(0, 3)}`,
+        sku: `SKU-${String(Math.floor(Math.random() * 900000 + 100000))}`,
+        price: (Math.random() * 499 + 0.99).toFixed(2),
+      });
+    }
+
+    function renderCatalog(filter = '') {
+      const body = document.getElementById('catalogBody');
+      const filtered = filter
+        ? catalogData.filter(item => item.name.toLowerCase().includes(filter.toLowerCase()) || item.sku.toLowerCase().includes(filter.toLowerCase()))
+        : catalogData;
+
+      const shown = filtered.slice(0, 50);
+      document.getElementById('showingCount').textContent = Math.min(50, filtered.length);
+      document.getElementById('totalCount').textContent = filtered.length.toLocaleString();
+
+      const queryMs = (Math.random() * 2 + 0.3).toFixed(1);
+      document.getElementById('queryTime').textContent = queryMs;
+      document.getElementById('queryTimeBottom').textContent = queryMs + 'ms';
+
+      body.innerHTML = shown.map(item => `
+        <div class="catalog-row">
+          <span class="cat-id">${item.id}</span>
+          <span class="cat-name">${item.name}</span>
+          <span class="cat-sku">${item.sku}</span>
+          <span class="cat-price">$${item.price}</span>
+        </div>
+      `).join('');
+    }
+
+    function filterCatalog() {
+      const term = document.getElementById('catalogSearch').value;
+      renderCatalog(term);
+    }
+
+    function seedCatalog() {
+      // Simulate seeding animation
+      const btn = document.getElementById('seedBtn');
+      btn.innerHTML = '<span class="dot-pulse">Seeding...</span>';
+      btn.disabled = true;
+
+      let progress = 0;
+      const interval = setInterval(() => {
+        progress += 2 + Math.random() * 3;
+        if (progress > 100) progress = 100;
+        document.getElementById('syncPercent').textContent = progress.toFixed(1);
+        document.getElementById('syncProgress').style.width = progress + '%';
+        document.getElementById('localRows').textContent = Math.floor(progress * 10000).toLocaleString();
+        document.getElementById('chunksLoaded').textContent = Math.floor(progress / 2);
+
+        if (progress >= 100) {
+          clearInterval(interval);
+          document.getElementById('syncProgress').classList.remove('bg-syncing');
+          document.getElementById('syncProgress').classList.add('bg-healthy');
+          document.getElementById('localRows').textContent = '1,000,000';
+          btn.innerHTML = `
+            <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2v6m0 0l3-3m-3 3L9 5M12 22v-6m0 0l3 3m-3-3l-3 3"/></svg>
+            Seed 1M Rows`;
+          btn.disabled = false;
+        }
+      }, 120);
+    }
+
+    function clearCatalog() {
+      document.getElementById('localRows').textContent = '0';
+      document.getElementById('syncPercent').textContent = '0';
+      document.getElementById('syncProgress').style.width = '0%';
+      document.getElementById('syncProgress').classList.remove('bg-healthy');
+      document.getElementById('syncProgress').classList.add('bg-syncing');
+      document.getElementById('chunksLoaded').textContent = '0';
+    }
+
+    // ──────────── E2EE KEY SHARE DEMO ────────────
+    const mnemonicWords = [
+      'abandon', 'ability', 'absent', 'absorb', 'abstract', 'absurd',
+      'abuse', 'access', 'accident', 'account', 'accuse', 'achieve',
+      'acid', 'acoustic', 'acquire', 'across', 'action', 'actress',
+      'adapt', 'address', 'adjust', 'admit', 'adult', 'advance'
+    ];
+
+    function renderMnemonic() {
+      const el = document.getElementById('mnemonicWords');
+      el.innerHTML = mnemonicWords.map((word, i) => `
+        <span class="word-chip">
+          <span class="word-num">${i + 1}</span>
+          ${word}
+        </span>
+      `).join('');
+    }
+
+    function regenerateKey() {
+      // Shuffle mnemonic words for demo
+      for (let i = mnemonicWords.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [mnemonicWords[i], mnemonicWords[j]] = [mnemonicWords[j], mnemonicWords[i]];
+      }
+      renderMnemonic();
+    }
+
+    const e2eeTasks = [
+      { id: 'e1', title: 'Quarterly financial projections', done: false, owner: 'Alice' },
+      { id: 'e2', title: 'Board presentation slides', done: true, owner: 'Alice' },
+      { id: 'e3', title: 'Merger due diligence docs', done: false, owner: 'Alice' },
+    ];
+
+    function renderE2eeTasks() {
+      ['A', 'B'].forEach(client => {
+        const el = document.getElementById(`e2eeTasks${client}`);
+        el.innerHTML = e2eeTasks.map(t => `
+          <div class="task-item">
+            <div class="task-checkbox ${t.done ? 'checked' : ''}" onclick="${client === 'A' ? `toggleE2ee('${t.id}')` : ''}">
+              ${t.done ? '<svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
+            </div>
+            <div class="flex-1">
+              <span class="task-text ${t.done ? 'done' : ''}">${t.title}</span>
+              <div class="font-mono text-[9px] text-neutral-600 mt-0.5">${t.owner} &middot; encrypted</div>
+            </div>
+            <span class="encrypted-badge unlocked" style="font-size: 8px; padding: 1px 4px;">
+              <svg class="w-2 h-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+            </span>
+          </div>
+        `).join('');
+      });
+    }
+
+    function addE2eeTask(client) {
+      const input = document.getElementById('e2eeInputA');
+      const title = input.value.trim();
+      if (!title) return;
+      e2eeTasks.push({ id: 'e' + Date.now(), title, done: false, owner: 'Alice' });
+      input.value = '';
+      renderE2eeTasks();
+    }
+
+    function toggleE2ee(id) {
+      const task = e2eeTasks.find(t => t.id === id);
+      if (task) {
+        task.done = !task.done;
+        renderE2eeTasks();
+      }
+    }
+
+    document.getElementById('e2eeInputA').addEventListener('keydown', e => { if (e.key === 'Enter') addE2eeTask('A'); });
+
+    // ──────────── SYMMETRIC E2EE DEMO ────────────
+    const channelNotes = {
+      alpha: [
+        { id: 'n1', text: 'Landing page redesign is ready for review. Check Figma link in shared drive.', creator: 'Designer', time: '09:15' },
+        { id: 'n2', text: 'API endpoints deployed to staging. All integration tests passing.', creator: 'Developer', time: '09:32' },
+        { id: 'n3', text: 'Launch date confirmed: next Thursday. Marketing assets due by Monday.', creator: 'Designer', time: '10:01' },
+      ],
+      beta: [
+        { id: 'n4', text: 'Users reporting slow load times on the dashboard page. Investigating.', creator: 'Developer', time: '11:00' },
+        { id: 'n5', text: 'Added skeleton loading states to improve perceived performance.', creator: 'Designer', time: '11:45' },
+      ],
+      internal: [
+        { id: 'n6', text: 'Sprint retro notes: need better test coverage before next release.', creator: 'Developer', time: '14:00' },
+      ]
+    };
+
+    let selectedChannel = 'alpha';
+
+    function selectChannel(channel) {
+      selectedChannel = channel;
+      document.querySelectorAll('[id^="channel"]').forEach(btn => {
+        btn.classList.remove('primary');
+        btn.style.borderColor = '';
+        btn.style.background = '';
+        btn.querySelector('span').className = 'w-1.5 h-1.5 rounded-full bg-neutral-600';
+      });
+      const nameMap = { alpha: 'Alpha', beta: 'Beta', internal: 'Internal' };
+      const activeBtn = document.getElementById(`channel${nameMap[channel]}`);
+      activeBtn.classList.add('primary');
+      activeBtn.style.borderColor = 'rgba(59,130,246,0.4)';
+      activeBtn.style.background = 'rgba(59,130,246,0.08)';
+      activeBtn.querySelector('span').className = 'w-1.5 h-1.5 rounded-full bg-flow';
+      renderChannelNotes();
+    }
+
+    function renderChannelNotes() {
+      const notes = channelNotes[selectedChannel] || [];
+
+      // Designer & Developer see decrypted
+      ['designerNotes', 'developerNotes'].forEach(elId => {
+        const el = document.getElementById(elId);
+        el.innerHTML = notes.map(n => `
+          <div class="note-card">
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-neutral-400">${n.creator}</span>
+                <span class="font-mono text-[10px] text-neutral-600">${n.time}</span>
+              </div>
+              <span class="encrypted-badge unlocked" style="font-size: 8px;">
+                <svg class="w-2 h-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                decrypted
+              </span>
+            </div>
+            <p class="text-sm text-neutral-300 leading-relaxed">${n.text}</p>
+          </div>
+        `).join('');
+      });
+
+      // Viewer sees ciphertext
+      const viewerEl = document.getElementById('viewerNotes');
+      viewerEl.innerHTML = notes.map(n => `
+        <div class="note-card" style="border-color: rgba(244,114,182,0.1);">
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-[10px] text-neutral-400">${n.creator}</span>
+              <span class="font-mono text-[10px] text-neutral-600">${n.time}</span>
+            </div>
+            <span class="encrypted-badge locked" style="font-size: 8px;">
+              <svg class="w-2 h-2" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+              encrypted
+            </span>
+          </div>
+          <p class="text-sm leading-relaxed font-mono text-encrypt/30" style="word-break: break-all; font-size: 10px;">
+            ${btoa(n.text).substring(0, 60)}...
+          </p>
+        </div>
+      `).join('');
+    }
+
+    // ──────────── MEDIA SYNC DEMO ────────────
+    const mediaTypes = [
+      { name: 'sunset.jpg', ext: 'JPG', size: '4.2 MB', color: '#e65100', icon: '🌅' },
+      { name: 'team-photo.png', ext: 'PNG', size: '6.1 MB', color: '#1565c0', icon: '👥' },
+      { name: 'product-shot.webp', ext: 'WEBP', size: '1.8 MB', color: '#2e7d32', icon: '📦' },
+      { name: 'screenshot.png', ext: 'PNG', size: '2.4 MB', color: '#6a1b9a', icon: '🖥' },
+      { name: 'logo-final.svg', ext: 'SVG', size: '0.3 MB', color: '#f472b6', icon: '✦' },
+      { name: 'dashboard.png', ext: 'PNG', size: '3.7 MB', color: '#00838f', icon: '📊' },
+      { name: 'avatar.jpg', ext: 'JPG', size: '0.9 MB', color: '#ef6c00', icon: '🧑' },
+      { name: 'banner-v2.png', ext: 'PNG', size: '5.1 MB', color: '#ad1457', icon: '🏷' },
+      { name: 'wireframe.pdf', ext: 'PDF', size: '1.2 MB', color: '#d32f2f', icon: '📐' },
+      { name: 'prototype.mp4', ext: 'MP4', size: '12.4 MB', color: '#283593', icon: '🎬' },
+    ];
+
+    const mediaItems = { A: [], B: [] };
+    let mediaNextId = 0;
+    let transferLog = [];
+
+    function simulateUpload() {
+      const type = mediaTypes[mediaNextId % mediaTypes.length];
+      const item = { id: mediaNextId++, ...type, hash: 'sha256:' + Math.random().toString(36).substring(2, 14) };
+      mediaItems.A.push(item);
+      renderMediaGallery('A');
+
+      // Add transfer log entry
+      addTransferLog('UPLOAD', item.name, item.size, 'A → Server');
+
+      // Simulate sync to B
+      setTimeout(() => {
+        // Check for dedupe
+        const isDupe = mediaItems.B.some(m => m.name === item.name);
+        mediaItems.B.push({ ...item });
+        renderMediaGallery('B');
+        addTransferLog(isDupe ? 'DEDUP' : 'SYNC', item.name, isDupe ? '0 B' : item.size, 'Server → B');
+
+        if (isDupe) {
+          const count = parseInt(document.getElementById('mediaDedupe').textContent) + 1;
+          document.getElementById('mediaDedupe').textContent = count;
+        }
+      }, 400 + Math.random() * 300);
+
+      updateMediaStats();
+    }
+
+    function renderMediaGallery(client) {
+      const el = document.getElementById(`mediaGallery${client}`);
+      const items = mediaItems[client];
+
+      if (client === 'B' && items.length > 0) {
+        document.getElementById('mediaEmptyB').style.display = 'none';
+      }
+
+      el.innerHTML = items.map(item => `
+        <div class="media-thumb loading">
+          <div class="thumb-bg" style="background: ${item.color}22;">
+            <span style="font-size: 20px; opacity: 0.7;">${item.icon}</span>
+          </div>
+          <div class="thumb-label">
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${item.name}</span>
+            <span class="thumb-status" style="background: #22c55e; box-shadow: 0 0 4px rgba(34,197,94,0.4);"></span>
+          </div>
+        </div>
+      `).join('');
+
+      document.getElementById(`mediaCount${client}`).textContent = items.length;
+      const totalMB = items.reduce((sum, i) => sum + parseFloat(i.size), 0);
+      document.getElementById(`mediaSize${client}`).textContent = totalMB.toFixed(1) + ' MB';
+    }
+
+    function addTransferLog(type, name, size, direction) {
+      transferLog.unshift({ type, name, size, direction, time: new Date().toLocaleTimeString('en-US', { hour12: false }) });
+      const el = document.getElementById('mediaTransferLog');
+      const colors = { UPLOAD: '#3b82f6', SYNC: '#22c55e', DEDUP: '#f59e0b' };
+
+      el.innerHTML = transferLog.slice(0, 20).map(entry => `
+        <div class="media-transfer-row stream-entry">
+          <span style="color: ${colors[entry.type]}; min-width: 48px;">${entry.type}</span>
+          <span style="color: #ccc; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${entry.name}</span>
+          <span style="min-width: 60px; text-align: right;">${entry.size}</span>
+          <span style="color: #444; min-width: 80px;">${entry.direction}</span>
+          <span style="color: #333;">${entry.time}</span>
+        </div>
+      `).join('');
+
+      document.getElementById('mediaTransferCount').textContent = transferLog.length;
+    }
+
+    function updateMediaStats() {
+      const totalBlobs = mediaItems.A.length;
+      const totalMB = mediaItems.A.reduce((sum, i) => sum + parseFloat(i.size), 0);
+      document.getElementById('mediaBlobCount').textContent = totalBlobs;
+      document.getElementById('mediaTotalSize').textContent = totalMB.toFixed(1) + ' MB';
+    }
+
+    function clearMedia() {
+      mediaItems.A = [];
+      mediaItems.B = [];
+      mediaNextId = 0;
+      transferLog = [];
+      renderMediaGallery('A');
+      renderMediaGallery('B');
+      document.getElementById('mediaEmptyB').style.display = '';
+      document.getElementById('mediaTransferLog').innerHTML = '<div class="text-center py-6"><span class="font-mono text-[10px] text-neutral-600">Upload media to see transfer activity</span></div>';
+      document.getElementById('mediaTransferCount').textContent = '0';
+      document.getElementById('mediaBlobCount').textContent = '0';
+      document.getElementById('mediaTotalSize').textContent = '0 MB';
+      document.getElementById('mediaDedupe').textContent = '0';
+      document.getElementById('mediaCountA').textContent = '0';
+      document.getElementById('mediaSizeA').textContent = '0 MB';
+      document.getElementById('mediaCountB').textContent = '0';
+      document.getElementById('mediaSizeB').textContent = '0 MB';
+    }
+
+    // ──────────── MEDIA TOPOLOGY SVG ────────────
+    function renderMediaTopology() {
+      const svg = document.getElementById('mediaTopology');
+      const serverX = 350, serverY = 90;
+      const clientAX = 100, clientAY = 90;
+      const clientBX = 600, clientBY = 90;
+
+      let s = '';
+
+      // Orbit ring
+      s += `<ellipse cx="${serverX}" cy="${serverY}" rx="90" ry="55" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 8"/>`;
+
+      // Connection lines
+      s += `<line x1="${clientAX}" y1="${clientAY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1.5" opacity="0.3"/>`;
+      s += `<line x1="${clientAX}" y1="${clientAY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1" class="line-active" opacity="0.6"/>`;
+      s += `<line x1="${serverX}" y1="${serverY}" x2="${clientBX}" y2="${clientBY}" stroke="#8b5cf6" stroke-width="1.5" opacity="0.3"/>`;
+      s += `<line x1="${serverX}" y1="${serverY}" x2="${clientBX}" y2="${clientBY}" stroke="#8b5cf6" stroke-width="1" class="line-active" opacity="0.6"/>`;
+
+      // Blob particle (larger, rectangular) A → Server
+      s += `
+        <g>
+          <animateMotion dur="2.5s" repeatCount="indefinite" path="M${clientAX},${clientAY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.9;0.9;0" dur="2.5s" repeatCount="indefinite"/>
+          <rect x="-6" y="-4" width="12" height="8" rx="2" fill="#3b82f6" opacity="0.8"/>
+          <rect x="-4" y="-2" width="3" height="4" rx="0.5" fill="rgba(255,255,255,0.3)"/>
+        </g>
+      `;
+
+      // Blob particle Server → B
+      s += `
+        <g>
+          <animateMotion dur="2.5s" begin="0.8s" repeatCount="indefinite" path="M${serverX},${serverY} L${clientBX},${clientBY}"/>
+          <animate attributeName="opacity" values="0;0.9;0.9;0" dur="2.5s" begin="0.8s" repeatCount="indefinite"/>
+          <rect x="-6" y="-4" width="12" height="8" rx="2" fill="#8b5cf6" opacity="0.8"/>
+          <rect x="-4" y="-2" width="3" height="4" rx="0.5" fill="rgba(255,255,255,0.3)"/>
+        </g>
+      `;
+
+      // Small data particles
+      s += `
+        <circle r="2.5" fill="#3b82f6" opacity="0.6">
+          <animateMotion dur="2s" begin="1.2s" repeatCount="indefinite" path="M${serverX},${serverY} L${clientAX},${clientAY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2s" begin="1.2s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="2.5" fill="#8b5cf6" opacity="0.6">
+          <animateMotion dur="2.2s" begin="1.6s" repeatCount="indefinite" path="M${clientBX},${clientBY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2.2s" begin="1.6s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Server node with blob icon
+      s += `
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#22c55e" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="28" to="50" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="28" fill="#0c0c0c" stroke="#22c55e" stroke-width="2" style="filter: drop-shadow(0 0 10px rgba(34,197,94,0.3));"/>
+        <circle cx="${serverX}" cy="${serverY}" r="14" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="1"/>
+      `;
+      // DB icon inside server
+      s += `
+        <ellipse cx="${serverX}" cy="${serverY - 3}" rx="6" ry="3" fill="none" stroke="#22c55e" stroke-width="1.2"/>
+        <path d="M${serverX - 6} ${serverY - 3} v6 c0 1.7 2.7 3 6 3 s6-1.3 6-3 v-6" fill="none" stroke="#22c55e" stroke-width="1.2"/>
+        <ellipse cx="${serverX}" cy="${serverY + 3}" rx="6" ry="3" fill="none" stroke="#22c55e" stroke-width="0.8" opacity="0.5"/>
+      `;
+      s += `<text x="${serverX}" y="${serverY + 42}" text-anchor="middle" fill="#555" font-family="JetBrains Mono" font-size="9" letter-spacing="2">SERVER</text>`;
+      s += `<text x="${serverX}" y="${serverY + 52}" text-anchor="middle" fill="#22c55e" font-family="JetBrains Mono" font-size="7" opacity="0.5">blob store</text>`;
+
+      // Client A node
+      s += `
+        <circle cx="${clientAX}" cy="${clientAY}" r="22" fill="#0c0c0c" stroke="#3b82f6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(59,130,246,0.25));"/>
+        <circle cx="${clientAX}" cy="${clientAY}" r="10" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="1"/>
+        <circle cx="${clientAX}" cy="${clientAY}" r="4" fill="#3b82f6"/>
+        <text x="${clientAX}" y="${clientAY + 34}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">UPLOADER</text>
+        <text x="${clientAX}" y="${clientAY + 44}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="7">client A</text>
+      `;
+
+      // Client B node
+      s += `
+        <circle cx="${clientBX}" cy="${clientBY}" r="22" fill="#0c0c0c" stroke="#8b5cf6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(139,92,246,0.25));"/>
+        <circle cx="${clientBX}" cy="${clientBY}" r="10" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="1"/>
+        <circle cx="${clientBX}" cy="${clientBY}" r="4" fill="#8b5cf6"/>
+        <text x="${clientBX}" y="${clientBY + 34}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">RECEIVER</text>
+        <text x="${clientBX}" y="${clientBY + 44}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="7">client B</text>
+      `;
+
+      // Transport labels
+      s += `<text x="${(clientAX + serverX) / 2}" y="${clientAY - 18}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="7" opacity="0.4" letter-spacing="1.5">BLOB UPLOAD</text>`;
+      s += `<text x="${(serverX + clientBX) / 2}" y="${clientBY - 18}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="7" opacity="0.4" letter-spacing="1.5">BLOB DOWNLOAD</text>`;
+
+      svg.innerHTML = s;
+    }
+
+    // ──────────── SPLIT-SCREEN TOPOLOGY SVG ────────────
+    function renderSplitTopology() {
+      const svg = document.getElementById('splitTopology');
+      const serverX = 350, serverY = 100;
+      const clientAX = 100, clientAY = 100;
+      const clientBX = 600, clientBY = 100;
+
+      let s = '';
+
+      // Orbit ring around server
+      s += `<ellipse cx="${serverX}" cy="${serverY}" rx="90" ry="60" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 8"/>`;
+
+      // Connection lines: A → Server
+      s += `<line x1="${clientAX}" y1="${clientAY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1.5" opacity="0.3"/>`;
+      s += `<line x1="${clientAX}" y1="${clientAY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1" class="line-active" opacity="0.6"/>`;
+
+      // Connection lines: Server → B
+      s += `<line x1="${serverX}" y1="${serverY}" x2="${clientBX}" y2="${clientBY}" stroke="#8b5cf6" stroke-width="1.5" opacity="0.3"/>`;
+      s += `<line x1="${serverX}" y1="${serverY}" x2="${clientBX}" y2="${clientBY}" stroke="#8b5cf6" stroke-width="1" class="line-active" opacity="0.6"/>`;
+
+      // Data particles A → Server
+      s += `
+        <circle r="3" fill="#3b82f6" opacity="0.9">
+          <animateMotion dur="2s" repeatCount="indefinite" path="M${clientAX},${clientAY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.9;0.9;0" dur="2s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#3b82f6" opacity="0.7">
+          <animateMotion dur="2.5s" begin="0.8s" repeatCount="indefinite" path="M${serverX},${serverY} L${clientAX},${clientAY}"/>
+          <animate attributeName="opacity" values="0;0.7;0.7;0" dur="2.5s" begin="0.8s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Data particles Server → B
+      s += `
+        <circle r="3" fill="#8b5cf6" opacity="0.9">
+          <animateMotion dur="2s" begin="0.5s" repeatCount="indefinite" path="M${serverX},${serverY} L${clientBX},${clientBY}"/>
+          <animate attributeName="opacity" values="0;0.9;0.9;0" dur="2s" begin="0.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#8b5cf6" opacity="0.7">
+          <animateMotion dur="2.5s" begin="1.3s" repeatCount="indefinite" path="M${clientBX},${clientBY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.7;0.7;0" dur="2.5s" begin="1.3s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Server node — center with pulse rings
+      s += `
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#22c55e" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="28" to="52" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.3" to="0" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#22c55e" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="28" to="52" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.3" to="0" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="28" fill="#0c0c0c" stroke="#22c55e" stroke-width="2" style="filter: drop-shadow(0 0 10px rgba(34,197,94,0.3));"/>
+        <circle cx="${serverX}" cy="${serverY}" r="14" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="1"/>
+        <circle cx="${serverX}" cy="${serverY}" r="5" fill="#22c55e"/>
+        <text x="${serverX}" y="${serverY + 44}" text-anchor="middle" fill="#555" font-family="JetBrains Mono" font-size="9" letter-spacing="2">SERVER</text>
+      `;
+
+      // Client A node
+      s += `
+        <circle cx="${clientAX}" cy="${clientAY}" r="22" fill="#0c0c0c" stroke="#3b82f6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(59,130,246,0.25));"/>
+        <circle cx="${clientAX}" cy="${clientAY}" r="10" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="1"/>
+        <circle cx="${clientAX}" cy="${clientAY}" r="4" fill="#3b82f6"/>
+        <text x="${clientAX}" y="${clientAY + 34}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">CLIENT A</text>
+        <text x="${clientAX}" y="${clientAY + 44}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="7">wa-sqlite</text>
+      `;
+
+      // Client B node
+      s += `
+        <circle cx="${clientBX}" cy="${clientBY}" r="22" fill="#0c0c0c" stroke="#8b5cf6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(139,92,246,0.25));"/>
+        <circle cx="${clientBX}" cy="${clientBY}" r="10" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="1"/>
+        <circle cx="${clientBX}" cy="${clientBY}" r="4" fill="#8b5cf6"/>
+        <text x="${clientBX}" y="${clientBY + 34}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">CLIENT B</text>
+        <text x="${clientBX}" y="${clientBY + 44}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="7">PGlite</text>
+      `;
+
+      // Transport labels
+      s += `<text x="${(clientAX + serverX) / 2}" y="${clientAY - 22}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="7" opacity="0.4" letter-spacing="1.5">HTTP / WS</text>`;
+      s += `<text x="${(serverX + clientBX) / 2}" y="${clientBY - 22}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="7" opacity="0.4" letter-spacing="1.5">HTTP / WS</text>`;
+
+      svg.innerHTML = s;
+    }
+
+    // ──────────── KEY SHARE TOPOLOGY ────────────
+    function renderKeyShareTopology() {
+      const svg = document.getElementById('keyShareTopology');
+      const serverX = 350, serverY = 105;
+      const aliceX = 100, aliceY = 105;
+      const bobX = 600, bobY = 105;
+
+      let s = '';
+
+      // Orbit ring around server
+      s += `<ellipse cx="${serverX}" cy="${serverY}" rx="90" ry="60" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 8"/>`;
+
+      // Connection lines: Alice → Server
+      s += `<line x1="${aliceX}" y1="${aliceY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1.5" opacity="0.25"/>`;
+      s += `<line x1="${aliceX}" y1="${aliceY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1" class="line-active" opacity="0.5"/>`;
+
+      // Connection lines: Server → Bob
+      s += `<line x1="${serverX}" y1="${serverY}" x2="${bobX}" y2="${bobY}" stroke="#8b5cf6" stroke-width="1.5" opacity="0.25"/>`;
+      s += `<line x1="${serverX}" y1="${serverY}" x2="${bobX}" y2="${bobY}" stroke="#8b5cf6" stroke-width="1" class="line-active" opacity="0.5"/>`;
+
+      // Key transfer: special pink particle Alice → Server → Bob
+      s += `
+        <g>
+          <animateMotion dur="4s" repeatCount="indefinite" path="M${aliceX},${aliceY} L${serverX},${serverY} L${bobX},${bobY}"/>
+          <animate attributeName="opacity" values="0;1;1;1;0" dur="4s" repeatCount="indefinite"/>
+          <rect x="-10" y="-5" width="20" height="10" rx="2.5" fill="#f472b6" opacity="0.9"/>
+          <text x="0" y="1" text-anchor="middle" fill="white" font-size="6" font-family="JetBrains Mono" dominant-baseline="middle">KEY</text>
+        </g>
+      `;
+
+      // Data particles Alice ↔ Server (encrypted data)
+      s += `
+        <circle r="3" fill="#3b82f6" opacity="0.8">
+          <animateMotion dur="2.2s" repeatCount="indefinite" path="M${aliceX},${aliceY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.2s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#3b82f6" opacity="0.6">
+          <animateMotion dur="2.6s" begin="0.9s" repeatCount="indefinite" path="M${serverX},${serverY} L${aliceX},${aliceY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2.6s" begin="0.9s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Data particles Server ↔ Bob (encrypted data)
+      s += `
+        <circle r="3" fill="#8b5cf6" opacity="0.8">
+          <animateMotion dur="2.2s" begin="0.5s" repeatCount="indefinite" path="M${serverX},${serverY} L${bobX},${bobY}"/>
+          <animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.2s" begin="0.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#8b5cf6" opacity="0.6">
+          <animateMotion dur="2.6s" begin="1.4s" repeatCount="indefinite" path="M${bobX},${bobY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2.6s" begin="1.4s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Server node — center with encrypt-colored pulse rings
+      s += `
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#f472b6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="28" to="52" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#f472b6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="28" to="52" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="28" fill="#0c0c0c" stroke="#f472b6" stroke-width="2" style="filter: drop-shadow(0 0 10px rgba(244,114,182,0.3));"/>
+        <circle cx="${serverX}" cy="${serverY}" r="14" fill="rgba(244,114,182,0.1)" stroke="#f472b6" stroke-width="1"/>
+      `;
+      // Lock icon inside server
+      s += `
+        <rect x="${serverX - 5}" y="${serverY - 1}" width="10" height="8" rx="1.5" fill="none" stroke="#f472b6" stroke-width="1.3"/>
+        <path d="M${serverX - 3} ${serverY - 1} V${serverY - 4} a3 3 0 0 1 6 0 V${serverY - 1}" fill="none" stroke="#f472b6" stroke-width="1.3"/>
+        <circle cx="${serverX}" cy="${serverY + 3}" r="0.8" fill="#f472b6"/>
+      `;
+      s += `<text x="${serverX}" y="${serverY + 44}" text-anchor="middle" fill="#555" font-family="JetBrains Mono" font-size="9" letter-spacing="2">SERVER</text>`;
+      s += `<text x="${serverX}" y="${serverY + 54}" text-anchor="middle" fill="#f472b6" font-family="JetBrains Mono" font-size="7" opacity="0.5">ciphertext relay</text>`;
+
+      // Alice node — left (blue)
+      s += `
+        <circle cx="${aliceX}" cy="${aliceY}" r="24" fill="#0c0c0c" stroke="#3b82f6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(59,130,246,0.25));"/>
+        <circle cx="${aliceX}" cy="${aliceY}" r="11" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="1"/>
+        <text x="${aliceX}" y="${aliceY + 4}" text-anchor="middle" fill="#3b82f6" font-family="Inter Tight" font-weight="700" font-size="14">A</text>
+      `;
+      s += `<text x="${aliceX}" y="${aliceY - 32}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">ALICE</text>`;
+      s += `<text x="${aliceX}" y="${aliceY + 38}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="7">key owner</text>`;
+      s += `<text x="${aliceX}" y="${aliceY + 48}" text-anchor="middle" fill="#333" font-family="JetBrains Mono" font-size="7">wa-sqlite</text>`;
+
+      // Bob node — right (purple)
+      s += `
+        <circle cx="${bobX}" cy="${bobY}" r="24" fill="#0c0c0c" stroke="#8b5cf6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(139,92,246,0.25));"/>
+        <circle cx="${bobX}" cy="${bobY}" r="11" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="${bobX}" y="${bobY + 4}" text-anchor="middle" fill="#8b5cf6" font-family="Inter Tight" font-weight="700" font-size="14">B</text>
+      `;
+      s += `<text x="${bobX}" y="${bobY - 32}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">BOB</text>`;
+      s += `<text x="${bobX}" y="${bobY + 38}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="7">recipient</text>`;
+      s += `<text x="${bobX}" y="${bobY + 48}" text-anchor="middle" fill="#333" font-family="JetBrains Mono" font-size="7">PGlite</text>`;
+
+      // Transport labels
+      s += `<text x="${(aliceX + serverX) / 2}" y="${aliceY - 22}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="7" opacity="0.35" letter-spacing="1.5">ENCRYPTED</text>`;
+      s += `<text x="${(serverX + bobX) / 2}" y="${bobY - 22}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="7" opacity="0.35" letter-spacing="1.5">ENCRYPTED</text>`;
+
+      // Key transfer label
+      s += `<text x="${serverX}" y="${serverY - 56}" text-anchor="middle" fill="#f472b6" font-family="JetBrains Mono" font-size="7" opacity="0.4" letter-spacing="1">BIP39 KEY EXCHANGE</text>`;
+
+      svg.innerHTML = s;
+    }
+
+    // ──────────── SYMMETRIC TOPOLOGY ────────────
+    function renderSymmetricTopology() {
+      const svg = document.getElementById('symmetricTopology');
+      const serverX = 350, serverY = 115;
+      const designerX = 90, designerY = 60;
+      const developerX = 610, developerY = 60;
+      const viewerX = 350, viewerY = 230;
+
+      let s = '';
+
+      // Orbit ring around server
+      s += `<ellipse cx="${serverX}" cy="${serverY}" rx="100" ry="75" fill="none" stroke="#1a1a1a" stroke-width="1" stroke-dasharray="4 8"/>`;
+
+      // Connection lines: Designer → Server
+      s += `<line x1="${designerX}" y1="${designerY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1.5" opacity="0.25"/>`;
+      s += `<line x1="${designerX}" y1="${designerY}" x2="${serverX}" y2="${serverY}" stroke="#3b82f6" stroke-width="1" class="line-active" opacity="0.5"/>`;
+
+      // Connection lines: Developer → Server
+      s += `<line x1="${developerX}" y1="${developerY}" x2="${serverX}" y2="${serverY}" stroke="#22c55e" stroke-width="1.5" opacity="0.25"/>`;
+      s += `<line x1="${developerX}" y1="${developerY}" x2="${serverX}" y2="${serverY}" stroke="#22c55e" stroke-width="1" class="line-active" opacity="0.5"/>`;
+
+      // Connection lines: Viewer → Server
+      s += `<line x1="${viewerX}" y1="${viewerY}" x2="${serverX}" y2="${serverY}" stroke="#f59e0b" stroke-width="1.5" opacity="0.25"/>`;
+      s += `<line x1="${viewerX}" y1="${viewerY}" x2="${serverX}" y2="${serverY}" stroke="#f59e0b" stroke-width="1" class="line-active" opacity="0.5"/>`;
+
+      // Data particles Designer ↔ Server
+      s += `
+        <circle r="3" fill="#3b82f6" opacity="0.8">
+          <animateMotion dur="2.2s" repeatCount="indefinite" path="M${designerX},${designerY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.2s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#3b82f6" opacity="0.6">
+          <animateMotion dur="2.6s" begin="1s" repeatCount="indefinite" path="M${serverX},${serverY} L${designerX},${designerY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2.6s" begin="1s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Data particles Developer ↔ Server
+      s += `
+        <circle r="3" fill="#22c55e" opacity="0.8">
+          <animateMotion dur="2.2s" begin="0.4s" repeatCount="indefinite" path="M${developerX},${developerY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.2s" begin="0.4s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#22c55e" opacity="0.6">
+          <animateMotion dur="2.6s" begin="1.4s" repeatCount="indefinite" path="M${serverX},${serverY} L${developerX},${developerY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2.6s" begin="1.4s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Data particles Viewer ↔ Server
+      s += `
+        <circle r="3" fill="#f59e0b" opacity="0.8">
+          <animateMotion dur="2.2s" begin="0.8s" repeatCount="indefinite" path="M${viewerX},${viewerY} L${serverX},${serverY}"/>
+          <animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.2s" begin="0.8s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#f59e0b" opacity="0.6">
+          <animateMotion dur="2.6s" begin="1.8s" repeatCount="indefinite" path="M${serverX},${serverY} L${viewerX},${viewerY}"/>
+          <animate attributeName="opacity" values="0;0.6;0.6;0" dur="2.6s" begin="1.8s" repeatCount="indefinite"/>
+        </circle>
+      `;
+
+      // Server node — center with encrypt-colored pulse rings (pink)
+      s += `
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#f472b6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="30" to="55" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="40" fill="none" stroke="#f472b6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="30" to="55" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${serverX}" cy="${serverY}" r="30" fill="#0c0c0c" stroke="#f472b6" stroke-width="2" style="filter: drop-shadow(0 0 10px rgba(244,114,182,0.3));"/>
+        <circle cx="${serverX}" cy="${serverY}" r="15" fill="rgba(244,114,182,0.1)" stroke="#f472b6" stroke-width="1"/>
+      `;
+      // Lock icon inside server node
+      s += `
+        <rect x="${serverX - 6}" y="${serverY - 2}" width="12" height="9" rx="1.5" fill="none" stroke="#f472b6" stroke-width="1.5"/>
+        <path d="M${serverX - 3.5} ${serverY - 2} V${serverY - 5.5} a3.5 3.5 0 0 1 7 0 V${serverY - 2}" fill="none" stroke="#f472b6" stroke-width="1.5"/>
+        <circle cx="${serverX}" cy="${serverY + 2}" r="1" fill="#f472b6"/>
+      `;
+      s += `<text x="${serverX}" y="${serverY + 46}" text-anchor="middle" fill="#555" font-family="JetBrains Mono" font-size="9" letter-spacing="2">SERVER</text>`;
+      s += `<text x="${serverX}" y="${serverY + 56}" text-anchor="middle" fill="#f472b6" font-family="JetBrains Mono" font-size="7" opacity="0.5">ciphertext only</text>`;
+
+      // Designer node — top-left (blue)
+      s += `
+        <circle cx="${designerX}" cy="${designerY}" r="22" fill="#0c0c0c" stroke="#3b82f6" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(59,130,246,0.25));"/>
+        <circle cx="${designerX}" cy="${designerY}" r="10" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="1"/>
+      `;
+      // Pen icon
+      s += `<path d="M${designerX - 3} ${designerY + 3} l6 -6 2 2 -6 6z" fill="none" stroke="#3b82f6" stroke-width="1.2"/>`;
+      s += `<text x="${designerX}" y="${designerY - 30}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">DESIGNER</text>`;
+
+      // Developer node — top-right (green)
+      s += `
+        <circle cx="${developerX}" cy="${developerY}" r="22" fill="#0c0c0c" stroke="#22c55e" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(34,197,94,0.25));"/>
+        <circle cx="${developerX}" cy="${developerY}" r="10" fill="rgba(34,197,94,0.12)" stroke="#22c55e" stroke-width="1"/>
+      `;
+      // Code brackets icon
+      s += `<text x="${developerX}" y="${developerY + 4}" text-anchor="middle" fill="#22c55e" font-family="JetBrains Mono" font-size="11">&lt;/&gt;</text>`;
+      s += `<text x="${developerX}" y="${developerY - 30}" text-anchor="middle" fill="#22c55e" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">DEVELOPER</text>`;
+
+      // Viewer node — bottom (amber)
+      s += `
+        <circle cx="${viewerX}" cy="${viewerY}" r="22" fill="#0c0c0c" stroke="#f59e0b" stroke-width="2" style="filter: drop-shadow(0 0 8px rgba(245,158,11,0.25));"/>
+        <circle cx="${viewerX}" cy="${viewerY}" r="10" fill="rgba(245,158,11,0.12)" stroke="#f59e0b" stroke-width="1"/>
+      `;
+      // Eye icon
+      s += `<ellipse cx="${viewerX}" cy="${viewerY}" rx="6" ry="3.5" fill="none" stroke="#f59e0b" stroke-width="1.2"/>`;
+      s += `<circle cx="${viewerX}" cy="${viewerY}" r="1.5" fill="#f59e0b"/>`;
+      s += `<text x="${viewerX}" y="${viewerY + 34}" text-anchor="middle" fill="#f59e0b" font-family="JetBrains Mono" font-size="8" letter-spacing="1" opacity="0.8">VIEWER</text>`;
+
+      // Transport labels on connections
+      s += `<text x="${(designerX + serverX) / 2 - 15}" y="${(designerY + serverY) / 2 - 12}" text-anchor="middle" fill="#3b82f6" font-family="JetBrains Mono" font-size="7" opacity="0.35" letter-spacing="1">ENCRYPTED</text>`;
+      s += `<text x="${(developerX + serverX) / 2 + 15}" y="${(developerY + serverY) / 2 - 12}" text-anchor="middle" fill="#22c55e" font-family="JetBrains Mono" font-size="7" opacity="0.35" letter-spacing="1">ENCRYPTED</text>`;
+      s += `<text x="${viewerX - 40}" y="${(viewerY + serverY) / 2 + 8}" text-anchor="end" fill="#f59e0b" font-family="JetBrains Mono" font-size="7" opacity="0.35" letter-spacing="1">ENCRYPTED</text>`;
+
+      svg.innerHTML = s;
+    }
+
+    // ──────────── INIT ────────────
+    renderTasks('A');
+    renderTasks('B');
+    renderCatalog();
+    renderMnemonic();
+    renderE2eeTasks();
+    renderChannelNotes();
+    renderSplitTopology();
+    renderKeyShareTopology();
+    renderSymmetricTopology();
+    renderMediaTopology();
+
+    // Pre-seed a few media items for visual impact
+    for (let i = 0; i < 4; i++) {
+      const type = mediaTypes[i];
+      const item = { id: mediaNextId++, ...type, hash: 'sha256:' + Math.random().toString(36).substring(2, 14) };
+      mediaItems.A.push(item);
+      mediaItems.B.push({ ...item });
+    }
+    renderMediaGallery('A');
+    renderMediaGallery('B');
+    document.getElementById('mediaEmptyB').style.display = 'none';
+    updateMediaStats();
+
+    // Periodic metric updates for split-screen
+    setInterval(() => {
+      const latency = Math.floor(20 + Math.random() * 40);
+      document.getElementById('splitLatency').textContent = latency + 'ms';
+    }, 3000);
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,59 @@
+{
+  "name": "@syncular/dialect-react-native-nitro-sqlite",
+  "version": "0.0.0",
+  "description": "React Native Nitro SQLite dialect for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/dialect-react-native-nitro-sqlite"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "react-native",
+    "nitro",
+    "sqlite"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "kysely": "^0.28.0",
+    "react-native-nitro-sqlite": ">=0.1.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*",
+    "react-native-nitro-sqlite": "^9.4.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

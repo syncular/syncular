@@ -1,0 +1,64 @@
+---
+title: Runtime Patterns
+description: Share runtime-safe testing primitives across node, deno, and cloudflare tests.
+---
+
+# Runtime Patterns
+
+Runtime tests usually duplicate the same three pieces:
+
+- app table DDL
+- server table handler logic
+- Hono -> runtime server bridge
+
+`@syncular/testkit` provides reusable runtime-safe primitives so runtime suites stay aligned:
+
+- `createProjectScopedTasksHandler(...)`
+- `ensureProjectScopedTasksTable(...)`
+- `createNodeHonoServer(...)`
+- `createRealtimeWsUrl(...)`
+- `openRealtimeWs(...)`
+- `waitForWsOpen(...)`
+- `waitForWsJsonMessage(...)`
+- `closeWsSafe(...)`
+
+## Node / Deno server pattern
+
+```ts
+import { Hono } from 'hono';
+import {
+  createNodeHonoServer,
+  createProjectScopedTasksHandler,
+  ensureProjectScopedTasksTable,
+} from '@syncular/testkit';
+
+await ensureSyncSchema(db, dialect);
+await ensureProjectScopedTasksTable(db);
+
+const routes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [createProjectScopedTasksHandler()],
+  authenticate: async (c) => ({ actorId: c.req.header('x-actor-id')! }),
+});
+
+const app = new Hono();
+app.route('/sync', routes);
+
+const server = createNodeHonoServer(app, { cors: false });
+```
+
+## Cloudflare worker pattern
+
+Use the same tasks helper in your DO setup, then attach sync + blob routes.
+This keeps scope/auth/snapshot/apply behavior identical across runtime suites.
+
+## When to keep runtime-specific code
+
+Keep runtime-specific code only for:
+
+- process lifecycle (`spawn`, `SIGTERM`, `wrangler dev`)
+- runtime database adapters (`node:sqlite`, D1 bindings)
+- transport environment constraints (headers/query auth differences)
+
+Everything else should be shared through testkit primitives.

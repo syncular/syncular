@@ -1,0 +1,153 @@
+---
+title: Syncular
+description: Build offline-first apps with confidence. Syncular is a type-safe sync framework that makes local-first architecture simple.
+---
+
+# Build apps that work everywhere
+
+Syncular is a sync framework for building **local-first applications** — apps that work offline by default, sync when connected, and feel instant to use.
+
+> **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
+
+> **You are here:** Overview (evaluate if Syncular is a fit).
+>
+> **If you’re building:** start with [Build](/docs/build).
+
+Your app talks to a local SQLite database. Changes sync through an immutable commit log. Authorization is baked in through scopes. Everything is typed end-to-end with Kysely.
+
+```tsx
+function TaskList() {
+  const { data: tasks } = useSyncQuery(({ selectFrom }) =>
+    selectFrom('tasks').selectAll().where('completed', '=', 0)
+  );
+  const m = useMutations();
+
+  return (
+    <ul>
+      {tasks?.map((task) => (
+        <li key={task.id} onClick={() => m.tasks.update(task.id, { completed: 1 })}>
+          {task.title}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+No loading spinners. No network requests in the hot path. Queries run against local SQLite in under 1ms. Changes sync automatically in the background.
+
+## Start building
+
+If you're implementing Syncular, follow the Guides path (server setup → client setup → table handlers). If you're evaluating, start with Adoption Paths and the comparison pages. If you're unsure which dialect/runtime to use, start with [Runtimes](/docs/build/runtimes).
+
+<Cards>
+  <Card title="Build Path (Guides)" href="/docs/build" description="Step-by-step: server setup → client setup → table handlers" />
+  <Card title="Console Guides" href="/docs/console" description="Operator workflows for triage, payload forensics, and maintenance actions" />
+  <Card title="CLI Section" href="/docs/cli" description="Scaffold projects, run migrations, and use the interactive command menu" />
+  <Card title="Testing Section" href="/docs/testing" description="Runner-agnostic testkit guides for in-process, HTTP, and runtime testing" />
+  <Card title="Adoption Paths" href="/docs/introduction/adoption-paths" description="Choose a greenfield or incremental adoption path" />
+  <Card title="Try the Demo" href="/docs/introduction/demo" description="Hands-on walkthrough (sync, large datasets, encryption, console)" />
+</Cards>
+
+## How it works
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  YOUR APP                                                        │
+│                                                                  │
+│  ┌──────────┐   query    ┌──────────┐          ┌──────────┐     │
+│  │  React   │──────────▶│  Kysely  │────────▶│  SQLite  │     │
+│  │  UI      │◀──────────│  (typed) │◀────────│  (local) │     │
+│  └──────────┘   data     └──────────┘          └──────────┘     │
+│       │                                             │            │
+│       │ mutate                                      │            │
+│       ▼                                             ▼            │
+│  ┌──────────┐                                 ┌──────────┐      │
+│  │  Outbox  │ ◀── writes queue here offline   │ Incoming │      │
+│  └────┬─────┘                                 └────┬─────┘      │
+└───────┼────────────────────────────────────────────┼─────────────┘
+        │  push (HTTP)                    pull (HTTP) │
+        ▼                                            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  SERVER                                                          │
+│                                                                  │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
+│  │    Table     │◀──▶│    Kysely   │───▶│   Postgres   │       │
+│  │   Handlers   │    │   (typed)   │    │              │       │
+│  └──────────────┘    └──────────────┘    └──────────────┘       │
+│                                                │                 │
+│              Commit Log ◀──────────────────────┘                 │
+│              (append-only, scoped, ordered)                      │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+1. **User makes a change** — written to local SQLite instantly, queued in the outbox
+2. **Outbox pushes to server** — server validates, applies, writes to commit log
+3. **Other clients pull** — fetch new commits since their last position, apply to local DB
+4. **WebSocket wake-ups** — optional real-time notifications trigger immediate pulls
+
+## Why Syncular?
+
+Building sync is hard. Most teams underestimate it — offline support alone means local state, sync logic, conflict resolution, retry handling, and authorization that works across boundaries.
+
+Syncular gives you a complete solution built on two key insights:
+
+### Commit-log sync is simpler than replication
+
+Most sync solutions replicate database state. This creates complexity around schema changes, replication lag, and partial sync. Syncular uses an **immutable commit log** instead. Every change is a commit. Clients sync by fetching commits they haven't seen. Simple, predictable, easy to debug.
+
+### Scopes make auth explicit
+
+Instead of query-based authorization (hard to audit, easy to get wrong), Syncular uses **scopes** — key-value pairs attached to every change that define who can access it. Scopes are extracted from your data automatically.
+
+```typescript
+// Server: define scope patterns once
+createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  resolveScopes: async (ctx) => ({
+    user_id: [ctx.actorId],
+    project_id: await getProjectIds(ctx.actorId),
+  }),
+});
+
+// Client: subscribe to the scopes you need
+subscriptions: [
+  { id: 'my-tasks', table: 'tasks', scopes: { project_id: '456' } }
+]
+// Server automatically: extracts scopes from rows, tags changes,
+// filters pulls by (requested ∩ allowed) scopes
+```
+
+## What you get
+
+| Feature | What it means |
+|---------|---------------|
+| **Local-first** | SQLite on the client. Instant queries. Works offline. |
+| **Type-safe** | End-to-end TypeScript with Kysely. Queries checked at build time. |
+| **Commit-log sync** | Append-only log. Incremental pulls. Easy to debug and reason about. |
+| **Scope-based auth** | Every change tagged with who can see it. Auditable and composable. |
+| **Conflict detection** | Optimistic concurrency with version numbers. Handle conflicts your way. |
+| **Real-time** | WebSocket wake-ups for instant updates. Data always flows over HTTP. |
+| **Self-hosted** | Run on your infrastructure. MIT licensed. No vendor lock-in. |
+| **Encryption** | Optional E2E field encryption plugin with key sharing. |
+
+## When to use Syncular
+
+**Good fit:**
+- Building a new app where offline support matters
+- Existing Postgres + Kysely stack
+- Need explicit control over sync behavior and auth
+- Team values type safety and debuggability
+
+**Not a good fit:**
+- Need managed infrastructure (consider [PowerSync](/docs/introduction/comparison/vs-powersync) or [Zero](/docs/introduction/comparison/vs-zero))
+- Building Google Docs-style real-time collaboration (consider [Jazz](/docs/introduction/comparison/vs-jazz))
+- Want arbitrary client queries without server-defined table handlers (consider [Zero](/docs/introduction/comparison/vs-zero))
+
+## Next
+
+- Implementing? Start with [Build](/docs/build).
+- Learn the model: [How Sync Works](/docs/introduction/architecture) and [Scopes](/docs/introduction/scopes).
+- Want an honest comparison? See [Comparison](/docs/introduction/comparison).
+- Looking for endpoints? See the [API Reference](/docs/api).

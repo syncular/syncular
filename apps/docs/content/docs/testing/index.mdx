@@ -1,0 +1,58 @@
+---
+title: Testing
+description: Runner-agnostic testing for Syncular with @syncular/testkit.
+---
+
+# Testing
+
+Use `@syncular/testkit` to test Syncular behavior across:
+
+- fast in-process tests
+- real HTTP integration tests
+- runtime-oriented tests (node, deno, cloudflare)
+
+The API is test-runner agnostic. You can use Bun, Vitest, Jest, or other runners without changing testkit code.
+
+## Choose your path
+
+<Cards>
+  <Card title="Quick Start" href="/docs/testing/quick-start">
+    Create fixtures, run push/pull/sync, and assert rows/outbox/conflicts
+  </Card>
+  <Card title="Testkit Primitives" href="/docs/testing/primitives">
+    Builders, schema parsers, deterministic IDs/clocks, scenario flow, and realtime WS helpers
+  </Card>
+  <Card title="Resource Lifecycle" href="/docs/testing/lifecycle">
+    Optional `using` resources and callback wrappers to remove `try/finally` cleanup noise
+  </Card>
+  <Card title="Fault Injection" href="/docs/testing/fault-injection">
+    Simulate latency, flaky transport, and deterministic failures
+  </Card>
+  <Card title="Runtime Patterns" href="/docs/testing/runtime">
+    Share server handlers and runtime helpers across node/deno/cloudflare tests
+  </Card>
+  <Card title="Real-World Examples" href="/docs/testing/examples-offline-reconnect">
+    Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
+  </Card>
+  <Card title="CLI" href="/docs/cli">
+    Scaffold projects and run migration workflows from the CLI section
+  </Card>
+</Cards>
+
+## API groups
+
+| Group | Main exports |
+|---|---|
+| Fixtures | `createSyncFixture`, `createTestServer`, `createTestClient`, `createEngineTestClient` |
+| HTTP fixtures | `createHttpServerFixture`, `createHttpClientFixture`, `createNodeHonoServer` |
+| Protocol + parsing | `createSyncUpsertOperation`, `createSyncSubscription`, `createSyncCombinedRequest`, `parseSyncCombinedResponse` |
+| Lifecycle resources | `withSyncFixture`, `createSyncFixtureResource`, `withTestServer`, `openRealtimeWsResource` |
+| Scenario + deterministic | `createScenarioFlow`, `runPushPullCycle`, `createIdFactory`, `createFakeClock` |
+| Runtime realtime | `createRealtimeWsUrl`, `openRealtimeWs`, `waitForWsJsonMessage`, `closeWsSafe` |
+| Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
+| Faults | `withFaults`, `withRecording`, `createMockTransport` |
+
+## Build vs Testing docs
+
+The [Build testing page](/docs/build/testing) now focuses on testing strategy in the build flow.
+This section is the canonical testkit reference.

@@ -1,0 +1,135 @@
+---
+title: Syncular vs Zero
+description: Choosing between commit-log sync and reactive queries
+lastVerified: 2026-02-03
+---
+
+# Syncular vs Zero
+
+[Zero](https://zero.rocicorp.dev) (from Rocicorp, creators of Replicache) provides a **query-first** local-first experience: you query a local cache and it stays in sync via a **zero-cache** service. It’s open-source and self-hostable, with a managed hosting option.
+
+> **Last verified:** February 2026. Zero is actively evolving — check their docs for the latest.
+
+## Methodology
+
+This comparison focuses on:
+
+- Query model: **reactive queries** vs **explicit replication boundary**
+- Where writes execute: optimistic client effects vs server-authoritative results
+- Where auth/permissions live (and what the framework provides vs “bring your own”)
+
+## The trade-off
+
+| | Syncular | Zero |
+|---|----------|------|
+| **Status** | Alpha | Alpha |
+| **Open source** | Yes (MIT) | Yes (Apache 2.0) |
+| **Deployment** | Self-hosted | Self-hosted or managed |
+| **Primary layer** | Sync framework | Reactive query/cache layer |
+| **Data selection** | Subscriptions + scopes | Queries (reactive) |
+| **Local storage** | SQLite | SQLite (local cache) |
+| **Write semantics** | App-defined handlers | Optimistic mutators → server tx → reconcile |
+| **Conflict semantics** | App-defined | Server authoritative; optimistic effects rollback/rebase |
+
+## What Zero does well
+
+**Reactive queries**: Zero’s standout feature is that you *query first*. Queries are reactive and update as the underlying data changes.
+
+**Local-first feel**: Queries run against a local cache, then reconcile with server results via zero-cache.
+
+**Mutation pipeline**: Mutators run optimistically on the client, then run on the server inside a transaction. Clients reconcile when server updates arrive.
+
+**Open source**: Zero is Apache 2.0 and self-hostable.
+
+**Automatic reactivity**: Data changes propagate automatically. One user changes something, all other users see it live.
+
+## Where Zero has limits
+
+**Alpha status**: Zero is in public alpha. APIs may change, and there are rough edges.
+
+**More moving parts**: Zero-cache is an additional service in your architecture (alongside Postgres and your app/backend).
+
+**Authorization is still your job**: Zero provides the data layer, but you still need to decide how requests are authenticated/authorized in your stack (and how that maps to query visibility and mutators).
+
+## Where Syncular differs
+
+**Explicit replication boundary**: You define exactly what data syncs via subscriptions and scopes. No hidden “distributed query planner” — easier to reason about and debug.
+
+**Commit-log model**: All changes flow through an immutable commit log. Easy to audit, debug, and reason about.
+
+**Scope-based auth**: JSONB scopes make authorization explicit and auditable.
+
+**Typed SQL**: Query and handler APIs are Kysely-first.
+
+## What “building” looks like
+
+At a high level:
+
+- In **Zero**, you define a schema, then define **queries** and **mutators** that run against that schema (client and server). Your UI reads via queries; writes via mutators; the system keeps the local cache consistent with server results.
+- In **Syncular**, you define server-side scope resolution + subscriptions, and client-side table handlers. Your UI reads via typed SQL (`useSyncQuery`) against local SQLite.
+
+## Architecture comparison
+
+### Zero
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Client    │◄────►│    Zero     │◄────►│   Postgres  │
+│  (SQLite)   │      │   (sync)    │      │             │
+└─────────────┘      └─────────────┘      └─────────────┘
+```
+
+Zero sits between your client and Postgres, handling reactive queries and sync.
+
+### Syncular
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Client    │◄────►│ Your Server │◄────►│   Postgres  │
+│  (SQLite)   │      │   (Hono)    │      │             │
+└─────────────┘      └─────────────┘      └─────────────┘
+```
+
+You run the full stack with explicit control over sync logic.
+
+## When to choose Zero
+
+- You want a query-first, reactive experience
+- Developer experience is your top priority
+- You're comfortable with alpha software
+- You want open-source with optional managed hosting
+
+## When to choose Syncular
+
+- You want explicit control over what data syncs
+- You prefer a simpler mental model (commit log vs reactive queries)
+- You need explicit, auditable authorization
+- You're already using Kysely and want type safety
+
+## Migration notes
+
+### Zero → Syncular
+
+1. Set up Postgres and Syncular server
+2. Create table handlers for each synced table
+3. Implement `resolveScopes` for authorization
+4. Replace Zero queries with `useSyncQuery`
+
+### Syncular → Zero
+
+1. Set up Zero in front of your Postgres
+2. Define your schema in Zero
+3. Replace Syncular hooks with Zero queries
+4. Integrate your auth model with queries/mutators
+
+## Summary
+
+| Choose Zero if... | Choose Syncular if... |
+|-------------------|----------------------|
+| Reactive queries are essential | Explicit control is preferred |
+| You want minimal backend code | You need custom sync logic |
+| Alpha status is acceptable | You want simpler mental model |
+
+---
+
+*Sources: [Zero docs](https://zero.rocicorp.dev/docs), [Zero open source](https://zero.rocicorp.dev/docs/open-source), [Queries](https://zero.rocicorp.dev/docs/queries), [Mutators](https://zero.rocicorp.dev/docs/mutators)*

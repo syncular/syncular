@@ -1,0 +1,210 @@
+---
+title: Server Dialects
+description: Database dialect configuration for the server
+---
+
+There are two layers of dialect in Syncular:
+
+1. **Server dialect** — generates database-specific SQL for sync operations (`push`, `pull`, pruning, compaction)
+2. **Kysely database dialect** — creates the `Kysely<T>` instance that connects to the actual database
+
+You need one of each. The server dialect must match the database engine (Postgres or SQLite).
+
+## Server Dialects
+
+### PostgreSQL
+
+```typescript
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+const dialect = createPostgresServerDialect();
+```
+
+### SQLite
+
+```typescript
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+
+const dialect = createSqliteServerDialect();
+```
+
+## Kysely Database Dialects
+
+These packages create the `Kysely<T>` instance that you pass to `ensureSyncSchema` and `createSyncRoutes`. Choose one that matches your runtime and server dialect.
+
+### SQLite-compatible (use with `server-dialect-sqlite`)
+
+| Package | Runtime | Example |
+|---------|---------|---------|
+| `@syncular/dialect-better-sqlite3` | Node.js | `createBetterSqlite3Db({ path: './data.db' })` |
+| `@syncular/dialect-electron-sqlite` | Electron (Renderer) | `createElectronSqliteDbFromWindow({ bridgeKey: 'app' })` |
+| `@syncular/dialect-sqlite3` | Node.js | `createSqlite3Db({ path: './data.db' })` |
+| `@syncular/dialect-bun-sqlite` | Bun | `createBunSqliteDb({ path: './data.db' })` |
+| `@syncular/dialect-libsql` | Node.js / Edge | `createLibsqlDb({ url: 'libsql://...', authToken: '...' })` |
+| `@syncular/dialect-d1` | Cloudflare Workers | `createD1Db(env.DB)` |
+| `@syncular/dialect-wa-sqlite` | Browser | `createWaSqliteDb({ fileName: 'app.db' })` |
+
+### Postgres-compatible (use with `server-dialect-postgres`)
+
+| Package | Runtime | Example |
+|---------|---------|---------|
+| `kysely` + `pg` | Node.js | `new Kysely({ dialect: new PostgresDialect({ pool }) })` |
+| `@syncular/dialect-neon` | Serverless / Edge | `createNeonDb({ connectionString: '...' })` |
+| `@syncular/dialect-pglite` | Browser | `createPgliteDbAsync({ dataDir: 'idb://app' })` |
+
+## Migrations
+
+Run migrations using the dialect:
+
+```typescript
+import { ensureSyncSchema } from '@syncular/server';
+
+await ensureSyncSchema(db, dialect);
+```
+
+This creates the sync infrastructure tables:
+
+| Table | Purpose |
+|-------|---------|
+| `sync_commits` | Commit log with idempotency keys |
+| `sync_changes` | Individual changes within commits (JSONB scopes) |
+| `sync_client_cursors` | Per-client cursor tracking |
+| `sync_snapshot_chunks` | Large bootstrap chunk storage |
+
+## Low-Level Operations
+
+### pushCommit
+
+Push a commit directly:
+
+```typescript
+import { pushCommit } from '@syncular/server';
+
+const result = await pushCommit({
+  db,
+  dialect,
+  handlers,
+  actorId,
+  request: pushRequest,
+});
+```
+
+### pull
+
+Pull commits and snapshots:
+
+```typescript
+import { pull } from '@syncular/server';
+
+const result = await pull({
+  db,
+  dialect,
+  handlers,
+  actorId,
+  request: pullRequest,
+});
+```
+
+## Pruning
+
+Remove old commits that are no longer needed:
+
+### computePruneWatermarkCommitSeq
+
+```typescript
+import { computePruneWatermarkCommitSeq } from '@syncular/server';
+
+const watermark = await computePruneWatermarkCommitSeq(db, {
+  activeWindowMs: 14 * 24 * 60 * 60 * 1000,
+  fallbackMaxAgeMs: 30 * 24 * 60 * 60 * 1000,
+});
+```
+
+### pruneSync
+
+```typescript
+import { pruneSync } from '@syncular/server';
+
+const deleted = await pruneSync(db, {
+  watermarkCommitSeq: watermark,
+  keepNewestCommits: 1000,
+});
+```
+
+### maybePruneSync
+
+Rate-limited pruning:
+
+```typescript
+import { maybePruneSync } from '@syncular/server';
+
+const deleted = await maybePruneSync(db, {
+  minIntervalMs: 5 * 60 * 1000,
+  options: { /* ... */ },
+});
+```
+
+## Compaction
+
+Compact change history to reduce storage:
+
+### compactChanges
+
+```typescript
+import { compactChanges } from '@syncular/server';
+
+const deleted = await compactChanges(db, {
+  dialect,
+  options: { fullHistoryHours: 168 },
+});
+```
+
+### maybeCompactChanges
+
+Rate-limited compaction:
+
+```typescript
+import { maybeCompactChanges } from '@syncular/server';
+
+const deleted = await maybeCompactChanges(db, {
+  dialect,
+  minIntervalMs: 30 * 60 * 1000,
+  options: { fullHistoryHours: 168 },
+});
+```
+
+## Client Cursors
+
+### recordClientCursor
+
+Track client sync position:
+
+```typescript
+import { recordClientCursor } from '@syncular/server';
+
+await recordClientCursor(db, dialect, {
+  clientId,
+  actorId,
+  cursor,
+  effectiveScopes,
+});
+```
+
+## Snapshot Chunks
+
+### readSnapshotChunk
+
+Read large snapshot chunks:
+
+```typescript
+import { readSnapshotChunk } from '@syncular/server';
+
+const chunk = await readSnapshotChunk(db, chunkId);
+```
+
+`chunk.body` is `Uint8Array` for inline/database storage and may be `ReadableStream<Uint8Array>` when using external chunk storage adapters with streaming reads.
+
+## Next Steps
+
+- [Realtime Bridge](/docs/server/realtime-bridge) - Multi-instance realtime
+- [Server Setup Guide](/docs/build/server-setup) - Complete setup guide

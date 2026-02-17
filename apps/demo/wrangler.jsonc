@@ -1,0 +1,56 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "336bfd20ccb2f56e24ac0afeca6b4837",
+	"name": "syncular-demo",
+	"main": "src/cf/index.ts",
+	"compatibility_date": "2026-02-06",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": false,
+	"routes": [
+		{ "pattern": "demo.syncular.dev", "custom_domain": true }
+	],
+	"observability": {
+		"enabled": true,
+		"logs": {
+			"invocation_logs": true
+		}
+	},
+	"assets": {
+		"directory": "./dist",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "syncular-demo",
+			"database_id": "4e080dc7-de34-4ddf-bcb5-9af244bb4392"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "BLOBS",
+			"bucket_name": "syncular-demo-blobs"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "SYNC_DO", "class_name": "SyncDO" }
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["SyncDO"]
+		}
+	],
+	"version_metadata": {
+		"binding": "CF_VERSION_METADATA"
+	},
+	"vars": {
+		"BLOB_SECRET": "demo-blob-secret",
+		"SENTRY_DSN": "",
+		"SENTRY_ENVIRONMENT": "production",
+		"SENTRY_RELEASE": ""
+	}
+}

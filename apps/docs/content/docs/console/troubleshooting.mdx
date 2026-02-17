@@ -1,0 +1,57 @@
+---
+title: Troubleshooting
+description: Diagnose and resolve common Console connection and investigation issues
+---
+
+# Troubleshooting
+
+## Console cannot connect
+
+Checks:
+
+1. Verify server URL points to the sync base path (for example `.../api`).
+2. Verify token matches server-side console token.
+3. Confirm `/console/stats` returns `200` with bearer auth.
+4. Check CORS policy if Console and API are on different origins.
+
+## Connected, but no data appears
+
+Checks:
+
+1. Confirm correct partition context (empty means all partitions).
+2. Expand time range in Stream filters.
+3. Verify server has request-event rows and commits in selected partition.
+4. Confirm token has access in the target environment.
+
+## Stream detail shows no payload snapshot
+
+Possible causes:
+
+- payload retention disabled
+- payload pruned by retention policy
+- event type/path does not capture payload
+
+Use event metadata (`payloadRef`, `requestId`, `traceId`) for fallback correlation.
+
+## Live feed appears stale
+
+Checks:
+
+1. Confirm Console live WebSocket is connected.
+2. Trigger a known test mutation and verify new event arrival.
+3. If needed, refresh to force timeline refetch.
+
+## Evict does not solve client issue
+
+Checks:
+
+1. Confirm evict operation succeeded in audit log.
+2. Verify client reconnected and bootstrap pull executed.
+3. If external writes are involved, run `Notify Data Change`.
+4. Inspect server/client logs for recurring auth or schema errors.
+
+## Related pages
+
+- [Connect and Auth](/docs/console/connect-and-auth)
+- [Stream Investigation](/docs/console/stream-investigation)
+- [Operations](/docs/console/operations)

@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 23: Accretion Disk</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@200;300;400;500;600;700;800&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Manrope', sans-serif;
+    background: #000;
+    color: #fff;
+    overflow-x: hidden;
+  }
+  code, .mono { font-family: 'Fira Code', monospace; }
+
+  /* ===== ACCRETION DISK ===== */
+  .disk-container {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .disk-system {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 900px;
+    height: 900px;
+  }
+
+  /* Each ring is an ellipse viewed from a slight top-down angle */
+  .disk-ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    border-radius: 50%;
+    border-style: solid;
+    border-color: transparent;
+    transform-origin: center center;
+    pointer-events: none;
+  }
+
+  /* Ring 1 — outermost, cool blue */
+  .ring-1 {
+    width: 860px;
+    height: 860px;
+    margin-left: -430px;
+    margin-top: -430px;
+    border-width: 1.5px;
+    border-color: rgba(59, 130, 246, 0.15);
+    box-shadow:
+      0 0 30px 2px rgba(59, 130, 246, 0.04),
+      inset 0 0 30px 2px rgba(59, 130, 246, 0.02);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 60s linear infinite;
+  }
+
+  /* Ring 2 */
+  .ring-2 {
+    width: 760px;
+    height: 760px;
+    margin-left: -380px;
+    margin-top: -380px;
+    border-width: 1.5px;
+    border-color: rgba(79, 120, 255, 0.2);
+    box-shadow:
+      0 0 25px 3px rgba(79, 120, 255, 0.05),
+      inset 0 0 25px 3px rgba(79, 120, 255, 0.03);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 50s linear infinite;
+  }
+
+  /* Ring 3 */
+  .ring-3 {
+    width: 660px;
+    height: 660px;
+    margin-left: -330px;
+    margin-top: -330px;
+    border-width: 2px;
+    border-color: rgba(99, 102, 241, 0.25);
+    box-shadow:
+      0 0 22px 4px rgba(99, 102, 241, 0.06),
+      inset 0 0 22px 4px rgba(99, 102, 241, 0.04);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 42s linear infinite reverse;
+  }
+
+  /* Ring 4 */
+  .ring-4 {
+    width: 560px;
+    height: 560px;
+    margin-left: -280px;
+    margin-top: -280px;
+    border-width: 2px;
+    border-color: rgba(139, 92, 246, 0.3);
+    box-shadow:
+      0 0 20px 5px rgba(139, 92, 246, 0.08),
+      inset 0 0 20px 5px rgba(139, 92, 246, 0.05);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 35s linear infinite;
+  }
+
+  /* Ring 5 */
+  .ring-5 {
+    width: 460px;
+    height: 460px;
+    margin-left: -230px;
+    margin-top: -230px;
+    border-width: 2.5px;
+    border-color: rgba(168, 85, 247, 0.35);
+    box-shadow:
+      0 0 18px 6px rgba(168, 85, 247, 0.1),
+      inset 0 0 18px 6px rgba(168, 85, 247, 0.06);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 28s linear infinite reverse;
+  }
+
+  /* Ring 6 */
+  .ring-6 {
+    width: 360px;
+    height: 360px;
+    margin-left: -180px;
+    margin-top: -180px;
+    border-width: 2.5px;
+    border-color: rgba(192, 70, 220, 0.4);
+    box-shadow:
+      0 0 16px 7px rgba(192, 70, 220, 0.12),
+      inset 0 0 16px 7px rgba(192, 70, 220, 0.07);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 22s linear infinite;
+  }
+
+  /* Ring 7 — getting hot */
+  .ring-7 {
+    width: 270px;
+    height: 270px;
+    margin-left: -135px;
+    margin-top: -135px;
+    border-width: 3px;
+    border-color: rgba(236, 72, 153, 0.45);
+    box-shadow:
+      0 0 14px 8px rgba(236, 72, 153, 0.14),
+      inset 0 0 14px 8px rgba(236, 72, 153, 0.08);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 16s linear infinite reverse;
+  }
+
+  /* Ring 8 — hot pink */
+  .ring-8 {
+    width: 190px;
+    height: 190px;
+    margin-left: -95px;
+    margin-top: -95px;
+    border-width: 3px;
+    border-color: rgba(244, 63, 94, 0.5);
+    box-shadow:
+      0 0 14px 10px rgba(244, 63, 94, 0.16),
+      inset 0 0 14px 10px rgba(244, 63, 94, 0.09);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 11s linear infinite;
+  }
+
+  /* Ring 9 — very hot */
+  .ring-9 {
+    width: 120px;
+    height: 120px;
+    margin-left: -60px;
+    margin-top: -60px;
+    border-width: 3px;
+    border-color: rgba(251, 113, 133, 0.55);
+    box-shadow:
+      0 0 16px 12px rgba(251, 113, 133, 0.18),
+      inset 0 0 16px 12px rgba(251, 113, 133, 0.1);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 7s linear infinite reverse;
+  }
+
+  /* Ring 10 — innermost, near-white hot */
+  .ring-10 {
+    width: 70px;
+    height: 70px;
+    margin-left: -35px;
+    margin-top: -35px;
+    border-width: 2.5px;
+    border-color: rgba(255, 200, 220, 0.6);
+    box-shadow:
+      0 0 20px 14px rgba(255, 200, 220, 0.2),
+      inset 0 0 20px 14px rgba(255, 200, 220, 0.12);
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 4s linear infinite;
+  }
+
+  /* Diffuse glow bands between rings */
+  .glow-band {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  .glow-outer {
+    width: 800px;
+    height: 800px;
+    margin-left: -400px;
+    margin-top: -400px;
+    background: radial-gradient(ellipse, transparent 40%, rgba(59, 130, 246, 0.03) 50%, transparent 65%);
+    transform: rotateX(72deg);
+    animation: spin-ring 55s linear infinite;
+  }
+
+  .glow-mid {
+    width: 500px;
+    height: 500px;
+    margin-left: -250px;
+    margin-top: -250px;
+    background: radial-gradient(ellipse, transparent 30%, rgba(168, 85, 247, 0.05) 50%, transparent 70%);
+    transform: rotateX(72deg);
+    animation: spin-ring 30s linear infinite reverse;
+  }
+
+  .glow-inner {
+    width: 250px;
+    height: 250px;
+    margin-left: -125px;
+    margin-top: -125px;
+    background: radial-gradient(ellipse, transparent 20%, rgba(244, 63, 94, 0.08) 50%, transparent 75%);
+    transform: rotateX(72deg);
+    animation: spin-ring 15s linear infinite;
+  }
+
+  /* Central singularity — bright white core */
+  .singularity {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 8px;
+    height: 8px;
+    margin-left: -4px;
+    margin-top: -4px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow:
+      0 0 6px 3px rgba(255, 255, 255, 0.9),
+      0 0 20px 8px rgba(255, 255, 255, 0.5),
+      0 0 50px 20px rgba(255, 200, 220, 0.25),
+      0 0 100px 40px rgba(236, 72, 153, 0.1),
+      0 0 180px 60px rgba(139, 92, 246, 0.05);
+    z-index: 5;
+    animation: core-pulse 3s ease-in-out infinite;
+  }
+
+  @keyframes core-pulse {
+    0%, 100% {
+      transform: scale(1);
+      box-shadow:
+        0 0 6px 3px rgba(255,255,255,0.9),
+        0 0 20px 8px rgba(255,255,255,0.5),
+        0 0 50px 20px rgba(255,200,220,0.25),
+        0 0 100px 40px rgba(236,72,153,0.1),
+        0 0 180px 60px rgba(139,92,246,0.05);
+    }
+    50% {
+      transform: scale(1.3);
+      box-shadow:
+        0 0 8px 4px rgba(255,255,255,1),
+        0 0 30px 12px rgba(255,255,255,0.6),
+        0 0 70px 28px rgba(255,200,220,0.3),
+        0 0 130px 50px rgba(236,72,153,0.14),
+        0 0 220px 80px rgba(139,92,246,0.07);
+    }
+  }
+
+  @keyframes spin-ring {
+    from { transform: rotateX(72deg) rotateZ(0deg); }
+    to   { transform: rotateX(72deg) rotateZ(360deg); }
+  }
+
+  /* Orbiting data particles on the rings */
+  .data-particle {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 4;
+  }
+
+  .particle-1 {
+    width: 760px;
+    height: 760px;
+    margin-left: -380px;
+    margin-top: -380px;
+    transform: rotateX(72deg) rotateZ(0deg);
+    animation: spin-ring 50s linear infinite;
+  }
+  .particle-1::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 4px;
+    height: 4px;
+    margin-left: -2px;
+    margin-top: -2px;
+    border-radius: 50%;
+    background: rgba(99, 130, 255, 0.8);
+    box-shadow: 0 0 8px 3px rgba(99, 130, 255, 0.4);
+  }
+
+  .particle-2 {
+    width: 460px;
+    height: 460px;
+    margin-left: -230px;
+    margin-top: -230px;
+    transform: rotateX(72deg) rotateZ(120deg);
+    animation: spin-ring 28s linear infinite reverse;
+  }
+  .particle-2::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 4px;
+    height: 4px;
+    margin-left: -2px;
+    margin-top: -2px;
+    border-radius: 50%;
+    background: rgba(192, 100, 255, 0.8);
+    box-shadow: 0 0 8px 3px rgba(192, 100, 255, 0.4);
+  }
+
+  .particle-3 {
+    width: 270px;
+    height: 270px;
+    margin-left: -135px;
+    margin-top: -135px;
+    transform: rotateX(72deg) rotateZ(200deg);
+    animation: spin-ring 16s linear infinite;
+  }
+  .particle-3::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 3px;
+    height: 3px;
+    margin-left: -1.5px;
+    margin-top: -1.5px;
+    border-radius: 50%;
+    background: rgba(244, 100, 160, 0.9);
+    box-shadow: 0 0 8px 3px rgba(244, 100, 160, 0.5);
+  }
+
+  .particle-4 {
+    width: 120px;
+    height: 120px;
+    margin-left: -60px;
+    margin-top: -60px;
+    transform: rotateX(72deg) rotateZ(300deg);
+    animation: spin-ring 7s linear infinite reverse;
+  }
+  .particle-4::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 3px;
+    height: 3px;
+    margin-left: -1.5px;
+    margin-top: -1.5px;
+    border-radius: 50%;
+    background: rgba(255, 180, 200, 0.9);
+    box-shadow: 0 0 10px 4px rgba(255, 180, 200, 0.5);
+  }
+
+  /* Ambient background radial */
+  .ambient-bg {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(ellipse 60% 40% at 50% 45%, rgba(99, 102, 241, 0.06) 0%, transparent 60%),
+      radial-gradient(ellipse 40% 30% at 50% 45%, rgba(168, 85, 247, 0.04) 0%, transparent 50%),
+      radial-gradient(ellipse 20% 15% at 50% 45%, rgba(236, 72, 153, 0.03) 0%, transparent 40%),
+      #000;
+    pointer-events: none;
+  }
+
+  /* ===== HERO TEXT ===== */
+  .hero-content {
+    position: relative;
+    z-index: 10;
+    text-align: center;
+    max-width: 800px;
+    padding: 0 1.5rem;
+  }
+
+  .hero-title {
+    font-size: clamp(3.5rem, 10vw, 7rem);
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    margin-bottom: 1rem;
+    background: linear-gradient(135deg, #93c5fd 0%, #a78bfa 30%, #e879a0 60%, #fff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero-subtitle {
+    font-size: clamp(1rem, 2.5vw, 1.35rem);
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.55);
+    line-height: 1.7;
+    max-width: 600px;
+    margin: 0 auto 2.5rem;
+  }
+
+  .hero-subtitle em {
+    font-style: normal;
+    color: rgba(255, 255, 255, 0.85);
+    font-weight: 500;
+  }
+
+  /* ===== NAV ===== */
+  nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    padding: 1.25rem 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    backdrop-filter: blur(12px);
+    background: rgba(0, 0, 0, 0.4);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .nav-logo {
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: -0.02em;
+    color: #fff;
+  }
+  .nav-logo span {
+    color: rgba(167, 139, 250, 0.9);
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 2rem;
+    list-style: none;
+  }
+  .nav-links a {
+    color: rgba(255, 255, 255, 0.5);
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: rgba(255, 255, 255, 0.9); }
+
+  /* ===== BUTTONS ===== */
+  .btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.85rem 2rem;
+    border-radius: 9999px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+    color: #fff;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.6), rgba(168, 85, 247, 0.6));
+    border: 1px solid rgba(167, 139, 250, 0.3);
+    transition: all 0.3s;
+    cursor: pointer;
+  }
+  .btn-primary:hover {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.8), rgba(168, 85, 247, 0.8));
+    border-color: rgba(167, 139, 250, 0.5);
+    box-shadow: 0 0 30px rgba(139, 92, 246, 0.2);
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.85rem 2rem;
+    border-radius: 9999px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-decoration: none;
+    color: rgba(255, 255, 255, 0.7);
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    transition: all 0.3s;
+    cursor: pointer;
+  }
+  .btn-secondary:hover {
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+
+  /* ===== SECTIONS ===== */
+  section {
+    position: relative;
+    z-index: 10;
+  }
+
+  .section-label {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: rgba(167, 139, 250, 0.6);
+    margin-bottom: 1rem;
+  }
+
+  .section-title {
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
+    margin-bottom: 1rem;
+  }
+
+  .section-desc {
+    font-size: 1.05rem;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.5);
+    line-height: 1.7;
+    max-width: 560px;
+  }
+
+  /* ===== FEATURES — ORBITAL ROWS ===== */
+  .feature-orbit {
+    position: relative;
+    padding: 2rem 0;
+  }
+
+  /* Curved connectors between features */
+  .orbit-line {
+    position: absolute;
+    left: 50%;
+    width: 600px;
+    margin-left: -300px;
+    height: 1px;
+    pointer-events: none;
+  }
+  .orbit-line::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(139, 92, 246, 0.15), transparent);
+  }
+
+  .feature-card {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    padding: 2rem;
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+  .feature-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.2), transparent);
+  }
+  .feature-card:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.1);
+    transform: translateY(-2px);
+  }
+
+  .feature-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.25rem;
+    font-size: 1.1rem;
+    position: relative;
+  }
+
+  .feature-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 0.6rem;
+    letter-spacing: -0.01em;
+  }
+
+  .feature-desc {
+    font-size: 0.88rem;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.45);
+    line-height: 1.65;
+  }
+
+  /* Orbital badge on each feature — which ring it belongs to */
+  .orbit-badge {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.6rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    border: 1px solid;
+    position: absolute;
+    top: 1.25rem;
+    right: 1.25rem;
+  }
+
+  .orbit-outer .orbit-badge { color: rgba(99, 130, 255, 0.7); border-color: rgba(99, 130, 255, 0.2); }
+  .orbit-mid .orbit-badge   { color: rgba(168, 85, 247, 0.7); border-color: rgba(168, 85, 247, 0.2); }
+  .orbit-inner .orbit-badge { color: rgba(244, 100, 160, 0.7); border-color: rgba(244, 100, 160, 0.2); }
+
+  .orbit-outer .feature-icon { background: rgba(59, 130, 246, 0.1); color: rgba(99, 160, 255, 0.8); }
+  .orbit-mid .feature-icon   { background: rgba(139, 92, 246, 0.1); color: rgba(168, 130, 255, 0.8); }
+  .orbit-inner .feature-icon { background: rgba(236, 72, 153, 0.1); color: rgba(244, 130, 180, 0.8); }
+
+  /* ===== CONVERGENCE SECTION ===== */
+  .convergence-visual {
+    position: relative;
+    width: 100%;
+    height: 340px;
+    overflow: hidden;
+  }
+
+  .spiral-path {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    width: 100%;
+    height: 100%;
+  }
+
+  .spiral-ring-mini {
+    position: absolute;
+    top: 50%;
+    left: 70%;
+    border-radius: 50%;
+    border: 1px solid;
+    pointer-events: none;
+  }
+
+  .sr-1 { width: 300px; height: 300px; margin: -150px 0 0 -150px; border-color: rgba(59, 130, 246, 0.12); transform: rotateX(72deg); animation: spin-ring 30s linear infinite; }
+  .sr-2 { width: 220px; height: 220px; margin: -110px 0 0 -110px; border-color: rgba(139, 92, 246, 0.18); transform: rotateX(72deg); animation: spin-ring 20s linear infinite reverse; }
+  .sr-3 { width: 140px; height: 140px; margin: -70px 0 0 -70px; border-color: rgba(236, 72, 153, 0.25); transform: rotateX(72deg); animation: spin-ring 12s linear infinite; }
+  .sr-4 { width: 70px; height: 70px; margin: -35px 0 0 -35px; border-color: rgba(255, 200, 220, 0.35); transform: rotateX(72deg); animation: spin-ring 6s linear infinite reverse; }
+
+  .sr-core {
+    position: absolute;
+    top: 50%;
+    left: 70%;
+    width: 6px;
+    height: 6px;
+    margin: -3px 0 0 -3px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow:
+      0 0 6px 3px rgba(255, 255, 255, 0.6),
+      0 0 20px 8px rgba(255, 200, 220, 0.2);
+  }
+
+  /* Data streams spiraling in — animated dashes */
+  .data-stream {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    height: 1px;
+    transform-origin: right center;
+  }
+
+  .stream-1 {
+    width: 55%;
+    left: 5%;
+    margin-top: -40px;
+    background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.3) 30%, rgba(139, 92, 246, 0.4) 60%, rgba(236, 72, 153, 0.3) 85%, transparent);
+    animation: stream-flow 4s ease-in-out infinite;
+  }
+  .stream-2 {
+    width: 50%;
+    left: 10%;
+    margin-top: 0px;
+    background: linear-gradient(90deg, transparent, rgba(79, 120, 255, 0.25) 25%, rgba(168, 85, 247, 0.35) 55%, rgba(244, 63, 94, 0.25) 80%, transparent);
+    animation: stream-flow 5s ease-in-out infinite 1s;
+  }
+  .stream-3 {
+    width: 48%;
+    left: 12%;
+    margin-top: 40px;
+    background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.2) 30%, rgba(192, 70, 220, 0.3) 60%, rgba(251, 113, 133, 0.2) 85%, transparent);
+    animation: stream-flow 4.5s ease-in-out infinite 0.5s;
+  }
+
+  @keyframes stream-flow {
+    0% { opacity: 0.3; transform: scaleX(0.7) translateX(-10%); }
+    50% { opacity: 1; transform: scaleX(1) translateX(0%); }
+    100% { opacity: 0.3; transform: scaleX(0.7) translateX(-10%); }
+  }
+
+  /* Stream labels */
+  .stream-label {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+    position: absolute;
+    left: 3%;
+    white-space: nowrap;
+  }
+  .label-1 { top: calc(50% - 52px); color: rgba(99, 160, 255, 0.5); }
+  .label-2 { top: calc(50% - 12px); color: rgba(168, 130, 255, 0.5); }
+  .label-3 { top: calc(50% + 28px); color: rgba(244, 130, 180, 0.5); }
+
+  /* ===== INSTALL ===== */
+  .install-block {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 1.25rem 1.75rem;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.7);
+    position: relative;
+    overflow: hidden;
+  }
+  .install-block::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.3), transparent);
+  }
+  .install-block .prompt { color: rgba(167, 139, 250, 0.6); }
+  .install-block .pkg { color: rgba(255, 255, 255, 0.9); }
+
+  /* ===== FOOTER ===== */
+  footer {
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    .disk-system {
+      width: 500px;
+      height: 500px;
+    }
+    .ring-1 { width: 480px; height: 480px; margin-left: -240px; margin-top: -240px; }
+    .ring-2 { width: 420px; height: 420px; margin-left: -210px; margin-top: -210px; }
+    .ring-3 { width: 360px; height: 360px; margin-left: -180px; margin-top: -180px; }
+    .ring-4 { width: 300px; height: 300px; margin-left: -150px; margin-top: -150px; }
+    .ring-5 { width: 250px; height: 250px; margin-left: -125px; margin-top: -125px; }
+    .ring-6 { width: 200px; height: 200px; margin-left: -100px; margin-top: -100px; }
+    .ring-7 { width: 150px; height: 150px; margin-left: -75px; margin-top: -75px; }
+    .ring-8 { width: 110px; height: 110px; margin-left: -55px; margin-top: -55px; }
+    .ring-9 { width: 70px; height: 70px; margin-left: -35px; margin-top: -35px; }
+    .ring-10 { width: 40px; height: 40px; margin-left: -20px; margin-top: -20px; }
+    .glow-outer { width: 450px; height: 450px; margin-left: -225px; margin-top: -225px; }
+    .glow-mid { width: 280px; height: 280px; margin-left: -140px; margin-top: -140px; }
+    .glow-inner { width: 140px; height: 140px; margin-left: -70px; margin-top: -70px; }
+    .particle-1 { width: 420px; height: 420px; margin-left: -210px; margin-top: -210px; }
+    .particle-2 { width: 250px; height: 250px; margin-left: -125px; margin-top: -125px; }
+    .particle-3 { width: 150px; height: 150px; margin-left: -75px; margin-top: -75px; }
+    .particle-4 { width: 70px; height: 70px; margin-left: -35px; margin-top: -35px; }
+    .nav-links { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Ambient background -->
+<div class="ambient-bg"></div>
+
+<!-- Navigation -->
+<nav>
+  <div class="nav-logo">syncular<span>.</span></div>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#convergence">How It Works</a></li>
+    <li><a href="#install">Install</a></li>
+    <li><a href="https://github.com/nicknisi/syncular">GitHub</a></li>
+    <li><a href="/docs">Docs</a></li>
+  </ul>
+</nav>
+
+<!-- Hero: Accretion Disk -->
+<section class="disk-container" style="min-height: 100vh;">
+  <div class="disk-system">
+    <!-- Glow bands -->
+    <div class="glow-band glow-outer"></div>
+    <div class="glow-band glow-mid"></div>
+    <div class="glow-band glow-inner"></div>
+
+    <!-- Concentric rings — outer (cool) to inner (hot) -->
+    <div class="disk-ring ring-1"></div>
+    <div class="disk-ring ring-2"></div>
+    <div class="disk-ring ring-3"></div>
+    <div class="disk-ring ring-4"></div>
+    <div class="disk-ring ring-5"></div>
+    <div class="disk-ring ring-6"></div>
+    <div class="disk-ring ring-7"></div>
+    <div class="disk-ring ring-8"></div>
+    <div class="disk-ring ring-9"></div>
+    <div class="disk-ring ring-10"></div>
+
+    <!-- Data particles orbiting on the rings -->
+    <div class="data-particle particle-1"></div>
+    <div class="data-particle particle-2"></div>
+    <div class="data-particle particle-3"></div>
+    <div class="data-particle particle-4"></div>
+
+    <!-- Central singularity -->
+    <div class="singularity"></div>
+  </div>
+
+  <!-- Overlaid hero text -->
+  <div class="hero-content">
+    <p class="section-label" style="margin-bottom: 1.5rem;">Offline-first sync framework</p>
+    <h1 class="hero-title">Every commit converges</h1>
+    <p class="hero-subtitle">
+      Data spirals inward from every client, ordered by the commit log,
+      <em>converging to a single source of truth</em>.
+      Syncular gives you offline-first sync that works like gravity.
+    </p>
+    <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
+      <a href="#install" class="btn-primary">Get Started</a>
+      <a href="/docs" class="btn-secondary">Documentation</a>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features" class="py-32 px-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-20">
+      <p class="section-label">Orbital features</p>
+      <h2 class="section-title">Built for convergence at every layer</h2>
+      <p class="section-desc mx-auto">
+        From the outermost client edge to the innermost server core,
+        every layer is designed to pull data toward consistency.
+      </p>
+    </div>
+
+    <!-- Outer orbit — Client-side features -->
+    <div class="mb-6">
+      <p class="mono text-xs" style="color: rgba(99, 130, 255, 0.4); letter-spacing: 0.1em; margin-bottom: 1rem;">
+        // OUTER ORBIT &mdash; CLIENT
+      </p>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
+      <div class="feature-card orbit-outer">
+        <span class="orbit-badge">outer</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <h3 class="feature-title">Offline-First Storage</h3>
+        <p class="feature-desc">
+          Reads and writes hit the local database instantly.
+          Changes queue in an outbox, spiraling toward the server
+          when connectivity returns.
+        </p>
+      </div>
+      <div class="feature-card orbit-outer">
+        <span class="orbit-badge">outer</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l2 2 4-4"/></svg>
+        </div>
+        <h3 class="feature-title">Conflict Resolution</h3>
+        <p class="feature-desc">
+          When two clients edit the same row offline,
+          last-write-wins or custom merge functions resolve
+          the collision automatically.
+        </p>
+      </div>
+      <div class="feature-card orbit-outer">
+        <span class="orbit-badge">outer</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3 class="feature-title">End-to-End Encryption</h3>
+        <p class="feature-desc">
+          Optional E2EE plugin encrypts data before it leaves
+          the client. The server never sees plaintext --
+          only encrypted commits spiral inward.
+        </p>
+      </div>
+    </div>
+
+    <!-- Mid orbit — Transport features -->
+    <div class="mb-6">
+      <p class="mono text-xs" style="color: rgba(168, 100, 255, 0.4); letter-spacing: 0.1em; margin-bottom: 1rem;">
+        // MID ORBIT &mdash; TRANSPORT
+      </p>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
+      <div class="feature-card orbit-mid">
+        <span class="orbit-badge">mid</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <h3 class="feature-title">HTTP + WebSocket</h3>
+        <p class="feature-desc">
+          Pull over HTTP for reliable batch sync.
+          WebSocket for realtime push notifications
+          that wake sleeping clients instantly.
+        </p>
+      </div>
+      <div class="feature-card orbit-mid">
+        <span class="orbit-badge">mid</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        </div>
+        <h3 class="feature-title">Snapshot Chunks</h3>
+        <p class="feature-desc">
+          New clients bootstrap from chunked snapshots
+          instead of replaying the entire commit history.
+          Fast cold starts, no matter how deep the log.
+        </p>
+      </div>
+      <div class="feature-card orbit-mid">
+        <span class="orbit-badge">mid</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9"/></svg>
+        </div>
+        <h3 class="feature-title">Edge Relay</h3>
+        <p class="feature-desc">
+          Deploy relay nodes at the edge to reduce latency.
+          Commits pass through the relay on their spiral
+          toward the origin server.
+        </p>
+      </div>
+    </div>
+
+    <!-- Inner orbit — Server features -->
+    <div class="mb-6">
+      <p class="mono text-xs" style="color: rgba(244, 100, 160, 0.4); letter-spacing: 0.1em; margin-bottom: 1rem;">
+        // INNER ORBIT &mdash; SERVER CORE
+      </p>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div class="feature-card orbit-inner">
+        <span class="orbit-badge">core</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <h3 class="feature-title">Commit-Log Ordering</h3>
+        <p class="feature-desc">
+          The server maintains a strict commit log.
+          Every mutation from every client is assigned
+          a monotonic sequence number -- the gravitational order.
+        </p>
+      </div>
+      <div class="feature-card orbit-inner">
+        <span class="orbit-badge">core</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M4 10h16M10 4v16"/></svg>
+        </div>
+        <h3 class="feature-title">Scope Subscriptions</h3>
+        <p class="feature-desc">
+          Clients subscribe to scoped subsets of data.
+          Only relevant commits spiral down to each client,
+          keeping bandwidth and storage minimal.
+        </p>
+      </div>
+      <div class="feature-card orbit-inner">
+        <span class="orbit-badge">core</span>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/><path d="M19 6l-7 12"/></svg>
+        </div>
+        <h3 class="feature-title">Prune &amp; Compact</h3>
+        <p class="feature-desc">
+          Old commits compact into snapshots.
+          The log stays lean while the source of truth
+          remains complete and consistent at the singularity.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Convergence Section -->
+<section id="convergence" class="py-32 px-6" style="background: linear-gradient(180deg, transparent, rgba(15, 5, 25, 0.5), transparent);">
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+      <div>
+        <p class="section-label">Convergence</p>
+        <h2 class="section-title">
+          Data spirals inward.<br>
+          <span style="background: linear-gradient(90deg, #818cf8, #e879a0); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+            Truth emerges at the center.
+          </span>
+        </h2>
+        <p class="section-desc mb-8">
+          Each client generates mutations independently -- offline, concurrent, uncoordinated.
+          When they sync, commits enter the accretion disk: ordered by the server's commit log,
+          resolved through deterministic conflict handling, and compacted into the single
+          authoritative state at the core.
+        </p>
+
+        <div class="space-y-6">
+          <div class="flex gap-4">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs mono" style="background: rgba(59, 130, 246, 0.1); color: rgba(99, 160, 255, 0.7); border: 1px solid rgba(59, 130, 246, 0.2);">1</div>
+            <div>
+              <p class="text-sm font-semibold mb-1">Clients write locally</p>
+              <p class="text-xs" style="color: rgba(255,255,255,0.4);">Mutations are instant. Changes queue in the outbox regardless of connectivity.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs mono" style="background: rgba(139, 92, 246, 0.1); color: rgba(168, 130, 255, 0.7); border: 1px solid rgba(139, 92, 246, 0.2);">2</div>
+            <div>
+              <p class="text-sm font-semibold mb-1">Commits push to the server</p>
+              <p class="text-xs" style="color: rgba(255,255,255,0.4);">Each push is assigned a monotonic sequence number. The spiral tightens.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs mono" style="background: rgba(236, 72, 153, 0.1); color: rgba(244, 130, 180, 0.7); border: 1px solid rgba(236, 72, 153, 0.2);">3</div>
+            <div>
+              <p class="text-sm font-semibold mb-1">Clients pull the ordered log</p>
+              <p class="text-xs" style="color: rgba(255,255,255,0.4);">Every client converges to the same state. Conflicts resolve deterministically.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs mono" style="background: rgba(255, 200, 220, 0.1); color: rgba(255, 200, 220, 0.7); border: 1px solid rgba(255, 200, 220, 0.2);">4</div>
+            <div>
+              <p class="text-sm font-semibold mb-1">One source of truth</p>
+              <p class="text-xs" style="color: rgba(255,255,255,0.4);">The singularity. All clients agree. The system is consistent.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visual: mini accretion disk with data streams -->
+      <div class="convergence-visual">
+        <!-- Data stream lines -->
+        <div class="data-stream stream-1"></div>
+        <div class="data-stream stream-2"></div>
+        <div class="data-stream stream-3"></div>
+
+        <!-- Stream labels -->
+        <div class="stream-label label-1">client_a.push()</div>
+        <div class="stream-label label-2">client_b.push()</div>
+        <div class="stream-label label-3">client_c.push()</div>
+
+        <!-- Mini disk -->
+        <div class="spiral-ring-mini sr-1"></div>
+        <div class="spiral-ring-mini sr-2"></div>
+        <div class="spiral-ring-mini sr-3"></div>
+        <div class="spiral-ring-mini sr-4"></div>
+        <div class="sr-core"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Code Example -->
+<section class="py-24 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="text-center mb-16">
+      <p class="section-label">Minimal surface area</p>
+      <h2 class="section-title">A few lines to orbit</h2>
+      <p class="section-desc mx-auto">
+        Define your schema, create a client, and start syncing.
+        The commit log and convergence happen behind the scenes.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- Client code -->
+      <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; overflow: hidden;">
+        <div style="padding: 0.75rem 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.04); display: flex; align-items: center; gap: 0.5rem;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: rgba(99, 130, 255, 0.4);"></span>
+          <span class="mono text-xs" style="color: rgba(255,255,255,0.35);">client.ts</span>
+        </div>
+        <pre style="padding: 1.25rem; font-size: 0.78rem; line-height: 1.8; overflow-x: auto;"><code style="color: rgba(255,255,255,0.6);"><span style="color: rgba(139, 92, 246, 0.7);">import</span> { createClient } <span style="color: rgba(139, 92, 246, 0.7);">from</span> <span style="color: rgba(99, 160, 255, 0.7);">'@syncular/client'</span>
+<span style="color: rgba(139, 92, 246, 0.7);">import</span> { httpTransport } <span style="color: rgba(139, 92, 246, 0.7);">from</span> <span style="color: rgba(99, 160, 255, 0.7);">'@syncular/transport-http'</span>
+
+<span style="color: rgba(139, 92, 246, 0.7);">const</span> client = <span style="color: rgba(255,255,255,0.8);">createClient</span>({
+  <span style="color: rgba(244, 130, 180, 0.7);">transport</span>: httpTransport({
+    <span style="color: rgba(244, 130, 180, 0.7);">baseUrl</span>: <span style="color: rgba(99, 160, 255, 0.7);">'https://api.example.com'</span>
+  }),
+  <span style="color: rgba(244, 130, 180, 0.7);">tables</span>: { <span style="color: rgba(255,255,255,0.5);">todos</span>, <span style="color: rgba(255,255,255,0.5);">projects</span> }
+})</code></pre>
+      </div>
+
+      <!-- Server code -->
+      <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; overflow: hidden;">
+        <div style="padding: 0.75rem 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.04); display: flex; align-items: center; gap: 0.5rem;">
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: rgba(244, 100, 160, 0.4);"></span>
+          <span class="mono text-xs" style="color: rgba(255,255,255,0.35);">server.ts</span>
+        </div>
+        <pre style="padding: 1.25rem; font-size: 0.78rem; line-height: 1.8; overflow-x: auto;"><code style="color: rgba(255,255,255,0.6);"><span style="color: rgba(139, 92, 246, 0.7);">import</span> { createServer } <span style="color: rgba(139, 92, 246, 0.7);">from</span> <span style="color: rgba(99, 160, 255, 0.7);">'@syncular/server'</span>
+<span style="color: rgba(139, 92, 246, 0.7);">import</span> { honoAdapter } <span style="color: rgba(139, 92, 246, 0.7);">from</span> <span style="color: rgba(99, 160, 255, 0.7);">'@syncular/server-hono'</span>
+
+<span style="color: rgba(139, 92, 246, 0.7);">const</span> server = <span style="color: rgba(255,255,255,0.8);">createServer</span>({
+  <span style="color: rgba(244, 130, 180, 0.7);">db</span>: database,
+  <span style="color: rgba(244, 130, 180, 0.7);">shapes</span>: { <span style="color: rgba(255,255,255,0.5);">todos</span>, <span style="color: rgba(255,255,255,0.5);">projects</span> }
+})
+
+<span style="color: rgba(139, 92, 246, 0.7);">export default</span> honoAdapter(server)</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section id="install" class="py-32 px-6">
+  <div class="max-w-2xl mx-auto text-center">
+    <p class="section-label">Enter the disk</p>
+    <h2 class="section-title mb-4">Start converging</h2>
+    <p class="section-desc mx-auto mb-10">
+      Install the client and server packages. Your data begins its spiral toward truth.
+    </p>
+
+    <div class="install-block text-left mb-8">
+      <span class="prompt">$</span> bun add <span class="pkg">@syncular/client</span> <span class="pkg">@syncular/server</span>
+    </div>
+
+    <div class="flex gap-4 justify-center flex-wrap">
+      <a href="/docs" class="btn-primary">Read the Docs</a>
+      <a href="https://github.com" class="btn-secondary">View on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="py-16 px-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-12 mb-16">
+      <div>
+        <p class="nav-logo mb-4" style="font-size: 1.1rem;">syncular<span>.</span></p>
+        <p class="text-xs" style="color: rgba(255,255,255,0.3); line-height: 1.7;">
+          Offline-first sync framework.<br>
+          Every commit converges.
+        </p>
+      </div>
+      <div>
+        <p class="text-xs font-semibold mb-4" style="color: rgba(255,255,255,0.5); letter-spacing: 0.05em;">FRAMEWORK</p>
+        <ul class="space-y-2">
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Client</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Server</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">React Bindings</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Transports</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="text-xs font-semibold mb-4" style="color: rgba(255,255,255,0.5); letter-spacing: 0.05em;">RESOURCES</p>
+        <ul class="space-y-2">
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Documentation</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Examples</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">API Reference</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Changelog</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="text-xs font-semibold mb-4" style="color: rgba(255,255,255,0.5); letter-spacing: 0.05em;">COMMUNITY</p>
+        <ul class="space-y-2">
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">GitHub</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Discord</a></li>
+          <li><a href="#" class="text-xs" style="color: rgba(255,255,255,0.3); text-decoration: none;">Twitter</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="flex flex-col md:flex-row justify-between items-center gap-4" style="border-top: 1px solid rgba(255,255,255,0.04); padding-top: 2rem;">
+      <p class="text-xs" style="color: rgba(255,255,255,0.2);">Syncular. Offline-first sync that converges.</p>
+      <p class="mono text-xs" style="color: rgba(255,255,255,0.15);">draft-23-accretion-disk</p>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

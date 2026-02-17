@@ -1,0 +1,146 @@
+---
+title: useMutations
+description: Make changes that sync to the server
+---
+
+`useMutations` provides a typed, ergonomic API for making changes.
+
+## Basic Usage
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { Button, Input } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useMutations, useMutation } = createSyncularReact<AppDb>();
+
+function TaskList({ tasks }) {
+  const m = useMutations();
+
+  const addTask = async () => {
+    await m.tasks.insert({ title: 'New Task', completed: 0, user_id: 'u1' });
+  };
+
+  const toggle = async (task) => {
+    await m.tasks.update(task.id, { completed: task.completed ? 0 : 1 });
+  };
+
+  const remove = async (task) => {
+    await m.tasks.delete(task.id);
+  };
+
+  return (
+    <div>
+      <Button onClick={addTask} disabled={m.$isPending}>Add</Button>
+      <ul>
+        {tasks?.map((task) => (
+          <li key={task.id}>
+            <span onClick={() => toggle(task)}>{task.title}</span>
+            <Button onClick={() => remove(task)}>Delete</Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## API
+
+### Table Methods
+
+```typescript
+// Insert new row (generates UUID for id)
+await m.tasks.insert({ title: 'New', completed: 0, user_id: 'u1' });
+
+// Insert with custom ID
+await m.tasks.insert({ id: 'custom-id', title: 'New', completed: 0, user_id: 'u1' });
+
+// Update existing row
+await m.tasks.update('task-id', { title: 'Updated' });
+
+// Update with version check (for conflict detection)
+await m.tasks.update('task-id', { title: 'Updated' }, { baseVersion: 5 });
+
+// Delete row
+await m.tasks.delete('task-id');
+```
+
+### Status Properties
+
+```typescript
+m.$isPending  // true while any mutation is in progress
+m.$error      // Error if last mutation failed
+m.$reset()    // Reset error state
+```
+
+## Batch Operations
+
+Use `$commit` to batch multiple operations into a single outbox commit:
+
+```tsx
+await m.$commit(async (tx) => {
+  await tx.tasks.insert({ title: 'Task A', completed: 0, user_id: 'u1' });
+  await tx.tasks.insert({ title: 'Task B', completed: 0, user_id: 'u1' });
+  await tx.tasks.delete('old-task-id');
+});
+```
+
+All operations in the commit are atomic.
+
+## useMutation (Single Table)
+
+For single-table mutations with more control:
+
+```tsx
+function TaskItem({ task }) {
+  const { mutate, isPending, error } = useMutation({ table: 'tasks' });
+
+  const updateTitle = async (newTitle: string) => {
+    await mutate.upsert(task.id, { title: newTitle }, { baseVersion: task.server_version });
+  };
+
+  return <Input value={task.title} onChange={(e) => updateTitle(e.target.value)} />;
+}
+```
+
+### useMutation Options
+
+```typescript
+interface UseMutationOptions {
+  table: string;
+  syncImmediately?: boolean;
+  onSuccess?: (result: MutationResult) => void;
+  onError?: (error: Error) => void;
+}
+```
+
+### useMutation Result
+
+```typescript
+interface UseMutationResult {
+  mutate: FluentMutation;
+  mutateMany: (inputs: MutationInput[]) => Promise<MutationResult>;
+  isPending: boolean;
+  error: Error | null;
+  reset: () => void;
+}
+```
+
+## Optimistic Updates
+
+Mutations apply locally immediately, providing instant UI feedback:
+
+```tsx
+const toggle = async (task) => {
+  // This updates local SQLite immediately
+  await m.tasks.update(task.id, { completed: task.completed ? 0 : 1 });
+  // useSyncQuery will re-run and show the change instantly
+  // The change syncs to server in background
+};
+```
+
+## Next Steps
+
+- [Hooks Reference](/docs/client-sdk/react/hooks-reference) - All hooks
+- [Conflict Resolution](/docs/introduction/conflict-resolution) - Handling conflicts

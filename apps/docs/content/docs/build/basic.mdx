@@ -1,0 +1,31 @@
+---
+title: Basic Setup
+description: Getting started with Syncular
+---
+
+# Basic Setup
+
+This page is intentionally short. The canonical, up-to-date setup lives in:
+
+- [Quick Start](/docs/introduction/quick-start)
+- [Server Setup](/docs/build/server-setup)
+- [Client Setup](/docs/build/client-setup)
+
+## One important convention (URLs)
+
+Syncular’s OpenAPI paths are rooted at `/sync` and `/console/*`. A clean way to use that is:
+
+- Choose an API base prefix (example: `/api`)
+- Mount Sync routes at `${API_BASE}/sync`
+- Create the client HTTP transport with `baseUrl: API_BASE`
+
+That makes requests land at:
+
+- `POST ${API_BASE}/sync` (with `push` and/or `pull` in the body)
+- `GET  ${API_BASE}/sync/realtime` (WebSocket wake-ups)
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) - Advanced server configuration
+- [Client Setup](/docs/build/client-setup) - Advanced client configuration
+- [Authentication](/docs/build/auth) - Securing your data

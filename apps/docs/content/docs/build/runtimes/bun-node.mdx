@@ -1,0 +1,30 @@
+---
+title: Bun / Node
+description: Desktop/CLI/testing runtimes and native SQLite dialects
+---
+
+# Bun / Node
+
+For desktop apps, CLIs, scripts, and tests, you can run Syncular against native SQLite drivers.
+
+## Dialect options
+
+- **Bun:** `@syncular/dialect-bun-sqlite`
+- **Node (fast, embedded):** `@syncular/dialect-better-sqlite3`
+- **Node (node-sqlite3):** `@syncular/dialect-sqlite3`
+
+## Minimal setup (Node + better-sqlite3)
+
+```ts
+import { createBetterSqlite3Db } from '@syncular/dialect-better-sqlite3';
+import { ensureClientSyncSchema } from '@syncular/client';
+
+const db = createBetterSqlite3Db({ path: './app.sqlite' });
+await ensureClientSyncSchema(db);
+```
+
+## Next steps
+
+- [Client Setup](/docs/build/client-setup)
+- [Testing](/docs/build/testing)
+

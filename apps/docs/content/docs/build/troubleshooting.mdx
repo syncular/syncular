@@ -1,0 +1,133 @@
+---
+title: Troubleshooting
+description: Diagnose and fix common sync issues
+---
+
+# Troubleshooting
+
+## What you'll learn
+
+- How to verify URL wiring, table names, and scope alignment
+- How to debug revoked subscriptions
+- How to fix bootstrap loops
+- How to diagnose missing writes across clients
+- How to resolve WebSocket connection issues
+
+---
+
+This page is a practical checklist for debugging "why isn't it syncing?" issues.
+
+## First: confirm the basics
+
+### 1) Verify your URL wiring
+
+One recommended convention:
+
+- API base: `/api`
+- Sync routes mounted at: `/api/sync`
+- Console routes mounted at: `/api/console`
+- Client transport `baseUrl`: `/api` (prefix before `/sync`)
+
+If the client is configured with `baseUrl: '/api/sync'`, requests will go to `/api/sync/sync` and fail.
+
+### 2) Verify your table names
+
+- Server: `createServerHandler({ table: 'tasks', ... })` registers a table named `tasks`
+- Client subscription: `{ table: 'tasks', ... }` must match exactly
+
+### 3) Verify scopes are present and aligned
+
+If your server handler declares:
+
+```ts
+scopes: ['project:{project_id}']
+```
+
+Then each row **must** have a `project_id` column value, and clients must subscribe using:
+
+```ts
+{ scopes: { project_id: 'proj-a' } }
+```
+
+## “My subscription is revoked”
+
+Revoked means the server computed an empty effective scope intersection:
+
+- the client requested scopes that aren’t allowed, or
+- `resolveScopes` returned no values (bug, missing membership, or unauthenticated actor)
+
+Checklist:
+
+- Confirm your `authenticate()` returns `{ actorId }` (not `null`).
+- Log/inspect `resolveScopes(ctx)` for the actor.
+- Confirm requested keys match your handler’s scope variables (e.g. `project_id`, not `projectId`).
+
+## “Bootstrap keeps happening” (looping snapshots)
+
+Common causes:
+
+- The client never persists the cursor/state (database not persisted, stateId changes, or app resets DB).
+- Pruning removed commits the client still needs, so the server forces a bootstrap.
+- The client changes `actorId`/`clientId`/`db`/`transport` without remounting `SyncProvider`.
+
+Checklist:
+
+- Ensure `actorId` and `clientId` are stable for the lifetime of the provider.
+- If they change, remount with a React `key`.
+- Confirm you are not deleting the local DB between reloads.
+- If pruning is enabled, validate your prune settings match your offline window.
+
+## “Writes don’t show up on other clients”
+
+Checklist:
+
+- Ensure the write is actually pushed (check outbox and sync status).
+- Ensure the server emitted changes for the correct scopes.
+- Ensure the other client has a subscription that matches those scopes.
+- If realtime is enabled, remember: WebSocket is a wake-up signal only — data still arrives via pull.
+
+In React, inspect:
+
+- `useSyncStatus()` (online/syncing/error)
+- `useOutbox()` (queued commits)
+- `useConflicts()` (conflicts blocking commits)
+
+## “I’m seeing lots of conflicts”
+
+Conflicts typically mean optimistic concurrency is enabled but the client is not providing a correct `base_version`.
+
+Checklist:
+
+- Ensure synced tables include a `server_version` column (or your configured version column).
+- Enable the incrementing version plugin for automatic base versioning, or pass `baseVersion` explicitly on updates.
+- Ensure your server handler increments the version column on each successful write.
+
+See: [Conflict Resolution](/docs/introduction/conflict-resolution).
+
+## “WebSocket doesn’t connect”
+
+Checklist:
+
+- Confirm the server enabled WebSockets (`sync.websocket.enabled` + `upgradeWebSocket`).
+- Confirm the URL matches your mountpoint (example: `/api/sync/realtime`).
+- In browsers, you cannot send custom headers with WebSocket:
+  - Prefer same-origin cookie auth, or
+  - Use a short-lived non-sensitive query param token.
+- `@syncular/server-hono` authenticates realtime during HTTP upgrade and does not consume first-message `{ type: 'auth' }` tokens.
+
+See: [Realtime](/docs/build/realtime).
+
+## “Bootstrap is slow / huge”
+
+Checklist:
+
+- Reduce scope cardinality (prefer `project_id`/`team_id` over many fine-grained scopes).
+- Tune snapshot limits (`limitSnapshotRows`, `maxSnapshotPages`) carefully; don’t default to “huge”.
+- Use snapshot chunks (`json-row-frame-v1` + gzip) and ensure the `/sync/snapshot-chunks/:chunkId` route is reachable.
+- Index your scope columns and primary keys appropriately (especially on the server DB).
+
+## Next steps
+
+- [Data Modeling with Scopes](/docs/build/data-modeling)
+- [Server Setup](/docs/build/server-setup)
+- [Client Setup](/docs/build/client-setup)

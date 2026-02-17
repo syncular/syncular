@@ -1,0 +1,53 @@
+{
+  "name": "@syncular/cli",
+  "version": "0.0.0",
+  "description": "CLI for scaffolding and migration workflows in Syncular",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "cli",
+    "migrations",
+    "scaffold"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "bin": {
+    "syncular": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "dev": "bun src/index.tsx",
+    "build": "tsgo && node ./scripts/fix-esm-imports.mjs dist",
+    "start": "node dist/index.js",
+    "start:bun": "bun dist/index.js",
+    "help": "node dist/index.js --help",
+    "tsgo": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "eta": "^4.5.1",
+    "ink": "^6.7.0",
+    "react": "^19.2.4"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@types/react": "^19.2.14"
+  }
+}

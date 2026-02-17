@@ -1,0 +1,160 @@
+---
+title: Data Modeling
+description: Design schemas and scopes that sync well
+---
+
+# Data Modeling
+
+## What you'll learn
+
+- How to choose scope keys for your data model
+- Patterns for user-owned, project-based, and multi-tenant data
+- Cardinality guidelines (how many scope values is too many)
+- How to handle rows that move between scopes
+- Testing strategies for your scope model
+
+## Prerequisites
+
+- Familiarity with [Scopes](/docs/introduction/scopes) and [Table Handlers](/docs/build/table-handlers)
+
+---
+
+Scopes are Syncular's routing + authorization mechanism: every change is tagged with **stored scope values**, and clients only receive changes for the **effective scopes** they're authorized to access.
+
+This guide focuses on choosing scopes and table layouts that are:
+
+- easy to reason about
+- efficient to sync
+- hard to accidentally break with auth bugs
+
+## The terminology (one time)
+
+- **Scope pattern**: a string like `project:{project_id}` declared on a server handler
+- **Scope variable**: the `{project_id}` portion (the key stored on a change)
+- **Stored scopes**: the key/value object stored with each change (example: `{ project_id: 'p1' }`)
+- **Requested scopes**: what the client asks for in a subscription
+- **Allowed scopes**: what `resolveScopes` returns for the actor
+- **Effective scopes**: `requested ∩ allowed` (what the server actually uses)
+
+## A “good default” scope strategy
+
+Use scopes that represent **stable access boundaries**:
+
+- `user_id` for private data
+- `project_id` / `team_id` for shared collaboration spaces
+- `org_id` for multi-tenant partitions
+
+Avoid scopes that are:
+
+- **high-cardinality per actor** (thousands of values per user)
+- **volatile** (rows frequently “move” between scopes)
+- **row-level** (`row_id` as a scope is almost always a mistake)
+
+## Example: project membership (recommended pattern)
+
+Use a membership table for authorization, and store the stable scope on the row:
+
+```ts
+// Server handler
+import { createServerHandler } from '@syncular/server';
+
+export const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return { project_id: memberships.map((m) => m.project_id) };
+  },
+});
+```
+
+Client subscriptions are now predictable:
+
+```ts
+{ id: 'project-a', table: 'tasks', scopes: { project_id: 'proj-a' } }
+```
+
+### Why this works well
+
+- You subscribe to **a small number of projects** (not a large number of rows).
+- Membership changes are handled by `resolveScopes` and subscription changes.
+- Bootstrap/snapshot size scales with the project, not with global data.
+
+## Example: per-user private data
+
+```ts
+export const draftsHandler = createServerHandler({
+  table: 'drafts',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+## Multi-tenant: `org_id` + “space” scopes
+
+In multi-tenant apps, make the tenant boundary explicit.
+
+Two common options:
+
+1) **Tenant-only scope** for org-wide data:
+
+```ts
+scopes: ['org:{org_id}']
+```
+
+2) **Tenant + space scope** for collaboration:
+
+```ts
+scopes: ['org:{org_id}', 'project:{project_id}']
+```
+
+Rule of thumb: if you ever need to delete/evict data for one tenant, you want `org_id` to exist as a routing key.
+
+## Cardinality checklist
+
+If a user can access 10,000 documents, do not make them subscribe to 10,000 scope values.
+
+Prefer:
+
+- `project_id` (one subscription per project)
+- `channel_id` (one per chat channel)
+- `account_id` (one per account)
+
+Avoid:
+
+- `doc_id` for every document (unless documents are very few per user)
+
+## When rows move between scopes
+
+If a row’s scope column changes (example: a task moves from `project_id = A` to `project_id = B`), clients subscribed to A must stop seeing it, and clients subscribed to B must start seeing it.
+
+The safe approach is:
+
+- keep the scope column on the row (`project_id`)
+- let Syncular emit changes based on the current row state
+- write tests for “move between scopes” scenarios
+
+If you see surprising behavior, validate that the scope column is always set and that your handler’s scope pattern matches the column name.
+
+## Testing your scope model
+
+Write tests around:
+
+- `resolveScopes` (membership logic)
+- `snapshot` results per effective scope
+- scope boundaries (user A never sees user B’s data)
+- membership changes (revoked subscriptions clear data)
+
+The [Testing](/docs/build/testing) guide shows end-to-end patterns.
+
+## Next steps
+
+- [Scopes](/docs/introduction/scopes) — How scopes work
+- [Authorization](/docs/build/auth) — Implementing `resolveScopes` patterns
+- [Subscriptions](/docs/introduction/subscriptions) — Client subscriptions and lifecycle

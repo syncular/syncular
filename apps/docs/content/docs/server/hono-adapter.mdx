@@ -1,0 +1,215 @@
+---
+title: Hono Adapter
+description: Configure sync routes with Hono
+---
+
+The `@syncular/server-hono` package provides Hono routes for sync endpoints.
+
+## Basic Setup
+
+```typescript
+import { Hono } from 'hono';
+import { createSyncRoutes } from '@syncular/server-hono';
+
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+});
+
+const app = new Hono();
+app.route('/api/sync', syncRoutes);
+```
+
+## Options
+
+```typescript
+interface CreateSyncRoutesOptions {
+  db: Kysely<any>;
+  dialect: ServerSyncDialect;
+  handlers: ServerTableHandler[];
+  authenticate: (c: Context) => Promise<SyncAuthResult | null>;
+  sync?: SyncRoutesConfigWithRateLimit;
+}
+```
+
+## Sync Config
+
+```typescript
+interface SyncRoutesConfigWithRateLimit {
+  // Limits
+  maxPullLimitCommits?: number;       // Default: 100
+  maxSubscriptionsPerPull?: number;   // Default: 200
+  maxPullLimitSnapshotRows?: number;  // Default: 5000
+  maxPullMaxSnapshotPages?: number;   // Default: 10
+  maxOperationsPerPush?: number;      // Default: 200
+
+  // Features
+  rateLimit?: SyncRateLimitConfig | false;
+  websocket?: SyncWebSocketConfig;
+  prune?: PruneConfig;
+  compact?: CompactConfig;
+  realtime?: RealtimeConfig;
+}
+```
+
+## Authentication
+
+The `authenticate` function extracts user identity from requests.
+
+### Header-Based Auth
+
+```typescript
+const authenticate = async (c: Context) => {
+  const token = c.req.header('authorization')?.replace('Bearer ', '');
+  if (!token) return null;
+
+  const payload = await verifyJWT(token);
+  if (!payload) return null;
+
+  return { actorId: payload.userId };
+};
+```
+
+### Cookie-Based Auth
+
+```typescript
+const authenticate = async (c: Context) => {
+  const sessionId = getCookie(c, 'session');
+  if (!sessionId) return null;
+
+  const session = await getSession(sessionId);
+  if (!session) return null;
+
+  return { actorId: session.userId };
+};
+```
+
+### Query Parameter Auth (for WebSocket)
+
+```typescript
+const authenticate = async (c: Context) => {
+  // Try header first (for HTTP)
+  let userId = c.req.header('x-user-id');
+
+  // Fall back to query param (for WebSocket)
+  if (!userId) {
+    userId = c.req.query('userId');
+  }
+
+  if (!userId) return null;
+  return { actorId: userId };
+};
+```
+
+## WebSocket Configuration
+
+```typescript
+import { createBunWebSocket } from 'hono/bun';
+
+const { upgradeWebSocket } = createBunWebSocket();
+
+const syncRoutes = createSyncRoutes({
+  // ... other options ...
+  sync: {
+    websocket: {
+      enabled: true,
+      upgradeWebSocket,
+      heartbeatIntervalMs: 30000,
+      maxConnectionsTotal: 5000,
+      maxConnectionsPerClient: 3,
+    },
+  },
+});
+```
+
+### WebSocket Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | false | Enable WebSocket realtime |
+| `upgradeWebSocket` | required | Framework WebSocket upgrader |
+| `heartbeatIntervalMs` | 30000 | Heartbeat interval |
+| `maxConnectionsTotal` | 5000 | Max total connections |
+| `maxConnectionsPerClient` | 3 | Max connections per client |
+
+## Rate Limiting
+
+```typescript
+sync: {
+  rateLimit: {
+    pull: {
+      windowMs: 60000,    // 1 minute window
+      maxRequests: 60,    // 60 requests per minute
+    },
+    push: {
+      windowMs: 60000,
+      maxRequests: 30,
+    },
+  },
+}
+
+// Or disable rate limiting
+sync: {
+  rateLimit: false,
+}
+```
+
+## Pruning and Compaction
+
+```typescript
+sync: {
+  prune: {
+    minIntervalMs: 5 * 60 * 1000,  // Check every 5 minutes
+    options: {
+      activeWindowMs: 14 * 24 * 60 * 60 * 1000,  // 14 days
+      fallbackMaxAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 days
+      keepNewestCommits: 1000,
+    },
+  },
+  compact: {
+    minIntervalMs: 30 * 60 * 1000,  // Check every 30 minutes
+    options: {
+      fullHistoryHours: 24 * 7,  // Keep 1 week of full history
+    },
+  },
+}
+```
+
+## Route Limits
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `maxPullLimitCommits` | 100 | Max commits per pull |
+| `maxSubscriptionsPerPull` | 200 | Max subscriptions per request |
+| `maxPullLimitSnapshotRows` | 5000 | Max snapshot rows per page |
+| `maxPullMaxSnapshotPages` | 10 | Max snapshot pages per response |
+| `maxOperationsPerPush` | 200 | Max operations per push |
+
+## Endpoints
+
+These endpoints are **relative to where you mount** `createSyncRoutes`. If you mount at `/sync`, the sync endpoint is `POST /sync`.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | POST | Combined sync (`push` and/or `pull`) |
+| `/snapshot-chunks/:chunkId` | GET | Download large snapshot chunks |
+| `/realtime` | GET | WebSocket connection (if enabled) |
+
+## Error Responses
+
+| Error Code | HTTP Status | Description |
+|------------|-------------|-------------|
+| `UNAUTHENTICATED` | 401 | Authentication failed |
+| `FORBIDDEN` | 403 | Not authorized for resource |
+| `INVALID_REQUEST` | 400 | Malformed request |
+| `INVALID_SUBSCRIPTION` | 400 | Unknown table |
+| `TOO_MANY_OPERATIONS` | 400 | Exceeded max operations |
+| `WEBSOCKET_CONNECTION_LIMIT_TOTAL` | 429 | Too many WebSocket connections |
+| `WEBSOCKET_CONNECTION_LIMIT_CLIENT` | 429 | Too many connections for client |
+
+## Next Steps
+
+- [Dialects](/docs/server/dialects) - Database dialect configuration
+- [Realtime Bridge](/docs/server/realtime-bridge) - Multi-instance realtime

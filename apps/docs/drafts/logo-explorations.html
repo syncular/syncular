@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — Logo Explorations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,600;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #060608;
+      --surface: #0d0d10;
+      --card: #0f0f13;
+      --border: #1a1a22;
+      --border-hover: #2a2a36;
+      --text: #c8c8d4;
+      --text-dim: #5a5a6e;
+      --text-muted: #3a3a4a;
+      --blue: #3b82f6;
+      --purple: #8b5cf6;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --cyan: #06b6d4;
+      --rose: #f43f5e;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .mono { font-family: 'IBM Plex Mono', monospace; }
+    .serif { font-family: 'Instrument Serif', Georgia, serif; }
+
+    /* Page background texture */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,0.015) 1px, transparent 0);
+      background-size: 32px 32px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Header */
+    .page-header {
+      position: relative;
+      z-index: 1;
+      padding: 80px 48px 60px;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+
+    .page-header .eyebrow {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .page-header .eyebrow::before {
+      content: '';
+      width: 32px;
+      height: 1px;
+      background: var(--blue);
+      opacity: 0.5;
+    }
+
+    .page-header h1 {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-size: clamp(40px, 6vw, 72px);
+      font-weight: 400;
+      font-style: italic;
+      color: #fff;
+      line-height: 1.05;
+      letter-spacing: -1px;
+      max-width: 700px;
+    }
+
+    .page-header p {
+      font-size: 16px;
+      color: var(--text-dim);
+      margin-top: 20px;
+      max-width: 520px;
+      line-height: 1.65;
+      font-weight: 300;
+    }
+
+    .page-header .divider {
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border) 0%, transparent 70%);
+      margin-top: 48px;
+    }
+
+    /* Logo grid */
+    .logo-grid {
+      position: relative;
+      z-index: 1;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 48px 120px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 20px;
+    }
+
+    .logo-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      transition: border-color 0.35s ease, transform 0.35s ease, box-shadow 0.35s ease;
+      cursor: default;
+    }
+
+    .logo-card:hover {
+      border-color: var(--border-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+    }
+
+    .logo-canvas {
+      height: 280px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .logo-canvas svg {
+      width: 140px;
+      height: 140px;
+    }
+
+    /* Subtle canvas background per card */
+    .logo-canvas::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,0.012) 1px, transparent 0);
+      background-size: 20px 20px;
+    }
+
+    .logo-info {
+      padding: 20px 24px 24px;
+      border-top: 1px solid var(--border);
+    }
+
+    .logo-info .logo-number {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .logo-info h3 {
+      font-family: 'Bricolage Grotesque', sans-serif;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+
+    .logo-info p {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.55;
+      font-weight: 300;
+    }
+
+    .logo-info .tags {
+      display: flex;
+      gap: 6px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .logo-info .tag {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+
+    /* Wordmark strip at bottom */
+    .wordmark-strip {
+      position: relative;
+      z-index: 1;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 48px 80px;
+    }
+
+    .wordmark-strip h2 {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px;
+      font-weight: 400;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 32px;
+    }
+
+    .wordmark-row {
+      display: flex;
+      align-items: center;
+      gap: 48px;
+      flex-wrap: wrap;
+      padding: 32px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .wordmark-item {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .wordmark-item svg {
+      width: 36px;
+      height: 36px;
+    }
+
+    .wordmark-item .wm-text {
+      font-size: 22px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.5px;
+    }
+
+    .wordmark-item .wm-text-serif {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-size: 26px;
+      font-weight: 400;
+      font-style: italic;
+      color: #fff;
+    }
+
+    .wordmark-item .wm-text-mono {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 18px;
+      font-weight: 500;
+      color: #fff;
+      letter-spacing: 2px;
+      text-transform: lowercase;
+    }
+
+    /* SVG animation keyframes */
+    @keyframes rotSlow { to { transform: rotate(360deg); } }
+    @keyframes rotSlowReverse { to { transform: rotate(-360deg); } }
+    @keyframes pulseRing {
+      0% { r: 20; opacity: 0.4; }
+      100% { r: 55; opacity: 0; }
+    }
+    @keyframes pulseGlow {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 0.8; }
+    }
+    @keyframes dashSlide {
+      to { stroke-dashoffset: 0; }
+    }
+    @keyframes dashSlideReverse {
+      to { stroke-dashoffset: -40; }
+    }
+    @keyframes particleOrbit {
+      0% { transform: rotate(0deg) translateX(38px); }
+      100% { transform: rotate(360deg) translateX(38px); }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes scaleBreath {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.06); }
+    }
+    @keyframes orbitFloat {
+      0% { transform: rotate(0deg) translateX(var(--r)) rotate(0deg); }
+      100% { transform: rotate(360deg) translateX(var(--r)) rotate(-360deg); }
+    }
+
+    .logo-card {
+      animation: fadeInUp 0.6s ease backwards;
+    }
+    .logo-card:nth-child(1) { animation-delay: 0.05s; }
+    .logo-card:nth-child(2) { animation-delay: 0.1s; }
+    .logo-card:nth-child(3) { animation-delay: 0.15s; }
+    .logo-card:nth-child(4) { animation-delay: 0.2s; }
+    .logo-card:nth-child(5) { animation-delay: 0.25s; }
+    .logo-card:nth-child(6) { animation-delay: 0.3s; }
+    .logo-card:nth-child(7) { animation-delay: 0.35s; }
+    .logo-card:nth-child(8) { animation-delay: 0.4s; }
+    .logo-card:nth-child(9) { animation-delay: 0.45s; }
+    .logo-card:nth-child(10) { animation-delay: 0.5s; }
+    .logo-card:nth-child(11) { animation-delay: 0.55s; }
+    .logo-card:nth-child(12) { animation-delay: 0.6s; }
+    .logo-card:nth-child(13) { animation-delay: 0.65s; }
+    .logo-card:nth-child(14) { animation-delay: 0.7s; }
+    .logo-card:nth-child(15) { animation-delay: 0.75s; }
+    .logo-card:nth-child(16) { animation-delay: 0.8s; }
+
+    @media (max-width: 860px) {
+      .logo-grid { grid-template-columns: 1fr; padding: 0 20px 80px; }
+      .page-header { padding: 60px 20px 40px; }
+      .wordmark-strip { padding: 0 20px 60px; }
+      .wordmark-row { gap: 24px; }
+    }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #222; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+  <header class="page-header">
+    <div class="eyebrow">Logo Explorations</div>
+    <h1>Topology-Inspired Marks</h1>
+    <p>Ten logomark concepts distilled from the Syncular sync topology visualization — concentric orbits, flowing particles, hub-and-spoke networks, and convergent data streams.</p>
+    <div class="divider"></div>
+  </header>
+
+  <div class="logo-grid">
+
+    <!-- ========== LOGO 1: Singularity ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Outer pulse ring -->
+          <circle cx="70" cy="70" r="20" stroke="#3b82f6" stroke-width="0.8" opacity="0">
+            <animate attributeName="r" from="20" to="62" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.5" to="0" dur="3s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="70" cy="70" r="20" stroke="#3b82f6" stroke-width="0.8" opacity="0">
+            <animate attributeName="r" from="20" to="62" dur="3s" begin="1.5s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.5" to="0" dur="3s" begin="1.5s" repeatCount="indefinite" />
+          </circle>
+          <!-- Orbit rings -->
+          <circle cx="70" cy="70" r="52" stroke="#3b82f6" stroke-width="0.5" opacity="0.15" stroke-dasharray="3 5" />
+          <circle cx="70" cy="70" r="38" stroke="#3b82f6" stroke-width="0.5" opacity="0.2" stroke-dasharray="2 4" />
+          <!-- Core rings -->
+          <circle cx="70" cy="70" r="24" stroke="#3b82f6" stroke-width="2" opacity="0.9" />
+          <circle cx="70" cy="70" r="14" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="1" opacity="0.7" />
+          <!-- Center dot -->
+          <circle cx="70" cy="70" r="5" fill="#3b82f6">
+            <animate attributeName="r" values="5;5.8;5" dur="2s" repeatCount="indefinite" />
+          </circle>
+          <!-- Glow -->
+          <circle cx="70" cy="70" r="8" fill="#3b82f6" opacity="0.15">
+            <animate attributeName="r" values="8;14;8" dur="2s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0.15;0.05;0.15" dur="2s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">01 / 10</div>
+        <h3>Singularity</h3>
+        <p>The server as the center of the sync universe. Concentric rings radiate outward with pulsing energy, echoing the topology's core node.</p>
+        <div class="tags">
+          <span class="tag">concentric</span>
+          <span class="tag">pulsing</span>
+          <span class="tag">minimal</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 2: Orbital Network ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Orbital path -->
+          <circle cx="70" cy="70" r="44" stroke="#8b5cf6" stroke-width="0.6" opacity="0.2" stroke-dasharray="4 6" />
+          <!-- Rotating group -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 20s linear infinite;">
+            <!-- Satellite nodes on orbit -->
+            <circle cx="114" cy="70" r="6" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+            <circle cx="114" cy="70" r="2.5" fill="#22c55e" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 20s linear infinite; animation-delay: -6.66s;">
+            <circle cx="114" cy="70" r="6" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+            <circle cx="114" cy="70" r="2.5" fill="#3b82f6" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 20s linear infinite; animation-delay: -13.33s;">
+            <circle cx="114" cy="70" r="6" fill="#060608" stroke="#f59e0b" stroke-width="1.5" />
+            <circle cx="114" cy="70" r="2.5" fill="#f59e0b" />
+          </g>
+          <!-- Connection lines to center (rotate with nodes) -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 20s linear infinite;">
+            <line x1="70" y1="70" x2="108" y2="70" stroke="#22c55e" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.4">
+              <animate attributeName="stroke-dashoffset" from="6" to="0" dur="1s" repeatCount="indefinite" />
+            </line>
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 20s linear infinite; animation-delay: -6.66s;">
+            <line x1="70" y1="70" x2="108" y2="70" stroke="#3b82f6" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.4">
+              <animate attributeName="stroke-dashoffset" from="6" to="0" dur="1s" repeatCount="indefinite" />
+            </line>
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 20s linear infinite; animation-delay: -13.33s;">
+            <line x1="70" y1="70" x2="108" y2="70" stroke="#f59e0b" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.4">
+              <animate attributeName="stroke-dashoffset" from="6" to="0" dur="1s" repeatCount="indefinite" />
+            </line>
+          </g>
+          <!-- Core -->
+          <circle cx="70" cy="70" r="16" fill="#060608" stroke="#8b5cf6" stroke-width="2" />
+          <circle cx="70" cy="70" r="8" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="0.8" />
+          <circle cx="70" cy="70" r="3.5" fill="#8b5cf6" />
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">02 / 10</div>
+        <h3>Orbital Network</h3>
+        <p>Satellites orbit a central hub with dashed data-flow lines, directly abstracting the topology's client-server constellation.</p>
+        <div class="tags">
+          <span class="tag">animated</span>
+          <span class="tag">hub-spoke</span>
+          <span class="tag">multi-color</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 3: Convergence ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Three arcs converging to center -->
+          <path d="M 30 100 Q 50 50, 70 70" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round" opacity="0.9">
+            <animate attributeName="opacity" values="0.5;0.9;0.5" dur="3s" repeatCount="indefinite" />
+          </path>
+          <path d="M 110 100 Q 90 50, 70 70" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" opacity="0.9">
+            <animate attributeName="opacity" values="0.5;0.9;0.5" dur="3s" begin="1s" repeatCount="indefinite" />
+          </path>
+          <path d="M 70 25 Q 70 50, 70 70" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round" opacity="0.9">
+            <animate attributeName="opacity" values="0.5;0.9;0.5" dur="3s" begin="2s" repeatCount="indefinite" />
+          </path>
+          <!-- Endpoint dots -->
+          <circle cx="30" cy="100" r="4" fill="#3b82f6" opacity="0.6" />
+          <circle cx="110" cy="100" r="4" fill="#22c55e" opacity="0.6" />
+          <circle cx="70" cy="25" r="4" fill="#8b5cf6" opacity="0.6" />
+          <!-- Flowing particles along paths -->
+          <circle r="2.5" fill="#3b82f6">
+            <animateMotion dur="2s" repeatCount="indefinite" path="M 30 100 Q 50 50, 70 70" />
+            <animate attributeName="opacity" values="0;0.9;0" dur="2s" repeatCount="indefinite" />
+          </circle>
+          <circle r="2.5" fill="#22c55e">
+            <animateMotion dur="2s" begin="0.66s" repeatCount="indefinite" path="M 110 100 Q 90 50, 70 70" />
+            <animate attributeName="opacity" values="0;0.9;0" dur="2s" begin="0.66s" repeatCount="indefinite" />
+          </circle>
+          <circle r="2.5" fill="#8b5cf6">
+            <animateMotion dur="2s" begin="1.33s" repeatCount="indefinite" path="M 70 25 Q 70 50, 70 70" />
+            <animate attributeName="opacity" values="0;0.9;0" dur="2s" begin="1.33s" repeatCount="indefinite" />
+          </circle>
+          <!-- Center convergence point -->
+          <circle cx="70" cy="70" r="10" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.15)" stroke-width="1" />
+          <circle cx="70" cy="70" r="4.5" fill="#fff">
+            <animate attributeName="r" values="4.5;5.5;4.5" dur="2s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">03 / 10</div>
+        <h3>Convergence</h3>
+        <p>Three data streams flow inward from distributed sources toward a single point of truth. Particles represent commits arriving from every client.</p>
+        <div class="tags">
+          <span class="tag">flow</span>
+          <span class="tag">particles</span>
+          <span class="tag">triadic</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 4: Backbone Link ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Two interconnected nodes like server-relay backbone -->
+          <circle cx="48" cy="70" r="22" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0.15" stroke-dasharray="3 5" />
+          <circle cx="92" cy="70" r="22" fill="none" stroke="#8b5cf6" stroke-width="0.5" opacity="0.15" stroke-dasharray="3 5" />
+          <!-- Backbone line -->
+          <line x1="62" y1="70" x2="78" y2="70" stroke="url(#bbGrad4)" stroke-width="2.5" stroke-linecap="round" />
+          <!-- Particles on backbone -->
+          <circle r="2" fill="#3b82f6" opacity="0.8">
+            <animateMotion dur="1.5s" repeatCount="indefinite" path="M 62 70 L 78 70" />
+            <animate attributeName="opacity" values="0;0.9;0" dur="1.5s" repeatCount="indefinite" />
+          </circle>
+          <circle r="2" fill="#8b5cf6" opacity="0.8">
+            <animateMotion dur="1.5s" begin="0.75s" repeatCount="indefinite" path="M 78 70 L 62 70" />
+            <animate attributeName="opacity" values="0;0.9;0" dur="1.5s" begin="0.75s" repeatCount="indefinite" />
+          </circle>
+          <!-- Node A (server) -->
+          <circle cx="48" cy="70" r="14" fill="#060608" stroke="#3b82f6" stroke-width="2" />
+          <circle cx="48" cy="70" r="7" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="0.8" />
+          <circle cx="48" cy="70" r="3" fill="#3b82f6" />
+          <!-- Node B (relay) -->
+          <circle cx="92" cy="70" r="14" fill="#060608" stroke="#8b5cf6" stroke-width="2" />
+          <circle cx="92" cy="70" r="7" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="0.8" />
+          <circle cx="92" cy="70" r="3" fill="#8b5cf6" />
+          <!-- Pulse rings -->
+          <circle cx="48" cy="70" r="14" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0">
+            <animate attributeName="r" from="14" to="30" dur="2.5s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.35" to="0" dur="2.5s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="92" cy="70" r="14" fill="none" stroke="#8b5cf6" stroke-width="0.5" opacity="0">
+            <animate attributeName="r" from="14" to="30" dur="2.5s" begin="1.25s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.35" to="0" dur="2.5s" begin="1.25s" repeatCount="indefinite" />
+          </circle>
+          <defs>
+            <linearGradient id="bbGrad4" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#3b82f6" />
+              <stop offset="1" stop-color="#8b5cf6" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">04 / 10</div>
+        <h3>Backbone Link</h3>
+        <p>Server and relay nodes connected by a pulsing backbone — the topology's dual-hub architecture distilled into a symmetric mark.</p>
+        <div class="tags">
+          <span class="tag">dual-node</span>
+          <span class="tag">gradient</span>
+          <span class="tag">symmetric</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 5: Sync Vortex ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Spiral arms -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 12s linear infinite;">
+            <path d="M 70 70 Q 70 30, 100 28" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+            <circle cx="100" cy="28" r="3" fill="#3b82f6" opacity="0.7" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 12s linear infinite; animation-delay: -3s;">
+            <path d="M 70 70 Q 70 30, 100 28" stroke="#22c55e" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+            <circle cx="100" cy="28" r="3" fill="#22c55e" opacity="0.7" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 12s linear infinite; animation-delay: -6s;">
+            <path d="M 70 70 Q 70 30, 100 28" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+            <circle cx="100" cy="28" r="3" fill="#8b5cf6" opacity="0.7" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 12s linear infinite; animation-delay: -9s;">
+            <path d="M 70 70 Q 70 30, 100 28" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+            <circle cx="100" cy="28" r="3" fill="#f59e0b" opacity="0.7" />
+          </g>
+          <!-- Center -->
+          <circle cx="70" cy="70" r="8" fill="#060608" stroke="rgba(255,255,255,0.2)" stroke-width="1.5" />
+          <circle cx="70" cy="70" r="3.5" fill="#fff" />
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">05 / 10</div>
+        <h3>Sync Vortex</h3>
+        <p>Spiral arms draw clients inward like a gravitational well. The rotation evokes continuous, never-ending sync cycles.</p>
+        <div class="tags">
+          <span class="tag">rotational</span>
+          <span class="tag">dynamic</span>
+          <span class="tag">four-color</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 6: Signal Rings ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Stacked concentric half-rings (like a signal broadcast) -->
+          <path d="M 46 70 A 24 24 0 0 1 94 70" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.9" />
+          <path d="M 38 70 A 32 32 0 0 1 102 70" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.6" />
+          <path d="M 30 70 A 40 40 0 0 1 110 70" stroke="#3b82f6" stroke-width="1" stroke-linecap="round" fill="none" opacity="0.35" />
+          <path d="M 22 70 A 48 48 0 0 1 118 70" stroke="#3b82f6" stroke-width="0.8" stroke-linecap="round" fill="none" opacity="0.18" />
+          <!-- Mirror below -->
+          <path d="M 46 70 A 24 24 0 0 0 94 70" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.9" />
+          <path d="M 38 70 A 32 32 0 0 0 102 70" stroke="#8b5cf6" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.6" />
+          <path d="M 30 70 A 40 40 0 0 0 110 70" stroke="#8b5cf6" stroke-width="1" stroke-linecap="round" fill="none" opacity="0.35" />
+          <path d="M 22 70 A 48 48 0 0 0 118 70" stroke="#8b5cf6" stroke-width="0.8" stroke-linecap="round" fill="none" opacity="0.18" />
+          <!-- Center node -->
+          <circle cx="70" cy="70" r="10" fill="#060608" stroke="url(#sigGrad)" stroke-width="2" />
+          <circle cx="70" cy="70" r="4" fill="url(#sigGrad)" />
+          <!-- Animated pulse ring -->
+          <circle cx="70" cy="70" r="10" fill="none" stroke="url(#sigGrad)" stroke-width="0.5" opacity="0">
+            <animate attributeName="r" from="10" to="55" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.4" to="0" dur="3s" repeatCount="indefinite" />
+          </circle>
+          <defs>
+            <linearGradient id="sigGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#3b82f6" />
+              <stop offset="1" stop-color="#8b5cf6" />
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">06 / 10</div>
+        <h3>Signal Rings</h3>
+        <p>Broadcast arcs radiate from the center in both directions — push and pull — visualizing the bidirectional sync protocol.</p>
+        <div class="tags">
+          <span class="tag">broadcast</span>
+          <span class="tag">bidirectional</span>
+          <span class="tag">layered</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 7: Commit Chain ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Chain of commit nodes in a curved line -->
+          <path d="M 25 95 Q 45 40, 70 70 Q 95 100, 115 45" stroke="rgba(255,255,255,0.06)" stroke-width="1" fill="none" />
+          <!-- Commit nodes along the path -->
+          <circle cx="25" cy="95" r="7" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="25" cy="95" r="3" fill="#22c55e" />
+          <circle cx="44" cy="60" r="7" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="44" cy="60" r="3" fill="#3b82f6" />
+          <circle cx="70" cy="70" r="9" fill="#060608" stroke="#8b5cf6" stroke-width="2" />
+          <circle cx="70" cy="70" r="4" fill="#8b5cf6" />
+          <circle cx="96" cy="80" r="7" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="96" cy="80" r="3" fill="#3b82f6" />
+          <circle cx="115" cy="45" r="7" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="115" cy="45" r="3" fill="#22c55e" />
+          <!-- Connecting segments -->
+          <line x1="32" y1="91" x2="37" y2="64" stroke="#22c55e" stroke-width="0.8" opacity="0.4" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="1s" repeatCount="indefinite" />
+          </line>
+          <line x1="51" y1="62" x2="62" y2="68" stroke="#3b82f6" stroke-width="0.8" opacity="0.4" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="1s" repeatCount="indefinite" />
+          </line>
+          <line x1="79" y1="72" x2="89" y2="78" stroke="#8b5cf6" stroke-width="0.8" opacity="0.4" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="1s" repeatCount="indefinite" />
+          </line>
+          <line x1="103" y1="76" x2="109" y2="50" stroke="#3b82f6" stroke-width="0.8" opacity="0.4" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="1s" repeatCount="indefinite" />
+          </line>
+          <!-- Traveling particle -->
+          <circle r="2" fill="#fff" opacity="0">
+            <animateMotion dur="4s" repeatCount="indefinite" path="M 25 95 Q 45 40, 70 70 Q 95 100, 115 45" />
+            <animate attributeName="opacity" values="0;0.9;0.9;0" dur="4s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">07 / 10</div>
+        <h3>Commit Chain</h3>
+        <p>Nodes linked in a flowing commit log. A particle traverses the chain like data propagating through the sync engine's immutable history.</p>
+        <div class="tags">
+          <span class="tag">sequential</span>
+          <span class="tag">commit-log</span>
+          <span class="tag">narrative</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 8: Mesh Topology ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Hexagonal mesh of interconnected nodes -->
+          <!-- Nodes -->
+          <circle cx="70" cy="38" r="6" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="70" cy="38" r="2.5" fill="#3b82f6" />
+
+          <circle cx="100" cy="54" r="6" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="100" cy="54" r="2.5" fill="#22c55e" />
+
+          <circle cx="100" cy="86" r="6" fill="#060608" stroke="#8b5cf6" stroke-width="1.5" />
+          <circle cx="100" cy="86" r="2.5" fill="#8b5cf6" />
+
+          <circle cx="70" cy="102" r="6" fill="#060608" stroke="#f59e0b" stroke-width="1.5" />
+          <circle cx="70" cy="102" r="2.5" fill="#f59e0b" />
+
+          <circle cx="40" cy="86" r="6" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="40" cy="86" r="2.5" fill="#22c55e" />
+
+          <circle cx="40" cy="54" r="6" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="40" cy="54" r="2.5" fill="#3b82f6" />
+
+          <!-- Central node -->
+          <circle cx="70" cy="70" r="10" fill="#060608" stroke="#fff" stroke-width="2" />
+          <circle cx="70" cy="70" r="4.5" fill="#fff" />
+
+          <!-- Connections from center to all outer nodes -->
+          <line x1="70" y1="70" x2="70" y2="44" stroke="#3b82f6" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 3">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="1.2s" repeatCount="indefinite" />
+          </line>
+          <line x1="70" y1="70" x2="95" y2="57" stroke="#22c55e" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 3">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="1.2s" repeatCount="indefinite" />
+          </line>
+          <line x1="70" y1="70" x2="95" y2="83" stroke="#8b5cf6" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 3">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="1.2s" repeatCount="indefinite" />
+          </line>
+          <line x1="70" y1="70" x2="70" y2="96" stroke="#f59e0b" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 3">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="1.2s" repeatCount="indefinite" />
+          </line>
+          <line x1="70" y1="70" x2="45" y2="83" stroke="#22c55e" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 3">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="1.2s" repeatCount="indefinite" />
+          </line>
+          <line x1="70" y1="70" x2="45" y2="57" stroke="#3b82f6" stroke-width="0.7" opacity="0.3" stroke-dasharray="2 3">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="1.2s" repeatCount="indefinite" />
+          </line>
+          <!-- Outer ring connections -->
+          <line x1="70" y1="38" x2="100" y2="54" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />
+          <line x1="100" y1="54" x2="100" y2="86" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />
+          <line x1="100" y1="86" x2="70" y2="102" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />
+          <line x1="70" y1="102" x2="40" y2="86" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />
+          <line x1="40" y1="86" x2="40" y2="54" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />
+          <line x1="40" y1="54" x2="70" y2="38" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" />
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">08 / 10</div>
+        <h3>Mesh Topology</h3>
+        <p>A hexagonal network with a white hub node. Every satellite connects back to center — a clean graph-theory rendering of the sync topology.</p>
+        <div class="tags">
+          <span class="tag">hexagonal</span>
+          <span class="tag">graph</span>
+          <span class="tag">structured</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 9: Sync Waves ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Layered wave paths -->
+          <path d="M 20 70 Q 45 40, 70 70 Q 95 100, 120 70" stroke="#3b82f6" stroke-width="2.5" stroke-linecap="round" fill="none">
+            <animate attributeName="d"
+              values="M 20 70 Q 45 40, 70 70 Q 95 100, 120 70;M 20 70 Q 45 100, 70 70 Q 95 40, 120 70;M 20 70 Q 45 40, 70 70 Q 95 100, 120 70"
+              dur="4s" repeatCount="indefinite" />
+          </path>
+          <path d="M 20 70 Q 45 50, 70 70 Q 95 90, 120 70" stroke="#8b5cf6" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.5">
+            <animate attributeName="d"
+              values="M 20 70 Q 45 50, 70 70 Q 95 90, 120 70;M 20 70 Q 45 90, 70 70 Q 95 50, 120 70;M 20 70 Q 45 50, 70 70 Q 95 90, 120 70"
+              dur="4s" begin="0.5s" repeatCount="indefinite" />
+          </path>
+          <path d="M 20 70 Q 45 55, 70 70 Q 95 85, 120 70" stroke="#22c55e" stroke-width="1" stroke-linecap="round" fill="none" opacity="0.3">
+            <animate attributeName="d"
+              values="M 20 70 Q 45 55, 70 70 Q 95 85, 120 70;M 20 70 Q 45 85, 70 70 Q 95 55, 120 70;M 20 70 Q 45 55, 70 70 Q 95 85, 120 70"
+              dur="4s" begin="1s" repeatCount="indefinite" />
+          </path>
+          <!-- Endpoint dots -->
+          <circle cx="20" cy="70" r="4" fill="#3b82f6" opacity="0.5" />
+          <circle cx="120" cy="70" r="4" fill="#3b82f6" opacity="0.5" />
+          <!-- Center node on the wave -->
+          <circle cx="70" cy="70" r="8" fill="#060608" stroke="#fff" stroke-width="1.5" />
+          <circle cx="70" cy="70" r="3.5" fill="#fff" />
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">09 / 10</div>
+        <h3>Sync Waves</h3>
+        <p>Oscillating waveforms cross at a central nexus — data flowing through the server like standing waves in a continuous stream.</p>
+        <div class="tags">
+          <span class="tag">waveform</span>
+          <span class="tag">fluid</span>
+          <span class="tag">organic</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 10: Delta Mark ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Outer delta/triangle with rounded corners -->
+          <path d="M 70 28 L 112 100 L 28 100 Z" stroke="#3b82f6" stroke-width="2" stroke-linejoin="round" fill="none" opacity="0.8" />
+          <!-- Inner delta -->
+          <path d="M 70 48 L 94 88 L 46 88 Z" stroke="#8b5cf6" stroke-width="1.5" stroke-linejoin="round" fill="none" opacity="0.5" />
+          <!-- Connecting lines between triangles (at vertices) -->
+          <line x1="70" y1="28" x2="70" y2="48" stroke="#3b82f6" stroke-width="0.8" opacity="0.3" />
+          <line x1="112" y1="100" x2="94" y2="88" stroke="#3b82f6" stroke-width="0.8" opacity="0.3" />
+          <line x1="28" y1="100" x2="46" y2="88" stroke="#3b82f6" stroke-width="0.8" opacity="0.3" />
+          <!-- Vertex nodes on outer triangle -->
+          <circle cx="70" cy="28" r="5" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="70" cy="28" r="2" fill="#3b82f6" />
+          <circle cx="112" cy="100" r="5" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="112" cy="100" r="2" fill="#22c55e" />
+          <circle cx="28" cy="100" r="5" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="28" cy="100" r="2" fill="#22c55e" />
+          <!-- Vertex nodes on inner triangle -->
+          <circle cx="70" cy="48" r="4" fill="#060608" stroke="#8b5cf6" stroke-width="1.2" />
+          <circle cx="70" cy="48" r="1.5" fill="#8b5cf6" />
+          <circle cx="94" cy="88" r="4" fill="#060608" stroke="#8b5cf6" stroke-width="1.2" />
+          <circle cx="94" cy="88" r="1.5" fill="#8b5cf6" />
+          <circle cx="46" cy="88" r="4" fill="#060608" stroke="#8b5cf6" stroke-width="1.2" />
+          <circle cx="46" cy="88" r="1.5" fill="#8b5cf6" />
+          <!-- Center convergence -->
+          <circle cx="70" cy="72" r="7" fill="#060608" stroke="#fff" stroke-width="1.5" />
+          <circle cx="70" cy="72" r="3" fill="#fff">
+            <animate attributeName="r" values="3;3.8;3" dur="2.5s" repeatCount="indefinite" />
+          </circle>
+          <!-- Flowing particles along outer edges -->
+          <circle r="1.5" fill="#3b82f6" opacity="0">
+            <animateMotion dur="5s" repeatCount="indefinite" path="M 70 28 L 112 100 L 28 100 Z" />
+            <animate attributeName="opacity" values="0;0.8;0.8;0" dur="5s" repeatCount="indefinite" />
+          </circle>
+          <circle r="1.5" fill="#8b5cf6" opacity="0">
+            <animateMotion dur="4s" repeatCount="indefinite" path="M 70 48 L 94 88 L 46 88 Z" />
+            <animate attributeName="opacity" values="0;0.7;0.7;0" dur="4s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">10 / 10</div>
+        <h3>Delta Mark</h3>
+        <p>Nested triangles represent layered delta-sync — outer nodes push changes inward through an inner ring to the center of truth.</p>
+        <div class="tags">
+          <span class="tag">geometric</span>
+          <span class="tag">delta</span>
+          <span class="tag">nested</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 11: Orbital Singularity (Mix of 01 + 02) ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Pulse rings expanding outward (from Singularity) -->
+          <circle cx="70" cy="70" r="20" stroke="#3b82f6" stroke-width="0.6" opacity="0">
+            <animate attributeName="r" from="20" to="64" dur="3.5s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.45" to="0" dur="3.5s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="70" cy="70" r="20" stroke="#3b82f6" stroke-width="0.6" opacity="0">
+            <animate attributeName="r" from="20" to="64" dur="3.5s" begin="1.75s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.45" to="0" dur="3.5s" begin="1.75s" repeatCount="indefinite" />
+          </circle>
+
+          <!-- Outer orbit ring (dashed, from Orbital Network) -->
+          <circle cx="70" cy="70" r="52" stroke="#3b82f6" stroke-width="0.5" opacity="0.12" stroke-dasharray="4 6" />
+          <!-- Inner orbit ring -->
+          <circle cx="70" cy="70" r="34" stroke="#8b5cf6" stroke-width="0.5" opacity="0.15" stroke-dasharray="3 5" />
+
+          <!-- Orbiting satellites on outer ring (from Orbital Network) -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 18s linear infinite;">
+            <!-- Dashed connection line to center -->
+            <line x1="70" y1="70" x2="122" y2="70" stroke="#22c55e" stroke-width="0.6" stroke-dasharray="3 3" opacity="0.35">
+              <animate attributeName="stroke-dashoffset" from="6" to="0" dur="0.8s" repeatCount="indefinite" />
+            </line>
+            <circle cx="122" cy="70" r="6" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+            <circle cx="122" cy="70" r="2.5" fill="#22c55e" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 18s linear infinite; animation-delay: -6s;">
+            <line x1="70" y1="70" x2="122" y2="70" stroke="#3b82f6" stroke-width="0.6" stroke-dasharray="3 3" opacity="0.35">
+              <animate attributeName="stroke-dashoffset" from="6" to="0" dur="0.8s" repeatCount="indefinite" />
+            </line>
+            <circle cx="122" cy="70" r="6" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+            <circle cx="122" cy="70" r="2.5" fill="#3b82f6" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 18s linear infinite; animation-delay: -12s;">
+            <line x1="70" y1="70" x2="122" y2="70" stroke="#f59e0b" stroke-width="0.6" stroke-dasharray="3 3" opacity="0.35">
+              <animate attributeName="stroke-dashoffset" from="6" to="0" dur="0.8s" repeatCount="indefinite" />
+            </line>
+            <circle cx="122" cy="70" r="6" fill="#060608" stroke="#f59e0b" stroke-width="1.5" />
+            <circle cx="122" cy="70" r="2.5" fill="#f59e0b" />
+          </g>
+
+          <!-- Orbiting satellites on inner ring -->
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 14s linear infinite;">
+            <line x1="70" y1="70" x2="104" y2="70" stroke="#8b5cf6" stroke-width="0.5" stroke-dasharray="2 3" opacity="0.3">
+              <animate attributeName="stroke-dashoffset" from="5" to="0" dur="0.8s" repeatCount="indefinite" />
+            </line>
+            <circle cx="104" cy="70" r="4.5" fill="#060608" stroke="#8b5cf6" stroke-width="1.2" />
+            <circle cx="104" cy="70" r="2" fill="#8b5cf6" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 14s linear infinite; animation-delay: -7s;">
+            <line x1="70" y1="70" x2="104" y2="70" stroke="#8b5cf6" stroke-width="0.5" stroke-dasharray="2 3" opacity="0.3">
+              <animate attributeName="stroke-dashoffset" from="5" to="0" dur="0.8s" repeatCount="indefinite" />
+            </line>
+            <circle cx="104" cy="70" r="4.5" fill="#060608" stroke="#8b5cf6" stroke-width="1.2" />
+            <circle cx="104" cy="70" r="2" fill="#8b5cf6" />
+          </g>
+
+          <!-- Core concentric rings (from Singularity) -->
+          <circle cx="70" cy="70" r="20" stroke="#3b82f6" stroke-width="2" opacity="0.9" />
+          <circle cx="70" cy="70" r="12" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="0.8" opacity="0.6" />
+          <!-- Center dot with glow -->
+          <circle cx="70" cy="70" r="5" fill="#3b82f6">
+            <animate attributeName="r" values="5;6;5" dur="2s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="70" cy="70" r="10" fill="#3b82f6" opacity="0.1">
+            <animate attributeName="r" values="10;16;10" dur="2s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0.1;0.03;0.1" dur="2s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">11 / bonus</div>
+        <h3>Orbital Singularity</h3>
+        <p>The pulsing concentric core of Singularity meets the orbiting satellite network — two rings of clients rotate in counter-directions around a breathing center of truth.</p>
+        <div class="tags">
+          <span class="tag">hybrid</span>
+          <span class="tag">dual-orbit</span>
+          <span class="tag">pulsing</span>
+          <span class="tag">counter-rotate</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 12: Resonance Nodes ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Each satellite has its own mini concentric rings (singularity fractal) -->
+          <!-- Central singularity core -->
+          <circle cx="70" cy="70" r="18" stroke="#3b82f6" stroke-width="1.8" opacity="0.85" />
+          <circle cx="70" cy="70" r="10" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="0.7" opacity="0.5" />
+          <circle cx="70" cy="70" r="4.5" fill="#3b82f6" />
+          <!-- Orbit path -->
+          <circle cx="70" cy="70" r="44" stroke="#3b82f6" stroke-width="0.4" opacity="0.1" stroke-dasharray="3 5" />
+          <!-- Satellite A (top) with mini rings -->
+          <circle cx="70" cy="26" r="12" stroke="#22c55e" stroke-width="0.4" opacity="0.2" />
+          <circle cx="70" cy="26" r="8" stroke="#22c55e" stroke-width="1" opacity="0.7" />
+          <circle cx="70" cy="26" r="4" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="0.5" opacity="0.5" />
+          <circle cx="70" cy="26" r="2" fill="#22c55e" />
+          <!-- Connection to center -->
+          <line x1="70" y1="34" x2="70" y2="52" stroke="#22c55e" stroke-width="0.6" opacity="0.25" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="0.8s" repeatCount="indefinite" />
+          </line>
+          <!-- Satellite B (bottom-right) with mini rings -->
+          <circle cx="108" cy="92" r="12" stroke="#8b5cf6" stroke-width="0.4" opacity="0.2" />
+          <circle cx="108" cy="92" r="8" stroke="#8b5cf6" stroke-width="1" opacity="0.7" />
+          <circle cx="108" cy="92" r="4" fill="rgba(139,92,246,0.1)" stroke="#8b5cf6" stroke-width="0.5" opacity="0.5" />
+          <circle cx="108" cy="92" r="2" fill="#8b5cf6" />
+          <!-- Connection to center -->
+          <line x1="102" y1="87" x2="84" y2="77" stroke="#8b5cf6" stroke-width="0.6" opacity="0.25" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="0.8s" repeatCount="indefinite" />
+          </line>
+          <!-- Satellite C (bottom-left) with mini rings -->
+          <circle cx="32" cy="92" r="12" stroke="#f59e0b" stroke-width="0.4" opacity="0.2" />
+          <circle cx="32" cy="92" r="8" stroke="#f59e0b" stroke-width="1" opacity="0.7" />
+          <circle cx="32" cy="92" r="4" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="0.5" opacity="0.5" />
+          <circle cx="32" cy="92" r="2" fill="#f59e0b" />
+          <!-- Connection to center -->
+          <line x1="38" y1="87" x2="56" y2="77" stroke="#f59e0b" stroke-width="0.6" opacity="0.25" stroke-dasharray="2 2">
+            <animate attributeName="stroke-dashoffset" from="4" to="0" dur="0.8s" repeatCount="indefinite" />
+          </line>
+          <!-- Subtle pulse from center -->
+          <circle cx="70" cy="70" r="18" fill="none" stroke="#3b82f6" stroke-width="0.4" opacity="0">
+            <animate attributeName="r" from="18" to="44" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.3" to="0" dur="3s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">12 / bonus</div>
+        <h3>Resonance Nodes</h3>
+        <p>Each satellite carries its own miniature singularity — concentric rings repeated fractally at every node, as if each client mirrors the server's heartbeat.</p>
+        <div class="tags">
+          <span class="tag">hybrid</span>
+          <span class="tag">fractal</span>
+          <span class="tag">self-similar</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 13: Tilted Orrery ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Tilted orbital ellipses (singularity rings viewed at angle) -->
+          <ellipse cx="70" cy="70" rx="56" ry="22" stroke="#3b82f6" stroke-width="0.5" opacity="0.12" stroke-dasharray="4 6" transform="rotate(-15 70 70)" />
+          <ellipse cx="70" cy="70" rx="42" ry="16" stroke="#8b5cf6" stroke-width="0.5" opacity="0.15" stroke-dasharray="3 5" transform="rotate(-15 70 70)" />
+          <ellipse cx="70" cy="70" rx="28" ry="11" stroke="#3b82f6" stroke-width="0.5" opacity="0.2" stroke-dasharray="2 4" transform="rotate(-15 70 70)" />
+          <!-- Orbiting satellites on outer ellipse -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 16s linear infinite;">
+            <circle cx="126" cy="70" r="5.5" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+            <circle cx="126" cy="70" r="2.2" fill="#22c55e" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 16s linear infinite; animation-delay: -8s;">
+            <circle cx="126" cy="70" r="5.5" fill="#060608" stroke="#f59e0b" stroke-width="1.5" />
+            <circle cx="126" cy="70" r="2.2" fill="#f59e0b" />
+          </g>
+          <!-- Orbiting satellites on middle ellipse -->
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 11s linear infinite;">
+            <circle cx="112" cy="70" r="4" fill="#060608" stroke="#3b82f6" stroke-width="1.2" />
+            <circle cx="112" cy="70" r="1.8" fill="#3b82f6" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 11s linear infinite; animation-delay: -5.5s;">
+            <circle cx="112" cy="70" r="4" fill="#060608" stroke="#8b5cf6" stroke-width="1.2" />
+            <circle cx="112" cy="70" r="1.8" fill="#8b5cf6" />
+          </g>
+          <!-- Inner satellite -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 7s linear infinite;">
+            <circle cx="98" cy="70" r="3" fill="#060608" stroke="#22c55e" stroke-width="1" />
+            <circle cx="98" cy="70" r="1.2" fill="#22c55e" />
+          </g>
+          <!-- Core singularity -->
+          <circle cx="70" cy="70" r="14" fill="#060608" stroke="#3b82f6" stroke-width="2" />
+          <circle cx="70" cy="70" r="7.5" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="0.7" />
+          <circle cx="70" cy="70" r="3.5" fill="#3b82f6">
+            <animate attributeName="r" values="3.5;4.2;3.5" dur="2.5s" repeatCount="indefinite" />
+          </circle>
+          <!-- Pulse -->
+          <circle cx="70" cy="70" r="14" fill="none" stroke="#3b82f6" stroke-width="0.4" opacity="0">
+            <animate attributeName="r" from="14" to="50" dur="4s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.25" to="0" dur="4s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">13 / bonus</div>
+        <h3>Tilted Orrery</h3>
+        <p>Concentric orbits viewed at a dramatic angle, with satellites on three tilted planes rotating at different speeds — like a mechanical model of the sync solar system.</p>
+        <div class="tags">
+          <span class="tag">hybrid</span>
+          <span class="tag">perspective</span>
+          <span class="tag">multi-plane</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 14: Pulsar Grid ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Concentric rings with satellite dots embedded directly on them -->
+          <!-- Ring 1 (outer) -->
+          <circle cx="70" cy="70" r="52" stroke="#3b82f6" stroke-width="1" opacity="0.25" />
+          <!-- Dots on ring 1 -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 24s linear infinite;">
+            <circle cx="122" cy="70" r="3.5" fill="#22c55e" opacity="0.85" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 24s linear infinite; animation-delay: -6s;">
+            <circle cx="122" cy="70" r="3.5" fill="#3b82f6" opacity="0.85" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 24s linear infinite; animation-delay: -12s;">
+            <circle cx="122" cy="70" r="3.5" fill="#f59e0b" opacity="0.85" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 24s linear infinite; animation-delay: -18s;">
+            <circle cx="122" cy="70" r="3.5" fill="#8b5cf6" opacity="0.85" />
+          </g>
+          <!-- Ring 2 (middle) -->
+          <circle cx="70" cy="70" r="36" stroke="#3b82f6" stroke-width="1.2" opacity="0.4" />
+          <!-- Dots on ring 2 -->
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 18s linear infinite;">
+            <circle cx="106" cy="70" r="3" fill="#22c55e" opacity="0.75" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 18s linear infinite; animation-delay: -6s;">
+            <circle cx="106" cy="70" r="3" fill="#8b5cf6" opacity="0.75" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlowReverse 18s linear infinite; animation-delay: -12s;">
+            <circle cx="106" cy="70" r="3" fill="#3b82f6" opacity="0.75" />
+          </g>
+          <!-- Ring 3 (inner) -->
+          <circle cx="70" cy="70" r="20" stroke="#3b82f6" stroke-width="1.5" opacity="0.6" />
+          <!-- Dots on ring 3 -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 10s linear infinite;">
+            <circle cx="90" cy="70" r="2.5" fill="#f59e0b" opacity="0.7" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 10s linear infinite; animation-delay: -5s;">
+            <circle cx="90" cy="70" r="2.5" fill="#22c55e" opacity="0.7" />
+          </g>
+          <!-- Center -->
+          <circle cx="70" cy="70" r="6" fill="#3b82f6">
+            <animate attributeName="opacity" values="0.7;1;0.7" dur="2s" repeatCount="indefinite" />
+          </circle>
+          <!-- Pulse rings -->
+          <circle cx="70" cy="70" r="6" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0">
+            <animate attributeName="r" from="6" to="52" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.3" to="0" dur="3s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="70" cy="70" r="6" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0">
+            <animate attributeName="r" from="6" to="52" dur="3s" begin="1s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.3" to="0" dur="3s" begin="1s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="70" cy="70" r="6" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0">
+            <animate attributeName="r" from="6" to="52" dur="3s" begin="2s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.3" to="0" dur="3s" begin="2s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">14 / bonus</div>
+        <h3>Pulsar Grid</h3>
+        <p>Solid concentric rings with colored satellite dots riding directly on each orbit — pulse waves ripple outward through the rings like a radar sweep.</p>
+        <div class="tags">
+          <span class="tag">hybrid</span>
+          <span class="tag">radar</span>
+          <span class="tag">embedded</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 15: Eclipse ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Two overlapping singularity cores sharing a common orbit -->
+          <!-- Shared orbit path -->
+          <circle cx="70" cy="70" r="46" stroke="rgba(255,255,255,0.06)" stroke-width="0.5" stroke-dasharray="3 5" />
+          <!-- Left singularity -->
+          <circle cx="55" cy="70" r="20" stroke="#3b82f6" stroke-width="1.5" opacity="0.6" />
+          <circle cx="55" cy="70" r="11" fill="rgba(59,130,246,0.08)" stroke="#3b82f6" stroke-width="0.6" opacity="0.4" />
+          <circle cx="55" cy="70" r="4.5" fill="#3b82f6" />
+          <!-- Right singularity -->
+          <circle cx="85" cy="70" r="20" stroke="#8b5cf6" stroke-width="1.5" opacity="0.6" />
+          <circle cx="85" cy="70" r="11" fill="rgba(139,92,246,0.08)" stroke="#8b5cf6" stroke-width="0.6" opacity="0.4" />
+          <circle cx="85" cy="70" r="4.5" fill="#8b5cf6" />
+          <!-- Intersection glow -->
+          <ellipse cx="70" cy="70" rx="6" ry="16" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.08)" stroke-width="0.5" />
+          <!-- Shared orbiting satellites -->
+          <g style="transform-origin: 70px 70px; animation: rotSlow 15s linear infinite;">
+            <circle cx="116" cy="70" r="5" fill="#060608" stroke="#22c55e" stroke-width="1.4" />
+            <circle cx="116" cy="70" r="2" fill="#22c55e" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 15s linear infinite; animation-delay: -5s;">
+            <circle cx="116" cy="70" r="5" fill="#060608" stroke="#f59e0b" stroke-width="1.4" />
+            <circle cx="116" cy="70" r="2" fill="#f59e0b" />
+          </g>
+          <g style="transform-origin: 70px 70px; animation: rotSlow 15s linear infinite; animation-delay: -10s;">
+            <circle cx="116" cy="70" r="5" fill="#060608" stroke="#22c55e" stroke-width="1.4" />
+            <circle cx="116" cy="70" r="2" fill="#22c55e" />
+          </g>
+          <!-- Cross-pulse from both cores -->
+          <circle cx="55" cy="70" r="20" fill="none" stroke="#3b82f6" stroke-width="0.4" opacity="0">
+            <animate attributeName="r" from="20" to="46" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.25" to="0" dur="3s" repeatCount="indefinite" />
+          </circle>
+          <circle cx="85" cy="70" r="20" fill="none" stroke="#8b5cf6" stroke-width="0.4" opacity="0">
+            <animate attributeName="r" from="20" to="46" dur="3s" begin="1.5s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.25" to="0" dur="3s" begin="1.5s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">15 / bonus</div>
+        <h3>Eclipse</h3>
+        <p>Two overlapping singularity cores — server and relay — share a common orbital ring. Satellites traverse the shared space where both fields overlap.</p>
+        <div class="tags">
+          <span class="tag">hybrid</span>
+          <span class="tag">twin-core</span>
+          <span class="tag">overlap</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== LOGO 16: Compass Rose ========== -->
+    <div class="logo-card">
+      <div class="logo-canvas">
+        <svg viewBox="0 0 140 140" fill="none">
+          <!-- Four cardinal satellite arms with concentric center -->
+          <!-- Concentric core rings -->
+          <circle cx="70" cy="70" r="22" stroke="#3b82f6" stroke-width="1.8" opacity="0.85" />
+          <circle cx="70" cy="70" r="13" fill="rgba(59,130,246,0.08)" stroke="#3b82f6" stroke-width="0.7" opacity="0.5" />
+          <circle cx="70" cy="70" r="5" fill="#3b82f6">
+            <animate attributeName="r" values="5;5.8;5" dur="2s" repeatCount="indefinite" />
+          </circle>
+          <!-- Dashed orbit circle -->
+          <circle cx="70" cy="70" r="48" stroke="#3b82f6" stroke-width="0.4" opacity="0.1" stroke-dasharray="2 4" />
+          <!-- Top satellite -->
+          <line x1="70" y1="48" x2="70" y2="28" stroke="#22c55e" stroke-width="0.8" opacity="0.35" stroke-dasharray="3 2">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="0.7s" repeatCount="indefinite" />
+          </line>
+          <circle cx="70" cy="22" r="6" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="70" cy="22" r="2.5" fill="#22c55e" />
+          <!-- Right satellite -->
+          <line x1="92" y1="70" x2="112" y2="70" stroke="#3b82f6" stroke-width="0.8" opacity="0.35" stroke-dasharray="3 2">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="0.7s" repeatCount="indefinite" />
+          </line>
+          <circle cx="118" cy="70" r="6" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="118" cy="70" r="2.5" fill="#3b82f6" />
+          <!-- Bottom satellite -->
+          <line x1="70" y1="92" x2="70" y2="112" stroke="#8b5cf6" stroke-width="0.8" opacity="0.35" stroke-dasharray="3 2">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="0.7s" repeatCount="indefinite" />
+          </line>
+          <circle cx="70" cy="118" r="6" fill="#060608" stroke="#8b5cf6" stroke-width="1.5" />
+          <circle cx="70" cy="118" r="2.5" fill="#8b5cf6" />
+          <!-- Left satellite -->
+          <line x1="48" y1="70" x2="28" y2="70" stroke="#f59e0b" stroke-width="0.8" opacity="0.35" stroke-dasharray="3 2">
+            <animate attributeName="stroke-dashoffset" from="5" to="0" dur="0.7s" repeatCount="indefinite" />
+          </line>
+          <circle cx="22" cy="70" r="6" fill="#060608" stroke="#f59e0b" stroke-width="1.5" />
+          <circle cx="22" cy="70" r="2.5" fill="#f59e0b" />
+          <!-- Particles flowing inward -->
+          <circle r="1.8" fill="#22c55e" opacity="0">
+            <animateMotion dur="2s" repeatCount="indefinite" path="M 70 22 L 70 48" />
+            <animate attributeName="opacity" values="0;0.8;0" dur="2s" repeatCount="indefinite" />
+          </circle>
+          <circle r="1.8" fill="#3b82f6" opacity="0">
+            <animateMotion dur="2s" begin="0.5s" repeatCount="indefinite" path="M 118 70 L 92 70" />
+            <animate attributeName="opacity" values="0;0.8;0" dur="2s" begin="0.5s" repeatCount="indefinite" />
+          </circle>
+          <circle r="1.8" fill="#8b5cf6" opacity="0">
+            <animateMotion dur="2s" begin="1s" repeatCount="indefinite" path="M 70 118 L 70 92" />
+            <animate attributeName="opacity" values="0;0.8;0" dur="2s" begin="1s" repeatCount="indefinite" />
+          </circle>
+          <circle r="1.8" fill="#f59e0b" opacity="0">
+            <animateMotion dur="2s" begin="1.5s" repeatCount="indefinite" path="M 22 70 L 48 70" />
+            <animate attributeName="opacity" values="0;0.8;0" dur="2s" begin="1.5s" repeatCount="indefinite" />
+          </circle>
+          <!-- Pulse ring -->
+          <circle cx="70" cy="70" r="22" fill="none" stroke="#3b82f6" stroke-width="0.4" opacity="0">
+            <animate attributeName="r" from="22" to="55" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="opacity" from="0.3" to="0" dur="3s" repeatCount="indefinite" />
+          </circle>
+        </svg>
+      </div>
+      <div class="logo-info">
+        <div class="logo-number">16 / bonus</div>
+        <h3>Compass Rose</h3>
+        <p>Four satellites at cardinal points with particles streaming inward toward the concentric core — a static orbital layout with dynamic data flow, like a compass always pointing to the source of truth.</p>
+        <div class="tags">
+          <span class="tag">hybrid</span>
+          <span class="tag">cardinal</span>
+          <span class="tag">inward-flow</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Wordmark pairings -->
+  <div class="wordmark-strip">
+    <h2>Wordmark Pairings</h2>
+    <div class="wordmark-row">
+      <!-- Pairing 1: Singularity + Sans -->
+      <div class="wordmark-item">
+        <svg viewBox="0 0 140 140" fill="none">
+          <circle cx="70" cy="70" r="24" stroke="#3b82f6" stroke-width="2.5" opacity="0.9" />
+          <circle cx="70" cy="70" r="14" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="1" opacity="0.7" />
+          <circle cx="70" cy="70" r="5.5" fill="#3b82f6" />
+        </svg>
+        <span class="wm-text">syncular</span>
+      </div>
+
+      <!-- Pairing 2: Backbone + Serif -->
+      <div class="wordmark-item">
+        <svg viewBox="0 0 140 140" fill="none">
+          <circle cx="52" cy="70" r="14" fill="#060608" stroke="#3b82f6" stroke-width="2.5" />
+          <circle cx="52" cy="70" r="5" fill="#3b82f6" />
+          <circle cx="88" cy="70" r="14" fill="#060608" stroke="#8b5cf6" stroke-width="2.5" />
+          <circle cx="88" cy="70" r="5" fill="#8b5cf6" />
+          <line x1="66" y1="70" x2="74" y2="70" stroke="url(#wmGrad)" stroke-width="2.5" stroke-linecap="round" />
+          <defs><linearGradient id="wmGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        </svg>
+        <span class="wm-text-serif">syncular</span>
+      </div>
+
+      <!-- Pairing 3: Mesh + Mono -->
+      <div class="wordmark-item">
+        <svg viewBox="0 0 140 140" fill="none">
+          <circle cx="70" cy="45" r="5" fill="#060608" stroke="#3b82f6" stroke-width="1.5" />
+          <circle cx="70" cy="45" r="2" fill="#3b82f6" />
+          <circle cx="95" cy="70" r="5" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="95" cy="70" r="2" fill="#22c55e" />
+          <circle cx="84" cy="95" r="5" fill="#060608" stroke="#8b5cf6" stroke-width="1.5" />
+          <circle cx="84" cy="95" r="2" fill="#8b5cf6" />
+          <circle cx="56" cy="95" r="5" fill="#060608" stroke="#f59e0b" stroke-width="1.5" />
+          <circle cx="56" cy="95" r="2" fill="#f59e0b" />
+          <circle cx="45" cy="70" r="5" fill="#060608" stroke="#22c55e" stroke-width="1.5" />
+          <circle cx="45" cy="70" r="2" fill="#22c55e" />
+          <circle cx="70" cy="70" r="8" fill="#060608" stroke="#fff" stroke-width="2" />
+          <circle cx="70" cy="70" r="3.5" fill="#fff" />
+          <line x1="70" y1="70" x2="70" y2="50" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" />
+          <line x1="70" y1="70" x2="90" y2="70" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" />
+          <line x1="70" y1="70" x2="81" y2="91" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" />
+          <line x1="70" y1="70" x2="59" y2="91" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" />
+          <line x1="70" y1="70" x2="50" y2="70" stroke="rgba(255,255,255,0.12)" stroke-width="0.8" />
+        </svg>
+        <span class="wm-text-mono">syncular</span>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

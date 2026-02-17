@@ -1,0 +1,72 @@
+---
+title: Adoption Paths
+description: Ways to adopt Syncular incrementally, from a single offline table to a full local-first architecture
+---
+
+# Adoption Paths
+
+> **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
+
+Syncular is modular by design. You can adopt it table-by-table and feature-by-feature, instead of committing to an "all or nothing" platform rewrite.
+
+Below are practical paths teams actually take, depending on where they start.
+
+## Path A: Greenfield local-first app
+
+Best when you are building a new product where offline is a requirement (email client, CRM, internal tool, field app).
+
+1. Pick a client runtime + SQLite dialect.
+2. Create your local DB schema and UI queries (Kysely).
+3. Add Syncular server + table handlers.
+4. Add scopes + subscriptions for partial sync and auth.
+5. Add real-time wakeups (optional).
+
+Start here:
+- [Quick Start](/docs/introduction/quick-start)
+- [Server Setup](/docs/build/server-setup)
+- [Client Setup](/docs/build/client-setup)
+- [Scopes](/docs/introduction/scopes)
+- [Subscriptions](/docs/introduction/subscriptions)
+
+## Path B: Existing app with REST/webhooks/pipelines
+
+Best when you already have a production backend and want offline + sync without replacing everything.
+
+1. Start with local SQLite as your primary read/write path (your UI talks to local DB).
+2. Turn on sync for one table (one handler + one subscription).
+3. Keep existing REST/webhook/pipeline writes, but make them sync-aware:
+   - Use `notifyExternalDataChange` when data changes outside push flow.
+   - Consider the admin DB proxy for admin tools and data fixes that must emit sync commits.
+4. Expand table-by-table.
+
+Relevant docs:
+- [External Changes](/docs/build/external-changes)
+- [Admin Database Proxy](/docs/build/proxy)
+- [Table Handlers](/docs/build/table-handlers)
+
+## Path C: Add "business app" features as you scale
+
+These are common add-ons once the core loop is working:
+
+1. Fast first sync for large datasets:
+   - [Architecture (bootstrap + snapshot chunks)](/docs/introduction/architecture)
+   - [Performance](/docs/build/performance)
+2. Blobs (files) + offline cache/upload queue:
+   - [Blob Storage](/docs/build/blob-storage)
+3. End-to-end encryption:
+   - [Encryption](/docs/build/encryption)
+4. Operations + observability:
+   - [Operations](/docs/build/operations)
+   - [Observability](/docs/build/observability)
+5. Relay (intermittent networks / edge):
+   - [Relay](/docs/build/relay)
+6. Migrations + type generation:
+   - [Schema Migrations](/docs/build/migrations)
+
+## What to decide early (to avoid rewrites)
+
+- Your scope keys and how they map to access control.
+- Your row versioning strategy (conflict detection).
+- Whether encrypted data needs search/sort/indexing (design implications).
+- Whether you will have external writers (REST/jobs/admin tools) and how you will notify sync.
+

@@ -1,0 +1,71 @@
+---
+title: Comparison Overview
+description: Compare sync approaches by architecture, not just vendor names
+lastVerified: 2026-02-15
+---
+
+# Comparison Overview
+
+Most comparison pages optimize for vendor names. This section optimizes for architecture decisions first:
+
+- Data model (SQL tables vs object/CRDT models)
+- Write path (offline-first writes vs read-path replication)
+- Auth boundary (explicit server auth vs query/rule layers)
+- Ops model (self-hosted control vs managed convenience)
+
+> **Last verified:** February 2026. These products move quickly. If you spot drift, open an issue and we will correct it.
+
+## How to use this section
+
+1. Start with the decision filter below.
+2. Use the landscape table to narrow to one or two categories.
+3. Read deep dives only for close architectural overlaps.
+
+## Decision filter (2-minute)
+
+- Do you need durable offline writes across app restarts?
+- Is your data primarily relational SQL, or document/object/CRDT?
+- Do you want explicit replication boundaries, or reactive query-driven replication?
+- Where should auth be enforced: server-side app logic, query/rule layers, or mostly managed for you?
+- Do you need strict self-hosting, or do you prefer managed services?
+
+If you answer "yes" to offline writes + multi-user + custom auth + SQL, you are usually in sync framework territory.
+
+## Landscape by approach
+
+| Approach | Tools that often come up | What it optimizes for | Main trade-off |
+|---|---|---|---|
+| SQL sync frameworks with explicit replication boundaries | Syncular, PowerSync | Durable offline writes, explicit auth boundary, operational visibility | More backend modeling upfront |
+| Postgres read-path replication | Electric SQL | Fast server-to-client streaming from Postgres | Write path and auth/conflict policy usually stay in your backend |
+| Reactive query-cache layer | Zero | Query-first reactive developer experience | Additional sync service and query-layer mental model |
+| CRDT collaboration stacks | Jazz, Yjs, Automerge | Automatic merge under concurrent edits | Different data model from classic relational SQL |
+| Client-side local-first data layers | LiveStore, TinyBase, Evolu | Fast local data/state with offline-first UX | You still define backend authority and system-level ops |
+| Backend platforms with built-in local sync | Instant | Batteries-included backend (auth, permissions, storage, realtime/offline) | Less control over backend internals and hosting model |
+
+## Where Syncular is most differentiated
+
+- SQL/Kysely-first app and server model
+- Commit-log push/pull with explicit scopes + subscriptions
+- Programmatic, auditable authorization via scopes
+- Fully MIT and self-hosted across client and server packages
+
+## Deep dives (optional)
+
+Read these only when you are already in a close category match:
+
+- [Syncular vs Electric SQL](/docs/introduction/comparison/vs-electric)
+- [Syncular vs Zero](/docs/introduction/comparison/vs-zero)
+- [Syncular vs Jazz](/docs/introduction/comparison/vs-jazz)
+- [Syncular vs PowerSync](/docs/introduction/comparison/vs-powersync)
+- [Others](/docs/introduction/comparison/others)
+
+## Sources
+
+- [Electric SQL docs](https://electric-sql.com/docs) and [Electric Shape API](https://electric-sql.com/api/openapi)
+- [Zero docs](https://zero.rocicorp.dev/docs) and [Zero open source](https://zero.rocicorp.dev/docs/open-source)
+- [Jazz docs](https://jazz.tools/docs) and [Jazz GitHub](https://github.com/garden-co/jazz)
+- [PowerSync docs](https://docs.powersync.com) and [PowerSync open source](https://www.powersync.com/open-source)
+- [Instant](https://www.instantdb.com)
+- [LiveStore](https://livestore.dev) and [How LiveStore works](https://docs.livestore.dev/evaluation/how-livestore-works/)
+- [TinyBase](https://tinybase.org) and [TinyBase synchronization guide](https://tinybase.org/guides/synchronization/)
+- [Evolu](https://www.evolu.dev) and [Get started with local-first](https://www.evolu.dev/docs/local-first)

@@ -1,0 +1,47 @@
+export function printHelp(): void {
+  const lines = [
+    'syncular CLI',
+    '',
+    'Usage:',
+    '  syncular [command] [subcommand] [flags]',
+    '',
+    'Commands:',
+    '  help                       Show help',
+    '  version                    Show CLI version',
+    '  doctor                     Run local environment checks',
+    '  create                     Scaffold Syncular libraries (interactive in TTY)',
+    '  create demo                Scaffold runnable demo project',
+    '  migrate status             Show migration status (via adapter)',
+    '  migrate up                 Run pending migrations (via adapter)',
+    '  interactive                Open interactive TUI',
+    '',
+    'Create flags:',
+    '  --dir <path>               Target directory (default: .)',
+    '  --force                    Overwrite generated files',
+    '  --targets                  Comma list: server,react,vanilla,expo,react-native,electron,proxy-api',
+    '  --server-dialect           postgres|sqlite',
+    '  --react-dialect            wa-sqlite|pglite|bun-sqlite|better-sqlite3|sqlite3',
+    '  --vanilla-dialect          wa-sqlite|pglite|bun-sqlite|better-sqlite3|sqlite3',
+    '  --electron-dialect         electron-sqlite|better-sqlite3',
+    '',
+    'Demo flags:',
+    '  --dir <path>               Target directory (default: .)',
+    '  --force                    Overwrite generated files',
+    '',
+    'Migrate flags:',
+    '  --config <path>            Config file path (default: syncular.config.json)',
+    '  --on-checksum-mismatch     error|reset (default: error)',
+    '  --dry-run                  Plan migration without applying',
+    '  --yes                      Confirm destructive reset mode',
+    '',
+    'Global flags:',
+    '  --interactive              Force interactive TUI',
+    '  --no-interactive           Disable interactive TUI',
+    '  --help                     Show help',
+    '  --version                  Show version',
+  ];
+
+  for (const line of lines) {
+    console.log(line);
+  }
+}

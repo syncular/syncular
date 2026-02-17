@@ -1,0 +1,36 @@
+---
+title: Electron
+description: Renderer/main split, IPC dialects, and recommended database setups for Electron apps
+---
+
+# Electron
+
+Electron apps are a great fit for Syncular: you get a durable local SQLite database, instant UI reads/writes, and background sync.
+
+## Recommended dialects
+
+You typically choose between:
+
+- **`@syncular/dialect-electron-sqlite` (recommended)**: renderer uses Kysely, SQL executes in the main process via a preload IPC bridge.
+- **`@syncular/dialect-better-sqlite3`**: run SQLite directly in a Node-capable process.
+
+The IPC approach is usually the cleanest because it keeps direct DB access out of the renderer and centralizes file/system access in main.
+
+## Renderer setup (IPC dialect)
+
+In the renderer:
+
+```ts
+import { createElectronSqliteDbFromWindow } from '@syncular/dialect-electron-sqlite';
+
+// Uses window.electronAPI.sqlite by default (bridgeKey: "sqlite")
+const db = createElectronSqliteDbFromWindow();
+```
+
+You’ll also need to implement the preload/main bridge that actually executes SQL and stores the DB on disk. The exact bridge is app-specific, but the mental model stays simple: renderer calls Kysely, main executes queries.
+
+## Next steps
+
+- [Client Setup](/docs/build/client-setup)
+- [Installation](/docs/introduction/installation) (package selection)
+

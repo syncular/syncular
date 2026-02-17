@@ -1,0 +1,89 @@
+---
+title: React SDK Overview
+description: React bindings for Syncular
+---
+
+The `@syncular/client-react` package provides React hooks and components for Syncular.
+
+### What you'll learn
+
+- How to install and configure the React SDK
+- Setting up `SyncProvider` with transport and subscriptions
+- Querying synced data reactively with `useSyncQuery`
+- Making mutations from React components
+- All available hooks at a glance
+
+## Installation
+
+```bash
+npm install @syncular/client @syncular/client-react @syncular/transport-http
+```
+
+## Quick Start
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { SyncClientDb } from '@syncular/client';
+
+type Task = { id: string; title: string; completed: number; created_at: string };
+type Db = SyncClientDb & { tasks: Task };
+
+const { SyncProvider, useSyncQuery, useMutations } = createSyncularReact<Db>();
+
+function App() {
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      handlers={handlers}
+      actorId={userId}
+      clientId={deviceId}
+      subscriptions={[
+        { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
+      ]}
+    >
+      <TaskList />
+    </SyncProvider>
+  );
+}
+
+function TaskList() {
+  const { data: tasks, isLoading } = useSyncQuery(({ selectFrom }) =>
+    selectFrom('tasks').selectAll().orderBy('created_at', 'desc')
+  );
+  const m = useMutations();
+
+  if (isLoading) return <div>Loading...</div>;
+
+  return (
+    <ul>
+      {tasks?.map((task) => (
+        <li key={task.id} onClick={() => m.tasks.update(task.id, { completed: 1 })}>
+          {task.title}
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Available Hooks
+
+| Hook | Description |
+|------|-------------|
+| `useSyncQuery` | Query local data with reactive updates |
+| `useMutations` | Make changes that sync |
+| `useMutation` | Single-table mutations |
+| `useSyncStatus` | Monitor sync status |
+| `useSyncEngine` | Access sync engine directly |
+| `useSyncConnection` | Monitor WebSocket connection |
+| `useConflicts` | Get pending conflicts |
+| `useResolveConflict` | Resolve conflicts |
+| `useOutbox` | Get outbox status |
+| `useSyncContext` | Access raw sync context |
+
+## Next Steps
+
+- [SyncProvider](/docs/client-sdk/react/sync-provider) - Provider configuration
+- [useSyncQuery](/docs/client-sdk/react/use-sync-query) - Querying data
+- [useMutations](/docs/client-sdk/react/use-mutations) - Making changes

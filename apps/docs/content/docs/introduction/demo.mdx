@@ -1,0 +1,96 @@
+---
+title: Try the Demo
+description: Run the Syncular demo app and explore key features
+---
+
+# Try the Demo
+
+The demo app is the fastest way to see Syncular in action. It runs a full stack locally — React frontend, Hono API server, PGlite (in-memory Postgres), and multiple sync clients.
+
+## Run it
+
+```bash
+bun install
+bun --cwd apps/demo dev
+```
+
+This starts:
+- **Frontend:** `http://localhost:5173`
+- **API server:** `http://localhost:3001` (sync routes at `/api/sync`)
+
+## Demo 1: Split-Screen Sync
+
+The default tab shows **two independent sync clients** side-by-side. The left panel uses SQLite (via wa-sqlite), the right uses PGlite. Both sync to the same server.
+
+**Things to try:**
+
+1. **Add a task in the left panel** — watch it appear on the right within a second
+2. **Click a task to complete it** — the change syncs to the other panel
+3. **Pause sync** on one panel (use the sync controls), make changes, then resume — watch the queued changes sync
+4. **Open browser DevTools → Network** — observe the HTTP push/pull requests
+5. **Edit the same task in both panels simultaneously** — see conflict detection in action
+
+**What you're seeing:** Two separate SQLite databases, each running in the browser, syncing through a commit log stored in PGlite (Postgres). The outbox queues writes when paused. Scopes filter data per user.
+
+## Demo 2: Large Catalog
+
+This tab demonstrates sync at scale — **bootstrapping large datasets** with chunked snapshots.
+
+**Things to try:**
+
+1. **Seed the catalog** — click to generate up to 1 million rows on the server
+2. **Watch the bootstrap** — the client downloads data in compressed chunks (framed JSON rows + gzip)
+3. **Filter the list** — observe query performance against the local database
+4. **Check chunk stats** — see how many chunks were downloaded and their sizes
+
+**What you're seeing:** Syncular's snapshot chunking system. Instead of sending all rows in one response, the server breaks large snapshots into compressed chunks. The client downloads and applies them incrementally. After bootstrap, only incremental commits are synced.
+
+## Demo 3: Key Share (E2EE)
+
+This tab demonstrates **end-to-end field encryption** with key sharing.
+
+**Things to try:**
+
+1. **Add a shared task in the left panel** (the "owner") — the title is encrypted before leaving the device
+2. **Look at the right panel** — without the key, you see ciphertext
+3. **Copy the 24-word mnemonic** from the left panel and paste it into the right panel
+4. **Watch the data decrypt** — the right panel can now read the task titles
+
+**What you're seeing:** The `@syncular/client-plugin-encryption` plugin encrypts specified fields (like `title`) using XChaCha20-Poly1305 before pushing to the server. The server only stores ciphertext. Key sharing uses BIP39 mnemonics (or QR codes).
+
+## Demo 4: Symmetric E2EE
+
+A simpler version of the encryption demo where both panels share the same key from the start.
+
+## Run the Console
+
+The Console is a monitoring dashboard for your sync server. To run it against the demo:
+
+```bash
+bun --cwd apps/console dev
+```
+
+Then connect to:
+- **Server URL:** `http://localhost:3001/api`
+- **Token:** `demo-token`
+
+The console shows:
+- **Dashboard** — real-time metrics (operations, latency, error rate, active clients)
+- **Explorer** — browse the commit log and request events
+- **Clients** — connected clients and their sync state
+- **System** — server health and storage stats
+
+## Where the code lives
+
+| Component | Path |
+|-----------|------|
+| Frontend UI | `demo/src/components/` |
+| Server routes | `demo/src/server/` |
+| Type generation | `demo/scripts/generate-types.ts` |
+| Console UI | `console/src/` |
+
+## Next steps
+
+- [Quick Start](/docs/introduction/quick-start) — build your own app from scratch
+- [How Sync Works](/docs/introduction/architecture) — understand what's happening under the hood
+- [Encryption Guide](/docs/build/encryption) — set up E2E encryption in your app

@@ -1,0 +1,83 @@
+---
+title: Quick Start
+description: Create Syncular test fixtures and write your first integration test.
+---
+
+# Quick Start
+
+## Install
+
+```bash
+bun add -d @syncular/testkit
+```
+
+## Minimal in-process test
+
+```ts
+import { describe, it } from 'bun:test';
+import {
+  assertRowExists,
+  createSyncFixture,
+  seedServerData,
+} from '@syncular/testkit';
+
+describe('sync quick start', () => {
+  it('bootstraps data from server', async () => {
+    const fixture = await createSyncFixture({
+      serverDialect: 'sqlite',
+      defaultClientDialect: 'bun-sqlite',
+    });
+
+    try {
+      await seedServerData(fixture.server, { userId: 'u1', count: 2 });
+
+      const client = await fixture.createClient({
+        mode: 'raw',
+        actorId: 'u1',
+        clientId: 'client-a',
+      });
+
+      await client.pull({
+        subscriptions: [
+          { id: 'my-tasks', table: 'tasks', scopes: { user_id: 'u1' } },
+        ],
+      });
+
+      await assertRowExists(client.db, 'tasks', 'task-1');
+    } finally {
+      await fixture.destroyAll();
+    }
+  });
+});
+```
+
+## Engine-mode test
+
+Use engine mode when you want to test polling/realtime/outbox lifecycle behavior:
+
+```ts
+const client = await fixture.createClient({
+  mode: 'engine',
+  actorId: 'u1',
+  clientId: 'engine-client',
+  subscriptions: [{ id: 'my-tasks', table: 'tasks', scopes: { user_id: 'u1' } }],
+});
+
+await client.startEngine();
+await client.syncEngine();
+```
+
+## HTTP fixture path
+
+If you want route/auth/CORS realism, use HTTP fixtures:
+
+- `createHttpServerFixture(...)`
+- `createHttpClientFixture(...)`
+
+These run real HTTP sync routes and real transport calls, while still keeping setup code small.
+
+## Next step
+
+Use [Testkit Primitives](/docs/testing/primitives) for protocol builders, schema parsers, deterministic clocks/IDs, scenario flow wrappers, and runtime WebSocket helpers.
+
+If you want less cleanup boilerplate, use [Resource Lifecycle (`using`)](/docs/testing/lifecycle).

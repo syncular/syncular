@@ -1,0 +1,213 @@
+---
+title: Mutations
+description: Making changes that sync
+---
+
+Mutations create local changes that are synced to the server.
+
+### What you'll learn
+
+- The recommended high-level `client.mutations` API for insert, update, delete, and batch operations
+- How mutations flow through the outbox to the server
+- The low-level `enqueueOutboxCommit` escape hatch for advanced use cases
+- How version tracking enables conflict detection
+
+## Mutation Lifecycle
+
+Every mutation follows this path from the client to the server:
+
+```
+  client.mutations.tasks.insert({ title: 'New' })
+                  |
+                  v
+  +-------------------------------+
+  | 1. Local DB write (in a tx)   |  <-- immediate, optimistic
+  +-------------------------------+
+                  |
+                  v
+  +-------------------------------+
+  | 2. Outbox commit enqueued     |  <-- persisted in same tx
+  +-------------------------------+
+                  |
+                  v  (next sync cycle)
+  +-------------------------------+
+  | 3. Push to server             |  <-- transport.push()
+  +-------------------------------+
+                  |
+          +-------+--------+
+          |                |
+          v                v
+  +-------------+  +---------------+
+  | 4a. Applied |  | 4b. Conflict  |
+  | (acked)     |  | (stored for   |
+  +-------------+  |  resolution)  |
+                   +---------------+
+```
+
+## Mutations API (Recommended)
+
+The `client.mutations` proxy provides a typed, table-scoped API that handles outbox commits, local writes, and ID generation automatically. This is the recommended approach for all mutations.
+
+```typescript
+// Insert — auto-generates an ID, returns it
+const { id } = await client.mutations.tasks.insert({
+  title: 'New Task',
+  completed: 0,
+  user_id: 'user-123',
+});
+
+// Update — pass the row ID and a partial payload
+await client.mutations.tasks.update(id, { title: 'Updated Title' });
+
+// Delete
+await client.mutations.tasks.delete(id);
+
+// Batch — multiple operations in a single atomic commit
+await client.mutations.$commit(async (tx) => {
+  const taskId = await tx.tasks.insert({ title: 'Task' });
+  await tx.comments.insert({ taskId, text: 'First!' });
+});
+```
+
+The mutations API automatically:
+- Generates UUIDs for new rows (unless you provide an `id`)
+- Reads `server_version` for conflict detection on updates
+- Wraps everything in a database transaction
+- Enqueues the outbox commit in the same transaction (no data loss on crash)
+
+## Using enqueueOutboxCommit (Low-Level)
+
+```typescript
+import { enqueueOutboxCommit } from '@syncular/client';
+
+// Insert a new task
+await enqueueOutboxCommit(db, {
+  clientCommitId: crypto.randomUUID(),
+  operations: [
+    {
+      table: 'tasks',
+      row_id: crypto.randomUUID(),
+      op: 'upsert',
+      payload: {
+        title: 'New Task',
+        completed: 0,
+        user_id: 'user-123'
+      },
+    },
+  ],
+});
+
+// Update a task
+await enqueueOutboxCommit(db, {
+  clientCommitId: crypto.randomUUID(),
+  operations: [
+    {
+      table: 'tasks',
+      row_id: 'existing-task-id',
+      op: 'upsert',
+      payload: { completed: 1 },
+      base_version: 5, // For conflict detection
+    },
+  ],
+});
+
+// Delete a task
+await enqueueOutboxCommit(db, {
+  clientCommitId: crypto.randomUUID(),
+  operations: [
+    {
+      table: 'tasks',
+      row_id: 'task-to-delete',
+      op: 'delete',
+      payload: null,
+    },
+  ],
+});
+```
+
+## Batch Operations
+
+Multiple operations in one commit are atomic:
+
+```typescript
+await enqueueOutboxCommit(db, {
+  clientCommitId: crypto.randomUUID(),
+  operations: [
+    {
+      table: 'tasks',
+      row_id: 'task-1',
+      op: 'upsert',
+      payload: { title: 'Task 1' },
+    },
+    {
+      table: 'tasks',
+      row_id: 'task-2',
+      op: 'upsert',
+      payload: { title: 'Task 2' },
+    },
+    {
+      table: 'tasks',
+      row_id: 'task-3',
+      op: 'delete',
+      payload: null,
+    },
+  ],
+});
+```
+
+## Version Tracking
+
+Include `base_version` for conflict detection:
+
+```typescript
+// Read current row
+const task = await db
+  .selectFrom('tasks')
+  .selectAll()
+  .where('id', '=', taskId)
+  .executeTakeFirst();
+
+// Update with version check
+await enqueueOutboxCommit(db, {
+  clientCommitId: crypto.randomUUID(),
+  operations: [
+    {
+      table: 'tasks',
+      row_id: task.id,
+      op: 'upsert',
+      payload: { title: 'Updated Title' },
+      base_version: task.server_version,
+    },
+  ],
+});
+```
+
+## Operation Results
+
+After push, check results:
+
+```typescript
+import { syncPushOnce } from '@syncular/client';
+
+const { pushed, response } = await syncPushOnce(db, transport, {
+  clientId,
+  actorId,
+});
+
+if (pushed && response) {
+  for (const result of response.results) {
+    if (result.status === 'applied') {
+      console.log(`Operation ${result.opIndex} applied`);
+    } else if (result.status === 'conflict') {
+      console.log(`Operation ${result.opIndex} conflicted:`, result.message);
+    } else if (result.status === 'error') {
+      console.log(`Operation ${result.opIndex} errored:`, result.error);
+    }
+  }
+}
+```
+
+## Next Steps
+
+- [Plugins](/docs/client-sdk/javascript/plugins) - Auto-versioning plugin
+- [Conflict Resolution](/docs/introduction/conflict-resolution) - Handling conflicts

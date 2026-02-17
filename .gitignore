@@ -1,0 +1,33 @@
+.ignore/
+node_modules/
+.DS_Store
+.astro/
+dist/
+.vercel/
+.netlify/
+.cache/
+.turbo/
+.playwright-mcp/
+.env
+
+**/.wrangler/
+
+**/*.log
+
+CLAUDE.md
+WARP.md
+
+openapi.json
+coverage/
+.tmp/
+**/*.af~lock~
+
+# Playwright artifacts
+playwright-report/
+test-results/
+
+# Local artifacts (should never be committed)
+demo/a/
+demo-*.png
+
+**/*.tgz

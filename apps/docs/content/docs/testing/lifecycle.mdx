@@ -1,0 +1,77 @@
+---
+title: Resource Lifecycle (`using`)
+description: Use optional `using` resources and callback helpers to eliminate cleanup boilerplate.
+---
+
+# Resource Lifecycle (`using`)
+
+`@syncular/testkit` supports two cleanup styles:
+
+- callback helpers (`with*`) that work in every environment
+- resource helpers (`create*Resource`) for `await using` style cleanup
+
+Both APIs are runner-agnostic and use the same underlying fixtures.
+
+## Callback style (universal)
+
+```ts
+import { withSyncFixture } from '@syncular/testkit';
+
+await withSyncFixture(
+  {
+    serverDialect: 'sqlite',
+    defaultClientDialect: 'bun-sqlite',
+  },
+  async (fixture) => {
+    const client = await fixture.createClient({
+      mode: 'raw',
+      actorId: 'u1',
+      clientId: 'client-a',
+    });
+
+    await client.pull({
+      subscriptions: [
+        { id: 'tasks', table: 'tasks', scopes: { user_id: 'u1' } },
+      ],
+    });
+  }
+);
+```
+
+## `using` style (optional)
+
+```ts
+import { createSyncFixtureResource } from '@syncular/testkit';
+
+await using fixtureRes = await createSyncFixtureResource({
+  serverDialect: 'sqlite',
+  defaultClientDialect: 'bun-sqlite',
+});
+
+const fixture = fixtureRes.value;
+const client = await fixture.createClient({
+  mode: 'raw',
+  actorId: 'u1',
+  clientId: 'client-a',
+});
+```
+
+## Recommended resource cases
+
+Use resource APIs for objects that must always be closed:
+
+- `createSyncFixtureResource`, `createTestServerResource`, `createTestClientResource`
+- `createHttpServerFixtureResource`, `createHttpClientFixtureResource`
+- `createEngineSessionResource`
+- `openRealtimeWsResource`
+- `createChildProcessResource`
+
+## Keep non-resource helpers simple
+
+Do not use `using` for pure helpers:
+
+- protocol builders/parsers
+- deterministic id/clock factories
+- assertions and wait helpers
+
+Those should remain plain functions.

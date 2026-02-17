@@ -1,0 +1,109 @@
+---
+title: Bootstrap Deep Dive
+description: Snapshot chunks, streaming, caching, and how first sync scales
+---
+
+# Bootstrap Deep Dive (First Sync)
+
+> **Deep dive.** For the canonical “How sync works” overview, start with [Architecture](/docs/introduction/architecture).
+
+This page focuses on making first sync fast and operationally predictable: snapshots, snapshot chunks, streaming, caching, and the knobs you can tune.
+
+## When bootstrap happens
+
+A subscription bootstraps when it has never synced before. Concretely, the client sends a subscription with `cursor: -1`:
+
+```ts
+{
+  id: 'my-tasks',
+  table: 'tasks',
+  cursor: -1, // bootstrap
+  scopes: { user_id: '123' },
+}
+```
+
+The server responds with:
+- A point-in-time **snapshot** of the data matching the subscription
+- An `asOfCommitSeq` (cursor) that says “this snapshot includes everything up to commit N”
+
+After bootstrap, the client switches to incremental pulls (cursor >= 0) and only receives commits.
+
+## Effective scopes (why snapshots are per-scope)
+
+Syncular treats **scopes** as the primitive for both auth and partial sync:
+
+1. The server computes **allowed scopes** via `resolveScopes(ctx)` (what the actor can access).
+2. The server intersects that with the client’s **requested scopes** to get **effective scopes**.
+
+Snapshots are generated for the effective scopes. This is what enables:
+- Partial sync (“only my projects”)
+- Safe auth (“requested ∩ allowed”)
+- Snapshot caching keyed by scope set (see below)
+
+## Snapshot generation (server)
+
+For each subscribed table, the server table handler is responsible for snapshotting. If you use `createServerHandler`, the defaults handle common cases:
+- Deterministic ordering
+- Pagination (`limitSnapshotRows`) with cursors
+- Dependency ordering (`dependsOn`) so bootstrap can apply in a safe sequence
+
+If you need custom snapshot logic (joins, derived rows, multi-table snapshots), you can override `snapshot()` on a handler.
+
+## Snapshot chunks (fast initial sync)
+
+For large datasets, inline JSON snapshots become slow and memory-heavy. Syncular supports **snapshot chunks**:
+- The server frames rows into a compact binary format, compresses (e.g. gzip), and stores it using the same **blob storage adapter** system.
+- The sync response returns chunk descriptors (id/hash/encoding/compression) instead of embedding all rows inline.
+- The client downloads chunks and applies them as a stream.
+
+This enables very fast first syncs:
+- Less JSON overhead
+- Better compression ratio
+- Streaming apply (don’t hold the entire dataset in memory)
+- Cacheable per effective scopes (so multiple devices can reuse)
+
+## Caching + TTL (what makes bootstrap scalable)
+
+Bootstraps are expensive; caching makes them scalable.
+
+At a high level:
+- Chunked snapshots can be cached per `(table, effective scopes, params, schemaVersion)` with a TTL.
+- Servers can reuse a cached snapshot for multiple clients that request the same effective scopes.
+
+The key concept is: snapshots are generated for an *effective scope set*, not “for a user” in an opaque way. That makes caching explicit and auditable.
+
+## Client apply semantics (defaults + customization)
+
+On the client, handlers apply bootstrap snapshots and incremental changes.
+
+Defaults are designed to work well out of the box:
+- Snapshot apply: upsert all rows
+- Change apply: upsert/delete by primary key
+- Scope revocation: clear data for scopes that are no longer subscribed/allowed
+
+You only need custom client handlers when you want different semantics (soft delete, stale marking, custom clear logic, derived tables, etc.).
+
+## Tuning knobs (common levers)
+
+These settings affect bootstrap time and perceived responsiveness:
+- `limitSnapshotRows`: rows per snapshot page (bigger pages reduce round trips; smaller pages reduce peak work).
+- `maxSnapshotPages`: how much bootstrap work happens per sync cycle (controls time-to-interactive).
+- `snapshotChunkTtlMs` (server): snapshot cache lifetime.
+
+The right values depend on:
+- Dataset size and shape
+- Client runtime and device constraints
+- Whether you prioritize “first paint” vs “finish full sync ASAP”
+
+## Next steps
+
+- [Architecture](/docs/introduction/architecture) — canonical deep dive into the sync lifecycle
+- [Blob Storage](/docs/build/blob-storage) — snapshot chunks use the same storage adapter system
+- [Performance](/docs/build/performance) — bootstrap tuning and large dataset strategy
+- [Table Handlers](/docs/build/table-handlers) — controlling snapshot/apply and auth boundaries
+
+## Next Steps
+
+- [Architecture](/docs/introduction/architecture) - Deep dive into the commit log
+- [Scopes](/docs/introduction/scopes) - Understand authorization
+- [Conflict Resolution](/docs/introduction/conflict-resolution) - Handle conflicts
