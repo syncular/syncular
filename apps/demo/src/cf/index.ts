@@ -34,7 +34,7 @@ import {
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
-import { sql, type Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import type { ClientDb } from '../client/types.generated';
 import {
   DEFAULT_DEMO_SENTRY_ENVIRONMENT,
@@ -128,7 +128,9 @@ async function writeRuntimeBootstrapVersion(
   `.execute(db);
 }
 
-async function hasRuntimeRequiredTables(db: Kysely<ServerDb>): Promise<boolean> {
+async function hasRuntimeRequiredTables(
+  db: Kysely<ServerDb>
+): Promise<boolean> {
   const res = await sql<{ name: string }>`
     SELECT name
     FROM sqlite_master

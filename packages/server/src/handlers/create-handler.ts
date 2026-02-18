@@ -498,12 +498,13 @@ export function createServerHandler<
 
     // Check whether the row exists and fetch only version metadata for hot path.
     const existingRow = await (
-      (trx.selectFrom(table) as SelectQueryBuilder<
+      trx.selectFrom(table) as SelectQueryBuilder<
         ServerDB,
         keyof ServerDB & string,
         Record<string, unknown>
-      >).select(ref<string>(versionColumn))
+      >
     )
+      .select(ref<string>(versionColumn))
       .where(ref<string>(primaryKey), '=', op.row_id)
       .executeTakeFirst();
 

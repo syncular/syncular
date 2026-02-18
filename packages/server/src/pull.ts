@@ -20,10 +20,7 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import type {
-  DbExecutor,
-  ServerSyncDialect,
-} from './dialect/types';
+import type { DbExecutor, ServerSyncDialect } from './dialect/types';
 import type { TableRegistry } from './handlers/registry';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
