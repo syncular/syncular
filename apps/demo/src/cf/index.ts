@@ -34,6 +34,7 @@ import {
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Hono } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
+import { sql, type Kysely } from 'kysely';
 import type { ClientDb } from '../client/types.generated';
 import {
   DEFAULT_DEMO_SENTRY_ENVIRONMENT,
@@ -51,6 +52,18 @@ import { createDemoRoutes } from '../server/routes';
 
 interface ServerDb extends SyncCoreDb, SyncBlobDb, ClientDb {}
 
+const RUNTIME_BOOTSTRAP_STATE_TABLE = 'sync_runtime_bootstrap_state';
+const RUNTIME_BOOTSTRAP_STATE_KEY = 'demo-cf-runtime';
+const RUNTIME_BOOTSTRAP_SCHEMA_VERSION = 1;
+const RUNTIME_REQUIRED_TABLES = [
+  'sync_commits',
+  'sync_table_commits',
+  'sync_changes',
+  'sync_client_cursors',
+  'sync_snapshot_chunks',
+  'sync_blob_uploads',
+] as const;
+
 interface Env {
   DB: D1Database;
   BLOBS: R2Bucket;
@@ -60,6 +73,99 @@ interface Env {
   SENTRY_DSN?: string;
   SENTRY_ENVIRONMENT?: string;
   SENTRY_RELEASE?: string;
+}
+
+interface RuntimeBootstrapStateRow {
+  cache_key: string;
+  version: unknown;
+}
+
+async function ensureRuntimeBootstrapStateTable(
+  db: Kysely<ServerDb>
+): Promise<void> {
+  await db.schema
+    .createTable(RUNTIME_BOOTSTRAP_STATE_TABLE)
+    .ifNotExists()
+    .addColumn('cache_key', 'text', (col) => col.primaryKey())
+    .addColumn('version', 'integer', (col) => col.notNull())
+    .addColumn('updated_at', 'text', (col) => col.notNull())
+    .execute();
+}
+
+async function readRuntimeBootstrapVersion(
+  db: Kysely<ServerDb>
+): Promise<number | null> {
+  const res = await sql<RuntimeBootstrapStateRow>`
+    SELECT cache_key, version
+    FROM ${sql.table(RUNTIME_BOOTSTRAP_STATE_TABLE)}
+    WHERE cache_key = ${RUNTIME_BOOTSTRAP_STATE_KEY}
+    LIMIT 1
+  `.execute(db);
+
+  const row = res.rows[0];
+  if (!row) return null;
+
+  const version =
+    typeof row.version === 'number'
+      ? row.version
+      : typeof row.version === 'bigint'
+        ? Number(row.version)
+        : Number(row.version);
+  return Number.isFinite(version) ? version : null;
+}
+
+async function writeRuntimeBootstrapVersion(
+  db: Kysely<ServerDb>,
+  version: number
+): Promise<void> {
+  const now = new Date().toISOString();
+  await sql`
+    INSERT INTO ${sql.table(RUNTIME_BOOTSTRAP_STATE_TABLE)} (cache_key, version, updated_at)
+    VALUES (${RUNTIME_BOOTSTRAP_STATE_KEY}, ${version}, ${now})
+    ON CONFLICT(cache_key) DO UPDATE SET
+      version = excluded.version,
+      updated_at = excluded.updated_at
+  `.execute(db);
+}
+
+async function hasRuntimeRequiredTables(db: Kysely<ServerDb>): Promise<boolean> {
+  const res = await sql<{ name: string }>`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+  `.execute(db);
+
+  const existing = new Set(
+    res.rows
+      .map((row) => row.name)
+      .filter((name): name is string => typeof name === 'string')
+  );
+
+  for (const tableName of RUNTIME_REQUIRED_TABLES) {
+    if (!existing.has(tableName)) return false;
+  }
+
+  return true;
+}
+
+async function ensureRuntimeSchemaIfNeeded(
+  db: Kysely<ServerDb>,
+  dialect: ReturnType<typeof createSqliteServerDialect>
+): Promise<void> {
+  await ensureRuntimeBootstrapStateTable(db);
+
+  const version = await readRuntimeBootstrapVersion(db);
+  const canSkipBootstrap =
+    version === RUNTIME_BOOTSTRAP_SCHEMA_VERSION &&
+    (await hasRuntimeRequiredTables(db));
+
+  if (canSkipBootstrap) {
+    return;
+  }
+
+  await ensureSyncSchema(db, dialect);
+  await ensureBlobStorageSchemaSqlite(db);
+  await writeRuntimeBootstrapVersion(db, RUNTIME_BOOTSTRAP_SCHEMA_VERSION);
 }
 
 function resolveDemoCloudflareSentryOptions(env: Env) {
@@ -79,6 +185,29 @@ function resolveDemoCloudflareSentryOptions(env: Env) {
 }
 
 class SyncDOBase extends SyncDurableObject<Env> {
+  private static runtimeBootstrapPromise: Promise<void> | null = null;
+
+  private async ensureRuntimeBootstrap(
+    db: Kysely<ServerDb>,
+    dialect: ReturnType<typeof createSqliteServerDialect>
+  ): Promise<void> {
+    if (!SyncDOBase.runtimeBootstrapPromise) {
+      SyncDOBase.runtimeBootstrapPromise = (async () => {
+        await ensureRuntimeSchemaIfNeeded(db, dialect);
+        await runMigrations({
+          db,
+          migrations: serverMigrations,
+          trackingTable: 'sync_server_migration_state',
+        });
+      })().catch((error) => {
+        SyncDOBase.runtimeBootstrapPromise = null;
+        throw error;
+      });
+    }
+
+    await SyncDOBase.runtimeBootstrapPromise;
+  }
+
   override async setup(
     app: Hono<{ Bindings: Env }>,
     env: Env,
@@ -87,14 +216,8 @@ class SyncDOBase extends SyncDurableObject<Env> {
     const db = createD1Db<ServerDb>(env.DB);
     const dialect = createSqliteServerDialect({ supportsTransactions: false });
 
-    // Idempotent schema + migrations
-    await ensureSyncSchema(db, dialect);
-    await runMigrations({
-      db,
-      migrations: serverMigrations,
-      trackingTable: 'sync_server_migration_state',
-    });
-    await ensureBlobStorageSchemaSqlite(db);
+    // Ensure runtime schema/migrations once per isolate and only when needed.
+    await this.ensureRuntimeBootstrap(db, dialect);
 
     // Blob storage via R2
     const tokenSigner = createHmacTokenSigner(env.BLOB_SECRET);
