@@ -67,6 +67,22 @@ function parseJsonValue(value: unknown): unknown {
   }
 }
 
+function coerceNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'bigint') {
+    const coerced = Number(value);
+    return Number.isFinite(coerced) ? coerced : null;
+  }
+  if (typeof value === 'string') {
+    const coerced = Number(value);
+    return Number.isFinite(coerced) ? coerced : null;
+  }
+  return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -264,13 +280,15 @@ export async function pushCommit<DB extends SyncCoreDb>(args: {
             // Clean up any stale commit row with null result_json.
             // This can happen when a previous push inserted the commit row but crashed
             // before writing the result (e.g., on D1 without transaction support).
-            await syncTrx
-              .deleteFrom('sync_commits')
-              .where('partition_id', '=', partitionId)
-              .where('client_id', '=', request.clientId)
-              .where('client_commit_id', '=', request.clientCommitId)
-              .where('result_json', 'is', null)
-              .execute();
+            if (!dialect.supportsSavepoints) {
+              await syncTrx
+                .deleteFrom('sync_commits')
+                .where('partition_id', '=', partitionId)
+                .where('client_id', '=', request.clientId)
+                .where('client_commit_id', '=', request.clientCommitId)
+                .where('result_json', 'is', null)
+                .execute();
+            }
 
             // Insert commit row (idempotency key)
             const commitRow: Insertable<SyncCoreDb['sync_commits']> = {
@@ -371,20 +389,22 @@ export async function pushCommit<DB extends SyncCoreDb>(args: {
               };
             }
 
-            const insertedCommit = await (
-              syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
-                SyncCoreDb,
-                'sync_commits',
-                EmptySelection
-              >
-            )
-              .selectAll()
-              .where('partition_id', '=', partitionId)
-              .where('client_id', '=', request.clientId)
-              .where('client_commit_id', '=', request.clientCommitId)
-              .executeTakeFirstOrThrow();
-
-            const commitSeq = Number(insertedCommit.commit_seq);
+            let commitSeq = coerceNumber(insertResult.insertId) ?? 0;
+            if (commitSeq <= 0) {
+              const insertedCommit = await (
+                syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
+                  SyncCoreDb,
+                  'sync_commits',
+                  EmptySelection
+                >
+              )
+                .selectAll()
+                .where('partition_id', '=', partitionId)
+                .where('client_id', '=', request.clientId)
+                .where('client_commit_id', '=', request.clientCommitId)
+                .executeTakeFirstOrThrow();
+              commitSeq = Number(insertedCommit.commit_seq);
+            }
             const commitId = `${request.clientId}:${request.clientCommitId}`;
 
             const savepointName = 'sync_apply';

@@ -28,6 +28,22 @@ function toDialectJsonValue(
   return value;
 }
 
+function coerceNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'bigint') {
+    const coerced = Number(value);
+    return Number.isFinite(coerced) ? coerced : null;
+  }
+  if (typeof value === 'string') {
+    const coerced = Number(value);
+    return Number.isFinite(coerced) ? coerced : null;
+  }
+  return null;
+}
+
 export interface NotifyExternalDataChangeArgs<DB extends SyncCoreDb> {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
@@ -90,18 +106,23 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
       affected_tables: dialect.arrayToDb(tables) as string[],
     };
 
-    await syncTrx.insertInto('sync_commits').values(commitRow).execute();
-
-    // Read back the assigned commit_seq
-    const inserted = await syncTrx
-      .selectFrom('sync_commits')
-      .select(['commit_seq'])
-      .where('partition_id', '=', partitionId)
-      .where('client_id', '=', EXTERNAL_CLIENT_ID)
-      .where('client_commit_id', '=', clientCommitId)
+    const insertResult = await syncTrx
+      .insertInto('sync_commits')
+      .values(commitRow)
       .executeTakeFirstOrThrow();
 
-    const commitSeq = Number(inserted.commit_seq);
+    let commitSeq = coerceNumber(insertResult.insertId) ?? 0;
+    if (commitSeq <= 0) {
+      // Fallback for dialects/drivers that don't provide insertId.
+      const inserted = await syncTrx
+        .selectFrom('sync_commits')
+        .select(['commit_seq'])
+        .where('partition_id', '=', partitionId)
+        .where('client_id', '=', EXTERNAL_CLIENT_ID)
+        .where('client_commit_id', '=', clientCommitId)
+        .executeTakeFirstOrThrow();
+      commitSeq = Number(inserted.commit_seq);
+    }
 
     // 2. Insert sync_table_commits entries for each affected table
     const tableCommits: Array<Insertable<SyncCoreDb['sync_table_commits']>> =
