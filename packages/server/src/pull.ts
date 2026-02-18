@@ -20,7 +20,11 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import type { DbExecutor, ServerSyncDialect } from './dialect/types';
+import type {
+  DbExecutor,
+  IncrementalPullRow,
+  ServerSyncDialect,
+} from './dialect/types';
 import type { TableRegistry } from './handlers/registry';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
@@ -704,18 +708,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 : cursor;
 
             // Collect rows and compute nextCursor in a single pass
-            const incrementalRows: Array<{
-              commit_seq: number;
-              actor_id: string;
-              created_at: string;
-              change_id: number;
-              table: string;
-              row_id: string;
-              op: 'upsert' | 'delete';
-              row_json: unknown | null;
-              row_version: number | null;
-              scopes: Record<string, string | string[]>;
-            }> = [];
+            const incrementalRows: IncrementalPullRow[] = [];
 
             let nextCursor = cursor;
 
@@ -765,7 +758,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   op: r.op,
                   row_json: r.row_json,
                   row_version: r.row_version,
-                  scopes: dialect.dbToScopes(r.scopes),
+                  scopes: r.scopes,
                 };
 
                 latestByRowKey.set(rowKey, {
@@ -835,7 +828,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 op: r.op,
                 row_json: r.row_json,
                 row_version: r.row_version,
-                scopes: dialect.dbToScopes(r.scopes),
+                scopes: r.scopes,
               };
               commit.changes.push(change);
             }
