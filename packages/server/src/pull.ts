@@ -706,6 +706,19 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 ? scannedCommitSeqs[scannedCommitSeqs.length - 1]!
                 : cursor;
 
+            if (scannedCommitSeqs.length === 0) {
+              subResponses.push({
+                id: sub.id,
+                status: 'active',
+                scopes: effectiveScopes,
+                bootstrap: false,
+                nextCursor: cursor,
+                commits: [],
+              });
+              nextCursors.push(cursor);
+              continue;
+            }
+
             let nextCursor = cursor;
 
             if (dedupeRows) {
