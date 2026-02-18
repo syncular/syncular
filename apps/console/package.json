@@ -13,12 +13,8 @@
     "tsgo": "tsgo --noEmit"
   },
   "dependencies": {
+    "@syncular/console": "workspace:*",
     "@syncular/observability-sentry": "workspace:*",
-    "@syncular/transport-http": "workspace:*",
-    "@syncular/ui": "workspace:*",
-    "@tanstack/react-query": "^5.90.21",
-    "@tanstack/react-router": "^1.159.5",
-    "lucide-react": "^0.563.0",
     "react": "^19",
     "react-dom": "^19"
   },

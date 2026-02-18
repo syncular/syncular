@@ -13,6 +13,7 @@
     "@syncular/client": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",
     "@syncular/client-react": "workspace:*",
+    "@syncular/console": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-d1": "workspace:*",
     "@syncular/dialect-pglite": "workspace:*",
@@ -32,7 +33,6 @@
     "react-dom": "^19"
   },
   "devDependencies": {
-    "@syncular/console-app": "workspace:*",
     "hono": "*",
     "kysely": "*",
     "@cloudflare/workers-types": "*",

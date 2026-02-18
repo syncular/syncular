@@ -1,0 +1,98 @@
+---
+title: Console Integration
+description: Integrate Syncular Console via CLI distributables, mount API, or component composition.
+---
+
+# Console Integration
+
+Use one of three integration paths depending on how much control you need.
+
+| Path | Best for | What you manage |
+|---|---|---|
+| CLI + distributables | Local ops tooling, quick usage | `syncular console` flags |
+| Mount API | Embed full Console app in your frontend | container + config props |
+| Component composition | Build a custom dashboard shell | routing/layout/page composition |
+
+## 1) Distributables (CLI-backed)
+
+`syncular console` serves prebuilt assets from `@syncular/console/static/*`.
+
+```bash
+export SYNC_CONSOLE_TOKEN="your-operator-token"
+syncular console \
+  --server-url http://localhost:9811/api \
+  --token-env SYNC_CONSOLE_TOKEN \
+  --open
+```
+
+This is the fastest path when your app server is already running and you want a dedicated Console UI immediately.
+
+See full command details in [CLI Console Command](/docs/cli/console).
+
+## 2) Mount API (embed full app)
+
+Use `mountSyncularConsoleApp` to mount the full Console app into your own page.
+
+```tsx
+import { mountSyncularConsoleApp } from '@syncular/console';
+
+mountSyncularConsoleApp('#console-root', {
+  basePath: '/console',
+  defaultConfig: {
+    serverUrl: 'https://api.example.com',
+    token: window.__SYNCULAR_CONSOLE_TOKEN__,
+  },
+});
+```
+
+`defaultConfig` is optional. If omitted, Console reads runtime meta tags (`syncular-console-server-url`, `syncular-console-token`, `syncular-console-basepath`).
+
+## 3) Component composition (custom shell)
+
+If you want your own route structure or layout, compose from exported components.
+
+### Full app component
+
+```tsx
+import { App as SyncularConsoleApp } from '@syncular/console';
+
+<SyncularConsoleApp
+  basePath="/console"
+  defaultConfig={{
+    serverUrl: 'https://api.example.com',
+    token: token,
+  }}
+/>
+```
+
+### Route-level composition
+
+```tsx
+import {
+  ConnectionProvider,
+  ConsoleLayout,
+  Command,
+  Stream,
+  Fleet,
+  Ops,
+  Config,
+} from '@syncular/console';
+
+<ConnectionProvider defaultConfig={{ serverUrl, token }}>
+  <ConsoleLayout basePath="/console" />
+</ConnectionProvider>
+```
+
+Then map pages (`Command`, `Stream`, `Fleet`, `Ops`, `Config`) into your router exactly where you want them.
+
+## Security guidance
+
+- Use short-lived operator tokens when possible.
+- Prefer environment-based token injection server-side or via `--token-env` in CLI.
+- Avoid putting permanent tokens in URLs.
+
+## Related guides
+
+- [Operations Console route setup](/docs/build/operations)
+- [Console operator workflows](/docs/console)
+- [CLI Console Command](/docs/cli/console)

@@ -2,5 +2,5 @@
   "root": true,
   "title": "CLI",
   "icon": "Terminal",
-  "pages": ["index", "create", "migrate"]
+  "pages": ["index", "create", "migrate", "console"]
 }

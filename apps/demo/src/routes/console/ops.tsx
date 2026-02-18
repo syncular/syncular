@@ -1,4 +1,4 @@
-import { Ops } from '@syncular/console-app';
+import { Ops } from '@syncular/console';
 import { createRoute } from '@tanstack/react-router';
 import { Route as consoleRoute } from '../console';
 

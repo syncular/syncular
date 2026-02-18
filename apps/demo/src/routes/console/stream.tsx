@@ -1,4 +1,4 @@
-import { Stream } from '@syncular/console-app';
+import { Stream } from '@syncular/console';
 import { createRoute } from '@tanstack/react-router';
 import { Route as consoleRoute } from '../console';
 

@@ -60,6 +60,7 @@ function normalizeRootCommand(value: string | null): RootCommand | null {
   if (value === 'doctor') return 'doctor';
   if (value === 'migrate') return 'migrate';
   if (value === 'create') return 'create';
+  if (value === 'console') return 'console';
   if (value === 'interactive') return 'interactive';
   return null;
 }

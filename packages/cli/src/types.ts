@@ -4,6 +4,7 @@ export type RootCommand =
   | 'doctor'
   | 'migrate'
   | 'create'
+  | 'console'
   | 'interactive';
 
 export type MigrateSubcommand = 'status' | 'up';

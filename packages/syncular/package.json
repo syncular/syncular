@@ -58,6 +58,13 @@
         "default": "./dist/client-react.js"
       }
     },
+    "./console": {
+      "bun": "./src/console.ts",
+      "import": {
+        "types": "./dist/console.d.ts",
+        "default": "./dist/console.js"
+      }
+    },
     "./client-plugin-encryption": {
       "bun": "./src/client-plugin-encryption.ts",
       "import": {
@@ -242,6 +249,7 @@
     "@syncular/client": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",
     "@syncular/client-react": "workspace:*",
+    "@syncular/console": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-better-sqlite3": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",

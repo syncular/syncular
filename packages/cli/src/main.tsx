@@ -6,6 +6,7 @@ import {
   parseArgs,
   shouldRunInteractive,
 } from './args';
+import { runConsole } from './commands/console';
 import { runCreateDemo, runCreateLibraries } from './commands/create';
 import { runMigrateStatus, runMigrateUp } from './commands/migrate';
 import { CLI_VERSION } from './constants';
@@ -41,6 +42,10 @@ async function runNonInteractive(args: ParsedArgs): Promise<number> {
     const result = formatDoctorResult(process.cwd());
     printResult(result);
     return result.ok ? 0 : 1;
+  }
+
+  if (args.command === 'console') {
+    return runConsole(args);
   }
 
   if (args.command === 'create') {

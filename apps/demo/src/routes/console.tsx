@@ -2,7 +2,7 @@ import {
   type ConnectionConfig,
   ConnectionProvider,
   ConsoleLayout,
-} from '@syncular/console-app';
+} from '@syncular/console';
 import { createRoute } from '@tanstack/react-router';
 import { useMemo } from 'react';
 import { Route as rootRoute } from './__root';

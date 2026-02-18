@@ -18,12 +18,8 @@
       "name": "@syncular/console-app",
       "version": "0.0.0",
       "dependencies": {
+        "@syncular/console": "workspace:*",
         "@syncular/observability-sentry": "workspace:*",
-        "@syncular/transport-http": "workspace:*",
-        "@syncular/ui": "workspace:*",
-        "@tanstack/react-query": "^5.90.21",
-        "@tanstack/react-router": "^1.159.5",
-        "lucide-react": "^0.563.0",
         "react": "^19",
         "react-dom": "^19",
       },
@@ -43,6 +39,7 @@
         "@syncular/client": "workspace:*",
         "@syncular/client-plugin-encryption": "workspace:*",
         "@syncular/client-react": "workspace:*",
+        "@syncular/console": "workspace:*",
         "@syncular/core": "workspace:*",
         "@syncular/dialect-d1": "workspace:*",
         "@syncular/dialect-pglite": "workspace:*",
@@ -63,7 +60,6 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "*",
-        "@syncular/console-app": "workspace:*",
         "@syncular/typegen": "workspace:*",
         "@types/bun": "latest",
         "@types/react": "^19",
@@ -122,6 +118,7 @@
         "syncular": "./dist/index.js",
       },
       "dependencies": {
+        "@syncular/console": "workspace:*",
         "eta": "^4.5.1",
         "ink": "^6.7.0",
         "react": "^19.2.4",
@@ -188,6 +185,35 @@
         "kysely": "^0.28.0",
         "react": "^18.0.0 || ^19.0.0",
       },
+    },
+    "packages/console": {
+      "name": "@syncular/console",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/observability-sentry": "workspace:*",
+        "@syncular/transport-http": "workspace:*",
+        "@syncular/ui": "workspace:*",
+        "@tanstack/react-query": "^5.90.21",
+        "@tanstack/react-router": "^1.159.5",
+        "lucide-react": "^0.563.0",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+        "bun-plugin-tailwind": "^0.1.2",
+        "react": "^19.2.4",
+        "react-dom": "^19.2.4",
+        "tailwindcss": "^4.1.18",
+      },
+      "peerDependencies": {
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+      "optionalPeers": [
+        "react",
+        "react-dom",
+      ],
     },
     "packages/core": {
       "name": "@syncular/core",
@@ -486,6 +512,7 @@
         "@syncular/client": "workspace:*",
         "@syncular/client-plugin-encryption": "workspace:*",
         "@syncular/client-react": "workspace:*",
+        "@syncular/console": "workspace:*",
         "@syncular/core": "workspace:*",
         "@syncular/dialect-better-sqlite3": "workspace:*",
         "@syncular/dialect-bun-sqlite": "workspace:*",
@@ -1739,6 +1766,8 @@
     "@syncular/client-react": ["@syncular/client-react@workspace:packages/client-react"],
 
     "@syncular/config": ["@syncular/config@workspace:config"],
+
+    "@syncular/console": ["@syncular/console@workspace:packages/console"],
 
     "@syncular/console-app": ["@syncular/console-app@workspace:apps/console"],
 
