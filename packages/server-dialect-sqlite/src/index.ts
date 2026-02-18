@@ -288,6 +288,10 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect {
 
     await sql`CREATE INDEX IF NOT EXISTS idx_sync_changes_table
       ON sync_changes(partition_id, "table")`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_changes_table_commit_seq_change_id
+      ON sync_changes(partition_id, "table", commit_seq, change_id)`.execute(
+      db
+    );
 
     // sync_client_cursors table
     await db.schema

@@ -956,7 +956,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             maxPullLimitSnapshotRows
           ),
           maxSnapshotPages: clampInt(
-            body.pull.maxSnapshotPages ?? 1,
+            body.pull.maxSnapshotPages ?? 4,
             1,
             maxPullMaxSnapshotPages
           ),

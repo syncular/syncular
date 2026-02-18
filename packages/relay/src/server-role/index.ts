@@ -225,7 +225,7 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
         typeof rawBody.maxSnapshotPages === 'number' &&
           Number.isInteger(rawBody.maxSnapshotPages)
           ? rawBody.maxSnapshotPages
-          : 1,
+          : 4,
         1,
         10
       ),

@@ -552,7 +552,7 @@ export async function buildPullRequest<DB extends SyncClientDb>(
     clientId: options.clientId,
     limitCommits: options.limitCommits ?? 50,
     limitSnapshotRows: options.limitSnapshotRows ?? 1000,
-    maxSnapshotPages: options.maxSnapshotPages,
+    maxSnapshotPages: options.maxSnapshotPages ?? 4,
     dedupeRows: options.dedupeRows,
     subscriptions: (options.subscriptions ?? []).map((sub) => ({
       ...sub,

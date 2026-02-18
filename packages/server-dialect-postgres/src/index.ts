@@ -170,6 +170,13 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect {
       .columns(['partition_id', 'table'])
       .execute();
 
+    await db.schema
+      .createIndex('idx_sync_changes_table_commit_seq_change_id')
+      .ifNotExists()
+      .on('sync_changes')
+      .columns(['partition_id', 'table', 'commit_seq', 'change_id'])
+      .execute();
+
     await this.ensureIndex(
       db,
       'idx_sync_changes_scopes',

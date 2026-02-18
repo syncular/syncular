@@ -342,7 +342,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
         );
         const maxSnapshotPages = sanitizeLimit(
           request.maxSnapshotPages,
-          1,
+          4,
           1,
           50
         );
