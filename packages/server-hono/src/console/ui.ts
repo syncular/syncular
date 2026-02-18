@@ -1,5 +1,8 @@
 import {
+  type ConsoleStaticResponder,
   type ConsoleUiPrefill,
+  type CreateConsoleStaticResponderOptions,
+  type ServeConsoleStaticRequestOptions,
   createConsoleStaticResponder,
 } from '@syncular/console/server';
 import type { Context, Hono } from 'hono';
@@ -41,6 +44,11 @@ export interface MountConsoleUiOptions {
   assetCacheControl?: string;
 }
 
+type StaticResponderConfig = Pick<
+  CreateConsoleStaticResponderOptions,
+  'mountPath' | 'staticDir' | 'indexCacheControl' | 'assetCacheControl'
+>;
+
 function normalizePath(pathname: string | undefined, fallback: string): string {
   const value = pathname?.trim() ?? '';
   if (!value) return fallback;
@@ -56,12 +64,14 @@ export function mountConsoleUi(
   const mountPath = normalizePath(options.mountPath, '/console');
   const apiBasePath = normalizePath(options.apiBasePath, '/api');
 
-  const serveConsoleStatic = createConsoleStaticResponder({
+  const staticResponderConfig: StaticResponderConfig = {
     mountPath,
     staticDir: options.staticDir,
     indexCacheControl: options.indexCacheControl,
     assetCacheControl: options.assetCacheControl,
-  });
+  };
+  const serveConsoleStatic: ConsoleStaticResponder =
+    createConsoleStaticResponder(staticResponderConfig);
 
   const handler = async (c: Context) => {
     const prefillFromResolver = await options.resolvePrefill?.(c);
@@ -78,7 +88,8 @@ export function mountConsoleUi(
       prefill.token = token;
     }
 
-    const response = await serveConsoleStatic(c.req.raw, { prefill });
+    const requestOptions: ServeConsoleStaticRequestOptions = { prefill };
+    const response = await serveConsoleStatic(c.req.raw, requestOptions);
     if (!response) return c.notFound();
     return response;
   };
