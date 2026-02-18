@@ -8,6 +8,12 @@ Hono adapter for `@syncular/server`. Provides push/pull routes, WebSocket wake-u
 npm install @syncular/server-hono hono
 ```
 
+If you want to serve the Console UI with `mountConsoleUi`, also install:
+
+```bash
+npm install @syncular/console
+```
+
 ## Documentation
 
 - Hono adapter: https://syncular.dev/docs/server/hono-adapter
@@ -20,4 +26,3 @@ npm install @syncular/server-hono hono
 - Issues: https://github.com/syncular/syncular/issues
 
 > Status: Alpha. APIs and storage layouts may change between releases.
-

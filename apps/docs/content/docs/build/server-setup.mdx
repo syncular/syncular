@@ -207,6 +207,21 @@ app.route('/api/sync', syncRoutes);
 if (consoleRoutes) app.route('/api/console', consoleRoutes);
 ```
 
+Serve the Console UI with one helper:
+
+```typescript
+import { mountConsoleUi } from '@syncular/server-hono';
+
+mountConsoleUi(app, {
+  mountPath: '/console',
+  apiBasePath: '/api',
+  resolveToken: async (c) => {
+    const session = await getSession(c);
+    return session?.consoleToken;
+  },
+});
+```
+
 See [Operations Guide](/docs/build/operations) for console API details.
 
 > **Migration note:** `createSyncServer` no longer enables console routes by default and no longer falls back to `demo-token`. To enable console routes, pass `console: { ... }` and configure either `console.token` or `SYNC_CONSOLE_TOKEN`.

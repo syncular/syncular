@@ -55,6 +55,7 @@
     "openapi-types": "^12.1.3"
   },
   "devDependencies": {
+    "@syncular/console": "workspace:*",
     "@syncular/config": "workspace:*",
     "@syncular/dialect-pglite": "workspace:*",
     "@syncular/server-dialect-postgres": "workspace:*",
@@ -62,9 +63,15 @@
     "zod": "*"
   },
   "peerDependencies": {
+    "@syncular/console": "^0.0.0",
     "hono": "^4.0.0",
     "kysely": "^0.28.0",
     "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@syncular/console": {
+      "optional": true
+    }
   },
   "files": [
     "dist",

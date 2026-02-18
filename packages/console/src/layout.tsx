@@ -16,6 +16,7 @@ import { useStats } from './hooks/useConsoleApi';
 import { useInstanceContext } from './hooks/useInstanceContext';
 import { usePartitionContext } from './hooks/usePartitionContext';
 import { usePreferences } from './hooks/usePreferences';
+import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
 
 interface ConsoleLayoutProps {
   basePath?: string;
@@ -104,7 +105,9 @@ export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
     : [];
 
   return (
-    <div className="h-screen bg-background text-foreground flex flex-col">
+    <div
+      className={`${SYNCULAR_CONSOLE_ROOT_CLASS} h-screen bg-background text-foreground flex flex-col`}
+    >
       <TopNavigation
         brand={
           <Link to={commandPath}>

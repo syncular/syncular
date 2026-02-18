@@ -44,6 +44,21 @@ app.route('/api/console', consoleRoutes);
 
 All paths below are **relative to where you mount** `createConsoleRoutes` (example above mounts at `/api/console`).
 
+To serve the Console UI itself, add:
+
+```typescript
+import { mountConsoleUi } from '@syncular/server-hono';
+
+mountConsoleUi(app, {
+  mountPath: '/console',
+  apiBasePath: '/api',
+  resolveToken: async (c) => {
+    const session = await getSession(c);
+    return session?.consoleToken;
+  },
+});
+```
+
 ## Gateway Mode (Multi-Instance)
 
 Use `createConsoleGatewayRoutes` when operators need one Console view across multiple Syncular instances.

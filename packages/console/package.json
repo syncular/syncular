@@ -48,9 +48,18 @@
         "default": "./dist/browser-main.js"
       }
     },
+    "./server": {
+      "bun": "./src/server.ts",
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      }
+    },
     "./static": "./web-dist/index.html",
     "./static/*": "./web-dist/*",
-    "./styles.css": "./src/styles/globals.css"
+    "./styles.css": "./dist/styles.css",
+    "./styles.source.css": "./src/styles/globals.css",
+    "./static/console.css": "./web-dist/console.css"
   },
   "scripts": {
     "tsgo": "tsgo --noEmit",
@@ -72,12 +81,14 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
+    "@tailwindcss/vite": "^4.1.18",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "bun-plugin-tailwind": "^0.1.2",
+    "@vitejs/plugin-react": "^5.1.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "tailwindcss": "^4.1.18"
+    "tailwindcss": "^4.1.18",
+    "vite": "^7.3.1"
   },
   "files": [
     "dist",

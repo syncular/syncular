@@ -1081,7 +1081,15 @@ export function createConsoleGatewayRoutes(
     cors({
       origin: corsOrigins === '*' ? '*' : corsOrigins,
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Content-Type', 'Authorization'],
+      allowHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Syncular-Transport-Path',
+        'Baggage',
+        'Sentry-Trace',
+        'Traceparent',
+        'Tracestate',
+      ],
       credentials: true,
     })
   );

@@ -1,29 +1,31 @@
-@import 'tailwindcss';
+@import 'tailwindcss/theme.css';
+@import 'tailwindcss/utilities.css';
 @import './tokens.css';
 
 /* ── Base ── */
-body {
-  background: var(--color-background);
-  color: var(--color-foreground);
-  font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+:where(.syncular-console-root, .syncular-ui-root) {
+  background: var(--syncular-color-background);
+  color: var(--syncular-color-foreground);
+  font-family: var(--syncular-font-display), ui-sans-serif, system-ui,
+    sans-serif;
   margin: 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-.font-mono {
-  font-family: var(--font-mono), ui-monospace, monospace;
+:where(.syncular-console-root, .syncular-ui-root) .font-mono {
+  font-family: var(--syncular-font-mono), ui-monospace, monospace;
 }
 
 /* ── Scrollbar ── */
-::-webkit-scrollbar {
+:where(.syncular-console-root, .syncular-ui-root) ::-webkit-scrollbar {
   width: 3px;
   height: 3px;
 }
-::-webkit-scrollbar-track {
+:where(.syncular-console-root, .syncular-ui-root) ::-webkit-scrollbar-track {
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
+:where(.syncular-console-root, .syncular-ui-root) ::-webkit-scrollbar-thumb {
   background: #333;
   border-radius: 2px;
 }
@@ -112,16 +114,16 @@ body {
   }
 }
 
-.line-active {
+:where(.syncular-console-root, .syncular-ui-root) .line-active {
   stroke-dasharray: 4 2;
   animation: dashFlow 1s linear infinite;
 }
 
-.stream-entry {
+:where(.syncular-console-root, .syncular-ui-root) .stream-entry {
   animation: streamSlide 0.35s ease-out;
 }
 
-.dot-pulse {
+:where(.syncular-console-root, .syncular-ui-root) .dot-pulse {
   animation: dotPulse 1.4s ease-in-out infinite;
 }
 
@@ -137,7 +139,7 @@ body {
   }
 }
 
-.flow-arrow {
+:where(.syncular-console-root, .syncular-ui-root) .flow-arrow {
   animation: flowPulse 2s ease-in-out infinite;
 }
 
@@ -152,7 +154,7 @@ body {
   }
 }
 
-.dot-grid {
+:where(.syncular-console-root, .syncular-ui-root) .dot-grid {
   background-image: radial-gradient(
     circle at 1px 1px,
     #1a1a1a 1px,
@@ -161,7 +163,7 @@ body {
   background-size: 24px 24px;
 }
 
-.scan-line {
+:where(.syncular-console-root, .syncular-ui-root) .scan-line {
   position: absolute;
   left: 0;
   right: 0;

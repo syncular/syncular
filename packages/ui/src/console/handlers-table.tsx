@@ -46,7 +46,7 @@ const HandlersTable = forwardRef<HTMLDivElement, HandlersTableProps>(
         {/* Rows */}
         {handlers.map((h, i) => (
           <div
-            key={h.table}
+            key={`${h.table}:${i}`}
             className={cn(
               'font-mono text-[11px] leading-7 px-4 flex items-center gap-4 hover:bg-white/[0.015] transition-colors cursor-default',
               i < handlers.length - 1 && 'border-b border-[#141414]'

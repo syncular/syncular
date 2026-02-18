@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { App, type SyncularConsoleProps } from './App';
+import { applyConsoleThemeScope } from './theme-scope';
 
 interface MountSyncularConsoleOptions {
   strictMode?: boolean;
@@ -27,7 +28,10 @@ export function mountSyncularConsoleApp(
   containerOrSelector: Element | string,
   options: MountSyncularConsoleOptions = {}
 ): Root {
-  const root = createRoot(resolveContainer(containerOrSelector));
+  const container = resolveContainer(containerOrSelector);
+  applyConsoleThemeScope(container);
+
+  const root = createRoot(container);
   const app = (
     <App basePath={options.basePath} defaultConfig={options.defaultConfig} />
   );

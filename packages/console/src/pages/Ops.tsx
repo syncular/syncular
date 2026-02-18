@@ -684,8 +684,10 @@ function OperationsAuditView({ partitionId }: { partitionId?: string }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(data?.items ?? []).map((event) => (
-                <TableRow key={event.operationId}>
+              {(data?.items ?? []).map((event, index) => (
+                <TableRow
+                  key={`${event.operationId}:${event.createdAt}:${index}`}
+                >
                   <TableCell className="whitespace-nowrap text-xs text-neutral-400">
                     {formatDateTime(event.createdAt)}
                   </TableCell>

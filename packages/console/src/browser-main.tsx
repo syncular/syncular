@@ -1,4 +1,4 @@
-import { initAndConfigureBrowserSentry } from '@syncular/observability-sentry';
+import { initAndConfigureBrowserSentry } from '@syncular/observability-sentry/browser';
 import { mountSyncularConsoleApp } from './mount';
 import { resolveConsoleBrowserSentryOptions } from './sentry';
 

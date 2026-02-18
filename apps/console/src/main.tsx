@@ -2,8 +2,8 @@ import {
   mountSyncularConsoleApp,
   resolveConsoleBrowserSentryOptions,
 } from '@syncular/console';
-import { initAndConfigureBrowserSentry } from '@syncular/observability-sentry';
-import '@syncular/console/styles.css';
+import { initAndConfigureBrowserSentry } from '@syncular/observability-sentry/browser';
+import '@syncular/console/styles.source.css';
 
 const sentryOptions = resolveConsoleBrowserSentryOptions();
 if (sentryOptions) {

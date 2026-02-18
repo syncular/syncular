@@ -586,7 +586,15 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
     cors({
       origin: corsOrigins === '*' ? '*' : corsOrigins,
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Content-Type', 'Authorization'],
+      allowHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Syncular-Transport-Path',
+        'Baggage',
+        'Sentry-Trace',
+        'Traceparent',
+        'Tracestate',
+      ],
       exposeHeaders: ['X-Total-Count'],
       credentials: true,
     })

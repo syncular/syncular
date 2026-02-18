@@ -65,6 +65,13 @@
         "default": "./dist/console.js"
       }
     },
+    "./console-server": {
+      "bun": "./src/console-server.ts",
+      "import": {
+        "types": "./dist/console-server.d.ts",
+        "default": "./dist/console-server.js"
+      }
+    },
     "./ui": {
       "bun": "./src/ui.ts",
       "import": {

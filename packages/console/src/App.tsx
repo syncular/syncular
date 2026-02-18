@@ -9,6 +9,7 @@ import {
   resolveConsoleBasePathFromMeta,
   resolveConsoleConnectionConfigFromMeta,
 } from './runtime-config';
+import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
 
 const routerForTypes = createRouter({ routeTree, basepath: '/' });
 
@@ -61,5 +62,9 @@ function SyncularConsole(props: SyncularConsoleProps) {
 }
 
 export function App(props: SyncularConsoleProps) {
-  return <SyncularConsole {...props} />;
+  return (
+    <div className={SYNCULAR_CONSOLE_ROOT_CLASS}>
+      <SyncularConsole {...props} />
+    </div>
+  );
 }

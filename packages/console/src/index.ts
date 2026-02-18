@@ -7,3 +7,4 @@ export * from './pages';
 export * from './routeTree';
 export * from './runtime-config';
 export * from './sentry';
+export * from './theme-scope';

@@ -56,7 +56,7 @@ const ApiKeysTable = forwardRef<HTMLDivElement, ApiKeysTableProps>(
       {/* Rows */}
       {keys.map((k, i) => (
         <div
-          key={k.name}
+          key={`${k.name}:${k.prefix}:${i}`}
           className={cn(
             'font-mono text-[11px] leading-7 px-4 flex items-center gap-4 hover:bg-white/[0.015] transition-colors cursor-default',
             i < keys.length - 1 && 'border-b border-[#141414]'

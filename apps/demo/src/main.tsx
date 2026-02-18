@@ -5,7 +5,7 @@
 import {
   initAndConfigureBrowserSentry,
   logBrowserSentryMessage,
-} from '@syncular/observability-sentry';
+} from '@syncular/observability-sentry/browser';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app';

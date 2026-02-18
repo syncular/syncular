@@ -7,3 +7,4 @@
 export * from './gateway';
 export * from './routes';
 export * from './schemas';
+export * from './ui';

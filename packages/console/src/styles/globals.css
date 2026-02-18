@@ -1,1 +1,5 @@
-@import "@syncular/ui/styles.css";
+@import '@syncular/ui/styles.css';
+
+:where(.syncular-console-root) {
+  color-scheme: dark;
+}
