@@ -1,7 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { App, type SyncularConsoleProps } from './App';
-import './styles/globals.css';
 
 interface MountSyncularConsoleOptions {
   strictMode?: boolean;

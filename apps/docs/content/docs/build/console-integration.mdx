@@ -34,6 +34,7 @@ See full command details in [CLI Console Command](/docs/cli/console).
 Use `mountSyncularConsoleApp` to mount the full Console app into your own page.
 
 ```tsx
+import '@syncular/console/styles.css';
 import { mountSyncularConsoleApp } from '@syncular/console';
 
 mountSyncularConsoleApp('#console-root', {
@@ -54,6 +55,7 @@ If you want your own route structure or layout, compose from exported components
 ### Full app component
 
 ```tsx
+import '@syncular/console/styles.css';
 import { App as SyncularConsoleApp } from '@syncular/console';
 
 <SyncularConsoleApp
@@ -68,6 +70,7 @@ import { App as SyncularConsoleApp } from '@syncular/console';
 ### Route-level composition
 
 ```tsx
+import '@syncular/console/styles.css';
 import {
   ConnectionProvider,
   ConsoleLayout,
