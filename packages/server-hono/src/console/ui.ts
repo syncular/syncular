@@ -2,8 +2,8 @@ import {
   type ConsoleStaticResponder,
   type ConsoleUiPrefill,
   type CreateConsoleStaticResponderOptions,
-  type ServeConsoleStaticRequestOptions,
   createConsoleStaticResponder,
+  type ServeConsoleStaticRequestOptions,
 } from '@syncular/console/server';
 import type { Context, Hono } from 'hono';
 
