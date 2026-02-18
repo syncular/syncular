@@ -22,7 +22,6 @@ import {
 import type { Kysely } from 'kysely';
 import type {
   DbExecutor,
-  IncrementalPullRow,
   ServerSyncDialect,
 } from './dialect/types';
 import type { TableRegistry } from './handlers/registry';
@@ -707,36 +706,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 ? scannedCommitSeqs[scannedCommitSeqs.length - 1]!
                 : cursor;
 
-            // Collect rows and compute nextCursor in a single pass
-            const incrementalRows: IncrementalPullRow[] = [];
-
             let nextCursor = cursor;
-
-            for await (const row of dialect.iterateIncrementalPullRows(trx, {
-              partitionId,
-              table: sub.table,
-              scopes: effectiveScopes,
-              cursor,
-              limitCommits,
-            })) {
-              incrementalRows.push(row);
-              nextCursor = Math.max(nextCursor, row.commit_seq);
-            }
-
-            nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
-
-            if (incrementalRows.length === 0) {
-              subResponses.push({
-                id: sub.id,
-                status: 'active',
-                scopes: effectiveScopes,
-                bootstrap: false,
-                nextCursor,
-                commits: [],
-              });
-              nextCursors.push(nextCursor);
-              continue;
-            }
 
             if (dedupeRows) {
               const latestByRowKey = new Map<
@@ -750,7 +720,14 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 }
               >();
 
-              for (const r of incrementalRows) {
+              for await (const r of dialect.iterateIncrementalPullRows(trx, {
+                partitionId,
+                table: sub.table,
+                scopes: effectiveScopes,
+                cursor,
+                limitCommits,
+              })) {
+                nextCursor = Math.max(nextCursor, r.commit_seq);
                 const rowKey = `${r.table}\u0000${r.row_id}`;
                 const change: SyncChange = {
                   table: r.table,
@@ -768,6 +745,21 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   changeId: r.change_id,
                   change,
                 });
+              }
+
+              nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
+
+              if (latestByRowKey.size === 0) {
+                subResponses.push({
+                  id: sub.id,
+                  status: 'active',
+                  scopes: effectiveScopes,
+                  bootstrap: false,
+                  nextCursor,
+                  commits: [],
+                });
+                nextCursors.push(nextCursor);
+                continue;
               }
 
               const latest = Array.from(latestByRowKey.values()).sort(
@@ -808,7 +800,14 @@ export async function pull<DB extends SyncCoreDb>(args: {
             const commitsBySeq = new Map<number, SyncCommit>();
             const commitSeqs: number[] = [];
 
-            for (const r of incrementalRows) {
+            for await (const r of dialect.iterateIncrementalPullRows(trx, {
+              partitionId,
+              table: sub.table,
+              scopes: effectiveScopes,
+              cursor,
+              limitCommits,
+            })) {
+              nextCursor = Math.max(nextCursor, r.commit_seq);
               const seq = r.commit_seq;
               let commit = commitsBySeq.get(seq);
               if (!commit) {
@@ -831,6 +830,21 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 scopes: r.scopes,
               };
               commit.changes.push(change);
+            }
+
+            nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
+
+            if (commitSeqs.length === 0) {
+              subResponses.push({
+                id: sub.id,
+                status: 'active',
+                scopes: effectiveScopes,
+                bootstrap: false,
+                nextCursor,
+                commits: [],
+              });
+              nextCursors.push(nextCursor);
+              continue;
             }
 
             const commits: SyncCommit[] = commitSeqs
