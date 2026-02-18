@@ -420,13 +420,13 @@ function emitConsoleLiveEvent(
       }
     | undefined,
   type: 'push' | 'pull' | 'commit' | 'client_update',
-  data: Record<string, unknown>
+  data: Record<string, unknown> | (() => Record<string, unknown>)
 ): void {
   if (!emitter) return;
   emitter.emit({
     type,
     timestamp: new Date().toISOString(),
-    data,
+    data: typeof data === 'function' ? data() : data,
   });
 }
 
@@ -453,6 +453,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
   const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 10;
   const maxOperationsPerPush = config.maxOperationsPerPush ?? 200;
   const consoleLiveEmitter = options.consoleLiveEmitter;
+  const shouldEmitConsoleLiveEvents = consoleLiveEmitter !== undefined;
+  const shouldRecordRequestEvents = shouldEmitConsoleLiveEvents;
 
   // -------------------------------------------------------------------------
   // Optional WebSocket manager (scope-key based wake-ups)
@@ -611,13 +613,19 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
     `.execute(options.db);
   };
 
-  const recordRequestEventInBackground = (event: RequestEvent): void => {
-    void recordRequestEvent(event).catch((error) => {
+  const recordRequestEventInBackground = (
+    event: RequestEvent | (() => RequestEvent)
+  ): void => {
+    if (!shouldRecordRequestEvents) return;
+
+    const resolvedEvent = typeof event === 'function' ? event() : event;
+
+    void recordRequestEvent(resolvedEvent).catch((error) => {
       logAsyncFailureOnce('sync.request_event_record_failed', {
         event: 'sync.request_event_record_failed',
-        userId: event.actorId,
-        clientId: event.clientId,
-        requestEventType: event.eventType,
+        userId: resolvedEvent.actorId,
+        clientId: resolvedEvent.clientId,
+        requestEventType: resolvedEvent.eventType,
         error: error instanceof Error ? error.message : String(error),
       });
     });
@@ -761,7 +769,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
 
       // --- Push phase ---
       if (body.push) {
-        const pushOps = body.push.operations ?? [];
+        const pushBody = body.push;
+        const pushOps = pushBody.operations ?? [];
         if (pushOps.length > maxOperationsPerPush) {
           return c.json(
             {
@@ -782,9 +791,9 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           partitionId,
           request: {
             clientId,
-            clientCommitId: body.push.clientCommitId,
-            operations: body.push.operations,
-            schemaVersion: body.push.schemaVersion,
+            clientCommitId: pushBody.clientCommitId,
+            operations: pushBody.operations,
+            schemaVersion: pushBody.schemaVersion,
           },
         });
 
@@ -799,7 +808,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           commitSeq: pushed.response.commitSeq,
         });
 
-        recordRequestEventInBackground({
+        recordRequestEventInBackground(() => ({
           partitionId,
           requestId,
           traceId: traceContext.traceId,
@@ -820,14 +829,14 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           payloadSnapshot: {
             request: {
               clientId,
-              clientCommitId: body.push.clientCommitId,
-              schemaVersion: body.push.schemaVersion,
-              operations: body.push.operations,
+              clientCommitId: pushBody.clientCommitId,
+              schemaVersion: pushBody.schemaVersion,
+              operations: pushBody.operations,
             },
             response: pushed.response,
           },
-        });
-        emitConsoleLiveEvent(consoleLiveEmitter, 'push', {
+        }));
+        emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
           partitionId,
           requestId,
           traceId: traceContext.traceId,
@@ -842,7 +851,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           commitSeq: pushed.response.commitSeq ?? null,
           operationCount: pushOps.length,
           tables: pushed.affectedTables,
-        });
+        }));
 
         // WS notifications
         if (
@@ -895,13 +904,13 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           pushed.response.status === 'applied' &&
           typeof pushed.response.commitSeq === 'number'
         ) {
-          emitConsoleLiveEvent(consoleLiveEmitter, 'commit', {
+          emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
             partitionId,
             commitSeq: pushed.response.commitSeq,
             actorId: auth.actorId,
             clientId,
             affectedTables: pushed.affectedTables,
-          });
+          }));
         }
 
         pushResponse = pushed.response;
@@ -994,13 +1003,13 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           effectiveScopes: pullResult.effectiveScopes,
         })
           .then(() => {
-            emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', {
+            emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
               action: 'cursor_recorded',
               partitionId,
               actorId: auth.actorId,
               clientId,
               cursor: pullResult.clientCursor,
-            });
+            }));
           })
           .catch((error) => {
             logAsyncFailureOnce('sync.client_cursor_record_failed', {
@@ -1029,56 +1038,73 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           clientCursor: pullResult.clientCursor,
         });
 
-        recordRequestEventInBackground({
-          partitionId,
-          requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          eventType: 'pull',
-          syncPath: 'http-combined',
-          actorId: auth.actorId,
-          clientId,
-          transportPath: readTransportPath(c),
-          statusCode: 200,
-          outcome: 'applied',
-          responseStatus: normalizeResponseStatus(200, 'applied'),
-          durationMs: pullDurationMs,
-          rowCount: countPullRows(pullResult.response),
-          subscriptionCount: request.subscriptions.length,
-          scopesSummary: summarizeScopeValues(pullResult.effectiveScopes),
-          payloadSnapshot: {
-            request: {
-              clientId,
-              limitCommits: request.limitCommits,
-              limitSnapshotRows: request.limitSnapshotRows,
-              maxSnapshotPages: request.maxSnapshotPages,
-              dedupeRows: request.dedupeRows,
-              subscriptions: request.subscriptions.map((subscription) => ({
-                id: subscription.id,
-                table: subscription.table,
-                scopes: subscription.scopes,
-                cursor: subscription.cursor,
-                bootstrapState: subscription.bootstrapState,
-              })),
-            },
-            response: summarizePullResponse(pullResult.response),
-          },
+        recordRequestEventInBackground(() => {
+          const pullRowCount = shouldRecordRequestEvents
+            ? countPullRows(pullResult.response)
+            : null;
+          const scopesSummary = shouldRecordRequestEvents
+            ? summarizeScopeValues(pullResult.effectiveScopes)
+            : null;
+          const payloadSnapshot = shouldRecordRequestEvents
+            ? {
+                request: {
+                  clientId,
+                  limitCommits: request.limitCommits,
+                  limitSnapshotRows: request.limitSnapshotRows,
+                  maxSnapshotPages: request.maxSnapshotPages,
+                  dedupeRows: request.dedupeRows,
+                  subscriptions: request.subscriptions.map((subscription) => ({
+                    id: subscription.id,
+                    table: subscription.table,
+                    scopes: subscription.scopes,
+                    cursor: subscription.cursor,
+                    bootstrapState: subscription.bootstrapState,
+                  })),
+                },
+                response: summarizePullResponse(pullResult.response),
+              }
+            : null;
+
+          return {
+            partitionId,
+            requestId,
+            traceId: traceContext.traceId,
+            spanId: traceContext.spanId,
+            eventType: 'pull',
+            syncPath: 'http-combined',
+            actorId: auth.actorId,
+            clientId,
+            transportPath: readTransportPath(c),
+            statusCode: 200,
+            outcome: 'applied',
+            responseStatus: normalizeResponseStatus(200, 'applied'),
+            durationMs: pullDurationMs,
+            rowCount: pullRowCount,
+            subscriptionCount: request.subscriptions.length,
+            scopesSummary,
+            payloadSnapshot,
+          };
         });
-        emitConsoleLiveEvent(consoleLiveEmitter, 'pull', {
-          partitionId,
-          requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          actorId: auth.actorId,
-          clientId,
-          transportPath: readTransportPath(c),
-          syncPath: 'http-combined',
-          outcome: 'applied',
-          statusCode: 200,
-          durationMs: pullDurationMs,
-          rowCount: countPullRows(pullResult.response),
-          subscriptionCount: request.subscriptions.length,
-          clientCursor: pullResult.clientCursor,
+        emitConsoleLiveEvent(consoleLiveEmitter, 'pull', () => {
+          const pullRowCount = shouldEmitConsoleLiveEvents
+            ? countPullRows(pullResult.response)
+            : null;
+          return {
+            partitionId,
+            requestId,
+            traceId: traceContext.traceId,
+            spanId: traceContext.spanId,
+            actorId: auth.actorId,
+            clientId,
+            transportPath: readTransportPath(c),
+            syncPath: 'http-combined',
+            outcome: 'applied',
+            statusCode: 200,
+            durationMs: pullDurationMs,
+            rowCount: pullRowCount,
+            subscriptionCount: request.subscriptions.length,
+            clientCursor: pullResult.clientCursor,
+          };
         });
 
         pullResponse = pullResult.response;
@@ -1309,14 +1335,14 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
 
           unregister = wsConnectionManager.register(conn, initialScopeKeys);
           conn.sendHeartbeat();
-          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', {
+          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
             action: 'realtime_connected',
             actorId: auth.actorId,
             clientId,
             partitionId,
             transportPath: realtimeTransportPath,
             scopeCount: initialScopeKeys.length,
-          });
+          }));
         },
         onClose(_evt, _ws) {
           unregister?.();
@@ -1326,12 +1352,12 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             event: 'sync.realtime.disconnect',
             userId: auth.actorId,
           });
-          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', {
+          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
             action: 'realtime_disconnected',
             actorId: auth.actorId,
             clientId,
             partitionId,
-          });
+          }));
         },
         onError(_evt, _ws) {
           unregister?.();
@@ -1341,12 +1367,12 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             event: 'sync.realtime.disconnect',
             userId: auth.actorId,
           });
-          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', {
+          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
             action: 'realtime_error',
             actorId: auth.actorId,
             clientId,
             partitionId,
-          });
+          }));
         },
         onMessage(evt, _ws) {
           if (!connRef) return;
@@ -1479,7 +1505,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             { opIndex: 0, status: 'error', error: 'Invalid push payload' },
           ],
         });
-        recordRequestEventInBackground({
+        recordRequestEventInBackground(() => ({
           partitionId,
           requestId,
           traceId: traceContext.traceId,
@@ -1503,8 +1529,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
               reason: 'invalid_push_payload',
             },
           },
-        });
-        emitConsoleLiveEvent(consoleLiveEmitter, 'push', {
+        }));
+        emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
           partitionId,
           requestId,
           traceId: traceContext.traceId,
@@ -1517,7 +1543,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           statusCode: 400,
           durationMs: invalidDurationMs,
           errorCode: 'INVALID_PUSH_PAYLOAD',
-        });
+        }));
         return;
       }
 
@@ -1536,7 +1562,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             },
           ],
         });
-        recordRequestEventInBackground({
+        recordRequestEventInBackground(() => ({
           partitionId,
           requestId,
           traceId: traceContext.traceId,
@@ -1566,8 +1592,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
               reason: 'max_operations_exceeded',
             },
           },
-        });
-        emitConsoleLiveEvent(consoleLiveEmitter, 'push', {
+        }));
+        emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
           partitionId,
           requestId,
           traceId: traceContext.traceId,
@@ -1581,7 +1607,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           durationMs: rejectedDurationMs,
           operationCount: pushOps.length,
           errorCode: 'MAX_OPERATIONS_EXCEEDED',
-        });
+        }));
         return;
       }
 
@@ -1610,7 +1636,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
         commitSeq: pushed.response.commitSeq,
       });
 
-      recordRequestEventInBackground({
+      recordRequestEventInBackground(() => ({
         partitionId,
         requestId,
         traceId: traceContext.traceId,
@@ -1637,8 +1663,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           },
           response: pushed.response,
         },
-      });
-      emitConsoleLiveEvent(consoleLiveEmitter, 'push', {
+      }));
+      emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
         partitionId,
         requestId,
         traceId: traceContext.traceId,
@@ -1653,7 +1679,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
         commitSeq: pushed.response.commitSeq ?? null,
         operationCount: pushOps.length,
         tables: pushed.affectedTables,
-      });
+      }));
 
       // WS notifications to other clients
       if (
@@ -1702,13 +1728,13 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
         pushed.response.status === 'applied' &&
         typeof pushed.response.commitSeq === 'number'
       ) {
-        emitConsoleLiveEvent(consoleLiveEmitter, 'commit', {
+        emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
           partitionId,
           commitSeq: pushed.response.commitSeq,
           actorId,
           clientId,
           affectedTables: pushed.affectedTables,
-        });
+        }));
       }
 
       conn.sendPushResponse({
@@ -1729,7 +1755,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
       });
       const message =
         err instanceof Error ? err.message : 'Internal server error';
-      recordRequestEventInBackground({
+      recordRequestEventInBackground(() => ({
         partitionId,
         requestId,
         traceId: traceContext.traceId,
@@ -1754,8 +1780,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             message,
           },
         },
-      });
-      emitConsoleLiveEvent(consoleLiveEmitter, 'push', {
+      }));
+      emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
         partitionId,
         requestId,
         traceId: traceContext.traceId,
@@ -1768,7 +1794,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
         statusCode: 500,
         durationMs: failedDurationMs,
         errorCode: 'INTERNAL_SERVER_ERROR',
-      });
+      }));
       conn.sendPushResponse({
         requestId,
         ok: false,

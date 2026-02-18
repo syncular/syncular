@@ -71,20 +71,58 @@ function toStringArray(value: unknown): string[] {
 }
 
 /**
- * Check if stored scopes match the requested scope values.
- * Uses OR semantics for arrays and treats missing keys as wildcards.
+ * Build a safe SQLite JSON path for a scope key.
  */
-function scopesMatch(stored: StoredScopes, requested: ScopeValues): boolean {
-  for (const [key, value] of Object.entries(requested)) {
-    const storedValue = stored[key];
-    if (storedValue === undefined) return false;
-    if (Array.isArray(value)) {
-      if (!value.includes(storedValue)) return false;
-    } else {
-      if (storedValue !== value) return false;
-    }
+function toSqliteJsonPath(scopeKey: string): string {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(scopeKey)) {
+    return `$.${scopeKey}`;
   }
-  return true;
+  const escaped = scopeKey
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll("'", "\\'");
+  return `$."${escaped}"`;
+}
+
+/**
+ * Build scope filter SQL for a JSON scopes column.
+ * Returns `0 = 1` when a requested array scope is empty.
+ */
+function buildScopeFilterSql(
+  scopes: ScopeValues,
+  scopeColumnSql: string
+): ReturnType<typeof sql> {
+  const conditions: ReturnType<typeof sql>[] = [];
+
+  for (const [scopeKey, requested] of Object.entries(scopes)) {
+    const jsonPath = toSqliteJsonPath(scopeKey);
+    if (Array.isArray(requested)) {
+      const values = requested.filter(
+        (value): value is string => typeof value === 'string'
+      );
+      if (values.length === 0) {
+        return sql`0 = 1`;
+      }
+      const valuesSql = sql.join(
+        values.map((value) => sql`${value}`),
+        sql`, `
+      );
+      conditions.push(
+        sql`json_extract(${sql.raw(scopeColumnSql)}, ${jsonPath}) IN (${valuesSql})`
+      );
+      continue;
+    }
+
+    conditions.push(
+      sql`json_extract(${sql.raw(scopeColumnSql)}, ${jsonPath}) = ${requested}`
+    );
+  }
+
+  if (conditions.length === 0) {
+    return sql`1 = 1`;
+  }
+
+  return sql.join(conditions, sql` AND `);
 }
 
 async function ensurePartitionColumn<DB extends SyncCoreDb>(
@@ -374,6 +412,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect {
   ): Promise<SyncChangeRow[]> {
     const partitionId = args.partitionId ?? 'default';
     if (args.commitSeqs.length === 0) return [];
+    const scopeFilter = buildScopeFilterSql(args.scopes, 'scopes');
 
     const commitSeqsIn = sql.join(
       args.commitSeqs.map((seq) => sql`${seq}`),
@@ -395,24 +434,19 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect {
       WHERE commit_seq IN (${commitSeqsIn})
         AND partition_id = ${partitionId}
         AND "table" = ${args.table}
+        AND (${scopeFilter})
       ORDER BY commit_seq ASC, change_id ASC
     `.execute(db);
 
-    // Filter by scopes (manual, since SQLite JSON operators are limited)
-    return res.rows
-      .filter((row) => {
-        const storedScopes = parseScopes(row.scopes);
-        return scopesMatch(storedScopes, args.scopes);
-      })
-      .map((row) => ({
-        commit_seq: coerceNumber(row.commit_seq) ?? 0,
-        table: row.table,
-        row_id: row.row_id,
-        op: row.op as SyncOp,
-        row_json: parseJsonValue(row.row_json),
-        row_version: coerceNumber(row.row_version),
-        scopes: parseScopes(row.scopes),
-      }));
+    return res.rows.map((row) => ({
+      commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      table: row.table,
+      row_id: row.row_id,
+      op: row.op as SyncOp,
+      row_json: parseJsonValue(row.row_json),
+      row_version: coerceNumber(row.row_version),
+      scopes: parseScopes(row.scopes),
+    }));
   }
 
   protected override async readIncrementalPullRowsBatch<DB extends SyncCoreDb>(
@@ -421,6 +455,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect {
   ): Promise<IncrementalPullRow[]> {
     const partitionId = args.partitionId ?? 'default';
     const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
+    const scopeFilter = buildScopeFilterSql(args.scopes, 'c.scopes');
 
     // Get commit_seqs for this table
     const commitSeqsRes = await sql<{ commit_seq: unknown }>`
@@ -480,27 +515,22 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect {
         AND cm.partition_id = ${partitionId}
         AND c.partition_id = ${partitionId}
         AND c."table" = ${args.table}
+        AND (${scopeFilter})
       ORDER BY cm.commit_seq ASC, c.change_id ASC
     `.execute(db);
 
-    // Filter by scopes and transform
-    return changesRes.rows
-      .filter((row) => {
-        const storedScopes = parseScopes(row.scopes);
-        return scopesMatch(storedScopes, args.scopes);
-      })
-      .map((row) => ({
-        commit_seq: coerceNumber(row.commit_seq) ?? 0,
-        actor_id: row.actor_id,
-        created_at: coerceIsoString(row.created_at),
-        change_id: coerceNumber(row.change_id) ?? 0,
-        table: row.table,
-        row_id: row.row_id,
-        op: row.op as SyncOp,
-        row_json: parseJsonValue(row.row_json),
-        row_version: coerceNumber(row.row_version),
-        scopes: parseScopes(row.scopes),
-      }));
+    return changesRes.rows.map((row) => ({
+      commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      actor_id: row.actor_id,
+      created_at: coerceIsoString(row.created_at),
+      change_id: coerceNumber(row.change_id) ?? 0,
+      table: row.table,
+      row_id: row.row_id,
+      op: row.op as SyncOp,
+      row_json: parseJsonValue(row.row_json),
+      row_version: coerceNumber(row.row_version),
+      scopes: parseScopes(row.scopes),
+    }));
   }
 
   async compactChanges<DB extends SyncCoreDb>(
