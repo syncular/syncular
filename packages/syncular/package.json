@@ -65,6 +65,13 @@
         "default": "./dist/console.js"
       }
     },
+    "./ui": {
+      "bun": "./src/ui.ts",
+      "import": {
+        "types": "./dist/ui.d.ts",
+        "default": "./dist/ui.js"
+      }
+    },
     "./client-plugin-encryption": {
       "bun": "./src/client-plugin-encryption.ts",
       "import": {
@@ -273,7 +280,8 @@
     "@syncular/testkit": "workspace:*",
     "@syncular/transport-http": "workspace:*",
     "@syncular/transport-ws": "workspace:*",
-    "@syncular/typegen": "workspace:*"
+    "@syncular/typegen": "workspace:*",
+    "@syncular/ui": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "*",

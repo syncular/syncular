@@ -210,10 +210,6 @@
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
       },
-      "optionalPeers": [
-        "react",
-        "react-dom",
-      ],
     },
     "packages/core": {
       "name": "@syncular/core",
@@ -537,6 +533,7 @@
         "@syncular/transport-http": "workspace:*",
         "@syncular/transport-ws": "workspace:*",
         "@syncular/typegen": "workspace:*",
+        "@syncular/ui": "workspace:*",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "*",
