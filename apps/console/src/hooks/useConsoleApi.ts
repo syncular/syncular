@@ -25,28 +25,38 @@ import type {
   TimeseriesStatsResponse,
 } from '../lib/types';
 import { useApiClient, useConnection } from './ConnectionContext';
+import { useInstanceContext } from './useInstanceContext';
 
 const queryKeys = {
-  stats: (params?: { partitionId?: string }) =>
+  stats: (params?: { partitionId?: string; instanceId?: string }) =>
     ['console', 'stats', params] as const,
   timeseries: (params?: {
     interval?: TimeseriesInterval;
     range?: TimeseriesRange;
     partitionId?: string;
+    instanceId?: string;
   }) => ['console', 'stats', 'timeseries', params] as const,
-  latency: (params?: { range?: TimeseriesRange; partitionId?: string }) =>
-    ['console', 'stats', 'latency', params] as const,
+  latency: (params?: {
+    range?: TimeseriesRange;
+    partitionId?: string;
+    instanceId?: string;
+  }) => ['console', 'stats', 'latency', params] as const,
   commits: (params?: {
     limit?: number;
     offset?: number;
     partitionId?: string;
+    instanceId?: string;
   }) => ['console', 'commits', params] as const,
-  commitDetail: (seq?: number, partitionId?: string) =>
-    ['console', 'commit-detail', seq, partitionId] as const,
+  commitDetail: (
+    seq?: string | number,
+    partitionId?: string,
+    instanceId?: string
+  ) => ['console', 'commit-detail', seq, partitionId, instanceId] as const,
   timeline: (params?: {
     limit?: number;
     offset?: number;
     partitionId?: string;
+    instanceId?: string;
     view?: 'all' | 'commits' | 'events';
     eventType?: 'push' | 'pull';
     actorId?: string;
@@ -63,18 +73,28 @@ const queryKeys = {
     limit?: number;
     offset?: number;
     partitionId?: string;
+    instanceId?: string;
   }) => ['console', 'clients', params] as const,
-  eventDetail: (id?: number, partitionId?: string) =>
-    ['console', 'event-detail', id, partitionId] as const,
-  eventPayload: (id?: number, partitionId?: string) =>
-    ['console', 'event-payload', id, partitionId] as const,
-  handlers: ['console', 'handlers'] as const,
-  prunePreview: ['console', 'prune', 'preview'] as const,
+  eventDetail: (
+    id?: string | number,
+    partitionId?: string,
+    instanceId?: string
+  ) => ['console', 'event-detail', id, partitionId, instanceId] as const,
+  eventPayload: (
+    id?: string | number,
+    partitionId?: string,
+    instanceId?: string
+  ) => ['console', 'event-payload', id, partitionId, instanceId] as const,
+  handlers: (instanceId?: string) =>
+    ['console', 'handlers', instanceId] as const,
+  prunePreview: (instanceId?: string) =>
+    ['console', 'prune', 'preview', instanceId] as const,
   operations: (params?: {
     limit?: number;
     offset?: number;
     operationType?: ConsoleOperationType;
     partitionId?: string;
+    instanceId?: string;
   }) => ['console', 'operations', params] as const,
   apiKeys: (params?: {
     limit?: number;
@@ -82,6 +102,7 @@ const queryKeys = {
     type?: 'relay' | 'proxy' | 'admin';
     status?: 'active' | 'revoked' | 'expiring';
     expiresWithinDays?: number;
+    instanceId?: string;
   }) => ['console', 'api-keys', params] as const,
 };
 
@@ -93,14 +114,52 @@ function resolveRefetchInterval(
   return refreshIntervalMs ?? defaultValueMs;
 }
 
+interface InstanceQueryFilter {
+  instanceId?: string;
+}
+
+function withInstanceQuery<T extends Record<string, unknown>>(
+  query: T,
+  instanceId: string | undefined
+): T & InstanceQueryFilter {
+  if (!instanceId) return query;
+  return { ...query, instanceId };
+}
+
+function serializePathSegment(value: string | number): string {
+  return encodeURIComponent(String(value));
+}
+
+function buildConsoleUrl(
+  serverUrl: string,
+  path: string,
+  queryString?: URLSearchParams
+): string {
+  const baseUrl = serverUrl.endsWith('/') ? serverUrl.slice(0, -1) : serverUrl;
+  const suffix = queryString?.toString();
+  return `${baseUrl}${path}${suffix ? `?${suffix}` : ''}`;
+}
+
 export function useStats(
-  options: { refetchIntervalMs?: number; partitionId?: string } = {}
+  options: {
+    refetchIntervalMs?: number;
+    partitionId?: string;
+    instanceId?: string;
+  } = {}
 ) {
   const client = useApiClient();
-  const query = options.partitionId ? { partitionId: options.partitionId } : {};
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = options.instanceId ?? selectedInstanceId;
+  const query = withInstanceQuery(
+    options.partitionId ? { partitionId: options.partitionId } : {},
+    instanceId
+  );
 
   return useQuery<SyncStats>({
-    queryKey: queryKeys.stats({ partitionId: options.partitionId }),
+    queryKey: queryKeys.stats({
+      partitionId: options.partitionId,
+      instanceId,
+    }),
     queryFn: () => {
       if (!client) throw new Error('Not connected');
       return unwrap(client.GET('/console/stats', { params: { query } }));
@@ -115,14 +174,17 @@ export function useTimeseriesStats(
     interval?: TimeseriesInterval;
     range?: TimeseriesRange;
     partitionId?: string;
+    instanceId?: string;
   } = {},
   options: { refetchIntervalMs?: number; enabled?: boolean } = {}
 ) {
   const client = useApiClient();
   const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
 
   return useQuery<TimeseriesStatsResponse>({
-    queryKey: queryKeys.timeseries(params),
+    queryKey: queryKeys.timeseries({ ...params, instanceId }),
     queryFn: async () => {
       if (!client || !connectionConfig) throw new Error('Not connected');
       // Use fetch directly since this endpoint may not be in OpenAPI yet
@@ -131,6 +193,7 @@ export function useTimeseriesStats(
       if (params.range) queryString.set('range', params.range);
       if (params.partitionId)
         queryString.set('partitionId', params.partitionId);
+      if (instanceId) queryString.set('instanceId', instanceId);
       const response = await fetch(
         `${connectionConfig.serverUrl}/console/stats/timeseries?${queryString}`,
         { headers: { Authorization: `Bearer ${connectionConfig.token}` } }
@@ -144,14 +207,20 @@ export function useTimeseriesStats(
 }
 
 export function useLatencyStats(
-  params: { range?: TimeseriesRange; partitionId?: string } = {},
+  params: {
+    range?: TimeseriesRange;
+    partitionId?: string;
+    instanceId?: string;
+  } = {},
   options: { refetchIntervalMs?: number; enabled?: boolean } = {}
 ) {
   const client = useApiClient();
   const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
 
   return useQuery<LatencyStatsResponse>({
-    queryKey: queryKeys.latency(params),
+    queryKey: queryKeys.latency({ ...params, instanceId }),
     queryFn: async () => {
       if (!client || !connectionConfig) throw new Error('Not connected');
       // Use fetch directly since this endpoint may not be in OpenAPI yet
@@ -159,6 +228,7 @@ export function useLatencyStats(
       if (params.range) queryString.set('range', params.range);
       if (params.partitionId)
         queryString.set('partitionId', params.partitionId);
+      if (instanceId) queryString.set('instanceId', instanceId);
       const response = await fetch(
         `${connectionConfig.serverUrl}/console/stats/latency?${queryString}`,
         { headers: { Authorization: `Bearer ${connectionConfig.token}` } }
@@ -172,18 +242,31 @@ export function useLatencyStats(
 }
 
 export function useCommits(
-  params: { limit?: number; offset?: number; partitionId?: string } = {},
+  params: {
+    limit?: number;
+    offset?: number;
+    partitionId?: string;
+    instanceId?: string;
+  } = {},
   options: { refetchIntervalMs?: number; enabled?: boolean } = {}
 ) {
   const client = useApiClient();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
+  const query = withInstanceQuery(
+    {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+    },
+    instanceId
+  );
 
   return useQuery<PaginatedResponse<ConsoleCommitListItem>>({
-    queryKey: queryKeys.commits(params),
+    queryKey: queryKeys.commits({ ...params, instanceId }),
     queryFn: () => {
       if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.GET('/console/commits', { params: { query: params } })
-      );
+      return unwrap(client.GET('/console/commits', { params: { query } }));
     },
     enabled: (options.enabled ?? true) && !!client,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
@@ -191,26 +274,30 @@ export function useCommits(
 }
 
 export function useCommitDetail(
-  seq: number | undefined,
-  options: { enabled?: boolean; partitionId?: string } = {}
+  seq: string | number | undefined,
+  options: { enabled?: boolean; partitionId?: string; instanceId?: string } = {}
 ) {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = options.instanceId ?? selectedInstanceId;
 
   return useQuery<ConsoleCommitDetail>({
-    queryKey: queryKeys.commitDetail(seq, options.partitionId),
-    queryFn: () => {
-      if (!client) throw new Error('Not connected');
+    queryKey: queryKeys.commitDetail(seq, options.partitionId, instanceId),
+    queryFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
       if (seq === undefined) throw new Error('Commit sequence is required');
-      return unwrap(
-        client.GET('/console/commits/{seq}', {
-          params: {
-            path: { seq },
-            ...(options.partitionId
-              ? { query: { partitionId: options.partitionId } }
-              : {}),
-          },
-        })
+      const queryString = new URLSearchParams();
+      if (options.partitionId)
+        queryString.set('partitionId', options.partitionId);
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const suffix = queryString.toString();
+      const response = await fetch(
+        `${connectionConfig.serverUrl}/console/commits/${serializePathSegment(seq)}${suffix ? `?${suffix}` : ''}`,
+        { headers: { Authorization: `Bearer ${connectionConfig.token}` } }
       );
+      if (!response.ok) throw new Error('Failed to fetch commit detail');
+      return response.json();
     },
     enabled: (options.enabled ?? true) && seq !== undefined && !!client,
   });
@@ -221,6 +308,7 @@ export function useTimeline(
     limit?: number;
     offset?: number;
     partitionId?: string;
+    instanceId?: string;
     view?: 'all' | 'commits' | 'events';
     eventType?: 'push' | 'pull';
     actorId?: string;
@@ -236,14 +324,33 @@ export function useTimeline(
   options: { refetchIntervalMs?: number; enabled?: boolean } = {}
 ) {
   const client = useApiClient();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
+  const query = withInstanceQuery(
+    {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+      view: params.view,
+      eventType: params.eventType,
+      actorId: params.actorId,
+      clientId: params.clientId,
+      requestId: params.requestId,
+      traceId: params.traceId,
+      table: params.table,
+      outcome: params.outcome,
+      search: params.search,
+      from: params.from,
+      to: params.to,
+    },
+    instanceId
+  );
 
   return useQuery<PaginatedResponse<ConsoleTimelineItem>>({
-    queryKey: queryKeys.timeline(params),
+    queryKey: queryKeys.timeline({ ...params, instanceId }),
     queryFn: () => {
       if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.GET('/console/timeline', { params: { query: params } })
-      );
+      return unwrap(client.GET('/console/timeline', { params: { query } }));
     },
     enabled: (options.enabled ?? true) && !!client,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
@@ -251,18 +358,31 @@ export function useTimeline(
 }
 
 export function useClients(
-  params: { limit?: number; offset?: number; partitionId?: string } = {},
+  params: {
+    limit?: number;
+    offset?: number;
+    partitionId?: string;
+    instanceId?: string;
+  } = {},
   options: { refetchIntervalMs?: number; enabled?: boolean } = {}
 ) {
   const client = useApiClient();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
+  const query = withInstanceQuery(
+    {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+    },
+    instanceId
+  );
 
   return useQuery<PaginatedResponse<ConsoleClient>>({
-    queryKey: queryKeys.clients(params),
+    queryKey: queryKeys.clients({ ...params, instanceId }),
     queryFn: () => {
       if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.GET('/console/clients', { params: { query: params } })
-      );
+      return unwrap(client.GET('/console/clients', { params: { query } }));
     },
     enabled: (options.enabled ?? true) && !!client,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
@@ -270,80 +390,123 @@ export function useClients(
 }
 
 export function useRequestEventDetail(
-  id: number | undefined,
-  options: { enabled?: boolean; partitionId?: string } = {}
+  id: string | number | undefined,
+  options: { enabled?: boolean; partitionId?: string; instanceId?: string } = {}
 ) {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = options.instanceId ?? selectedInstanceId;
 
   return useQuery<ConsoleRequestEvent>({
-    queryKey: queryKeys.eventDetail(id, options.partitionId),
-    queryFn: () => {
-      if (!client) throw new Error('Not connected');
+    queryKey: queryKeys.eventDetail(id, options.partitionId, instanceId),
+    queryFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
       if (id === undefined) throw new Error('Event id is required');
-      return unwrap(
-        client.GET('/console/events/{id}', {
-          params: {
-            path: { id },
-            ...(options.partitionId
-              ? { query: { partitionId: options.partitionId } }
-              : {}),
-          },
-        })
+      const queryString = new URLSearchParams();
+      if (options.partitionId)
+        queryString.set('partitionId', options.partitionId);
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const suffix = queryString.toString();
+      const response = await fetch(
+        `${connectionConfig.serverUrl}/console/events/${serializePathSegment(id)}${suffix ? `?${suffix}` : ''}`,
+        { headers: { Authorization: `Bearer ${connectionConfig.token}` } }
       );
+      if (!response.ok) throw new Error('Failed to fetch event detail');
+      return response.json();
     },
     enabled: (options.enabled ?? true) && id !== undefined && !!client,
   });
 }
 
 export function useRequestEventPayload(
-  id: number | undefined,
-  options: { enabled?: boolean; partitionId?: string } = {}
+  id: string | number | undefined,
+  options: { enabled?: boolean; partitionId?: string; instanceId?: string } = {}
 ) {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = options.instanceId ?? selectedInstanceId;
 
   return useQuery<ConsoleRequestPayload>({
-    queryKey: queryKeys.eventPayload(id, options.partitionId),
-    queryFn: () => {
-      if (!client) throw new Error('Not connected');
+    queryKey: queryKeys.eventPayload(id, options.partitionId, instanceId),
+    queryFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
       if (id === undefined) throw new Error('Event id is required');
-      return unwrap(
-        client.GET('/console/events/{id}/payload', {
-          params: {
-            path: { id },
-            ...(options.partitionId
-              ? { query: { partitionId: options.partitionId } }
-              : {}),
-          },
-        })
+      const queryString = new URLSearchParams();
+      if (options.partitionId)
+        queryString.set('partitionId', options.partitionId);
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const suffix = queryString.toString();
+      const response = await fetch(
+        `${connectionConfig.serverUrl}/console/events/${serializePathSegment(id)}/payload${suffix ? `?${suffix}` : ''}`,
+        { headers: { Authorization: `Bearer ${connectionConfig.token}` } }
       );
+      if (!response.ok) throw new Error('Failed to fetch event payload');
+      return response.json();
     },
     enabled: (options.enabled ?? true) && id !== undefined && !!client,
   });
 }
 
-export function useHandlers() {
+export function useHandlers(options: { instanceId?: string } = {}) {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = options.instanceId ?? selectedInstanceId;
 
   return useQuery<{ items: ConsoleHandler[] }>({
-    queryKey: queryKeys.handlers,
-    queryFn: () => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(client.GET('/console/handlers'));
+    queryKey: queryKeys.handlers(instanceId),
+    queryFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/handlers',
+          queryString
+        ),
+        {
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to fetch handlers');
+      return response.json();
     },
-    enabled: !!client,
+    enabled: !!client && !!connectionConfig,
   });
 }
 
-export function usePrunePreview(options: { enabled?: boolean } = {}) {
+export function usePrunePreview(
+  options: { enabled?: boolean; instanceId?: string } = {}
+) {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = options.instanceId ?? selectedInstanceId;
 
   return useQuery<{ watermarkCommitSeq: number; commitsToDelete: number }>({
-    queryKey: queryKeys.prunePreview,
-    queryFn: () => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(client.POST('/console/prune/preview'));
+    queryKey: queryKeys.prunePreview(instanceId),
+    queryFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/prune/preview',
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to fetch prune preview');
+      return response.json();
     },
-    enabled: !!client && (options.enabled ?? true),
+    enabled: !!client && !!connectionConfig && (options.enabled ?? true),
   });
 }
 
@@ -353,18 +516,28 @@ export function useOperationEvents(
     offset?: number;
     operationType?: ConsoleOperationType;
     partitionId?: string;
+    instanceId?: string;
   } = {},
   options: { enabled?: boolean; refetchIntervalMs?: number } = {}
 ) {
   const client = useApiClient();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
+  const query = withInstanceQuery(
+    {
+      limit: params.limit,
+      offset: params.offset,
+      operationType: params.operationType,
+      partitionId: params.partitionId,
+    },
+    instanceId
+  );
 
   return useQuery<PaginatedResponse<ConsoleOperationEvent>>({
-    queryKey: queryKeys.operations(params),
+    queryKey: queryKeys.operations({ ...params, instanceId }),
     queryFn: () => {
       if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.GET('/console/operations', { params: { query: params } })
-      );
+      return unwrap(client.GET('/console/operations', { params: { query } }));
     },
     enabled: (options.enabled ?? true) && !!client,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
@@ -373,23 +546,35 @@ export function useOperationEvents(
 
 export function useEvictClientMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<
     { evicted: boolean },
     Error,
-    { clientId: string; partitionId?: string }
+    { clientId: string; partitionId?: string; instanceId?: string }
   >({
-    mutationFn: ({ clientId, partitionId }) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.DELETE('/console/clients/{id}', {
-          params: {
-            path: { id: clientId },
-            ...(partitionId ? { query: { partitionId } } : {}),
-          },
-        })
+    mutationFn: async ({ clientId, partitionId, instanceId }) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const effectiveInstanceId = instanceId ?? selectedInstanceId;
+      const queryString = new URLSearchParams();
+      if (partitionId) queryString.set('partitionId', partitionId);
+      if (effectiveInstanceId)
+        queryString.set('instanceId', effectiveInstanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          `/console/clients/${serializePathSegment(clientId)}`,
+          queryString
+        ),
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
       );
+      if (!response.ok) throw new Error('Failed to evict client');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'clients'] });
@@ -401,18 +586,36 @@ export function useEvictClientMutation() {
 
 export function usePruneMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<{ deletedCommits: number }, Error, void>({
-    mutationFn: () => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(client.POST('/console/prune'));
+    mutationFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/prune',
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to prune');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'stats'] });
       queryClient.invalidateQueries({ queryKey: ['console', 'commits'] });
       queryClient.invalidateQueries({ queryKey: ['console', 'timeline'] });
-      queryClient.invalidateQueries({ queryKey: queryKeys.prunePreview });
+      queryClient.invalidateQueries({
+        queryKey: ['console', 'prune', 'preview'],
+      });
       queryClient.invalidateQueries({ queryKey: ['console', 'operations'] });
     },
   });
@@ -420,12 +623,28 @@ export function usePruneMutation() {
 
 export function useCompactMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<{ deletedChanges: number }, Error, void>({
-    mutationFn: () => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(client.POST('/console/compact'));
+    mutationFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/compact',
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to compact');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'stats'] });
@@ -436,18 +655,41 @@ export function useCompactMutation() {
 
 export function useNotifyDataChangeMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<
     ConsoleNotifyDataChangeResponse,
     Error,
-    { tables: string[]; partitionId?: string }
+    { tables: string[]; partitionId?: string; instanceId?: string }
   >({
-    mutationFn: (request) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.POST('/console/notify-data-change', { body: request })
+    mutationFn: async (request) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const effectiveInstanceId = request.instanceId ?? selectedInstanceId;
+      const queryString = new URLSearchParams();
+      if (effectiveInstanceId)
+        queryString.set('instanceId', effectiveInstanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/notify-data-change',
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connectionConfig.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            tables: request.tables,
+            partitionId: request.partitionId,
+          }),
+        }
       );
+      if (!response.ok) throw new Error('Failed to notify data change');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'stats'] });
@@ -465,24 +707,51 @@ export function useApiKeys(
     type?: 'relay' | 'proxy' | 'admin';
     status?: 'active' | 'revoked' | 'expiring';
     expiresWithinDays?: number;
+    instanceId?: string;
   } = {}
 ) {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const instanceId = params.instanceId ?? selectedInstanceId;
 
   return useQuery<PaginatedResponse<ConsoleApiKey>>({
-    queryKey: queryKeys.apiKeys(params),
-    queryFn: () => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.GET('/console/api-keys', { params: { query: params } })
+    queryKey: queryKeys.apiKeys({ ...params, instanceId }),
+    queryFn: async () => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (params.limit !== undefined)
+        queryString.set('limit', String(params.limit));
+      if (params.offset !== undefined)
+        queryString.set('offset', String(params.offset));
+      if (params.type) queryString.set('type', params.type);
+      if (params.status) queryString.set('status', params.status);
+      if (params.expiresWithinDays !== undefined) {
+        queryString.set('expiresWithinDays', String(params.expiresWithinDays));
+      }
+      if (instanceId) queryString.set('instanceId', instanceId);
+
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/api-keys',
+          queryString
+        ),
+        {
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
       );
+      if (!response.ok) throw new Error('Failed to fetch API keys');
+      return response.json();
     },
-    enabled: !!client,
+    enabled: !!client && !!connectionConfig,
   });
 }
 
 export function useCreateApiKeyMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<
@@ -496,9 +765,27 @@ export function useCreateApiKeyMutation() {
       expiresInDays?: number;
     }
   >({
-    mutationFn: (request) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(client.POST('/console/api-keys', { body: request }));
+    mutationFn: async (request) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/api-keys',
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connectionConfig.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(request),
+        }
+      );
+      if (!response.ok) throw new Error('Failed to create API key');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'api-keys'] });
@@ -508,16 +795,28 @@ export function useCreateApiKeyMutation() {
 
 export function useRevokeApiKeyMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<{ revoked: boolean }, Error, string>({
-    mutationFn: (keyId) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.DELETE('/console/api-keys/{id}', {
-          params: { path: { id: keyId } },
-        })
+    mutationFn: async (keyId) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          `/console/api-keys/${serializePathSegment(keyId)}`,
+          queryString
+        ),
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
       );
+      if (!response.ok) throw new Error('Failed to revoke API key');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'api-keys'] });
@@ -527,6 +826,8 @@ export function useRevokeApiKeyMutation() {
 
 export function useBulkRevokeApiKeysMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<
@@ -534,11 +835,27 @@ export function useBulkRevokeApiKeysMutation() {
     Error,
     { keyIds: string[] }
   >({
-    mutationFn: (request) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.POST('/console/api-keys/bulk-revoke', { body: request })
+    mutationFn: async (request) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/api-keys/bulk-revoke',
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${connectionConfig.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(request),
+        }
       );
+      if (!response.ok) throw new Error('Failed to bulk revoke API keys');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'api-keys'] });
@@ -548,16 +865,28 @@ export function useBulkRevokeApiKeysMutation() {
 
 export function useRotateApiKeyMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<{ key: ConsoleApiKey; secretKey: string }, Error, string>({
-    mutationFn: (keyId) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.POST('/console/api-keys/{id}/rotate', {
-          params: { path: { id: keyId } },
-        })
+    mutationFn: async (keyId) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          `/console/api-keys/${serializePathSegment(keyId)}/rotate`,
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
       );
+      if (!response.ok) throw new Error('Failed to rotate API key');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'api-keys'] });
@@ -567,16 +896,28 @@ export function useRotateApiKeyMutation() {
 
 export function useStageRotateApiKeyMutation() {
   const client = useApiClient();
+  const { config: connectionConfig } = useConnection();
+  const { instanceId } = useInstanceContext();
   const queryClient = useQueryClient();
 
   return useMutation<{ key: ConsoleApiKey; secretKey: string }, Error, string>({
-    mutationFn: (keyId) => {
-      if (!client) throw new Error('Not connected');
-      return unwrap(
-        client.POST('/console/api-keys/{id}/rotate/stage', {
-          params: { path: { id: keyId } },
-        })
+    mutationFn: async (keyId) => {
+      if (!client || !connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (instanceId) queryString.set('instanceId', instanceId);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          `/console/api-keys/${serializePathSegment(keyId)}/rotate/stage`,
+          queryString
+        ),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
       );
+      if (!response.ok) throw new Error('Failed to stage-rotate API key');
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['console', 'api-keys'] });

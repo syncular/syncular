@@ -23,6 +23,24 @@ Checks:
 3. Verify server has request-event rows and commits in selected partition.
 4. Confirm token has access in the target environment.
 
+## Gateway mode issues
+
+### "No instances selected" or "instance required"
+
+Checks:
+
+1. Verify top-nav instance selector is set as intended.
+2. For write actions (prune/compact/notify/evict/API key ops), select exactly one instance.
+3. For merged reads, clear instance selector or use `instanceIds` as needed.
+
+### One instance appears stale while others update
+
+Checks:
+
+1. Call `/console/instances/health` with your operator token.
+2. Review `healthy`, `status`, and `reason` fields for failing downstream instances.
+3. Confirm gateway can reach each configured `baseUrl` and that token forwarding/overrides are valid.
+
 ## Stream detail shows no payload snapshot
 
 Possible causes:

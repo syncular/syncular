@@ -13,6 +13,7 @@ import { Settings } from 'lucide-react';
 import { useMemo } from 'react';
 import { useConnection } from './hooks/ConnectionContext';
 import { useStats } from './hooks/useConsoleApi';
+import { useInstanceContext } from './hooks/useInstanceContext';
 import { usePartitionContext } from './hooks/usePartitionContext';
 import { usePreferences } from './hooks/usePreferences';
 
@@ -50,6 +51,8 @@ function resolvePath(basePath: string, suffix: ConsoleNavSuffix): string {
 export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
   const { connect, config, isConnected, isConnecting } = useConnection();
   const { preferences } = usePreferences();
+  const { instanceId, rawInstanceId, setInstanceId, clearInstanceId } =
+    useInstanceContext();
   const { partitionId, rawPartitionId, setPartitionId, clearPartitionId } =
     usePartitionContext();
   const pathname = useRouterState({
@@ -58,6 +61,7 @@ export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
   const { data: stats } = useStats({
     refetchIntervalMs: preferences.refreshInterval * 1000,
     partitionId,
+    instanceId,
   });
 
   const normalizedBasePath = normalizeBasePath(basePath);
@@ -120,6 +124,29 @@ export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
         }
         right={
           <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <span className="font-mono text-[9px] text-neutral-500 uppercase tracking-wide">
+                Instance
+              </span>
+              <Input
+                variant="mono"
+                value={rawInstanceId}
+                onChange={(event) => setInstanceId(event.target.value)}
+                onBlur={(event) => setInstanceId(event.target.value.trim())}
+                placeholder="all"
+                className="h-7 w-[110px] px-2 py-1"
+              />
+              {instanceId ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-[10px]"
+                  onClick={clearInstanceId}
+                >
+                  All
+                </Button>
+              ) : null}
+            </div>
             <div className="flex items-center gap-1">
               <span className="font-mono text-[9px] text-neutral-500 uppercase tracking-wide">
                 Partition

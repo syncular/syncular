@@ -22,6 +22,14 @@ Command is the high-level operational dashboard. Use it to answer: "Are we healt
 - **Recent Commits table**: latest commit summaries with actor/table context.
 - **Live Feed**: realtime event stream from console live WebSocket.
 
+## Multi-instance gateway behavior
+
+When connected through a console gateway, Command shows a merged view across selected instances.
+
+- Use the top-nav instance selector to scope metrics and tables to one instance.
+- Leave instance empty to view merged totals and timelines.
+- In merged mode, partial downstream failures surface as degraded/partial responses rather than full dashboard failure.
+
 ## Investigation pivot points
 
 - Go to **Stream** when you need event-level detail or payloads.

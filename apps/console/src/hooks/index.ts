@@ -1,5 +1,6 @@
 export * from './ConnectionContext';
 export * from './useConsoleApi';
+export * from './useInstanceContext';
 export * from './useLiveEvents';
 export * from './useLocalStorage';
 export * from './usePartitionContext';

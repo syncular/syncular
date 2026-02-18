@@ -35,6 +35,14 @@ Use after out-of-band writes/imports performed outside normal push flow.
 4. Run prune/compact during low-traffic windows when possible.
 5. Verify results in Operation Audit and Stream timeline.
 
+## Gateway safety rules
+
+In gateway mode, maintenance and config mutations are intentionally single-instance.
+
+- Select one instance in the top-nav selector before running prune, compact, notify, or evict.
+- If no instance (or multiple) is selected, write operations are rejected with an instance-required validation error.
+- Use `GET /console/instances/health` to verify downstream reachability before running actions during incidents.
+
 ## Audit trail
 
 Every action is logged with:

@@ -13,6 +13,14 @@ Stream is the primary forensics view. It merges commits and request events into 
 - **Commits**: commit-only sequence for ordering checks.
 - **Events**: push/pull request behavior only.
 
+## Gateway and federated IDs
+
+In gateway mode, Stream merges records from multiple instances.
+
+- Each row includes a source instance label.
+- Detail routes use federated IDs (`<instanceId>:<localId>`) to avoid cross-instance collisions.
+- Use instance filters when you want local IDs and strict single-instance context.
+
 ## Search tokens
 
 Use tokenized filters in the search box:

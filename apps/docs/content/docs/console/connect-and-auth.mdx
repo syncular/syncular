@@ -20,6 +20,14 @@ The Console sends `Authorization: Bearer <token>` on API requests.
 
 Configure the token server-side through `createSyncServer({ console: { token } })` and distribute it only to authorized operators.
 
+## Gateway mode
+
+When the Console points at a gateway (`createConsoleGatewayRoutes`), it still authenticates with a single bearer token.
+
+- The gateway forwards that token to each configured downstream instance by default.
+- Downstream overrides are optional (`instances[].token`) when one target needs a different credential.
+- The top-nav instance selector maps to gateway filters (`instanceId` / `instanceIds`) so operators can switch between merged and single-instance views.
+
 ## Prefill from query params
 
 You can prefill connection settings using URL params:
@@ -51,3 +59,4 @@ If the Console is disconnected but config is already saved, use `Connect` from t
 - [Stats](/docs/api/getConsoleStats)
 - [Clients](/docs/api/getConsoleClients)
 - [Timeline](/docs/api/getConsoleTimeline)
+- [Operations setup (including gateway mode)](/docs/build/operations)

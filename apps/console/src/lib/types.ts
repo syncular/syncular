@@ -35,6 +35,9 @@ export interface ConsoleCommitListItem {
   createdAt: string;
   changeCount: number;
   affectedTables: string[];
+  instanceId?: string;
+  federatedCommitId?: string;
+  localCommitSeq?: number;
 }
 
 export interface ConsoleChange {
@@ -66,6 +69,8 @@ export interface ConsoleClient {
   lastRequestOutcome: string | null;
   effectiveScopes: Record<string, unknown>;
   updatedAt: string;
+  instanceId?: string;
+  federatedClientId?: string;
 }
 
 export interface ConsoleHandler {
@@ -99,6 +104,9 @@ export interface ConsoleRequestEvent {
   errorMessage: string | null;
   payloadRef: string | null;
   createdAt: string;
+  instanceId?: string;
+  federatedEventId?: string;
+  localEventId?: number;
 }
 
 export interface ConsoleRequestPayload {
@@ -107,6 +115,9 @@ export interface ConsoleRequestPayload {
   requestPayload: unknown;
   responsePayload: unknown | null;
   createdAt: string;
+  instanceId?: string;
+  federatedEventId?: string;
+  localEventId?: number;
 }
 
 export interface ConsoleTimelineItem {
@@ -114,6 +125,10 @@ export interface ConsoleTimelineItem {
   timestamp: string;
   commit: ConsoleCommitListItem | null;
   event: ConsoleRequestEvent | null;
+  instanceId?: string;
+  federatedTimelineId?: string;
+  localCommitSeq?: number | null;
+  localEventId?: number | null;
 }
 
 export type ConsoleOperationType =
@@ -131,6 +146,9 @@ export interface ConsoleOperationEvent {
   requestPayload: unknown | null;
   resultPayload: unknown | null;
   createdAt: string;
+  instanceId?: string;
+  federatedOperationId?: string;
+  localOperationId?: number;
 }
 
 export interface ConsoleNotifyDataChangeResponse {
@@ -148,6 +166,14 @@ export interface SyncStats {
   activeClientCount: number;
   minActiveClientCursor: number | null;
   maxActiveClientCursor: number | null;
+  partial?: boolean;
+  failedInstances?: Array<{
+    instanceId: string;
+    reason: string;
+    status?: number;
+  }>;
+  minCommitSeqByInstance?: Record<string, number>;
+  maxCommitSeqByInstance?: Record<string, number>;
 }
 
 export interface PaginatedResponse<T> {
@@ -190,7 +216,13 @@ export interface LatencyStatsResponse {
 
 // Live events types
 export interface LiveEvent {
-  type: 'push' | 'pull' | 'commit' | 'client_update';
+  type:
+    | 'push'
+    | 'pull'
+    | 'commit'
+    | 'client_update'
+    | 'instance_error'
+    | 'error';
   timestamp: string;
   data: Record<string, unknown>;
 }

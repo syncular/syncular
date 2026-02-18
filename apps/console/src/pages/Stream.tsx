@@ -119,6 +119,30 @@ function formatJson(value: unknown): string {
   }
 }
 
+function resolveCommitEntryId(
+  commit: ConsoleTimelineItem['commit'],
+  sourceInstanceId: string | undefined
+): string {
+  if (!commit) return '#?';
+  const token =
+    commit.federatedCommitId ??
+    (sourceInstanceId
+      ? `${sourceInstanceId}:${commit.commitSeq}`
+      : String(commit.commitSeq));
+  return `#${token}`;
+}
+
+function resolveEventEntryId(
+  event: ConsoleTimelineItem['event'],
+  sourceInstanceId: string | undefined
+): string {
+  if (!event) return 'E?';
+  const token =
+    event.federatedEventId ??
+    (sourceInstanceId ? `${sourceInstanceId}:${event.eventId}` : event.eventId);
+  return `E${token}`;
+}
+
 function buildTraceUrl(
   template: string | undefined,
   traceId: string | null,
@@ -198,36 +222,43 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
 
   const clearEvents = useClearEventsMutation();
 
-  const selectedCommitSeq = selectedEntryId?.startsWith('#')
-    ? Number.parseInt(selectedEntryId.slice(1), 10)
+  const selectedCommitRef = selectedEntryId?.startsWith('#')
+    ? selectedEntryId.slice(1)
     : undefined;
-  const selectedEventId = selectedEntryId?.startsWith('E')
-    ? Number.parseInt(selectedEntryId.slice(1), 10)
+  const selectedEventRef = selectedEntryId?.startsWith('E')
+    ? selectedEntryId.slice(1)
     : undefined;
+  const normalizedSelectedCommitRef =
+    selectedCommitRef && selectedCommitRef !== '?'
+      ? selectedCommitRef
+      : undefined;
+  const normalizedSelectedEventRef =
+    selectedEventRef && selectedEventRef !== '?' ? selectedEventRef : undefined;
 
   const {
     data: selectedCommit,
     isLoading: selectedCommitLoading,
     error: selectedCommitError,
-  } = useCommitDetail(selectedCommitSeq, {
-    enabled: selectedCommitSeq !== undefined,
+  } = useCommitDetail(normalizedSelectedCommitRef, {
+    enabled: normalizedSelectedCommitRef !== undefined,
     partitionId,
   });
   const {
     data: selectedEvent,
     isLoading: selectedEventLoading,
     error: selectedEventError,
-  } = useRequestEventDetail(selectedEventId, {
-    enabled: selectedEventId !== undefined,
+  } = useRequestEventDetail(normalizedSelectedEventRef, {
+    enabled: normalizedSelectedEventRef !== undefined,
     partitionId,
   });
   const {
     data: selectedPayload,
     isLoading: selectedPayloadLoading,
     error: selectedPayloadError,
-  } = useRequestEventPayload(selectedEventId, {
+  } = useRequestEventPayload(normalizedSelectedEventRef, {
     enabled:
-      selectedEventId !== undefined && Boolean(selectedEvent?.payloadRef),
+      normalizedSelectedEventRef !== undefined &&
+      Boolean(selectedEvent?.payloadRef),
     partitionId,
   });
   const selectedTraceUrl = useMemo(
@@ -270,16 +301,20 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
   const baseEntries = useMemo((): StreamOperation[] => {
     const items = timelineData?.items ?? [];
     return items.map((item: ConsoleTimelineItem) => {
+      const sourceInstanceId =
+        item.instanceId ?? item.commit?.instanceId ?? item.event?.instanceId;
+      const sourcePrefix = sourceInstanceId ? `[${sourceInstanceId}] ` : '';
+
       if (item.type === 'commit' && item.commit) {
         const commit = item.commit;
         return {
           type: 'commit',
-          id: `#${commit.commitSeq}`,
+          id: resolveCommitEntryId(commit, sourceInstanceId),
           outcome: '--',
           duration: '--',
           actor: commit.actorId,
           client: commit.clientId,
-          detail: `${commit.changeCount} chg | ${(commit.affectedTables ?? []).join(', ')}`,
+          detail: `${sourcePrefix}${commit.changeCount} chg | ${(commit.affectedTables ?? []).join(', ')}`,
           time: formatTime(item.timestamp, preferences.timeFormat),
         };
       }
@@ -300,12 +335,12 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
 
       return {
         type: event.eventType as 'push' | 'pull',
-        id: `E${event.eventId}`,
+        id: resolveEventEntryId(event, sourceInstanceId),
         outcome: event.outcome,
         duration: `${event.durationMs}ms`,
         actor: event.actorId,
         client: event.clientId,
-        detail: (event.tables ?? []).join(', ') || '--',
+        detail: `${sourcePrefix}${(event.tables ?? []).join(', ') || '--'}`,
         time: formatTime(item.timestamp, preferences.timeFormat),
       };
     });
@@ -450,10 +485,10 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {selectedCommitSeq !== undefined
-                ? `Commit #${selectedCommitSeq}`
-                : selectedEventId !== undefined
-                  ? `Event E${selectedEventId}`
+              {normalizedSelectedCommitRef !== undefined
+                ? `Commit #${normalizedSelectedCommitRef}`
+                : normalizedSelectedEventRef !== undefined
+                  ? `Event E${normalizedSelectedEventRef}`
                   : 'Entry details'}
             </DialogTitle>
           </DialogHeader>
@@ -480,6 +515,12 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
                     <span className="text-neutral-500">Client</span>
                     <div className="text-neutral-100">
                       {selectedCommit.clientId}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Instance</span>
+                    <div className="text-neutral-100">
+                      {selectedCommit.instanceId ?? '--'}
                     </div>
                   </div>
                   <div>
@@ -557,6 +598,12 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
                     <span className="text-neutral-500">Path</span>
                     <div className="text-neutral-100">
                       {selectedEvent.syncPath}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-neutral-500">Instance</span>
+                    <div className="text-neutral-100">
+                      {selectedEvent.instanceId ?? '--'}
                     </div>
                   </div>
                   <div>
@@ -639,7 +686,9 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
                         variant="ghost"
                         size="sm"
                         onClick={() =>
-                          setSelectedEntryId(`#${selectedEvent.commitSeq}`)
+                          setSelectedEntryId(
+                            `#${selectedEvent.instanceId ? `${selectedEvent.instanceId}:` : ''}${selectedEvent.commitSeq}`
+                          )
                         }
                       >
                         Open linked commit

@@ -4,11 +4,7 @@ import { Route as rootRoute } from './__root';
 
 function InvestigateEvent() {
   const { id } = Route.useParams();
-  const parsedId = Number.parseInt(id, 10);
-  if (!Number.isFinite(parsedId)) {
-    return <Stream />;
-  }
-  return <Stream initialSelectedEntryId={`E${parsedId}`} />;
+  return <Stream initialSelectedEntryId={`E${id}`} />;
 }
 
 export const Route = createRoute({

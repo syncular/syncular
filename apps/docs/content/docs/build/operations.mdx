@@ -43,6 +43,65 @@ app.route('/api/console', consoleRoutes);
 
 All paths below are **relative to where you mount** `createConsoleRoutes` (example above mounts at `/api/console`).
 
+## Gateway Mode (Multi-Instance)
+
+Use `createConsoleGatewayRoutes` when operators need one Console view across multiple Syncular instances.
+
+```typescript
+import {
+  createConsoleGatewayRoutes,
+  createTokenAuthenticator,
+} from '@syncular/server-hono';
+
+const authenticate = createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN);
+
+const consoleGatewayRoutes = createConsoleGatewayRoutes({
+  authenticate,
+  corsOrigins: '*',
+  instances: [
+    {
+      instanceId: 'feature-a',
+      label: 'Feature A',
+      baseUrl: 'https://api.acme.dev/feature-a',
+    },
+    {
+      instanceId: 'feature-b',
+      label: 'Feature B',
+      baseUrl: 'https://api.acme.dev/feature-b',
+    },
+    {
+      instanceId: 'legacy',
+      label: 'Legacy',
+      baseUrl: 'https://api.acme.dev/internal/legacy-sync',
+      token: process.env.LEGACY_CONSOLE_TOKEN, // optional override
+    },
+  ],
+  websocket: {
+    enabled: true,
+    upgradeWebSocket,
+    heartbeatIntervalMs: 30000,
+  },
+});
+
+app.route('/api/console', consoleGatewayRoutes);
+```
+
+Gateway auth behavior:
+
+- If an instance entry omits `token`, the gateway forwards the inbound bearer token to that instance.
+- Set per-instance `token` only when one downstream uses a different credential.
+
+Gateway filtering and safety:
+
+- Read endpoints support `instanceId` / `instanceIds` filters and return merged responses.
+- Write/config endpoints require exactly one target instance (`instanceId` or a single-value `instanceIds`).
+
+Gateway health probe:
+
+- `GET /instances/health` runs a lightweight probe (`/console/stats`) against selected downstream instances.
+- Response includes per-instance `healthy`, `status`, `reason`, `responseTimeMs`, and `checkedAt`.
+- Supports `instanceId` / `instanceIds` filters.
+
 ## Statistics Endpoints
 
 ### Overall Stats

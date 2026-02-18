@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LiveEvent } from '../lib/types';
 import { useConnection } from './ConnectionContext';
+import { useInstanceContext } from './useInstanceContext';
 
 interface UseLiveEventsOptions {
   /** Maximum number of events to keep in the buffer */
@@ -17,6 +18,8 @@ interface UseLiveEventsOptions {
   replayLimit?: number;
   /** Optional partition filter for emitted events */
   partitionId?: string;
+  /** Optional instance filter for emitted events */
+  instanceId?: string;
 }
 
 interface UseLiveEventsResult {
@@ -41,8 +44,11 @@ export function useLiveEvents(
     staleAfterMs = 65_000,
     replayLimit = 100,
     partitionId,
+    instanceId,
   } = options;
   const { config, isConnected: apiConnected } = useConnection();
+  const { instanceId: selectedInstanceId } = useInstanceContext();
+  const effectiveInstanceId = instanceId ?? selectedInstanceId;
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<
@@ -131,6 +137,9 @@ export function useLiveEvents(
         if (partitionId) {
           baseUrl.searchParams.set('partitionId', partitionId);
         }
+        if (effectiveInstanceId) {
+          baseUrl.searchParams.set('instanceId', effectiveInstanceId);
+        }
         return baseUrl.toString();
       })();
 
@@ -194,6 +203,12 @@ export function useLiveEvents(
           if (partitionId && liveEvent.data.partitionId !== partitionId) {
             return;
           }
+          if (
+            effectiveInstanceId &&
+            liveEvent.data.instanceId !== effectiveInstanceId
+          ) {
+            return;
+          }
 
           const lastEventTimestampMs = Date.parse(
             lastEventTimestampRef.current ?? ''
@@ -237,6 +252,7 @@ export function useLiveEvents(
     config?.token,
     maxEvents,
     partitionId,
+    effectiveInstanceId,
     replayLimit,
     staleAfterMs,
   ]);

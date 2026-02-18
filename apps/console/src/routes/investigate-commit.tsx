@@ -4,11 +4,7 @@ import { Route as rootRoute } from './__root';
 
 function InvestigateCommit() {
   const { seq } = Route.useParams();
-  const parsedSeq = Number.parseInt(seq, 10);
-  if (!Number.isFinite(parsedSeq)) {
-    return <Stream />;
-  }
-  return <Stream initialSelectedEntryId={`#${parsedSeq}`} />;
+  return <Stream initialSelectedEntryId={`#${seq}`} />;
 }
 
 export const Route = createRoute({
