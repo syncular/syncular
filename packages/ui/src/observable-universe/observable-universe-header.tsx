@@ -1,6 +1,6 @@
 'use client';
 
-import { ExternalLink, Github } from 'lucide-react';
+import { ExternalLink, Github, Star } from 'lucide-react';
 import { forwardRef } from 'react';
 import { cn } from '../lib/cn';
 import { UI_VERSION } from '../version';
@@ -15,6 +15,7 @@ export interface ObservableUniverseHeaderProps {
   demoHref?: string;
   consoleHref?: string;
   githubHref?: string;
+  githubStars?: number | null;
   className?: string;
 }
 
@@ -30,6 +31,19 @@ function isExternalHref(href: string): boolean {
   return href.startsWith('http://') || href.startsWith('https://');
 }
 
+function formatCompactCount(value: number): string {
+  if (value < 1000) return value.toString();
+  if (value < 10_000) {
+    const short = (value / 1000).toFixed(1);
+    return `${short.endsWith('.0') ? short.slice(0, -2) : short}k`;
+  }
+  if (value < 1_000_000) {
+    return `${Math.floor(value / 1000)}k`;
+  }
+  const short = (value / 1_000_000).toFixed(1);
+  return `${short.endsWith('.0') ? short.slice(0, -2) : short}m`;
+}
+
 export const ObservableUniverseHeader = forwardRef<
   HTMLElement,
   ObservableUniverseHeaderProps
@@ -39,10 +53,14 @@ export const ObservableUniverseHeader = forwardRef<
     demoHref,
     consoleHref,
     githubHref = 'https://github.com/syncular/syncular',
+    githubStars,
     className,
   },
   ref
 ) {
+  const formattedStars =
+    typeof githubStars === 'number' ? formatCompactCount(githubStars) : null;
+
   return (
     <nav
       ref={ref}
@@ -113,10 +131,21 @@ export const ObservableUniverseHeader = forwardRef<
               rel={
                 isExternalHref(githubHref) ? 'noreferrer noopener' : undefined
               }
-              className="text-neutral-400 hover:text-white transition-colors border border-border p-1.5 rounded"
-              aria-label="GitHub"
+              className={cn(
+                'text-neutral-400 hover:text-white transition-colors border border-border rounded inline-flex items-center',
+                formattedStars ? 'px-2.5 py-1 gap-1.5' : 'p-1.5'
+              )}
+              aria-label={
+                formattedStars ? `GitHub (${formattedStars} stars)` : 'GitHub'
+              }
             >
               <Github className="size-3.5" />
+              {formattedStars ? (
+                <span className="font-mono text-[10px] text-neutral-300 inline-flex items-center gap-1">
+                  <Star className="size-2.5" />
+                  {formattedStars}
+                </span>
+              ) : null}
             </a>
           ) : null}
         </div>

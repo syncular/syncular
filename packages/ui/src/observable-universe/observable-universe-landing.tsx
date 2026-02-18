@@ -20,6 +20,7 @@ export interface ObservableUniverseLandingProps {
   demoHref?: string;
   consoleHref?: string;
   githubHref?: string;
+  githubStars?: number | null;
   className?: string;
 }
 
@@ -27,7 +28,15 @@ export const ObservableUniverseLanding = forwardRef<
   HTMLDivElement,
   ObservableUniverseLandingProps
 >(function ObservableUniverseLanding(
-  { docsHref, topicLinks, demoHref, consoleHref, githubHref, className },
+  {
+    docsHref,
+    topicLinks,
+    demoHref,
+    consoleHref,
+    githubHref,
+    githubStars,
+    className,
+  },
   ref
 ) {
   const { clients, entries, metrics, streamRate } =
@@ -43,6 +52,7 @@ export const ObservableUniverseLanding = forwardRef<
         demoHref={demoHref}
         consoleHref={consoleHref}
         githubHref={githubHref}
+        githubStars={githubStars}
       />
       <HeroDashboardSection
         clients={clients}
