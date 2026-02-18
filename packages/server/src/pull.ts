@@ -392,6 +392,15 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   afterCursor: minSubCursor,
                 })
               : [];
+          const maxExternalCommitByTable = new Map<string, number>();
+          for (const change of externalDataChanges) {
+            for (const table of change.tables) {
+              const previous = maxExternalCommitByTable.get(table) ?? -1;
+              if (change.commitSeq > previous) {
+                maxExternalCommitByTable.set(table, change.commitSeq);
+              }
+            }
+          }
 
           for (const sub of resolved) {
             const cursor = Math.max(-1, sub.cursor ?? -1);
@@ -415,15 +424,17 @@ export async function pull<DB extends SyncCoreDb>(args: {
 
             const effectiveScopes = sub.scopes;
             activeSubscriptions.push({ scopes: effectiveScopes });
+            const latestExternalCommitForTable = maxExternalCommitByTable.get(
+              sub.table
+            );
 
             const needsBootstrap =
               sub.bootstrapState != null ||
               cursor < 0 ||
               cursor > maxCommitSeq ||
               (minCommitSeq > 0 && cursor < minCommitSeq - 1) ||
-              externalDataChanges.some(
-                (c) => c.commitSeq > cursor && c.tables.includes(sub.table)
-              );
+              (latestExternalCommitForTable !== undefined &&
+                latestExternalCommitForTable > cursor);
 
             if (needsBootstrap) {
               const tables = args.handlers
