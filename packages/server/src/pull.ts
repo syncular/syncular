@@ -779,24 +779,20 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 (a, b) => a.commitSeq - b.commitSeq || a.changeId - b.changeId
               );
 
-              const commitsBySeq = new Map<number, SyncCommit>();
+              const commits: SyncCommit[] = [];
               for (const item of latest) {
-                let commit = commitsBySeq.get(item.commitSeq);
-                if (!commit) {
-                  commit = {
+                const lastCommit = commits[commits.length - 1];
+                if (!lastCommit || lastCommit.commitSeq !== item.commitSeq) {
+                  commits.push({
                     commitSeq: item.commitSeq,
                     createdAt: item.createdAt,
                     actorId: item.actorId,
-                    changes: [],
-                  };
-                  commitsBySeq.set(item.commitSeq, commit);
+                    changes: [item.change],
+                  });
+                  continue;
                 }
-                commit.changes.push(item.change);
+                lastCommit.changes.push(item.change);
               }
-
-              const commits = Array.from(commitsBySeq.values()).sort(
-                (a, b) => a.commitSeq - b.commitSeq
-              );
 
               subResponses.push({
                 id: sub.id,
