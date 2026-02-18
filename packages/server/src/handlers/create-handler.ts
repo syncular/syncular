@@ -496,27 +496,50 @@ export function createServerHandler<
         : {};
     const payload = applyInboundTransform(payloadRecord, ctx.schemaVersion);
 
-    // Check for existing row
-    const existing = await (
-      trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+    // Check whether the row exists and fetch only version metadata for hot path.
+    const existingRow = await (
+      (trx.selectFrom(table) as SelectQueryBuilder<
         ServerDB,
         keyof ServerDB & string,
         Record<string, unknown>
-      >
+      >).select(ref<string>(versionColumn))
     )
       .where(ref<string>(primaryKey), '=', op.row_id)
       .executeTakeFirst();
 
-    const existingRow = existing as Record<string, unknown> | undefined;
+    const hasExistingRow = existingRow !== undefined;
     const existingVersion =
       (existingRow?.[versionColumn] as number | undefined) ?? 0;
 
     // Check version conflict
     if (
-      existing &&
+      hasExistingRow &&
       op.base_version != null &&
       existingVersion !== op.base_version
     ) {
+      const conflictRow = await (
+        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+          ServerDB,
+          keyof ServerDB & string,
+          Record<string, unknown>
+        >
+      )
+        .where(ref<string>(primaryKey), '=', op.row_id)
+        .executeTakeFirst();
+
+      if (!conflictRow) {
+        return {
+          result: {
+            opIndex,
+            status: 'error',
+            error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
+            code: 'ROW_MISSING',
+            retriable: false,
+          },
+          emittedChanges: [],
+        };
+      }
+
       return {
         result: {
           opIndex,
@@ -524,7 +547,7 @@ export function createServerHandler<
           message: `Version conflict: server=${existingVersion}, base=${op.base_version}`,
           server_version: existingVersion,
           server_row: applyOutboundTransform(
-            existing as Selectable<ServerDB[TableName]>
+            conflictRow as Selectable<ServerDB[TableName]>
           ),
         },
         emittedChanges: [],
@@ -533,7 +556,7 @@ export function createServerHandler<
 
     // If the client provided a base version, they expected this row to exist.
     // A missing row usually indicates stale local state after a server reset.
-    if (!existing && op.base_version != null) {
+    if (!hasExistingRow && op.base_version != null) {
       return {
         result: {
           opIndex,
@@ -552,7 +575,7 @@ export function createServerHandler<
     let constraintError: { message: string; code: string } | null = null;
 
     try {
-      if (existing) {
+      if (hasExistingRow) {
         // Update - merge payload with existing
         const updateSet: Record<string, unknown> = {
           ...payload,
