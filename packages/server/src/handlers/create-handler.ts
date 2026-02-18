@@ -454,24 +454,7 @@ export function createServerHandler<
 
     // Handle delete
     if (op.op === 'delete') {
-      const existing = await (
-        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
-          ServerDB,
-          keyof ServerDB & string,
-          Record<string, unknown>
-        >
-      )
-        .where(ref<string>(primaryKey), '=', op.row_id)
-        .executeTakeFirst();
-
-      if (!existing) {
-        return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
-      }
-
-      // Extract scopes from existing row for the delete emission
-      const scopes = extractScopesImpl(existing as Record<string, unknown>);
-
-      await (
+      const deleted = await (
         trx.deleteFrom(table) as DeleteQueryBuilder<
           ServerDB,
           keyof ServerDB & string,
@@ -479,7 +462,16 @@ export function createServerHandler<
         >
       )
         .where(ref<string>(primaryKey), '=', op.row_id)
-        .execute();
+        .returningAll()
+        .executeTakeFirst();
+
+      const deletedRow = deleted as Record<string, unknown> | undefined;
+      if (!deletedRow) {
+        return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
+      }
+
+      // Extract scopes from existing row for the delete emission
+      const scopes = extractScopesImpl(deletedRow);
 
       const emitted: EmittedChange = {
         table,
@@ -572,7 +564,7 @@ export function createServerHandler<
           delete updateSet[col];
         }
 
-        await (
+        updated = (await (
           trx.updateTable(table) as UpdateQueryBuilder<
             ServerDB,
             TableName,
@@ -582,7 +574,8 @@ export function createServerHandler<
         )
           .set(updateSet as UpdateSetObject)
           .where(ref<string>(primaryKey), '=', op.row_id)
-          .execute();
+          .returningAll()
+          .executeTakeFirst()) as Record<string, unknown> | undefined;
       } else {
         // Insert
         const insertValues: Record<string, unknown> = {
@@ -591,7 +584,7 @@ export function createServerHandler<
           [versionColumn]: 1,
         };
 
-        await (
+        updated = (await (
           trx.insertInto(table) as InsertQueryBuilder<
             ServerDB,
             TableName,
@@ -599,19 +592,9 @@ export function createServerHandler<
           >
         )
           .values(insertValues as Insertable<ServerDB[TableName]>)
-          .execute();
+          .returningAll()
+          .executeTakeFirst()) as Record<string, unknown> | undefined;
       }
-
-      // Read back the updated row
-      updated = await (
-        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
-          ServerDB,
-          keyof ServerDB & string,
-          Record<string, unknown>
-        >
-      )
-        .where(ref<string>(primaryKey), '=', op.row_id)
-        .executeTakeFirstOrThrow();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!isConstraintViolationError(message)) {
