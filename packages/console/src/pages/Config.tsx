@@ -48,12 +48,13 @@ import type {
   ConsoleApiKeyBulkRevokeResponse,
 } from '../lib/types';
 
-export function Config() {
+export function Config({ children }: { children?: import('react').ReactNode }) {
   return (
     <div className="space-y-4 px-5 py-5">
       <ConnectionTab />
       <ApiKeysTab />
       <PreferencesTab />
+      {children}
     </div>
   );
 }

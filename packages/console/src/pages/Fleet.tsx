@@ -7,7 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
   EmptyState,
-  FleetCard,
+  FleetTable,
   Pagination,
   PanelShell,
   Spinner,
@@ -99,7 +99,11 @@ function mapToSyncNode(
   };
 }
 
-export function Fleet() {
+export function Fleet({
+  emptyState,
+}: {
+  emptyState?: import('react').ReactNode;
+} = {}) {
   const [page, setPage] = useState(1);
   const [evictingClientId, setEvictingClientId] = useState<string | null>(null);
   const { preferences } = usePreferences();
@@ -167,22 +171,20 @@ export function Fleet() {
       )}
 
       {syncNodes.length === 0 ? (
-        <PanelShell>
-          <EmptyState message="No clients yet" />
-        </PanelShell>
+        (emptyState ?? (
+          <PanelShell>
+            <EmptyState message="No clients yet" />
+          </PanelShell>
+        ))
       ) : (
-        <div className="grid grid-cols-3 gap-3">
-          {syncNodes.map((node, i) => (
-            <FleetCard
-              key={node.id}
-              client={node}
-              headSeq={headSeq}
-              onEvict={() =>
-                setEvictingClientId(data?.items[i]?.clientId ?? node.id)
-              }
-            />
-          ))}
-        </div>
+        <FleetTable
+          clients={syncNodes}
+          headSeq={headSeq}
+          onEvict={(clientId) => {
+            const item = data?.items.find((c) => c.clientId === clientId);
+            setEvictingClientId(item?.clientId ?? clientId);
+          }}
+        />
       )}
 
       {totalPages > 1 && (

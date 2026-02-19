@@ -226,3 +226,20 @@ export interface LiveEvent {
   timestamp: string;
   data: Record<string, unknown>;
 }
+
+// ---------------------------------------------------------------------------
+// Blob storage
+// ---------------------------------------------------------------------------
+
+export interface ConsoleBlob {
+  key: string;
+  size: number;
+  uploaded: string;
+  httpMetadata?: { contentType?: string };
+}
+
+export interface ConsoleBlobListResponse {
+  items: ConsoleBlob[];
+  truncated: boolean;
+  cursor: string | null;
+}

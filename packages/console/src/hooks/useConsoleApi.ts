@@ -7,6 +7,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
+  ConsoleBlob,
+  ConsoleBlobListResponse,
   ConsoleClient,
   ConsoleCommitDetail,
   ConsoleCommitListItem,
@@ -104,6 +106,8 @@ const queryKeys = {
     expiresWithinDays?: number;
     instanceId?: string;
   }) => ['console', 'api-keys', params] as const,
+  blobs: (params?: Record<string, unknown>) =>
+    ['console', 'blobs', params] as const,
 };
 
 function resolveRefetchInterval(
@@ -923,4 +927,105 @@ export function useStageRotateApiKeyMutation() {
       queryClient.invalidateQueries({ queryKey: ['console', 'api-keys'] });
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Blob storage hooks
+// ---------------------------------------------------------------------------
+
+export function useBlobs(
+  options: {
+    prefix?: string;
+    cursor?: string;
+    limit?: number;
+    refetchIntervalMs?: number;
+  } = {}
+) {
+  const { config: connectionConfig } = useConnection();
+  const queryClient = useQueryClient();
+  return useQuery<ConsoleBlobListResponse>({
+    queryKey: queryKeys.blobs({
+      prefix: options.prefix,
+      cursor: options.cursor,
+      limit: options.limit,
+    }),
+    queryFn: async () => {
+      if (!connectionConfig) throw new Error('Not connected');
+      const queryString = new URLSearchParams();
+      if (options.prefix) queryString.set('prefix', options.prefix);
+      if (options.cursor) queryString.set('cursor', options.cursor);
+      if (options.limit) queryString.set('limit', String(options.limit));
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          '/console/blobs',
+          queryString
+        ),
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to list blobs');
+      return response.json();
+    },
+    enabled: !!connectionConfig,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 30000),
+  });
+}
+
+export function useDeleteBlobMutation() {
+  const { config: connectionConfig } = useConnection();
+  const queryClient = useQueryClient();
+  return useMutation<{ deleted: boolean }, Error, string>({
+    mutationFn: async (key: string) => {
+      if (!connectionConfig) throw new Error('Not connected');
+      const encodedKey = encodeURIComponent(key);
+      const response = await fetch(
+        buildConsoleUrl(
+          connectionConfig.serverUrl,
+          `/console/blobs/${encodedKey}`,
+          new URLSearchParams()
+        ),
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${connectionConfig.token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to delete blob');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['console', 'blobs'] });
+    },
+  });
+}
+
+export function useBlobDownload() {
+  const { config: connectionConfig } = useConnection();
+  return async (key: string) => {
+    if (!connectionConfig) throw new Error('Not connected');
+    const encodedKey = encodeURIComponent(key);
+    const response = await fetch(
+      buildConsoleUrl(
+        connectionConfig.serverUrl,
+        `/console/blobs/${encodedKey}/download`,
+        new URLSearchParams()
+      ),
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${connectionConfig.token}` },
+      }
+    );
+    if (!response.ok) throw new Error('Failed to download blob');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = key.split('/').pop() || key;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 }

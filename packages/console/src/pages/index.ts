@@ -1,3 +1,4 @@
+export * from './Blobs';
 export * from './Command';
 export * from './Config';
 export * from './Fleet';
