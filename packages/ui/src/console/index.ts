@@ -9,6 +9,7 @@ export * from './danger-action-card';
 export * from './empty-state';
 export * from './filter-bar';
 export * from './fleet-card';
+export * from './fleet-table';
 export * from './handlers-table';
 export * from './kpi-card';
 export * from './kpi-strip';

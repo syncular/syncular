@@ -81,7 +81,8 @@
         "default": "./dist/navigation/index.js"
       }
     },
-    "./styles.css": "./src/styles/styles.css",
+    "./styles.css": "./dist/styles.css",
+    "./styles.source.css": "./src/styles/styles.css",
     "./styles/tokens.css": "./src/styles/tokens.css",
     "./package.json": "./package.json"
   },
@@ -91,7 +92,8 @@
   ],
   "scripts": {
     "tsgo": "tsgo --noEmit",
-    "build": "tsgo",
+    "build:css": "bunx @tailwindcss/cli -i src/styles/styles.css -o dist/styles.css",
+    "build": "tsgo && bun run build:css",
     "release": "bunx syncular-publish"
   },
   "peerDependencies": {
@@ -109,6 +111,7 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
+    "@tailwindcss/cli": "^4.1.18",
     "@types/react": "^19.2.14"
   }
 }

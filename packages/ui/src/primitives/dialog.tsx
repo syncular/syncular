@@ -94,7 +94,7 @@ const DialogDescription = forwardRef<
 >(({ className, ...props }, ref) => (
   <BaseDialog.Description
     ref={ref}
-    className={cn('text-sm text-neutral-400', className)}
+    className={cn('font-mono text-[10px] text-neutral-500', className)}
     {...props}
   />
 ));

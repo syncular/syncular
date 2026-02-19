@@ -24,9 +24,13 @@ export function DangerActionCard({
   return (
     <Card className={cn('border-offline/20', className)}>
       <CardContent className="flex flex-col gap-3">
-        <h3 className="text-lg font-semibold text-offline">{title}</h3>
+        <h3 className="font-mono text-[10px] text-offline uppercase tracking-widest">
+          {title}
+        </h3>
         {description ? (
-          <p className="text-sm text-neutral-500">{description}</p>
+          <p className="font-mono text-[10px] text-neutral-500">
+            {description}
+          </p>
         ) : null}
         {stats ? <div>{stats}</div> : null}
         {onAction ? (

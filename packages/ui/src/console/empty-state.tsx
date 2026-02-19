@@ -24,7 +24,7 @@ export function EmptyState({
       )}
     >
       {icon ? <div className="text-neutral-500">{icon}</div> : null}
-      <p className="text-sm text-neutral-500">{message}</p>
+      <p className="font-mono text-[10px] text-neutral-500">{message}</p>
       {action ? <div>{action}</div> : null}
     </div>
   );
