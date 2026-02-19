@@ -11,13 +11,13 @@ This isn't a new obsession. Back in 2019 I built [debe](https://github.com/bknif
 
 I spent the better part of a year evaluating the current generation of sync tools. I built prototypes with each, hit limits, wrote glue code, and eventually realized the glue code was the actual product I needed. So I built it.
 
-This post walks through what I tried, the architectural lessons I extracted along the way, and how those lessons led to [Syncular](https://syncular.dev). Even if you never use Syncular, the patterns and tradeoffs here apply to anyone building sync.
+This post walks through what I tried, what I learned along the way, and how those lessons led to [Syncular](https://syncular.dev). Even if you never use Syncular, the patterns and tradeoffs here apply to anyone building sync.
 
 ## Why offline writes are the real problem
 
 Most sync frameworks start with the read path: how do we get server data to the client fast? That's a well-understood problem. Stream shapes from Postgres, cache queries locally, use reactive subscriptions. There are good tools for all of this.
 
-But the moment you need durable offline writes, the complexity explodes:
+But the moment you need durable offline writes, things get ugly fast:
 
 - **Durability across restarts.** The user typed something, closed the app, and opened it a week later. Is it still there?
 - **Ordering and idempotency.** The push failed, so we retry. Does the server apply it twice? Does the order change?
@@ -33,7 +33,7 @@ Notion reached a similar conclusion from the product side. When they [shipped of
 
 ### The IndexedDB floor
 
-There's a structural reason this is so hard on the web. Every browser-based offline-first tool eventually hits the same floor: [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API). It's fundamentally an object store, not a relational database. OPFS is changing this picture, but adoption is still early.
+There's a structural reason this is so hard on the web. Every browser-based offline-first tool eventually hits the same floor: [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API). It's fundamentally an object store, not a relational database. OPFS is changing this picture, but adoption is still limited.
 
 Every relational abstraction on top of IndexedDB must emulate relational guarantees over a key-value store, and that emulation comes with tradeoffs. PowerSync stores WASM SQLite binary chunks in IndexedDB. WatermelonDB uses an in-memory LokiJS database that flushes to IndexedDB. Triplit and InstantDB use triples stored in IndexedDB. Each approach trades off differently, but they all share the same bottleneck.
 
@@ -41,7 +41,7 @@ The [Marco team's offline-first landscape post](https://marcoapp.io/blog/offline
 
 The overhead can be staggering — a [LokiJS issue](https://github.com/techfort/LokiJS/issues/620) reports 3.5MB of entities ballooning to 2,944MB in Chrome's IndexedDB usage.
 
-[Notion's migration to WASM SQLite](https://www.notion.com/blog/how-we-sped-up-notion-in-the-browser-with-wasm-sqlite) showed what's possible on the other side: 20% faster page navigation (up to 33% in some regions), 50% faster initial loads. But OPFS "doesn't come with graceful handling of concurrency" — Notion had to build a SharedWorker architecture where a single "active tab" handles all writes with Web Locks. And early practitioner reports suggest OPFS-based WASM SQLite may have [significantly higher corruption rates](https://news.ycombinator.com/item?id=45066070) than native SQLite.
+[Notion's migration to WASM SQLite](https://www.notion.com/blog/how-we-sped-up-notion-in-the-browser-with-wasm-sqlite) showed what's possible on the other side: 20% faster page navigation (up to 33% in some regions), 50% faster initial loads. But OPFS "doesn't come with graceful handling of concurrency" — Notion had to build a SharedWorker architecture where a single "active tab" handles all writes with Web Locks. And early practitioner reports suggest OPFS-based WASM SQLite may have [higher corruption rates](https://news.ycombinator.com/item?id=45066070) than native SQLite.
 
 The point for write durability: your offline outbox is only as reliable as your persistence substrate. If IndexedDB silently bloats or OPFS corrupts under concurrent writes, "durable offline queue" becomes a support nightmare.
 
@@ -49,23 +49,23 @@ The point for write durability: your offline outbox is only as reliable as your 
 
 ### PowerSync
 
-PowerSync is probably the most mature option in the space. Multi-database support (Postgres, MongoDB, MySQL), strong mobile SDKs (Flutter, React Native, Swift, Kotlin), and a real team with enterprise customers.
+PowerSync is probably the most mature option out there. Multi-database support (Postgres, MongoDB, MySQL), strong mobile SDKs (Flutter, React Native, Swift, Kotlin), and a real team with enterprise customers.
 
-But the developer experience was rough. Sync rules are defined in YAML — powerful for flat access patterns, but painful for hierarchical permissions. "Show me tasks in projects I'm a member of" requires expressing a join relationship in a declarative config language that doesn't support joins. Self-hosting requires Postgres _and_ a separate MongoDB cluster _and_ a lot of configuration. The Marco team reported 45-second client initialization times and 100ms+ query latency on web.
+But the developer experience was rough. Sync rules are defined in YAML — powerful for flat access patterns, but painful for hierarchical permissions. "Show me tasks in projects I'm a member of" requires expressing a join relationship in a declarative config language that doesn't support joins. Self-hosting requires Postgres _and_ a separate MongoDB cluster _and_ a lot of configuration. The Marco team (building an offline-first email client) reported 45-second client initialization times and 100ms+ query latency on web.
 
 **The general lesson:** Declarative auth configuration (YAML, JSON rules) works for flat access control — "user X can read table Y." But real applications have hierarchical scoping: users belong to organizations, organizations have projects, projects have tasks. Expressing that in a declarative config language means either flattening your hierarchy (denormalization) or building escape hatches. This isn't a PowerSync-specific problem — Firebase security rules hit the same wall. At a certain complexity, permissions need to be code, not config.
 
 ### Zero
 
-Zero, from the Replicache team, is the most exciting project in this space. Reactive queries that run against a local SQLite cache, [Incremental View Maintenance](https://en.wikipedia.org/wiki/Materialized_view#Incremental_view_maintenance) to update results efficiently, and a demo that is genuinely _fast_. The DX is exceptional.
+Zero, from the Replicache team, is the most exciting of the bunch. Reactive queries that run against a local SQLite cache, [Incremental View Maintenance](https://en.wikipedia.org/wiki/Materialized_view#Incremental_view_maintenance) to update results efficiently, and a demo that is genuinely _fast_. The DX is exceptional.
 
-But Zero's model is different from traditional sync — it's closer to a reactive query cache than a replication framework. It sits between your client and Postgres as an additional service, keeping the active working set in memory with a [recommended ~40MB limit](https://news.ycombinator.com/item?id=45066070) for the initial sync to avoid browser memory pressure. Authorization and permissions are your responsibility — and the team is candid about how hard that is. Their own docs note that "syncing a static block of data is easy; syncing just the slice the user wants and has access to is much more difficult." The mental model is different — reactive queries decide what data lives on a device, which means debugging "why is this row missing?" requires understanding the query planner's decisions rather than inspecting an explicit subscription list.
+But Zero's model is different from traditional sync — it's closer to a reactive query cache than a replication framework. It sits between your client and Postgres as an additional service, keeping the active working set in memory with a recommended ~40MB limit for the initial sync to avoid browser memory pressure. Authorization and permissions are your responsibility — and the team is candid about how hard that is. Their own docs note that "syncing a static block of data is easy; syncing just the slice the user wants and has access to is much more difficult." The mental model is different — reactive queries decide what data lives on a device, which means debugging "why is this row missing?" requires understanding the query planner's decisions rather than inspecting an explicit subscription list.
 
 **The general lesson:** There's a real architectural tension between reactive query replication and explicit subscription-based replication. Reactive queries are magical when they work — you write a query, and the system figures out what to sync. But they trade debuggability for convenience. When something goes wrong, you have to reason about cache coherence and invalidation chains. Explicit subscriptions are more work to set up, but the state is always inspectable: "this device asked for X, was authorized for Y, received Z."
 
 ### Electric SQL (+ TanStack DB)
 
-Electric SQL is remarkable engineering. It consumes the Postgres logical replication stream and turns it into HTTP-streamable "Shape Logs" — append-only logs of database operations scoped to a query shape. It's CDN-native by design and can support millions of concurrent clients with minimal load on the sync service and zero load on Postgres.
+Electric SQL is seriously impressive. It consumes the Postgres logical replication stream and turns it into HTTP-streamable "Shape Logs" — append-only logs of database operations scoped to a query shape. It's CDN-native by design and can support millions of concurrent clients with minimal load on the sync service and zero load on Postgres.
 
 But Electric is read-path only. It doesn't handle mutations, conflict resolution, or offline writes. Those stay in your application. You write the outbox, you handle the retries, you build the conflict detection. TanStack DB adds an optimistic mutation layer on the client, but the server-side write path — validation, authorization, conflict resolution — is entirely your problem.
 
@@ -81,9 +81,9 @@ But Replicache is a KV store on the client. No relational queries without buildi
 
 ### LiveStore
 
-[LiveStore](https://livestore.dev/), from Johannes Schickling (creator of Prisma) and born out of the [Riffle](https://riffle.systems/) research project at MIT CSAIL, is the tool I came closest to adopting. Architecturally, it's the most similar to what I ended up building: event-sourced, local SQLite as the primary database, Git-inspired push/pull sync. The reactive query layer is excellent — it replaces Redux/MobX-style state management with reactive SQLite, and the research pedigree (peer-reviewed at [UIST 2023](https://dl.acm.org/doi/10.1145/3586183.3606801)) gives it genuine intellectual depth.
+[LiveStore](https://livestore.dev/), from Johannes Schickling (creator of Prisma) and born out of the [Riffle](https://riffle.systems/) research project at MIT CSAIL, is the tool I came closest to adopting. Architecturally, it's the most similar to what I ended up building: event-sourced, local SQLite as the primary database, Git-inspired push/pull sync. The reactive query layer is excellent — it replaces Redux/MobX-style state management with reactive SQLite, and it's backed by real research (peer-reviewed at [UIST 2023](https://dl.acm.org/doi/10.1145/3586183.3606801)).
 
-But LiveStore is primarily a client-side state management framework that happens to sync, not a sync protocol. In practice, that means several things I needed weren't there yet: authorization and partial sync are [documented as TODO](https://docs.livestore.dev/reference/syncing/). Conflict resolution beyond last-write-wins is [not yet implemented](https://docs.livestore.dev/reference/syncing/). And critically, there's no event log compaction — the log grows without bound, and every client must replay the full history (or eventually, a compacted version that doesn't exist yet). The docs are [upfront about this](https://docs.livestore.dev/evaluation/state-of-the-project/): it "doesn't scale for unbounded amounts of data."
+But LiveStore is primarily a client-side state management framework that happens to sync, not a sync protocol. In practice, that means several things I needed weren't there yet: authorization and partial sync are [documented as TODO](https://docs.livestore.dev/reference/syncing/). Conflict resolution beyond last-write-wins is [not yet implemented](https://docs.livestore.dev/reference/syncing/). And critically, there's no event log compaction — the log grows without bound, and every client must replay the full history. A compacted version doesn't exist yet. The docs are [upfront about this](https://docs.livestore.dev/evaluation/state-of-the-project/): it "doesn't scale for unbounded amounts of data."
 
 For apps with bounded event histories (a personal todo app, a small team tool), this is fine. For multi-tenant SaaS with years of data, growing teams, and hierarchical permissions, you need the server to control what each client sees, prune old history, and compact the log. That's the gap that pushed me to build my own.
 
@@ -91,7 +91,7 @@ For apps with bounded event histories (a personal todo app, a small team tool), 
 
 ## Patterns that apply to any sync system
 
-Across all this exploration, a handful of architectural patterns kept proving their worth. These aren't Syncular-specific — they're lessons I'd pass on to anyone building sync.
+Across all of this, a few patterns kept showing up.
 
 ### The doorbell pattern
 
@@ -127,7 +127,9 @@ The costs of CRDTs for structured data are real and quantified. [Cinapse moved a
 
 Every sync framework needs to answer one question: "which data goes to which client?" The way they force you to answer it shapes your entire data architecture.
 
-**Denormalize to fit the sync model.** PowerSync organizes data into ["sync buckets"](https://docs.powersync.com/sync/rules/organize-data-into-buckets) — each bucket is a unit of replication defined by YAML sync rules. To make this work, your Postgres data needs to carry the information that determines bucket membership on each row. If a task is visible because the user is a member of a project, and project membership lives in a join table, you're stuck: either denormalize `project_id` onto every task row and flatten the membership lookup into a YAML rule, or restructure your schema so the bucket boundary aligns with your authorization boundary. The Marco team hit this directly — PowerSync ["required us to completely denormalize our Postgres tables, as relations are not properly supported across the sync buckets."](https://marcoapp.io/blog/offline-first-landscape) The [Facilitron migration to PowerSync](https://www.powersync.com/blog/how-facilitron-migrated-from-atlas-device-sync-to-powersync) describes the same pattern: client mutations written to SQLite plus an upload queue, with developers implementing `uploadData()` to apply those mutations against their backend API.
+**Denormalize to fit the sync model.** PowerSync organizes data into ["sync buckets"](https://docs.powersync.com/sync/rules/organize-data-into-buckets) — each bucket is a unit of replication defined by YAML sync rules. To make this work, your Postgres data needs to carry the information that determines bucket membership on each row. If a task is visible because the user is a member of a project, and project membership lives in a join table, you're stuck: either denormalize `project_id` onto every task row and flatten the membership lookup into a YAML rule, or restructure your schema so the bucket boundary aligns with your authorization boundary.
+
+The Marco team hit this directly — PowerSync ["required us to completely denormalize our Postgres tables, as relations are not properly supported across the sync buckets."](https://marcoapp.io/blog/offline-first-landscape) The [Facilitron migration to PowerSync](https://www.powersync.com/blog/how-facilitron-migrated-from-atlas-device-sync-to-powersync) describes the same pattern: client mutations written to SQLite plus an upload queue, with developers implementing `uploadData()` to apply those mutations against their backend API.
 
 Triplit takes it further: your relational data is decomposed into [triples](https://www.triplit.dev/) `(entity_id, attribute, value)`. That's not denormalization — it's a different data model. Joins become graph traversals. Aggregates become client-side reductions. And as the Marco team found, [5MB of JSON can balloon to 1GB of SQLite](https://marcoapp.io/blog/offline-first-landscape) under the triples representation.
 
@@ -246,19 +248,21 @@ This doesn't make revocation trivial — it's inherently hard in any offline sys
 
 If you're evaluating sync tools right now, here's where I see things:
 
-There are 14+ solutions in this space, and there's no clear winner. The ecosystem is fragmented because the problem has genuinely different shapes depending on your use case.
+There are 14+ solutions and no clear winner — the problem just looks different depending on what you're building.
 
-**Two architectural camps.** CRDTs (Automerge, Yjs) are the right choice for collaborative document editing. Server-authoritative systems (Zero, Electric, PowerSync, Syncular, Replicache) are the right choice for structured data with permissions. Don't let anyone tell you one camp is universally better.
+**Two architectural camps.** CRDTs (Automerge, Yjs) for collaborative document editing. Server-authoritative systems (Zero, Electric, PowerSync, Syncular, Replicache) for structured data with permissions.
 
-**SQLite-on-client is the rising trend.** LiveStore, Notion's WASM SQLite migration, and the broader libSQL/Turso ecosystem all point the same direction: give the client a real relational database, not a KV store with a relational wrapper. Expect this to accelerate.
+**SQLite-on-client is where things are headed.** LiveStore, Notion's WASM SQLite migration, and the broader libSQL/Turso ecosystem all point the same direction: give the client a real relational database, not a KV store with a relational wrapper.
 
 **Vendor lock-in is a real, demonstrated risk.** MongoDB [announced the deprecation of Atlas Device Sync](https://www.mongodb.com/docs/atlas/app-services/sync/device-sync-deprecation/) (formerly Realm Sync) in September 2024, with final shutdown on September 30, 2025. Teams with production apps had a year to migrate — with [no clear first-party alternative](https://github.com/realm/realm-swift/discussions/8680) and a lot of frustration. If your sync layer is a hosted service with proprietary internals, you're one corporate decision away from a rewrite.
 
 **What developers actually want** (based on the [Zero launch HN thread](https://news.ycombinator.com/item?id=42453431) and similar discussions): speed, bring-your-own-database, partial sync with permissions, custom server-side logic, SQL familiarity, open source, and low barrier to entry. No single tool delivers all of these today. [Ink & Switch's seven ideals](https://www.inkandswitch.com/local-first/) — fast, multi-device, offline, collaboration, longevity, privacy, user control — remain the north star, but the ecosystem is still early.
 
-**The decentralized camp is solving a different problem.** Projects like [Jazz](https://jazz.tools/), [Evolu](https://www.evolu.dev/), and [Anytype/AnySync](https://anytype.io/) optimize for data sovereignty — no central server, end-to-end encryption, cryptographic identity and permissions. If your primary requirement is that no authority controls user data, these projects are doing important work. The tradeoff is that without a central server, authorization must be enforced via cryptography rather than server-side validation, conflict resolution must be automatic (typically CRDTs), and revocation is fundamentally harder — you can't un-share a key a client already has. Syncular assumes a server exists and makes it the authority. Different problem, different architecture.
+**The decentralized camp is solving a different problem.** Projects like [Jazz](https://jazz.tools/), [Evolu](https://www.evolu.dev/), and [Anytype/AnySync](https://anytype.io/) optimize for data sovereignty — no central server, end-to-end encryption, cryptographic identity and permissions. If your primary requirement is that no authority controls user data, these projects are doing important work. The tradeoff is that without a central server, authorization must be enforced via cryptography rather than server-side validation, conflict resolution must be automatic (typically CRDTs), and revocation is fundamentally harder — you can't un-share a key a client already has.
 
-Martin Kleppmann [makes a compelling argument](https://martin.kleppmann.com/2024/05/30/local-first-conference.html) that the _developer_ benefits of local-first may matter as much as the user benefits: no dedicated backend team, no on-call for sync infrastructure, no network error handling in every component. That's the promise. We're not there yet, but the pieces are falling into place.
+Syncular assumes a server exists and makes it the authority. Different problem, different architecture.
+
+Martin Kleppmann [makes a compelling argument](https://martin.kleppmann.com/2024/05/30/local-first-conference.html) that the _developer_ benefits of local-first may matter as much as the user benefits: no dedicated backend team, no on-call for sync infrastructure, no network error handling in every component. That's the promise. We're not there yet.
 
 ## What others optimize for (and why that's valid)
 
@@ -266,7 +270,7 @@ Different tools optimize for different things. The right choice depends on your 
 
 **Zero** optimizes for developer experience and reactive queries. If you want the lowest-friction path to a fast, reactive UI with local-first semantics, Zero is probably the best option right now.
 
-**Electric SQL** optimizes for read-path scale. If you have a stable write API and need to stream Postgres changes to millions of clients through a CDN, Electric is remarkable engineering.
+**Electric SQL** optimizes for read-path scale. If you have a stable write API and need to stream Postgres changes to millions of clients through a CDN, Electric is hard to beat.
 
 **PowerSync** optimizes for platform coverage. If you need Flutter and MongoDB and professional support, PowerSync is the only serious option.
 
@@ -280,13 +284,9 @@ Different tools optimize for different things. The right choice depends on your 
 
 ## Who this is for
 
-Syncular is for engineers who want to understand their sync. Who want to open the commit log and see exactly what happened. Who need offline writes that survive anything — app crashes, network failures, three days without signal on a construction site.
+If you've been burned by opaque sync layers — spent hours wondering why a row is missing on one device, or duct-taped an outbox onto a read-only framework — Syncular is the tool I wished existed. Full SQL on the client, authorization baked into the commit log, TypeScript end-to-end, offline writes that survive app crashes and three days without signal.
 
-It's for teams that want authorization baked into the data, not bolted on at the edge. Who want full SQL on the client, not a KV store or a custom query language. Who want TypeScript end-to-end, with queries checked at build time.
-
-It's not for everyone. If you want the lowest-friction reactive UI, try [Zero](https://zero.rocicorp.dev). If you want read-path streaming at CDN scale, try [Electric](https://electric-sql.com). If you need Flutter and MongoDB, try [PowerSync](https://powersync.com).
-
-But if you've tried those and kept writing glue code for the parts they don't cover — the outbox, the conflicts, the auth, the debugging — [that's what Syncular is](https://syncular.dev).
+If you want the lowest-friction reactive UI, try [Zero](https://zero.rocicorp.dev). Read-path streaming at CDN scale, try [Electric](https://electric-sql.com). Flutter and MongoDB, try [PowerSync](https://powersync.com). But if you've tried those and kept writing glue code for the parts they don't cover — [that's what Syncular is](https://syncular.dev).
 
 ---
 
