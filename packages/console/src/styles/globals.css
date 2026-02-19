@@ -1,4 +1,7 @@
-@import '@syncular/ui/styles.css';
+@import '@syncular/ui/styles.source.css';
+
+/* Scan console page source files for Tailwind class usage */
+@source "../**/*.{ts,tsx}";
 
 :where(.syncular-console-root) {
   color-scheme: dark;
