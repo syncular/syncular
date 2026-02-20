@@ -8,8 +8,8 @@
  * ensuring clients receive the updated data.
  */
 
-import type { Insertable, Kysely } from 'kysely';
 import { randomId } from '@syncular/core';
+import type { Insertable, Kysely } from 'kysely';
 import type { ServerSyncDialect } from './dialect/types';
 import type { SyncCoreDb } from './schema';
 

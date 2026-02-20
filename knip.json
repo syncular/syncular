@@ -15,7 +15,13 @@
     "types/**",
     ".source/**",
     ".next/**",
-    "**/dist/**"
+    "**/dist/**",
+    "apps/console/build.ts",
+    "apps/demo/build.ts",
+    "apps/demo/src/server/index.ts",
+    "apps/demo/src/sw/server.ts",
+    "packages/console/build-static.ts",
+    "tests/load/server.ts"
   ],
   "ignoreDependencies": [
     "happy-dom",
@@ -47,6 +53,9 @@
     "packages/client-plugin-encryption": {
       "includeEntryExports": false
     },
+    "packages/console": {
+      "includeEntryExports": false
+    },
     "packages/server": {
       "includeEntryExports": false
     },
@@ -61,6 +70,15 @@
       "includeEntryExports": false
     },
     "packages/server-dialect-postgres": {
+      "includeEntryExports": false
+    },
+    "packages/server-service-worker": {
+      "includeEntryExports": false
+    },
+    "packages/server-storage-filesystem": {
+      "includeEntryExports": false
+    },
+    "packages/server-storage-s3": {
       "includeEntryExports": false
     },
     "packages/transport-http": {
@@ -131,7 +149,6 @@
       "includeEntryExports": false,
       "entry": [
         "src/main.tsx!",
-        "src/server/server.ts!",
         "src/cf/index.ts!",
         "scripts/*.ts"
       ]
@@ -159,7 +176,7 @@
     },
     "tests/load": {
       "includeEntryExports": false,
-      "entry": ["lib/*.js", "scripts/*.js"],
+      "entry": ["lib/*.js", "scripts/*.js", "seeding.ts"],
       "ignoreDependencies": ["k6"]
     },
     "tests/integration": {

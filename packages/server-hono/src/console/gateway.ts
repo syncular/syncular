@@ -4,7 +4,6 @@ import { cors } from 'hono/cors';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import { z } from 'zod';
-import type { ConsoleAuthResult } from './types';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
@@ -61,6 +60,7 @@ import {
   TimeseriesQuerySchema,
   TimeseriesStatsResponseSchema,
 } from './schemas';
+import type { ConsoleAuthResult } from './types';
 
 export interface ConsoleGatewayInstance {
   instanceId: string;

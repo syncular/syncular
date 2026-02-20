@@ -20,7 +20,10 @@ import {
   createConsoleRoutes,
   createTokenAuthenticator,
 } from './console/routes';
-import type { ConsoleEventEmitter, ConsoleSharedOptions } from './console/types';
+import type {
+  ConsoleEventEmitter,
+  ConsoleSharedOptions,
+} from './console/types';
 import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,

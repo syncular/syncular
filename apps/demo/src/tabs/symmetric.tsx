@@ -11,7 +11,6 @@ import {
   createIncrementingVersionPlugin,
 } from '@syncular/client';
 import { createFieldEncryptionPlugin } from '@syncular/client-plugin-encryption';
-import { createWebSocketTransport } from '@syncular/transport-ws';
 import {
   ActorPanel,
   ChannelSelector,
@@ -29,9 +28,9 @@ import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
-  getDemoAuthHeaders,
-  getDemoRealtimeParams,
-} from '../client/demo-identity';
+  createDemoPollingTransport,
+  DEMO_POLL_INTERVAL_MS,
+} from '../client/demo-transport';
 import { patientNotesClientHandler } from '../client/handlers/patient-notes';
 import { migrateClientDb } from '../client/migrate';
 import {
@@ -381,13 +380,7 @@ function ActorVaultPanel({
   }, [createDb]);
 
   const transport = useMemo(
-    () =>
-      createWebSocketTransport({
-        baseUrl: '/api',
-        wsUrl: '/api/sync/realtime',
-        getHeaders: () => getDemoAuthHeaders(actor.id),
-        getRealtimeParams: () => getDemoRealtimeParams(actor.id),
-      }),
+    () => createDemoPollingTransport(actor.id),
     [actor.id]
   );
 
@@ -489,8 +482,8 @@ function ActorVaultPanel({
         actorId={actor.id}
         subscriptions={subscriptions}
         plugins={allPlugins}
-        realtimeEnabled
-        realtimeFallbackPollMs={10000}
+        realtimeEnabled={true}
+        pollIntervalMs={DEMO_POLL_INTERVAL_MS}
         stateId={stateId}
       >
         <NotesContent

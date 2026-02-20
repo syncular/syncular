@@ -2,7 +2,7 @@
 @import './tokens.css';
 
 /* Explicitly scan UI component source files for Tailwind class usage */
-@source "../**/*.{ts,tsx}";
+@source "..";
 
 /* ── Base ── */
 :where(.syncular-console-root, .syncular-ui-root) {

@@ -7,7 +7,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
-  ConsoleBlob,
   ConsoleBlobListResponse,
   ConsoleClient,
   ConsoleCommitDetail,
@@ -942,7 +941,6 @@ export function useBlobs(
   } = {}
 ) {
   const { config: connectionConfig } = useConnection();
-  const queryClient = useQueryClient();
   return useQuery<ConsoleBlobListResponse>({
     queryKey: queryKeys.blobs({
       prefix: options.prefix,

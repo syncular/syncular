@@ -100,6 +100,13 @@
         "default": "./dist/server-hono.js"
       }
     },
+    "./server-service-worker": {
+      "bun": "./src/server-service-worker.ts",
+      "import": {
+        "types": "./dist/server-service-worker.d.ts",
+        "default": "./dist/server-service-worker.js"
+      }
+    },
     "./server-storage-filesystem": {
       "bun": "./src/server-storage-filesystem.ts",
       "import": {
@@ -298,6 +305,7 @@
     "@syncular/server-dialect-postgres": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
+    "@syncular/server-service-worker": "workspace:*",
     "@syncular/server-storage-filesystem": "workspace:*",
     "@syncular/server-storage-s3": "workspace:*",
     "@syncular/testkit": "workspace:*",

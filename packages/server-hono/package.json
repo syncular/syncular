@@ -34,6 +34,20 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./blobs": {
+      "bun": "./src/blobs.ts",
+      "import": {
+        "types": "./dist/blobs.d.ts",
+        "default": "./dist/blobs.js"
+      }
+    },
+    "./create-server": {
+      "bun": "./src/create-server.ts",
+      "import": {
+        "types": "./dist/create-server.d.ts",
+        "default": "./dist/create-server.js"
+      }
     }
   },
   "scripts": {

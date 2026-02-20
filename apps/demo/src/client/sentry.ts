@@ -40,15 +40,23 @@ function firstDefined(values: Array<string | undefined>): string | undefined {
   return undefined;
 }
 
+function isLocalhostBrowserRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return host === 'localhost' || host === '127.0.0.1';
+}
+
 /**
  * Resolve browser Sentry options from globals, meta tags, or build-time env.
  */
 export function resolveDemoBrowserSentryOptions(): BrowserSentryInitOptions | null {
+  const shouldUseDefaultDsn = !isLocalhostBrowserRuntime();
+
   const dsn = firstDefined([
     cleanValue(globalThis.__SYNCULAR_SENTRY_DSN__),
     readMeta(SENTRY_DSN_META),
     readEnv('SYNCULAR_SENTRY_DSN'),
-    DEMO_BROWSER_SENTRY_DSN,
+    shouldUseDefaultDsn ? DEMO_BROWSER_SENTRY_DSN : undefined,
   ]);
 
   if (!dsn) return null;
@@ -70,7 +78,7 @@ export function resolveDemoBrowserSentryOptions(): BrowserSentryInitOptions | nu
     environment,
     release,
     enableLogs: true,
-    tracesSampleRate: 1.0,
+    tracesSampleRate: 0.2,
     tracePropagationTargets: [
       /^\/api\//,
       /^https:\/\/demo\.syncular\.dev\/api\//,

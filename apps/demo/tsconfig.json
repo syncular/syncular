@@ -7,6 +7,7 @@
     "moduleDetection": "force",
     "jsx": "react-jsx",
     "allowJs": true,
+    "types": ["@cloudflare/workers-types"],
 
     // Bundler mode
     "moduleResolution": "bundler",
@@ -14,8 +15,6 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
     "customConditions": ["bun"],
-
-    "types": ["@cloudflare/workers-types"],
 
     // Best practices
     "strict": true,
@@ -29,6 +28,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-
-  "exclude": ["dist", "dist-cf", "node_modules"]
+  "exclude": ["dist", "node_modules"]
 }

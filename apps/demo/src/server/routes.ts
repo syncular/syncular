@@ -12,7 +12,8 @@ import {
   type ServerSyncDialect,
   type SnapshotChunkStorage,
 } from '@syncular/server';
-import { createBlobRoutes, createSyncServer } from '@syncular/server-hono';
+import { createBlobRoutes } from '@syncular/server-hono/blobs';
+import { createSyncServer } from '@syncular/server-hono/create-server';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';

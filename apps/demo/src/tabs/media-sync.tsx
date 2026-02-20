@@ -8,7 +8,6 @@
  */
 
 import { ClientTableRegistry } from '@syncular/client';
-import { createWebSocketTransport } from '@syncular/transport-ws';
 import {
   ClientPanel,
   DemoHeader,
@@ -26,10 +25,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
+import { getDemoAuthHeaders } from '../client/demo-identity';
 import {
-  getDemoAuthHeaders,
-  getDemoRealtimeParams,
-} from '../client/demo-identity';
+  createDemoPollingTransport,
+  DEMO_POLL_INTERVAL_MS,
+} from '../client/demo-transport';
 import { tasksClientHandler } from '../client/handlers/tasks';
 import { migrateClientDb } from '../client/migrate';
 import { SyncProvider, useMutations, useSyncQuery } from '../client/react';
@@ -44,7 +44,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const userId = 'demo-media-user';
-const baseUrl = '/api';
 const blobBaseUrl = '/api/sync';
 
 const subscriptions = [
@@ -128,19 +127,8 @@ function getReceiverDb() {
   return receiverDbPromise;
 }
 
-const uploaderTransport = createWebSocketTransport({
-  baseUrl,
-  wsUrl: '/api/sync/realtime',
-  getHeaders: () => getDemoAuthHeaders(userId),
-  getRealtimeParams: () => getDemoRealtimeParams(userId),
-});
-
-const receiverTransport = createWebSocketTransport({
-  baseUrl,
-  wsUrl: '/api/sync/realtime',
-  getHeaders: () => getDemoAuthHeaders(userId),
-  getRealtimeParams: () => getDemoRealtimeParams(userId),
-});
+const uploaderTransport = createDemoPollingTransport(userId);
+const receiverTransport = createDemoPollingTransport(userId);
 
 // ---------------------------------------------------------------------------
 // BlobImage - fetches a signed URL and displays an image
@@ -413,7 +401,8 @@ function ReceiverWrapper() {
       actorId={userId}
       subscriptions={subscriptions}
       migrate={migrateClientDb}
-      realtimeEnabled
+      realtimeEnabled={true}
+      pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
       <ReceiverPanel />
     </SyncProvider>
@@ -501,7 +490,8 @@ export function MediaSyncTab() {
           actorId={userId}
           subscriptions={subscriptions}
           migrate={migrateClientDb}
-          realtimeEnabled
+          realtimeEnabled={true}
+          pollIntervalMs={DEMO_POLL_INTERVAL_MS}
         >
           <UploaderPanel onTransfer={addTransfer} />
         </SyncProvider>

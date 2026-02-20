@@ -59,13 +59,3 @@ export function getDemoAuthHeaders(
     'x-demo-id': getDemoId(),
   };
 }
-
-export function getDemoRealtimeParams(actorId: string): {
-  userId: string;
-  demoId: string;
-} {
-  return {
-    userId: actorId,
-    demoId: getDemoId(),
-  };
-}

@@ -13,7 +13,9 @@ const queryClient = new QueryClient({
 function RootLayout() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Outlet />
+      <div className="syncular-ui-root min-h-screen">
+        <Outlet />
+      </div>
     </QueryClientProvider>
   );
 }

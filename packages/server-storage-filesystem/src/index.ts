@@ -6,7 +6,15 @@
  * (same pattern as the database adapter).
  */
 
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   BlobSignDownloadOptions,

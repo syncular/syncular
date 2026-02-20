@@ -70,11 +70,7 @@ export interface ConsoleBlobHeadResult {
 }
 
 export interface ConsoleBlobBucket {
-  list(options: {
-    prefix?: string;
-    cursor?: string;
-    limit?: number;
-  }): Promise<{
+  list(options: { prefix?: string; cursor?: string; limit?: number }): Promise<{
     objects: ConsoleBlobObject[];
     truncated: boolean;
     cursor?: string;
@@ -94,9 +90,8 @@ export interface ConsoleSharedOptions {
   blobBucket?: ConsoleBlobBucket;
 }
 
-export interface CreateConsoleRoutesOptions<
-  DB extends SyncCoreDb = SyncCoreDb,
-> extends ConsoleSharedOptions {
+export interface CreateConsoleRoutesOptions<DB extends SyncCoreDb = SyncCoreDb>
+  extends ConsoleSharedOptions {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
   handlers: ServerTableHandler<DB>[];

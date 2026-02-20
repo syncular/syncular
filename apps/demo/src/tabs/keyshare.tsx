@@ -22,7 +22,6 @@ import {
   mnemonicToKey,
   parseShareUrl,
 } from '@syncular/client-plugin-encryption';
-import { createWebSocketTransport } from '@syncular/transport-ws';
 import {
   ClientPanel,
   DemoHeader,
@@ -43,9 +42,9 @@ import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
-  getDemoAuthHeaders,
-  getDemoRealtimeParams,
-} from '../client/demo-identity';
+  createDemoPollingTransport,
+  DEMO_POLL_INTERVAL_MS,
+} from '../client/demo-transport';
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { migrateClientDb } from '../client/migrate';
 import {
@@ -271,16 +270,7 @@ function AlicePanel({
   const [error, setError] = useState<string | null>(null);
   const initRef = useRef(false);
 
-  const transport = useMemo(
-    () =>
-      createWebSocketTransport({
-        baseUrl: '/api',
-        wsUrl: '/api/sync/realtime',
-        getHeaders: () => getDemoAuthHeaders(actorId),
-        getRealtimeParams: () => getDemoRealtimeParams(actorId),
-      }),
-    []
-  );
+  const transport = useMemo(() => createDemoPollingTransport(actorId), []);
 
   const tables = useMemo(
     () =>
@@ -368,8 +358,8 @@ function AlicePanel({
       stateId={stateId}
       plugins={plugins}
       subscriptions={subscriptions}
-      realtimeEnabled
-      realtimeFallbackPollMs={10000}
+      realtimeEnabled={true}
+      pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[Alice] Sync error:', e)}
     >
       <AliceInner shareId={shareId} actorId={actorId} />
@@ -545,16 +535,7 @@ function BobPanel({
   const initRef = useRef(false);
   const recipientKeyRef = useRef<Uint8Array | null>(recipientKey);
 
-  const transport = useMemo(
-    () =>
-      createWebSocketTransport({
-        baseUrl: '/api',
-        wsUrl: '/api/sync/realtime',
-        getHeaders: () => getDemoAuthHeaders(actorId),
-        getRealtimeParams: () => getDemoRealtimeParams(actorId),
-      }),
-    []
-  );
+  const transport = useMemo(() => createDemoPollingTransport(actorId), []);
 
   const tables = useMemo(
     () =>
@@ -656,8 +637,8 @@ function BobPanel({
       stateId={stateId}
       plugins={plugins}
       subscriptions={subscriptions}
-      realtimeEnabled
-      realtimeFallbackPollMs={10000}
+      realtimeEnabled={true}
+      pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[Bob] Sync error:', e)}
     >
       <BobInner

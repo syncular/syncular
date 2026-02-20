@@ -4,7 +4,7 @@
  * Serves everything from a single Bun dev server:
  * - `/` and frontend routes → Demo React app (via Bun's bundler)
  * - `/console/*` → Console UI (built-in via TanStack Router)
- * - `/api/*` → Demo API
+ * - `/api/*` → Disabled (API is provided by the Service Worker server)
  * - `/__demo/*` → WASM assets (pglite, wa-sqlite)
  */
 import { getPgliteAssetPaths } from '@syncular/dialect-pglite';
@@ -14,10 +14,8 @@ import {
 } from '@syncular/dialect-wa-sqlite';
 import type { BuildArtifact } from 'bun';
 import { serve } from 'bun';
-import { createBunWebSocket } from 'hono/bun';
 // Import HTML file - Bun will bundle this as a frontend app
 import demoApp from '../../index.html';
-import { createDemoApp } from './app';
 
 async function main() {
   const portRaw = process.env.PORT;
@@ -28,6 +26,9 @@ async function main() {
 
   const { moduleWorkerPath } = getWaSqliteWorkerEntrypointPaths();
   const wasqliteAssets = await buildWasqliteWorkerAssets(moduleWorkerPath);
+  const swServerAsset = await buildServiceWorkerServerAsset(
+    new URL('../sw/server.ts', import.meta.url).pathname
+  );
 
   const { asyncWasmPath, syncWasmPath } = getWaSqliteWasmPaths();
   const wasqliteAsyncWasm = Bun.file(asyncWasmPath);
@@ -37,31 +38,16 @@ async function main() {
   const pgliteFsBundle = Bun.file(fsBundlePath);
   const pgliteWasm = Bun.file(wasmPath);
 
-  const { upgradeWebSocket, websocket } = createBunWebSocket();
-
-  const { app } = await createDemoApp({
-    consoleToken,
-    upgradeWebSocket,
-  });
-
-  type HonoEnv = { server: ReturnType<typeof serve> };
-  let server: ReturnType<typeof serve> | null = null;
-
-  function fetchHono(req: Request): Response | Promise<Response> {
-    if (!server) return new Response('Server not ready', { status: 503 });
-    return app.fetch(req, { server } satisfies HonoEnv);
-  }
-
-  server = serve({
+  const server = serve({
     port,
     development: process.env.NODE_ENV !== 'production' && {
       hmr: true,
       console: true,
     },
-    websocket,
     routes: {
-      // API routes (most specific first)
-      '/api/*': (req) => fetchHono(req as Request),
+      // API is intentionally disabled in network server mode.
+      // Browser clients must use the Service Worker server path.
+      '/api/*': () => responseForDisabledApi(),
 
       // WASM/Worker assets
       '/__demo/pglite/pglite.data': () =>
@@ -79,6 +65,8 @@ async function main() {
         if (!asset) return new Response('Not found', { status: 404 });
         return responseForBuildArtifact(asset);
       },
+      '/__demo/sw-server.js': () =>
+        responseForServiceWorkerScript(swServerAsset),
 
       // Demo React app - catch-all for SPA
       '/*': demoApp,
@@ -111,6 +99,27 @@ function responseForBuildArtifact(artifact: BuildArtifact): Response {
   headers.set('cross-origin-resource-policy', 'cross-origin');
   if (artifact.hash) headers.set('etag', artifact.hash);
   return new Response(artifact, { status: 200, headers });
+}
+
+function responseForServiceWorkerScript(artifact: BuildArtifact): Response {
+  const response = responseForBuildArtifact(artifact);
+  response.headers.set('service-worker-allowed', '/');
+  return response;
+}
+
+function responseForDisabledApi(): Response {
+  return new Response(
+    JSON.stringify({
+      error: 'Demo API server is disabled. Service Worker server is required.',
+    }),
+    {
+      status: 503,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      },
+    }
+  );
 }
 
 type BunFileLike = ReturnType<typeof Bun.file>;
@@ -180,6 +189,39 @@ async function buildWasqliteWorkerAssets(
   }
 
   return assets;
+}
+
+async function buildServiceWorkerServerAsset(
+  entrypointPath: string
+): Promise<BuildArtifact> {
+  const result = await Bun.build({
+    entrypoints: [entrypointPath],
+    target: 'browser',
+    format: 'esm',
+    splitting: false,
+    conditions: ['bun'],
+    naming: {
+      entry: 'sw-server.js',
+      chunk: 'chunk-[hash].js',
+      asset: 'asset-[hash].[ext]',
+    },
+  });
+
+  if (!result.success) {
+    const message = result.logs.at(0)?.message ?? 'unknown bundler error';
+    throw new Error(
+      `[demo] Failed to bundle service worker server: ${message}`
+    );
+  }
+
+  const swBundle = result.outputs.find((output) =>
+    output.path.endsWith('/sw-server.js')
+  );
+  if (!swBundle) {
+    throw new Error('[demo] Missing service worker server bundle output');
+  }
+
+  return swBundle;
 }
 
 function assertSingleWorkerBundle(

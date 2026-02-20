@@ -2,7 +2,7 @@
  * @syncular/demo - Dual-Client Sync tab
  *
  * Two independent clients (wa-sqlite OPFS + PGlite IndexedDB) syncing to
- * the same server in real-time over WebSocket transport.
+ * the same server in real-time over a service-worker wake-up channel.
  */
 
 import {
@@ -15,7 +15,6 @@ import {
   captureBrowserSentryMessage,
   logBrowserSentryMessage,
 } from '@syncular/observability-sentry';
-import { createWebSocketTransport } from '@syncular/transport-ws';
 import {
   ClientPanel,
   ConflictPanel,
@@ -45,9 +44,9 @@ import {
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
-  getDemoAuthHeaders,
-  getDemoRealtimeParams,
-} from '../client/demo-identity';
+  createDemoPollingTransport,
+  DEMO_POLL_INTERVAL_MS,
+} from '../client/demo-transport';
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { tasksClientHandler } from '../client/handlers/tasks';
@@ -407,13 +406,7 @@ function SyncClientPanel({
   }, [clientStoreKey, isRecoveringInitError, onRecoverFromInitError]);
 
   const transport = useMemo(
-    () =>
-      createWebSocketTransport({
-        baseUrl: '/api',
-        wsUrl: '/api/sync/realtime',
-        getHeaders: () => getDemoAuthHeaders(actorId),
-        getRealtimeParams: () => getDemoRealtimeParams(actorId),
-      }),
+    () => createDemoPollingTransport(actorId),
     [actorId]
   );
 
@@ -497,7 +490,8 @@ function SyncClientPanel({
       actorId={actorId}
       subscriptions={subscriptions}
       plugins={plugins}
-      realtimeEnabled
+      realtimeEnabled={true}
+      pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
       <TasksContent
         actorId={actorId}
@@ -620,10 +614,10 @@ export function SplitScreenTab() {
         description={
           <>
             Both clients maintain their own local database and outbox. Mutations
-            are written locally first, then pushed to the server via the
-            WebSocket transport. The server resolves ordering through a commit
-            log, and each client pulls the merged state back down. Conflicts are
-            detected using optimistic version checks on{' '}
+            are written locally first, then pushed to the server via the Sync
+            transport. A service-worker realtime channel wakes other tabs
+            immediately, and each client then pulls merged state from the commit
+            log. Conflicts are detected using optimistic version checks on{' '}
             <code className="text-flow">server_version</code>.
           </>
         }

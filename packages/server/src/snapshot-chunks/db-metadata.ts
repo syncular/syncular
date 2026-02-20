@@ -8,12 +8,12 @@
 import {
   type BlobStorageAdapter,
   randomId,
-  sha256Hex,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   type SyncSnapshotChunkCompression,
   type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
+  sha256Hex,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import type { SyncCoreDb } from '../schema';

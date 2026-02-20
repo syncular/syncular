@@ -1,9 +1,7 @@
 /**
- * Cloudflare static asset builder.
+ * Demo static asset builder.
  *
- * Builds the demo SPA and copies WASM assets into dist-cf/.
- * Used by wrangler via [build] command so `wrangler dev` and `wrangler deploy`
- * produce assets automatically — no separate build step needed.
+ * Builds the demo SPA and copies runtime WASM/worker assets into `dist/`.
  */
 
 import {
@@ -39,9 +37,10 @@ if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
-console.log(`[build-cf] SPA: ${result.outputs.length} files`);
+console.log(`[build] SPA: ${result.outputs.length} files`);
 
 stampSentryMetaTags(join(OUT, 'index.html'));
+writeCloudflareHeaders(join(OUT, '_headers'));
 
 // 2. Favicon assets (copied as-is, referenced via absolute paths in HTML)
 const faviconDir = resolve(ROOT, '../../assets/favicon');
@@ -80,24 +79,14 @@ if (!workerBuild.success) {
 }
 assertSingleWorkerBundle(
   workerBuild.outputs.map((output) => output.path),
-  'build-cf'
+  'build'
 );
 
 const { asyncWasmPath, syncWasmPath } = getWaSqliteWasmPaths();
 cpSync(asyncWasmPath, join(wasqliteDir, 'wa-sqlite-async.wasm'));
 cpSync(syncWasmPath, join(wasqliteDir, 'wa-sqlite.wasm'));
 
-// 5. CF _headers (COOP/COEP/CORP for SharedArrayBuffer/OPFS)
-writeFileSync(
-  join(OUT, '_headers'),
-  `/*
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Embedder-Policy: require-corp
-  Cross-Origin-Resource-Policy: cross-origin
-`
-);
-
-console.log('[build-cf] Done');
+console.log('[build] Done');
 
 function stampSentryMetaTags(indexPath: string): void {
   const replacements = [
@@ -129,6 +118,23 @@ function stampSentryMetaTags(indexPath: string): void {
     );
   }
   writeFileSync(indexPath, html);
+}
+
+function writeCloudflareHeaders(headersPath: string): void {
+  const headers = [
+    '/*',
+    '  Cross-Origin-Opener-Policy: same-origin',
+    '  Cross-Origin-Embedder-Policy: require-corp',
+    '  Cross-Origin-Resource-Policy: cross-origin',
+    '',
+    '/__demo/*',
+    '  Cross-Origin-Opener-Policy: same-origin',
+    '  Cross-Origin-Embedder-Policy: require-corp',
+    '  Cross-Origin-Resource-Policy: cross-origin',
+    '',
+  ].join('\n');
+
+  writeFileSync(headersPath, headers);
 }
 
 function assertSingleWorkerBundle(

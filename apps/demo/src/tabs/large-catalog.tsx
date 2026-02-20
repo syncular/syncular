@@ -7,7 +7,6 @@
 
 import { ClientTableRegistry } from '@syncular/client';
 import type { SyncTransportOptions } from '@syncular/core';
-import { createWebSocketTransport } from '@syncular/transport-ws';
 import {
   CatalogTable,
   DemoHeader,
@@ -19,9 +18,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
-  getDemoAuthHeaders,
-  getDemoRealtimeParams,
-} from '../client/demo-identity';
+  createDemoPollingTransport,
+  DEMO_POLL_INTERVAL_MS,
+} from '../client/demo-transport';
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
 import { migrateClientDb } from '../client/migrate';
 import { SyncProvider, useSyncQuery, useSyncStatus } from '../client/react';
@@ -79,12 +78,7 @@ export function LargeCatalogTab() {
 
   /* Transport with chunk-tracking wrapper */
   const transport = useMemo(() => {
-    const base = createWebSocketTransport({
-      baseUrl: '/api',
-      wsUrl: '/api/sync/realtime',
-      getHeaders: () => getDemoAuthHeaders(CATALOG_ACTOR_ID),
-      getRealtimeParams: () => getDemoRealtimeParams(CATALOG_ACTOR_ID),
-    });
+    const base = createDemoPollingTransport(CATALOG_ACTOR_ID);
     return {
       ...base,
       async fetchSnapshotChunk(
@@ -163,8 +157,8 @@ export function LargeCatalogTab() {
       ]}
       limitSnapshotRows={CATALOG_SNAPSHOT_ROWS_PER_PAGE}
       maxSnapshotPages={CATALOG_MAX_SNAPSHOT_PAGES_PER_PULL}
-      realtimeEnabled
-      realtimeFallbackPollMs={10000}
+      realtimeEnabled={true}
+      pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[catalog-demo] Sync error:', e)}
     >
       <CatalogContent

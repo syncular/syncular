@@ -16,9 +16,7 @@
  */
 
 import { logSyncEvent } from '@syncular/core';
-import type {
-  SyncCoreDb,
-} from '@syncular/server';
+import type { SyncCoreDb } from '@syncular/server';
 import {
   compactChanges,
   computePruneWatermarkCommitSeq,
@@ -29,7 +27,6 @@ import {
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';

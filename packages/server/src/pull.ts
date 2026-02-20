@@ -7,7 +7,6 @@ import {
   gzipBytes,
   gzipBytesToStream,
   randomId,
-  sha256Hex,
   type ScopeValues,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
@@ -18,6 +17,7 @@ import {
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
   type SyncSnapshot,
+  sha256Hex,
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
