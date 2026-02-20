@@ -27,9 +27,9 @@
     "@syncular/server-service-worker": "workspace:*",
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.21",
-    "@tanstack/react-router": "^1.159.5",
-    "hono": "^4.10.4",
-    "kysely": "^0.28.8",
+    "@tanstack/react-router": "^1.161.3",
+    "hono": "^4.12.0",
+    "kysely": "^0.28.11",
     "react": "^19",
     "react-dom": "^19"
   },

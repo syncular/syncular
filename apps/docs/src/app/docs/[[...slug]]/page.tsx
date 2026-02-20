@@ -5,11 +5,11 @@ import {
   DocsPage,
   DocsTitle,
 } from 'fumadocs-ui/layouts/docs/page';
-import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { MDXContent } from 'mdx/types';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { LLMCopyButton, ViewOptions } from '@/components/ai/page-actions';
+import { createRelativeLink } from '@/lib/fumadocs-compat';
 import { getPageImage, source } from '@/lib/source';
 import { getMDXComponents } from '@/mdx-components';
 
