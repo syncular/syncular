@@ -17,8 +17,6 @@
 
 import { logSyncEvent } from '@syncular/core';
 import type {
-  ServerSyncDialect,
-  ServerTableHandler,
   SyncCoreDb,
 } from '@syncular/server';
 import {
@@ -35,7 +33,6 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
-import type { WebSocketConnectionManager } from '../ws';
 import {
   type ApiKeyType,
   ApiKeyTypeSchema,
@@ -100,36 +97,12 @@ import {
   type TimeseriesStatsResponse,
   TimeseriesStatsResponseSchema,
 } from './schemas';
-
-export interface ConsoleAuthResult {
-  /** Identifier for the console user (for audit logging). */
-  consoleUserId?: string;
-}
-
-/**
- * Listener for console live events (SSE streaming).
- */
-export type ConsoleEventListener = (event: LiveEvent) => void;
-
-/**
- * Console event emitter for broadcasting live events.
- */
-export interface ConsoleEventEmitter {
-  /** Add a listener for live events */
-  addListener(listener: ConsoleEventListener): void;
-  /** Remove a listener */
-  removeListener(listener: ConsoleEventListener): void;
-  /** Emit an event to all listeners */
-  emit(event: LiveEvent): void;
-  /**
-   * Replay recent events, optionally constrained by timestamp, partition, and max count.
-   */
-  replay(options?: {
-    since?: string;
-    limit?: number;
-    partitionId?: string;
-  }): LiveEvent[];
-}
+import type {
+  ConsoleAuthResult,
+  ConsoleEventEmitter,
+  ConsoleEventListener,
+  CreateConsoleRoutesOptions,
+} from './types';
 
 /**
  * Create a simple console event emitter for broadcasting live events.
@@ -193,103 +166,6 @@ export function createConsoleEventEmitter(options?: {
       const limited = filtered.slice(-normalizedLimit);
       return [...limited];
     },
-  };
-}
-
-export interface CreateConsoleRoutesOptions<
-  DB extends SyncCoreDb = SyncCoreDb,
-> {
-  db: Kysely<DB>;
-  dialect: ServerSyncDialect;
-  handlers: ServerTableHandler<DB>[];
-  /**
-   * Authentication function for console requests.
-   * Return null to reject the request.
-   */
-  authenticate: (c: Context) => Promise<ConsoleAuthResult | null>;
-  /**
-   * CORS origins to allow. Defaults to ['http://localhost:5173', 'https://console.sync.dev'].
-   * Set to '*' to allow all origins (not recommended for production).
-   */
-  corsOrigins?: string[] | '*';
-  /**
-   * Compaction options (required for /compact endpoint).
-   */
-  compact?: {
-    fullHistoryHours?: number;
-  };
-  /**
-   * Pruning options.
-   */
-  prune?: {
-    activeWindowMs?: number;
-    fallbackMaxAgeMs?: number;
-    keepNewestCommits?: number;
-  };
-  /**
-   * Event emitter for live console events.
-   * If provided along with websocket config, enables the /events/live WebSocket endpoint.
-   */
-  eventEmitter?: ConsoleEventEmitter;
-  /**
-   * Shared sync WebSocket connection manager.
-   * When provided, `/clients` includes realtime connection state per client.
-   */
-  wsConnectionManager?: WebSocketConnectionManager;
-  /**
-   * WebSocket configuration for live events streaming.
-   */
-  websocket?: {
-    enabled?: boolean;
-    /**
-     * Runtime-provided WebSocket upgrader (e.g. from `hono/bun`'s `createBunWebSocket()`).
-     */
-    upgradeWebSocket?: UpgradeWebSocket;
-    /**
-     * Heartbeat interval in milliseconds. Default: 30000
-     */
-    heartbeatIntervalMs?: number;
-  };
-  /**
-   * Metrics query strategy for timeseries/latency endpoints.
-   * - raw: in-memory processing from raw event rows
-   * - aggregated: DB-level aggregation where supported (raw fallback for unsupported paths)
-   * - auto: use raw for small windows, aggregated for larger windows
-   */
-  metrics?: {
-    aggregationMode?: 'auto' | 'raw' | 'aggregated';
-    /** Max events for using raw mode when aggregationMode is 'auto'. */
-    rawFallbackMaxEvents?: number;
-  };
-  blobBucket?: {
-    list(options: {
-      prefix?: string;
-      cursor?: string;
-      limit?: number;
-    }): Promise<{
-      objects: Array<{
-        key: string;
-        size: number;
-        uploaded: Date;
-        httpMetadata?: { contentType?: string };
-      }>;
-      truncated: boolean;
-      cursor?: string;
-    }>;
-    get(
-      key: string
-    ): Promise<{
-      body: ReadableStream;
-      size: number;
-      httpMetadata?: { contentType?: string };
-    } | null>;
-    delete(key: string | string[]): Promise<void>;
-    head(
-      key: string
-    ): Promise<{
-      size: number;
-      httpMetadata?: { contentType?: string };
-    } | null>;
   };
 }
 

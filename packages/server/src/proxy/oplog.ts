@@ -4,19 +4,11 @@
  * Creates sync oplog entries for proxy mutations.
  */
 
-import { randomUUID } from 'node:crypto';
-import type { SyncOp } from '@syncular/core';
+import { randomId, type SyncOp } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import type { ServerSyncDialect } from '../dialect/types';
 import type { SyncCoreDb } from '../schema';
 import type { ProxyTableHandler } from './types';
-
-/**
- * Generate a random ID for commit tracking.
- */
-function generateId(): string {
-  return randomUUID();
-}
 
 function toDialectJsonValue(
   dialect: ServerSyncDialect,
@@ -67,7 +59,7 @@ export async function createOplogEntries<DB extends SyncCoreDb>(args: {
       ${partitionId},
       ${actorId},
       ${clientId},
-      ${`proxy:${generateId()}`},
+      ${`proxy:${randomId()}`},
       ${null},
       ${null}
     )

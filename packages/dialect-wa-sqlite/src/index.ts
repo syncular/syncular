@@ -6,7 +6,11 @@
  */
 
 import { Kysely } from 'kysely';
+import { GenericSqliteDialect } from 'kysely-generic-sqlite';
 import {
+  createSqliteExecutor,
+  defaultCreateDatabaseFn,
+  type InitData,
   WaSqliteWorkerDialect,
   type WaSqliteWorkerDialectConfig,
 } from 'kysely-wasqlite-worker';
@@ -15,6 +19,15 @@ export interface WaSqliteOptions
   extends Omit<WaSqliteWorkerDialectConfig, 'fileName'> {
   /** Database filename for persistence (defaults to 'diego.sqlite') */
   fileName?: string;
+}
+
+export interface WaSqliteMainThreadOptions {
+  /** Database filename for persistence (defaults to 'diego.sqlite') */
+  fileName?: string;
+  /** Prefer OPFS storage when available (defaults to true) */
+  useOPFS?: boolean;
+  /** WASM URL override */
+  url?: string;
 }
 
 function toDialectConfig(
@@ -51,6 +64,43 @@ export function createWaSqliteDialect(
   options?: WaSqliteOptions
 ): WaSqliteWorkerDialect {
   return new WaSqliteWorkerDialect(toDialectConfig(options));
+}
+
+function toMainThreadInitData(options?: WaSqliteMainThreadOptions): InitData {
+  return {
+    fileName: options?.fileName ?? 'diego.sqlite',
+    useOPFS: options?.useOPFS ?? true,
+    url: options?.url,
+  };
+}
+
+/**
+ * Create a Kysely instance with wa-sqlite running in the current thread.
+ *
+ * Useful when nested Worker support is unavailable (for example, in
+ * ServiceWorker runtimes).
+ */
+export function createWaSqliteMainThreadDb<T>(
+  options?: WaSqliteMainThreadOptions
+): Kysely<T> {
+  const initData = toMainThreadInitData(options);
+  return new Kysely<T>({
+    dialect: new GenericSqliteDialect(async () =>
+      createSqliteExecutor(await defaultCreateDatabaseFn(initData))
+    ),
+  });
+}
+
+/**
+ * Create the wa-sqlite main-thread dialect directly.
+ */
+export function createWaSqliteMainThreadDialect(
+  options?: WaSqliteMainThreadOptions
+): GenericSqliteDialect {
+  const initData = toMainThreadInitData(options);
+  return new GenericSqliteDialect(async () =>
+    createSqliteExecutor(await defaultCreateDatabaseFn(initData))
+  );
 }
 
 export function getWaSqliteWorkerEntrypointPaths(): {

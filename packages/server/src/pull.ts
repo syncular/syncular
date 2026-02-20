@@ -1,12 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { promisify } from 'node:util';
-import { gzip, gzipSync } from 'node:zlib';
 import {
   captureSyncException,
   countSyncMetric,
   distributionSyncMetric,
   encodeSnapshotRowFrames,
   encodeSnapshotRows,
+  gzipBytes,
+  gzipBytesToStream,
+  randomId,
+  sha256Hex,
   type ScopeValues,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
@@ -31,9 +32,6 @@ import {
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve';
 
-const gzipAsync = promisify(gzip);
-const ASYNC_GZIP_MIN_BYTES = 64 * 1024;
-
 function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
     return chunks[0] ?? new Uint8Array();
@@ -53,62 +51,6 @@ function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   return merged;
 }
 
-function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
-function chunksToReadableStream(
-  chunks: readonly Uint8Array[]
-): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(chunk);
-      }
-      controller.close();
-    },
-  });
-}
-
-async function compressSnapshotPayload(
-  payload: Uint8Array
-): Promise<Uint8Array> {
-  if (payload.byteLength < ASYNC_GZIP_MIN_BYTES) {
-    return new Uint8Array(gzipSync(payload));
-  }
-  const compressed = await gzipAsync(payload);
-  return new Uint8Array(compressed);
-}
-
-async function compressSnapshotPayloadStream(
-  chunks: readonly Uint8Array[]
-): Promise<{
-  stream: ReadableStream<Uint8Array>;
-  byteLength?: number;
-}> {
-  if (typeof CompressionStream !== 'undefined') {
-    const source = chunksToReadableStream(chunks);
-    const gzipStream = new CompressionStream(
-      'gzip'
-    ) as unknown as TransformStream<Uint8Array, Uint8Array>;
-    return {
-      stream: source.pipeThrough(gzipStream),
-    };
-  }
-
-  const payload = concatByteChunks(chunks);
-  const compressed = await compressSnapshotPayload(payload);
-  return {
-    stream: bytesToReadableStream(compressed),
-    byteLength: compressed.length,
-  };
-}
-
 export interface PullResult {
   response: SyncPullResponse;
   /**
@@ -123,7 +65,7 @@ export interface PullResult {
 /**
  * Generate a stable cache key for snapshot chunks.
  */
-function scopesToCacheKey(scopes: ScopeValues): string {
+async function scopesToCacheKey(scopes: ScopeValues): Promise<string> {
   const sorted = Object.entries(scopes)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([k, v]) => {
@@ -131,7 +73,7 @@ function scopesToCacheKey(scopes: ScopeValues): string {
       return `${k}:${arr.join(',')}`;
     })
     .join('|');
-  return createHash('sha256').update(sorted).digest('hex');
+  return await sha256Hex(sorted);
 }
 
 /**
@@ -482,7 +424,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
 
               const snapshots: SyncSnapshot[] = [];
               let nextState: SyncBootstrapState | null = effectiveState;
-              const cacheKey = `${partitionId}:${scopesToCacheKey(effectiveScopes)}`;
+              const cacheKey = `${partitionId}:${await scopesToCacheKey(effectiveScopes)}`;
 
               interface SnapshotBundle {
                 table: string;
@@ -491,7 +433,6 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 isLastPage: boolean;
                 pageCount: number;
                 ttlMs: number;
-                hash: ReturnType<typeof createHash>;
                 rowFrameParts: Uint8Array[];
               }
 
@@ -518,7 +459,10 @@ export async function pull<DB extends SyncCoreDb>(args: {
 
                 let chunkRef = cached;
                 if (!chunkRef) {
-                  const sha256 = bundle.hash.digest('hex');
+                  const rowFramePayload = concatByteChunks(
+                    bundle.rowFrameParts
+                  );
+                  const sha256 = await sha256Hex(rowFramePayload);
                   const expiresAt = new Date(
                     Date.now() + Math.max(1000, bundle.ttlMs)
                   ).toISOString();
@@ -526,9 +470,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   if (args.chunkStorage) {
                     if (args.chunkStorage.storeChunkStream) {
                       const { stream: bodyStream, byteLength } =
-                        await compressSnapshotPayloadStream(
-                          bundle.rowFrameParts
-                        );
+                        await gzipBytesToStream(rowFramePayload);
                       chunkRef = await args.chunkStorage.storeChunkStream({
                         partitionId,
                         scopeKey: cacheKey,
@@ -544,9 +486,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                         expiresAt,
                       });
                     } else {
-                      const compressedBody = await compressSnapshotPayload(
-                        concatByteChunks(bundle.rowFrameParts)
-                      );
+                      const compressedBody = await gzipBytes(rowFramePayload);
                       chunkRef = await args.chunkStorage.storeChunk({
                         partitionId,
                         scopeKey: cacheKey,
@@ -562,10 +502,8 @@ export async function pull<DB extends SyncCoreDb>(args: {
                       });
                     }
                   } else {
-                    const compressedBody = await compressSnapshotPayload(
-                      concatByteChunks(bundle.rowFrameParts)
-                    );
-                    const chunkId = randomUUID();
+                    const compressedBody = await gzipBytes(rowFramePayload);
+                    const chunkId = randomId();
                     chunkRef = await insertSnapshotChunk(trx, {
                       chunkId,
                       partitionId,
@@ -617,9 +555,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   if (activeBundle) {
                     await flushSnapshotBundle(activeBundle);
                   }
-                  const bundleHash = createHash('sha256');
                   const bundleHeader = encodeSnapshotRows([]);
-                  bundleHash.update(bundleHeader);
                   activeBundle = {
                     table: nextTableName,
                     startCursor: nextState.rowCursor,
@@ -628,7 +564,6 @@ export async function pull<DB extends SyncCoreDb>(args: {
                     pageCount: 0,
                     ttlMs:
                       tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
-                    hash: bundleHash,
                     rowFrameParts: [bundleHeader],
                   };
                 }
@@ -645,7 +580,6 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 );
 
                 const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
-                activeBundle.hash.update(rowFrames);
                 activeBundle.rowFrameParts.push(rowFrames);
                 activeBundle.pageCount += 1;
 

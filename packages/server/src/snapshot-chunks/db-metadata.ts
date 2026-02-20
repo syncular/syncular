@@ -5,9 +5,10 @@
  * body content in blob storage adapter.
  */
 
-import { createHash } from 'node:crypto';
 import {
   type BlobStorageAdapter,
+  randomId,
+  sha256Hex,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   type SyncSnapshotChunkCompression,
@@ -65,14 +66,14 @@ export function createDbMetadataChunkStorage(
   const { db, blobAdapter, chunkIdPrefix = 'chunk_' } = options;
 
   // Generate deterministic blob hash from chunk identity metadata.
-  function computeBlobHash(metadata: {
+  async function computeBlobHash(metadata: {
     encoding: SyncSnapshotChunkEncoding;
     compression: SyncSnapshotChunkCompression;
     sha256: string;
-  }): string {
-    const digest = createHash('sha256')
-      .update(`${metadata.encoding}:${metadata.compression}:${metadata.sha256}`)
-      .digest('hex');
+  }): Promise<string> {
+    const digest = await sha256Hex(
+      `${metadata.encoding}:${metadata.compression}:${metadata.sha256}`
+    );
     return `sha256:${digest}`;
   }
 
@@ -133,7 +134,7 @@ export function createDbMetadataChunkStorage(
 
   // Generate unique chunk ID
   function generateChunkId(): string {
-    return `${chunkIdPrefix}${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    return `${chunkIdPrefix}${randomId()}`;
   }
 
   async function readStoredRef(args: {
@@ -280,7 +281,7 @@ export function createDbMetadataChunkStorage(
       }
     ): Promise<SyncSnapshotChunkRef> {
       const { body, ...metaWithoutBody } = metadata;
-      const blobHash = computeBlobHash(metaWithoutBody);
+      const blobHash = await computeBlobHash(metaWithoutBody);
 
       // Check if blob already exists (content-addressed dedup)
       const blobExists = await blobAdapter.exists(blobHash);
@@ -340,7 +341,7 @@ export function createDbMetadataChunkStorage(
       }
     ): Promise<SyncSnapshotChunkRef> {
       const { bodyStream, byteLength, ...metaWithoutBody } = metadata;
-      const blobHash = computeBlobHash(metaWithoutBody);
+      const blobHash = await computeBlobHash(metaWithoutBody);
 
       const blobExists = await blobAdapter.exists(blobHash);
       let observedByteLength: number;

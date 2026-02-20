@@ -3,8 +3,8 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BlobStorageAdapter } from '@syncular/core';
-import { createHmacTokenSigner } from './database';
-import { createFilesystemBlobStorageAdapter } from './filesystem';
+import { createHmacTokenSigner } from '@syncular/server';
+import { createFilesystemBlobStorageAdapter } from './index';
 
 let basePath: string;
 let adapter: BlobStorageAdapter;

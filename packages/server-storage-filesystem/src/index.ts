@@ -6,15 +6,7 @@
  * (same pattern as the database adapter).
  */
 
-import {
-  mkdir,
-  open,
-  readFile,
-  rename,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   BlobSignDownloadOptions,
@@ -22,7 +14,22 @@ import type {
   BlobSignUploadOptions,
   BlobStorageAdapter,
 } from '@syncular/core';
-import type { BlobTokenSigner } from './database';
+
+export interface BlobTokenSigner {
+  sign(
+    payload: {
+      hash: string;
+      action: 'upload' | 'download';
+      expiresAt: number;
+    },
+    expiresInSeconds: number
+  ): Promise<string>;
+}
+
+function hasErrnoCode(error: unknown, code: string): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  return (error as { code?: unknown }).code === code;
+}
 
 export interface FilesystemBlobStorageAdapterOptions {
   /** Directory root for blob files */
@@ -109,7 +116,7 @@ export function createFilesystemBlobStorageAdapter(
       try {
         await unlink(hashToFilePath(basePath, hash));
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        if (!hasErrnoCode(err, 'ENOENT')) throw err;
       }
     },
 
@@ -117,8 +124,8 @@ export function createFilesystemBlobStorageAdapter(
       hash: string
     ): Promise<{ size: number; mimeType?: string } | null> {
       try {
-        const s = await stat(hashToFilePath(basePath, hash));
-        return { size: s.size };
+        const fileStats = await stat(hashToFilePath(basePath, hash));
+        return { size: fileStats.size };
       } catch {
         return null;
       }
@@ -157,20 +164,20 @@ export function createFilesystemBlobStorageAdapter(
 
     async get(hash: string): Promise<Uint8Array | null> {
       try {
-        const buf = await readFile(hashToFilePath(basePath, hash));
-        return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+        const data = await readFile(hashToFilePath(basePath, hash));
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        if (hasErrnoCode(err, 'ENOENT')) return null;
         throw err;
       }
     },
 
     async getStream(hash: string): Promise<ReadableStream<Uint8Array> | null> {
-      let data: Buffer;
+      let data: Uint8Array;
       try {
         data = await readFile(hashToFilePath(basePath, hash));
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        if (hasErrnoCode(err, 'ENOENT')) return null;
         throw err;
       }
       const bytes = new Uint8Array(

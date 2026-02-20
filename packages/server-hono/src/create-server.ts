@@ -16,11 +16,11 @@ import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';
 import {
-  type ConsoleEventEmitter,
   createConsoleEventEmitter,
   createConsoleRoutes,
   createTokenAuthenticator,
 } from './console/routes';
+import type { ConsoleEventEmitter, ConsoleSharedOptions } from './console/types';
 import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,
@@ -58,47 +58,10 @@ export interface SyncServerOptions<DB extends SyncCoreDb = SyncCoreDb> {
    */
   console?:
     | false
-    | {
+    | ({
         /** Console bearer token for authentication (required unless SYNC_CONSOLE_TOKEN is set) */
         token?: string;
-        /** CORS origins (defaults to '*') */
-        corsOrigins?: '*' | string[];
-        /** Metrics aggregation strategy for console stats endpoints */
-        metrics?: {
-          aggregationMode?: 'auto' | 'raw' | 'aggregated';
-          rawFallbackMaxEvents?: number;
-        };
-        blobBucket?: {
-          list(options: {
-            prefix?: string;
-            cursor?: string;
-            limit?: number;
-          }): Promise<{
-            objects: Array<{
-              key: string;
-              size: number;
-              uploaded: Date;
-              httpMetadata?: { contentType?: string };
-            }>;
-            truncated: boolean;
-            cursor?: string;
-          }>;
-          get(
-            key: string
-          ): Promise<{
-            body: ReadableStream;
-            size: number;
-            httpMetadata?: { contentType?: string };
-          } | null>;
-          delete(key: string | string[]): Promise<void>;
-          head(
-            key: string
-          ): Promise<{
-            size: number;
-            httpMetadata?: { contentType?: string };
-          } | null>;
-        };
-      };
+      } & ConsoleSharedOptions);
 }
 
 export interface SyncServerResult {

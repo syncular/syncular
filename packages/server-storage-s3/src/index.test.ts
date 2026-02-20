@@ -4,7 +4,7 @@ import {
   type GetSignedUrlFn,
   type S3ClientLike,
   type S3Commands,
-} from './s3';
+} from './index';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -8,8 +8,8 @@
  * ensuring clients receive the updated data.
  */
 
-import { randomUUID } from 'node:crypto';
 import type { Insertable, Kysely } from 'kysely';
+import { randomId } from '@syncular/core';
 import type { ServerSyncDialect } from './dialect/types';
 import type { SyncCoreDb } from './schema';
 
@@ -92,7 +92,7 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
     >;
     const syncTrx = trx as SyncTrx;
 
-    const clientCommitId = `ext_${Date.now()}_${randomUUID()}`;
+    const clientCommitId = `ext_${Date.now()}_${randomId()}`;
 
     // 1. Insert synthetic commit
     const commitRow: Insertable<SyncCoreDb['sync_commits']> = {

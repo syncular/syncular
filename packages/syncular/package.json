@@ -100,6 +100,20 @@
         "default": "./dist/server-hono.js"
       }
     },
+    "./server-storage-filesystem": {
+      "bun": "./src/server-storage-filesystem.ts",
+      "import": {
+        "types": "./dist/server-storage-filesystem.d.ts",
+        "default": "./dist/server-storage-filesystem.js"
+      }
+    },
+    "./server-storage-s3": {
+      "bun": "./src/server-storage-s3.ts",
+      "import": {
+        "types": "./dist/server-storage-s3.d.ts",
+        "default": "./dist/server-storage-s3.js"
+      }
+    },
     "./server-cloudflare": {
       "bun": "./src/server-cloudflare.ts",
       "import": {
@@ -284,6 +298,8 @@
     "@syncular/server-dialect-postgres": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
+    "@syncular/server-storage-filesystem": "workspace:*",
+    "@syncular/server-storage-s3": "workspace:*",
     "@syncular/testkit": "workspace:*",
     "@syncular/transport-http": "workspace:*",
     "@syncular/transport-ws": "workspace:*",
