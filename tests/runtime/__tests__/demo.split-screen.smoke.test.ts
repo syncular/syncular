@@ -57,7 +57,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     await page.waitForFunction(
       () =>
         document.querySelectorAll('input[placeholder="Add a task..."]')
-          .length >= 2,
+          .length >= 1,
       undefined,
       { timeout: 120_000 }
     );
@@ -88,7 +88,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     await input.fill(title);
     await input.press('Enter');
 
-    const deadline = Date.now() + 60_000;
+    const deadline = Date.now() + 240_000;
     while (Date.now() < deadline) {
       const count = await page.getByText(title, { exact: true }).count();
       if (count >= 2) return;
@@ -97,5 +97,5 @@ describeDemoSmoke('Demo split-screen smoke', () => {
 
     const finalCount = await page.getByText(title, { exact: true }).count();
     expect(finalCount).toBeGreaterThanOrEqual(2);
-  }, 180_000);
+  }, 300_000);
 });

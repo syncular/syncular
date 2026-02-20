@@ -92,32 +92,63 @@ export const clientMigrations = defineMigrations<ClientDb>({
   },
 });
 
+const CLIENT_MIGRATION_QUEUE_KEY = 'demo-client-migrations';
+const migrationQueues = new Map<string, Promise<void>>();
+
+async function runWithMigrationQueue<T>(
+  queueKey: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const previous = migrationQueues.get(queueKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => current);
+  migrationQueues.set(queueKey, tail);
+
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (migrationQueues.get(queueKey) === tail) {
+      migrationQueues.delete(queueKey);
+    }
+  }
+}
+
 /**
  * Migrate the client database schema
  */
 export async function migrateClientDb(db: Kysely<ClientDb>): Promise<void> {
-  // Create sync infrastructure tables
-  await ensureClientSyncSchema(db);
+  // In development StrictMode, client setup can be invoked concurrently for
+  // the same local store. Serialize migrations to avoid duplicate CREATE TABLE
+  // races during startup.
+  await runWithMigrationQueue(CLIENT_MIGRATION_QUEUE_KEY, async () => {
+    // Create sync infrastructure tables
+    await ensureClientSyncSchema(db);
 
-  // Run versioned migrations with auto-reset on checksum mismatch
-  await runMigrations({
-    db,
-    migrations: clientMigrations,
-    onChecksumMismatch: 'reset',
-    beforeReset: async (db) => {
-      // Drop app tables so migrations can recreate them
-      for (const table of [
-        'tasks',
-        'shared_tasks',
-        'catalog_items',
-        'patient_notes',
-      ]) {
-        await db.schema.dropTable(table).ifExists().execute();
-      }
-      // Drop and recreate sync schema
-      await dropClientSyncSchema(db);
-      await ensureClientSyncSchema(db);
-    },
+    // Run versioned migrations with auto-reset on checksum mismatch
+    await runMigrations({
+      db,
+      migrations: clientMigrations,
+      onChecksumMismatch: 'reset',
+      beforeReset: async (db) => {
+        // Drop app tables so migrations can recreate them
+        for (const table of [
+          'tasks',
+          'shared_tasks',
+          'catalog_items',
+          'patient_notes',
+        ]) {
+          await db.schema.dropTable(table).ifExists().execute();
+        }
+        // Drop and recreate sync schema
+        await dropClientSyncSchema(db);
+        await ensureClientSyncSchema(db);
+      },
+    });
   });
 }
 
