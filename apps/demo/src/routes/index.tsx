@@ -82,7 +82,7 @@ function DemoShell() {
         </Badge>
         <Link to="/console" className={navActionLinkClassName}>
           Go to console
-          <ArrowRight className="h-3.5 w-3.5" />
+          <ArrowRight className="h-3 w-3" />
         </Link>
       </div>
     ),

@@ -203,12 +203,12 @@ export function ConsoleLayout({
                 variant={pathname === configPath ? 'secondary' : 'ghost'}
                 size="icon"
               >
-                <Settings />
+                <Settings className="h-3 w-3" />
               </Button>
             </Link>
             {appHref ? (
               <a href={appHref} className={navActionLinkClassName}>
-                <ArrowLeft className="h-3.5 w-3.5" />
+                <ArrowLeft className="h-3 w-3" />
                 Go to app
               </a>
             ) : null}
