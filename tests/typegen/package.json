@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "tsgo": "tsgo --noEmit",
     "test": "bun test ."
   },
   "devDependencies": {

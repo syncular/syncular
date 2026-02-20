@@ -49,14 +49,33 @@ describe('SQLite introspection', () => {
   it('supports migrations that read rows during introspection', async () => {
     const readDuringMigration = defineMigrations({
       v1: async (db) => {
+        const migrationDb = db as unknown as {
+          insertInto: (table: string) => {
+            values: (row: Record<string, unknown>) => {
+              execute: () => Promise<unknown>;
+            };
+          };
+          selectFrom: (table: string) => {
+            select: (column: string) => {
+              where: (
+                column: string,
+                operator: '=' | '!=' | '<' | '>' | '<=' | '>=',
+                value: unknown
+              ) => {
+                executeTakeFirstOrThrow: () => Promise<{ id: string }>;
+              };
+            };
+          };
+        };
+
         await db.schema
           .createTable('source')
           .addColumn('id', 'text', (col) => col.primaryKey())
           .execute();
 
-        await db.insertInto('source').values({ id: 'row-1' }).execute();
+        await migrationDb.insertInto('source').values({ id: 'row-1' }).execute();
 
-        const row = await db
+        const row = await migrationDb
           .selectFrom('source')
           .select('id')
           .where('id', '=', 'row-1')
