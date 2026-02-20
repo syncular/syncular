@@ -65,6 +65,8 @@
         "default": "./dist/console.js"
       }
     },
+    "./console/styles.css": "./src/console-styles.css",
+    "./console/styles.source.css": "./src/console-styles.source.css",
     "./console-server": {
       "bun": "./src/console-server.ts",
       "import": {
