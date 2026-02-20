@@ -1,6 +1,6 @@
 import { createPgliteClient } from './db-pglite';
 import { createSqliteClient } from './db-sqlite';
-import { migrateClientDb, resetClientData } from './migrate';
+import { migrateClientDbWithTimeout, resetClientData } from './migrate';
 
 type DemoClientStoreDriver = 'sqlite' | 'pglite';
 
@@ -104,14 +104,14 @@ function formatResetErrors(errors: readonly string[]): string {
 async function resetStoreData(store: DemoClientStore): Promise<void> {
   if (store.driver === 'sqlite') {
     const db = createSqliteClient(store.location);
-    await migrateClientDb(db);
+    await migrateClientDbWithTimeout(db, { clientStoreKey: store.key });
     await resetClientData(db);
     await db.destroy();
     return;
   }
 
   const db = await createPgliteClient(store.location);
-  await migrateClientDb(db);
+  await migrateClientDbWithTimeout(db, { clientStoreKey: store.key });
   await resetClientData(db);
   await db.destroy();
 }

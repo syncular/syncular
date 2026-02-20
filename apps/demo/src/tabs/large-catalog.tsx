@@ -22,7 +22,7 @@ import {
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
-import { migrateClientDb } from '../client/migrate';
+import { migrateClientDbWithTimeout } from '../client/migrate';
 import { SyncProvider, useSyncQuery, useSyncStatus } from '../client/react';
 import type { ClientDb } from '../client/types.generated';
 import {
@@ -112,7 +112,9 @@ export function LargeCatalogTab() {
         const database = createSqliteClient(
           DEMO_CLIENT_STORES.catalogSqlite.location
         );
-        await migrateClientDb(database);
+        await migrateClientDbWithTimeout(database, {
+          clientStoreKey: DEMO_CLIENT_STORES.catalogSqlite.key,
+        });
         setDb(database);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

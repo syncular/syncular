@@ -50,7 +50,7 @@ import {
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { tasksClientHandler } from '../client/handlers/tasks';
-import { migrateClientDb } from '../client/migrate';
+import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
   SyncProvider,
   useConflicts,
@@ -341,7 +341,7 @@ function SyncClientPanel({
       }
       try {
         const database = await createDb();
-        await migrateClientDb(database);
+        await migrateClientDbWithTimeout(database, { clientStoreKey });
         if (!cancelled) {
           setDb(database);
         }

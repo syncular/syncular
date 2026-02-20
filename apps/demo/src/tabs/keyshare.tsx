@@ -46,7 +46,7 @@ import {
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
-import { migrateClientDb } from '../client/migrate';
+import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
   SyncProvider,
   useMutation,
@@ -321,7 +321,9 @@ function AlicePanel({
         const database = createSqliteClient(
           DEMO_CLIENT_STORES.keyshareAliceSqlite.location
         );
-        await migrateClientDb(database);
+        await migrateClientDbWithTimeout(database, {
+          clientStoreKey: DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
+        });
         setDb(database);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -600,7 +602,9 @@ function BobPanel({
         const database = await createPgliteClient(
           DEMO_CLIENT_STORES.keyshareBobPglite.location
         );
-        await migrateClientDb(database);
+        await migrateClientDbWithTimeout(database, {
+          clientStoreKey: DEMO_CLIENT_STORES.keyshareBobPglite.key,
+        });
         setDb(database);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

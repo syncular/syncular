@@ -31,7 +31,7 @@ import {
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { tasksClientHandler } from '../client/handlers/tasks';
-import { migrateClientDb } from '../client/migrate';
+import { migrateClientDbWithTimeout } from '../client/migrate';
 import { SyncProvider, useMutations, useSyncQuery } from '../client/react';
 import type { ClientDb, TasksTable } from '../client/types.generated';
 import {
@@ -113,16 +113,33 @@ const receiverHandlers = new ClientTableRegistry<ClientDb>().register(
   tasksClientHandler
 );
 
-const uploaderDb = createSqliteClient(
-  DEMO_CLIENT_STORES.mediaUploaderSqlite.location
-);
+let uploaderDbPromise: Promise<Awaited<ReturnType<typeof createSqliteClient>>> | null =
+  null;
+async function getUploaderDb() {
+  if (!uploaderDbPromise) {
+    uploaderDbPromise = (async () => {
+      const db = createSqliteClient(DEMO_CLIENT_STORES.mediaUploaderSqlite.location);
+      await migrateClientDbWithTimeout(db, {
+        clientStoreKey: DEMO_CLIENT_STORES.mediaUploaderSqlite.key,
+      });
+      return db;
+    })();
+  }
+  return uploaderDbPromise;
+}
 
 let receiverDbPromise: ReturnType<typeof createPgliteClient> | null = null;
 function getReceiverDb() {
   if (!receiverDbPromise) {
-    receiverDbPromise = createPgliteClient(
-      DEMO_CLIENT_STORES.mediaReceiverPglite.location
-    );
+    receiverDbPromise = (async () => {
+      const db = await createPgliteClient(
+        DEMO_CLIENT_STORES.mediaReceiverPglite.location
+      );
+      await migrateClientDbWithTimeout(db, {
+        clientStoreKey: DEMO_CLIENT_STORES.mediaReceiverPglite.key,
+      });
+      return db;
+    })();
   }
   return receiverDbPromise;
 }
@@ -364,20 +381,112 @@ function ReceiverPanel() {
 // ReceiverWrapper - waits for PGlite database to be ready
 // ---------------------------------------------------------------------------
 
-function ReceiverWrapper() {
-  const [db, setDb] = useState<Awaited<
-    ReturnType<typeof createPgliteClient>
-  > | null>(null);
+function InitErrorPanel({
+  label,
+  color,
+  error,
+}: {
+  label: string;
+  color: 'flow' | 'relay';
+  error: string;
+}) {
+  return (
+    <ClientPanel label={label} color={color}>
+      <div className="px-3 py-3">
+        <div className="text-xs text-red-300 font-mono break-all">
+          Database initialization failed: {error}
+        </div>
+      </div>
+    </ClientPanel>
+  );
+}
+
+function UploaderWrapper({
+  onTransfer,
+}: {
+  onTransfer: (entry: TransferEntry) => void;
+}) {
+  const [db, setDb] = useState<Awaited<ReturnType<typeof createSqliteClient>> | null>(
+    null
+  );
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    getReceiverDb().then((resolved) => {
-      if (!cancelled) setDb(resolved);
-    });
+    getUploaderDb()
+      .then((resolved) => {
+        if (!cancelled) setDb(resolved);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  if (error) {
+    return <InitErrorPanel label="Client A - Uploader" color="flow" error={error} />;
+  }
+
+  if (!db) {
+    return (
+      <ClientPanel label="Client A - Uploader" color="flow">
+        <div className="text-center py-6">
+          <span className="font-mono text-[10px] text-neutral-600">
+            Initializing wa-sqlite...
+          </span>
+        </div>
+      </ClientPanel>
+    );
+  }
+
+  return (
+    <SyncProvider
+      key="media-uploader"
+      db={db}
+      transport={uploaderTransport}
+      handlers={uploaderHandlers}
+      clientId="client-media-uploader"
+      actorId={userId}
+      subscriptions={subscriptions}
+      realtimeEnabled={true}
+      pollIntervalMs={DEMO_POLL_INTERVAL_MS}
+    >
+      <UploaderPanel onTransfer={onTransfer} />
+    </SyncProvider>
+  );
+}
+
+function ReceiverWrapper() {
+  const [db, setDb] = useState<Awaited<ReturnType<typeof createPgliteClient>> | null>(
+    null
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getReceiverDb()
+      .then((resolved) => {
+        if (!cancelled) setDb(resolved);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (error) {
+    return (
+      <InitErrorPanel label="Client B - Receiver" color="relay" error={error} />
+    );
+  }
 
   if (!db) {
     return (
@@ -400,7 +509,6 @@ function ReceiverWrapper() {
       clientId="client-media-receiver"
       actorId={userId}
       subscriptions={subscriptions}
-      migrate={migrateClientDb}
       realtimeEnabled={true}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
@@ -481,21 +589,7 @@ export function MediaSyncTab() {
       </TopologyPanel>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-        <SyncProvider
-          key="media-uploader"
-          db={uploaderDb}
-          transport={uploaderTransport}
-          handlers={uploaderHandlers}
-          clientId="client-media-uploader"
-          actorId={userId}
-          subscriptions={subscriptions}
-          migrate={migrateClientDb}
-          realtimeEnabled={true}
-          pollIntervalMs={DEMO_POLL_INTERVAL_MS}
-        >
-          <UploaderPanel onTransfer={addTransfer} />
-        </SyncProvider>
-
+        <UploaderWrapper onTransfer={addTransfer} />
         <ReceiverWrapper />
       </div>
 

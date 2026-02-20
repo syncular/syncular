@@ -32,7 +32,7 @@ import {
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { patientNotesClientHandler } from '../client/handlers/patient-notes';
-import { migrateClientDb } from '../client/migrate';
+import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
   SyncProvider,
   useMutation,
@@ -366,18 +366,23 @@ function ActorVaultPanel({
     passphraseState;
 
   const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
   const initRef = useRef(false);
 
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
     async function init() {
-      const database = await createDb();
-      await migrateClientDb(database);
-      setDb(database);
+      try {
+        const database = await createDb();
+        await migrateClientDbWithTimeout(database, { clientStoreKey });
+        setDb(database);
+      } catch (error) {
+        setInitError(error instanceof Error ? error.message : String(error));
+      }
     }
     init();
-  }, [createDb]);
+  }, [clientStoreKey, createDb]);
 
   const transport = useMemo(
     () => createDemoPollingTransport(actor.id),
@@ -432,6 +437,23 @@ function ActorVaultPanel({
 
   const hasPassphrase = passphrases.has(`patient:${selectedChannel}`);
   const currentPassphrase = passphrases.get(`patient:${selectedChannel}`) ?? '';
+
+  if (initError) {
+    return (
+      <ActorPanel
+        label={actor.label}
+        color={actor.color}
+        icon={actor.icon}
+        badge={<EncryptedBadge locked />}
+      >
+        <div className="px-3 py-3">
+          <div className="text-xs text-red-300 font-mono break-all">
+            Database initialization failed: {initError}
+          </div>
+        </div>
+      </ActorPanel>
+    );
+  }
 
   if (!db) {
     return (

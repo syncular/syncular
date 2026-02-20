@@ -18,6 +18,53 @@ import type { ClientDb } from './types.generated';
 
 import { defineMigrations } from '@syncular/migrations';
 
+const DEFAULT_CLIENT_MIGRATION_TIMEOUT_MS = 20_000;
+
+export interface MigrateClientDbWithTimeoutOptions {
+  timeoutMs?: number;
+  clientStoreKey?: string;
+}
+
+export class ClientDbInitializationTimeoutError extends Error {
+  readonly timeoutMs: number;
+  readonly clientStoreKey?: string;
+
+  constructor(timeoutMs: number, clientStoreKey?: string) {
+    const scope = clientStoreKey ? ` (${clientStoreKey})` : '';
+    super(
+      `Client database initialization timed out after ${timeoutMs}ms${scope}. ` +
+        'This usually means wa-sqlite worker startup failed or never replied. ' +
+        'Check browser support for module workers and Web Locks.'
+    );
+    this.name = 'ClientDbInitializationTimeoutError';
+    this.timeoutMs = timeoutMs;
+    this.clientStoreKey = clientStoreKey;
+  }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  createError: () => Error
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(createError());
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
 /** @public Used by scripts/generate-types.ts */
 export const clientMigrations = defineMigrations<ClientDb>({
   v1: async (db) => {
@@ -119,6 +166,19 @@ export async function migrateClientDb(db: Kysely<ClientDb>): Promise<void> {
       await ensureClientSyncSchema(db);
     },
   });
+}
+
+export async function migrateClientDbWithTimeout(
+  db: Kysely<ClientDb>,
+  options?: MigrateClientDbWithTimeoutOptions
+): Promise<void> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_CLIENT_MIGRATION_TIMEOUT_MS;
+  await withTimeout(
+    migrateClientDb(db),
+    timeoutMs,
+    () =>
+      new ClientDbInitializationTimeoutError(timeoutMs, options?.clientStoreKey)
+  );
 }
 
 const RESET_TABLES = [
