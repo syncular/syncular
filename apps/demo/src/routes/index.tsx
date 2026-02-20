@@ -95,7 +95,7 @@ function DemoShell() {
     <div className="min-h-screen bg-background">
       <TopNavigation brand={brand} center={center} right={right} />
 
-      <main className="pt-[52px]">
+      <main>
         <div className="max-w-[1440px] mx-auto px-6 py-6">
           <div className="mb-4 rounded-md border border-flow/30 bg-flow/[0.08] px-3 py-2 font-mono text-[10px] text-flow">
             Service Worker mode enabled: this demo runs entirely offline in your
