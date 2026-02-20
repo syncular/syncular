@@ -19,7 +19,7 @@ export function TopNavigation({
   return (
     <nav
       className={cn(
-        'sticky top-0 z-50 h-[42px] border-b border-border bg-surface/88 backdrop-blur-lg flex items-center justify-between px-5',
+        'fixed top-0 left-0 right-0 z-100 h-[42px] border-b border-border bg-surface/88 backdrop-blur-lg flex items-center justify-between px-5',
         className
       )}
     >

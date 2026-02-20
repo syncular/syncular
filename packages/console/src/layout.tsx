@@ -212,7 +212,7 @@ export function ConsoleLayout({
         }
       />
 
-      <main className="flex-1 overflow-auto pb-[32px]">
+      <main className="flex-1 overflow-auto pt-[42px] pb-[32px]">
         <div className="min-h-full">
           {isConnected || pathname === configPath ? (
             <div key={pathname} style={{ animation: 'pageIn 0.3s ease-out' }}>
