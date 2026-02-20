@@ -36,6 +36,9 @@ The Console is the operator surface for Syncular deployments. Use it to investig
   <Card title="Operations" href="/docs/console/operations">
     Prune, compact, notify-data-change, and audit
   </Card>
+  <Card title="Storage" href="/docs/console/storage">
+    Browse blob objects, filter by prefix, download, and delete
+  </Card>
   <Card title="Config and API Keys" href="/docs/console/config-and-api-keys">
     Manage credentials, filters, and key lifecycle
   </Card>
@@ -58,3 +61,4 @@ The Console is the operator surface for Syncular deployments. Use it to investig
 - [Operations endpoint](/docs/api/getConsoleOperations)
 - [Request payload endpoint](/docs/api/getConsoleEventsByIdPayload)
 - [Notify data change endpoint](/docs/api/postConsoleNotifyDataChange)
+- Storage endpoints: `GET /console/storage`, `GET /console/storage/{key}/download`, `DELETE /console/storage/{key}`

@@ -29,7 +29,7 @@ Your app queries a **local database** — reads are instant, the UI never waits 
 - **Scope-based auth** — every change is tagged with scope values (e.g. `user_id`, `project_id`); pulls return only what's requested _and_ allowed
 - **Blob storage** — sync binary files (images, documents) alongside structured data; pluggable backends including database storage and Cloudflare R2
 - **End-to-end encryption** — optional field-level E2E encryption plugin (XChaCha20-Poly1305) with BIP39 key sharing between devices
-- **Admin console** — inspect commits, clients, events, and run maintenance operations (prune/compact)
+- **Admin console** — inspect commits/clients/events, browse storage objects, and run maintenance operations (prune/compact/notify)
 - **External changes + admin proxy** — integrate existing REST/webhook/pipeline writes and admin SQL without breaking sync semantics
 - **Observability** — pluggable telemetry (logs, traces, metrics, exceptions) with built-in Sentry adapter or bring your own (OpenTelemetry, Datadog, etc.)
 - **Migrations + typegen** — schema versioning for rolling upgrades, plus optional type generation from migrations
@@ -105,6 +105,7 @@ All packages are published under the `@syncular` scope on npm.
 | `@syncular/core` | Protocol types, schemas, telemetry |
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
 | `@syncular/server-hono` | Hono adapter with OpenAPI spec + WebSocket |
+| `@syncular/server-service-worker` | Service Worker server/runtime + wake transport helpers |
 | `@syncular/client` | Client sync engine (outbox, conflicts, plugins, blobs) |
 | `@syncular/client-react` | React provider, typed hooks, queries, mutations, presence |
 | `@syncular/transport-http` | HTTP transport with typed client |
@@ -119,7 +120,7 @@ All packages are published under the `@syncular` scope on npm.
 
 ```bash
 bun install
-bun --cwd apps/demo dev     # demo at http://localhost:5173
+bun --cwd apps/demo dev     # demo (single app + console shell, default http://localhost:9811)
 bun --cwd apps/docs dev     # docs at http://localhost:3000
 bun --cwd apps/console dev  # console at http://localhost:5174
 ```

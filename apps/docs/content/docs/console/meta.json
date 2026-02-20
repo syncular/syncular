@@ -9,6 +9,7 @@
     "stream-investigation",
     "fleet",
     "operations",
+    "storage",
     "config-and-api-keys",
     "incident-playbooks",
     "troubleshooting"

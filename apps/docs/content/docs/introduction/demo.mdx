@@ -1,11 +1,18 @@
 ---
 title: Try the Demo
-description: Run the Syncular demo app and explore key features
+description: Run the current Syncular demo (Service Worker server + built-in Console) and explore key workflows.
 ---
 
 # Try the Demo
 
-The demo app is the fastest way to see Syncular in action. It runs a full stack locally — React frontend, Hono API server, PGlite (in-memory Postgres), and multiple sync clients.
+The demo app runs the full Syncular stack in-browser:
+
+- React app shell
+- Sync + console APIs served by a Service Worker server
+- Local SQLite persistence (wa-sqlite) plus a PGlite client variant
+- Built-in Console UI at `/console`
+
+This is intentionally close to a real deployment flow, but with no external backend dependency.
 
 ## Run it
 
@@ -14,83 +21,92 @@ bun install
 bun --cwd apps/demo dev
 ```
 
-This starts:
-- **Frontend:** `http://localhost:5173`
-- **API server:** `http://localhost:3001` (sync routes at `/api/sync`)
+By default, the demo prints a local URL such as:
 
-## Demo 1: Split-Screen Sync
+- app: `http://localhost:9811/`
+- console: `http://localhost:9811/console`
 
-The default tab shows **two independent sync clients** side-by-side. The left panel uses SQLite (via wa-sqlite), the right uses PGlite. Both sync to the same server.
+## Important runtime behavior
 
-**Things to try:**
+- Service Worker mode is required for API handling in this demo.
+- `/api/*` is handled by the Service Worker server.
+- The network dev server intentionally does not serve live `/api/*` sync endpoints.
 
-1. **Add a task in the left panel** — watch it appear on the right within a second
-2. **Click a task to complete it** — the change syncs to the other panel
-3. **Pause sync** on one panel (use the sync controls), make changes, then resume — watch the queued changes sync
-4. **Open browser DevTools → Network** — observe the HTTP push/pull requests
-5. **Edit the same task in both panels simultaneously** — see conflict detection in action
+If Service Worker registration or health check fails, the app renders an explicit startup error screen instead of silently falling back.
 
-**What you're seeing:** Two separate SQLite databases, each running in the browser, syncing through a commit log stored in PGlite (Postgres). The outbox queues writes when paused. Scopes filter data per user.
+## Demo tabs
 
-## Demo 2: Large Catalog
+## 1) Split Screen
 
-This tab demonstrates sync at scale — **bootstrapping large datasets** with chunked snapshots.
+Two independent clients sync against the same server state:
 
-**Things to try:**
+- left panel: wa-sqlite
+- right panel: PGlite
 
-1. **Seed the catalog** — click to generate up to 1 million rows on the server
-2. **Watch the bootstrap** — the client downloads data in compressed chunks (framed JSON rows + gzip)
-3. **Filter the list** — observe query performance against the local database
-4. **Check chunk stats** — see how many chunks were downloaded and their sizes
+Try:
 
-**What you're seeing:** Syncular's snapshot chunking system. Instead of sending all rows in one response, the server breaks large snapshots into compressed chunks. The client downloads and applies them incrementally. After bootstrap, only incremental commits are synced.
+1. Create/update tasks on one side and verify propagation to the other.
+2. Toggle sync controls to queue writes, then resume and observe replay.
+3. Make conflicting edits to inspect conflict handling behavior.
 
-## Demo 3: Key Share (E2EE)
+## 2) Media Sync
 
-This tab demonstrates **end-to-end field encryption** with key sharing.
+Covers blob-aware workflows (upload/download + metadata references in synced rows).
 
-**Things to try:**
+Try:
 
-1. **Add a shared task in the left panel** (the "owner") — the title is encrypted before leaving the device
-2. **Look at the right panel** — without the key, you see ciphertext
-3. **Copy the 24-word mnemonic** from the left panel and paste it into the right panel
-4. **Watch the data decrypt** — the right panel can now read the task titles
+1. Upload media in one panel.
+2. Verify sync metadata propagation and retrieval behavior on the other panel.
 
-**What you're seeing:** The `@syncular/client-plugin-encryption` plugin encrypts specified fields (like `title`) using XChaCha20-Poly1305 before pushing to the server. The server only stores ciphertext. Key sharing uses BIP39 mnemonics (or QR codes).
+## 3) Large Catalog
 
-## Demo 4: Symmetric E2EE
+Exercises large bootstrap and chunked snapshot behavior.
 
-A simpler version of the encryption demo where both panels share the same key from the start.
+Try:
 
-## Run the Console
+1. Seed a large dataset.
+2. Observe bootstrap paging/chunk behavior.
+3. Filter/query locally after bootstrap completes.
 
-The Console is a monitoring dashboard for your sync server. To run it against the demo:
+## 4) E2EE Key Share
 
-```bash
-bun --cwd apps/console dev
-```
+Demonstrates field-level encryption plus mnemonic-based key exchange.
 
-Then connect to:
-- **Server URL:** `http://localhost:3001/api`
-- **Token:** `demo-token`
+Try:
 
-The console shows:
-- **Dashboard** — real-time metrics (operations, latency, error rate, active clients)
-- **Explorer** — browse the commit log and request events
-- **Clients** — connected clients and their sync state
-- **System** — server health and storage stats
+1. Write encrypted data as owner.
+2. Observe ciphertext on peer before key share.
+3. Share mnemonic and verify peer decryption.
+
+## 5) Symmetric E2EE
+
+Demonstrates a shared-key encrypted flow from the start.
+
+## Built-in Console (`/console`)
+
+The demo includes Console in the same app shell so you can move between app and operator views quickly.
+
+Console views:
+
+- **Command**: high-level health + KPIs
+- **Stream**: timeline for commits/events/payload drill-down
+- **Fleet**: client cursor/lag and eviction workflows
+- **Ops**: prune/compact/notify data change + audit trail
+- **Storage**: blob/object view (available when storage routes are enabled)
+- **Config**: endpoint/auth/preferences and API key controls
 
 ## Where the code lives
 
 | Component | Path |
 |-----------|------|
-| Frontend UI | `demo/src/components/` |
-| Server routes | `demo/src/server/` |
-| Type generation | `demo/scripts/generate-types.ts` |
-| Console UI | `console/src/` |
+| Demo app routes + tabs | `apps/demo/src/routes` and `apps/demo/src/tabs` |
+| Service Worker server runtime | `apps/demo/src/sw/server.ts` |
+| Demo dev server (asset + worker script serving) | `apps/demo/src/server/index.ts` |
+| Demo backend route wiring | `apps/demo/src/server/routes.ts` |
+| Console package | `packages/console/src` |
 
 ## Next steps
 
-- [Quick Start](/docs/introduction/quick-start) — build your own app from scratch
-- [How Sync Works](/docs/introduction/architecture) — understand what's happening under the hood
-- [Encryption Guide](/docs/build/encryption) — set up E2E encryption in your app
+- [Quick Start](/docs/introduction/quick-start)
+- [Service Worker Server](/docs/build/service-worker-server)
+- [Console docs](/docs/console)

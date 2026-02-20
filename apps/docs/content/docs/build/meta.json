@@ -7,6 +7,7 @@
     "server-setup",
     "client-setup",
     "runtimes",
+    "service-worker-server",
     "table-handlers",
     "---Features---",
     "auth",

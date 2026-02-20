@@ -267,6 +267,36 @@ Removes intermediate change history while preserving newest state per row.
 
 Keeps full history for last N hours (`fullHistoryHours`), then compacts older changes to just the newest per (table, row_id, scopes).
 
+## Storage Endpoints (Optional)
+
+Console storage APIs are enabled only when `blobBucket` is provided:
+
+```typescript
+const consoleRoutes = createConsoleRoutes({
+  db,
+  dialect,
+  handlers,
+  authenticate: createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN),
+  blobBucket: {
+    list: async ({ prefix, cursor, limit }) => bucket.list({ prefix, cursor, limit }),
+    get: async (key) => bucket.get(key),
+    delete: async (key) => bucket.delete(key),
+    head: async (key) => bucket.head(key),
+  },
+});
+```
+
+Endpoints:
+
+- `GET /storage` - list objects (prefix/cursor/limit)
+- `GET /storage/:key/download` - download object bytes
+- `DELETE /storage/:key` - delete object
+
+Notes:
+
+- These are mounted under your console prefix (for example `/api/console/storage`).
+- Storage routes are part of direct console routes; gateway mode does not proxy storage endpoints.
+
 ## Request Events
 
 Track sync request history for debugging and analytics.

@@ -30,6 +30,9 @@ All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at `/
 | `GET` | `/console/commits` | Browse commit history |
 | `GET` | `/console/clients` | List connected clients |
 | `GET` | `/console/handlers` | List table handlers |
+| `GET` | `/console/storage` | List storage/blob objects (optional, requires `console.blobBucket`) |
+| `GET` | `/console/storage/{key}/download` | Download a storage/blob object (optional) |
+| `DELETE` | `/console/storage/{key}` | Delete a storage/blob object (optional) |
 
 ## Authentication
 

@@ -1,0 +1,89 @@
+---
+title: Service Worker Server
+description: Run Syncular server APIs in-browser via Service Worker with wake-up transport helpers.
+---
+
+# Service Worker Server
+
+`@syncular/server-service-worker` lets you run Syncular server endpoints entirely in the browser.
+
+This is useful for:
+
+- local/offline demos with no remote backend
+- deterministic smoke environments
+- browser-only workflows that still need real push/pull semantics
+
+## What the package provides
+
+- `createServiceWorkerServer(...)` for request routing + wake message resolution
+- `attachServiceWorkerServer(...)` to wire fetch/install/activate handlers
+- `configureServiceWorkerServer(...)` to register and health-check from the app shell
+- `createServiceWorkerWakeTransport(...)` for `BroadcastChannel`/SW wake-up events with HTTP sync transport
+
+## 1) Service worker script
+
+```ts
+import {
+  attachServiceWorkerServer,
+  createServiceWorkerServer,
+} from '@syncular/server-service-worker';
+
+const server = createServiceWorkerServer({
+  serviceWorkerScriptPath: '/__demo/sw-server.js',
+  handleRequest: async (request) => {
+    return app.fetch(request); // your Hono app / router
+  },
+  onError: (error) => {
+    console.error('[sw-server] request failed', error);
+    return new Response('Service worker server failed', { status: 500 });
+  },
+});
+
+attachServiceWorkerServer(self, server, { logger: console });
+```
+
+## 2) Browser bootstrap + health check
+
+```ts
+import { configureServiceWorkerServer } from '@syncular/server-service-worker';
+
+const ok = await configureServiceWorkerServer({
+  scriptPath: '/__demo/sw-server.js',
+  healthPath: '/api/health',
+  scope: '/',
+  type: 'module',
+  updateViaCache: 'none',
+  logger: console,
+});
+
+if (!ok) {
+  throw new Error('Service Worker server startup failed');
+}
+```
+
+`configureServiceWorkerServer` registers the worker, waits for controller activation, then probes health with retries/timeouts.
+
+## 3) Optional wake-up transport on the client
+
+```ts
+import { createServiceWorkerWakeTransport } from '@syncular/server-service-worker';
+
+const transport = createServiceWorkerWakeTransport({
+  baseUrl: '/api',
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+});
+```
+
+This keeps push/pull over HTTP while using worker/channel messages for low-latency wake events.
+
+## Operational notes
+
+- Serve the worker script with JavaScript MIME (`text/javascript` or equivalent), not HTML.
+- Keep worker scope aligned with your API prefix (typically `/` + `/api/*`).
+- Exclude the worker script path from API interception (`serviceWorkerScriptPath`).
+- Use `enabled: false` and `unregisterOnDisable` for controlled rollbacks in development.
+
+## See it in production-like form
+
+- [Try the Demo](/docs/introduction/demo) — uses this architecture end-to-end.
+- [Web runtime notes](/docs/build/runtimes/web)

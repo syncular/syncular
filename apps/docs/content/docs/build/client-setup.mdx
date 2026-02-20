@@ -177,6 +177,38 @@ Treat `db`, `transport`, `handlers`, `actorId`, and `clientId` as **stable for t
 <SyncProvider key={`${actorId}:${clientId}`} ... />
 ```
 
+## StrictMode-safe async initialization
+
+When initializing DB clients or other expensive async resources in React, use `useCachedAsyncValue` so duplicate StrictMode mounts do not re-run the same initializer.
+
+```tsx
+import {
+  createAsyncInitRegistry,
+  useCachedAsyncValue,
+} from '@syncular/client-react';
+
+const dbInitRegistry = createAsyncInitRegistry<string, AppDb>();
+
+function AppRoot() {
+  const [db, dbError] = useCachedAsyncValue(
+    () =>
+      dbInitRegistry.run('primary-db', async () => {
+        const database = createWaSqliteDb<AppDb>({ fileName: 'app.sqlite' });
+        await ensureClientSyncSchema(database);
+        return database;
+      }),
+    { key: 'primary-db' }
+  );
+
+  if (dbError) return <div>DB init failed: {dbError.message}</div>;
+  if (!db) return <div>Initializing DB...</div>;
+
+  return <SyncProvider db={db} transport={transport} handlers={handlers} />;
+}
+```
+
+`useCachedAsyncValue` returns `[value, error]` and caches outside component state.
+
 ## Customizing client handlers
 
 ### applySnapshot
