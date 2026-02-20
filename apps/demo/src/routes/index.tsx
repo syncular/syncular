@@ -1,11 +1,12 @@
 import type { NavItem } from '@syncular/ui';
 import {
   NavPillGroup,
+  navActionLinkClassName,
   StatusDot,
   SyncularBrand,
   TopNavigation,
 } from '@syncular/ui/navigation';
-import { Badge, Button } from '@syncular/ui/primitives';
+import { Badge } from '@syncular/ui/primitives';
 import {
   createRoute,
   Link,
@@ -79,11 +80,9 @@ function DemoShell() {
           <StatusDot color="flow" pulse />
           SW Offline
         </Badge>
-        <Link to="/console">
-          <Button variant="primary" size="sm" className="h-8">
-            Go to console
-            <ArrowRight className="h-3 w-3" />
-          </Button>
+        <Link to="/console" className={navActionLinkClassName}>
+          Go to console
+          <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
     ),

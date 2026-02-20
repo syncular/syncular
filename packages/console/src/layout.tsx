@@ -6,6 +6,7 @@ import {
   Input,
   NavPill,
   NavPillGroup,
+  navActionLinkClassName,
   SyncularBrand,
   TopNavigation,
 } from '@syncular/ui';
@@ -206,11 +207,9 @@ export function ConsoleLayout({
               </Button>
             </Link>
             {appHref ? (
-              <a href={appHref}>
-                <Button variant="primary" size="sm" className="h-8">
-                  <ArrowLeft className="h-3 w-3" />
-                  Go to app
-                </Button>
+              <a href={appHref} className={navActionLinkClassName}>
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Go to app
               </a>
             ) : null}
           </div>
