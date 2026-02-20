@@ -164,8 +164,11 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
   const { range, setRange } = useTimeRangeState();
   const pageSize = preferences.pageSize;
   const refreshIntervalMs = preferences.refreshInterval * 1000;
-  const traceUrlTemplate: string | undefined = import.meta.env
-    ?.VITE_CONSOLE_TRACE_URL_TEMPLATE;
+  const traceUrlTemplate: string | undefined = (
+    import.meta as ImportMeta & {
+      env?: { VITE_CONSOLE_TRACE_URL_TEMPLATE?: string };
+    }
+  ).env?.VITE_CONSOLE_TRACE_URL_TEMPLATE;
 
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     if (initialSelectedEntryId?.startsWith('#')) return 'commits';
@@ -268,7 +271,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
         selectedEvent?.traceId ?? null,
         selectedEvent?.spanId ?? null
       ),
-    [selectedEvent?.spanId, selectedEvent?.traceId]
+    [selectedEvent?.spanId, selectedEvent?.traceId, traceUrlTemplate]
   );
 
   useEffect(() => {

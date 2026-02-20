@@ -27,7 +27,6 @@ function supportsModuleWorkers(): boolean {
   try {
     // Feature-detect `type: "module"` support.
     const options = {
-      // @ts-expect-error Property getter is used for capability detection.
       get type() {
         supports = true;
         return 'module';

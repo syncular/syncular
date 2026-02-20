@@ -97,8 +97,9 @@ function DemoShell() {
       <main>
         <div className="max-w-[1440px] mx-auto px-6 py-6">
           <div className="mb-4 rounded-md border border-flow/30 bg-flow/[0.08] px-3 py-2 font-mono text-[10px] text-flow">
-            This demo runs the full server stack — Hono, Database, Blob Storage, realtime sync — entirely in your browser via Service Worker. No backend
-            needed.
+            This demo runs the full server stack — Hono, Database, Blob Storage,
+            realtime sync — entirely in your browser via Service Worker. No
+            backend needed.
           </div>
           <Outlet />
         </div>

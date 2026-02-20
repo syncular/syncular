@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun src/server/index.ts",
     "build": "rm -rf dist && bun run build.ts",
+    "tsgo": "tsgo --noEmit -p tsconfig.tsgo.json",
     "pub": "bun scripts/publish.ts",
     "generate:types": "bun scripts/generate-types.ts"
   },
