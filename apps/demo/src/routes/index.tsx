@@ -5,6 +5,7 @@ import {
   SyncularBrand,
   TopNavigation,
 } from '@syncular/ui/navigation';
+import { Badge } from '@syncular/ui/primitives';
 import {
   createRoute,
   Link,
@@ -69,15 +70,14 @@ function DemoShell() {
     () => (
       <div className="flex items-center gap-3">
         <DemoResetAllButton />
-        <div
-          className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-healthy/30 bg-healthy/[0.08]"
+        <Badge
+          variant="flow"
+          className="px-2 py-1 text-[10px]"
           title="This demo runs fully in-browser via a service-worker server and local SQLite storage."
         >
-          <StatusDot color="healthy" pulse />
-          <span className="font-mono text-[10px] uppercase tracking-wider text-foreground-muted">
-            SW Offline
-          </span>
-        </div>
+          <StatusDot color="flow" pulse />
+          SW Offline
+        </Badge>
         <Link
           to="/console"
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-flow/30 text-flow text-[10px] font-mono uppercase tracking-wider hover:bg-flow/8 transition-colors"

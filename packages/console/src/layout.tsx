@@ -1,4 +1,5 @@
 import {
+  Badge,
   BottomBar,
   Button,
   ConnectionStatusBadge,
@@ -142,9 +143,12 @@ export function ConsoleLayout({
         right={
           <div className="flex items-center gap-2">
             {modeBadge ? (
-              <div className="hidden md:inline-flex items-center rounded-md border border-healthy/30 bg-healthy/[0.08] px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300">
+              <Badge
+                variant="flow"
+                className="hidden md:inline-flex px-2 py-1 text-[10px]"
+              >
                 {modeBadge}
-              </div>
+              </Badge>
             ) : null}
             <div className="flex items-center gap-1">
               <span className="font-mono text-[9px] text-neutral-500 uppercase tracking-wide">
