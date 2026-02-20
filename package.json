@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "devDependencies": {
     "@biomejs/biome": "2.4.3",
     "@types/bun": "^1.3.9",
