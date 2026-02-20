@@ -113,24 +113,14 @@ export function ConnectionProvider({
 
       try {
         const client = createConsoleClient(normalizedConfig);
-        const ok = await testConnection(client);
-
-        if (ok) {
-          setState({
-            isConnected: true,
-            isConnecting: false,
-            client,
-            error: null,
-          });
-          return true;
-        }
+        await testConnection(client);
         setState({
-          isConnected: false,
+          isConnected: true,
           isConnecting: false,
-          client: null,
-          error: 'Failed to connect',
+          client,
+          error: null,
         });
-        return false;
+        return true;
       } catch (err) {
         setState({
           isConnected: false,
