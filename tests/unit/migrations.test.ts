@@ -13,6 +13,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { rm } from 'node:fs/promises';
 import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import {
   clearAppliedMigrations,
@@ -225,6 +226,43 @@ describe('migrations', () => {
       expect(result2.wasReset).toBe(false);
     });
 
+    it('serializes concurrent runs for the same tracking table', async () => {
+      const dbPath = `/tmp/syncular-migrations-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`;
+      const dbA = createBunSqliteDb<TestDb>({ path: dbPath });
+      const dbB = createBunSqliteDb<TestDb>({ path: dbPath });
+
+      const migrations = defineMigrations<TestDb>({
+        v1: async (db) => {
+          await db.schema
+            .createTable('items')
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .addColumn('name', 'text')
+            .execute();
+        },
+      });
+
+      try {
+        const [resultA, resultB] = await Promise.all([
+          runMigrations({ db: dbA, migrations }),
+          runMigrations({ db: dbB, migrations }),
+        ]);
+
+        const appliedSets = [resultA.applied, resultB.applied].sort(
+          (left, right) => right.length - left.length
+        );
+        expect(appliedSets).toEqual([[1], []]);
+
+        const applied = await getAppliedMigrations(dbA, 'sync_migration_state');
+        expect(applied).toHaveLength(1);
+      } finally {
+        await Promise.all([
+          dbA.destroy().catch(() => {}),
+          dbB.destroy().catch(() => {}),
+        ]);
+        await rm(dbPath, { force: true });
+      }
+    });
+
     it('throws on checksum mismatch in error mode (default)', async () => {
       const migrations1 = defineMigrations<TestDb>({
         v1: async (db) => {
@@ -299,6 +337,36 @@ describe('migrations', () => {
       // Table was recreated (old data gone)
       const rows = await db.selectFrom('items').selectAll().execute();
       expect(rows).toEqual([]);
+    });
+
+    it('recovers from pre-existing app tables when reset mode is enabled', async () => {
+      await db.schema
+        .createTable('items')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('name', 'text')
+        .execute();
+
+      const migrations = defineMigrations<TestDb>({
+        v1: async (db) => {
+          await db.schema
+            .createTable('items')
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .addColumn('name', 'text')
+            .execute();
+        },
+      });
+
+      const result = await runMigrations({
+        db,
+        migrations,
+        onChecksumMismatch: 'reset',
+        beforeReset: async (db) => {
+          await db.schema.dropTable('items').ifExists().execute();
+        },
+      });
+
+      expect(result.wasReset).toBe(true);
+      expect(result.applied).toEqual([1]);
     });
 
     it('calls beforeReset before clearing tracking state', async () => {
