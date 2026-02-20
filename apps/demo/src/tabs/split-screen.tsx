@@ -52,6 +52,7 @@ import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { tasksClientHandler } from '../client/handlers/tasks';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
+  createAsyncInitRegistry,
   SyncProvider,
   useConflicts,
   useMutations,
@@ -70,6 +71,21 @@ import {
 // ---------------------------------------------------------------------------
 
 const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:split-screen:client-seed-v1';
+const clientDbInitRegistry = createAsyncInitRegistry<string, Kysely<ClientDb>>();
+
+async function initializeClientDb(args: {
+  initKey: string;
+  createDb: () => Kysely<ClientDb> | Promise<Kysely<ClientDb>>;
+  clientStoreKey: string;
+}): Promise<Kysely<ClientDb>> {
+  return await clientDbInitRegistry.run(args.initKey, async () => {
+    const database = await args.createDb();
+    await migrateClientDbWithTimeout(database, {
+      clientStoreKey: args.clientStoreKey,
+    });
+    return database;
+  });
+}
 
 function createClientIdSeed(): string {
   if (
@@ -333,6 +349,7 @@ function SyncClientPanel({
   useEffect(() => {
     let cancelled = false;
     const attempt = initAttempt;
+    const initKey = `${clientStoreKey}:attempt:${attempt}`;
     async function init() {
       if (attempt < 0) return;
       if (!cancelled) {
@@ -340,8 +357,11 @@ function SyncClientPanel({
         setDb(null);
       }
       try {
-        const database = await createDb();
-        await migrateClientDbWithTimeout(database, { clientStoreKey });
+        const database = await initializeClientDb({
+          initKey,
+          createDb,
+          clientStoreKey,
+        });
         if (!cancelled) {
           setDb(database);
         }

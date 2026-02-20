@@ -34,6 +34,7 @@ import {
 import { patientNotesClientHandler } from '../client/handlers/patient-notes';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
+  createAsyncInitRegistry,
   SyncProvider,
   useMutation,
   useOutbox,
@@ -130,6 +131,10 @@ const ACTORS = [
     icon: <EyeIcon />,
   },
 ];
+const symmetricDbInitRegistry = createAsyncInitRegistry<
+  string,
+  Kysely<ClientDb>
+>();
 
 // ---------------------------------------------------------------------------
 // Passphrase state hook
@@ -367,15 +372,18 @@ function ActorVaultPanel({
 
   const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
   const [initError, setInitError] = useState<string | null>(null);
-  const initRef = useRef(false);
 
   useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
     async function init() {
       try {
-        const database = await createDb();
-        await migrateClientDbWithTimeout(database, { clientStoreKey });
+        const database = await symmetricDbInitRegistry.run(
+          clientStoreKey,
+          async () => {
+            const created = await createDb();
+            await migrateClientDbWithTimeout(created, { clientStoreKey });
+            return created;
+          }
+        );
         setDb(database);
       } catch (error) {
         setInitError(error instanceof Error ? error.message : String(error));

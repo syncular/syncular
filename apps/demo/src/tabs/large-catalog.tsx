@@ -23,7 +23,12 @@ import {
 } from '../client/demo-transport';
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
 import { migrateClientDbWithTimeout } from '../client/migrate';
-import { SyncProvider, useSyncQuery, useSyncStatus } from '../client/react';
+import {
+  createAsyncInitRegistry,
+  SyncProvider,
+  useSyncQuery,
+  useSyncStatus,
+} from '../client/react';
 import type { ClientDb } from '../client/types.generated';
 import {
   DemoClientSyncControls,
@@ -38,6 +43,10 @@ const CATALOG_STATE_ID = 'catalog-demo';
 const CATALOG_SUBSCRIPTION_ID = 'catalog-items';
 const CATALOG_SNAPSHOT_ROWS_PER_PAGE = 50_000;
 const CATALOG_MAX_SNAPSHOT_PAGES_PER_PULL = 20;
+const catalogDbInitRegistry = createAsyncInitRegistry<
+  string,
+  Kysely<ClientDb>
+>();
 
 /* ---------- Helpers ---------- */
 
@@ -74,8 +83,6 @@ export function LargeCatalogTab() {
     bytes: 0,
   });
 
-  const initRef = useRef(false);
-
   /* Transport with chunk-tracking wrapper */
   const transport = useMemo(() => {
     const base = createDemoPollingTransport(CATALOG_ACTOR_ID);
@@ -104,17 +111,20 @@ export function LargeCatalogTab() {
 
   /* Init PGlite database */
   useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-
     (async () => {
       try {
-        const database = createSqliteClient(
-          DEMO_CLIENT_STORES.catalogSqlite.location
+        const database = await catalogDbInitRegistry.run(
+          DEMO_CLIENT_STORES.catalogSqlite.key,
+          async () => {
+            const created = createSqliteClient(
+              DEMO_CLIENT_STORES.catalogSqlite.location
+            );
+            await migrateClientDbWithTimeout(created, {
+              clientStoreKey: DEMO_CLIENT_STORES.catalogSqlite.key,
+            });
+            return created;
+          }
         );
-        await migrateClientDbWithTimeout(database, {
-          clientStoreKey: DEMO_CLIENT_STORES.catalogSqlite.key,
-        });
         setDb(database);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

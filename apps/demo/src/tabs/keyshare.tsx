@@ -48,6 +48,7 @@ import {
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
+  createAsyncInitRegistry,
   SyncProvider,
   useMutation,
   useSyncContext,
@@ -115,6 +116,8 @@ function useStoredKey(storageKey: string): KeyData {
 function isCiphertext(value: unknown): boolean {
   return typeof value === 'string' && value.startsWith('dgsync:e2ee:1:');
 }
+
+const keyshareDbInitRegistry = createAsyncInitRegistry<string, Kysely<ClientDb>>();
 
 function deriveSyncBadgeStatus(
   status: ReturnType<typeof useSyncStatus>
@@ -268,7 +271,6 @@ function AlicePanel({
 
   const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const initRef = useRef(false);
 
   const transport = useMemo(() => createDemoPollingTransport(actorId), []);
 
@@ -313,17 +315,20 @@ function AlicePanel({
   );
 
   useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-
     (async () => {
       try {
-        const database = createSqliteClient(
-          DEMO_CLIENT_STORES.keyshareAliceSqlite.location
+        const database = await keyshareDbInitRegistry.run(
+          DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
+          async () => {
+            const created = createSqliteClient(
+              DEMO_CLIENT_STORES.keyshareAliceSqlite.location
+            );
+            await migrateClientDbWithTimeout(created, {
+              clientStoreKey: DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
+            });
+            return created;
+          }
         );
-        await migrateClientDbWithTimeout(database, {
-          clientStoreKey: DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
-        });
         setDb(database);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -534,7 +539,6 @@ function BobPanel({
 
   const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const initRef = useRef(false);
   const recipientKeyRef = useRef<Uint8Array | null>(recipientKey);
 
   const transport = useMemo(() => createDemoPollingTransport(actorId), []);
@@ -594,17 +598,20 @@ function BobPanel({
   );
 
   useEffect(() => {
-    if (initRef.current) return;
-    initRef.current = true;
-
     (async () => {
       try {
-        const database = await createPgliteClient(
-          DEMO_CLIENT_STORES.keyshareBobPglite.location
+        const database = await keyshareDbInitRegistry.run(
+          DEMO_CLIENT_STORES.keyshareBobPglite.key,
+          async () => {
+            const created = await createPgliteClient(
+              DEMO_CLIENT_STORES.keyshareBobPglite.location
+            );
+            await migrateClientDbWithTimeout(created, {
+              clientStoreKey: DEMO_CLIENT_STORES.keyshareBobPglite.key,
+            });
+            return created;
+          }
         );
-        await migrateClientDbWithTimeout(database, {
-          clientStoreKey: DEMO_CLIENT_STORES.keyshareBobPglite.key,
-        });
         setDb(database);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
