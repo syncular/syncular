@@ -8,7 +8,7 @@ import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
 import type { Kysely } from 'kysely';
 import type { ClientDb } from './types.generated';
 
-export class WaSqliteRuntimeSupportError extends Error {
+class WaSqliteRuntimeSupportError extends Error {
   readonly issues: readonly string[];
 
   constructor(issues: readonly string[]) {

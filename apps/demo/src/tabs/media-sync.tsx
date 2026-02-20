@@ -113,12 +113,15 @@ const receiverHandlers = new ClientTableRegistry<ClientDb>().register(
   tasksClientHandler
 );
 
-let uploaderDbPromise: Promise<Awaited<ReturnType<typeof createSqliteClient>>> | null =
-  null;
+let uploaderDbPromise: Promise<
+  Awaited<ReturnType<typeof createSqliteClient>>
+> | null = null;
 async function getUploaderDb() {
   if (!uploaderDbPromise) {
     uploaderDbPromise = (async () => {
-      const db = createSqliteClient(DEMO_CLIENT_STORES.mediaUploaderSqlite.location);
+      const db = createSqliteClient(
+        DEMO_CLIENT_STORES.mediaUploaderSqlite.location
+      );
       await migrateClientDbWithTimeout(db, {
         clientStoreKey: DEMO_CLIENT_STORES.mediaUploaderSqlite.key,
       });
@@ -406,9 +409,9 @@ function UploaderWrapper({
 }: {
   onTransfer: (entry: TransferEntry) => void;
 }) {
-  const [db, setDb] = useState<Awaited<ReturnType<typeof createSqliteClient>> | null>(
-    null
-  );
+  const [db, setDb] = useState<Awaited<
+    ReturnType<typeof createSqliteClient>
+  > | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -428,7 +431,9 @@ function UploaderWrapper({
   }, []);
 
   if (error) {
-    return <InitErrorPanel label="Client A - Uploader" color="flow" error={error} />;
+    return (
+      <InitErrorPanel label="Client A - Uploader" color="flow" error={error} />
+    );
   }
 
   if (!db) {
@@ -461,9 +466,9 @@ function UploaderWrapper({
 }
 
 function ReceiverWrapper() {
-  const [db, setDb] = useState<Awaited<ReturnType<typeof createPgliteClient>> | null>(
-    null
-  );
+  const [db, setDb] = useState<Awaited<
+    ReturnType<typeof createPgliteClient>
+  > | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

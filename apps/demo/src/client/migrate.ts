@@ -20,12 +20,12 @@ import { defineMigrations } from '@syncular/migrations';
 
 const DEFAULT_CLIENT_MIGRATION_TIMEOUT_MS = 20_000;
 
-export interface MigrateClientDbWithTimeoutOptions {
+interface MigrateClientDbWithTimeoutOptions {
   timeoutMs?: number;
   clientStoreKey?: string;
 }
 
-export class ClientDbInitializationTimeoutError extends Error {
+class ClientDbInitializationTimeoutError extends Error {
   readonly timeoutMs: number;
   readonly clientStoreKey?: string;
 
@@ -142,7 +142,7 @@ export const clientMigrations = defineMigrations<ClientDb>({
 /**
  * Migrate the client database schema
  */
-export async function migrateClientDb(db: Kysely<ClientDb>): Promise<void> {
+async function migrateClientDb(db: Kysely<ClientDb>): Promise<void> {
   // Create sync infrastructure tables
   await ensureClientSyncSchema(db);
 
