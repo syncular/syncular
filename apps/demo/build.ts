@@ -77,14 +77,42 @@ if (!workerBuild.success) {
   for (const log of workerBuild.logs) console.error(log);
   process.exit(1);
 }
-assertSingleWorkerBundle(
+assertSingleNamedBundle(
   workerBuild.outputs.map((output) => output.path),
-  'build'
+  'build',
+  'worker.js'
 );
 
 const { asyncWasmPath, syncWasmPath } = getWaSqliteWasmPaths();
 cpSync(asyncWasmPath, join(wasqliteDir, 'wa-sqlite-async.wasm'));
 cpSync(syncWasmPath, join(wasqliteDir, 'wa-sqlite.wasm'));
+
+// 5. Service worker server script
+const demoAssetsDir = join(OUT, '__demo');
+mkdirSync(demoAssetsDir, { recursive: true });
+const swServerBuild = await Bun.build({
+  entrypoints: [join(ROOT, 'src', 'sw', 'server.ts')],
+  outdir: demoAssetsDir,
+  target: 'browser',
+  format: 'esm',
+  splitting: false,
+  minify: true,
+  conditions: ['bun'],
+  naming: {
+    entry: 'sw-server.js',
+    chunk: 'chunk-[hash].js',
+    asset: 'asset-[hash].[ext]',
+  },
+});
+if (!swServerBuild.success) {
+  for (const log of swServerBuild.logs) console.error(log);
+  process.exit(1);
+}
+assertSingleNamedBundle(
+  swServerBuild.outputs.map((output) => output.path),
+  'build',
+  'sw-server.js'
+);
 
 console.log('[build] Done');
 
@@ -132,24 +160,28 @@ function writeCloudflareHeaders(headersPath: string): void {
     '  Cross-Origin-Embedder-Policy: require-corp',
     '  Cross-Origin-Resource-Policy: cross-origin',
     '',
+    '/__demo/sw-server.js',
+    '  Service-Worker-Allowed: /',
+    '',
   ].join('\n');
 
   writeFileSync(headersPath, headers);
 }
 
-function assertSingleWorkerBundle(
+function assertSingleNamedBundle(
   outputPaths: readonly string[],
-  buildContext: string
+  buildContext: string,
+  expectedEntry: string
 ): void {
   const outputNames = outputPaths
     .map((outputPath) => outputPath.split('/').at(-1))
     .filter((name): name is string => Boolean(name));
-  const extraOutputs = outputNames.filter((name) => name !== 'worker.js');
+  const extraOutputs = outputNames.filter((name) => name !== expectedEntry);
 
   if (extraOutputs.length === 0) return;
 
   throw new Error(
-    `[${buildContext}] wa-sqlite worker build produced split artifacts (${extraOutputs.join(', ')}). ` +
-      'This can trigger Bun ESM duplicate-export crashes in module workers. Keep worker bundling unsplit.'
+    `[${buildContext}] ${expectedEntry} build produced unexpected artifacts (${extraOutputs.join(', ')}). ` +
+      'Keep this bundle unsplit.'
   );
 }
