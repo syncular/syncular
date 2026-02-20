@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import {
   base64ToBytes,
   base64UrlToBytes,
-  bytesToBase64,
   bytesToBase64Url,
   hexToBytes,
   randomBytes,
@@ -38,7 +37,7 @@ afterEach(() => {
 describe('crypto-utils', () => {
   test('encodes and decodes base64 payloads', () => {
     const bytes = new Uint8Array([0, 1, 2, 253, 254, 255]);
-    const encoded = bytesToBase64(bytes);
+    const encoded = 'AAEC/f7/';
     const decoded = base64ToBytes(encoded);
     expect(decoded).toEqual(bytes);
   });
@@ -59,7 +58,7 @@ describe('crypto-utils', () => {
     disableBufferRuntime();
 
     const bytes = new Uint8Array([0, 1, 2, 253, 254, 255]);
-    const encoded = bytesToBase64(bytes);
+    const encoded = 'AAEC/f7/';
     const decoded = base64ToBytes(encoded);
     expect(decoded).toEqual(bytes);
 

@@ -11,7 +11,13 @@
   "typescript": true,
   "ignore": [
     "**/generated/**",
-    "types/**"
+    "types/**",
+    "apps/console/build.ts",
+    "apps/demo/build.ts",
+    "apps/demo/src/server/index.ts",
+    "apps/demo/src/sw/server.ts",
+    "packages/console/build-static.ts",
+    "tests/load/server.ts"
   ],
   "ignoreDependencies": [
     "happy-dom",

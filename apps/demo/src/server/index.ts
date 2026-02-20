@@ -47,6 +47,7 @@ async function main() {
     routes: {
       // API is intentionally disabled in network server mode.
       // Browser clients must use the Service Worker server path.
+      '/api/health': () => responseForHealth(),
       '/api/*': () => responseForDisabledApi(),
 
       // WASM/Worker assets
@@ -120,6 +121,16 @@ function responseForDisabledApi(): Response {
       },
     }
   );
+}
+
+function responseForHealth(): Response {
+  return new Response(JSON.stringify({ status: 'ok' }), {
+    status: 200,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  });
 }
 
 type BunFileLike = ReturnType<typeof Bun.file>;
