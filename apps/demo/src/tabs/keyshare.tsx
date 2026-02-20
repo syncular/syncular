@@ -117,7 +117,10 @@ function isCiphertext(value: unknown): boolean {
   return typeof value === 'string' && value.startsWith('dgsync:e2ee:1:');
 }
 
-const keyshareDbInitRegistry = createAsyncInitRegistry<string, Kysely<ClientDb>>();
+const keyshareDbInitRegistry = createAsyncInitRegistry<
+  string,
+  Kysely<ClientDb>
+>();
 
 function deriveSyncBadgeStatus(
   status: ReturnType<typeof useSyncStatus>

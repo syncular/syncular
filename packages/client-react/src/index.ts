@@ -5,6 +5,8 @@
  * typed to your application's DB schema.
  */
 
+export type { AsyncInitRegistry } from './async-init-registry';
+export { createAsyncInitRegistry } from './async-init-registry';
 export type {
   ConflictResolution,
   FluentMutation,
@@ -43,8 +45,6 @@ export type {
 } from './createSyncularReact';
 // Re-export core client types for convenience.
 export { createSyncularReact } from './createSyncularReact';
-export type { AsyncInitRegistry } from './async-init-registry';
-export { createAsyncInitRegistry } from './async-init-registry';
 export type {
   SyncGroupChannel,
   SyncGroupChannelSnapshot,

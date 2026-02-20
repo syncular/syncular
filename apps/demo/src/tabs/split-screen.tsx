@@ -71,7 +71,10 @@ import {
 // ---------------------------------------------------------------------------
 
 const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:split-screen:client-seed-v1';
-const clientDbInitRegistry = createAsyncInitRegistry<string, Kysely<ClientDb>>();
+const clientDbInitRegistry = createAsyncInitRegistry<
+  string,
+  Kysely<ClientDb>
+>();
 
 async function initializeClientDb(args: {
   initKey: string;

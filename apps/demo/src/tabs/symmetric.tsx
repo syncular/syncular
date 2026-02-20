@@ -23,7 +23,7 @@ import {
   TopologySvgSymmetric,
 } from '@syncular/ui/demo';
 import type { Kysely } from 'kysely';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';

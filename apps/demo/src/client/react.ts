@@ -1,4 +1,7 @@
-import { createAsyncInitRegistry, createSyncularReact } from '@syncular/client-react';
+import {
+  createAsyncInitRegistry,
+  createSyncularReact,
+} from '@syncular/client-react';
 import type { ClientDb } from './types.generated';
 
 export const {
