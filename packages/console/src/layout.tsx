@@ -10,7 +10,7 @@ import {
   TopNavigation,
 } from '@syncular/ui';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
-import { Settings } from 'lucide-react';
+import { ArrowLeft, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useMemo } from 'react';
 import { useConnection } from './hooks/ConnectionContext';
@@ -207,8 +207,9 @@ export function ConsoleLayout({
             </Link>
             {appHref ? (
               <a href={appHref}>
-                <Button variant="primary" size="sm">
-                  App
+                <Button variant="primary" size="sm" className="h-8">
+                  <ArrowLeft className="h-3 w-3" />
+                  Go to app
                 </Button>
               </a>
             ) : null}

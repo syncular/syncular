@@ -13,6 +13,7 @@ import {
   useNavigate,
   useRouterState,
 } from '@tanstack/react-router';
+import { ArrowRight } from 'lucide-react';
 import { useCallback, useMemo } from 'react';
 import { DemoResetAllButton } from '../components/demo-reset-all-button';
 import { Route as rootRoute } from './__root';
@@ -82,7 +83,8 @@ function DemoShell() {
           to="/console"
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-flow/30 text-flow text-[10px] font-mono uppercase tracking-wider hover:bg-flow/8 transition-colors"
         >
-          Console
+          Go to console
+          <ArrowRight className="h-3 w-3" />
         </Link>
       </div>
     ),
