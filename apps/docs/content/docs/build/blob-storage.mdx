@@ -76,10 +76,10 @@ Choose a storage backend:
 ```typescript
 import {
   createDatabaseBlobStorageAdapter,
-  createFilesystemBlobStorageAdapter,
-  createS3BlobStorageAdapter,
   createHmacTokenSigner,
 } from '@syncular/server';
+import { createFilesystemBlobStorageAdapter } from '@syncular/server-storage-filesystem';
+import { createS3BlobStorageAdapter } from '@syncular/server-storage-s3';
 
 const tokenSigner = createHmacTokenSigner(process.env.BLOB_SECRET!);
 
