@@ -73,7 +73,10 @@ describe('SQLite introspection', () => {
           .addColumn('id', 'text', (col) => col.primaryKey())
           .execute();
 
-        await migrationDb.insertInto('source').values({ id: 'row-1' }).execute();
+        await migrationDb
+          .insertInto('source')
+          .values({ id: 'row-1' })
+          .execute();
 
         const row = await migrationDb
           .selectFrom('source')
