@@ -68,7 +68,6 @@ async function main() {
       },
       '/__demo/sw-server.js': () =>
         responseForServiceWorkerScript(swServerAsset),
-      '/__demo/sw-health': () => responseForHealth(),
 
       // Demo React app - catch-all for SPA
       '/*': demoApp,

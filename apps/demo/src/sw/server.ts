@@ -122,7 +122,10 @@ async function createApiApp(): Promise<Hono> {
     return c.json({ ok: true });
   });
 
-  app.get('/api/health', (c) => c.json({ status: 'ok' }));
+  app.get('/api/health', (c) => {
+    c.header('x-syncular-sw-server', '1');
+    return c.json({ status: 'ok' });
+  });
   return app;
 }
 
@@ -139,17 +142,6 @@ async function getApiApp(): Promise<Hono> {
 const serviceWorkerServer = createServiceWorkerServer({
   serviceWorkerScriptPath: SW_SERVER_SCRIPT_PATH,
   handleRequest: async (request) => {
-    const pathname = new URL(request.url).pathname;
-    if (pathname === '/api/health' || pathname === '/api/health/') {
-      return new Response(JSON.stringify({ status: 'ok' }), {
-        status: 200,
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-        },
-      });
-    }
-
     const app = await getApiApp();
     return await app.fetch(request);
   },

@@ -521,6 +521,7 @@ export function attachServiceWorkerServer(
 export interface ConfigureServiceWorkerServerOptions {
   scriptPath: string;
   healthPath?: string;
+  healthCheck?: (response: Response) => boolean | Promise<boolean>;
   enabled?: boolean;
   scope?: string;
   type?: 'classic' | 'module';
@@ -599,6 +600,7 @@ async function waitForHealth(args: {
   retryDelayMs: number;
   requestTimeoutMs: number;
   fetchImpl: typeof fetch;
+  healthCheck?: (response: Response) => boolean | Promise<boolean>;
 }): Promise<boolean> {
   const started = Date.now();
 
@@ -620,6 +622,12 @@ async function waitForHealth(args: {
         clearTimeout(timeoutId);
       }
       if (response.ok) {
+        if (args.healthCheck) {
+          const matches = await args.healthCheck(response);
+          if (!matches) {
+            throw new Error('Service Worker health probe mismatch');
+          }
+        }
         return true;
       }
     } catch {
@@ -670,6 +678,7 @@ export async function configureServiceWorkerServer(
       retryDelayMs: options.healthRetryDelayMs ?? 150,
       requestTimeoutMs: options.healthRequestTimeoutMs ?? 2_000,
       fetchImpl: options.fetchImpl ?? fetch,
+      healthCheck: options.healthCheck,
     });
 
     if (!healthy) {
