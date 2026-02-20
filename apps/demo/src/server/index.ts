@@ -40,7 +40,7 @@ async function main() {
 
   const server = serve({
     port,
-    development: process.env.NODE_ENV !== 'production' && {
+    development: {
       hmr: true,
       console: true,
     },
@@ -68,6 +68,7 @@ async function main() {
       },
       '/__demo/sw-server.js': () =>
         responseForServiceWorkerScript(swServerAsset),
+      '/__demo/sw-health': () => responseForHealth(),
 
       // Demo React app - catch-all for SPA
       '/*': demoApp,

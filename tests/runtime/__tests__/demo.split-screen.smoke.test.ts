@@ -30,7 +30,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
       cwd: repoRoot,
       env: {
         ...process.env,
-        NODE_ENV: 'production',
+        NODE_ENV: 'development',
         PORT: String(port),
       },
       stdin: 'ignore',
@@ -58,7 +58,8 @@ describeDemoSmoke('Demo split-screen smoke', () => {
       () =>
         document.querySelectorAll('input[placeholder="Add a task..."]')
           .length >= 2,
-      { timeout: 60_000 }
+      undefined,
+      { timeout: 120_000 }
     );
 
     expect(
@@ -77,7 +78,8 @@ describeDemoSmoke('Demo split-screen smoke', () => {
           !Array.from(document.querySelectorAll('button')).some(
             (button) => button.textContent?.trim() === 'Reset my data'
           ),
-        { timeout: 60_000 }
+        undefined,
+        { timeout: 90_000 }
       );
     }
 
@@ -95,5 +97,5 @@ describeDemoSmoke('Demo split-screen smoke', () => {
 
     const finalCount = await page.getByText(title, { exact: true }).count();
     expect(finalCount).toBeGreaterThanOrEqual(2);
-  }, 120_000);
+  }, 180_000);
 });

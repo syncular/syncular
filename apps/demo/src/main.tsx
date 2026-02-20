@@ -70,19 +70,18 @@ function renderStartupError(message: string): void {
 }
 
 async function start(): Promise<void> {
-  const swReady = await configureDemoServiceWorkerServer();
-  if (!swReady) {
-    renderStartupError(
-      'This demo now requires Service Worker mode. Ensure service workers are allowed and reload the page.'
-    );
-    return;
-  }
-
   reactRoot.render(
     <StrictMode>
       <App />
     </StrictMode>
   );
+
+  const swReady = await configureDemoServiceWorkerServer();
+  if (!swReady) {
+    renderStartupError(
+      'This demo now requires Service Worker mode. Ensure service workers are allowed and reload the page.'
+    );
+  }
 }
 
 void start();

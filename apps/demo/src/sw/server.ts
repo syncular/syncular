@@ -139,6 +139,17 @@ async function getApiApp(): Promise<Hono> {
 const serviceWorkerServer = createServiceWorkerServer({
   serviceWorkerScriptPath: SW_SERVER_SCRIPT_PATH,
   handleRequest: async (request) => {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === '/api/health' || pathname === '/api/health/') {
+      return new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        },
+      });
+    }
+
     const app = await getApiApp();
     return await app.fetch(request);
   },

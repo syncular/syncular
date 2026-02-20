@@ -529,6 +529,7 @@ export interface ConfigureServiceWorkerServerOptions {
   controllerTimeoutMs?: number;
   healthTimeoutMs?: number;
   healthRetryDelayMs?: number;
+  healthRequestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   logger?: {
     info?: (...args: unknown[]) => void;
@@ -596,16 +597,28 @@ async function waitForHealth(args: {
   path: string;
   timeoutMs: number;
   retryDelayMs: number;
+  requestTimeoutMs: number;
   fetchImpl: typeof fetch;
 }): Promise<boolean> {
   const started = Date.now();
 
   while (Date.now() - started < args.timeoutMs) {
     try {
-      const response = await args.fetchImpl(args.path, {
-        method: 'GET',
-        cache: 'no-store',
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        args.requestTimeoutMs
+      );
+      let response: Response;
+      try {
+        response = await args.fetchImpl(args.path, {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
       if (response.ok) {
         return true;
       }
@@ -655,6 +668,7 @@ export async function configureServiceWorkerServer(
       path: options.healthPath ?? '/api/health',
       timeoutMs: options.healthTimeoutMs ?? 10_000,
       retryDelayMs: options.healthRetryDelayMs ?? 150,
+      requestTimeoutMs: options.healthRequestTimeoutMs ?? 2_000,
       fetchImpl: options.fetchImpl ?? fetch,
     });
 
