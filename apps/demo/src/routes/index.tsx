@@ -5,7 +5,7 @@ import {
   SyncularBrand,
   TopNavigation,
 } from '@syncular/ui/navigation';
-import { Badge } from '@syncular/ui/primitives';
+import { Badge, Button } from '@syncular/ui/primitives';
 import {
   createRoute,
   Link,
@@ -79,12 +79,11 @@ function DemoShell() {
           <StatusDot color="flow" pulse />
           SW Offline
         </Badge>
-        <Link
-          to="/console"
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-flow/30 text-flow text-[10px] font-mono uppercase tracking-wider hover:bg-flow/8 transition-colors"
-        >
-          Go to console
-          <ArrowRight className="h-3 w-3" />
+        <Link to="/console">
+          <Button variant="primary" size="sm" className="h-8">
+            Go to console
+            <ArrowRight className="h-3 w-3" />
+          </Button>
         </Link>
       </div>
     ),
