@@ -1,3 +1,4 @@
+import { Button } from '@syncular/ui/primitives';
 import { useCallback, useState } from 'react';
 import { resetAllDemoData } from '../client/demo-data-reset';
 
@@ -33,14 +34,16 @@ export function DemoResetAllButton(props: { className?: string }) {
 
   return (
     <div className={wrapperClassName}>
-      <button
+      <Button
         type="button"
         onClick={() => void handleResetAll()}
+        variant="destructive"
+        size="sm"
         disabled={isResetting}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-red-500/40 text-red-300 text-[10px] font-mono uppercase tracking-wider hover:bg-red-500/10 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+        className="whitespace-nowrap uppercase tracking-wider"
       >
         {isResetting ? 'Resetting...' : 'Reset All Data'}
-      </button>
+      </Button>
       {error ? (
         <span className="max-w-[280px] truncate font-mono text-[10px] text-red-300">
           {error}

@@ -69,10 +69,13 @@ function DemoShell() {
     () => (
       <div className="flex items-center gap-3">
         <DemoResetAllButton />
-        <div className="flex items-center gap-1.5">
+        <div
+          className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-healthy/30 bg-healthy/[0.08]"
+          title="This demo runs fully in-browser via a service-worker server and local SQLite storage."
+        >
           <StatusDot color="healthy" pulse />
           <span className="font-mono text-[10px] uppercase tracking-wider text-foreground-muted">
-            Live
+            SW Offline
           </span>
         </div>
         <Link
@@ -90,8 +93,13 @@ function DemoShell() {
     <div className="min-h-screen bg-background">
       <TopNavigation brand={brand} center={center} right={right} />
 
-      <main className="pt-[52px]">
+      <main>
         <div className="max-w-[1440px] mx-auto px-6 py-6">
+          <div className="mb-4 rounded-md border border-flow/30 bg-flow/[0.08] px-3 py-2 font-mono text-[10px] text-flow">
+            Service Worker mode enabled: this demo runs entirely offline in your
+            browser with local SQLite. Sync behavior mirrors a real server
+            deployment.
+          </div>
           <Outlet />
         </div>
       </main>

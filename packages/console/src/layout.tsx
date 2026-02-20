@@ -10,6 +10,7 @@ import {
 } from '@syncular/ui';
 import { Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { Settings } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useMemo } from 'react';
 import { useConnection } from './hooks/ConnectionContext';
 import { useStats } from './hooks/useConsoleApi';
@@ -20,6 +21,8 @@ import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
 
 interface ConsoleLayoutProps {
   basePath?: string;
+  appHref?: string;
+  modeBadge?: ReactNode;
 }
 
 type ConsoleNavSuffix =
@@ -56,7 +59,11 @@ function resolvePath(basePath: string, suffix: ConsoleNavSuffix): string {
   return suffix ? `${basePath}${suffix}` : basePath;
 }
 
-export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
+export function ConsoleLayout({
+  basePath,
+  appHref,
+  modeBadge,
+}: ConsoleLayoutProps) {
   const { connect, config, isConnected, isConnecting } = useConnection();
   const { preferences } = usePreferences();
   const { instanceId, rawInstanceId, setInstanceId, clearInstanceId } =
@@ -134,6 +141,11 @@ export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
         }
         right={
           <div className="flex items-center gap-2">
+            {modeBadge ? (
+              <div className="hidden md:inline-flex items-center rounded-md border border-healthy/30 bg-healthy/[0.08] px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-neutral-300">
+                {modeBadge}
+              </div>
+            ) : null}
             <div className="flex items-center gap-1">
               <span className="font-mono text-[9px] text-neutral-500 uppercase tracking-wide">
                 Instance
@@ -189,11 +201,18 @@ export function ConsoleLayout({ basePath }: ConsoleLayoutProps) {
                 <Settings />
               </Button>
             </Link>
+            {appHref ? (
+              <a href={appHref}>
+                <Button variant="primary" size="sm">
+                  App
+                </Button>
+              </a>
+            ) : null}
           </div>
         }
       />
 
-      <main className="flex-1 overflow-auto pt-[42px] pb-[32px]">
+      <main className="flex-1 overflow-auto pb-[32px]">
         <div className="min-h-full">
           {isConnected || pathname === configPath ? (
             <div key={pathname} style={{ animation: 'pageIn 0.3s ease-out' }}>

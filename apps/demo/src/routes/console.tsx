@@ -32,7 +32,15 @@ function ConsoleWrapper() {
   return (
     <ConnectionProvider defaultConfig={defaultConfig}>
       <ConsoleAutoConnect />
-      <ConsoleLayout basePath="/console" />
+      <ConsoleLayout
+        basePath="/console"
+        appHref="/"
+        modeBadge={
+          <span title="This demo runs entirely in-browser via a service-worker server and local SQLite storage.">
+            SW Offline Demo
+          </span>
+        }
+      />
     </ConnectionProvider>
   );
 }
