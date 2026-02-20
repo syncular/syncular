@@ -10,18 +10,8 @@
   "playwright": true,
   "typescript": true,
   "ignore": [
-    ".claude/**",
     "**/generated/**",
-    "types/**",
-    ".source/**",
-    ".next/**",
-    "**/dist/**",
-    "apps/console/build.ts",
-    "apps/demo/build.ts",
-    "apps/demo/src/server/index.ts",
-    "apps/demo/src/sw/server.ts",
-    "packages/console/build-static.ts",
-    "tests/load/server.ts"
+    "types/**"
   ],
   "ignoreDependencies": [
     "happy-dom",
@@ -45,7 +35,6 @@
       "entry": [
         "src/**/*.test.ts",
         "src/**/*.test.tsx",
-        "src/__tests__/setup.ts",
         "src/__tests__/test-utils.ts",
         "src/__tests__/integration/test-setup.ts"
       ]
