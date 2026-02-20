@@ -48,6 +48,9 @@ import {
   ConsoleApiKeyCreateResponseSchema,
   ConsoleApiKeyRevokeResponseSchema,
   ConsoleApiKeySchema,
+  ConsoleBlobDeleteResponseSchema,
+  ConsoleBlobListQuerySchema,
+  ConsoleBlobListResponseSchema,
   type ConsoleChange,
   type ConsoleClearEventsResult,
   ConsoleClearEventsResultSchema,
@@ -257,6 +260,36 @@ export interface CreateConsoleRoutesOptions<
     aggregationMode?: 'auto' | 'raw' | 'aggregated';
     /** Max events for using raw mode when aggregationMode is 'auto'. */
     rawFallbackMaxEvents?: number;
+  };
+  blobBucket?: {
+    list(options: {
+      prefix?: string;
+      cursor?: string;
+      limit?: number;
+    }): Promise<{
+      objects: Array<{
+        key: string;
+        size: number;
+        uploaded: Date;
+        httpMetadata?: { contentType?: string };
+      }>;
+      truncated: boolean;
+      cursor?: string;
+    }>;
+    get(
+      key: string
+    ): Promise<{
+      body: ReadableStream;
+      size: number;
+      httpMetadata?: { contentType?: string };
+    } | null>;
+    delete(key: string | string[]): Promise<void>;
+    head(
+      key: string
+    ): Promise<{
+      size: number;
+      httpMetadata?: { contentType?: string };
+    } | null>;
   };
 }
 
@@ -3414,6 +3447,147 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
       return c.json(response, 200);
     }
   );
+
+  // -----------------------------------------------------------------------
+  // Blob storage endpoints
+  // -----------------------------------------------------------------------
+  if (options.blobBucket) {
+    const bucket = options.blobBucket;
+
+    routes.get(
+      '/blobs',
+      describeRoute({
+        tags: ['console'],
+        summary: 'List blobs',
+        responses: {
+          200: {
+            description: 'Paginated list of blobs',
+            content: {
+              'application/json': {
+                schema: resolver(ConsoleBlobListResponseSchema),
+              },
+            },
+          },
+          401: {
+            description: 'Unauthenticated',
+            content: {
+              'application/json': { schema: resolver(ErrorResponseSchema) },
+            },
+          },
+        },
+      }),
+      zValidator('query', ConsoleBlobListQuerySchema),
+      async (c) => {
+        const auth = await requireAuth(c);
+        if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+
+        const { prefix, cursor, limit } = c.req.valid('query');
+        const listed = await bucket.list({
+          prefix: prefix || undefined,
+          cursor: cursor || undefined,
+          limit,
+        });
+
+        return c.json(
+          {
+            items: listed.objects.map((obj) => ({
+              key: obj.key,
+              size: obj.size,
+              uploaded: obj.uploaded.toISOString(),
+              httpMetadata: obj.httpMetadata?.contentType
+                ? { contentType: obj.httpMetadata.contentType }
+                : undefined,
+            })),
+            truncated: listed.truncated,
+            cursor: listed.cursor ?? null,
+          },
+          200
+        );
+      }
+    );
+
+    routes.get(
+      '/blobs/:key{.+}/download',
+      describeRoute({
+        tags: ['console'],
+        summary: 'Download a blob',
+        responses: {
+          200: { description: 'Blob contents' },
+          401: {
+            description: 'Unauthenticated',
+            content: {
+              'application/json': { schema: resolver(ErrorResponseSchema) },
+            },
+          },
+          404: {
+            description: 'Blob not found',
+            content: {
+              'application/json': { schema: resolver(ErrorResponseSchema) },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const auth = await requireAuth(c);
+        if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+
+        const key = decodeURIComponent(c.req.param('key'));
+        const object = await bucket.get(key);
+        if (!object) {
+          return c.json({ error: 'BLOB_NOT_FOUND' }, 404);
+        }
+
+        const headers = new Headers();
+        headers.set('Content-Length', String(object.size));
+        headers.set(
+          'Content-Type',
+          object.httpMetadata?.contentType ?? 'application/octet-stream'
+        );
+        const filename = key.split('/').pop() || key;
+        headers.set(
+          'Content-Disposition',
+          `attachment; filename="${filename.replace(/"/g, '\\"')}"`
+        );
+
+        return new Response(object.body as ReadableStream, {
+          status: 200,
+          headers,
+        });
+      }
+    );
+
+    routes.delete(
+      '/blobs/:key{.+}',
+      describeRoute({
+        tags: ['console'],
+        summary: 'Delete a blob',
+        responses: {
+          200: {
+            description: 'Blob deleted',
+            content: {
+              'application/json': {
+                schema: resolver(ConsoleBlobDeleteResponseSchema),
+              },
+            },
+          },
+          401: {
+            description: 'Unauthenticated',
+            content: {
+              'application/json': { schema: resolver(ErrorResponseSchema) },
+            },
+          },
+        },
+      }),
+      async (c) => {
+        const auth = await requireAuth(c);
+        if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+
+        const key = decodeURIComponent(c.req.param('key'));
+        await bucket.delete(key);
+        return c.json({ deleted: true }, 200);
+      }
+    );
+  }
 
   return routes;
 }

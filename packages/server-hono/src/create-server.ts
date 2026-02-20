@@ -20,7 +20,7 @@ import {
   createConsoleEventEmitter,
   createConsoleRoutes,
   createTokenAuthenticator,
-} from './console';
+} from './console/routes';
 import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,
@@ -67,6 +67,36 @@ export interface SyncServerOptions<DB extends SyncCoreDb = SyncCoreDb> {
         metrics?: {
           aggregationMode?: 'auto' | 'raw' | 'aggregated';
           rawFallbackMaxEvents?: number;
+        };
+        blobBucket?: {
+          list(options: {
+            prefix?: string;
+            cursor?: string;
+            limit?: number;
+          }): Promise<{
+            objects: Array<{
+              key: string;
+              size: number;
+              uploaded: Date;
+              httpMetadata?: { contentType?: string };
+            }>;
+            truncated: boolean;
+            cursor?: string;
+          }>;
+          get(
+            key: string
+          ): Promise<{
+            body: ReadableStream;
+            size: number;
+            httpMetadata?: { contentType?: string };
+          } | null>;
+          delete(key: string | string[]): Promise<void>;
+          head(
+            key: string
+          ): Promise<{
+            size: number;
+            httpMetadata?: { contentType?: string };
+          } | null>;
         };
       };
 }
@@ -188,6 +218,7 @@ export function createSyncServer<DB extends SyncCoreDb = SyncCoreDb>(
     eventEmitter: consoleEventEmitter,
     wsConnectionManager: getSyncWebSocketConnectionManager(syncRoutes),
     metrics: resolvedConsoleConfig.metrics,
+    blobBucket: resolvedConsoleConfig.blobBucket,
     ...(upgradeWebSocket && {
       websocket: {
         enabled: true,

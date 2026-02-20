@@ -403,3 +403,32 @@ export const LiveEventSchema = z.object({
 });
 
 export type LiveEvent = z.infer<typeof LiveEventSchema>;
+
+// ---------------------------------------------------------------------------
+// Blob storage
+// ---------------------------------------------------------------------------
+
+export const ConsoleBlobSchema = z.object({
+  key: z.string(),
+  size: z.number().int(),
+  uploaded: z.string(),
+  httpMetadata: z.object({ contentType: z.string().optional() }).optional(),
+});
+
+export type ConsoleBlob = z.infer<typeof ConsoleBlobSchema>;
+
+export const ConsoleBlobListQuerySchema = z.object({
+  prefix: z.string().optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+});
+
+export const ConsoleBlobListResponseSchema = z.object({
+  items: z.array(ConsoleBlobSchema),
+  truncated: z.boolean(),
+  cursor: z.string().nullable(),
+});
+
+export const ConsoleBlobDeleteResponseSchema = z.object({
+  deleted: z.boolean(),
+});
