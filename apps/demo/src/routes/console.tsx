@@ -2,10 +2,23 @@ import {
   type ConnectionConfig,
   ConnectionProvider,
   ConsoleLayout,
+  useConnection,
 } from '@syncular/console';
 import { createRoute } from '@tanstack/react-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Route as rootRoute } from './__root';
+
+function ConsoleAutoConnect() {
+  const { config, isConnected, isConnecting, connect } = useConnection();
+
+  useEffect(() => {
+    if (isConnected || isConnecting) return;
+    if (!config?.serverUrl?.trim() || !config.token?.trim()) return;
+    void connect();
+  }, [config, isConnected, isConnecting, connect]);
+
+  return null;
+}
 
 function ConsoleWrapper() {
   const defaultConfig = useMemo<ConnectionConfig | null>(() => {
@@ -18,6 +31,7 @@ function ConsoleWrapper() {
 
   return (
     <ConnectionProvider defaultConfig={defaultConfig}>
+      <ConsoleAutoConnect />
       <ConsoleLayout basePath="/console" />
     </ConnectionProvider>
   );

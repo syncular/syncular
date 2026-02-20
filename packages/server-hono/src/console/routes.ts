@@ -3322,19 +3322,19 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
   );
 
   // -----------------------------------------------------------------------
-  // Blob storage endpoints
+  // Storage endpoints
   // -----------------------------------------------------------------------
   if (options.blobBucket) {
     const bucket = options.blobBucket;
 
     routes.get(
-      '/blobs',
+      '/storage',
       describeRoute({
         tags: ['console'],
-        summary: 'List blobs',
+        summary: 'List storage items',
         responses: {
           200: {
-            description: 'Paginated list of blobs',
+            description: 'Paginated list of storage items',
             content: {
               'application/json': {
                 schema: resolver(ConsoleBlobListResponseSchema),
@@ -3380,12 +3380,12 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
     );
 
     routes.get(
-      '/blobs/:key{.+}/download',
+      '/storage/:key{.+}/download',
       describeRoute({
         tags: ['console'],
-        summary: 'Download a blob',
+        summary: 'Download a storage item',
         responses: {
-          200: { description: 'Blob contents' },
+          200: { description: 'Storage item contents' },
           401: {
             description: 'Unauthenticated',
             content: {
@@ -3430,13 +3430,13 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
     );
 
     routes.delete(
-      '/blobs/:key{.+}',
+      '/storage/:key{.+}',
       describeRoute({
         tags: ['console'],
-        summary: 'Delete a blob',
+        summary: 'Delete a storage item',
         responses: {
           200: {
-            description: 'Blob deleted',
+            description: 'Storage item deleted',
             content: {
               'application/json': {
                 schema: resolver(ConsoleBlobDeleteResponseSchema),

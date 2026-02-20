@@ -22,7 +22,13 @@ interface ConsoleLayoutProps {
   basePath?: string;
 }
 
-type ConsoleNavSuffix = '' | '/stream' | '/fleet' | '/ops' | '/config';
+type ConsoleNavSuffix =
+  | ''
+  | '/stream'
+  | '/fleet'
+  | '/ops'
+  | '/storage'
+  | '/config';
 
 interface ConsoleNavItem {
   suffix: ConsoleNavSuffix;
@@ -34,6 +40,7 @@ const NAV_ITEMS: ConsoleNavItem[] = [
   { suffix: '/stream', label: 'Stream' },
   { suffix: '/fleet', label: 'Fleet' },
   { suffix: '/ops', label: 'Ops' },
+  { suffix: '/storage', label: 'Storage' },
   { suffix: '/config', label: 'Config' },
 ];
 

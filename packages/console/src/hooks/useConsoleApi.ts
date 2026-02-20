@@ -105,8 +105,8 @@ const queryKeys = {
     expiresWithinDays?: number;
     instanceId?: string;
   }) => ['console', 'api-keys', params] as const,
-  blobs: (params?: Record<string, unknown>) =>
-    ['console', 'blobs', params] as const,
+  storage: (params?: Record<string, unknown>) =>
+    ['console', 'storage', params] as const,
 };
 
 function resolveRefetchInterval(
@@ -942,7 +942,7 @@ export function useBlobs(
 ) {
   const { config: connectionConfig } = useConnection();
   return useQuery<ConsoleBlobListResponse>({
-    queryKey: queryKeys.blobs({
+    queryKey: queryKeys.storage({
       prefix: options.prefix,
       cursor: options.cursor,
       limit: options.limit,
@@ -956,7 +956,7 @@ export function useBlobs(
       const response = await fetch(
         buildConsoleUrl(
           connectionConfig.serverUrl,
-          '/console/blobs',
+          '/console/storage',
           queryString
         ),
         {
@@ -982,7 +982,7 @@ export function useDeleteBlobMutation() {
       const response = await fetch(
         buildConsoleUrl(
           connectionConfig.serverUrl,
-          `/console/blobs/${encodedKey}`,
+          `/console/storage/${encodedKey}`,
           new URLSearchParams()
         ),
         {
@@ -994,7 +994,7 @@ export function useDeleteBlobMutation() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['console', 'blobs'] });
+      queryClient.invalidateQueries({ queryKey: ['console', 'storage'] });
     },
   });
 }
@@ -1007,7 +1007,7 @@ export function useBlobDownload() {
     const response = await fetch(
       buildConsoleUrl(
         connectionConfig.serverUrl,
-        `/console/blobs/${encodedKey}/download`,
+        `/console/storage/${encodedKey}/download`,
         new URLSearchParams()
       ),
       {

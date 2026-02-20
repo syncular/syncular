@@ -5,6 +5,7 @@ import { Route as indexRoute } from './routes/index';
 import { Route as investigateCommitRoute } from './routes/investigate-commit';
 import { Route as investigateEventRoute } from './routes/investigate-event';
 import { Route as opsRoute } from './routes/ops';
+import { Route as storageRoute } from './routes/storage';
 import { Route as streamRoute } from './routes/stream';
 
 export const routeTree = rootRoute.addChildren([
@@ -14,5 +15,6 @@ export const routeTree = rootRoute.addChildren([
   investigateEventRoute,
   fleetRoute,
   opsRoute,
+  storageRoute,
   configRoute,
 ]);

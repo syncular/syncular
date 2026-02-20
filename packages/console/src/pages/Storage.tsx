@@ -38,7 +38,7 @@ function formatDateTime(iso: string): string {
   return new Date(parsed).toLocaleString();
 }
 
-export function Blobs() {
+export function Storage() {
   const [prefixInput, setPrefixInput] = useState('');
   const [activePrefix, setActivePrefix] = useState<string | undefined>(
     undefined
@@ -107,7 +107,7 @@ export function Blobs() {
       <div className="flex flex-col gap-4 px-5 py-5">
         <div className="flex items-center justify-center h-[200px]">
           <p className="text-danger font-mono text-[11px]">
-            Failed to load blobs: {error.message}
+            Failed to load storage items: {error.message}
           </p>
         </div>
       </div>
@@ -119,7 +119,7 @@ export function Blobs() {
   return (
     <div className="flex flex-col gap-4 px-5 py-5">
       <SectionCard
-        title="Blob Storage"
+        title="Storage"
         actions={
           <div className="flex items-center gap-2">
             <Input
@@ -146,8 +146,8 @@ export function Blobs() {
           <EmptyState
             message={
               activePrefix
-                ? `No blobs matching prefix "${activePrefix}".`
-                : 'No blobs in storage.'
+                ? `No storage items matching prefix "${activePrefix}".`
+                : 'No storage items found.'
             }
           />
         ) : (
@@ -241,7 +241,7 @@ export function Blobs() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Blob</DialogTitle>
+            <DialogTitle>Delete Storage Item</DialogTitle>
           </DialogHeader>
           <div className="px-5 py-4 flex flex-col gap-4">
             <p className="font-mono text-[11px] text-neutral-300">
@@ -275,3 +275,6 @@ export function Blobs() {
     </div>
   );
 }
+
+// Backward-compatible export while consumers migrate to the Storage name.
+export const Blobs = Storage;

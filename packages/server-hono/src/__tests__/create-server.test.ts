@@ -158,6 +158,58 @@ describe('createSyncServer console configuration', () => {
     expect(server.consoleRoutes).toBeDefined();
   });
 
+  it('enables storage console routes when blobBucket is configured', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {
+        token: 'blob-token',
+        blobBucket: {
+          list: async () => ({
+            objects: [
+              {
+                key: 'hello.txt',
+                size: 12,
+                uploaded: new Date('2025-01-01T00:00:00.000Z'),
+                httpMetadata: { contentType: 'text/plain' },
+              },
+            ],
+            truncated: false,
+            cursor: undefined,
+          }),
+          get: async () => null,
+          delete: async () => {},
+          head: async () => null,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/console', server.consoleRoutes!);
+
+    const unauthenticated = await app.request(
+      'http://localhost/console/storage'
+    );
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await app.request('http://localhost/console/storage', {
+      headers: { Authorization: 'Bearer blob-token' },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      items: [
+        {
+          key: 'hello.txt',
+          size: 12,
+          uploaded: '2025-01-01T00:00:00.000Z',
+          httpMetadata: { contentType: 'text/plain' },
+        },
+      ],
+      truncated: false,
+      cursor: null,
+    });
+  });
+
   it('forwards maxConnectionsPerClient from factory to realtime route', async () => {
     const options = createOptions();
     const upgradeWebSocket = defineWebSocketHelper(async () => {});
