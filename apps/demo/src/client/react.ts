@@ -1,5 +1,4 @@
 import {
-  createAsyncInitRegistry,
   createSyncularReact,
   useCachedAsyncValue,
 } from '@syncular/client-react';
@@ -19,5 +18,4 @@ export const {
   useSyncQuery,
 } = createSyncularReact<ClientDb>();
 
-export { createAsyncInitRegistry };
 export { useCachedAsyncValue };
