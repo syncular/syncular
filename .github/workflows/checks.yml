@@ -156,7 +156,7 @@ jobs:
       - uses: ./.github/actions/setup-environment
 
       - name: Install Playwright Chromium
-        run: bunx playwright install chromium
+        run: bunx playwright install --with-deps chromium
 
       - name: Run browser runtime tests
         run: bun test:runtime:browser
@@ -171,7 +171,7 @@ jobs:
       - uses: ./.github/actions/setup-environment
 
       - name: Install Playwright Chromium
-        run: bunx playwright install chromium
+        run: bunx playwright install --with-deps chromium
 
       - name: Run demo split-screen smoke test
         run: bun test:runtime:demo

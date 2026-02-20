@@ -6,7 +6,6 @@ import {
   initAndConfigureBrowserSentry,
   logBrowserSentryMessage,
 } from '@syncular/observability-sentry/browser';
-import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './app';
 import { resolveDemoBrowserSentryOptions } from './client/sentry';
@@ -70,11 +69,7 @@ function renderStartupError(message: string): void {
 }
 
 async function start(): Promise<void> {
-  reactRoot.render(
-    <StrictMode>
-      <App />
-    </StrictMode>
-  );
+  reactRoot.render(<App />);
 
   const swReady = await configureDemoServiceWorkerServer();
   if (!swReady) {
