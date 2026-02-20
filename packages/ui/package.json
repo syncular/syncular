@@ -27,6 +27,7 @@
   "exports": {
     ".": {
       "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
@@ -34,6 +35,7 @@
     },
     "./charts": {
       "bun": "./src/charts/index.ts",
+      "browser": "./src/charts/index.ts",
       "import": {
         "types": "./dist/charts/index.d.ts",
         "default": "./dist/charts/index.js"
@@ -41,6 +43,7 @@
     },
     "./console": {
       "bun": "./src/console/index.ts",
+      "browser": "./src/console/index.ts",
       "import": {
         "types": "./dist/console/index.d.ts",
         "default": "./dist/console/index.js"
@@ -48,6 +51,7 @@
     },
     "./forms": {
       "bun": "./src/forms/index.ts",
+      "browser": "./src/forms/index.ts",
       "import": {
         "types": "./dist/forms/index.d.ts",
         "default": "./dist/forms/index.js"
@@ -55,6 +59,7 @@
     },
     "./primitives": {
       "bun": "./src/primitives/index.ts",
+      "browser": "./src/primitives/index.ts",
       "import": {
         "types": "./dist/primitives/index.d.ts",
         "default": "./dist/primitives/index.js"
@@ -62,6 +67,7 @@
     },
     "./observable-universe": {
       "bun": "./src/observable-universe/index.ts",
+      "browser": "./src/observable-universe/index.ts",
       "import": {
         "types": "./dist/observable-universe/index.d.ts",
         "default": "./dist/observable-universe/index.js"
@@ -69,6 +75,7 @@
     },
     "./demo": {
       "bun": "./src/demo/index.ts",
+      "browser": "./src/demo/index.ts",
       "import": {
         "types": "./dist/demo/index.d.ts",
         "default": "./dist/demo/index.js"
@@ -76,6 +83,7 @@
     },
     "./navigation": {
       "bun": "./src/navigation/index.ts",
+      "browser": "./src/navigation/index.ts",
       "import": {
         "types": "./dist/navigation/index.d.ts",
         "default": "./dist/navigation/index.js"
