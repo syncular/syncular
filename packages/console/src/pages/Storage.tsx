@@ -275,6 +275,3 @@ export function Storage() {
     </div>
   );
 }
-
-// Backward-compatible export while consumers migrate to the Storage name.
-export const Blobs = Storage;
