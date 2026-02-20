@@ -11,14 +11,6 @@ import {
 } from './runtime-config';
 import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
 
-const routerForTypes = createRouter({ routeTree, basepath: '/' });
-
-declare module '@tanstack/react-router' {
-  interface Register {
-    router: typeof routerForTypes;
-  }
-}
-
 export interface SyncularConsoleProps {
   basePath?: string;
   defaultConfig?: ConnectionConfig | null;
