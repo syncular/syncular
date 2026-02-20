@@ -45,6 +45,12 @@ export type {
 } from './createSyncularReact';
 // Re-export core client types for convenience.
 export { createSyncularReact } from './createSyncularReact';
+export type { UseCachedAsyncValueOptions } from './use-cached-async-value';
+export {
+  clearCachedAsyncValues,
+  invalidateCachedAsyncValue,
+  useCachedAsyncValue,
+} from './use-cached-async-value';
 export type {
   SyncGroupChannel,
   SyncGroupChannelSnapshot,

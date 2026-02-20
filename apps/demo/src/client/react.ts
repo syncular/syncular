@@ -1,6 +1,7 @@
 import {
   createAsyncInitRegistry,
   createSyncularReact,
+  useCachedAsyncValue,
 } from '@syncular/client-react';
 import type { ClientDb } from './types.generated';
 
@@ -19,3 +20,4 @@ export const {
 } = createSyncularReact<ClientDb>();
 
 export { createAsyncInitRegistry };
+export { useCachedAsyncValue };

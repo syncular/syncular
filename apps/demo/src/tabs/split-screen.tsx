@@ -52,8 +52,8 @@ import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { tasksClientHandler } from '../client/handlers/tasks';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
-  createAsyncInitRegistry,
   SyncProvider,
+  useCachedAsyncValue,
   useConflicts,
   useMutations,
   useResolveConflict,
@@ -71,24 +71,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:split-screen:client-seed-v1';
-const clientDbInitRegistry = createAsyncInitRegistry<
-  string,
-  Kysely<ClientDb>
->();
-
-async function initializeClientDb(args: {
-  initKey: string;
-  createDb: () => Kysely<ClientDb> | Promise<Kysely<ClientDb>>;
-  clientStoreKey: string;
-}): Promise<Kysely<ClientDb>> {
-  return await clientDbInitRegistry.run(args.initKey, async () => {
-    const database = await args.createDb();
-    await migrateClientDbWithTimeout(database, {
-      clientStoreKey: args.clientStoreKey,
-    });
-    return database;
-  });
-}
 
 function createClientIdSeed(): string {
   if (
@@ -344,63 +326,54 @@ function SyncClientPanel({
   color: 'flow' | 'relay';
   onRecoverFromInitError?: () => Promise<void>;
 }) {
-  const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
-  const [initError, setInitError] = useState<string | null>(null);
   const [initAttempt, setInitAttempt] = useState(0);
   const [isRecoveringInitError, setIsRecoveringInitError] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+
+  const initKey = `${clientStoreKey}:attempt:${initAttempt}`;
+  const [db, dbError] = useCachedAsyncValue(
+    async () => {
+      const database = await createDb();
+      await migrateClientDbWithTimeout(database, {
+        clientStoreKey,
+      });
+      return database;
+    },
+    {
+      key: initKey,
+      deps: [createDb, clientStoreKey],
+    }
+  );
+
+  const initError = recoveryError ?? dbError?.message ?? null;
 
   useEffect(() => {
-    let cancelled = false;
-    const attempt = initAttempt;
-    const initKey = `${clientStoreKey}:attempt:${attempt}`;
-    async function init() {
-      if (attempt < 0) return;
-      if (!cancelled) {
-        setInitError(null);
-        setDb(null);
-      }
-      try {
-        const database = await initializeClientDb({
-          initKey,
-          createDb,
-          clientStoreKey,
-        });
-        if (!cancelled) {
-          setDb(database);
+    if (!dbError) return;
+    if (dbError instanceof PgliteClientInitializationError) {
+      captureBrowserSentryMessage(
+        'syncular.demo.client.db_init_failed.pglite',
+        {
+          level: 'error',
+          tags: {
+            base_data_dir: dbError.baseDataDir,
+            active_data_dir: dbError.activeDataDir,
+            client_store_key: clientStoreKey,
+          },
         }
-      } catch (error) {
-        if (error instanceof PgliteClientInitializationError) {
-          captureBrowserSentryMessage(
-            'syncular.demo.client.db_init_failed.pglite',
-            {
-              level: 'error',
-              tags: {
-                base_data_dir: error.baseDataDir,
-                active_data_dir: error.activeDataDir,
-                client_store_key: clientStoreKey,
-              },
-            }
-          );
-        } else {
-          captureBrowserSentryMessage('syncular.demo.client.db_init_failed', {
-            level: 'error',
-            tags: {
-              client_store_key: clientStoreKey,
-            },
-          });
-        }
-        if (!cancelled) {
-          setInitError(error instanceof Error ? error.message : String(error));
-        }
-      }
+      );
+      return;
     }
-    void init();
-    return () => {
-      cancelled = true;
-    };
-  }, [clientStoreKey, createDb, initAttempt]);
+
+    captureBrowserSentryMessage('syncular.demo.client.db_init_failed', {
+      level: 'error',
+      tags: {
+        client_store_key: clientStoreKey,
+      },
+    });
+  }, [clientStoreKey, dbError]);
 
   const handleRetryInit = useCallback(() => {
+    setRecoveryError(null);
     setInitAttempt((current) => current + 1);
   }, []);
 
@@ -410,10 +383,11 @@ function SyncClientPanel({
     setIsRecoveringInitError(true);
     try {
       await onRecoverFromInitError();
+      setRecoveryError(null);
       setInitAttempt((current) => current + 1);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setInitError(message);
+      setRecoveryError(message);
       captureBrowserSentryMessage(
         'syncular.demo.client.db_init_recovery_failed',
         {

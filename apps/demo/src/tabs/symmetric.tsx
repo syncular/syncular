@@ -34,8 +34,8 @@ import {
 import { patientNotesClientHandler } from '../client/handlers/patient-notes';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
-  createAsyncInitRegistry,
   SyncProvider,
+  useCachedAsyncValue,
   useMutation,
   useOutbox,
   useSyncContext,
@@ -131,10 +131,6 @@ const ACTORS = [
     icon: <EyeIcon />,
   },
 ];
-const symmetricDbInitRegistry = createAsyncInitRegistry<
-  string,
-  Kysely<ClientDb>
->();
 
 // ---------------------------------------------------------------------------
 // Passphrase state hook
@@ -370,27 +366,17 @@ function ActorVaultPanel({
   const { store, passphrases, setPassphrase, clearPassphrase } =
     passphraseState;
 
-  const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
-  const [initError, setInitError] = useState<string | null>(null);
-
-  useEffect(() => {
-    async function init() {
-      try {
-        const database = await symmetricDbInitRegistry.run(
-          clientStoreKey,
-          async () => {
-            const created = await createDb();
-            await migrateClientDbWithTimeout(created, { clientStoreKey });
-            return created;
-          }
-        );
-        setDb(database);
-      } catch (error) {
-        setInitError(error instanceof Error ? error.message : String(error));
-      }
+  const [db, initError] = useCachedAsyncValue(
+    async () => {
+      const created = await createDb();
+      await migrateClientDbWithTimeout(created, { clientStoreKey });
+      return created;
+    },
+    {
+      key: clientStoreKey,
+      deps: [clientStoreKey, createDb],
     }
-    init();
-  }, [clientStoreKey, createDb]);
+  );
 
   const transport = useMemo(
     () => createDemoPollingTransport(actor.id),
@@ -456,7 +442,7 @@ function ActorVaultPanel({
       >
         <div className="px-3 py-3">
           <div className="text-xs text-red-300 font-mono break-all">
-            Database initialization failed: {initError}
+            Database initialization failed: {initError.message}
           </div>
         </div>
       </ActorPanel>

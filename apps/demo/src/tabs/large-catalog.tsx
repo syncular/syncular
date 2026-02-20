@@ -13,7 +13,6 @@ import {
   InfoPanel,
   MetricCard,
 } from '@syncular/ui/demo';
-import type { Kysely } from 'kysely';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
@@ -24,8 +23,8 @@ import {
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
-  createAsyncInitRegistry,
   SyncProvider,
+  useCachedAsyncValue,
   useSyncQuery,
   useSyncStatus,
 } from '../client/react';
@@ -43,10 +42,6 @@ const CATALOG_STATE_ID = 'catalog-demo';
 const CATALOG_SUBSCRIPTION_ID = 'catalog-items';
 const CATALOG_SNAPSHOT_ROWS_PER_PAGE = 50_000;
 const CATALOG_MAX_SNAPSHOT_PAGES_PER_PULL = 20;
-const catalogDbInitRegistry = createAsyncInitRegistry<
-  string,
-  Kysely<ClientDb>
->();
 
 /* ---------- Helpers ---------- */
 
@@ -76,8 +71,20 @@ type ChunkStats = { downloads: number; bytes: number };
 /* ---------- Root tab (owns PGlite lifecycle + SyncProvider) ---------- */
 
 export function LargeCatalogTab() {
-  const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [db, dbError] = useCachedAsyncValue(
+    async () => {
+      const created = createSqliteClient(
+        DEMO_CLIENT_STORES.catalogSqlite.location
+      );
+      await migrateClientDbWithTimeout(created, {
+        clientStoreKey: DEMO_CLIENT_STORES.catalogSqlite.key,
+      });
+      return created;
+    },
+    {
+      key: DEMO_CLIENT_STORES.catalogSqlite.key,
+    }
+  );
   const [chunkStats, setChunkStats] = useState<ChunkStats>({
     downloads: 0,
     bytes: 0,
@@ -109,35 +116,12 @@ export function LargeCatalogTab() {
     []
   );
 
-  /* Init PGlite database */
-  useEffect(() => {
-    (async () => {
-      try {
-        const database = await catalogDbInitRegistry.run(
-          DEMO_CLIENT_STORES.catalogSqlite.key,
-          async () => {
-            const created = createSqliteClient(
-              DEMO_CLIENT_STORES.catalogSqlite.location
-            );
-            await migrateClientDbWithTimeout(created, {
-              clientStoreKey: DEMO_CLIENT_STORES.catalogSqlite.key,
-            });
-            return created;
-          }
-        );
-        setDb(database);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-  }, []);
-
-  if (error) {
+  if (dbError) {
     return (
       <InfoPanel
         icon={<span className="text-red-400 text-sm">!</span>}
         title="Initialization Error"
-        description={error}
+        description={dbError.message}
       />
     );
   }

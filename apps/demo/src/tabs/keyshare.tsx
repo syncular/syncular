@@ -36,7 +36,6 @@ import {
   TopologyPanel,
   TopologySvgKeyshare,
 } from '@syncular/ui/demo';
-import type { Kysely } from 'kysely';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
@@ -48,8 +47,8 @@ import {
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
 import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
-  createAsyncInitRegistry,
   SyncProvider,
+  useCachedAsyncValue,
   useMutation,
   useSyncContext,
   useSyncQuery,
@@ -116,11 +115,6 @@ function useStoredKey(storageKey: string): KeyData {
 function isCiphertext(value: unknown): boolean {
   return typeof value === 'string' && value.startsWith('dgsync:e2ee:1:');
 }
-
-const keyshareDbInitRegistry = createAsyncInitRegistry<
-  string,
-  Kysely<ClientDb>
->();
 
 function deriveSyncBadgeStatus(
   status: ReturnType<typeof useSyncStatus>
@@ -272,8 +266,20 @@ function AlicePanel({
   const clientId = 'client-keyshare-sqlite';
   const stateId = `keyshare-${shareId}-${keyData.kid}`;
 
-  const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [db, error] = useCachedAsyncValue(
+    async () => {
+      const created = createSqliteClient(
+        DEMO_CLIENT_STORES.keyshareAliceSqlite.location
+      );
+      await migrateClientDbWithTimeout(created, {
+        clientStoreKey: DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
+      });
+      return created;
+    },
+    {
+      key: DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
+    }
+  );
 
   const transport = useMemo(() => createDemoPollingTransport(actorId), []);
 
@@ -317,32 +323,10 @@ function AlicePanel({
     [shareId]
   );
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const database = await keyshareDbInitRegistry.run(
-          DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
-          async () => {
-            const created = createSqliteClient(
-              DEMO_CLIENT_STORES.keyshareAliceSqlite.location
-            );
-            await migrateClientDbWithTimeout(created, {
-              clientStoreKey: DEMO_CLIENT_STORES.keyshareAliceSqlite.key,
-            });
-            return created;
-          }
-        );
-        setDb(database);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-  }, []);
-
   if (error) {
     return (
       <ClientPanel label="Alice  /  wa-sqlite (OPFS)" color="flow">
-        <div className="text-xs text-red-400 py-4">Error: {error}</div>
+        <div className="text-xs text-red-400 py-4">Error: {error.message}</div>
       </ClientPanel>
     );
   }
@@ -540,8 +524,20 @@ function BobPanel({
   const clientId = 'client-keyshare-pglite';
   const stateId = `keyshare-${shareId}`;
 
-  const [db, setDb] = useState<Kysely<ClientDb> | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [db, error] = useCachedAsyncValue(
+    async () => {
+      const created = await createPgliteClient(
+        DEMO_CLIENT_STORES.keyshareBobPglite.location
+      );
+      await migrateClientDbWithTimeout(created, {
+        clientStoreKey: DEMO_CLIENT_STORES.keyshareBobPglite.key,
+      });
+      return created;
+    },
+    {
+      key: DEMO_CLIENT_STORES.keyshareBobPglite.key,
+    }
+  );
   const recipientKeyRef = useRef<Uint8Array | null>(recipientKey);
 
   const transport = useMemo(() => createDemoPollingTransport(actorId), []);
@@ -600,32 +596,10 @@ function BobPanel({
     [shareId]
   );
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const database = await keyshareDbInitRegistry.run(
-          DEMO_CLIENT_STORES.keyshareBobPglite.key,
-          async () => {
-            const created = await createPgliteClient(
-              DEMO_CLIENT_STORES.keyshareBobPglite.location
-            );
-            await migrateClientDbWithTimeout(created, {
-              clientStoreKey: DEMO_CLIENT_STORES.keyshareBobPglite.key,
-            });
-            return created;
-          }
-        );
-        setDb(database);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-  }, []);
-
   if (error) {
     return (
       <ClientPanel label="Bob  /  PGlite (IndexedDB)" color="encrypt">
-        <div className="text-xs text-red-400 py-4">Error: {error}</div>
+        <div className="text-xs text-red-400 py-4">Error: {error.message}</div>
       </ClientPanel>
     );
   }
