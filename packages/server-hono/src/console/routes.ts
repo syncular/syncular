@@ -396,6 +396,19 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
 ): Hono {
   const routes = new Hono();
 
+  routes.onError((error, context) => {
+    const message =
+      error instanceof Error ? error.message : 'Unknown console error';
+    console.error('[console] route error', error);
+    return context.json(
+      {
+        error: 'CONSOLE_ROUTE_ERROR',
+        message,
+      },
+      500
+    );
+  });
+
   interface SyncRequestEventsTable {
     event_id: number;
     partition_id: string;
