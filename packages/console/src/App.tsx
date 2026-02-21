@@ -14,6 +14,7 @@ import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
 export interface SyncularConsoleProps {
   basePath?: string;
   defaultConfig?: ConnectionConfig | null;
+  autoConnect?: boolean;
 }
 
 function createDefaultQueryClient(): QueryClient {
@@ -43,10 +44,15 @@ function SyncularConsole(props: SyncularConsoleProps) {
     props.defaultConfig === undefined
       ? resolveConsoleConnectionConfigFromMeta()
       : props.defaultConfig;
+  const autoConnect =
+    props.autoConnect ?? (props.defaultConfig === undefined);
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ConnectionProvider defaultConfig={defaultConfig}>
+      <ConnectionProvider
+        defaultConfig={defaultConfig}
+        autoConnect={autoConnect}
+      >
         <RouterProvider router={router} />
       </ConnectionProvider>
     </QueryClientProvider>

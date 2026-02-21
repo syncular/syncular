@@ -125,7 +125,7 @@ function renderIndexHtml(args: {
   const resolvedServerUrl = args.prefill?.serverUrl ?? '';
   const resolvedToken = args.prefill?.token ?? '';
 
-  return withMetaTag(
+  const withMeta = withMetaTag(
     withMetaTag(
       withMetaTag(args.template, CONSOLE_BASEPATH_META, resolvedBasePath),
       CONSOLE_SERVER_URL_META,
@@ -133,6 +133,17 @@ function renderIndexHtml(args: {
     ),
     CONSOLE_TOKEN_META,
     resolvedToken
+  );
+
+  if (resolvedBasePath === '/') {
+    return withMeta;
+  }
+
+  const mountPrefix = resolvedBasePath.replace(/\/+$/g, '');
+  return withMeta.replace(
+    /(src|href)=("|')\/assets\/([^"']+)("|')/g,
+    (_match, attribute, openQuote, assetPath, closeQuote) =>
+      `${attribute}=${openQuote}${mountPrefix}/assets/${assetPath}${closeQuote}`
   );
 }
 

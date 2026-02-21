@@ -3337,143 +3337,153 @@ export function createConsoleRoutes<DB extends SyncCoreDb>(
   // -----------------------------------------------------------------------
   // Storage endpoints
   // -----------------------------------------------------------------------
-  if (options.blobBucket) {
-    const bucket = options.blobBucket;
+  const bucket = options.blobBucket;
 
-    routes.get(
-      '/storage',
-      describeRoute({
-        tags: ['console'],
-        summary: 'List storage items',
-        responses: {
-          200: {
-            description: 'Paginated list of storage items',
-            content: {
-              'application/json': {
-                schema: resolver(ConsoleBlobListResponseSchema),
-              },
-            },
-          },
-          401: {
-            description: 'Unauthenticated',
-            content: {
-              'application/json': { schema: resolver(ErrorResponseSchema) },
+  routes.get(
+    '/storage',
+    describeRoute({
+      tags: ['console'],
+      summary: 'List storage items',
+      responses: {
+        200: {
+          description: 'Paginated list of storage items',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleBlobListResponseSchema),
             },
           },
         },
-      }),
-      zValidator('query', ConsoleBlobListQuerySchema),
-      async (c) => {
-        const auth = await requireAuth(c);
-        if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
-        const { prefix, cursor, limit } = c.req.valid('query');
-        const listed = await bucket.list({
-          prefix: prefix || undefined,
-          cursor: cursor || undefined,
-          limit,
-        });
-
-        return c.json(
-          {
-            items: listed.objects.map((obj) => ({
-              key: obj.key,
-              size: obj.size,
-              uploaded: obj.uploaded.toISOString(),
-              httpMetadata: obj.httpMetadata?.contentType
-                ? { contentType: obj.httpMetadata.contentType }
-                : undefined,
-            })),
-            truncated: listed.truncated,
-            cursor: listed.cursor ?? null,
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
           },
-          200
-        );
+        },
+      },
+    }),
+    zValidator('query', ConsoleBlobListQuerySchema),
+    async (c) => {
+      const auth = await requireAuth(c);
+      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+
+      if (!bucket) {
+        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
       }
-    );
 
-    routes.get(
-      '/storage/:key{.+}/download',
-      describeRoute({
-        tags: ['console'],
-        summary: 'Download a storage item',
-        responses: {
-          200: { description: 'Storage item contents' },
-          401: {
-            description: 'Unauthenticated',
-            content: {
-              'application/json': { schema: resolver(ErrorResponseSchema) },
-            },
+      const { prefix, cursor, limit } = c.req.valid('query');
+      const listed = await bucket.list({
+        prefix: prefix || undefined,
+        cursor: cursor || undefined,
+        limit,
+      });
+
+      return c.json(
+        {
+          items: listed.objects.map((obj) => ({
+            key: obj.key,
+            size: obj.size,
+            uploaded: obj.uploaded.toISOString(),
+            httpMetadata: obj.httpMetadata?.contentType
+              ? { contentType: obj.httpMetadata.contentType }
+              : undefined,
+          })),
+          truncated: listed.truncated,
+          cursor: listed.cursor ?? null,
+        },
+        200
+      );
+    }
+  );
+
+  routes.get(
+    '/storage/:key{.+}/download',
+    describeRoute({
+      tags: ['console'],
+      summary: 'Download a storage item',
+      responses: {
+        200: { description: 'Storage item contents' },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
           },
-          404: {
-            description: 'Blob not found',
-            content: {
-              'application/json': { schema: resolver(ErrorResponseSchema) },
+        },
+        404: {
+          description: 'Blob not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    async (c) => {
+      const auth = await requireAuth(c);
+      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+
+      if (!bucket) {
+        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+      }
+
+      const key = decodeURIComponent(c.req.param('key'));
+      const object = await bucket.get(key);
+      if (!object) {
+        return c.json({ error: 'BLOB_NOT_FOUND' }, 404);
+      }
+
+      const headers = new Headers();
+      headers.set('Content-Length', String(object.size));
+      headers.set(
+        'Content-Type',
+        object.httpMetadata?.contentType ?? 'application/octet-stream'
+      );
+      const filename = key.split('/').pop() || key;
+      headers.set(
+        'Content-Disposition',
+        `attachment; filename="${filename.replace(/"/g, '\\"')}"`
+      );
+
+      return new Response(object.body as ReadableStream, {
+        status: 200,
+        headers,
+      });
+    }
+  );
+
+  routes.delete(
+    '/storage/:key{.+}',
+    describeRoute({
+      tags: ['console'],
+      summary: 'Delete a storage item',
+      responses: {
+        200: {
+          description: 'Storage item deleted',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleBlobDeleteResponseSchema),
             },
           },
         },
-      }),
-      async (c) => {
-        const auth = await requireAuth(c);
-        if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
-        const key = decodeURIComponent(c.req.param('key'));
-        const object = await bucket.get(key);
-        if (!object) {
-          return c.json({ error: 'BLOB_NOT_FOUND' }, 404);
-        }
-
-        const headers = new Headers();
-        headers.set('Content-Length', String(object.size));
-        headers.set(
-          'Content-Type',
-          object.httpMetadata?.contentType ?? 'application/octet-stream'
-        );
-        const filename = key.split('/').pop() || key;
-        headers.set(
-          'Content-Disposition',
-          `attachment; filename="${filename.replace(/"/g, '\\"')}"`
-        );
-
-        return new Response(object.body as ReadableStream, {
-          status: 200,
-          headers,
-        });
-      }
-    );
-
-    routes.delete(
-      '/storage/:key{.+}',
-      describeRoute({
-        tags: ['console'],
-        summary: 'Delete a storage item',
-        responses: {
-          200: {
-            description: 'Storage item deleted',
-            content: {
-              'application/json': {
-                schema: resolver(ConsoleBlobDeleteResponseSchema),
-              },
-            },
-          },
-          401: {
-            description: 'Unauthenticated',
-            content: {
-              'application/json': { schema: resolver(ErrorResponseSchema) },
-            },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
           },
         },
-      }),
-      async (c) => {
-        const auth = await requireAuth(c);
-        if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      },
+    }),
+    async (c) => {
+      const auth = await requireAuth(c);
+      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
 
-        const key = decodeURIComponent(c.req.param('key'));
-        await bucket.delete(key);
-        return c.json({ deleted: true }, 200);
+      if (!bucket) {
+        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
       }
-    );
-  }
+
+      const key = decodeURIComponent(c.req.param('key'));
+      await bucket.delete(key);
+      return c.json({ deleted: true }, 200);
+    }
+  );
 
   return routes;
 }

@@ -7,6 +7,7 @@ interface MountSyncularConsoleOptions {
   strictMode?: boolean;
   basePath?: SyncularConsoleProps['basePath'];
   defaultConfig?: SyncularConsoleProps['defaultConfig'];
+  autoConnect?: SyncularConsoleProps['autoConnect'];
 }
 
 function resolveContainer(containerOrSelector: Element | string): Element {
@@ -33,7 +34,11 @@ export function mountSyncularConsoleApp(
 
   const root = createRoot(container);
   const app = (
-    <App basePath={options.basePath} defaultConfig={options.defaultConfig} />
+    <App
+      basePath={options.basePath}
+      defaultConfig={options.defaultConfig}
+      autoConnect={options.autoConnect}
+    />
   );
 
   if (options.strictMode === false) {

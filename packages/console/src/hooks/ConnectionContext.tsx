@@ -10,6 +10,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -44,6 +45,7 @@ interface ConnectionContextValue {
 interface ConnectionProviderProps {
   children: ReactNode;
   defaultConfig?: ConnectionConfig | null;
+  autoConnect?: boolean;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -51,6 +53,7 @@ const ConnectionContext = createContext<ConnectionContextValue | null>(null);
 export function ConnectionProvider({
   children,
   defaultConfig = null,
+  autoConnect = false,
 }: ConnectionProviderProps) {
   const [config, setConfigStorage] = useLocalStorage<ConnectionConfig | null>(
     'sync-console-connection',
@@ -63,6 +66,7 @@ export function ConnectionProvider({
     error: null,
     client: null,
   });
+  const lastAutoConnectConfigKeyRef = useRef<string | null>(null);
 
   // Resolve initial config: saved config -> provided defaults
   useEffect(() => {
@@ -182,11 +186,49 @@ export function ConnectionProvider({
     [config, setConfig, state, connect, disconnect, clearError]
   );
 
+  useEffect(() => {
+    if (!autoConnect || state.isConnected || state.isConnecting) {
+      return;
+    }
+
+    const candidate = config ?? defaultConfig;
+    const key = normalizeConfigKey(candidate);
+    if (!candidate || !key) {
+      return;
+    }
+
+    if (lastAutoConnectConfigKeyRef.current === key) {
+      return;
+    }
+
+    lastAutoConnectConfigKeyRef.current = key;
+    void connect(candidate, { persistOverride: true });
+  }, [
+    autoConnect,
+    config,
+    defaultConfig,
+    state.isConnected,
+    state.isConnecting,
+    connect,
+  ]);
+
   return (
     <ConnectionContext.Provider value={value}>
       {children}
     </ConnectionContext.Provider>
   );
+}
+
+function normalizeConfigKey(config: ConnectionConfig | null): string | null {
+  if (!config) {
+    return null;
+  }
+  const serverUrl = config.serverUrl?.trim() ?? '';
+  const token = config.token?.trim() ?? '';
+  if (!serverUrl || !token) {
+    return null;
+  }
+  return `${serverUrl}\u0000${token}`;
 }
 
 export function useConnection(): ConnectionContextValue {

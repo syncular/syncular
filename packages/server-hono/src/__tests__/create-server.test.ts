@@ -158,6 +158,30 @@ describe('createSyncServer console configuration', () => {
     expect(server.consoleRoutes).toBeDefined();
   });
 
+  it('returns empty storage list when blobBucket is not configured', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {
+        token: 'console-token',
+      },
+    });
+
+    const app = new Hono();
+    app.route('/console', server.consoleRoutes!);
+
+    const response = await app.request('http://localhost/console/storage', {
+      headers: { Authorization: 'Bearer console-token' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      items: [],
+      truncated: false,
+      cursor: null,
+    });
+  });
+
   it('enables storage console routes when blobBucket is configured', async () => {
     const options = createOptions();
     const server = createSyncServer({
