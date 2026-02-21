@@ -7,8 +7,8 @@ import {
 } from '@syncular/core';
 import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import {
-  createServerHandlerCollection,
   createServerHandler,
+  createServerHandlerCollection,
   ensureSyncSchema,
   InvalidSubscriptionScopeError,
   pull,

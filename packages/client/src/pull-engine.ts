@@ -13,8 +13,8 @@ import type {
 import { decodeSnapshotRows } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
 import {
-  getClientHandlerOrThrow,
   type ClientHandlerCollection,
+  getClientHandlerOrThrow,
 } from './handlers/collection';
 import type { ClientTableHandler } from './handlers/types';
 import type {

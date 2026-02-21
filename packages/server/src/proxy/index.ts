@@ -4,6 +4,14 @@
  * Server-side proxy functionality for database access.
  */
 
+// Oplog creation
+// Collections
+export {
+  createProxyHandlerCollection,
+  getProxyHandler,
+  getProxyHandlerOrThrow,
+  type ProxyHandlerCollection,
+} from './collection';
 // Query execution
 export {
   type ExecuteProxyQueryArgs,
@@ -12,12 +20,4 @@ export {
 } from './handler';
 // Mutation detection
 export { type DetectedMutation, detectMutation } from './mutation-detector';
-// Oplog creation
-// Collections
-export {
-  type ProxyHandlerCollection,
-  createProxyHandlerCollection,
-  getProxyHandler,
-  getProxyHandlerOrThrow,
-} from './collection';
 // Types

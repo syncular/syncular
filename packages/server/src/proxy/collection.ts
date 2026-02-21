@@ -11,7 +11,9 @@ export function createProxyHandlerCollection(
   const byTable = new Map<string, ProxyTableHandler>();
   for (const handler of handlers) {
     if (byTable.has(handler.table)) {
-      throw new Error(`Proxy table handler already registered: ${handler.table}`);
+      throw new Error(
+        `Proxy table handler already registered: ${handler.table}`
+      );
     }
     byTable.set(handler.table, handler);
   }

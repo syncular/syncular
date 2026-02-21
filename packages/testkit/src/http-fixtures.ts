@@ -49,7 +49,10 @@ export interface CreateHttpServerFixtureOptions<DB extends SyncCoreDb> {
   serverDialect: HttpServerDialect;
   createTables: (db: Kysely<DB>) => Promise<void>;
   handlers: ServerTableHandler<DB>[];
-  authenticate: CreateSyncRoutesOptions<DB, { actorId: string }>['authenticate'];
+  authenticate: CreateSyncRoutesOptions<
+    DB,
+    { actorId: string }
+  >['authenticate'];
   sync?: CreateSyncRoutesOptions<DB, { actorId: string }>['sync'];
   routePath?: string;
   cors?: boolean;

@@ -27,6 +27,7 @@ import type {
 } from '@syncular/server';
 import {
   type CompactOptions,
+  createServerHandlerCollection,
   InvalidSubscriptionScopeError,
   type PruneOptions,
   type PullResult,
@@ -34,7 +35,6 @@ import {
   pushCommit,
   readSnapshotChunk,
   recordClientCursor,
-  createServerHandlerCollection,
 } from '@syncular/server';
 import type { Context, MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
@@ -434,9 +434,7 @@ function emitConsoleLiveEvent(
 export function createSyncRoutes<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
->(
-  options: CreateSyncRoutesOptions<DB, Auth>
-): Hono {
+>(options: CreateSyncRoutesOptions<DB, Auth>): Hono {
   const routes = new Hono();
   routes.onError((error, c) => {
     captureSyncException(error, {

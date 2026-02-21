@@ -7,19 +7,17 @@ import type {
   SyncSubscriptionRequest,
 } from '@syncular/core';
 import {
-  createClientHandler,
   type CreateClientHandlerOptions,
+  createClientHandler,
 } from './handlers/create-handler';
 import type { ClientTableHandler } from './handlers/types';
 import type { SyncClientDb } from './schema';
 
-type ClientSyncSubscription<ScopeDefs extends readonly ScopeDefinition[]> = Omit<
-  SyncSubscriptionRequest,
-  'cursor' | 'table' | 'scopes'
-> & {
-  table: string;
-  scopes?: ScopeValuesFromPatterns<ScopeDefs>;
-};
+type ClientSyncSubscription<ScopeDefs extends readonly ScopeDefinition[]> =
+  Omit<SyncSubscriptionRequest, 'cursor' | 'table' | 'scopes'> & {
+    table: string;
+    scopes?: ScopeValuesFromPatterns<ScopeDefs>;
+  };
 
 type SharedTableName<DB extends SyncClientDb> = keyof DB & string;
 
@@ -51,7 +49,9 @@ export interface ClientSyncConfig<
   Identity = { actorId: string },
 > {
   handlers: ClientTableHandler<DB>[];
-  subscriptions(identity: Identity): Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions(
+    identity: Identity
+  ): Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
 }
 
 export interface DefineClientSyncOptions<
@@ -89,7 +89,12 @@ export function defineClientSync<
   const registeredTables = new Set<string>();
   const subscriptionsByTable = new Map<
     string,
-    ClientSyncHandlerOptionsForTable<DB, SharedTableName<DB>, ScopeDefs, Identity>['subscribe']
+    ClientSyncHandlerOptionsForTable<
+      DB,
+      SharedTableName<DB>,
+      ScopeDefs,
+      Identity
+    >['subscribe']
   >();
 
   const toScopeValues = (
@@ -141,7 +146,9 @@ export function defineClientSync<
       registeredTables.add(handlerOptions.table);
       return sync;
     },
-    subscriptions(identity: Identity): Array<Omit<SyncSubscriptionRequest, 'cursor'>> {
+    subscriptions(
+      identity: Identity
+    ): Array<Omit<SyncSubscriptionRequest, 'cursor'>> {
       const resolved: Array<Omit<SyncSubscriptionRequest, 'cursor'>> = [];
       for (const [table, subscribe] of subscriptionsByTable.entries()) {
         if (!subscribe) continue;

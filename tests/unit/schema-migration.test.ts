@@ -225,7 +225,9 @@ describe('schema migration (partition_id)', () => {
 
     // 3. Push a task — this would fail with the old migration code because
     //    ON CONFLICT (partition_id, ...) had no matching unique index
-    const handlers = createServerHandlerCollection<TestDb>([createTasksHandler()]);
+    const handlers = createServerHandlerCollection<TestDb>([
+      createTasksHandler(),
+    ]);
 
     const result = await pushCommit({
       db,
@@ -272,7 +274,9 @@ describe('schema migration (partition_id)', () => {
       )
     `.execute(db);
 
-    const handlers = createServerHandlerCollection<TestDb>([createTasksHandler()]);
+    const handlers = createServerHandlerCollection<TestDb>([
+      createTasksHandler(),
+    ]);
 
     const result = await pushCommit({
       db,
@@ -310,7 +314,9 @@ describe('schema migration (partition_id)', () => {
     // Migrate
     await ensureSyncSchema(db, noTxDialect);
 
-    const handlers = createServerHandlerCollection<TestDb>([createTasksHandler()]);
+    const handlers = createServerHandlerCollection<TestDb>([
+      createTasksHandler(),
+    ]);
 
     const result = await pushCommit({
       db,

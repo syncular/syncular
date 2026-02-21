@@ -7,8 +7,8 @@ import {
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
-import { createClientHandler } from './handlers/create-handler';
 import type { ClientHandlerCollection } from './handlers/collection';
+import { createClientHandler } from './handlers/create-handler';
 import { ensureClientSyncSchema } from './migrate';
 import { applyPullResponse, buildPullRequest } from './pull-engine';
 import type { SyncClientDb } from './schema';

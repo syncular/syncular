@@ -1,6 +1,6 @@
 import {
-  type ClientHandlerCollection,
   type ClientClearContext,
+  type ClientHandlerCollection,
   type ClientSnapshotHookContext,
   type ClientTableHandler,
   enqueueOutboxCommit,
@@ -31,8 +31,8 @@ import { createPgliteDb } from '@syncular/dialect-pglite';
 import { createSqlite3Db } from '@syncular/dialect-sqlite3';
 import {
   type ApplyOperationResult,
-  type EmittedChange,
   createServerHandlerCollection,
+  type EmittedChange,
   ensureSyncSchema,
   pull,
   pushCommit,

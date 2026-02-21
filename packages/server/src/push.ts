@@ -181,15 +181,16 @@ function recordPushMetrics(args: {
   );
 }
 
-export async function pushCommit<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
-  args: {
+export async function pushCommit<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
   handlers: ServerHandlerCollection<DB, Auth>;
   auth: Auth;
   request: SyncPushRequest;
-}
-): Promise<PushCommitResult> {
+}): Promise<PushCommitResult> {
   const { db, dialect, handlers, request } = args;
   const actorId = args.auth.actorId;
   const partitionId = args.auth.partitionId ?? 'default';

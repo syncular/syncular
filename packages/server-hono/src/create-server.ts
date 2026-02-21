@@ -97,8 +97,7 @@ export interface SyncServerResult {
 export function createSyncServer<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
->(options: SyncServerOptions<DB, Auth>
-): SyncServerResult {
+>(options: SyncServerOptions<DB, Auth>): SyncServerResult {
   const {
     db,
     dialect,

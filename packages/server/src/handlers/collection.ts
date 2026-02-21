@@ -12,9 +12,7 @@ export interface ServerHandlerCollection<
 export function createServerHandlerCollection<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncServerAuth = SyncServerAuth,
->(
-  handlers: ServerTableHandler<DB, Auth>[]
-): ServerHandlerCollection<DB, Auth> {
+>(handlers: ServerTableHandler<DB, Auth>[]): ServerHandlerCollection<DB, Auth> {
   const byTable = new Map<string, ServerTableHandler<DB, Auth>>();
 
   for (const handler of handlers) {
@@ -73,7 +71,9 @@ function topoSortTables<
   const visit = (table: string) => {
     if (visited.has(table)) return;
     if (visiting.has(table)) {
-      throw new Error(`Circular dependency detected involving table "${table}"`);
+      throw new Error(
+        `Circular dependency detected involving table "${table}"`
+      );
     }
 
     const handler = collection.byTable.get(table);

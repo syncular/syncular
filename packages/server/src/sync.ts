@@ -3,12 +3,16 @@ import type {
   ColumnCodecSource,
   ScopeDefinition,
 } from '@syncular/core';
-import { createServerHandler, type CreateServerHandlerOptions } from './handlers';
+import {
+  type CreateServerHandlerOptions,
+  createServerHandler,
+} from './handlers';
 import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
 import type { SyncCoreDb } from './schema';
 
-type SharedTableName<ServerDB, ClientDB> =
-  keyof ServerDB & keyof ClientDB & string;
+type SharedTableName<ServerDB, ClientDB> = keyof ServerDB &
+  keyof ClientDB &
+  string;
 
 export type ServerSyncHandlerOptionsForTable<
   ServerDB extends SyncCoreDb,

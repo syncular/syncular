@@ -94,8 +94,7 @@ export interface ConsoleSharedOptions {
 export interface CreateConsoleRoutesOptions<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncServerAuth = SyncServerAuth,
->
-  extends ConsoleSharedOptions {
+> extends ConsoleSharedOptions {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
   handlers: ServerTableHandler<DB, Auth>[];

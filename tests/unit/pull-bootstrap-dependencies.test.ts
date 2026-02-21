@@ -3,8 +3,8 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { decodeSnapshotRows, type SyncPullRequest } from '@syncular/core';
 import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import {
-  createServerHandlerCollection,
   createServerHandler,
+  createServerHandlerCollection,
   ensureSyncSchema,
   pull,
   readSnapshotChunk,
@@ -229,7 +229,9 @@ describe('pull bootstrap behavior', () => {
         resolveScopes: async () => ({ catalog_id: '*' }),
       });
 
-      const handlers = createServerHandlerCollection<ServerDb>([catalogHandler]);
+      const handlers = createServerHandlerCollection<ServerDb>([
+        catalogHandler,
+      ]);
 
       const requestedCatalogs = ['zeta', 'alpha'];
       const request: SyncPullRequest = {

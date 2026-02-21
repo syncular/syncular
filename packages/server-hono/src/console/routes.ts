@@ -394,8 +394,7 @@ const handlersResponseSchema = z.object({
 export function createConsoleRoutes<
   DB extends SyncCoreDb,
   Auth extends SyncServerAuth,
->(options: CreateConsoleRoutesOptions<DB, Auth>
-): Hono {
+>(options: CreateConsoleRoutesOptions<DB, Auth>): Hono {
   const routes = new Hono();
 
   routes.onError((error, context) => {

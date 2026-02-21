@@ -246,8 +246,10 @@ async function readExternalDataChanges<DB extends SyncCoreDb>(
   }));
 }
 
-export async function pull<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
-  args: {
+export async function pull<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
   handlers: ServerHandlerCollection<DB, Auth>;
@@ -259,8 +261,7 @@ export async function pull<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
    * instead of inline in the database.
    */
   chunkStorage?: SnapshotChunkStorage;
-}
-): Promise<PullResult> {
+}): Promise<PullResult> {
   const { request, dialect } = args;
   const db = args.db;
   const partitionId = args.auth.partitionId ?? 'default';
@@ -385,8 +386,10 @@ export async function pull<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
                 latestExternalCommitForTable > cursor);
 
             if (needsBootstrap) {
-              const tables = getServerBootstrapOrderFor(args.handlers, sub.table)
-                .map((handler) => handler.table);
+              const tables = getServerBootstrapOrderFor(
+                args.handlers,
+                sub.table
+              ).map((handler) => handler.table);
 
               const initState: SyncBootstrapState = {
                 asOfCommitSeq: maxCommitSeq,
@@ -557,10 +560,7 @@ export async function pull<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
                 }
 
                 const tableHandler: ServerTableHandler<DB, Auth> =
-                  getServerHandlerOrThrow(
-                  args.handlers,
-                  nextTableName
-                );
+                  getServerHandlerOrThrow(args.handlers, nextTableName);
                 if (!activeBundle || activeBundle.table !== nextTableName) {
                   if (activeBundle) {
                     await flushSnapshotBundle(activeBundle);
@@ -580,16 +580,16 @@ export async function pull<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
 
                 const page: { rows: unknown[]; nextCursor: string | null } =
                   await tableHandler.snapshot(
-                  {
-                    db: trx,
-                    actorId: args.auth.actorId,
-                    auth: args.auth,
-                    scopeValues: effectiveScopes,
-                    cursor: nextState.rowCursor,
-                    limit: limitSnapshotRows,
-                  },
-                  sub.params
-                );
+                    {
+                      db: trx,
+                      actorId: args.auth.actorId,
+                      auth: args.auth,
+                      scopeValues: effectiveScopes,
+                      cursor: nextState.rowCursor,
+                      limit: limitSnapshotRows,
+                    },
+                    sub.params
+                  );
 
                 const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
                 activeBundle.rowFrameParts.push(rowFrames);

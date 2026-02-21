@@ -516,7 +516,8 @@ export function createSyncularReact<
 
     useEffect(() => {
       const changedProps: string[] = [];
-      if (identity.actorId !== initialProps.actorId) changedProps.push('actorId');
+      if (identity.actorId !== initialProps.actorId)
+        changedProps.push('actorId');
       if (clientId !== initialProps.clientId) changedProps.push('clientId');
       if (db !== initialProps.db) changedProps.push('db');
       if (transport !== initialProps.transport) changedProps.push('transport');

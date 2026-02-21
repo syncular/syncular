@@ -5,13 +5,13 @@
 import type {
   ClientHandlerCollection,
   ClientSyncConfig,
+  SyncClientDb,
   SyncPullRequest,
   SyncPullResponse,
   SyncPushRequest,
   SyncPushResponse,
   SyncTransport,
 } from '@syncular/client';
-import type { SyncClientDb } from '@syncular/client';
 import type { Kysely } from 'kysely';
 
 /**
@@ -76,7 +76,11 @@ export function createMockHandlerRegistry<
 
 export function createMockSync<DB extends SyncClientDb = SyncClientDb>(args?: {
   handlers?: ClientHandlerCollection<DB>;
-  subscriptions?: Array<{ id: string; table: string; scopes?: Record<string, unknown> }>;
+  subscriptions?: Array<{
+    id: string;
+    table: string;
+    scopes?: Record<string, unknown>;
+  }>;
 }): ClientSyncConfig<DB, { actorId: string }> {
   const handlers = args?.handlers ?? createMockHandlerRegistry<DB>();
   const subscriptions = args?.subscriptions ?? [];

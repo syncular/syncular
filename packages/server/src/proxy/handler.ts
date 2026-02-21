@@ -8,6 +8,7 @@ import type { Kysely, RawBuilder } from 'kysely';
 import { sql } from 'kysely';
 import type { ServerSyncDialect } from '../dialect/types';
 import type { SyncCoreDb } from '../schema';
+import { getProxyHandler, type ProxyHandlerCollection } from './collection';
 import {
   appendReturning,
   detectMutation,
@@ -15,7 +16,6 @@ import {
   hasReturningWildcard,
 } from './mutation-detector';
 import { createOplogEntries } from './oplog';
-import { getProxyHandler, type ProxyHandlerCollection } from './collection';
 import type { ProxyQueryContext } from './types';
 
 export interface ExecuteProxyQueryArgs<DB extends SyncCoreDb = SyncCoreDb> {

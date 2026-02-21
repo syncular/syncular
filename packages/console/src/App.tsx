@@ -44,8 +44,7 @@ function SyncularConsole(props: SyncularConsoleProps) {
     props.defaultConfig === undefined
       ? resolveConsoleConnectionConfigFromMeta()
       : props.defaultConfig;
-  const autoConnect =
-    props.autoConnect ?? (props.defaultConfig === undefined);
+  const autoConnect = props.autoConnect ?? props.defaultConfig === undefined;
 
   return (
     <QueryClientProvider client={queryClient}>
