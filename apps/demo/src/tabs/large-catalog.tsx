@@ -27,7 +27,6 @@ import {
   useSyncQuery,
   useSyncStatus,
 } from '../client/react';
-import type { ClientDb } from '../client/types.generated';
 import {
   DemoClientSyncControls,
   useDemoClientSyncControls,

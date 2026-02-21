@@ -54,11 +54,7 @@ export interface ClientSyncConfig<
   ): Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
 }
 
-export interface DefineClientSyncOptions<
-  DB extends SyncClientDb,
-  ScopeDefs extends readonly ScopeDefinition[],
-  Identity,
-> {
+export interface DefineClientSyncOptions {
   codecs?: ColumnCodecSource;
   codecDialect?: ColumnCodecDialect;
 }
@@ -83,7 +79,7 @@ export function defineClientSync<
   ScopeDefs extends readonly ScopeDefinition[],
   Identity,
 >(
-  options: DefineClientSyncOptions<DB, ScopeDefs, Identity>
+  options: DefineClientSyncOptions
 ): ClientSyncBuilder<DB, ScopeDefs, Identity> {
   const handlers: ClientTableHandler<DB>[] = [];
   const registeredTables = new Set<string>();

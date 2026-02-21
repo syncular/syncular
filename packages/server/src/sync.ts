@@ -33,12 +33,7 @@ export interface ServerSyncConfig<
   handlers: ServerTableHandler<ServerDB, Auth>[];
 }
 
-export interface DefineServerSyncOptions<
-  ServerDB extends SyncCoreDb,
-  ClientDB,
-  ScopeDefs extends readonly ScopeDefinition[],
-  Auth extends SyncServerAuth,
-> {
+export interface DefineServerSyncOptions<Auth extends SyncServerAuth> {
   authenticate: (request: Request) => Promise<Auth | null> | Auth | null;
   codecs?: ColumnCodecSource;
   codecDialect?: ColumnCodecDialect;
@@ -67,7 +62,7 @@ export function defineServerSync<
   ScopeDefs extends readonly ScopeDefinition[],
   Auth extends SyncServerAuth,
 >(
-  options: DefineServerSyncOptions<ServerDB, ClientDB, ScopeDefs, Auth>
+  options: DefineServerSyncOptions<Auth>
 ): ServerSyncBuilder<ServerDB, ClientDB, ScopeDefs, Auth> {
   const handlers: ServerTableHandler<ServerDB, Auth>[] = [];
   const registeredTables = new Set<string>();
