@@ -132,7 +132,7 @@ export interface CreateServerHandlerOptions<
    * Use ctx.schemaVersion to handle older client versions.
    */
   transformInbound?: (
-    row: ClientDB[TableName],
+    row: Selectable<ClientDB[TableName]>,
     ctx: { schemaVersion?: number }
   ) => Updateable<ServerDB[TableName]>;
 
@@ -141,7 +141,7 @@ export interface CreateServerHandlerOptions<
    */
   transformOutbound?: (
     row: Selectable<ServerDB[TableName]>
-  ) => ClientDB[TableName];
+  ) => Selectable<ClientDB[TableName]>;
 
   /**
    * Optional column codec resolver.
@@ -312,7 +312,7 @@ export function createServerHandler<
 
   const applyOutboundTransform = (
     row: Selectable<ServerDB[TableName]>
-  ): ClientDB[TableName] => {
+  ): Selectable<ClientDB[TableName]> => {
     if (transformOutbound) {
       return transformOutbound(row);
     }
@@ -323,7 +323,7 @@ export function createServerHandler<
       resolveTableCodecs(recordRow),
       codecDialect
     );
-    return transformed as ClientDB[TableName];
+    return transformed as Selectable<ClientDB[TableName]>;
   };
 
   const applyInboundTransform = (
@@ -331,7 +331,7 @@ export function createServerHandler<
     schemaVersion: number | undefined
   ): Updateable<ServerDB[TableName]> => {
     if (transformInbound) {
-      return transformInbound(row as ClientDB[TableName], {
+      return transformInbound(row as Selectable<ClientDB[TableName]>, {
         schemaVersion,
       });
     }
