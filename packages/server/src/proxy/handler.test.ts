@@ -4,8 +4,8 @@ import { createBunSqliteDb } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { ensureSyncSchema } from '../migrate';
 import type { SyncCoreDb } from '../schema';
+import { createProxyHandlerCollection } from './collection';
 import { executeProxyQuery } from './handler';
-import { ProxyTableRegistry } from './registry';
 
 interface TasksTable {
   id: string;
@@ -21,12 +21,14 @@ interface ProxyTestDb extends SyncCoreDb {
 describe('executeProxyQuery', () => {
   let db: Kysely<ProxyTestDb>;
   const dialect = createSqliteServerDialect();
-  const handlers = new ProxyTableRegistry().register({
-    table: 'tasks',
-    computeScopes: (row) => ({
-      user_id: String(row.user_id),
-    }),
-  });
+  const handlers = createProxyHandlerCollection([
+    {
+      table: 'tasks',
+      computeScopes: (row) => ({
+        user_id: String(row.user_id),
+      }),
+    },
+  ]);
 
   beforeEach(async () => {
     db = createBunSqliteDb<ProxyTestDb>({ path: ':memory:' });

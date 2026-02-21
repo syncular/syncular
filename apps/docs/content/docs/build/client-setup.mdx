@@ -75,15 +75,14 @@ You *register* client handlers so Syncular knows how to apply snapshots/changes 
 You typically don’t write any custom logic — `createClientHandler` provides good defaults. Only customize behavior for cases like soft-deletes or partial clears.
 
 ```typescript
-import { createClientHandler, ClientTableRegistry } from '@syncular/client';
+import { createClientHandler } from '@syncular/client';
 
-const handlers = new ClientTableRegistry()
-  .register(
-    createClientHandler({
-      table: 'tasks',
-      scopes: ['user:{user_id}'],
-    })
-  );
+const handlers = [
+  createClientHandler({
+    table: 'tasks',
+    scopes: ['user:{user_id}'],
+  }),
+];
 ```
 
 </Step>
@@ -148,19 +147,29 @@ const transport = createWebSocketTransport({
 
 ```tsx
 	import { createSyncularReact } from '@syncular/client-react';
+	import { defineClientSync } from '@syncular/client';
 	import type { AppDb } from './db-types';
+	import type { AppScopes } from './scopes';
 
 	const { SyncProvider } = createSyncularReact<AppDb>();
+  const sync = defineClientSync<AppDb, AppScopes, { actorId: string }>({ codecs });
+
+  sync.addHandler({
+    table: 'tasks',
+    scopes: ['user:{user_id}'],
+    subscribe: ({ identity }) => ({
+      id: `my-tasks-${identity.actorId}`,
+      table: 'tasks',
+      scopes: { user_id: identity.actorId },
+    }),
+  });
 
 	<SyncProvider
 	  db={db}
 	  transport={transport}
-  handlers={handlers}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={deviceId}
-  subscriptions={[
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-  ]}
 >
   <App />
 </SyncProvider>
@@ -171,10 +180,10 @@ const transport = createWebSocketTransport({
 
 ## Important: keep critical props stable
 
-Treat `db`, `transport`, `handlers`, `actorId`, and `clientId` as **stable for the lifetime of the provider**. If those values change, remount using a React `key`:
+Treat `db`, `transport`, `sync`, `identity.actorId`, and `clientId` as **stable for the lifetime of the provider**. If those values change, remount using a React `key`:
 
 ```tsx
-<SyncProvider key={`${actorId}:${clientId}`} ... />
+<SyncProvider key={`${identity.actorId}:${clientId}`} ... />
 ```
 
 ## StrictMode-safe async initialization
@@ -203,7 +212,14 @@ function AppRoot() {
   if (dbError) return <div>DB init failed: {dbError.message}</div>;
   if (!db) return <div>Initializing DB...</div>;
 
-  return <SyncProvider db={db} transport={transport} handlers={handlers} />;
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      sync={sync}
+      identity={{ actorId: userId }}
+    />
+  );
 }
 ```
 

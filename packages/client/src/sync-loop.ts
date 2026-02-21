@@ -14,7 +14,7 @@ import type {
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { upsertConflictsForRejectedCommit } from './conflicts';
-import type { ClientTableRegistry } from './handlers/registry';
+import type { ClientHandlerCollection } from './handlers/collection';
 import {
   getNextSendableOutboxCommit,
   markOutboxCommitAcked,
@@ -119,7 +119,7 @@ function mergePullResponse(
 async function syncPullUntilSettled<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
-  handlers: ClientTableRegistry<DB>,
+  handlers: ClientHandlerCollection<DB>,
   options: SyncPullUntilSettledOptions
 ): Promise<SyncPullUntilSettledResult> {
   const maxRounds = Math.max(1, Math.min(1000, options.maxRounds ?? 20));
@@ -182,7 +182,7 @@ export interface SyncOnceResult {
 async function syncOnceCombined<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
-  handlers: ClientTableRegistry<DB>,
+  handlers: ClientHandlerCollection<DB>,
   options: SyncOnceOptions
 ): Promise<SyncOnceResult> {
   const pullOpts: SyncPullOnceOptions = {
@@ -364,7 +364,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
 export async function syncOnce<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
-  handlers: ClientTableRegistry<DB>,
+  handlers: ClientHandlerCollection<DB>,
   options: SyncOnceOptions
 ): Promise<SyncOnceResult> {
   return syncOnceCombined(db, transport, handlers, options);

@@ -3,7 +3,7 @@ import type { SyncChange, SyncTransport } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import { createBunSqliteDb } from '../../../dialect-bun-sqlite/src';
-import { ClientTableRegistry } from '../handlers/registry';
+import type { ClientHandlerCollection } from '../handlers/collection';
 import { ensureClientSyncSchema } from '../migrate';
 import type { SyncClientDb } from '../schema';
 import { SyncEngine } from './SyncEngine';
@@ -74,29 +74,31 @@ describe('SyncEngine WS inline apply', () => {
   });
 
   it('rolls back row updates and cursor when any inline WS change fails', async () => {
-    const handlers = new ClientTableRegistry<TestDb>().register({
-      table: 'tasks',
-      async applySnapshot() {},
-      async clearAll() {},
-      async applyChange(ctx, change) {
-        if (change.row_id === 'fail') {
-          throw new Error('forced apply failure');
-        }
-        const rowJson =
-          change.row_json && typeof change.row_json === 'object'
-            ? change.row_json
-            : null;
-        const title =
-          rowJson && 'title' in rowJson ? String(rowJson.title ?? '') : '';
-        await sql`
-          update ${sql.table('tasks')}
-          set
-            ${sql.ref('title')} = ${sql.val(title)},
-            ${sql.ref('server_version')} = ${sql.val(Number(change.row_version ?? 0))}
-          where ${sql.ref('id')} = ${sql.val(change.row_id)}
-        `.execute(ctx.trx);
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange(ctx, change) {
+          if (change.row_id === 'fail') {
+            throw new Error('forced apply failure');
+          }
+          const rowJson =
+            change.row_json && typeof change.row_json === 'object'
+              ? change.row_json
+              : null;
+          const title =
+            rowJson && 'title' in rowJson ? String(rowJson.title ?? '') : '';
+          await sql`
+            update ${sql.table('tasks')}
+            set
+              ${sql.ref('title')} = ${sql.val(title)},
+              ${sql.ref('server_version')} = ${sql.val(Number(change.row_version ?? 0))}
+            where ${sql.ref('id')} = ${sql.val(change.row_id)}
+          `.execute(ctx.trx);
+        },
       },
-    });
+    ];
 
     const engine = new SyncEngine<TestDb>({
       db,
@@ -156,12 +158,14 @@ describe('SyncEngine WS inline apply', () => {
   });
 
   it('returns a bounded inspector snapshot with serializable events', async () => {
-    const handlers = new ClientTableRegistry<TestDb>().register({
-      table: 'tasks',
-      async applySnapshot() {},
-      async clearAll() {},
-      async applyChange() {},
-    });
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
 
     const engine = new SyncEngine<TestDb>({
       db,
@@ -206,12 +210,14 @@ describe('SyncEngine WS inline apply', () => {
         )
         .execute();
 
-      const handlers = new ClientTableRegistry<TestDb>().register({
-        table: 'tasks',
-        async applySnapshot() {},
-        async clearAll() {},
-        async applyChange() {},
-      });
+      const handlers: ClientHandlerCollection<TestDb> = [
+        {
+          table: 'tasks',
+          async applySnapshot() {},
+          async clearAll() {},
+          async applyChange() {},
+        },
+      ];
 
       const engine = new SyncEngine<TestDb>({
         db: coldDb,

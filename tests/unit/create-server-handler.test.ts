@@ -7,6 +7,7 @@ import {
 } from '@syncular/core';
 import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import {
+  createServerHandlerCollection,
   createServerHandler,
   ensureSyncSchema,
   InvalidSubscriptionScopeError,
@@ -14,7 +15,6 @@ import {
   pushCommit,
   readSnapshotChunk,
   type SyncCoreDb,
-  TableRegistry,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Kysely } from 'kysely';
@@ -127,8 +127,7 @@ describe('createServerHandler', () => {
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(tasksHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
     await db
       .insertInto('tasks')
@@ -150,7 +149,7 @@ describe('createServerHandler', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request,
     });
 
@@ -184,8 +183,7 @@ describe('createServerHandler', () => {
       resolveScopes: async () => ({ catalog_id: '*' }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(catalogHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([catalogHandler]);
 
     await db
       .insertInto('catalog_items')
@@ -212,7 +210,7 @@ describe('createServerHandler', () => {
       db,
       dialect,
       handlers,
-      actorId: 'any-actor',
+      auth: { actorId: 'any-actor' },
       request,
     });
 
@@ -249,14 +247,13 @@ describe('createServerHandler', () => {
       },
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(codecsHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([codecsHandler]);
 
     const pushResult = await pushCommit({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
         clientCommitId: 'codec-commit-1',
@@ -290,7 +287,7 @@ describe('createServerHandler', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
         limitCommits: 10,
@@ -329,8 +326,7 @@ describe('createServerHandler', () => {
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(tasksHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
     let caught: unknown;
     try {
@@ -338,7 +334,7 @@ describe('createServerHandler', () => {
         db,
         dialect,
         handlers,
-        actorId: 'u1',
+        auth: { actorId: 'u1' },
         request: {
           clientId: 'c1',
           limitCommits: 10,
@@ -374,8 +370,7 @@ describe('createServerHandler', () => {
       }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(tasksHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
     let caught: unknown;
     try {
@@ -383,7 +378,7 @@ describe('createServerHandler', () => {
         db,
         dialect,
         handlers,
-        actorId: 'u1',
+        auth: { actorId: 'u1' },
         request: {
           clientId: 'c1',
           limitCommits: 10,
@@ -415,14 +410,13 @@ describe('createServerHandler', () => {
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(tasksHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
     const pushed = await pushCommit({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
         clientCommitId: 'commit-row-missing',
@@ -458,14 +452,13 @@ describe('createServerHandler', () => {
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(tasksHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
     const pushed = await pushCommit({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
         clientCommitId: 'commit-constraint',
@@ -498,15 +491,14 @@ describe('createServerHandler', () => {
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
 
-    const handlers = new TableRegistry<ServerDb>();
-    handlers.register(tasksHandler);
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
     // Seed a baseline commit for actor u1 so we can start incremental pull at cursor=1.
     const basePush = await pushCommit({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-u1',
         clientCommitId: 'base-u1',
@@ -530,7 +522,7 @@ describe('createServerHandler', () => {
         db,
         dialect,
         handlers,
-        actorId: 'u2',
+        auth: { actorId: 'u2' },
         request: {
           clientId: 'client-u2',
           clientCommitId: `u2-${i}`,
@@ -553,7 +545,7 @@ describe('createServerHandler', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-u1',
         limitCommits: 2,

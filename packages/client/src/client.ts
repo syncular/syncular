@@ -37,7 +37,7 @@ import type {
   SyncResult,
   TransportHealth,
 } from './engine/types';
-import type { ClientTableRegistry } from './handlers/registry';
+import type { ClientHandlerCollection } from './handlers/collection';
 import { ensureClientSyncSchema } from './migrate';
 import {
   createMutationsApi,
@@ -91,7 +91,7 @@ export interface ClientOptions<DB extends SyncClientDb> {
   transport: SyncTransport;
 
   /** Table handlers for applying snapshots and changes */
-  tableHandlers: ClientTableRegistry<DB>;
+  tableHandlers: ClientHandlerCollection<DB>;
 
   /** Unique client identifier (e.g., device ID) */
   clientId: string;

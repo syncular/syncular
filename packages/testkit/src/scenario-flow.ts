@@ -1,5 +1,5 @@
 import {
-  type ClientTableRegistry,
+  type ClientHandlerCollection,
   enqueueOutboxCommit,
   type SyncClientDb,
   type SyncOnceOptions,
@@ -22,7 +22,7 @@ import type { Kysely } from 'kysely';
 export interface ScenarioFlowClient<DB extends SyncClientDb> {
   db: Kysely<DB>;
   transport: SyncTransport;
-  handlers: ClientTableRegistry<DB>;
+  handlers: ClientHandlerCollection<DB>;
   clientId: string;
   actorId?: string;
 }

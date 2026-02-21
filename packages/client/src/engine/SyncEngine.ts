@@ -18,6 +18,7 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
+import { getClientHandler } from '../handlers/collection';
 import { ensureClientSyncSchema } from '../migrate';
 import { syncPushOnce } from '../push-engine';
 import type {
@@ -1006,7 +1007,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
 
     if (options.scope === 'all') {
-      for (const handler of this.config.handlers.getAll()) {
+      for (const handler of this.config.handlers) {
         await handler.clearAll({ trx, scopes: {} });
         clearedTables.push(handler.table);
       }
@@ -1015,7 +1016,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     const seen = new Set<string>();
     for (const target of targets) {
-      const handler = this.config.handlers.get(target.table);
+      const handler = getClientHandler(this.config.handlers, target.table);
       if (!handler) continue;
 
       const key = `${target.table}:${JSON.stringify(target.scopes)}`;
@@ -1602,7 +1603,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     try {
       await this.config.db.transaction().execute(async (trx) => {
         for (const change of changes) {
-          const handler = this.config.handlers.get(change.table);
+          const handler = getClientHandler(this.config.handlers, change.table);
           if (!handler) {
             throw new Error(
               `Missing client table handler for WS change table "${change.table}"`
@@ -2292,7 +2293,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     await db.transaction().execute(async (trx) => {
       for (const input of inputs) {
-        const handler = handlers.get(input.table);
+        const handler = getClientHandler(handlers, input.table);
         if (!handler) continue;
 
         affectedTables.add(input.table);

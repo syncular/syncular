@@ -11,6 +11,7 @@ import { createSyncularReact } from '../index';
 import {
   createMockDb,
   createMockHandlerRegistry,
+  createMockSync,
   createMockTransport,
 } from './test-utils';
 
@@ -54,15 +55,15 @@ describe('useMutations', () => {
   function createWrapper() {
     const transport = createMockTransport();
     const handlers = createMockHandlerRegistry<TestDb>();
+    const sync = createMockSync<TestDb>({ handlers });
 
     const Wrapper = ({ children }: { children: ReactNode }) => (
       <SyncProvider
         db={db}
         transport={transport}
-        handlers={handlers}
-        actorId="test-actor"
+        sync={sync}
+        identity={{ actorId: 'test-actor' }}
         clientId="test-client"
-        subscriptions={[]}
         pollIntervalMs={999999}
         autoStart={false}
       >

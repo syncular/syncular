@@ -16,7 +16,7 @@
  */
 
 import { logSyncEvent } from '@syncular/core';
-import type { SyncCoreDb } from '@syncular/server';
+import type { SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   compactChanges,
   computePruneWatermarkCommitSeq,
@@ -391,8 +391,10 @@ const handlersResponseSchema = z.object({
   items: z.array(ConsoleHandlerSchema),
 });
 
-export function createConsoleRoutes<DB extends SyncCoreDb>(
-  options: CreateConsoleRoutesOptions<DB>
+export function createConsoleRoutes<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(options: CreateConsoleRoutesOptions<DB, Auth>
 ): Hono {
   const routes = new Hono();
 

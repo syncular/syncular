@@ -186,7 +186,7 @@ createRelayServer({
   mainServerActorId: string,
   tables: string[],
   scopes: Record<string, string | string[]>,
-  handlers: TableRegistry,
+  handlers: ServerHandlerCollection,
 
   // Optional timing
   heartbeatIntervalMs: 30000,     // WebSocket keepalive

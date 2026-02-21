@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
-  ClientTableRegistry,
+  type ClientHandlerCollection,
   ensureClientSyncSchema,
   type SyncClientDb,
   SyncEngine,
@@ -38,20 +38,20 @@ interface ClientDb extends SyncClientDb {
 
 const { SyncProvider } = createSyncularReact<ClientDb>();
 
-// Create a mock ClientTableRegistry for tests
-function createMockClientTableRegistry(): ClientTableRegistry<ClientDb> {
-  return new ClientTableRegistry<ClientDb>();
+// Create mock handlers for tests
+function createMockClientHandlers(): ClientHandlerCollection<ClientDb> {
+  return [];
 }
 
 describe('SyncProvider Reconfiguration', () => {
   let server: TestServer;
   let db: Kysely<ClientDb>;
-  let mockHandlers: ClientTableRegistry<ClientDb>;
+  let mockHandlers: ClientHandlerCollection<ClientDb>;
 
   beforeEach(async () => {
     server = await createTestServer();
     db = createBunSqliteDb<ClientDb>({ path: ':memory:' });
-    mockHandlers = createMockClientTableRegistry();
+    mockHandlers = createMockClientHandlers();
 
     await ensureClientSyncSchema(db);
 
@@ -145,14 +145,16 @@ describe('SyncProvider Reconfiguration', () => {
     const message =
       `[SyncProvider] Critical props changed after mount: ${changedProps.join(', ')}. ` +
       'This is not supported. Use a React key prop to force remount, e.g., ' +
-      '<SyncProvider key={actorId} ...>';
+      "<SyncProvider key={identity.actorId + ':' + clientId} ...>";
 
     expect(message).toContain(
       '[SyncProvider] Critical props changed after mount'
     );
     expect(message).toContain('actorId');
     expect(message).toContain('This is not supported');
-    expect(message).toContain('<SyncProvider key={actorId} ...>');
+    expect(message).toContain(
+      "<SyncProvider key={identity.actorId + ':' + clientId} ...>"
+    );
   });
 
   it('engine config is immutable after creation', () => {
@@ -188,7 +190,7 @@ describe('SyncProvider Reconfiguration', () => {
 
 describe('SyncProvider React render tests', () => {
   let db: Kysely<ClientDb>;
-  let mockHandlers: ClientTableRegistry<ClientDb>;
+  let mockHandlers: ClientHandlerCollection<ClientDb>;
   const mockTransport = {
     async sync() {
       return { ok: true as const };
@@ -200,7 +202,7 @@ describe('SyncProvider React render tests', () => {
 
   beforeEach(async () => {
     db = createBunSqliteDb<ClientDb>({ path: ':memory:' });
-    mockHandlers = new ClientTableRegistry<ClientDb>();
+    mockHandlers = [];
     await ensureClientSyncSchema(db);
   });
 
@@ -211,14 +213,18 @@ describe('SyncProvider React render tests', () => {
 
   it('warns when critical props change after mount', () => {
     const child = createElement('div', null, 'Test Child');
+    const sync = {
+      handlers: mockHandlers,
+      subscriptions: () => [],
+    };
 
     // Render with initial props
     const { rerender } = render(
       createElement(SyncProvider, {
         db,
         transport: mockTransport,
-        handlers: mockHandlers,
-        actorId: 'user-1',
+        sync,
+        identity: { actorId: 'user-1' },
         clientId: 'client-1',
         autoStart: false, // Disable auto-start for faster test
         // biome-ignore lint/correctness/noChildrenProp: createElement requires children prop
@@ -232,8 +238,8 @@ describe('SyncProvider React render tests', () => {
         createElement(SyncProvider, {
           db,
           transport: mockTransport,
-          handlers: mockHandlers,
-          actorId: 'user-2', // Changed!
+          sync,
+          identity: { actorId: 'user-2' }, // Changed!
           clientId: 'client-1',
           autoStart: false,
           // biome-ignore lint/correctness/noChildrenProp: createElement requires children prop
@@ -245,12 +251,16 @@ describe('SyncProvider React render tests', () => {
 
   it('does not throw when non-critical props change', () => {
     const child = createElement('div', null, 'Test Child');
+    const sync = {
+      handlers: mockHandlers,
+      subscriptions: () => [],
+    };
     const { rerender } = render(
       createElement(SyncProvider, {
         db,
         transport: mockTransport,
-        handlers: mockHandlers,
-        actorId: 'user-1',
+        sync,
+        identity: { actorId: 'user-1' },
         clientId: 'client-1',
         autoStart: false,
         pollIntervalMs: 1000,
@@ -265,8 +275,8 @@ describe('SyncProvider React render tests', () => {
         createElement(SyncProvider, {
           db,
           transport: mockTransport,
-          handlers: mockHandlers,
-          actorId: 'user-1',
+          sync,
+          identity: { actorId: 'user-1' },
           clientId: 'client-1',
           autoStart: false,
           pollIntervalMs: 5000, // Changed non-critical prop

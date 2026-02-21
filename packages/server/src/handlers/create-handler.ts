@@ -39,6 +39,7 @@ import type {
   ServerContext,
   ServerSnapshotContext,
   ServerTableHandler,
+  SyncServerAuth,
 } from './types';
 
 /**
@@ -78,6 +79,7 @@ export interface CreateServerHandlerOptions<
   ServerDB extends SyncCoreDb,
   ClientDB,
   TableName extends keyof ServerDB & keyof ClientDB & string,
+  Auth extends SyncServerAuth = SyncServerAuth,
   ScopeDefs extends
     readonly SimpleScopeDefinition[] = readonly SimpleScopeDefinition[],
 > {
@@ -124,7 +126,7 @@ export interface CreateServerHandlerOptions<
    * })
    */
   resolveScopes: (
-    ctx: ServerContext<ServerDB>
+    ctx: ServerContext<ServerDB, Auth>
   ) => Promise<ScopeValuesFromPatterns<ScopeDefs>>;
 
   /**
@@ -162,19 +164,19 @@ export interface CreateServerHandlerOptions<
    * Return true to allow, or an error object to reject.
    */
   authorize?: (
-    ctx: ServerApplyOperationContext<ServerDB>,
+    ctx: ServerApplyOperationContext<ServerDB, Auth>,
     op: SyncOperation
   ) => Promise<AuthorizeResult>;
 
   /**
    * Override: Build snapshot query.
    */
-  snapshot?: ServerTableHandler<ServerDB>['snapshot'];
+  snapshot?: ServerTableHandler<ServerDB, Auth>['snapshot'];
 
   /**
    * Override: Apply operation.
    */
-  applyOperation?: ServerTableHandler<ServerDB>['applyOperation'];
+  applyOperation?: ServerTableHandler<ServerDB, Auth>['applyOperation'];
 
   /**
    * Custom scope extraction from row (for complex scope logic).
@@ -213,11 +215,18 @@ export function createServerHandler<
   ServerDB extends SyncCoreDb,
   ClientDB,
   TableName extends keyof ServerDB & keyof ClientDB & string,
+  Auth extends SyncServerAuth = SyncServerAuth,
   ScopeDefs extends
     readonly SimpleScopeDefinition[] = readonly SimpleScopeDefinition[],
 >(
-  options: CreateServerHandlerOptions<ServerDB, ClientDB, TableName, ScopeDefs>
-): ServerTableHandler<ServerDB> {
+  options: CreateServerHandlerOptions<
+    ServerDB,
+    ClientDB,
+    TableName,
+    Auth,
+    ScopeDefs
+  >
+): ServerTableHandler<ServerDB, Auth> {
   type OverloadParameters<T> = T extends (...args: infer A) => unknown
     ? A
     : never;
@@ -298,7 +307,7 @@ export function createServerHandler<
   const extractScopesImpl = customExtractScopes ?? defaultExtractScopes;
 
   const resolveScopesImpl = async (
-    ctx: ServerContext<ServerDB>
+    ctx: ServerContext<ServerDB, Auth>
   ): Promise<ScopeValues> => {
     const resolved = await resolveScopes(ctx);
     const normalized: ScopeValues = {};
@@ -346,7 +355,7 @@ export function createServerHandler<
 
   // Default snapshot implementation
   const defaultSnapshot = async (
-    ctx: ServerSnapshotContext<ServerDB>,
+    ctx: ServerSnapshotContext<ServerDB, string, Auth>,
     _params: Record<string, unknown> | undefined
   ): Promise<{ rows: unknown[]; nextCursor: string | null }> => {
     const trx = ctx.db;
@@ -415,7 +424,7 @@ export function createServerHandler<
 
   // Default applyOperation implementation
   const defaultApplyOperation = async (
-    ctx: ServerApplyOperationContext<ServerDB>,
+    ctx: ServerApplyOperationContext<ServerDB, Auth>,
     op: SyncOperation,
     opIndex: number
   ): Promise<ApplyOperationResult> => {

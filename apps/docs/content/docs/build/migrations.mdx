@@ -248,11 +248,10 @@ Pass your migration function to SyncProvider's `migrate` prop. It runs before th
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={clientId}
   migrate={migrateClientDb}
-  subscriptions={subscriptions}
 >
   {children}
 </SyncProvider>
@@ -264,15 +263,14 @@ If migration fails, the engine emits a `SYNC_ERROR` through the `onError` callba
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={clientId}
   migrate={migrateClientDb}
   onMigrationError={(error) => {
     console.error('Migration failed:', error);
     // e.g. show a "please clear app data" prompt
   }}
-  subscriptions={subscriptions}
 >
   {children}
 </SyncProvider>

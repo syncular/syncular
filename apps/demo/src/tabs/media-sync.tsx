@@ -7,7 +7,7 @@
  * Client A (wa-sqlite) uploads images, Client B (PGlite) receives them.
  */
 
-import { ClientTableRegistry } from '@syncular/client';
+import type { ClientHandlerCollection } from '@syncular/client';
 import {
   ClientPanel,
   DemoHeader,
@@ -105,13 +105,21 @@ function timeNow(): string {
 // Singletons (stable across re-renders)
 // ---------------------------------------------------------------------------
 
-const uploaderHandlers = new ClientTableRegistry<ClientDb>().register(
-  tasksClientHandler
-);
+const uploaderHandlers: ClientHandlerCollection<ClientDb> = [
+  tasksClientHandler,
+];
 
-const receiverHandlers = new ClientTableRegistry<ClientDb>().register(
-  tasksClientHandler
-);
+const receiverHandlers: ClientHandlerCollection<ClientDb> = [
+  tasksClientHandler,
+];
+const mediaSync = {
+  handlers: uploaderHandlers,
+  subscriptions: () => subscriptions,
+};
+const receiverSync = {
+  handlers: receiverHandlers,
+  subscriptions: () => subscriptions,
+};
 
 let uploaderDbPromise: Promise<
   Awaited<ReturnType<typeof createSqliteClient>>
@@ -453,10 +461,9 @@ function UploaderWrapper({
       key="media-uploader"
       db={db}
       transport={uploaderTransport}
-      handlers={uploaderHandlers}
+      sync={mediaSync}
+      identity={{ actorId: userId }}
       clientId="client-media-uploader"
-      actorId={userId}
-      subscriptions={subscriptions}
       realtimeEnabled={true}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
@@ -510,10 +517,9 @@ function ReceiverWrapper() {
       key="media-receiver"
       db={db}
       transport={receiverTransport}
-      handlers={receiverHandlers}
+      sync={receiverSync}
+      identity={{ actorId: userId }}
       clientId="client-media-receiver"
-      actorId={userId}
-      subscriptions={subscriptions}
       realtimeEnabled={true}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >

@@ -22,6 +22,7 @@ import { createSyncularReact } from '../index';
 import {
   createMockDb,
   createMockHandlerRegistry,
+  createMockSync,
   createMockTransport,
 } from './test-utils';
 
@@ -67,16 +68,16 @@ describe('SyncProvider (StrictMode)', () => {
   function renderWithProvider(node: React.ReactNode) {
     const transport = createMockTransport();
     const handlers = createMockHandlerRegistry();
+    const sync = createMockSync({ handlers });
 
     return render(
       <React.StrictMode>
         <SyncProvider
           db={db}
           transport={transport}
-          handlers={handlers}
-          actorId="test-actor"
+          sync={sync}
+          identity={{ actorId: 'test-actor' }}
           clientId="test-client"
-          subscriptions={[]}
           pollIntervalMs={999999}
         >
           {node}

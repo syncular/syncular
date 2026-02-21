@@ -12,12 +12,18 @@ import type {
   SyncSubscriptionRequest,
   SyncTransport,
 } from '@syncular/core';
-import type { ServerSyncDialect, TableRegistry } from '@syncular/server';
+import type {
+  ServerHandlerCollection,
+  ServerSyncDialect,
+  SyncServerAuth,
+} from '@syncular/server';
 import { pushCommit } from '@syncular/server';
 import { type Kysely, sql } from 'kysely';
 import type { RelayRealtime } from '../realtime';
 import type { RelayDatabase } from '../schema';
 import type { SequenceMapper } from './sequence-mapper';
+
+type RelayAuth = SyncServerAuth;
 
 /**
  * Pull engine options.
@@ -31,7 +37,7 @@ export interface PullEngineOptions<DB extends RelayDatabase = RelayDatabase> {
   tables: string[];
   /** Scope values for subscriptions */
   scopes: ScopeValues;
-  handlers: TableRegistry<DB>;
+  handlers: ServerHandlerCollection<DB, RelayAuth>;
   sequenceMapper: SequenceMapper<DB>;
   realtime: RelayRealtime;
   intervalMs?: number;
@@ -49,7 +55,7 @@ export class PullEngine<DB extends RelayDatabase = RelayDatabase> {
   private readonly clientId: string;
   private readonly tables: string[];
   private readonly scopes: ScopeValues;
-  private readonly handlers: TableRegistry<DB>;
+  private readonly handlers: ServerHandlerCollection<DB, RelayAuth>;
   private readonly sequenceMapper: SequenceMapper<DB>;
   private readonly realtime: RelayRealtime;
   private readonly intervalMs: number;
@@ -279,7 +285,7 @@ export class PullEngine<DB extends RelayDatabase = RelayDatabase> {
       db: this.db,
       dialect: this.dialect,
       handlers: this.handlers,
-      actorId: commit.actorId,
+      auth: { actorId: commit.actorId },
       request: {
         clientId: `relay:${this.clientId}`,
         clientCommitId: relayCommitId,

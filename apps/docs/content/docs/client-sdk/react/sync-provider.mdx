@@ -16,12 +16,9 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={deviceId}
-  subscriptions={[
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-  ]}
 >
   <App />
 </SyncProvider>
@@ -33,10 +30,9 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 |------|------|----------|-------------|
 | `db` | `Kysely<DB>` | Yes | Database instance |
 | `transport` | `SyncTransport` | Yes | HTTP or WebSocket transport |
-| `handlers` | `ClientTableRegistry` | Yes | Client table handlers |
-| `actorId` | `string \| null` | No | User ID (null disables sync) |
+| `sync` | `ClientSyncConfig<DB, Identity>` | Yes | Sync contract (`handlers` + `subscriptions(identity)`) |
+| `identity` | `Identity` | Yes | Identity passed to `sync.subscriptions(identity)` |
 | `clientId` | `string \| null` | No | Device/installation ID |
-| `subscriptions` | `Array` | No | Data subscriptions |
 | `limitCommits` | `number` | No | Commits per pull (default: 50) |
 | `limitSnapshotRows` | `number` | No | Snapshot rows per page (default: 1000) |
 | `maxSnapshotPages` | `number` | No | Snapshot pages per pull (default: 1) |
@@ -57,12 +53,20 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 
 ```tsx
 const [projectId, setProjectId] = useState('default');
+const sync = defineClientSync<AppDb, ['user:{user_id}', 'project:{project_id}'], { actorId: string }>({});
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  subscribe: ({ identity }) => [
+    { id: 'my-tasks', table: 'tasks', scopes: { user_id: identity.actorId } },
+    { id: `project-${projectId}`, table: 'tasks', scopes: { project_id: projectId } },
+  ],
+});
 
 <SyncProvider
-  subscriptions={[
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-    { id: `project-${projectId}`, table: 'tasks', scopes: { project_id: projectId } },
-  ]}
+  sync={sync}
+  identity={{ actorId: userId }}
   ...
 >
   {children}
@@ -107,10 +111,11 @@ const plugins = [createIncrementingVersionPlugin()];
 Disable sync when user is logged out:
 
 ```tsx
-<SyncProvider
-  actorId={isLoggedIn ? userId : null}
-  ...
-/>
+{isLoggedIn ? (
+  <SyncProvider identity={{ actorId: userId }} ... />
+) : (
+  <LoggedOutScreen />
+)}
 ```
 
 ## Next Steps

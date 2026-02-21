@@ -7,7 +7,7 @@
 
 import type { D1Database } from '@cloudflare/workers-types';
 import {
-  ClientTableRegistry,
+  type ClientHandlerCollection,
   enqueueOutboxCommit,
   ensureClientSyncSchema,
   syncPullOnce,
@@ -306,8 +306,9 @@ async function createSyncClient(env: Env, serverUrl: string, actorId: string) {
     .addColumn('server_version', 'integer', (c) => c.notNull().defaultTo(0))
     .execute();
 
-  const handlers = new ClientTableRegistry<RuntimeClientDb>();
-  handlers.register(tasksClientHandler);
+  const handlers: ClientHandlerCollection<RuntimeClientDb> = [
+    tasksClientHandler,
+  ];
 
   const transport = createHttpTransport({
     baseUrl: serverUrl,

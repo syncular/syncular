@@ -15,7 +15,7 @@ import {
   hasReturningWildcard,
 } from './mutation-detector';
 import { createOplogEntries } from './oplog';
-import type { ProxyTableRegistry } from './registry';
+import { getProxyHandler, type ProxyHandlerCollection } from './collection';
 import type { ProxyQueryContext } from './types';
 
 export interface ExecuteProxyQueryArgs<DB extends SyncCoreDb = SyncCoreDb> {
@@ -23,8 +23,8 @@ export interface ExecuteProxyQueryArgs<DB extends SyncCoreDb = SyncCoreDb> {
   db: Kysely<DB>;
   /** Server sync dialect */
   dialect: ServerSyncDialect;
-  /** Proxy table registry for oplog generation */
-  handlers: ProxyTableRegistry;
+  /** Proxy table handlers for oplog generation */
+  handlers: ProxyHandlerCollection;
   /** Query context (actor/client IDs) */
   ctx: ProxyQueryContext;
   /** SQL query string */
@@ -111,7 +111,7 @@ export async function executeProxyQuery<DB extends SyncCoreDb>(
   }
 
   // Check if this table has a registered handler
-  const handler = handlers.get(mutation.tableName);
+  const handler = getProxyHandler(handlers, mutation.tableName);
   if (!handler) {
     // No handler registered - execute without oplog
     // This allows proxy operations on non-synced tables

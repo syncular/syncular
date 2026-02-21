@@ -32,10 +32,12 @@ async function ensureDemoSchema() {
   const { syncRoutes } = createSyncServer({
     db,
     dialect,
-    handlers: [tasksHandler],
-    authenticate: async (c) => {
-      const actorId = c.req.header('x-user-id') ?? 'demo-user';
-      return { actorId };
+    sync: {
+      handlers: [tasksHandler],
+      authenticate: async (request) => {
+        const actorId = request.headers.get('x-user-id') ?? 'demo-user';
+        return { actorId };
+      },
     },
   });
 

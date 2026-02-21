@@ -29,10 +29,12 @@ export async function createSyncularServer() {
   const server = createSyncServer({
     db,
     dialect,
-    handlers: [tasksHandler],
-    authenticate: async (c) => {
-      const actorId = c.req.header('x-user-id');
-      return actorId ? { actorId } : null;
+    sync: {
+      handlers: [tasksHandler],
+      authenticate: async (request) => {
+        const actorId = request.headers.get('x-user-id');
+        return actorId ? { actorId } : null;
+      },
     },
   });
 

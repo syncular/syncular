@@ -4,7 +4,11 @@ import {
   type SyncSubscriptionRequest,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import type { TableRegistry } from '../handlers/registry';
+import {
+  getServerHandler,
+  type ServerHandlerCollection,
+} from '../handlers/collection';
+import type { SyncServerAuth } from '../handlers/types';
 import type { SyncCoreDb } from '../schema';
 
 export class InvalidSubscriptionScopeError extends Error {
@@ -132,11 +136,12 @@ function validateScopeKeys(args: {
  */
 export async function resolveEffectiveScopesForSubscriptions<
   DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
 >(args: {
   db: Kysely<DB>;
-  actorId: string;
+  auth: Auth;
   subscriptions: SyncSubscriptionRequest[];
-  handlers: TableRegistry<DB>;
+  handlers: ServerHandlerCollection<DB, Auth>;
 }): Promise<ResolvedSubscription[]> {
   const out: ResolvedSubscription[] = [];
   const seenIds = new Set<string>();
@@ -158,7 +163,7 @@ export async function resolveEffectiveScopesForSubscriptions<
       );
     }
 
-    const handler = args.handlers.get(sub.table);
+    const handler = getServerHandler(args.handlers, sub.table);
     if (!handler) {
       throw new InvalidSubscriptionScopeError(
         `Unknown table: ${sub.table} for subscription ${sub.id}`
@@ -180,7 +185,8 @@ export async function resolveEffectiveScopesForSubscriptions<
     try {
       allowed = await handler.resolveScopes({
         db: args.db,
-        actorId: args.actorId,
+        actorId: args.auth.actorId,
+        auth: args.auth,
       });
     } catch (resolveErr) {
       // Scope resolution failed - mark subscription as revoked

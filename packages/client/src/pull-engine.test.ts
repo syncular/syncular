@@ -8,7 +8,7 @@ import {
 import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
 import { createClientHandler } from './handlers/create-handler';
-import { ClientTableRegistry } from './handlers/registry';
+import type { ClientHandlerCollection } from './handlers/collection';
 import { ensureClientSyncSchema } from './migrate';
 import { applyPullResponse, buildPullRequest } from './pull-engine';
 import type { SyncClientDb } from './schema';
@@ -75,12 +75,12 @@ describe('applyPullResponse chunk streaming', () => {
       },
     };
 
-    const handlers = new ClientTableRegistry<TestDb>().register(
+    const handlers: ClientHandlerCollection<TestDb> = [
       createClientHandler({
         table: 'items',
         scopes: ['items:{id}'],
-      })
-    );
+      }),
+    ];
 
     const options = {
       clientId: 'client-1',

@@ -11,6 +11,11 @@ import type { ZodSchema, z } from 'zod';
 import type { DbExecutor } from '../dialect/types';
 import type { SyncCoreDb } from '../schema';
 
+export interface SyncServerAuth {
+  actorId: string;
+  partitionId?: string;
+}
+
 /**
  * Emitted change to be stored in the oplog.
  * Uses JSONB scopes instead of scope_keys array.
@@ -41,11 +46,16 @@ export interface ApplyOperationResult {
 /**
  * Context for server operations.
  */
-export interface ServerContext<DB extends SyncCoreDb = SyncCoreDb> {
+export interface ServerContext<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> {
   /** Database connection (transaction in applyOperation) */
   db: DbExecutor<DB>;
   /** Actor ID (user ID from auth) */
   actorId: string;
+  /** Full auth payload returned by authenticate */
+  auth: Auth;
 }
 
 /**
@@ -54,7 +64,8 @@ export interface ServerContext<DB extends SyncCoreDb = SyncCoreDb> {
 export interface ServerSnapshotContext<
   DB extends SyncCoreDb = SyncCoreDb,
   ScopeKeys extends string = string,
-> extends ServerContext<DB> {
+  Auth extends SyncServerAuth = SyncServerAuth,
+> extends ServerContext<DB, Auth> {
   /** Database executor for the snapshot */
   db: DbExecutor<DB>;
   /** Effective scope values for this subscription */
@@ -68,8 +79,10 @@ export interface ServerSnapshotContext<
 /**
  * Context passed to applyOperation method.
  */
-export interface ServerApplyOperationContext<DB extends SyncCoreDb = SyncCoreDb>
-  extends ServerContext<DB> {
+export interface ServerApplyOperationContext<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> extends ServerContext<DB, Auth> {
   /** Database executor for the operation */
   trx: DbExecutor<DB>;
   /** Client/device identifier */
@@ -127,6 +140,7 @@ interface ServerScopeConfig {
  */
 export interface ServerHandlerOptions<
   DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
   Scopes extends Record<ScopePattern, Record<string, string>> = Record<
     ScopePattern,
     Record<string, string>
@@ -159,7 +173,7 @@ export interface ServerHandlerOptions<
    *   project_id: ctx.user.projectIds,
    * })
    */
-  resolveScopes: (ctx: ServerContext<DB>) => Promise<ScopeValues>;
+  resolveScopes: (ctx: ServerContext<DB, Auth>) => Promise<ScopeValues>;
 
   /**
    * Optional Zod schema for subscription parameters.
@@ -191,7 +205,7 @@ export interface ServerHandlerOptions<
    */
   transformInbound?: (
     payload: Record<string, unknown>,
-    ctx: ServerApplyOperationContext<DB>
+    ctx: ServerApplyOperationContext<DB, Auth>
   ) => Partial<DB[TableName & keyof DB]>;
 
   /**
@@ -206,7 +220,7 @@ export interface ServerHandlerOptions<
    * Default uses keyset pagination ordered by primary key.
    */
   snapshot?: (
-    ctx: ServerSnapshotContext<DB>,
+    ctx: ServerSnapshotContext<DB, string, Auth>,
     params: Params extends ZodSchema ? z.infer<Params> : undefined
   ) => Promise<{ rows: unknown[]; nextCursor: string | null }>;
 
@@ -214,7 +228,7 @@ export interface ServerHandlerOptions<
    * Custom apply operation implementation.
    */
   applyOperation?: (
-    ctx: ServerApplyOperationContext<DB>,
+    ctx: ServerApplyOperationContext<DB, Auth>,
     op: SyncOperation,
     opIndex: number
   ) => Promise<ApplyOperationResult>;
@@ -224,7 +238,10 @@ export interface ServerHandlerOptions<
  * Server-side table handler for snapshots and mutations.
  * This is the internal handler interface used by the sync engine.
  */
-export interface ServerTableHandler<DB extends SyncCoreDb = SyncCoreDb> {
+export interface ServerTableHandler<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> {
   /** Table name */
   table: string;
 
@@ -244,7 +261,7 @@ export interface ServerTableHandler<DB extends SyncCoreDb = SyncCoreDb> {
   /**
    * Resolve allowed scope values for the current actor.
    */
-  resolveScopes: (ctx: ServerContext<DB>) => Promise<ScopeValues>;
+  resolveScopes: (ctx: ServerContext<DB, Auth>) => Promise<ScopeValues>;
 
   /**
    * Extract stored scopes from a row.
@@ -255,7 +272,7 @@ export interface ServerTableHandler<DB extends SyncCoreDb = SyncCoreDb> {
    * Build a bootstrap snapshot page.
    */
   snapshot(
-    ctx: ServerSnapshotContext<DB>,
+    ctx: ServerSnapshotContext<DB, string, Auth>,
     params: Record<string, unknown> | undefined
   ): Promise<{ rows: unknown[]; nextCursor: string | null }>;
 
@@ -263,7 +280,7 @@ export interface ServerTableHandler<DB extends SyncCoreDb = SyncCoreDb> {
    * Apply a single operation.
    */
   applyOperation(
-    ctx: ServerApplyOperationContext<DB>,
+    ctx: ServerApplyOperationContext<DB, Auth>,
     op: SyncOperation,
     opIndex: number
   ): Promise<ApplyOperationResult>;

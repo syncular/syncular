@@ -2,6 +2,7 @@ import type {
   ServerSyncDialect,
   ServerTableHandler,
   SyncCoreDb,
+  SyncServerAuth,
 } from '@syncular/server';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
@@ -90,11 +91,14 @@ export interface ConsoleSharedOptions {
   blobBucket?: ConsoleBlobBucket;
 }
 
-export interface CreateConsoleRoutesOptions<DB extends SyncCoreDb = SyncCoreDb>
+export interface CreateConsoleRoutesOptions<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+>
   extends ConsoleSharedOptions {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: ServerTableHandler<DB>[];
+  handlers: ServerTableHandler<DB, Auth>[];
   /**
    * Authentication function for console requests.
    * Return null to reject the request.

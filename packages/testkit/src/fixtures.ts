@@ -1,8 +1,8 @@
 import {
+  type ClientHandlerCollection,
   type ClientClearContext,
   type ClientSnapshotHookContext,
   type ClientTableHandler,
-  ClientTableRegistry,
   enqueueOutboxCommit,
   ensureClientSyncSchema,
   type SyncClientDb,
@@ -32,15 +32,16 @@ import { createSqlite3Db } from '@syncular/dialect-sqlite3';
 import {
   type ApplyOperationResult,
   type EmittedChange,
+  createServerHandlerCollection,
   ensureSyncSchema,
   pull,
   pushCommit,
   readSnapshotChunk,
   recordClientCursor,
+  type ServerHandlerCollection,
   type ServerSyncDialect,
   type ServerTableHandler,
   type SyncCoreDb,
-  TableRegistry,
 } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
@@ -72,10 +73,12 @@ export interface TasksClientDb extends SyncClientDb {
   };
 }
 
+type TestAuth = { actorId: string };
+
 export interface TestServer {
   db: Kysely<TasksServerDb>;
   dialect: ServerSyncDialect;
-  handlers: TableRegistry<TasksServerDb>;
+  handlers: ServerHandlerCollection<TasksServerDb, TestAuth>;
   destroy: () => Promise<void>;
 }
 
@@ -83,7 +86,7 @@ export interface TestClient {
   mode: 'raw';
   db: Kysely<TasksClientDb>;
   transport: SyncTransport;
-  handlers: ClientTableRegistry<TasksClientDb>;
+  handlers: ClientHandlerCollection<TasksClientDb>;
   actorId: string;
   clientId: string;
   enqueue: (
@@ -527,8 +530,9 @@ async function setupTestServer(
     .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(1))
     .execute();
 
-  const handlers = new TableRegistry<TasksServerDb>();
-  handlers.register(tasksServerHandler);
+  const handlers = createServerHandlerCollection<TasksServerDb, TestAuth>([
+    tasksServerHandler,
+  ]);
 
   return {
     db,
@@ -582,7 +586,7 @@ function createInProcessTransport(
           db: server.db,
           dialect: server.dialect,
           handlers: server.handlers,
-          actorId,
+          auth: { actorId },
           request: {
             clientId: request.clientId,
             clientCommitId: request.push.clientCommitId,
@@ -598,7 +602,7 @@ function createInProcessTransport(
           db: server.db,
           dialect: server.dialect,
           handlers: server.handlers,
-          actorId,
+          auth: { actorId },
           request: {
             clientId: request.clientId,
             ...request.pull,
@@ -681,8 +685,9 @@ export async function createTestClient(
     .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
     .execute();
 
-  const handlers = new ClientTableRegistry<TasksClientDb>();
-  handlers.register(createTasksClientHandler());
+  const handlers: ClientHandlerCollection<TasksClientDb> = [
+    createTasksClientHandler(),
+  ];
 
   const transport = createInProcessTransport(server, options.actorId);
 

@@ -9,7 +9,11 @@
  */
 
 import type { ScopeValues, SyncTransport } from '@syncular/core';
-import type { ServerSyncDialect, TableRegistry } from '@syncular/server';
+import type {
+  ServerHandlerCollection,
+  ServerSyncDialect,
+  SyncServerAuth,
+} from '@syncular/server';
 import type { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
@@ -20,6 +24,8 @@ import { ensureRelaySchema } from './migrate';
 import { ModeManager, type RelayMode } from './mode-manager';
 import { RelayRealtime } from './realtime';
 import type { ForwardConflictEntry, RelayDatabase } from './schema';
+
+type RelayAuth = SyncServerAuth;
 
 /**
  * Events emitted by the relay server.
@@ -49,7 +55,7 @@ export interface RelayServerOptions<DB extends RelayDatabase = RelayDatabase> {
   /** Scope values for subscriptions to the main server */
   scopes: ScopeValues;
   /** Handler registry for handling operations */
-  handlers: TableRegistry<DB>;
+  handlers: ServerHandlerCollection<DB, RelayAuth>;
   /** Optional: WebSocket heartbeat interval in milliseconds (default: 30000) */
   heartbeatIntervalMs?: number;
   /** Optional: Forward engine retry interval in milliseconds (default: 5000) */
@@ -113,7 +119,7 @@ export class RelayServer<DB extends RelayDatabase = RelayDatabase> {
   private readonly mainServerActorId: string;
   private readonly tables: string[];
   private readonly scopes: ScopeValues;
-  private readonly handlers: TableRegistry<DB>;
+  private readonly handlers: ServerHandlerCollection<DB, RelayAuth>;
 
   private readonly modeManager: ModeManager;
   private readonly sequenceMapper: SequenceMapper<DB>;

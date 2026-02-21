@@ -27,3 +27,4 @@ export * from './snapshot-chunks';
 export type { SnapshotChunkStorage } from './snapshot-chunks/types';
 export * from './stats';
 export * from './subscriptions';
+export * from './sync';

@@ -4,9 +4,9 @@
 
 import { expect } from 'bun:test';
 import {
+  createProxyHandlerCollection,
   detectMutation,
   executeProxyQuery,
-  ProxyTableRegistry,
 } from '@syncular/server';
 import type { ScenarioContext } from '../harness/types';
 
@@ -39,19 +39,20 @@ export async function runProxyScenario(ctx: ScenarioContext): Promise<void> {
   expect(selectMutation).toBeNull();
 
   // Test proxy query execution
-  const proxyRegistry = new ProxyTableRegistry();
-  proxyRegistry.register({
-    table: 'tasks',
-    computeScopes: (row) => ({
-      user_id: String(row.user_id ?? ''),
-      project_id: String(row.project_id ?? ''),
-    }),
-  });
+  const proxyHandlers = createProxyHandlerCollection([
+    {
+      table: 'tasks',
+      computeScopes: (row) => ({
+        user_id: String(row.user_id ?? ''),
+        project_id: String(row.project_id ?? ''),
+      }),
+    },
+  ]);
 
   const result = await executeProxyQuery({
     db: server.db,
     dialect: server.dialect,
-    handlers: proxyRegistry,
+    handlers: proxyHandlers,
     ctx: { actorId: ctx.userId, clientId: ctx.clientId },
     sqlQuery:
       "INSERT INTO tasks (id, title, completed, user_id, project_id, server_version) VALUES ('proxy-1', 'Proxy Task', 0, '" +

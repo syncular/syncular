@@ -3,7 +3,7 @@
  */
 
 import type { Server as NodeServer } from 'node:http';
-import type { ClientTableRegistry, SyncClientDb } from '@syncular/client';
+import type { ClientHandlerCollection, SyncClientDb } from '@syncular/client';
 import type { SyncTransport } from '@syncular/core';
 import type { ServerSyncDialect, SyncCoreDb } from '@syncular/server';
 import type { Hono } from 'hono';
@@ -64,7 +64,7 @@ export interface IntegrationServer {
 export interface IntegrationClient {
   db: Kysely<IntegrationClientDb>;
   transport: SyncTransport;
-  handlers: ClientTableRegistry<IntegrationClientDb>;
+  handlers: ClientHandlerCollection<IntegrationClientDb>;
   actorId: string;
   clientId: string;
   destroy: () => Promise<void>;

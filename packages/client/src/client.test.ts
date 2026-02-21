@@ -6,7 +6,7 @@ import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
 import { ensureClientBlobSchema } from './blobs/migrate';
 import { Client, type ClientBlobStorage } from './client';
 import { SyncEngine } from './engine/SyncEngine';
-import { ClientTableRegistry } from './handlers/registry';
+import type { ClientHandlerCollection } from './handlers/collection';
 import { ensureClientSyncSchema } from './migrate';
 import type { SyncClientDb } from './schema';
 
@@ -162,7 +162,7 @@ describe('Client conflict events', () => {
       )
       .execute();
 
-    const handlers = new ClientTableRegistry<TestDb>();
+    const handlers: ClientHandlerCollection<TestDb> = [];
     client = new Client<TestDb>({
       db,
       transport: noopTransport,
@@ -275,7 +275,7 @@ describe('Client blob upload queue recovery', () => {
     await ensureClientBlobSchema(db);
     initiateCalls = 0;
 
-    const handlers = new ClientTableRegistry<TestDb>();
+    const handlers: ClientHandlerCollection<TestDb> = [];
     const transport: SyncTransport = {
       ...noopTransport,
       blobs: {
@@ -376,7 +376,7 @@ describe('Client inspector snapshot', () => {
     db = createBunSqliteDb<TestDb>({ path: ':memory:' });
     await ensureClientSyncSchema(db);
 
-    const handlers = new ClientTableRegistry<TestDb>();
+    const handlers: ClientHandlerCollection<TestDb> = [];
     client = new Client<TestDb>({
       db,
       transport: noopTransport,

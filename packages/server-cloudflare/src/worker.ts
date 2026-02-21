@@ -19,8 +19,12 @@
  *   const dialect = createSqliteServerDialect();
  *   const { syncRoutes, consoleRoutes } = createSyncServer({
  *     db, dialect,
- *     handlers: [tasksHandler],
- *     authenticate: async (c) => ({ actorId: c.req.header('x-user-id')! }),
+ *     sync: {
+ *       handlers: [tasksHandler],
+ *       authenticate: async (request) => ({
+ *         actorId: request.headers.get('x-user-id')!,
+ *       }),
+ *     },
  *   });
  *   app.route('/sync', syncRoutes);
  *   if (consoleRoutes) app.route('/console', consoleRoutes);

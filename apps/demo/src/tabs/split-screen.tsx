@@ -6,7 +6,7 @@
  */
 
 import {
-  ClientTableRegistry,
+  type ClientHandlerCollection,
   createIncrementingVersionPlugin,
   type SyncError,
   SyncTransportError,
@@ -408,11 +408,12 @@ function SyncClientPanel({
   );
 
   const handlers = useMemo(() => {
-    const registry = new ClientTableRegistry<ClientDb>();
-    registry.register(tasksClientHandler);
-    registry.register(sharedTasksClientHandler);
-    registry.register(catalogItemsClientHandler);
-    return registry;
+    const configured: ClientHandlerCollection<ClientDb> = [
+      tasksClientHandler,
+      sharedTasksClientHandler,
+      catalogItemsClientHandler,
+    ];
+    return configured;
   }, []);
 
   const plugins = useMemo(() => [createIncrementingVersionPlugin()], []);
@@ -422,6 +423,13 @@ function SyncClientPanel({
       { id: 'my-tasks', table: 'tasks' as const, scopes: { user_id: actorId } },
     ],
     [actorId]
+  );
+  const sync = useMemo(
+    () => ({
+      handlers,
+      subscriptions: () => subscriptions,
+    }),
+    [handlers, subscriptions]
   );
 
   if (initError) {
@@ -482,10 +490,9 @@ function SyncClientPanel({
     <SyncProvider
       db={db}
       transport={transport}
-      handlers={handlers}
+      sync={sync}
       clientId={clientId}
-      actorId={actorId}
-      subscriptions={subscriptions}
+      identity={{ actorId }}
       plugins={plugins}
       realtimeEnabled={true}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}

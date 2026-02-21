@@ -7,10 +7,16 @@
 
 import type { SyncPushRequest } from '@syncular/core';
 import { randomId } from '@syncular/core';
-import type { ServerSyncDialect, TableRegistry } from '@syncular/server';
+import type {
+  ServerHandlerCollection,
+  ServerSyncDialect,
+  SyncServerAuth,
+} from '@syncular/server';
 import { type PushCommitResult, pushCommit } from '@syncular/server';
 import { type Kysely, sql } from 'kysely';
 import type { RelayDatabase } from '../schema';
+
+type RelayAuth = SyncServerAuth;
 
 /**
  * Push a commit from a local client to the relay.
@@ -25,8 +31,8 @@ export async function relayPushCommit<
 >(args: {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: TableRegistry<DB>;
-  actorId: string;
+  handlers: ServerHandlerCollection<DB, RelayAuth>;
+  auth: RelayAuth;
   request: SyncPushRequest;
 }): Promise<PushCommitResult> {
   const { request } = args;
@@ -37,7 +43,7 @@ export async function relayPushCommit<
       db: trx,
       dialect: args.dialect,
       handlers: args.handlers,
-      actorId: args.actorId,
+      auth: args.auth,
       request,
     });
 

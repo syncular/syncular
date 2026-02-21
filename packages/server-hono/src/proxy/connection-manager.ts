@@ -11,7 +11,7 @@ import type {
 } from '@syncular/core';
 import type {
   ExecuteProxyQueryResult,
-  ProxyTableRegistry,
+  ProxyHandlerCollection,
   ServerSyncDialect,
   SyncCoreDb,
 } from '@syncular/server';
@@ -26,8 +26,8 @@ export interface ProxyConnectionManagerConfig<
   db: Kysely<DB>;
   /** Server sync dialect */
   dialect: ServerSyncDialect;
-  /** Proxy table registry for oplog generation */
-  handlers: ProxyTableRegistry;
+  /** Proxy table handlers for oplog generation */
+  handlers: ProxyHandlerCollection;
   /** Maximum concurrent connections (default: 100) */
   maxConnections?: number;
   /** Idle connection timeout in ms (default: 30000) */

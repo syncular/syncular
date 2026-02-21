@@ -12,7 +12,7 @@ import type {
 } from '@syncular/core';
 import { logSyncEvent } from '@syncular/core';
 import type {
-  ProxyTableRegistry,
+  ProxyHandlerCollection,
   ServerSyncDialect,
   SyncCoreDb,
 } from '@syncular/server';
@@ -48,8 +48,8 @@ interface CreateProxyRoutesConfig<DB extends SyncCoreDb = SyncCoreDb> {
   db: Kysely<DB>;
   /** Server sync dialect */
   dialect: ServerSyncDialect;
-  /** Proxy table registry for oplog generation */
-  handlers: ProxyTableRegistry;
+  /** Proxy table handlers for oplog generation */
+  handlers: ProxyHandlerCollection;
   /** Authenticate the request and return actor info */
   authenticate: (c: Context) => Promise<ProxyAuthResult | null>;
   /** WebSocket upgrade function from Hono */
@@ -75,7 +75,7 @@ interface CreateProxyRoutesConfig<DB extends SyncCoreDb = SyncCoreDb> {
  *
  * app.route('/proxy', createProxyRoutes({
  *   db,
- *   handlers: proxyTableRegistry,
+ *   handlers: proxyHandlers,
  *   authenticate: async (c) => {
  *     // Verify admin auth
  *     return { actorId: 'admin:123' };

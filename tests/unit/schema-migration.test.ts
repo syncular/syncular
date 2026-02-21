@@ -11,11 +11,11 @@ import { beforeEach, describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import {
+  createServerHandlerCollection,
   ensureSyncSchema,
   pushCommit,
   type ServerApplyOperationContext,
   type SyncCoreDb,
-  TableRegistry,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Kysely } from 'kysely';
@@ -225,14 +225,13 @@ describe('schema migration (partition_id)', () => {
 
     // 3. Push a task — this would fail with the old migration code because
     //    ON CONFLICT (partition_id, ...) had no matching unique index
-    const registry = new TableRegistry<TestDb>();
-    registry.register(createTasksHandler());
+    const handlers = createServerHandlerCollection<TestDb>([createTasksHandler()]);
 
     const result = await pushCommit({
       db,
       dialect,
-      handlers: registry,
-      actorId: 'test-user',
+      handlers,
+      auth: { actorId: 'test-user' },
       request: {
         clientId: 'client-1',
         clientCommitId: 'commit-1',
@@ -273,14 +272,13 @@ describe('schema migration (partition_id)', () => {
       )
     `.execute(db);
 
-    const registry = new TableRegistry<TestDb>();
-    registry.register(createTasksHandler());
+    const handlers = createServerHandlerCollection<TestDb>([createTasksHandler()]);
 
     const result = await pushCommit({
       db,
       dialect,
-      handlers: registry,
-      actorId: 'test-user',
+      handlers,
+      auth: { actorId: 'test-user' },
       request: {
         clientId: 'client-1',
         clientCommitId: 'commit-1',
@@ -312,14 +310,13 @@ describe('schema migration (partition_id)', () => {
     // Migrate
     await ensureSyncSchema(db, noTxDialect);
 
-    const registry = new TableRegistry<TestDb>();
-    registry.register(createTasksHandler());
+    const handlers = createServerHandlerCollection<TestDb>([createTasksHandler()]);
 
     const result = await pushCommit({
       db,
       dialect: noTxDialect,
-      handlers: registry,
-      actorId: 'test-user',
+      handlers,
+      auth: { actorId: 'test-user' },
       request: {
         clientId: 'client-1',
         clientCommitId: 'commit-1',

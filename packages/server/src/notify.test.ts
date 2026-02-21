@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
-import { createServerHandler } from './handlers';
-import { TableRegistry } from './handlers/registry';
+import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
 import { EXTERNAL_CLIENT_ID, notifyExternalDataChange } from './notify';
 import { pull } from './pull';
@@ -227,15 +226,14 @@ describe('pull re-bootstrap after external data change', () => {
       resolveScopes: async () => ({ catalog_id: '*' }),
     });
 
-    const handlers = new TableRegistry<TestDb>();
-    handlers.register(codesHandler);
+    const handlers = createServerHandlerCollection<TestDb>([codesHandler]);
 
     // 1. Initial bootstrap pull
     const firstPull = await pull({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,
@@ -262,7 +260,7 @@ describe('pull re-bootstrap after external data change', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,
@@ -296,7 +294,7 @@ describe('pull re-bootstrap after external data change', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,
@@ -341,16 +339,17 @@ describe('pull re-bootstrap after external data change', () => {
       resolveScopes: async () => ({ catalog_id: '*' }),
     });
 
-    const handlers = new TableRegistry<TestDb>();
-    handlers.register(tasksHandler);
-    handlers.register(codesHandler);
+    const handlers = createServerHandlerCollection<TestDb>([
+      tasksHandler,
+      codesHandler,
+    ]);
 
     // 1. Bootstrap pull for tasks
     const firstPull = await pull({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,
@@ -382,7 +381,7 @@ describe('pull re-bootstrap after external data change', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,
@@ -437,16 +436,17 @@ describe('pull re-bootstrap after external data change', () => {
       resolveScopes: async () => ({ catalog_id: '*' }),
     });
 
-    const handlers = new TableRegistry<TestDb>();
-    handlers.register(tasksHandler);
-    handlers.register(codesHandler);
+    const handlers = createServerHandlerCollection<TestDb>([
+      tasksHandler,
+      codesHandler,
+    ]);
 
     // 1. Bootstrap both subscriptions
     const firstPull = await pull({
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,
@@ -480,7 +480,7 @@ describe('pull re-bootstrap after external data change', () => {
       db,
       dialect,
       handlers,
-      actorId: 'u1',
+      auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
         limitCommits: 10,

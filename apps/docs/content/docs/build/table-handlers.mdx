@@ -150,16 +150,19 @@ app.route('/api/sync', createSyncRoutes({
 ### Client (only if using custom handlers)
 
 ```typescript
-import { ClientTableRegistry } from '@syncular/client';
-
-const handlers = new ClientTableRegistry()
-  .register(tasksClientHandler)
-  .register(projectsClientHandler);
+const sync = {
+  handlers: [tasksClientHandler, projectsClientHandler],
+  subscriptions: ({ actorId }) => [
+    { id: 'tasks', table: 'tasks', scopes: { user_id: actorId } },
+    { id: 'projects', table: 'projects', scopes: { user_id: actorId } },
+  ],
+};
 
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}  // Pass custom handlers
+  sync={sync}
+  identity={{ actorId: userId }}
   ...
 />
 ```

@@ -6,10 +6,16 @@
  */
 
 import type { SyncPullRequest } from '@syncular/core';
-import type { ServerSyncDialect, TableRegistry } from '@syncular/server';
+import type {
+  ServerHandlerCollection,
+  ServerSyncDialect,
+  SyncServerAuth,
+} from '@syncular/server';
 import { type PullResult, pull } from '@syncular/server';
 import type { Kysely } from 'kysely';
 import type { RelayDatabase } from '../schema';
+
+type RelayAuth = SyncServerAuth;
 
 /**
  * Pull commits for a local client from the relay.
@@ -22,8 +28,8 @@ export async function relayPull<
 >(args: {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: TableRegistry<DB>;
-  actorId: string;
+  handlers: ServerHandlerCollection<DB, RelayAuth>;
+  auth: RelayAuth;
   request: SyncPullRequest;
 }): Promise<PullResult> {
   // Use the standard pull - scope authorization is handled by handlers
@@ -31,7 +37,7 @@ export async function relayPull<
     db: args.db,
     dialect: args.dialect,
     handlers: args.handlers,
-    actorId: args.actorId,
+    auth: args.auth,
     request: args.request,
   });
 }

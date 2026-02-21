@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
-  ClientTableRegistry,
   enqueueOutboxCommit,
   type SyncClientDb,
   SyncEngine,
@@ -377,7 +376,7 @@ describe('SyncEngine', () => {
 
     it('should preserve first pull round commits when additional rounds run', async () => {
       const handlers = createMockHandlerRegistry();
-      handlers.register({
+      handlers.push({
         table: 'sync_outbox_commits',
         applySnapshot: async () => {},
         clearAll: async () => {},
@@ -857,15 +856,16 @@ describe('SyncEngine', () => {
     async function createTestEngine(
       args: { includeProjects?: boolean } = {}
     ): Promise<SyncEngine<TestDb>> {
-      const handlers = new ClientTableRegistry<TestDb>();
-      handlers.register({
-        table: 'tasks',
-        applySnapshot: async () => {},
-        clearAll: async () => {},
-        applyChange: async () => {},
-      });
+      const handlers: SyncEngineConfig<TestDb>['handlers'] = [
+        {
+          table: 'tasks',
+          applySnapshot: async () => {},
+          clearAll: async () => {},
+          applyChange: async () => {},
+        },
+      ];
       if (args.includeProjects) {
-        handlers.register({
+        handlers.push({
           table: 'projects',
           applySnapshot: async () => {},
           clearAll: async () => {},
@@ -1088,13 +1088,14 @@ describe('SyncEngine', () => {
       });
       const rt = createRealtimeTransport(base);
 
-      const handlers = new ClientTableRegistry();
-      handlers.register({
-        table: 'tasks',
-        applySnapshot: async () => {},
-        clearAll: async () => {},
-        applyChange: async () => {},
-      });
+      const handlers: SyncEngineConfig<SyncClientDb>['handlers'] = [
+        {
+          table: 'tasks',
+          applySnapshot: async () => {},
+          clearAll: async () => {},
+          applyChange: async () => {},
+        },
+      ];
 
       const engine = createEngine({
         transport: rt,
@@ -1222,13 +1223,14 @@ describe('SyncEngine', () => {
       });
       const rt = createRealtimeTransport(base);
 
-      const handlers = new ClientTableRegistry();
-      handlers.register({
-        table: 'tasks',
-        applySnapshot: async () => {},
-        clearAll: async () => {},
-        applyChange: async () => {},
-      });
+      const handlers: SyncEngineConfig<SyncClientDb>['handlers'] = [
+        {
+          table: 'tasks',
+          applySnapshot: async () => {},
+          clearAll: async () => {},
+          applyChange: async () => {},
+        },
+      ];
 
       const engine = createEngine({
         transport: rt,
@@ -1289,15 +1291,16 @@ describe('SyncEngine', () => {
       });
       const rt = createRealtimeTransport(base);
 
-      const handlers = new ClientTableRegistry();
-      handlers.register({
-        table: 'tasks',
-        applySnapshot: async () => {},
-        clearAll: async () => {},
-        applyChange: async () => {
-          inlineApplyCount++;
+      const handlers: SyncEngineConfig<SyncClientDb>['handlers'] = [
+        {
+          table: 'tasks',
+          applySnapshot: async () => {},
+          clearAll: async () => {},
+          applyChange: async () => {
+            inlineApplyCount++;
+          },
         },
-      });
+      ];
 
       const engine = createEngine({
         transport: rt,
@@ -1348,13 +1351,14 @@ describe('SyncEngine', () => {
       const base = createMockTransport();
       const rt = createRealtimeTransport(base);
 
-      const handlers = new ClientTableRegistry();
-      handlers.register({
-        table: 'tasks',
-        applySnapshot: async () => {},
-        clearAll: async () => {},
-        applyChange: async () => {},
-      });
+      const handlers: SyncEngineConfig<SyncClientDb>['handlers'] = [
+        {
+          table: 'tasks',
+          applySnapshot: async () => {},
+          clearAll: async () => {},
+          applyChange: async () => {},
+        },
+      ];
 
       const engine = createEngine({
         transport: rt,

@@ -14,6 +14,7 @@ import { createSyncularReact } from '../index';
 import {
   createMockDb,
   createMockHandlerRegistry,
+  createMockSync,
   createMockTransport,
 } from './test-utils';
 
@@ -41,15 +42,15 @@ describe('React Hooks', () => {
   function createWrapper(options?: { autoStart?: boolean }) {
     const transport = createMockTransport();
     const handlers = createMockHandlerRegistry();
+    const sync = createMockSync({ handlers });
 
     const Wrapper = ({ children }: { children: ReactNode }) => (
       <SyncProvider
         db={db}
         transport={transport}
-        handlers={handlers}
-        actorId="test-actor"
+        sync={sync}
+        identity={{ actorId: 'test-actor' }}
         clientId="test-client"
-        subscriptions={[]}
         pollIntervalMs={999999} // Long poll interval to prevent continuous polling
         autoStart={options?.autoStart ?? false} // Disable auto-start for tests
       >
@@ -213,21 +214,21 @@ describe('React Hooks', () => {
     it('supports watchTables invalidation on matching data:change scopes', async () => {
       const transport = createMockTransport();
       const handlers = createMockHandlerRegistry();
-      handlers.register({
+      handlers.push({
         table: 'tasks',
         applySnapshot: async () => {},
         clearAll: async () => {},
         applyChange: async () => {},
       });
+      const sync = createMockSync({ handlers });
 
       const Wrapper = ({ children }: { children: ReactNode }) => (
         <SyncProvider
           db={db}
           transport={transport}
-          handlers={handlers}
-          actorId="test-actor"
+          sync={sync}
+          identity={{ actorId: 'test-actor' }}
           clientId="test-client"
-          subscriptions={[]}
           pollIntervalMs={999999}
           autoStart={false}
         >

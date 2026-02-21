@@ -18,26 +18,27 @@ When you make changes directly to the database (bypassing the normal sync push f
 
 ```typescript
 import { createProxyRoutes } from '@syncular/server-hono';
-import { ProxyTableRegistry } from '@syncular/server';
+import { createProxyHandlerCollection } from '@syncular/server';
 
 // Define which tables should generate sync entries
-const proxyTableRegistry = new ProxyTableRegistry()
-  .register({
+const proxyHandlers = createProxyHandlerCollection([
+  {
     table: 'tasks',
     primaryKey: 'id',
     versionColumn: 'server_version',
     computeScopes: (row) => ({ user_id: String(row.user_id) }),
-  })
-  .register({
+  },
+  {
     table: 'projects',
     computeScopes: (row) => ({ project_id: String(row.id) }),
-  });
+  },
+]);
 
 // Create proxy routes
 app.route('/proxy', createProxyRoutes({
   db,
   dialect,
-  handlers: proxyTableRegistry,
+  handlers: proxyHandlers,
   authenticate: async (c) => {
     // Browser WebSocket clients cannot send custom headers.
     // Support either:

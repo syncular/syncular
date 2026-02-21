@@ -2,7 +2,7 @@
  * Simplified client factory
  *
  * Breaking changes from legacy Client:
- * - handlers: array instead of ClientTableRegistry
+ * - handlers: plain array (no registry class)
  * - url: string instead of transport (transport auto-created)
  * - subscriptions: derived from handler.subscribe (no separate param)
  * - clientId: auto-generated (no longer required)
@@ -20,7 +20,7 @@ import { createHttpTransport } from '@syncular/transport-http';
 import type { Kysely } from 'kysely';
 import { Client } from './client';
 import { createClientHandler } from './handlers/create-handler';
-import { ClientTableRegistry } from './handlers/registry';
+import { createClientHandlerCollection } from './handlers/collection';
 import type { ClientTableHandler } from './handlers/types';
 import type { SyncClientDb } from './schema';
 import { randomUUID } from './utils/id';
@@ -98,7 +98,6 @@ interface CreateClientOptions<DB extends SyncClientDb> {
 
   /**
    * Table handlers for applying snapshots and changes.
-   * Array is auto-converted to ClientTableRegistry.
    * Handlers with `subscribe: true` (or an object) are synced.
    * Handlers with `subscribe: false` are local-only.
    * Either handlers or tables must be provided.
@@ -244,11 +243,7 @@ export async function createClient<DB extends SyncClientDb>(
       })
     );
 
-  // Build registry from handlers array
-  const tableHandlers = new ClientTableRegistry<DB>();
-  for (const handler of handlers) {
-    tableHandlers.register(handler);
-  }
+  const tableHandlers = createClientHandlerCollection(handlers);
 
   // Create transport from URL if not provided
   let transport = customTransport;

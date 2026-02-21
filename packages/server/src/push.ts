@@ -16,7 +16,11 @@ import type {
 } from 'kysely';
 import { sql } from 'kysely';
 import type { ServerSyncDialect } from './dialect/types';
-import type { TableRegistry } from './handlers/registry';
+import {
+  getServerHandlerOrThrow,
+  type ServerHandlerCollection,
+} from './handlers/collection';
+import type { SyncServerAuth } from './handlers/types';
 import type { SyncCoreDb } from './schema';
 
 // biome-ignore lint/complexity/noBannedTypes: Kysely uses `{}` as the initial "no selected columns yet" marker.
@@ -177,17 +181,18 @@ function recordPushMetrics(args: {
   );
 }
 
-export async function pushCommit<DB extends SyncCoreDb>(args: {
+export async function pushCommit<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
+  args: {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: TableRegistry<DB>;
-  actorId: string;
-  partitionId?: string;
+  handlers: ServerHandlerCollection<DB, Auth>;
+  auth: Auth;
   request: SyncPushRequest;
-}): Promise<PushCommitResult> {
+}
+): Promise<PushCommitResult> {
   const { db, dialect, handlers, request } = args;
-  const actorId = args.actorId;
-  const partitionId = args.partitionId ?? 'default';
+  const actorId = args.auth.actorId;
+  const partitionId = args.auth.partitionId ?? 'default';
   const requestedOps = Array.isArray(request.operations)
     ? request.operations
     : [];
@@ -425,12 +430,13 @@ export async function pushCommit<DB extends SyncCoreDb>(args: {
 
               for (let i = 0; i < ops.length; i++) {
                 const op = ops[i]!;
-                const handler = handlers.getOrThrow(op.table);
+                const handler = getServerHandlerOrThrow(handlers, op.table);
                 const applied = await handler.applyOperation(
                   {
                     db: trx,
                     trx,
                     actorId,
+                    auth: args.auth,
                     clientId: request.clientId,
                     commitId,
                     schemaVersion: request.schemaVersion,

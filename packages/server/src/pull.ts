@@ -22,7 +22,12 @@ import {
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import type { DbExecutor, ServerSyncDialect } from './dialect/types';
-import type { TableRegistry } from './handlers/registry';
+import {
+  getServerBootstrapOrderFor,
+  getServerHandlerOrThrow,
+  type ServerHandlerCollection,
+} from './handlers/collection';
+import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
 import {
@@ -241,12 +246,12 @@ async function readExternalDataChanges<DB extends SyncCoreDb>(
   }));
 }
 
-export async function pull<DB extends SyncCoreDb>(args: {
+export async function pull<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
+  args: {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: TableRegistry<DB>;
-  actorId: string;
-  partitionId?: string;
+  handlers: ServerHandlerCollection<DB, Auth>;
+  auth: Auth;
   request: SyncPullRequest;
   /**
    * Optional snapshot chunk storage adapter.
@@ -254,10 +259,11 @@ export async function pull<DB extends SyncCoreDb>(args: {
    * instead of inline in the database.
    */
   chunkStorage?: SnapshotChunkStorage;
-}): Promise<PullResult> {
+}
+): Promise<PullResult> {
   const { request, dialect } = args;
   const db = args.db;
-  const partitionId = args.partitionId ?? 'default';
+  const partitionId = args.auth.partitionId ?? 'default';
   const requestedSubscriptionCount = Array.isArray(request.subscriptions)
     ? request.subscriptions.length
     : 0;
@@ -293,7 +299,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
           db,
-          actorId: args.actorId,
+          auth: args.auth,
           subscriptions: request.subscriptions ?? [],
           handlers: args.handlers,
         });
@@ -347,7 +353,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
           for (const sub of resolved) {
             const cursor = Math.max(-1, sub.cursor ?? -1);
             // Validate table handler exists (throws if not registered)
-            args.handlers.getOrThrow(sub.table);
+            getServerHandlerOrThrow(args.handlers, sub.table);
 
             if (
               sub.status === 'revoked' ||
@@ -379,8 +385,7 @@ export async function pull<DB extends SyncCoreDb>(args: {
                 latestExternalCommitForTable > cursor);
 
             if (needsBootstrap) {
-              const tables = args.handlers
-                .getBootstrapOrderFor(sub.table)
+              const tables = getServerBootstrapOrderFor(args.handlers, sub.table)
                 .map((handler) => handler.table);
 
               const initState: SyncBootstrapState = {
@@ -539,7 +544,8 @@ export async function pull<DB extends SyncCoreDb>(args: {
               ) {
                 if (!nextState) break;
 
-                const nextTableName = nextState.tables[nextState.tableIndex];
+                const nextTableName: string | undefined =
+                  nextState.tables[nextState.tableIndex];
                 if (!nextTableName) {
                   if (activeBundle) {
                     activeBundle.isLastPage = true;
@@ -550,7 +556,11 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   break;
                 }
 
-                const tableHandler = args.handlers.getOrThrow(nextTableName);
+                const tableHandler: ServerTableHandler<DB, Auth> =
+                  getServerHandlerOrThrow(
+                  args.handlers,
+                  nextTableName
+                );
                 if (!activeBundle || activeBundle.table !== nextTableName) {
                   if (activeBundle) {
                     await flushSnapshotBundle(activeBundle);
@@ -568,10 +578,12 @@ export async function pull<DB extends SyncCoreDb>(args: {
                   };
                 }
 
-                const page = await tableHandler.snapshot(
+                const page: { rows: unknown[]; nextCursor: string | null } =
+                  await tableHandler.snapshot(
                   {
                     db: trx,
-                    actorId: args.actorId,
+                    actorId: args.auth.actorId,
+                    auth: args.auth,
                     scopeValues: effectiveScopes,
                     cursor: nextState.rowCursor,
                     limit: limitSnapshotRows,

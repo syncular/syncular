@@ -5,7 +5,6 @@
  * All visual components come from @syncular/ui/demo.
  */
 
-import { ClientTableRegistry } from '@syncular/client';
 import type { SyncTransportOptions } from '@syncular/core';
 import {
   CatalogTable,
@@ -109,11 +108,20 @@ export function LargeCatalogTab() {
     };
   }, []);
 
-  /* Table registry (catalog_items only) */
-  const tables = useMemo(
-    () =>
-      new ClientTableRegistry<ClientDb>().register(catalogItemsClientHandler),
-    []
+  /* Sync handlers (catalog_items only) */
+  const tables = useMemo(() => [catalogItemsClientHandler], []);
+  const sync = useMemo(
+    () => ({
+      handlers: tables,
+      subscriptions: () => [
+        {
+          id: CATALOG_SUBSCRIPTION_ID,
+          table: 'catalog_items' as const,
+          scopes: { catalog_id: 'demo' },
+        },
+      ],
+    }),
+    [tables]
   );
 
   if (dbError) {
@@ -140,17 +148,10 @@ export function LargeCatalogTab() {
     <SyncProvider
       db={db}
       transport={transport}
-      handlers={tables}
-      actorId={CATALOG_ACTOR_ID}
+      sync={sync}
+      identity={{ actorId: CATALOG_ACTOR_ID }}
       clientId={CATALOG_CLIENT_ID}
       stateId={CATALOG_STATE_ID}
-      subscriptions={[
-        {
-          id: CATALOG_SUBSCRIPTION_ID,
-          table: 'catalog_items',
-          scopes: { catalog_id: 'demo' },
-        },
-      ]}
       limitSnapshotRows={CATALOG_SNAPSHOT_ROWS_PER_PAGE}
       maxSnapshotPages={CATALOG_MAX_SNAPSHOT_PAGES_PER_PULL}
       realtimeEnabled={true}

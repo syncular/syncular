@@ -8,7 +8,7 @@
 
 import type { SyncClientPlugin } from '@syncular/client';
 import {
-  ClientTableRegistry,
+  type ClientHandlerCollection,
   createIncrementingVersionPlugin,
 } from '@syncular/client';
 import {
@@ -283,9 +283,8 @@ function AlicePanel({
 
   const transport = useMemo(() => createDemoPollingTransport(actorId), []);
 
-  const tables = useMemo(
-    () =>
-      new ClientTableRegistry<ClientDb>().register(sharedTasksClientHandler),
+  const tables = useMemo<ClientHandlerCollection<ClientDb>>(
+    () => [sharedTasksClientHandler],
     []
   );
 
@@ -322,6 +321,13 @@ function AlicePanel({
     ],
     [shareId]
   );
+  const sync = useMemo(
+    () => ({
+      handlers: tables,
+      subscriptions: () => subscriptions,
+    }),
+    [tables, subscriptions]
+  );
 
   if (error) {
     return (
@@ -346,12 +352,11 @@ function AlicePanel({
       key={`${clientId}:${stateId}`}
       db={db}
       transport={transport}
-      handlers={tables}
-      actorId={actorId}
+      sync={sync}
+      identity={{ actorId }}
       clientId={clientId}
       stateId={stateId}
       plugins={plugins}
-      subscriptions={subscriptions}
       realtimeEnabled={true}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[Alice] Sync error:', e)}
@@ -542,9 +547,8 @@ function BobPanel({
 
   const transport = useMemo(() => createDemoPollingTransport(actorId), []);
 
-  const tables = useMemo(
-    () =>
-      new ClientTableRegistry<ClientDb>().register(sharedTasksClientHandler),
+  const tables = useMemo<ClientHandlerCollection<ClientDb>>(
+    () => [sharedTasksClientHandler],
     []
   );
 
@@ -595,6 +599,13 @@ function BobPanel({
     ],
     [shareId]
   );
+  const sync = useMemo(
+    () => ({
+      handlers: tables,
+      subscriptions: () => subscriptions,
+    }),
+    [tables, subscriptions]
+  );
 
   if (error) {
     return (
@@ -619,12 +630,11 @@ function BobPanel({
       key={`${clientId}:${stateId}`}
       db={db}
       transport={transport}
-      handlers={tables}
-      actorId={actorId}
+      sync={sync}
+      identity={{ actorId }}
       clientId={clientId}
       stateId={stateId}
       plugins={plugins}
-      subscriptions={subscriptions}
       realtimeEnabled={true}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[Bob] Sync error:', e)}

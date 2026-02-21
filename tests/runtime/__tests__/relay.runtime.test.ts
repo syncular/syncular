@@ -15,9 +15,9 @@ import {
   RelayServer,
 } from '@syncular/relay';
 import {
+  createServerHandlerCollection,
   ensureSyncSchema,
   type SyncCoreDb,
-  TableRegistry,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import { createSyncRoutes } from '@syncular/server-hono';
@@ -123,8 +123,9 @@ describe('Relay runtime', () => {
       fetch: _fetch,
     });
 
-    const relayHandlers = new TableRegistry<RelayDb>();
-    relayHandlers.register(createProjectScopedTasksHandler<RelayDb>());
+    const relayHandlers = createServerHandlerCollection<RelayDb>([
+      createProjectScopedTasksHandler<RelayDb>(),
+    ]);
 
     // Initialize relay schema without starting background processes
     // (tests use manual pullOnce/forwardOnce to avoid race conditions)

@@ -14,7 +14,6 @@ import {
 } from '@syncular/server';
 import { createBlobRoutes } from '@syncular/server-hono/blobs';
 import { createSyncServer } from '@syncular/server-hono/create-server';
-import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';
 import type { ServerDb } from './db';
@@ -41,13 +40,15 @@ export function createDemoRoutes(
   const upgradeWebSocket = args?.upgradeWebSocket;
 
   // Simple auth - extract user ID from header
-  const authenticate = async (c: Context) => {
-    const userId = c.req.header('x-user-id') ?? c.req.query('userId');
+  const authenticate = async (request: Request) => {
+    const url = new URL(request.url);
+    const userId =
+      request.headers.get('x-user-id') ?? url.searchParams.get('userId');
     if (!userId) return null;
     const partitionId = normalizePartitionId(
-      c.req.header('x-demo-id') ??
-        c.req.query('demoId') ??
-        c.req.query('demo_id')
+      request.headers.get('x-demo-id') ??
+        url.searchParams.get('demoId') ??
+        url.searchParams.get('demo_id')
     );
     return { actorId: userId, partitionId };
   };
@@ -55,15 +56,17 @@ export function createDemoRoutes(
   const { syncRoutes, consoleRoutes, consoleEventEmitter } = createSyncServer({
     db,
     dialect,
-    handlers: [
-      tasksServerHandler,
-      sharedTasksServerHandler,
-      catalogItemsServerHandler,
-      patientNotesServerHandler,
-    ],
-    authenticate,
-    chunkStorage: args?.chunkStorage,
     sync: {
+      handlers: [
+        tasksServerHandler,
+        sharedTasksServerHandler,
+        catalogItemsServerHandler,
+        patientNotesServerHandler,
+      ],
+      authenticate,
+    },
+    chunkStorage: args?.chunkStorage,
+    routes: {
       rateLimit: false, // Disable rate limiting for demo
       maxPullLimitSnapshotRows: 50_000,
       maxPullMaxSnapshotPages: 20,

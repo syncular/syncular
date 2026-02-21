@@ -23,6 +23,7 @@ import type {
   SyncCoreDb,
   SyncRealtimeBroadcaster,
   SyncRealtimeEvent,
+  SyncServerAuth,
 } from '@syncular/server';
 import {
   type CompactOptions,
@@ -33,7 +34,7 @@ import {
   pushCommit,
   readSnapshotChunk,
   recordClientCursor,
-  TableRegistry,
+  createServerHandlerCollection,
 } from '@syncular/server';
 import type { Context, MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
@@ -64,10 +65,7 @@ import {
 const wsConnectionManagerMap = new WeakMap<Hono, WebSocketConnectionManager>();
 const realtimeUnsubscribeMap = new WeakMap<Hono, () => void>();
 
-export interface SyncAuthResult {
-  actorId: string;
-  partitionId?: string;
-}
+export interface SyncAuthResult extends SyncServerAuth {}
 
 /**
  * WebSocket configuration for realtime sync.
@@ -162,11 +160,14 @@ export interface SyncRoutesConfigWithRateLimit {
   };
 }
 
-export interface CreateSyncRoutesOptions<DB extends SyncCoreDb = SyncCoreDb> {
+export interface CreateSyncRoutesOptions<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncAuthResult = SyncAuthResult,
+> {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: ServerTableHandler<DB>[];
-  authenticate: (c: Context) => Promise<SyncAuthResult | null>;
+  handlers: ServerTableHandler<DB, Auth>[];
+  authenticate: (c: Context) => Promise<Auth | null>;
   sync?: SyncRoutesConfigWithRateLimit;
   wsConnectionManager?: WebSocketConnectionManager;
   /**
@@ -430,8 +431,11 @@ function emitConsoleLiveEvent(
   });
 }
 
-export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
-  options: CreateSyncRoutesOptions<DB>
+export function createSyncRoutes<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncAuthResult = SyncAuthResult,
+>(
+  options: CreateSyncRoutesOptions<DB, Auth>
 ): Hono {
   const routes = new Hono();
   routes.onError((error, c) => {
@@ -442,10 +446,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
     });
     return c.text('Internal Server Error', 500);
   });
-  const handlerRegistry = new TableRegistry<DB>();
-  for (const handler of options.handlers) {
-    handlerRegistry.register(handler);
-  }
+  const handlerRegistry = createServerHandlerCollection(options.handlers);
   const config = options.sync ?? {};
   const maxPullLimitCommits = config.maxPullLimitCommits ?? 100;
   const maxSubscriptionsPerPull = config.maxSubscriptionsPerPull ?? 200;
@@ -631,8 +632,8 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
     });
   };
 
-  const authCache = new WeakMap<Context, Promise<SyncAuthResult | null>>();
-  const getAuth = (c: Context): Promise<SyncAuthResult | null> => {
+  const authCache = new WeakMap<Context, Promise<Auth | null>>();
+  const getAuth = (c: Context): Promise<Auth | null> => {
     const cached = authCache.get(c);
     if (cached) return cached;
     const pending = options.authenticate(c);
@@ -787,8 +788,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
           db: options.db,
           dialect: options.dialect,
           handlers: handlerRegistry,
-          actorId: auth.actorId,
-          partitionId,
+          auth,
           request: {
             clientId,
             clientCommitId: pushBody.clientCommitId,
@@ -979,8 +979,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             db: options.db,
             dialect: options.dialect,
             handlers: handlerRegistry,
-            actorId: auth.actorId,
-            partitionId,
+            auth,
             request,
             chunkStorage: options.chunkStorage,
           });
@@ -1383,13 +1382,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
             if (!msg || typeof msg !== 'object') return;
 
             if (msg.type === 'push') {
-              void handleWsPush(
-                msg,
-                connRef,
-                auth.actorId,
-                partitionId,
-                clientId
-              );
+              void handleWsPush(msg, connRef, auth, clientId);
               return;
             }
 
@@ -1481,10 +1474,11 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
   async function handleWsPush(
     msg: Record<string, unknown>,
     conn: WebSocketConnection,
-    actorId: string,
-    partitionId: string,
+    auth: Auth,
     clientId: string
   ): Promise<void> {
+    const actorId = auth.actorId;
+    const partitionId = auth.partitionId ?? 'default';
     const requestId = typeof msg.requestId === 'string' ? msg.requestId : '';
     if (!requestId) return;
     const traceContext = readTraceContextFromMessage(msg);
@@ -1615,8 +1609,7 @@ export function createSyncRoutes<DB extends SyncCoreDb = SyncCoreDb>(
         db: options.db,
         dialect: options.dialect,
         handlers: handlerRegistry,
-        actorId,
-        partitionId,
+        auth,
         request: {
           clientId,
           clientCommitId: parsed.data.clientCommitId,

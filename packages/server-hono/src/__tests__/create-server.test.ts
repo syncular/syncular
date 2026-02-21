@@ -70,8 +70,10 @@ describe('createSyncServer console configuration', () => {
     return {
       db,
       dialect: createPostgresServerDialect(),
-      handlers: [createTestHandler()],
-      authenticate: async () => ({ actorId: 'u1' }),
+      sync: {
+        handlers: [createTestHandler()],
+        authenticate: async () => ({ actorId: 'u1' }),
+      },
     };
   }
 
@@ -158,7 +160,7 @@ describe('createSyncServer console configuration', () => {
     expect(server.consoleRoutes).toBeDefined();
   });
 
-  it('returns empty storage list when blobBucket is not configured', async () => {
+  it('returns not implemented when blobBucket is not configured', async () => {
     const options = createOptions();
     const server = createSyncServer({
       ...options,
@@ -174,11 +176,9 @@ describe('createSyncServer console configuration', () => {
       headers: { Authorization: 'Bearer console-token' },
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(501);
     expect(await response.json()).toEqual({
-      items: [],
-      truncated: false,
-      cursor: null,
+      error: 'BLOB_STORAGE_NOT_CONFIGURED',
     });
   });
 
@@ -241,7 +241,7 @@ describe('createSyncServer console configuration', () => {
     const server = createSyncServer({
       ...options,
       upgradeWebSocket,
-      sync: {
+      routes: {
         websocket: {
           maxConnectionsPerClient: 1,
         },
@@ -273,7 +273,7 @@ describe('createSyncServer console configuration', () => {
     const server = createSyncServer({
       ...options,
       upgradeWebSocket,
-      sync: {
+      routes: {
         websocket: {
           maxConnectionsTotal: 1,
         },

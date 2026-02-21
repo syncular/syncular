@@ -23,7 +23,7 @@ npm install @syncular/transport-ws # optional (realtime wake-ups)
 ## Quick Start
 
 ```typescript
-import { Client, ClientTableRegistry } from '@syncular/client';
+import { Client } from '@syncular/client';
 import { createHttpTransport } from '@syncular/transport-http';
 
 // Create transport
@@ -34,9 +34,7 @@ const transport = createHttpTransport({
 });
 
 // Register client table handlers
-const tableHandlers = new ClientTableRegistry()
-  .register(tasksHandler)
-  .register(projectsHandler);
+const tableHandlers = [tasksHandler, projectsHandler];
 
 // Create client
 const client = new Client({
@@ -71,7 +69,7 @@ The unified `Client` class is the main entry point for sync operations.
 interface ClientOptions<DB> {
   db: Kysely<DB>;
   transport: SyncTransport;
-  tableHandlers: ClientTableRegistry;
+  tableHandlers: ClientTableHandler<DB>[];
   clientId: string;
   actorId: string;
   subscriptions: Array<{
@@ -152,26 +150,13 @@ await client.mutations.$commit(async (tx) => {
 });
 ```
 
-## ClientTableRegistry
+## Client Handler Collection
 
-Registers client-side table handlers.
+Client-side table handlers are provided as a plain array.
 
 ```typescript
-import { ClientTableRegistry } from '@syncular/client';
-
-const handlers = new ClientTableRegistry()
-  .register(tasksHandler)
-  .register(projectsHandler);
+const handlers = [tasksHandler, projectsHandler];
 ```
-
-### Methods
-
-| Method | Description |
-|--------|-------------|
-| `register(handler)` | Register a table handler |
-| `get(name)` | Get table handler by name |
-| `has(name)` | Check if table handler exists |
-| `getAll()` | Get all registered handlers |
 
 ## ClientTableHandler
 

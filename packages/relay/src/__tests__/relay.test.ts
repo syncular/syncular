@@ -5,7 +5,7 @@
 import Database from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { SyncCombinedRequest, SyncCombinedResponse } from '@syncular/core';
-import { TableRegistry } from '@syncular/server';
+import { createServerHandlerCollection } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Dialect, QueryResult } from 'kysely';
 import {
@@ -189,7 +189,7 @@ describe('RelayServer health check', () => {
       mainServerActorId: 'relay-main-actor',
       tables: [],
       scopes: {},
-      handlers: new TableRegistry<RelayDatabase>(),
+      handlers: createServerHandlerCollection<RelayDatabase>([]),
       healthCheckIntervalMs: 50,
       pullIntervalMs: 10_000,
       forwardRetryIntervalMs: 10_000,
@@ -261,32 +261,33 @@ describe('relayPushCommit atomic enqueue', () => {
       )
     `.execute(db);
 
-    const handlers = new TableRegistry<RelayDatabase>();
-    handlers.register({
-      table: 'tasks',
-      scopePatterns: ['user:{user_id}'],
-      resolveScopes: async () => ({ user_id: ['u1'] }),
-      extractScopes: () => ({ user_id: 'u1' }),
-      snapshot: async () => ({ rows: [], nextCursor: null }),
-      async applyOperation(_ctx, op, opIndex) {
-        return {
-          result: {
-            opIndex,
-            status: 'applied',
-          },
-          emittedChanges: [
-            {
-              table: 'tasks',
-              row_id: op.row_id,
-              op: op.op,
-              row_json: op.payload,
-              row_version: 1,
-              scopes: { user_id: 'u1' },
+    const handlers = createServerHandlerCollection<RelayDatabase>([
+      {
+        table: 'tasks',
+        scopePatterns: ['user:{user_id}'],
+        resolveScopes: async () => ({ user_id: ['u1'] }),
+        extractScopes: () => ({ user_id: 'u1' }),
+        snapshot: async () => ({ rows: [], nextCursor: null }),
+        async applyOperation(_ctx, op, opIndex) {
+          return {
+            result: {
+              opIndex,
+              status: 'applied',
             },
-          ],
-        };
+            emittedChanges: [
+              {
+                table: 'tasks',
+                row_id: op.row_id,
+                op: op.op,
+                row_json: op.payload,
+                row_version: 1,
+                scopes: { user_id: 'u1' },
+              },
+            ],
+          };
+        },
       },
-    });
+    ]);
 
     const originalRandomUUID = crypto.randomUUID;
     crypto.randomUUID = () => 'fixed-outbox-id';
@@ -296,7 +297,7 @@ describe('relayPushCommit atomic enqueue', () => {
           db,
           dialect: createSqliteServerDialect(),
           handlers,
-          actorId: 'u1',
+          auth: { actorId: 'u1' },
           request: {
             clientId: 'relay-client-1',
             clientCommitId: 'relay-commit-1',
@@ -385,26 +386,27 @@ describe('PullEngine cursor safety', () => {
       },
     };
 
-    const handlers = new TableRegistry<RelayDatabase>();
-    handlers.register({
-      table: 'tasks',
-      scopePatterns: ['user:{user_id}'],
-      resolveScopes: async () => ({}),
-      extractScopes: () => ({}),
-      snapshot: async () => ({ rows: [], nextCursor: null }),
-      async applyOperation(_ctx, _op, opIndex) {
-        return {
-          result: {
-            opIndex,
-            status: 'conflict',
-            message: 'reject locally',
-            server_version: 1,
-            server_row: {},
-          },
-          emittedChanges: [],
-        };
+    const handlers = createServerHandlerCollection<RelayDatabase>([
+      {
+        table: 'tasks',
+        scopePatterns: ['user:{user_id}'],
+        resolveScopes: async () => ({}),
+        extractScopes: () => ({}),
+        snapshot: async () => ({ rows: [], nextCursor: null }),
+        async applyOperation(_ctx, _op, opIndex) {
+          return {
+            result: {
+              opIndex,
+              status: 'conflict',
+              message: 'reject locally',
+              server_version: 1,
+              server_row: {},
+            },
+            emittedChanges: [],
+          };
+        },
       },
-    });
+    ]);
 
     const pullErrors: Error[] = [];
     const pullEngine = new PullEngine({

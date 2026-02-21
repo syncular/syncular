@@ -9,7 +9,7 @@
  */
 
 import type {
-  ClientTableRegistry,
+  ClientSyncConfig,
   MutationReceipt,
   MutationsApi,
   MutationsCommitFn,
@@ -28,7 +28,6 @@ import type {
   SyncRepairOptions,
   SyncResetOptions,
   SyncResetResult,
-  SyncSubscriptionRequest,
   SyncTransport,
   TransportHealth,
 } from '@syncular/client';
@@ -99,16 +98,18 @@ export interface SyncContextValue<DB extends SyncClientDb> {
   engine: SyncEngine<DB>;
   db: Kysely<DB>;
   transport: SyncTransport;
-  handlers: ClientTableRegistry<DB>;
+  handlers: ClientSyncConfig<DB, { actorId: string }>['handlers'];
 }
 
-export interface SyncProviderProps<DB extends SyncClientDb> {
+export interface SyncProviderProps<
+  DB extends SyncClientDb,
+  Identity extends { actorId: string },
+> {
   db: Kysely<DB>;
   transport: SyncTransport;
-  handlers: ClientTableRegistry<DB>;
-  actorId?: string | null;
+  sync: ClientSyncConfig<DB, Identity>;
+  identity: Identity;
   clientId?: string | null;
-  subscriptions?: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
@@ -418,16 +419,18 @@ export interface UsePresenceWithJoinResult<TMetadata = Record<string, unknown>>
   isJoined: boolean;
 }
 
-export function createSyncularReact<DB extends SyncClientDb>() {
+export function createSyncularReact<
+  DB extends SyncClientDb,
+  Identity extends { actorId: string } = { actorId: string },
+>() {
   const SyncContext = createContext<SyncContextValue<DB> | null>(null);
 
   function SyncProvider({
     db,
     transport,
-    handlers,
-    actorId,
+    sync,
+    identity,
     clientId,
-    subscriptions = [],
     limitCommits,
     limitSnapshotRows,
     maxSnapshotPages,
@@ -446,15 +449,20 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     autoStart = true,
     renderWhileStarting = true,
     children,
-  }: SyncProviderProps<DB>): ReactNode {
+  }: SyncProviderProps<DB, Identity>): ReactNode {
+    const resolvedSubscriptions = useMemo(
+      () => sync.subscriptions(identity),
+      [sync, identity]
+    );
+
     const config = useMemo<SyncEngineConfig<DB>>(
       () => ({
         db,
         transport,
-        handlers,
-        actorId,
+        handlers: sync.handlers,
+        actorId: identity.actorId,
         clientId,
-        subscriptions,
+        subscriptions: resolvedSubscriptions,
         limitCommits,
         limitSnapshotRows,
         maxSnapshotPages,
@@ -474,10 +482,10 @@ export function createSyncularReact<DB extends SyncClientDb>() {
       [
         db,
         transport,
-        handlers,
-        actorId,
+        sync,
+        identity,
         clientId,
-        subscriptions,
+        resolvedSubscriptions,
         limitCommits,
         limitSnapshotRows,
         maxSnapshotPages,
@@ -499,27 +507,27 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     const [engine] = useState(() => new SyncEngine(config));
 
     const [initialProps] = useState(() => ({
-      actorId,
+      actorId: identity.actorId,
       clientId,
       db,
       transport,
-      handlers,
+      sync,
     }));
 
     useEffect(() => {
       const changedProps: string[] = [];
-      if (actorId !== initialProps.actorId) changedProps.push('actorId');
+      if (identity.actorId !== initialProps.actorId) changedProps.push('actorId');
       if (clientId !== initialProps.clientId) changedProps.push('clientId');
       if (db !== initialProps.db) changedProps.push('db');
       if (transport !== initialProps.transport) changedProps.push('transport');
-      if (handlers !== initialProps.handlers) changedProps.push('handlers');
+      if (sync !== initialProps.sync) changedProps.push('sync');
 
       if (changedProps.length > 0) {
         const message =
           `[SyncProvider] Critical props changed after mount: ${changedProps.join(', ')}. ` +
           'This is not supported and may cause undefined behavior. ' +
           'Use a React key prop to force remount, e.g., ' +
-          `<SyncProvider key={userId} ...> or <SyncProvider key={actorId + ':' + clientId} ...>`;
+          `<SyncProvider key={userId} ...> or <SyncProvider key={identity.actorId + ':' + clientId} ...>`;
 
         console.error(message);
         if (process.env.NODE_ENV === 'development') {
@@ -529,7 +537,7 @@ export function createSyncularReact<DB extends SyncClientDb>() {
           );
         }
       }
-    }, [actorId, clientId, db, transport, handlers, initialProps]);
+    }, [identity, clientId, db, transport, sync, initialProps]);
 
     const [isReady, setIsReady] = useState(false);
 
@@ -561,19 +569,19 @@ export function createSyncularReact<DB extends SyncClientDb>() {
     }, [engine, autoStart]);
 
     useEffect(() => {
-      if (isReady && subscriptions.length > 0) {
-        engine.updateSubscriptions(subscriptions);
+      if (isReady && resolvedSubscriptions.length > 0) {
+        engine.updateSubscriptions(resolvedSubscriptions);
       }
-    }, [engine, isReady, subscriptions]);
+    }, [engine, isReady, resolvedSubscriptions]);
 
     const value = useMemo<SyncContextValue<DB>>(
       () => ({
         engine,
         db,
         transport,
-        handlers,
+        handlers: sync.handlers,
       }),
-      [engine, db, transport, handlers]
+      [engine, db, transport, sync]
     );
 
     if (!isReady && renderWhileStarting === false) {

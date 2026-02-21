@@ -57,8 +57,8 @@ The client controls how many rows and pages it requests per pull:
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={clientId}
   // Rows per snapshot page (capped by server's maxPullLimitSnapshotRows)
   limitSnapshotRows={1000}
@@ -66,7 +66,6 @@ The client controls how many rows and pages it requests per pull:
   maxSnapshotPages={5}
   // Commits per pull request (default varies)
   limitCommits={100}
-  subscriptions={subscriptions}
 >
   {children}
 </SyncProvider>
@@ -275,15 +274,27 @@ Keep client-side indexes minimal -- each index costs write performance on every 
 Only subscribe to the data you need. Broad subscriptions pull more data and slow down sync:
 
 ```tsx
-// Good: scoped subscription
-subscriptions={[
-  { table: 'notes', scopes: { user_id: userId } },
-]}
+// Good: scoped subscription in your sync config
+sync.addHandler({
+  table: 'notes',
+  scopes: ['user:{user_id}'],
+  subscribe: ({ identity }) => ({
+    id: `notes-${identity.actorId}`,
+    table: 'notes',
+    scopes: { user_id: identity.actorId },
+  }),
+});
 
-// Avoid: overly broad subscription (pulls all users' notes)
-subscriptions={[
-  { table: 'notes', scopes: {} },
-]}
+// Avoid: overly broad scopes in subscribe() (pulls far more rows)
+sync.addHandler({
+  table: 'notes',
+  scopes: ['user:{user_id}'],
+  subscribe: () => ({
+    id: 'all-notes',
+    table: 'notes',
+    scopes: {},
+  }),
+});
 ```
 
 ### Limit commits per pull
@@ -381,11 +392,24 @@ For real-time collaborative apps with frequent writes:
 If a client subscribes to many scopes (e.g., a user's personal data + shared workspaces):
 
 ```tsx
-subscriptions={[
-  { table: 'notes', scopes: { user_id: userId } },
-  { table: 'notes', scopes: { workspace_id: workspaceId } },
-  { table: 'tasks', scopes: { workspace_id: workspaceId } },
-]}
+sync.addHandler({
+  table: 'notes',
+  scopes: ['user:{user_id}', 'workspace:{workspace_id}'],
+  subscribe: ({ identity }) => [
+    { id: `notes-user-${identity.actorId}`, table: 'notes', scopes: { user_id: identity.actorId } },
+    { id: `notes-workspace-${workspaceId}`, table: 'notes', scopes: { workspace_id: workspaceId } },
+  ],
+});
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['workspace:{workspace_id}'],
+  subscribe: () => ({
+    id: `tasks-workspace-${workspaceId}`,
+    table: 'tasks',
+    scopes: { workspace_id: workspaceId },
+  }),
+});
 ```
 
 The server enforces a maximum subscription count per pull (default: 200, configurable via `maxSubscriptionsPerPull`).

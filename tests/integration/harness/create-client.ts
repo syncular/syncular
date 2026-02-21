@@ -55,8 +55,8 @@ export async function createIntegrationClient(
         .execute();
     },
     registerHandlers: (handlers) => {
-      handlers.register(tasksClientHandler);
-      handlers.register(projectsClientHandler);
+      handlers.push(tasksClientHandler);
+      handlers.push(projectsClientHandler);
     },
     ...(nativeFetch ? { fetch: nativeFetch } : {}),
   });

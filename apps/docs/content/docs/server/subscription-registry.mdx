@@ -142,10 +142,8 @@ Clients request subscriptions by table and scopes:
 
 ```typescript
 <SyncProvider
-  subscriptions={[
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-    { id: 'project-1', table: 'tasks', scopes: { project_id: 'p1' } },
-  ]}
+  sync={sync}
+  identity={{ actorId: userId }}
   ...
 />
 ```
@@ -171,8 +169,10 @@ Effective:                    { project_id: 'p1' }
 ```typescript
 const { syncRoutes } = createSyncServer({
   db, dialect,
-  handlers: [tasksHandler, projectsHandler],
-  authenticate,
+  sync: {
+    handlers: [tasksHandler, projectsHandler],
+    authenticate,
+  },
 });
 ```
 

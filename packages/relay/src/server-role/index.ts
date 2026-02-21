@@ -14,7 +14,11 @@ import {
   SyncPullRequestSchema,
   SyncPushRequestSchema,
 } from '@syncular/core';
-import type { ServerSyncDialect, TableRegistry } from '@syncular/server';
+import type {
+  ServerHandlerCollection,
+  ServerSyncDialect,
+  SyncServerAuth,
+} from '@syncular/server';
 import { recordClientCursor } from '@syncular/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
@@ -24,6 +28,8 @@ import type { RelayDatabase } from '../schema';
 import { relayPull } from './pull';
 import { relayPushCommit } from './push';
 
+type RelayAuth = SyncServerAuth;
+
 /**
  * Options for creating relay routes.
  */
@@ -32,7 +38,7 @@ export interface CreateRelayRoutesOptions<
 > {
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
-  handlers: TableRegistry<DB>;
+  handlers: ServerHandlerCollection<DB, RelayAuth>;
   realtime: RelayRealtime;
   /**
    * Called after a commit is successfully applied locally.
@@ -248,7 +254,7 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
       db: options.db,
       dialect: options.dialect,
       handlers: options.handlers,
-      actorId: auth.actorId,
+      auth,
       request: validatedRequest.data,
     });
 
@@ -306,7 +312,7 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
       db: options.db,
       dialect: options.dialect,
       handlers: options.handlers,
-      actorId: auth.actorId,
+      auth,
       request: body,
     });
 

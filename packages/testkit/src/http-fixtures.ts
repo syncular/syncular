@@ -1,5 +1,5 @@
 import {
-  ClientTableRegistry,
+  type ClientHandlerCollection,
   enqueueOutboxCommit,
   ensureClientSyncSchema,
   type SyncClientDb,
@@ -49,8 +49,8 @@ export interface CreateHttpServerFixtureOptions<DB extends SyncCoreDb> {
   serverDialect: HttpServerDialect;
   createTables: (db: Kysely<DB>) => Promise<void>;
   handlers: ServerTableHandler<DB>[];
-  authenticate: CreateSyncRoutesOptions<DB>['authenticate'];
-  sync?: CreateSyncRoutesOptions<DB>['sync'];
+  authenticate: CreateSyncRoutesOptions<DB, { actorId: string }>['authenticate'];
+  sync?: CreateSyncRoutesOptions<DB, { actorId: string }>['sync'];
   routePath?: string;
   cors?: boolean;
   corsAllowMethods?: string;
@@ -61,7 +61,7 @@ export interface CreateHttpServerFixtureOptions<DB extends SyncCoreDb> {
 export interface HttpClientFixture<DB extends SyncClientDb> {
   db: Kysely<DB>;
   transport: SyncTransport;
-  handlers: ClientTableRegistry<DB>;
+  handlers: ClientHandlerCollection<DB>;
   actorId: string;
   clientId: string;
   enqueue: (
@@ -85,7 +85,7 @@ export interface CreateHttpClientFixtureOptions<DB extends SyncClientDb> {
   actorId: string;
   clientId: string;
   createTables: (db: Kysely<DB>) => Promise<void>;
-  registerHandlers: (handlers: ClientTableRegistry<DB>) => void;
+  registerHandlers: (handlers: ClientHandlerCollection<DB>) => void;
   fetch?: typeof globalThis.fetch;
   getHeaders?: () => Record<string, string>;
 }
@@ -168,7 +168,7 @@ export async function createHttpClientFixture<DB extends SyncClientDb>(
   await ensureClientSyncSchema(db);
   await options.createTables(db);
 
-  const handlers = new ClientTableRegistry<DB>();
+  const handlers: ClientHandlerCollection<DB> = [];
   options.registerHandlers(handlers);
 
   const transport = createHttpTransport({

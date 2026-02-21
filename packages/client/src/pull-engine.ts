@@ -12,7 +12,10 @@ import type {
 } from '@syncular/core';
 import { decodeSnapshotRows } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
-import type { ClientTableRegistry } from './handlers/registry';
+import {
+  getClientHandlerOrThrow,
+  type ClientHandlerCollection,
+} from './handlers/collection';
 import type { ClientTableHandler } from './handlers/types';
 import type {
   SyncClientPlugin,
@@ -573,7 +576,7 @@ export async function buildPullRequest<DB extends SyncClientDb>(
 export async function applyPullResponse<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
-  handlers: ClientTableRegistry<DB>,
+  handlers: ClientHandlerCollection<DB>,
   options: SyncPullOnceOptions,
   pullState: {
     request: SyncPullRequest;
@@ -620,7 +623,10 @@ export async function applyPullResponse<DB extends SyncClientDb>(
               ? JSON.parse(row.scopes_json)
               : row.scopes_json
             : {};
-          await handlers.getOrThrow(row.table).clearAll({ trx, scopes });
+          await getClientHandlerOrThrow(handlers, row.table).clearAll({
+            trx,
+            scopes,
+          });
         } catch {
           // ignore missing table handler
         }
@@ -649,7 +655,10 @@ export async function applyPullResponse<DB extends SyncClientDb>(
                 ? JSON.parse(prev.scopes_json)
                 : prev.scopes_json
               : {};
-            await handlers.getOrThrow(prev.table).clearAll({ trx, scopes });
+            await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+              trx,
+              scopes,
+            });
           } catch {
             // ignore missing handler
           }
@@ -666,7 +675,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
       // Apply snapshots (bootstrap mode)
       if (sub.bootstrap) {
         for (const snapshot of sub.snapshots ?? []) {
-          const handler = handlers.getOrThrow(snapshot.table);
+          const handler = getClientHandlerOrThrow(handlers, snapshot.table);
           const hasChunkRefs =
             Array.isArray(snapshot.chunks) && snapshot.chunks.length > 0;
 
@@ -698,7 +707,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
         // Apply incremental changes
         for (const commit of sub.commits) {
           for (const change of commit.changes) {
-            const handler = handlers.getOrThrow(change.table);
+            const handler = getClientHandlerOrThrow(handlers, change.table);
             await handler.applyChange({ trx }, change);
           }
         }
@@ -763,7 +772,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 export async function syncPullOnce<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
-  handlers: ClientTableRegistry<DB>,
+  handlers: ClientHandlerCollection<DB>,
   options: SyncPullOnceOptions
 ): Promise<SyncPullResponse> {
   const pullState = await buildPullRequest(db, options);

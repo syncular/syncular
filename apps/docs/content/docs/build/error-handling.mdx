@@ -80,11 +80,10 @@ After each successful sync, the retry counter resets to 0. Non-retryable errors 
 <SyncProvider
   db={db}
   transport={transport}
-  shapes={shapes}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={clientId}
   maxRetries={10} // Default is 5
-  subscriptions={subscriptions}
 >
   {children}
 </SyncProvider>
@@ -119,11 +118,10 @@ function App() {
     <SyncProvider
       db={db}
       transport={transport}
-      handlers={handlers}
-      actorId={userId}
+      sync={sync}
+      identity={{ actorId: userId }}
       clientId={clientId}
       onError={handleSyncError}
-      subscriptions={subscriptions}
     >
       {children}
     </SyncProvider>
@@ -139,8 +137,8 @@ The `onMigrationError` prop is called specifically when the `migrate` function f
 <SyncProvider
   db={db}
   transport={transport}
-  shapes={shapes}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={clientId}
   migrate={migrateClientDb}
   onMigrationError={(error) => {
@@ -149,7 +147,6 @@ The `onMigrationError` prop is called specifically when the `migrate` function f
     toast.error('Database upgrade failed. Please clear app data and reload.');
   }}
   onError={handleSyncError}
-  subscriptions={subscriptions}
 >
   {children}
 </SyncProvider>

@@ -12,7 +12,7 @@ import type {
   SyncTransport,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import type { ClientTableRegistry } from '../handlers/registry';
+import type { ClientHandlerCollection } from '../handlers/collection';
 import type { SyncClientPlugin } from '../plugins/types';
 import type { SyncClientDb } from '../schema';
 import type { SubscriptionState } from '../subscription-state';
@@ -225,7 +225,7 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   /** Sync transport */
   transport: SyncTransport;
   /** Client table handler registry */
-  handlers: ClientTableRegistry<DB>;
+  handlers: ClientHandlerCollection<DB>;
   /** Actor id for sync scoping (null/undefined disables sync) */
   actorId: string | null | undefined;
   /** Stable device/app installation id */

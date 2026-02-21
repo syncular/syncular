@@ -13,6 +13,11 @@ export {
 // Mutation detection
 export { type DetectedMutation, detectMutation } from './mutation-detector';
 // Oplog creation
-// Registry
-export { ProxyTableRegistry } from './registry';
+// Collections
+export {
+  type ProxyHandlerCollection,
+  createProxyHandlerCollection,
+  getProxyHandler,
+  getProxyHandlerOrThrow,
+} from './collection';
 // Types

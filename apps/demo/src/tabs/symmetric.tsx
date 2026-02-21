@@ -7,7 +7,7 @@
  */
 
 import {
-  ClientTableRegistry,
+  type ClientHandlerCollection,
   createIncrementingVersionPlugin,
 } from '@syncular/client';
 import { createFieldEncryptionPlugin } from '@syncular/client-plugin-encryption';
@@ -384,9 +384,10 @@ function ActorVaultPanel({
   );
 
   const handlers = useMemo(() => {
-    const registry = new ClientTableRegistry<ClientDb>();
-    registry.register(patientNotesClientHandler);
-    return registry;
+    const configured: ClientHandlerCollection<ClientDb> = [
+      patientNotesClientHandler,
+    ];
+    return configured;
   }, []);
 
   const plugins = useMemo(() => [createIncrementingVersionPlugin()], []);
@@ -399,6 +400,13 @@ function ActorVaultPanel({
         scopes: { patient_id: ch.id },
       })),
     []
+  );
+  const sync = useMemo(
+    () => ({
+      handlers,
+      subscriptions: () => subscriptions,
+    }),
+    [handlers, subscriptions]
   );
 
   const createEncryptionPlugin = useCallback(
@@ -493,10 +501,9 @@ function ActorVaultPanel({
       <SyncProvider
         db={db}
         transport={transport}
-        handlers={handlers}
+        sync={sync}
         clientId={clientId}
-        actorId={actor.id}
-        subscriptions={subscriptions}
+        identity={{ actorId: actor.id }}
         plugins={allPlugins}
         realtimeEnabled={true}
         pollIntervalMs={DEMO_POLL_INTERVAL_MS}

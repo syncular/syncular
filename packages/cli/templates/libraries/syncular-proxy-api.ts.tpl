@@ -3,7 +3,7 @@
  */
 
 import { createProxyRoutes } from '@syncular/server-hono';
-import { ProxyTableRegistry } from '@syncular/server';
+import { createProxyHandlerCollection } from '@syncular/server';
 
 type ProxyRouteOptions = Parameters<typeof createProxyRoutes>[0];
 
@@ -13,10 +13,12 @@ export function createSyncularProxyRoutes(args: {
   upgradeWebSocket: ProxyRouteOptions['upgradeWebSocket'];
   validateToken: (token: string | undefined) => string | null;
 }) {
-  const handlers = new ProxyTableRegistry().register({
-    table: 'tasks',
-    computeScopes: (row) => ({ user_id: String(row.user_id ?? '') }),
-  });
+  const handlers = createProxyHandlerCollection([
+    {
+      table: 'tasks',
+      computeScopes: (row) => ({ user_id: String(row.user_id ?? '') }),
+    },
+  ]);
 
   return createProxyRoutes({
     db: args.db,

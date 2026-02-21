@@ -60,11 +60,10 @@ Then pass the plugin to your SyncProvider:
 <SyncProvider
   db={db}
   transport={transport}
-  shapes={shapes}
-  actorId={userId}
+  sync={sync}
+  identity={{ actorId: userId }}
   clientId={clientId}
   plugins={[encryptionPlugin]}
-  subscriptions={subscriptions}
 >
   {children}
 </SyncProvider>
@@ -310,11 +309,10 @@ function App() {
     <SyncProvider
       db={db}
       transport={transport}
-      handlers={handlers}
-      actorId={userId}
+      sync={sync}
+      identity={{ actorId: userId }}
       clientId={clientId}
       plugins={[encryptionPlugin]}
-      subscriptions={[{ table: 'notes', scopes: { user_id: userId } }]}
     >
       <Notes />
     </SyncProvider>

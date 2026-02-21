@@ -66,14 +66,19 @@ export class SyncDO extends SyncDurableObject<Env> {
     const { syncRoutes } = createSyncServer({
       db,
       dialect,
-      handlers: [createProjectScopedTasksHandler<ServerDb>()],
-      authenticate: async (c) => {
-        const userId =
-          c.req.header('x-user-id') ?? c.req.query('userId') ?? null;
-        if (!userId) {
-          return null;
-        }
-        return { actorId: userId };
+      sync: {
+        handlers: [createProjectScopedTasksHandler<ServerDb>()],
+        authenticate: async (request) => {
+          const url = new URL(request.url);
+          const userId =
+            request.headers.get('x-user-id') ??
+            url.searchParams.get('userId') ??
+            null;
+          if (!userId) {
+            return null;
+          }
+          return { actorId: userId };
+        },
       },
       upgradeWebSocket,
     });

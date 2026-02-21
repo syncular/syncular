@@ -2,17 +2,16 @@
  * Simplified server factory for Hono
  *
  * Breaking changes from legacy createSyncRoutes:
- * - handlers: array instead of TableRegistry
+ * - sync contract instead of top-level handlers/authenticate
  * - Combined sync + console routes in one call
  */
 
 import type {
+  ServerSyncConfig,
   ServerSyncDialect,
-  ServerTableHandler,
   SnapshotChunkStorage,
   SyncCoreDb,
 } from '@syncular/server';
-import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';
 import {
@@ -31,26 +30,24 @@ import {
   type SyncRoutesConfigWithRateLimit,
 } from './routes';
 
-export interface SyncServerOptions<DB extends SyncCoreDb = SyncCoreDb> {
+export interface SyncServerOptions<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncAuthResult = SyncAuthResult,
+> {
   /** Kysely database instance */
   db: Kysely<DB>;
 
   /** Server sync dialect */
   dialect: ServerSyncDialect;
 
-  /**
-   * Table handlers for sync operations.
-   */
-  handlers: ServerTableHandler<DB>[];
-
-  /** Authentication function - returns actorId or null for unauthenticated */
-  authenticate: (c: Context) => Promise<SyncAuthResult | null>;
+  /** Sync contract with auth + table handlers */
+  sync: ServerSyncConfig<DB, Auth>;
 
   /** Snapshot chunk storage (external body storage, e.g. R2/S3) */
   chunkStorage?: SnapshotChunkStorage;
 
   /** Sync route configuration */
-  sync?: SyncRoutesConfigWithRateLimit;
+  routes?: SyncRoutesConfigWithRateLimit;
 
   /** WebSocket upgrader for realtime */
   upgradeWebSocket?: UpgradeWebSocket;
@@ -81,45 +78,38 @@ export interface SyncServerResult {
  *
  * @example
  * ```typescript
- * // With handlers
+ * // With sync contract
  * const { syncRoutes } = createSyncServer({
  *   db,
  *   dialect,
- *   handlers: [tasksHandler, notesHandler],
- *   authenticate: async (c) => {
- *     const userId = c.req.header('x-user-id');
- *     return userId ? { actorId: userId } : null;
- *   },
+ *   sync,
  * });
  *
  * // With custom handlers
  * const { syncRoutes, consoleRoutes } = createSyncServer({
  *   db,
  *   dialect,
- *   handlers: [tasksHandler, notesHandler],
- *   authenticate: async (c) => {
- *     const userId = c.req.header('x-user-id');
- *     return userId ? { actorId: userId } : null;
- *   },
+ *   sync,
  *   console: { token: process.env.CONSOLE_TOKEN },
  * });
  * ```
  */
-export function createSyncServer<DB extends SyncCoreDb = SyncCoreDb>(
-  options: SyncServerOptions<DB>
+export function createSyncServer<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncAuthResult = SyncAuthResult,
+>(options: SyncServerOptions<DB, Auth>
 ): SyncServerResult {
   const {
     db,
     dialect,
-    handlers,
-    authenticate,
-    chunkStorage,
     sync,
+    chunkStorage,
+    routes,
     upgradeWebSocket,
     console: consoleConfig,
   } = options;
 
-  if (handlers.length === 0) {
+  if (sync.handlers.length === 0) {
     throw new Error('At least one handler must be provided');
   }
 
@@ -146,24 +136,25 @@ export function createSyncServer<DB extends SyncCoreDb = SyncCoreDb>(
   const syncRoutes = createSyncRoutes({
     db,
     dialect,
-    handlers,
-    authenticate,
+    handlers: sync.handlers,
+    authenticate: async (context): Promise<Auth | null> =>
+      sync.authenticate(context.req.raw),
     chunkStorage,
     consoleLiveEmitter: consoleEventEmitter,
     sync: {
-      ...sync,
+      ...routes,
       websocket: upgradeWebSocket
         ? {
             enabled: true,
             upgradeWebSocket,
-            ...(sync?.websocket?.heartbeatIntervalMs !== undefined && {
-              heartbeatIntervalMs: sync.websocket.heartbeatIntervalMs,
+            ...(routes?.websocket?.heartbeatIntervalMs !== undefined && {
+              heartbeatIntervalMs: routes.websocket.heartbeatIntervalMs,
             }),
-            ...(sync?.websocket?.maxConnectionsTotal !== undefined && {
-              maxConnectionsTotal: sync.websocket.maxConnectionsTotal,
+            ...(routes?.websocket?.maxConnectionsTotal !== undefined && {
+              maxConnectionsTotal: routes.websocket.maxConnectionsTotal,
             }),
-            ...(sync?.websocket?.maxConnectionsPerClient !== undefined && {
-              maxConnectionsPerClient: sync.websocket.maxConnectionsPerClient,
+            ...(routes?.websocket?.maxConnectionsPerClient !== undefined && {
+              maxConnectionsPerClient: routes.websocket.maxConnectionsPerClient,
             }),
           }
         : { enabled: false },
@@ -178,7 +169,7 @@ export function createSyncServer<DB extends SyncCoreDb = SyncCoreDb>(
   const consoleRoutes = createConsoleRoutes({
     db,
     dialect,
-    handlers,
+    handlers: sync.handlers,
     authenticate: createTokenAuthenticator(consoleToken),
     corsOrigins: resolvedConsoleConfig.corsOrigins ?? '*',
     eventEmitter: consoleEventEmitter,

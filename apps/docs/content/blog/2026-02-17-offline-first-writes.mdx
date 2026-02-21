@@ -165,10 +165,8 @@ Instead of a query planner deciding what data lives on the device, you declare i
 
 ```typescript
 <SyncProvider
-  subscriptions={[
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-    { id: 'team-projects', table: 'projects', scopes: { org_id: orgId } },
-  ]}
+  sync={sync}
+  identity={{ actorId: userId }}
 >
 ```
 

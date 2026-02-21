@@ -104,14 +104,22 @@ A subscription moves through distinct phases. Here is the full lifecycle:
 The most common pattern -- subscriptions declared once and unchanged:
 
 ```tsx
+const sync = defineClientSync<AppDb, AppScopes, { actorId: string }>({ codecs });
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  subscribe: ({ identity }) => [
+    { id: 'my-tasks', table: 'tasks', scopes: { user_id: identity.actorId } },
+    { id: 'project-a', table: 'tasks', scopes: { project_id: 'a' } },
+  ],
+});
+
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}
-  subscriptions={[
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-    { id: 'project-a', table: 'tasks', scopes: { project_id: 'a' } },
-  ]}
+  sync={sync}
+  identity={{ actorId: userId }}
 >
 ```
 
@@ -120,17 +128,23 @@ The most common pattern -- subscriptions declared once and unchanged:
 A single subscription can request multiple scope values at once:
 
 ```tsx
+const sync = defineClientSync<AppDb, AppScopes, { actorId: string }>({ codecs });
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['project:{project_id}'],
+  subscribe: () => ({
+    id: 'my-projects',
+    table: 'tasks',
+    scopes: { project_id: ['proj-a', 'proj-b', 'proj-c'] },
+  }),
+});
+
 <SyncProvider
   db={db}
   transport={transport}
-  handlers={handlers}
-  subscriptions={[
-    {
-      id: 'my-projects',
-      table: 'tasks',
-      scopes: { project_id: ['proj-a', 'proj-b', 'proj-c'] },
-    },
-  ]}
+  sync={sync}
+  identity={{ actorId: userId }}
 >
 ```
 
@@ -147,26 +161,36 @@ Subscriptions are reactive. When the list changes, the sync engine handles addin
 ```tsx
 function App() {
   const [selectedProjects, setSelectedProjects] = useState<string[]>(['a']);
+  const sync = useMemo(() => {
+    const config = defineClientSync<AppDb, AppScopes, { actorId: string }>({
+      codecs,
+    });
 
-  // Subscriptions update whenever selectedProjects changes
-  const subscriptions = [
-    // Always sync the user's own tasks
-    { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
-
-    // Sync tasks for each selected project
-    ...selectedProjects.map((pid) => ({
-      id: `project-${pid}`,
+    config.addHandler({
       table: 'tasks',
-      scopes: { project_id: pid },
-    })),
-  ];
+      scopes: ['user:{user_id}', 'project:{project_id}'],
+      subscribe: ({ identity }) => [
+        // Always sync the user's own tasks
+        { id: 'my-tasks', table: 'tasks', scopes: { user_id: identity.actorId } },
+
+        // Sync tasks for each selected project
+        ...selectedProjects.map((pid) => ({
+          id: `project-${pid}`,
+          table: 'tasks',
+          scopes: { project_id: pid },
+        })),
+      ],
+    });
+
+    return config;
+  }, [selectedProjects]);
 
   return (
     <SyncProvider
       db={db}
       transport={transport}
-      handlers={handlers}
-      subscriptions={subscriptions}
+      sync={sync}
+      identity={{ actorId: userId }}
     >
       <ProjectPicker
         selected={selectedProjects}
@@ -193,11 +217,9 @@ function App() {
 When the user changes (e.g., logout/login), all subscription IDs change and the entire local dataset is re-bootstrapped:
 
 ```tsx
-// When userId changes, 'my-tasks' ID stays the same but the scopes change.
-// The system detects scope changes and re-bootstraps.
-const subscriptions = [
-  { id: `tasks-${userId}`, table: 'tasks', scopes: { user_id: userId } },
-];
+// Keep subscription IDs stable and pass the current actor through identity.
+// When identity.actorId changes, remount the provider with a key.
+<SyncProvider key={userId} sync={sync} identity={{ actorId: userId }} ... />
 ```
 
 ---

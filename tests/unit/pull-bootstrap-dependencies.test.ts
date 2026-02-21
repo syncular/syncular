@@ -3,12 +3,12 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { decodeSnapshotRows, type SyncPullRequest } from '@syncular/core';
 import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import {
+  createServerHandlerCollection,
   createServerHandler,
   ensureSyncSchema,
   pull,
   readSnapshotChunk,
   type SyncCoreDb,
-  TableRegistry,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 
@@ -127,9 +127,10 @@ describe('pull bootstrap behavior', () => {
         resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
       });
 
-      const handlers = new TableRegistry<ServerDb>();
-      handlers.register(projectsHandler);
-      handlers.register(tasksHandler);
+      const handlers = createServerHandlerCollection<ServerDb>([
+        projectsHandler,
+        tasksHandler,
+      ]);
 
       const request: SyncPullRequest = {
         clientId: 'client-1',
@@ -150,7 +151,7 @@ describe('pull bootstrap behavior', () => {
         db,
         dialect,
         handlers,
-        actorId: 'u1',
+        auth: { actorId: 'u1' },
         request,
       });
 
@@ -228,8 +229,7 @@ describe('pull bootstrap behavior', () => {
         resolveScopes: async () => ({ catalog_id: '*' }),
       });
 
-      const handlers = new TableRegistry<ServerDb>();
-      handlers.register(catalogHandler);
+      const handlers = createServerHandlerCollection<ServerDb>([catalogHandler]);
 
       const requestedCatalogs = ['zeta', 'alpha'];
       const request: SyncPullRequest = {
@@ -251,7 +251,7 @@ describe('pull bootstrap behavior', () => {
         db,
         dialect,
         handlers,
-        actorId: 'u1',
+        auth: { actorId: 'u1' },
         request,
       });
 
@@ -304,8 +304,7 @@ describe('pull bootstrap behavior', () => {
         resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
       });
 
-      const handlers = new TableRegistry<ServerDb>();
-      handlers.register(tasksHandler);
+      const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
 
       const request: SyncPullRequest = {
         clientId: 'client-gzip-bundle',
@@ -326,7 +325,7 @@ describe('pull bootstrap behavior', () => {
         db,
         dialect,
         handlers,
-        actorId: 'u1',
+        auth: { actorId: 'u1' },
         request,
       });
 
