@@ -75,12 +75,22 @@ function createAutoHandler<
   });
 }
 
+function normalizeTransportBaseUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, '');
+  if (!trimmed.endsWith('/sync')) {
+    return trimmed;
+  }
+
+  const baseUrl = trimmed.slice(0, -'/sync'.length);
+  return baseUrl.length > 0 ? baseUrl : '/';
+}
+
 interface CreateClientOptions<DB extends SyncClientDb> {
   /** Kysely database instance */
   db: Kysely<DB>;
 
   /**
-   * Server URL (e.g., '/api/sync' or 'https://api.example.com').
+   * Sync URL (e.g., '/api/sync') or base API URL (e.g., '/api').
    * Defaults to '/api/sync' if not provided.
    * Ignored if transport is provided.
    */
@@ -244,7 +254,7 @@ export async function createClient<DB extends SyncClientDb>(
   let transport = customTransport;
   if (!transport && url) {
     transport = createHttpTransport({
-      baseUrl: url,
+      baseUrl: normalizeTransportBaseUrl(url),
       getHeaders,
     });
   }

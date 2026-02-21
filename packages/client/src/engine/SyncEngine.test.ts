@@ -193,4 +193,46 @@ describe('SyncEngine WS inline apply', () => {
     expect(typeof first.payload).toBe('object');
     expect(snapshot.diagnostics).toBeDefined();
   });
+
+  it('ensures sync schema on start without custom migrate callback', async () => {
+    const coldDb = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    try {
+      await coldDb.schema
+        .createTable('tasks')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .addColumn('server_version', 'integer', (col) =>
+          col.notNull().defaultTo(0)
+        )
+        .execute();
+
+      const handlers = new ClientTableRegistry<TestDb>().register({
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      });
+
+      const engine = new SyncEngine<TestDb>({
+        db: coldDb,
+        transport: noopTransport,
+        handlers,
+        actorId: 'u1',
+        clientId: 'client-migrate',
+        subscriptions: [],
+      });
+
+      await engine.start();
+
+      const exists = await sql<{ count: number }>`
+        select count(*) as count
+        from sqlite_master
+        where type = 'table' and name = 'sync_subscription_state'
+      `.execute(coldDb);
+
+      expect(Number(exists.rows[0]?.count ?? 0)).toBe(1);
+    } finally {
+      await coldDb.destroy();
+    }
+  });
 });

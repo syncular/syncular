@@ -244,7 +244,7 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   pollIntervalMs?: number;
   /** Max retries before giving up */
   maxRetries?: number;
-  /** Migration function to run before first sync */
+  /** Optional app migration to run before sync schema migration. */
   migrate?: (db: Kysely<DB>) => Promise<void>;
   /** Called when migration fails. Receives the error. */
   onMigrationError?: (error: Error) => void;

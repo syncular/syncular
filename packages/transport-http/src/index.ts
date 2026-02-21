@@ -119,16 +119,17 @@ export interface ClientOptions {
 }
 
 function resolveRequestUrl(baseUrl: string, path: string): string {
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const normalizedPath = path.replace(/^\/+/, '');
+  const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   const isAbsolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(baseUrl);
   if (isAbsolute) {
-    return new URL(normalizedPath, baseUrl).toString();
+    return new URL(normalizedPath, normalizedBaseUrl).toString();
   }
   if (typeof location === 'undefined') {
-    return `${baseUrl.replace(/\/$/, '')}${normalizedPath}`;
+    return `${baseUrl.replace(/\/$/, '')}/${normalizedPath}`;
   }
   return new URL(
-    `${baseUrl.replace(/\/$/, '')}${normalizedPath}`,
+    `${baseUrl.replace(/\/$/, '')}/${normalizedPath}`,
     location.origin
   ).toString();
 }

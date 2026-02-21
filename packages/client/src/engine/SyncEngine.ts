@@ -18,6 +18,7 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
+import { ensureClientSyncSchema } from '../migrate';
 import { syncPushOnce } from '../push-engine';
 import type {
   ConflictResultStatus,
@@ -1220,40 +1221,44 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     this.updateState({ enabled: true });
 
-    // Run migration if provided
-    if (this.config.migrate && !this.migrated) {
-      // Best-effort: push any pending outbox commits before migration
-      // (migration may reset the DB, so we try to save unsynced changes)
-      try {
-        const hasOutbox = await sql`
-          select 1 from ${sql.table('sync_outbox_commits')} limit 1
-        `
-          .execute(this.config.db)
-          .then((r) => r.rows.length > 0)
-          .catch(() => false);
+    // Run migrations before first sync.
+    if (!this.migrated) {
+      // Best-effort: push pending commits before user migration, because
+      // app migrations may reset tables and discard unsynced local writes.
+      if (this.config.migrate) {
+        try {
+          const hasOutbox = await sql`
+            select 1 from ${sql.table('sync_outbox_commits')} limit 1
+          `
+            .execute(this.config.db)
+            .then((r) => r.rows.length > 0)
+            .catch(() => false);
 
-        if (hasOutbox) {
-          // Push all pending commits (best effort)
-          let pushed = true;
-          while (pushed) {
-            const result = await syncPushOnce(
-              this.config.db,
-              this.config.transport,
-              {
-                clientId: this.config.clientId!,
-                actorId: this.config.actorId ?? undefined,
-                plugins: this.config.plugins,
-              }
-            );
-            pushed = result.pushed;
+          if (hasOutbox) {
+            let pushed = true;
+            while (pushed) {
+              const result = await syncPushOnce(
+                this.config.db,
+                this.config.transport,
+                {
+                  clientId: this.config.clientId!,
+                  actorId: this.config.actorId ?? undefined,
+                  plugins: this.config.plugins,
+                }
+              );
+              pushed = result.pushed;
+            }
           }
+        } catch {
+          // Best-effort: continue even if pre-migration push fails.
         }
-      } catch {
-        // Best-effort: if push fails (network down, table missing), continue
       }
 
       try {
-        await this.config.migrate(this.config.db);
+        if (this.config.migrate) {
+          await this.config.migrate(this.config.db);
+        }
+        await ensureClientSyncSchema(this.config.db);
         this.migrated = true;
       } catch (err) {
         const migrationError =

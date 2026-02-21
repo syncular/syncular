@@ -196,6 +196,36 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(authErrorCount).toBe(1);
   });
 
+  it('preserves base path for streamed snapshot chunk fetches', async () => {
+    const seenUrls: string[] = [];
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost:4311/api',
+      fetch: async (input) => {
+        seenUrls.push(
+          typeof input === 'string' ? input : (input as Request).url
+        );
+        return new Response(new Uint8Array([1]), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      },
+    });
+
+    const stream = await transport.fetchSnapshotChunkStream?.({
+      chunkId: 'chunk-path-test',
+    });
+    expect(stream).toBeDefined();
+
+    const reader = stream!.getReader();
+    await reader.read();
+    reader.releaseLock();
+
+    expect(seenUrls).toEqual([
+      'http://localhost:4311/api/sync/snapshot-chunks/chunk-path-test',
+    ]);
+  });
+
   it('supports auth lifecycle callbacks on 401/403', async () => {
     let requestCount = 0;
     let authExpiredCount = 0;
