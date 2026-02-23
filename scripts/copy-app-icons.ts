@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 const faviconDir = fileURLToPath(new URL('../assets/favicon', import.meta.url));
 
 const targets = [
-  fileURLToPath(new URL('../apps/docs/public', import.meta.url)),
-  fileURLToPath(new URL('../apps/demo', import.meta.url)),
-  fileURLToPath(new URL('../apps/console', import.meta.url)),
+  fileURLToPath(new URL('../apps/docs/public/assets', import.meta.url)),
+  fileURLToPath(new URL('../apps/demo/assets', import.meta.url)),
+  fileURLToPath(new URL('../apps/console/assets', import.meta.url)),
 ];
 
 // Copy all favicon assets to each app
@@ -22,20 +22,22 @@ for (const targetDir of targets) {
   }
 }
 
-// Clean up legacy icon.svg files from previous sync:icons runs
-const legacyPaths = [
-  fileURLToPath(new URL('../apps/docs/src/app/icon.svg', import.meta.url)),
-  fileURLToPath(new URL('../apps/demo/icon.svg', import.meta.url)),
-  fileURLToPath(new URL('../apps/console/icon.svg', import.meta.url)),
+// Clean up legacy files from previous locations (root-level copies + old icon.svg)
+const legacyRoots = [
+  fileURLToPath(new URL('../apps/docs/public', import.meta.url)),
+  fileURLToPath(new URL('../apps/demo', import.meta.url)),
+  fileURLToPath(new URL('../apps/console', import.meta.url)),
 ];
 
-for (const legacyPath of legacyPaths) {
-  try {
-    unlinkSync(legacyPath);
-    console.log(
-      `[icons] removed legacy ${relative(process.cwd(), legacyPath)}`
-    );
-  } catch {
-    // Already removed or never existed
+for (const root of legacyRoots) {
+  for (const file of files) {
+    try {
+      unlinkSync(join(root, file));
+      console.log(
+        `[icons] removed legacy ${relative(process.cwd(), join(root, file))}`
+      );
+    } catch {
+      // Already removed or never existed
+    }
   }
 }

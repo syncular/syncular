@@ -1,5 +1,11 @@
 #!/usr/bin/env bun
-import { cpSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+} from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import plugin from 'bun-plugin-tailwind';
@@ -47,8 +53,10 @@ await stampSentryMetaTags(path.join(outdir, 'index.html'));
 
 // Copy favicon assets (referenced via absolute paths in HTML)
 const faviconDir = path.resolve(__dirname, '../../assets/favicon');
+const faviconOutDir = path.join(outdir, 'assets');
+mkdirSync(faviconOutDir, { recursive: true });
 for (const file of readdirSync(faviconDir)) {
-  cpSync(path.join(faviconDir, file), path.join(outdir, file));
+  cpSync(path.join(faviconDir, file), path.join(faviconOutDir, file));
 }
 
 const outputTable = result.outputs.map((output) => ({

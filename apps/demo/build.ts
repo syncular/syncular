@@ -44,8 +44,10 @@ writeCloudflareHeaders(join(OUT, '_headers'));
 
 // 2. Favicon assets (copied as-is, referenced via absolute paths in HTML)
 const faviconDir = resolve(ROOT, '../../assets/favicon');
+const faviconOutDir = join(OUT, 'assets');
+mkdirSync(faviconOutDir, { recursive: true });
 for (const file of readdirSync(faviconDir)) {
-  cpSync(join(faviconDir, file), join(OUT, file));
+  cpSync(join(faviconDir, file), join(faviconOutDir, file));
 }
 
 // 3. PGlite WASM
