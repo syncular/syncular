@@ -27,8 +27,8 @@ import {
 import {
   detectRegressions,
   formatRegressionReport,
-  hasRegressions,
   hasMissingBaselines,
+  hasRegressions,
   loadBaseline,
 } from './regression';
 
@@ -278,7 +278,9 @@ describe('sync performance', () => {
     // Log the report
     console.log(`\n${formatRegressionReport(regressions)}`);
     // Machine-readable markers for CI gating.
-    console.log(`PERF_GATE_SYNC_REGRESSION=${hasRegression ? 'true' : 'false'}`);
+    console.log(
+      `PERF_GATE_SYNC_REGRESSION=${hasRegression ? 'true' : 'false'}`
+    );
     console.log(
       `PERF_GATE_SYNC_MISSING_BASELINE=${hasMissingBaseline ? 'true' : 'false'}`
     );

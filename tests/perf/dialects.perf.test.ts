@@ -16,8 +16,8 @@ import {
 import {
   detectRegressions,
   formatRegressionReport,
-  hasRegressions,
   hasMissingBaselines,
+  hasRegressions,
   loadBaseline,
 } from './regression';
 
