@@ -78,7 +78,6 @@ export function randomTaskBatch(userId, count) {
 export function taskUpsertOperation(userId, options) {
   const task = randomTask(userId, options);
   return {
-    scope: 'tasks',
     op: 'upsert',
     table: 'tasks',
     row_id: task.row_id,
@@ -93,7 +92,6 @@ export function taskUpsertOperation(userId, options) {
  */
 export function taskDeleteOperation(rowId) {
   return {
-    scope: 'tasks',
     op: 'delete',
     table: 'tasks',
     row_id: rowId,
@@ -103,16 +101,24 @@ export function taskDeleteOperation(rowId) {
 
 /**
  * Generate user tasks subscription request
- * @param {string} [id] - Subscription ID (default: 'sub-user-tasks')
- * @param {number} [cursor] - Cursor for incremental sync (default: 0)
+ * @param {string} userId - User ID scope value
+ * @param {object} [options] - Optional subscription config
+ * @param {string} [options.id] - Subscription ID (default: 'sub-user-tasks')
+ * @param {number} [options.cursor] - Cursor for incremental sync (default: -1)
+ * @param {object|null} [options.bootstrapState] - Bootstrap continuation state
  * @returns {object} Subscription request object
  */
-export function userTasksSubscription(id, cursor) {
+export function userTasksSubscription(userId, options) {
+  const opts = options || {};
   return {
-    id: id || 'sub-user-tasks',
-    kind: 'user_tasks',
-    params: {},
-    cursor: cursor || 0,
+    id: opts.id || 'sub-user-tasks',
+    table: 'tasks',
+    scopes: { user_id: userId },
+    cursor: Number.isFinite(opts.cursor) ? opts.cursor : -1,
+    bootstrapState:
+      typeof opts.bootstrapState === 'object' || opts.bootstrapState === null
+        ? opts.bootstrapState
+        : null,
   };
 }
 
@@ -164,7 +170,6 @@ export function payloadOfSize(size) {
 export function taskWithSize(userId, size) {
   const payload = payloadOfSize(size);
   return {
-    scope: 'tasks',
     op: 'upsert',
     table: 'tasks',
     row_id: uuid(),

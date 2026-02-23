@@ -23,6 +23,7 @@ interface RegressionResult {
   baseline: number;
   current: number;
   change: number; // percentage (positive = slower)
+  baselineMissing: boolean;
   regression: boolean;
   improvement: boolean;
 }
@@ -75,7 +76,9 @@ export function detectRegressions(
   baseline: Baseline | null
 ): RegressionResult[] {
   return results.map((r) => {
-    const base = baseline?.[r.name]?.median ?? r.median;
+    const baselineMetric = baseline?.[r.name];
+    const baselineMissing = !baselineMetric;
+    const base = baselineMetric?.median ?? r.median;
     const change = calculateRelativeChange(r.median, base);
 
     return {
@@ -83,8 +86,9 @@ export function detectRegressions(
       baseline: base,
       current: r.median,
       change,
-      regression: change > REGRESSION_THRESHOLD,
-      improvement: change < IMPROVEMENT_THRESHOLD,
+      baselineMissing,
+      regression: !baselineMissing && change > REGRESSION_THRESHOLD,
+      improvement: !baselineMissing && change < IMPROVEMENT_THRESHOLD,
     };
   });
 }
@@ -97,10 +101,13 @@ export function formatRegressionReport(
 ): string {
   const hasRegression = regressions.some((r) => r.regression);
   const hasImprovement = regressions.some((r) => r.improvement);
+  const hasMissingBaseline = regressions.some((r) => r.baselineMissing);
 
   let header: string;
   if (hasRegression) {
     header = '⚠️ Performance Regression Detected';
+  } else if (hasMissingBaseline) {
+    header = '⚠️ Missing Performance Baseline';
   } else if (hasImprovement) {
     header = '🚀 Performance Improvement Detected';
   } else {
@@ -109,7 +116,9 @@ export function formatRegressionReport(
 
   const rows = regressions.map((r) => {
     let emoji: string;
-    if (r.regression) {
+    if (r.baselineMissing) {
+      emoji = '🟡';
+    } else if (r.regression) {
       emoji = '🔴';
     } else if (r.improvement) {
       emoji = '🟢';
@@ -117,7 +126,11 @@ export function formatRegressionReport(
       emoji = '⚪';
     }
 
-    return `| ${emoji} ${r.metric} | ${r.baseline.toFixed(1)}ms | ${r.current.toFixed(1)}ms | ${formatChange(r.change)} |`;
+    const baselineLabel = r.baselineMissing
+      ? 'N/A'
+      : `${r.baseline.toFixed(1)}ms`;
+    const changeLabel = r.baselineMissing ? 'N/A' : formatChange(r.change);
+    return `| ${emoji} ${r.metric} | ${baselineLabel} | ${r.current.toFixed(1)}ms | ${changeLabel} |`;
   });
 
   return `## ${header}
@@ -132,4 +145,11 @@ ${rows.join('\n')}`;
  */
 export function hasRegressions(regressions: RegressionResult[]): boolean {
   return regressions.some((r) => r.regression);
+}
+
+/**
+ * Check if the current run includes metrics with no baseline values.
+ */
+export function hasMissingBaselines(regressions: RegressionResult[]): boolean {
+  return regressions.some((r) => r.baselineMissing);
 }

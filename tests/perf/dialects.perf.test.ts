@@ -17,6 +17,7 @@ import {
   detectRegressions,
   formatRegressionReport,
   hasRegressions,
+  hasMissingBaselines,
   loadBaseline,
 } from './regression';
 
@@ -170,6 +171,7 @@ describe('dialect performance (conformance schema)', () => {
 
     if (process.env.PERF_STRICT === 'true') {
       expect(hasRegressions(regressions)).toBe(false);
+      expect(hasMissingBaselines(regressions)).toBe(false);
     }
   });
 });

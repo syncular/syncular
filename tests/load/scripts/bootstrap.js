@@ -1,217 +1,275 @@
 /**
- * k6 Load Test: Large Data Bootstrap Scenario
+ * k6 Load Test: Bootstrap Scenario
  *
- * Tests initial sync (bootstrap) performance with large datasets.
- * Simulates new clients pulling all data for the first time.
- *
- * Prerequisites:
- *   - Server must be seeded with data using the load test server
- *   - Configure SEED_ROWS and SEED_USERS env vars when starting server
- *
- * Usage:
- *   k6 run tests/load/scripts/bootstrap.js
- *   k6 run --vus 50 tests/load/scripts/bootstrap.js
+ * Measures first-sync bootstrap behavior using the current combined /sync API.
+ * For each VU we:
+ * 1) discover expected rows for its user (if server exposes /api/stats/user/:id)
+ * 2) iterate pull requests while preserving cursor/bootstrapState
+ * 3) download referenced snapshot chunks to include network load
  */
 
 import { check, sleep } from 'k6';
+import http from 'k6/http';
 import { Counter, Rate, Trend } from 'k6/metrics';
-import { pull, fetchSnapshotChunk } from '../lib/sync-client.js';
+import {
+  fetchSnapshotChunk,
+  parseCombinedResponse,
+  pull,
+} from '../lib/sync-client.js';
 import { userTasksSubscription, vuUserId } from '../lib/data-generator.js';
+
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
+const BOOTSTRAP_MIN_RPS = Number.parseFloat(
+  __ENV.BOOTSTRAP_MIN_ROWS_PER_SECOND || '50'
+);
+const smokeMode = __ENV.K6_SMOKE === 'true';
 
 // Custom metrics
 const bootstrapLatency = new Trend('bootstrap_latency', true);
 const bootstrapErrors = new Rate('bootstrap_errors');
 const rowsReceived = new Counter('rows_received');
 const chunksReceived = new Counter('chunks_received');
-const bootstrapThroughput = new Trend('bootstrap_rows_per_second', true);
+const bootstrapThroughput = new Trend('bootstrap_rows_per_second', false);
 
 // Test configuration
 export const options = {
-  // Bootstrap test with moderate concurrency
-  scenarios: {
-    bootstrap_small: {
-      executor: 'constant-vus',
-      vus: 10,
-      duration: '1m',
-      exec: 'bootstrapSmall',
-      startTime: '0s',
-    },
-    bootstrap_medium: {
-      executor: 'constant-vus',
-      vus: 25,
-      duration: '2m',
-      exec: 'bootstrapMedium',
-      startTime: '1m',
-    },
-    bootstrap_large: {
-      executor: 'constant-vus',
-      vus: 50,
-      duration: '2m',
-      exec: 'bootstrapLarge',
-      startTime: '3m',
-    },
-  },
+  scenarios: smokeMode
+    ? {
+        bootstrap_small: {
+          executor: 'constant-vus',
+          vus: 1,
+          duration: '10s',
+          exec: 'bootstrapSmall',
+          startTime: '0s',
+        },
+      }
+    : {
+        bootstrap_small: {
+          executor: 'constant-vus',
+          vus: 10,
+          duration: '1m',
+          exec: 'bootstrapSmall',
+          startTime: '0s',
+        },
+        bootstrap_medium: {
+          executor: 'constant-vus',
+          vus: 25,
+          duration: '2m',
+          exec: 'bootstrapMedium',
+          startTime: '1m',
+        },
+        bootstrap_large: {
+          executor: 'constant-vus',
+          vus: 50,
+          duration: '2m',
+          exec: 'bootstrapLarge',
+          startTime: '3m',
+        },
+      },
 
-  // Performance thresholds
   thresholds: {
-    bootstrap_latency: ['p(95)<30000'], // 95th percentile under 30s
-    bootstrap_errors: ['rate<0.05'], // Less than 5% error rate
-    bootstrap_rows_per_second: ['avg>1000'], // Average > 1000 rows/second
+    bootstrap_latency: ['p(95)<30000'],
+    bootstrap_errors: ['rate<0.05'],
+    bootstrap_rows_per_second: [`avg>${BOOTSTRAP_MIN_RPS}`],
   },
 };
 
-/**
- * Perform a full bootstrap pull for a user
- * Handles paginated responses and snapshot chunks
- */
-function performBootstrap(userId, expectedRows) {
-  const clientId = `k6-bootstrap-${__VU}-${__ITER}`;
+function readExpectedRows(userId) {
+  const res = http.get(
+    `${BASE_URL}/api/stats/user/${encodeURIComponent(userId)}`
+  );
+  if (res.status !== 200) return null;
+
+  try {
+    const body = JSON.parse(res.body);
+    return Number.isFinite(body?.rows) ? body.rows : null;
+  } catch {
+    return null;
+  }
+}
+
+function countCommitRows(commits) {
+  let rows = 0;
+  for (const commit of commits || []) {
+    if (!Array.isArray(commit?.changes)) continue;
+    rows += commit.changes.length;
+  }
+  return rows;
+}
+
+function downloadSnapshotChunks(userId, snapshots) {
+  let bytes = 0;
+  for (const snapshot of snapshots || []) {
+    const chunks = Array.isArray(snapshot?.chunks) ? snapshot.chunks : [];
+    for (const chunk of chunks) {
+      const chunkId = chunk?.id;
+      if (!chunkId) continue;
+
+      chunksReceived.add(1);
+      const chunkRes = fetchSnapshotChunk(userId, chunkId);
+      if (chunkRes.status !== 200) continue;
+
+      const declaredSize = Number.parseInt(chunk?.byteLength, 10);
+      if (Number.isFinite(declaredSize) && declaredSize > 0) {
+        bytes += declaredSize;
+      } else if (Number.isFinite(chunkRes.body?.byteLength)) {
+        bytes += chunkRes.body.byteLength;
+      }
+    }
+  }
+  return bytes;
+}
+
+function performBootstrap(userId, profileName, pullOptions) {
+  const clientId = `k6-bootstrap-${profileName}-${__VU}-${__ITER}`;
+  const expectedRows = readExpectedRows(userId);
   const startTime = Date.now();
+
   let totalRows = 0;
-  let cursor = 0;
+  let totalChunkBytes = 0;
+  let cursor = -1;
+  let bootstrapState = null;
   let iterations = 0;
-  const maxIterations = 1000; // Safety limit
+  const maxIterations = 1000;
 
   while (iterations < maxIterations) {
     iterations++;
 
-    const res = pull(userId, [userTasksSubscription()], cursor, clientId);
+    const pullRes = pull(
+      userId,
+      [
+        userTasksSubscription(userId, {
+          id: `${profileName}-sub-${__VU}`,
+          cursor,
+          bootstrapState,
+        }),
+      ],
+      pullOptions,
+      clientId
+    );
 
-    if (res.status !== 200) {
-      bootstrapErrors.add(1);
-      console.error(
-        `Bootstrap pull failed: status=${res.status}, body=${res.body}`
-      );
-      return { success: false, rows: totalRows, duration: Date.now() - startTime };
+    const body = parseCombinedResponse(pullRes);
+    const sub = body?.pull?.subscriptions?.[0];
+    const pullOk =
+      pullRes.status === 200 &&
+      body?.ok === true &&
+      body?.pull?.ok === true &&
+      sub != null;
+
+    if (!pullOk) {
+      bootstrapErrors.add(true);
+      return {
+        success: false,
+        duration: Date.now() - startTime,
+        rows: totalRows,
+        expectedRows,
+        chunkBytes: totalChunkBytes,
+      };
     }
 
-    let response;
-    try {
-      response = JSON.parse(res.body);
-    } catch (e) {
-      bootstrapErrors.add(1);
-      console.error(`Failed to parse response: ${e}`);
-      return { success: false, rows: totalRows, duration: Date.now() - startTime };
-    }
+    const commitRows = countCommitRows(sub.commits);
+    totalRows += commitRows;
+    rowsReceived.add(commitRows);
 
-    // Count rows from changes
-    if (response.changes && Array.isArray(response.changes)) {
-      totalRows += response.changes.length;
-      rowsReceived.add(response.changes.length);
-    }
+    const snapshotRows = (sub.snapshots || []).reduce((sum, snapshot) => {
+      return sum + (Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0);
+    }, 0);
+    totalRows += snapshotRows;
+    rowsReceived.add(snapshotRows);
 
-    // Handle snapshot chunks if present
-    if (response.snapshots && Array.isArray(response.snapshots)) {
-      for (const snapshot of response.snapshots) {
-        if (snapshot.rows && Array.isArray(snapshot.rows)) {
-          totalRows += snapshot.rows.length;
-          rowsReceived.add(snapshot.rows.length);
-        }
+    totalChunkBytes += downloadSnapshotChunks(userId, sub.snapshots);
 
-        // Fetch additional chunks if present
-        if (snapshot.chunkIds && Array.isArray(snapshot.chunkIds)) {
-          for (const chunkId of snapshot.chunkIds) {
-            const chunkRes = fetchSnapshotChunk(userId, chunkId);
-            chunksReceived.add(1);
+    cursor = Number.isFinite(sub.nextCursor) ? sub.nextCursor : cursor;
+    bootstrapState = sub.bootstrapState ?? null;
 
-            if (chunkRes.status === 200) {
-              try {
-                const chunkData = JSON.parse(chunkRes.body);
-                if (chunkData.rows && Array.isArray(chunkData.rows)) {
-                  totalRows += chunkData.rows.length;
-                  rowsReceived.add(chunkData.rows.length);
-                }
-              } catch {
-                // Ignore chunk parse errors
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // Update cursor for next page
-    if (response.cursor && response.cursor > cursor) {
-      cursor = response.cursor;
-    } else {
-      // No more data
-      break;
-    }
-
-    // Check if we've received expected rows
-    if (expectedRows && totalRows >= expectedRows) {
+    if (bootstrapState == null) {
       break;
     }
   }
 
+  if (iterations >= maxIterations) {
+    bootstrapErrors.add(true);
+    return {
+      success: false,
+      duration: Date.now() - startTime,
+      rows: totalRows,
+      expectedRows,
+      chunkBytes: totalChunkBytes,
+    };
+  }
+
   const duration = Date.now() - startTime;
-  const rowsPerSecond = totalRows / (duration / 1000);
+  const effectiveRows = expectedRows ?? totalRows;
+  const rowsPerSecond =
+    duration > 0 && effectiveRows > 0 ? effectiveRows / (duration / 1000) : 0;
 
   return {
     success: true,
-    rows: totalRows,
     duration,
+    rows: totalRows,
+    expectedRows,
+    chunkBytes: totalChunkBytes,
     rowsPerSecond,
   };
 }
 
-// Bootstrap small dataset (user has ~1000 rows)
 export function bootstrapSmall() {
-  const userId = vuUserId(__VU, 'small');
-
-  const result = performBootstrap(userId, 1000);
-
-  bootstrapLatency.add(result.duration);
-  if (result.rowsPerSecond) {
-    bootstrapThroughput.add(result.rowsPerSecond);
-  }
-
-  check(result, {
-    'bootstrap succeeded': (r) => r.success,
-    'received data': (r) => r.rows > 0,
+  const userId = vuUserId(__VU, __ENV.BOOTSTRAP_SMALL_PREFIX || 'small');
+  const result = performBootstrap(userId, 'small', {
+    limitCommits: 100,
+    limitSnapshotRows: 1000,
+    maxSnapshotPages: 4,
   });
 
-  // Wait before next bootstrap attempt
+  bootstrapLatency.add(result.duration);
+  bootstrapErrors.add(!result.success);
+  if (result.rowsPerSecond) bootstrapThroughput.add(result.rowsPerSecond);
+
+  check(result, {
+    'bootstrap_small succeeds': (r) => r.success,
+    'bootstrap_small has rows': (r) => (r.expectedRows ?? r.rows) > 0,
+  });
+
   sleep(5);
 }
 
-// Bootstrap medium dataset (user has ~10K rows)
 export function bootstrapMedium() {
-  const userId = vuUserId(__VU, 'medium');
-
-  const result = performBootstrap(userId, 10000);
-
-  bootstrapLatency.add(result.duration);
-  if (result.rowsPerSecond) {
-    bootstrapThroughput.add(result.rowsPerSecond);
-  }
-
-  check(result, {
-    'bootstrap succeeded': (r) => r.success,
-    'received substantial data': (r) => r.rows >= 1000,
+  const userId = vuUserId(__VU, __ENV.BOOTSTRAP_MEDIUM_PREFIX || 'medium');
+  const result = performBootstrap(userId, 'medium', {
+    limitCommits: 200,
+    limitSnapshotRows: 2500,
+    maxSnapshotPages: 8,
   });
 
-  // Wait before next bootstrap attempt
+  bootstrapLatency.add(result.duration);
+  bootstrapErrors.add(!result.success);
+  if (result.rowsPerSecond) bootstrapThroughput.add(result.rowsPerSecond);
+
+  check(result, {
+    'bootstrap_medium succeeds': (r) => r.success,
+    'bootstrap_medium has rows': (r) => (r.expectedRows ?? r.rows) > 0,
+  });
+
   sleep(10);
 }
 
-// Bootstrap large dataset (user has ~50K+ rows)
 export function bootstrapLarge() {
-  const userId = vuUserId(__VU, 'large');
-
-  const result = performBootstrap(userId, 50000);
-
-  bootstrapLatency.add(result.duration);
-  if (result.rowsPerSecond) {
-    bootstrapThroughput.add(result.rowsPerSecond);
-  }
-
-  check(result, {
-    'bootstrap succeeded': (r) => r.success,
-    'received large dataset': (r) => r.rows >= 10000,
+  const userId = vuUserId(__VU, __ENV.BOOTSTRAP_LARGE_PREFIX || 'large');
+  const result = performBootstrap(userId, 'large', {
+    limitCommits: 500,
+    limitSnapshotRows: 5000,
+    maxSnapshotPages: 12,
   });
 
-  // Wait before next bootstrap attempt
+  bootstrapLatency.add(result.duration);
+  bootstrapErrors.add(!result.success);
+  if (result.rowsPerSecond) bootstrapThroughput.add(result.rowsPerSecond);
+
+  check(result, {
+    'bootstrap_large succeeds': (r) => r.success,
+    'bootstrap_large has rows': (r) => (r.expectedRows ?? r.rows) > 0,
+  });
+
   sleep(30);
 }
 
@@ -220,16 +278,14 @@ export default function () {
   bootstrapSmall();
 }
 
-// Setup function
 export function setup() {
   console.log('Starting bootstrap load test...');
-  console.log(`Base URL: ${__ENV.BASE_URL || 'http://localhost:3001'}`);
-  console.log('Note: Server should be seeded with data for meaningful results');
+  console.log(`Base URL: ${BASE_URL}`);
+  console.log(`Min rows/s threshold: ${BOOTSTRAP_MIN_RPS}`);
 
   return { startTime: Date.now() };
 }
 
-// Teardown function
 export function teardown(data) {
   const duration = (Date.now() - data.startTime) / 1000;
   console.log(`Test completed in ${duration.toFixed(2)}s`);

@@ -1,27 +1,31 @@
 /**
  * k6 Load Test: Mixed Workload Scenario
  *
- * Simulates real-world usage patterns with:
- * - 80% readers (pull-only)
- * - 20% writers (push + pull)
- * - All clients connected via WebSocket
- *
- * This is the most realistic load test scenario.
- *
- * Usage:
- *   k6 run tests/load/scripts/mixed-workload.js
- *   k6 run --out dashboard tests/load/scripts/mixed-workload.js
+ * Simulates production-ish usage patterns with:
+ * - readers: frequent pull-only sync
+ * - writers: push+pull cycles
+ * - websocket listeners: realtime wake-ups triggered by separate writer clientIds
  */
 
 import { check, sleep } from 'k6';
+import exec from 'k6/execution';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import ws from 'k6/ws';
-import { push, pull, healthCheck } from '../lib/sync-client.js';
+import {
+  collectPulledRowIds,
+  healthCheck,
+  parseCombinedResponse,
+  pull,
+  push,
+} from '../lib/sync-client.js';
 import {
   taskUpsertOperation,
   userTasksSubscription,
   vuUserId,
 } from '../lib/data-generator.js';
+
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
+const smokeMode = __ENV.K6_SMOKE === 'true';
 
 // Custom metrics
 const readerLatency = new Trend('reader_latency', true);
@@ -29,58 +33,161 @@ const writerPushLatency = new Trend('writer_push_latency', true);
 const writerPullLatency = new Trend('writer_pull_latency', true);
 const readerErrors = new Rate('reader_errors');
 const writerErrors = new Rate('writer_errors');
+const wsErrors = new Rate('ws_errors');
 const wsConnections = new Counter('ws_connections');
 const wsMessages = new Counter('ws_messages');
 const operationsPerSecond = new Rate('operations_per_second');
+const writerSyncLag = new Trend('writer_sync_lag_ms', true);
+const writerSyncConvergenceErrors = new Rate('writer_sync_convergence_errors');
+const writerPendingSyncWrites = new Trend('writer_pending_sync_writes', false);
+
+const readerStateByVu = new Map();
+const writerStateByVu = new Map();
+const wsStateByVu = new Map();
+const syncLagSloMs = Number.parseInt(__ENV.SYNC_LAG_SLO_MS || '5000', 10);
+const syncVisibilityTimeoutMs = Number.parseInt(
+  __ENV.SYNC_VISIBILITY_TIMEOUT_MS || '20000',
+  10
+);
+const maxPendingWrites = Number.parseInt(__ENV.SYNC_MAX_PENDING_WRITES || '50', 10);
+
+function getState(map) {
+  const key = `${exec.scenario.name}-${__VU}`;
+  const existing = map.get(key);
+  if (existing) return existing;
+
+  const state = { cursor: -1, bootstrapState: null, pendingWrites: new Map() };
+  map.set(key, state);
+  return state;
+}
+
+function settleWriterPending(state, visibleRowIds, now) {
+  let timedOut = 0;
+
+  for (const rowId of visibleRowIds) {
+    const startedAt = state.pendingWrites.get(rowId);
+    if (!Number.isFinite(startedAt)) continue;
+
+    const lag = now - startedAt;
+    if (lag >= 0) {
+      writerSyncLag.add(lag);
+    }
+    state.pendingWrites.delete(rowId);
+  }
+
+  for (const [rowId, startedAt] of state.pendingWrites.entries()) {
+    if (!Number.isFinite(startedAt)) continue;
+    if (now - startedAt < syncVisibilityTimeoutMs) continue;
+
+    timedOut++;
+    state.pendingWrites.delete(rowId);
+  }
+
+  writerPendingSyncWrites.add(state.pendingWrites.size);
+  return timedOut;
+}
+
+function runPull(userId, clientId, state, subscriptionId, options) {
+  const res = pull(
+    userId,
+    [
+      userTasksSubscription(userId, {
+        id: subscriptionId,
+        cursor: state.cursor,
+        bootstrapState: state.bootstrapState,
+      }),
+    ],
+    options,
+    clientId
+  );
+
+  const body = parseCombinedResponse(res);
+  const sub = body?.pull?.subscriptions?.[0];
+  const ok =
+    res.status === 200 &&
+    body?.ok === true &&
+    body?.pull?.ok === true &&
+    sub != null;
+
+  if (ok) {
+    state.cursor = Number.isFinite(sub.nextCursor) ? sub.nextCursor : state.cursor;
+    state.bootstrapState = sub.bootstrapState ?? null;
+  }
+
+  return { ok, res, sub };
+}
 
 // Test configuration
 export const options = {
-  scenarios: {
-    // 80% readers - poll for changes periodically
-    readers: {
-      executor: 'ramping-vus',
-      exec: 'reader',
-      startVUs: 0,
-      stages: [
-        { duration: '30s', target: 80 }, // Ramp up to 80
-        { duration: '4m', target: 800 }, // Hold at 800 (80% of 1000)
-        { duration: '30s', target: 0 }, // Ramp down
-      ],
-    },
+  scenarios: smokeMode
+    ? {
+        readers: {
+          executor: 'constant-vus',
+          exec: 'reader',
+          vus: 1,
+          duration: '10s',
+        },
+        writers: {
+          executor: 'constant-vus',
+          exec: 'writer',
+          vus: 1,
+          duration: '10s',
+        },
+        websockets: {
+          executor: 'constant-vus',
+          exec: 'websocketClient',
+          vus: 1,
+          duration: '10s',
+        },
+      }
+    : {
+        // 80% readers - poll for changes periodically
+        readers: {
+          executor: 'ramping-vus',
+          exec: 'reader',
+          startVUs: 0,
+          stages: [
+            { duration: '30s', target: 80 },
+            { duration: '4m', target: 800 },
+            { duration: '30s', target: 0 },
+          ],
+        },
 
-    // 20% writers - actively pushing changes
-    writers: {
-      executor: 'ramping-vus',
-      exec: 'writer',
-      startVUs: 0,
-      stages: [
-        { duration: '30s', target: 20 }, // Ramp up to 20
-        { duration: '4m', target: 200 }, // Hold at 200 (20% of 1000)
-        { duration: '30s', target: 0 }, // Ramp down
-      ],
-    },
+        // 20% writers - actively pushing changes
+        writers: {
+          executor: 'ramping-vus',
+          exec: 'writer',
+          startVUs: 0,
+          stages: [
+            { duration: '30s', target: 20 },
+            { duration: '4m', target: 200 },
+            { duration: '30s', target: 0 },
+          ],
+        },
 
-    // WebSocket connections for all users (realtime updates)
-    websockets: {
-      executor: 'ramping-vus',
-      exec: 'websocketClient',
-      startVUs: 0,
-      stages: [
-        { duration: '30s', target: 100 }, // Ramp up
-        { duration: '4m', target: 1000 }, // Hold at 1000
-        { duration: '30s', target: 0 }, // Ramp down
-      ],
-    },
-  },
+        // WebSocket listeners for realtime wake-ups
+        websockets: {
+          executor: 'ramping-vus',
+          exec: 'websocketClient',
+          startVUs: 0,
+          stages: [
+            { duration: '30s', target: 100 },
+            { duration: '4m', target: 1000 },
+            { duration: '30s', target: 0 },
+          ],
+        },
+      },
 
-  // Performance thresholds
   thresholds: {
-    reader_latency: ['p(95)<300'], // Readers: 95th percentile under 300ms
-    writer_push_latency: ['p(95)<500'], // Writers push: 95th percentile under 500ms
-    writer_pull_latency: ['p(95)<300'], // Writers pull: 95th percentile under 300ms
-    reader_errors: ['rate<0.01'], // Less than 1% reader errors
-    writer_errors: ['rate<0.01'], // Less than 1% writer errors
-    http_req_duration: ['p(99)<2000'], // 99th percentile under 2s
+    reader_latency: ['p(95)<300'],
+    writer_push_latency: ['p(95)<500'],
+    writer_pull_latency: ['p(95)<300'],
+    writer_sync_lag_ms: [`p(95)<${syncLagSloMs}`],
+    reader_errors: ['rate<0.01'],
+    writer_errors: ['rate<0.01'],
+    writer_sync_convergence_errors: ['rate<0.01'],
+    ws_errors: ['rate<0.05'],
+    http_req_duration: ['p(99)<2000'],
   },
 };
 
@@ -90,14 +197,20 @@ export const options = {
 export function reader() {
   const userId = vuUserId(__VU, 'reader');
   const clientId = `k6-reader-${__VU}`;
+  const state = getState(readerStateByVu);
 
-  const res = pull(userId, [userTasksSubscription()], 0, clientId);
+  const pullResult = runPull(userId, clientId, state, `reader-sub-${__VU}`, {
+    limitCommits: 100,
+    limitSnapshotRows: 1000,
+    maxSnapshotPages: 4,
+  });
 
-  readerLatency.add(res.timings.duration);
-  readerErrors.add(res.status !== 200);
+  readerLatency.add(pullResult.res.timings.duration);
+  readerErrors.add(!pullResult.ok);
+  operationsPerSecond.add(pullResult.ok);
 
-  check(res, {
-    'reader pull ok': (r) => r.status === 200,
+  check(pullResult.res, {
+    'reader pull ok': () => pullResult.ok,
   });
 
   // Readers poll less frequently (1-3 seconds)
@@ -110,29 +223,55 @@ export function reader() {
 export function writer() {
   const userId = vuUserId(__VU, 'writer');
   const clientId = `k6-writer-${__VU}`;
+  const state = getState(writerStateByVu);
 
   // Push a new task
   const operation = taskUpsertOperation(userId);
   const pushRes = push(userId, [operation], clientId);
+  const pushBody = parseCombinedResponse(pushRes);
+  const pushOk =
+    pushRes.status === 200 &&
+    pushBody?.ok === true &&
+    pushBody?.push?.ok === true;
 
   writerPushLatency.add(pushRes.timings.duration);
-  writerErrors.add(pushRes.status !== 200);
+  writerErrors.add(!pushOk);
+  operationsPerSecond.add(pushOk);
 
   check(pushRes, {
-    'writer push ok': (r) => r.status === 200,
+    'writer push ok': () => pushOk,
   });
+  if (pushOk) {
+    state.pendingWrites.set(operation.row_id, Date.now());
+  }
 
   // Small delay between push and pull
   sleep(0.3);
 
   // Pull to confirm changes
-  const pullRes = pull(userId, [userTasksSubscription()], 0, clientId);
+  const pullResult = runPull(userId, clientId, state, `writer-sub-${__VU}`, {
+    limitCommits: 100,
+    limitSnapshotRows: 1000,
+    maxSnapshotPages: 4,
+  });
 
-  writerPullLatency.add(pullRes.timings.duration);
-  writerErrors.add(pullRes.status !== 200);
+  writerPullLatency.add(pullResult.res.timings.duration);
+  writerErrors.add(!pullResult.ok);
+  operationsPerSecond.add(pullResult.ok);
 
-  check(pullRes, {
-    'writer pull ok': (r) => r.status === 200,
+  const visibleRowIds = pullResult.ok
+    ? collectPulledRowIds(pullResult.sub)
+    : new Set();
+  const timedOutWrites = pullResult.ok
+    ? settleWriterPending(state, visibleRowIds, Date.now())
+    : 0;
+  const pendingWritesOverLimit = state.pendingWrites.size > maxPendingWrites;
+  const convergenceFailed = timedOutWrites > 0 || pendingWritesOverLimit;
+  writerSyncConvergenceErrors.add(convergenceFailed);
+
+  check(pullResult.res, {
+    'writer pull ok': () => pullResult.ok,
+    'writer sync convergence maintained': () => !convergenceFailed,
   });
 
   // Writers are more active (0.5-2 seconds between writes)
@@ -140,71 +279,85 @@ export function writer() {
 }
 
 /**
- * WebSocket client - maintains long-lived connection for realtime
+ * WebSocket client - maintains connection and expects sync wake-ups.
  */
 export function websocketClient() {
   const userId = vuUserId(__VU, 'ws');
-  const baseUrl = __ENV.BASE_URL || 'http://localhost:3001';
-  const wsUrl = baseUrl.replace('http', 'ws');
-  const url = `${wsUrl}/api/sync/realtime?userId=${userId}`;
+  const wsClientId = `k6-ws-listener-${__VU}`;
+  const writerClientId = `k6-ws-writer-${__VU}`;
+  const state = getState(wsStateByVu);
 
-  let messageCount = 0;
+  const prime = runPull(userId, wsClientId, state, `ws-sub-${__VU}`, {
+    limitCommits: 100,
+    limitSnapshotRows: 1000,
+    maxSnapshotPages: 4,
+  });
+  if (!prime.ok) {
+    wsErrors.add(true);
+    return;
+  }
+
+  const wsUrl = BASE_URL.replace('http', 'ws');
+  const url =
+    `${wsUrl}/api/sync/realtime` +
+    `?userId=${encodeURIComponent(userId)}` +
+    `&clientId=${encodeURIComponent(wsClientId)}`;
+
+  let syncMessages = 0;
 
   const res = ws.connect(url, {}, (socket) => {
     socket.on('open', () => {
       wsConnections.add(1);
 
-      // Subscribe to changes
-      socket.send(
-        JSON.stringify({
-          type: 'subscribe',
-          subscriptions: [{ kind: 'user_tasks' }],
-        })
-      );
+      socket.setInterval(() => {
+        const op = taskUpsertOperation(userId);
+        push(userId, [op], writerClientId);
+      }, 2000);
     });
 
-    socket.on('message', () => {
+    socket.on('message', (data) => {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        return;
+      }
+
+      if (parsed?.event !== 'sync') return;
+      syncMessages++;
       wsMessages.add(1);
-      messageCount++;
     });
 
-    socket.on('error', (e) => {
-      console.error(`WS error: ${e}`);
+    socket.on('error', () => {
+      wsErrors.add(true);
     });
 
-    // Send periodic pings to keep connection alive
-    socket.setInterval(() => {
-      socket.send(JSON.stringify({ type: 'ping' }));
-    }, 30000);
-
-    // Hold connection for the test duration
     socket.setTimeout(() => {
       socket.close();
-    }, 300000); // 5 minutes max
+    }, smokeMode ? 8_000 : 60_000);
   });
 
-  check(res, {
+  const wsOk = check(res, {
     'ws connected': (r) => r && r.status === 101,
+    'ws received sync wake-up': () => syncMessages > 0,
   });
+
+  wsErrors.add(!(wsOk && syncMessages > 0));
 
   // WebSocket VUs run once and hold connection
-  // Sleep to prevent immediate reconnection
-  sleep(300);
+  sleep(smokeMode ? 8 : 60);
 }
 
 // Default function (for simple runs)
 export default function () {
-  // Default to reader behavior
   reader();
 }
 
-// Setup function
 export function setup() {
   console.log('Starting mixed workload load test...');
-  console.log(`Base URL: ${__ENV.BASE_URL || 'http://localhost:3001'}`);
-  console.log('Scenario: 80% readers, 20% writers, 100% WebSocket');
+  console.log(`Base URL: ${BASE_URL}`);
+  console.log('Scenario: readers + writers + websocket wake-ups');
 
-  // Verify server is available
   const res = healthCheck();
   if (res.status !== 200) {
     throw new Error(`Server not available: ${res.status}`);
@@ -213,20 +366,17 @@ export function setup() {
   return { startTime: Date.now() };
 }
 
-// Teardown function
 export function teardown(data) {
   const duration = (Date.now() - data.startTime) / 1000;
   console.log(`Test completed in ${duration.toFixed(2)}s`);
 }
 
-// Custom summary handler (optional)
 export function handleSummary(data) {
   const summary = {
     totalRequests: data.metrics.http_reqs?.values?.count || 0,
     avgLatency: data.metrics.http_req_duration?.values?.avg || 0,
     p95Latency: data.metrics.http_req_duration?.values['p(95)'] || 0,
-    errorRate:
-      (data.metrics.http_req_failed?.values?.rate || 0) * 100,
+    errorRate: (data.metrics.http_req_failed?.values?.rate || 0) * 100,
     wsConnections: data.metrics.ws_connections?.values?.count || 0,
     wsMessages: data.metrics.ws_messages?.values?.count || 0,
   };

@@ -88,13 +88,20 @@ jobs:
       - name: Extract regression report
         id: report
         run: |
-          if grep -q "Performance Regression Detected" perf-results.txt; then
+          if grep -q "PERF_GATE_SYNC_REGRESSION=true" perf-results.txt; then
             echo "has_regression=true" >> $GITHUB_OUTPUT
           else
             echo "has_regression=false" >> $GITHUB_OUTPUT
           fi
 
+          if grep -q "PERF_GATE_SYNC_MISSING_BASELINE=true" perf-results.txt; then
+            echo "has_missing_baseline=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_missing_baseline=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Comment PR with performance results
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
@@ -145,6 +152,12 @@ jobs:
                 body
               });
             }
+
+      - name: Fail on performance regression
+        if: steps.report.outputs.has_regression == 'true'
+        run: |
+          echo "Sync performance regression detected. See perf-results.txt for details."
+          exit 1
 
   runtime-browser:
     needs: changes

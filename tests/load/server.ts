@@ -1,21 +1,24 @@
 /**
  * Standalone load test server
  *
- * Uses PGlite (in-memory Postgres) and seeds configurable data for load testing.
- * This server can handle many concurrent connections for stress testing.
+ * Uses a configurable DB dialect and seeds configurable data for load testing.
+ * Default is SQLite to better mirror Durable Object style deployments.
  *
  * Environment variables:
  *   - PORT: Server port (default: 3001)
+ *   - LOAD_DB_DIALECT: `sqlite` or `pglite` (default: sqlite)
+ *   - SQLITE_PATH: SQLite DB path (default: :memory:)
  *   - SEED_ROWS: Total rows to seed exactly across all generated users (default: 10000)
  *   - SEED_USERS: Number of users to create (default: 100)
  *   - SEED_RANDOM_SEED: Optional deterministic seed for generated row randomness
  *
  * Usage:
  *   bun tests/load/server.ts
- *   SEED_ROWS=100000 SEED_USERS=1000 bun tests/load/server.ts
+ *   LOAD_DB_DIALECT=sqlite SEED_ROWS=100000 SEED_USERS=1000 bun tests/load/server.ts
  */
 
 import type { SyncOperation } from '@syncular/core';
+import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
 import { createPgliteDb } from '@syncular/dialect-pglite';
 import {
   type ApplyOperationResult,
@@ -26,6 +29,7 @@ import {
   type SyncCoreDb,
 } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import { createSyncRoutes } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
@@ -47,6 +51,8 @@ interface ServerDb extends SyncCoreDb {
     server_version: number;
   };
 }
+
+type LoadServerDialect = 'sqlite' | 'pglite';
 
 // Tasks table handler
 const tasksServerShape: ServerTableHandler<ServerDb> = {
@@ -313,9 +319,17 @@ async function main() {
   const seedRows = Number.parseInt(process.env.SEED_ROWS || '10000', 10);
   const seedUsers = Number.parseInt(process.env.SEED_USERS || '100', 10);
   const seedRandomSeed = process.env.SEED_RANDOM_SEED;
+  const dbDialectRaw = process.env.LOAD_DB_DIALECT || 'sqlite';
+  const dbDialect: LoadServerDialect =
+    dbDialectRaw === 'pglite' ? 'pglite' : 'sqlite';
+  const sqlitePath = process.env.SQLITE_PATH || ':memory:';
 
   console.log('=== Load Test Server ===');
   console.log(`Port: ${port}`);
+  console.log(`DB dialect: ${dbDialect}`);
+  if (dbDialect === 'sqlite') {
+    console.log(`SQLite path: ${sqlitePath}`);
+  }
   console.log(`Seed rows: ${seedRows}`);
   console.log(`Seed users: ${seedUsers}`);
   console.log(`Seed random seed: ${seedRandomSeed ?? '(random)'}`);
@@ -323,8 +337,14 @@ async function main() {
 
   // Initialize database
   console.log('Initializing database...');
-  const db = createPgliteDb<ServerDb>();
-  const dialect: ServerSyncDialect = createPostgresServerDialect();
+  const db =
+    dbDialect === 'pglite'
+      ? createPgliteDb<ServerDb>()
+      : createBunSqliteDb<ServerDb>({ path: sqlitePath });
+  const dialect: ServerSyncDialect =
+    dbDialect === 'pglite'
+      ? createPostgresServerDialect()
+      : createSqliteServerDialect();
 
   await ensureSyncSchema(db, dialect);
 
@@ -411,6 +431,21 @@ async function main() {
       seedUsers,
       seedRows,
       seedRandomSeed: seedRandomSeed ?? null,
+    });
+  });
+
+  // Per-user stats (used by bootstrap load tests)
+  app.get('/api/stats/user/:userId', async (c) => {
+    const userId = c.req.param('userId');
+    const taskCount = await db
+      .selectFrom('tasks')
+      .select(db.fn.count('id').as('count'))
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+
+    return c.json({
+      userId,
+      rows: Number(taskCount?.count ?? 0),
     });
   });
 

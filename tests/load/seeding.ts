@@ -25,7 +25,8 @@ export function buildSeedPlan(
   }
 
   const identities: string[] = [];
-  for (let userIndex = 0; userIndex < safeUserCount; userIndex++) {
+  // k6 VU ids are 1-based (__VU starts at 1), so seed from 1..N to match test users.
+  for (let userIndex = 1; userIndex <= safeUserCount; userIndex++) {
     for (const prefix of prefixes) {
       identities.push(`${prefix}-${userIndex}`);
     }

@@ -7,10 +7,10 @@ describe('buildSeedPlan', () => {
     const totalRows = plan.reduce((sum, entry) => sum + entry.rowCount, 0);
 
     expect(plan.map((entry) => entry.userId)).toEqual([
-      'alpha-0',
-      'beta-0',
       'alpha-1',
       'beta-1',
+      'alpha-2',
+      'beta-2',
     ]);
     expect(totalRows).toBe(100);
     expect(plan.every((entry) => entry.rowCount >= 25)).toBe(true);

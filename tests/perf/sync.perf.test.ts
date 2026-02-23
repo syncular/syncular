@@ -28,6 +28,7 @@ import {
   detectRegressions,
   formatRegressionReport,
   hasRegressions,
+  hasMissingBaselines,
   loadBaseline,
 } from './regression';
 
@@ -271,13 +272,21 @@ describe('sync performance', () => {
   it('generates regression report', async () => {
     const baseline = await loadBaseline(BASELINE_PATH);
     const regressions = detectRegressions(results, baseline);
+    const hasRegression = hasRegressions(regressions);
+    const hasMissingBaseline = hasMissingBaselines(regressions);
 
     // Log the report
     console.log(`\n${formatRegressionReport(regressions)}`);
+    // Machine-readable markers for CI gating.
+    console.log(`PERF_GATE_SYNC_REGRESSION=${hasRegression ? 'true' : 'false'}`);
+    console.log(
+      `PERF_GATE_SYNC_MISSING_BASELINE=${hasMissingBaseline ? 'true' : 'false'}`
+    );
 
     // Fail if regressions detected (disabled by default for initial setup)
     if (process.env.PERF_STRICT === 'true') {
-      expect(hasRegressions(regressions)).toBe(false);
+      expect(hasRegression).toBe(false);
+      expect(hasMissingBaseline).toBe(false);
     }
   });
 });
