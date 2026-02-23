@@ -4,6 +4,7 @@ import { createAsyncInitRegistry } from './async-init-registry';
 const cachedAsyncValueRegistry = createAsyncInitRegistry<unknown, unknown>();
 
 const EMPTY_DEPS: readonly unknown[] = Object.freeze([]);
+const DEFAULT_KEY = 'default';
 
 export interface UseCachedAsyncValueOptions<TKey = unknown> {
   /**
@@ -31,7 +32,7 @@ export function useCachedAsyncValue<TValue>(
   const runRef = useRef(run);
   runRef.current = run;
 
-  const key = options?.key ?? run;
+  const key = options?.key ?? DEFAULT_KEY;
   const deps = options?.deps ?? EMPTY_DEPS;
 
   useEffect(() => {
