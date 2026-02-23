@@ -2,7 +2,7 @@
   "name": "@syncular/client",
   "version": "0.0.0",
   "description": "Client-side sync engine with offline-first support, outbox, and conflict resolution",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

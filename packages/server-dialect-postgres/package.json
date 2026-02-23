@@ -2,7 +2,7 @@
   "name": "@syncular/server-dialect-postgres",
   "version": "0.0.0",
   "description": "PostgreSQL dialect for the Syncular server",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

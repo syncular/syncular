@@ -2,7 +2,7 @@
   "name": "@syncular/core",
   "version": "0.0.0",
   "description": "Core protocol types and shared utilities for the Syncular sync framework",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

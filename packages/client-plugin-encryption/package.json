@@ -2,7 +2,7 @@
   "name": "@syncular/client-plugin-encryption",
   "version": "0.0.0",
   "description": "End-to-end encryption plugin for the Syncular client",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

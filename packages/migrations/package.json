@@ -2,7 +2,7 @@
   "name": "@syncular/migrations",
   "version": "0.0.0",
   "description": "Database migration utilities for Syncular",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

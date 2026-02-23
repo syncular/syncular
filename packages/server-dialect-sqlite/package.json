@@ -2,7 +2,7 @@
   "name": "@syncular/server-dialect-sqlite",
   "version": "0.0.0",
   "description": "SQLite dialect for the Syncular server",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

@@ -2,7 +2,7 @@
   "name": "@syncular/testkit",
   "version": "0.0.0",
   "description": "Testing fixtures and utilities for Syncular",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

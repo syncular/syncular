@@ -2,7 +2,7 @@
   "name": "@syncular/relay",
   "version": "0.0.0",
   "description": "Edge relay for Syncular distributed sync",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

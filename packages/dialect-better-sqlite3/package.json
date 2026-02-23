@@ -2,7 +2,7 @@
   "name": "@syncular/dialect-better-sqlite3",
   "version": "0.0.0",
   "description": "better-sqlite3 dialect for the Syncular client",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

@@ -2,7 +2,7 @@
   "name": "@syncular/dialect-react-native-nitro-sqlite",
   "version": "0.0.0",
   "description": "React Native Nitro SQLite dialect for the Syncular client",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

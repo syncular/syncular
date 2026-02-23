@@ -2,7 +2,7 @@
   "name": "@syncular/server",
   "version": "0.0.0",
   "description": "Server-side sync engine with push/pull, pruning, and snapshot support",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

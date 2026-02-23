@@ -2,7 +2,7 @@
   "name": "@syncular/server-storage-s3",
   "version": "0.0.0",
   "description": "S3-compatible blob storage adapter for Syncular server",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

@@ -2,7 +2,7 @@
   "name": "syncular",
   "version": "0.0.0",
   "description": "Offline-first sync framework for TypeScript",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

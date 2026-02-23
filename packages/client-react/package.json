@@ -2,7 +2,7 @@
   "name": "@syncular/client-react",
   "version": "0.0.0",
   "description": "React hooks and bindings for the Syncular client",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

@@ -2,7 +2,7 @@
   "name": "@syncular/ui",
   "version": "0.0.0",
   "description": "Reusable Syncular UI components and styles",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

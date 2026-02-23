@@ -2,7 +2,7 @@
   "name": "@syncular/console",
   "version": "0.0.0",
   "description": "Embeddable Syncular console UI",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

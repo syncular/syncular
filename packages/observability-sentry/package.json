@@ -2,7 +2,7 @@
   "name": "@syncular/observability-sentry",
   "version": "0.0.0",
   "description": "Sentry adapters for Syncular telemetry",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

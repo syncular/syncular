@@ -2,7 +2,7 @@
   "name": "@syncular/dialect-expo-sqlite",
   "version": "0.0.0",
   "description": "Expo SQLite dialect for the Syncular client",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

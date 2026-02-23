@@ -2,7 +2,7 @@
   "name": "@syncular/transport-ws",
   "version": "0.0.0",
   "description": "WebSocket transport for Syncular real-time sync",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

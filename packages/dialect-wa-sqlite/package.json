@@ -2,7 +2,7 @@
   "name": "@syncular/dialect-wa-sqlite",
   "version": "0.0.0",
   "description": "WA-SQLite (WASM) dialect for the Syncular client",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {

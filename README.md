@@ -34,7 +34,7 @@ Your app queries a **local database** — reads are instant, the UI never waits 
 - **Observability** — pluggable telemetry (logs, traces, metrics, exceptions) with built-in Sentry adapter or bring your own (OpenTelemetry, Datadog, etc.)
 - **Migrations + typegen** — schema versioning for rolling upgrades, plus optional type generation from migrations
 - **Type-safe end-to-end** — TypeScript + [Kysely](https://kysely.dev) on both client and server, queries checked at build time
-- **Self-hosted, MIT** — run on your own infrastructure, no vendor lock-in
+- **Self-hosted, Apache-2.0** — run on your own infrastructure, no vendor lock-in
 
 ## How it works
 
@@ -127,4 +127,4 @@ bun --cwd apps/console dev  # console at http://localhost:5174
 
 ## License
 
-MIT
+Apache-2.0
