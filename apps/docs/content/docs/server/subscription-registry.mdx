@@ -1,0 +1,182 @@
+---
+title: Table Handlers & Scopes
+description: Configure data access through table handlers
+---
+
+Table handlers define how data syncs and what scopes users can access. Each handler has `resolveScopes` which controls authorization.
+
+## Basic Usage
+
+```typescript
+import type { ServerTableHandler } from '@syncular/server';
+
+const tasksHandler: ServerTableHandler = {
+  table: 'tasks',
+  scopePatterns: ['user:{user_id}'],
+
+  async resolveScopes(ctx) {
+    return {
+      user_id: ctx.actorId,
+    };
+  },
+
+  extractScopes(row) {
+    return {
+      user_id: String(row.user_id),
+    };
+  },
+
+  async snapshot(ctx) {
+    // Return data for ctx.scopeValues
+  },
+
+  async applyOperation(ctx, op, opIndex) {
+    // Apply changes
+  },
+};
+```
+
+## ServerTableHandler Interface
+
+```typescript
+interface ServerTableHandler {
+  table: string;
+  scopePatterns: string[];
+
+  resolveScopes(ctx: {
+    db: Kysely<any>;
+    actorId: string;
+  }): Promise<ScopeValues>;
+
+  extractScopes(row: Record<string, unknown>): ScopeValues;
+
+  snapshot(ctx: SnapshotContext): Promise<{ rows: unknown[]; nextCursor: string | null }>;
+
+  applyOperation(ctx: ApplyContext, op: SyncOperation, opIndex: number): Promise<ApplyOperationResult>;
+}
+
+type ScopeValues = Record<string, string | string[]>;
+```
+
+## Examples
+
+### User-Based Access
+
+```typescript
+const tasksHandler: ServerTableHandler = {
+  table: 'tasks',
+  scopePatterns: ['user:{user_id}'],
+
+  async resolveScopes(ctx) {
+    // User can only access their own data
+    return { user_id: ctx.actorId };
+  },
+
+  extractScopes(row) {
+    return { user_id: String(row.user_id) };
+  },
+};
+```
+
+### Project Membership
+
+```typescript
+const tasksHandler: ServerTableHandler = {
+  table: 'tasks',
+  scopePatterns: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    // User's data + projects they're members of
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      user_id: ctx.actorId,
+      project_id: memberships.map(m => m.project_id),
+    };
+  },
+
+  extractScopes(row) {
+    return {
+      user_id: String(row.user_id),
+      project_id: String(row.project_id),
+    };
+  },
+};
+```
+
+### Role-Based Access
+
+```typescript
+const tasksHandler: ServerTableHandler = {
+  table: 'tasks',
+  scopePatterns: ['user:{user_id}', 'org:{org_id}'],
+
+  async resolveScopes(ctx) {
+    const user = await ctx.db
+      .selectFrom('users')
+      .select(['role', 'org_id'])
+      .where('id', '=', ctx.actorId)
+      .executeTakeFirst();
+
+    const scopes: ScopeValues = {
+      user_id: ctx.actorId,
+    };
+
+    // Admins can access all org data
+    if (user?.role === 'admin' && user.org_id) {
+      scopes.org_id = user.org_id;
+    }
+
+    return scopes;
+  },
+};
+```
+
+## Client Usage
+
+Clients request subscriptions by table and scopes:
+
+```typescript
+<SyncProvider
+  sync={sync}
+  identity={{ actorId: userId }}
+  ...
+/>
+```
+
+## Authorization Flow
+
+1. Client requests subscription with `table` and `scopes`
+2. Server calls `resolveScopes` on the table handler
+3. Server intersects requested scopes with allowed scopes
+4. If intersection is non-empty, client receives data for effective scopes
+5. If intersection is empty, subscription returns `status: 'revoked'`
+
+## Scope Intersection
+
+```
+Requested (from client):      { project_id: 'p1' }
+Allowed (from resolveScopes): { user_id: 'u1', project_id: ['p1', 'p2'] }
+Effective:                    { project_id: 'p1' }
+```
+
+## Registering Handlers
+
+```typescript
+const { syncRoutes } = createSyncServer({
+  db, dialect,
+  sync: {
+    handlers: [tasksHandler, projectsHandler],
+    authenticate,
+  },
+});
+```
+
+## Next Steps
+
+- [Hono Adapter](/docs/server/hono-adapter) - Route configuration
+- [Scopes](/docs/introduction/scopes) - Understanding scopes

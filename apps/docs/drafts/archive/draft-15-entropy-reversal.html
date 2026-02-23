@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 15: Entropy Reversal</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Fragment+Mono&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Familjen Grotesk', sans-serif;
+    background: #020203;
+    color: #fff;
+    overflow-x: hidden;
+  }
+  .mono { font-family: 'Fragment Mono', monospace; }
+
+  /* Two canvas states — chaos and order */
+  #entropy-canvas {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+
+  /* Title */
+  .hero-title {
+    font-size: clamp(3.5rem, 10vw, 8rem);
+    font-weight: 700;
+    line-height: 0.92;
+    letter-spacing: -0.03em;
+  }
+
+  /* Strike-through for "chaos" becoming "order" */
+  .chaos {
+    text-decoration: line-through;
+    text-decoration-color: rgba(239, 68, 68, 0.3);
+    text-decoration-thickness: 2px;
+    color: rgba(255,255,255,0.15);
+  }
+  .order {
+    color: rgba(52, 211, 153, 0.7);
+  }
+
+  /* Animations */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fi { animation: fade-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .fi1 { animation-delay: 0.15s; }
+  .fi2 { animation-delay: 0.3s; }
+  .fi3 { animation-delay: 0.5s; }
+  .fi4 { animation-delay: 0.7s; }
+  .fi5 { animation-delay: 0.9s; }
+
+  /* Before/After comparison */
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 0;
+  }
+  .comp-side {
+    padding: 24px;
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 12px;
+  }
+  .comp-side.chaos-side {
+    border-color: rgba(239, 68, 68, 0.06);
+    background: rgba(239, 68, 68, 0.01);
+  }
+  .comp-side.order-side {
+    border-color: rgba(52, 211, 153, 0.06);
+    background: rgba(52, 211, 153, 0.01);
+  }
+  .comp-divider {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0 20px;
+  }
+  .comp-divider .line {
+    width: 1px;
+    flex: 1;
+    background: linear-gradient(180deg, rgba(239,68,68,0.1), rgba(255,255,255,0.05), rgba(52,211,153,0.1));
+  }
+
+  /* Entropy indicator */
+  .entropy-bar {
+    height: 3px;
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+  }
+  .entropy-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s ease;
+  }
+
+  /* Feature cards */
+  .order-card {
+    border: 1px solid rgba(52, 211, 153, 0.05);
+    border-radius: 10px;
+    padding: 16px;
+    transition: all 0.3s ease;
+  }
+  .order-card:hover {
+    border-color: rgba(52, 211, 153, 0.1);
+    background: rgba(52, 211, 153, 0.02);
+  }
+
+  /* CTA */
+  .cta-order {
+    background: rgba(52, 211, 153, 0.08);
+    border: 1px solid rgba(52, 211, 153, 0.12);
+    transition: all 0.3s ease;
+  }
+  .cta-order:hover {
+    background: rgba(52, 211, 153, 0.15);
+    border-color: rgba(52, 211, 153, 0.25);
+    box-shadow: 0 0 40px rgba(52, 211, 153, 0.06);
+  }
+
+  /* Scattered data items */
+  .scattered {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  .scattered .item {
+    padding: 6px 10px;
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 6px;
+    font-size: 9px;
+    transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .scattered .item.chaos-item {
+    opacity: 0.3;
+    transform: rotate(var(--rot)) translateX(var(--tx)) translateY(var(--ty));
+    color: rgba(239, 68, 68, 0.4);
+    border-color: rgba(239, 68, 68, 0.05);
+  }
+  .scattered:hover .item.chaos-item {
+    opacity: 0.7;
+    transform: rotate(0deg) translateX(0) translateY(0);
+    color: rgba(52, 211, 153, 0.5);
+    border-color: rgba(52, 211, 153, 0.1);
+  }
+</style>
+</head>
+<body>
+
+<canvas id="entropy-canvas"></canvas>
+
+<!-- Nav -->
+<header class="fixed top-0 left-0 right-0 z-50 px-8 py-6">
+  <nav class="max-w-6xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-1">
+        <div class="w-1.5 h-1.5 rounded-full bg-red-400/30"></div>
+        <svg width="12" height="8" viewBox="0 0 12 8" fill="none"><path d="M1 4h10M8 1l3 3-3 3" stroke="rgba(255,255,255,0.15)" stroke-width="0.5"/></svg>
+        <div class="w-1.5 h-1.5 rounded-full bg-emerald-400/50"></div>
+      </div>
+      <span class="text-xs font-semibold tracking-wider text-white/50">Syncular</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="#" class="text-[10px] text-white/25 hover:text-white/60 transition-colors font-medium">Docs</a>
+      <a href="#" class="text-[10px] text-white/25 hover:text-white/60 transition-colors font-medium">GitHub</a>
+    </div>
+  </nav>
+</header>
+
+<!-- Hero -->
+<section class="relative min-h-screen flex flex-col justify-center z-10 px-8">
+  <div class="max-w-5xl mx-auto w-full">
+    <div class="mono text-[9px] tracking-[0.4em] uppercase text-emerald-400/25 mb-6 fi fi1">
+      second law: reversed
+    </div>
+    <h1 class="hero-title fi fi2">
+      <span class="chaos">Scattered data.</span><br>
+      <span class="order">Perfect sync.</span>
+    </h1>
+    <p class="mt-8 text-sm text-white/20 leading-relaxed max-w-lg fi fi3">
+      Entropy says everything trends toward disorder. Syncular reverses the arrow —
+      scattered mutations across clients collapse into a single ordered truth.
+      Chaos becomes structure. Offline becomes online. Conflict becomes consensus.
+    </p>
+    <div class="mt-10 flex items-center gap-4 fi fi4">
+      <a href="#" class="cta-order px-7 py-2.5 rounded-lg text-sm font-semibold text-emerald-300/80">
+        Reverse Entropy
+      </a>
+      <a href="#" class="px-7 py-2.5 text-sm text-white/20 hover:text-white/50 transition-colors">
+        Source Code →
+      </a>
+    </div>
+
+    <!-- Entropy indicator -->
+    <div class="mt-16 max-w-sm fi fi5">
+      <div class="flex items-center justify-between mb-2">
+        <span class="mono text-[8px] text-red-400/30">HIGH ENTROPY</span>
+        <span class="mono text-[8px] text-emerald-400/30">LOW ENTROPY</span>
+      </div>
+      <div class="entropy-bar bg-white/[0.03]">
+        <div class="entropy-fill bg-gradient-to-r from-red-500/30 via-yellow-500/20 to-emerald-500/40" style="width: 78%;"></div>
+      </div>
+      <div class="mono text-[8px] text-white/10 mt-2">sync progress: 78% — converging</div>
+    </div>
+  </div>
+</section>
+
+<!-- Before/After -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-5xl mx-auto">
+    <h2 class="text-3xl font-bold text-white/60 mb-12">
+      <span class="chaos">Disorder</span> → <span class="order">Order</span>
+    </h2>
+
+    <div class="comparison">
+      <div class="comp-side chaos-side">
+        <span class="mono text-[9px] text-red-400/30 tracking-wider">BEFORE SYNC</span>
+        <div class="mt-4 space-y-2">
+          <div class="text-[10px] text-white/20">Client A: <span class="mono text-red-400/25">task.status = "done"</span></div>
+          <div class="text-[10px] text-white/20">Client B: <span class="mono text-red-400/25">task.status = "pending"</span></div>
+          <div class="text-[10px] text-white/20">Client C: <span class="mono text-red-400/25">task.status = "in_progress"</span></div>
+          <div class="text-[10px] text-white/10 italic mt-3">Three clients, three truths. Maximum entropy.</div>
+        </div>
+      </div>
+
+      <div class="comp-divider">
+        <div class="line"></div>
+        <div class="my-3">
+          <span class="mono text-[8px] text-white/15">sync</span>
+        </div>
+        <div class="line"></div>
+      </div>
+
+      <div class="comp-side order-side">
+        <span class="mono text-[9px] text-emerald-400/30 tracking-wider">AFTER SYNC</span>
+        <div class="mt-4 space-y-2">
+          <div class="text-[10px] text-white/30">Client A: <span class="mono text-emerald-400/30">task.status = "done"</span></div>
+          <div class="text-[10px] text-white/30">Client B: <span class="mono text-emerald-400/30">task.status = "done"</span></div>
+          <div class="text-[10px] text-white/30">Client C: <span class="mono text-emerald-400/30">task.status = "done"</span></div>
+          <div class="text-[10px] text-white/15 italic mt-3">Three clients, one truth. Entropy reversed.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Hover to organize scattered data -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-3xl mx-auto text-center">
+    <h2 class="text-2xl font-bold text-white/50 mb-3">Hover to sync</h2>
+    <p class="mono text-[9px] text-white/15 mb-8">Watch chaos become order.</p>
+    <div class="scattered">
+      <div class="item chaos-item mono" style="--rot: -5deg; --tx: 8px; --ty: -3px;">INSERT task</div>
+      <div class="item chaos-item mono" style="--rot: 3deg; --tx: -5px; --ty: 6px;">UPDATE user</div>
+      <div class="item chaos-item mono" style="--rot: -2deg; --tx: 12px; --ty: 2px;">DELETE old</div>
+      <div class="item chaos-item mono" style="--rot: 7deg; --tx: -8px; --ty: -5px;">INSERT note</div>
+      <div class="item chaos-item mono" style="--rot: -4deg; --tx: 3px; --ty: 8px;">UPDATE task</div>
+      <div class="item chaos-item mono" style="--rot: 6deg; --tx: -10px; --ty: -2px;">INSERT file</div>
+      <div class="item chaos-item mono" style="--rot: -8deg; --tx: 5px; --ty: -7px;">UPDATE note</div>
+      <div class="item chaos-item mono" style="--rot: 2deg; --tx: -3px; --ty: 4px;">DELETE temp</div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-5xl mx-auto">
+    <h2 class="text-3xl font-bold text-white/60 mb-12">Ordering forces</h2>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="order-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Offline-First</h3>
+        <p class="mono text-[9px] text-white/15">Local entropy contained. SQLite always writable.</p>
+      </div>
+      <div class="order-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Commit-Log</h3>
+        <p class="mono text-[9px] text-white/15">The ordering mechanism. Every change has a position.</p>
+      </div>
+      <div class="order-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Scoped Auth</h3>
+        <p class="mono text-[9px] text-white/15">Boundaries that prevent entropy leakage between scopes.</p>
+      </div>
+      <div class="order-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Type-Safe SQL</h3>
+        <p class="mono text-[9px] text-white/15">Compile-time order. Kysely + TypeScript.</p>
+      </div>
+      <div class="order-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Conflict Detection</h3>
+        <p class="mono text-[9px] text-white/15">When entropy spikes, we detect and resolve.</p>
+      </div>
+      <div class="order-card">
+        <h3 class="text-sm font-semibold text-white/50 mb-1">Self-Hosted</h3>
+        <p class="mono text-[9px] text-white/15">Your entropy, your rules. MIT license.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section class="relative z-10 px-8 py-24">
+  <div class="max-w-2xl mx-auto text-center">
+    <h2 class="text-3xl font-bold mb-12">
+      <span class="chaos">Chaos</span> <span class="text-white/20">→</span> <span class="order">Order</span>
+    </h2>
+    <div class="order-card p-6 text-left">
+      <code class="mono text-[11px] text-white/25">
+        <span class="text-emerald-400/20">$</span> bun add @syncular/client @syncular/server
+      </code>
+    </div>
+  </div>
+</section>
+
+<footer class="relative z-10 px-8 py-12 border-t border-white/[0.03]">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
+    <span class="mono text-[9px] text-white/12">syncular — MIT license</span>
+    <div class="flex gap-6">
+      <a href="#" class="mono text-[9px] text-white/12 hover:text-white/30 transition-colors">docs</a>
+      <a href="#" class="mono text-[9px] text-white/12 hover:text-white/30 transition-colors">github</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Entropy visualization — particles that start scattered and gradually organize into a grid
+const canvas = document.getElementById('entropy-canvas');
+const ctx = canvas.getContext('2d');
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+const dots = [];
+const GRID_COLS = 30;
+const GRID_ROWS = 20;
+const SPACING = 40;
+
+for (let row = 0; row < GRID_ROWS; row++) {
+  for (let col = 0; col < GRID_COLS; col++) {
+    const targetX = (canvas.width - GRID_COLS * SPACING) / 2 + col * SPACING + SPACING / 2;
+    const targetY = (canvas.height - GRID_ROWS * SPACING) / 2 + row * SPACING + SPACING / 2;
+    dots.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      targetX,
+      targetY,
+      size: 1,
+      chaosOffset: { x: (Math.random() - 0.5) * 200, y: (Math.random() - 0.5) * 200 },
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.3 + Math.random() * 0.7,
+    });
+  }
+}
+
+let syncProgress = 0;
+let direction = 1;
+
+function animate() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Oscillate sync progress
+  syncProgress += 0.001 * direction;
+  if (syncProgress > 0.85) direction = -1;
+  if (syncProgress < 0.15) direction = 1;
+
+  const time = Date.now() * 0.001;
+
+  dots.forEach(d => {
+    // Interpolate between chaos and order
+    const chaosX = d.targetX + d.chaosOffset.x + Math.sin(time * d.speed + d.phase) * 15;
+    const chaosY = d.targetY + d.chaosOffset.y + Math.cos(time * d.speed + d.phase) * 15;
+
+    d.x = chaosX + (d.targetX - chaosX) * syncProgress;
+    d.y = chaosY + (d.targetY - chaosY) * syncProgress;
+
+    // Color: red when chaotic, green when ordered
+    const r = Math.floor(239 * (1 - syncProgress) + 52 * syncProgress);
+    const g = Math.floor(68 * (1 - syncProgress) + 211 * syncProgress);
+    const b = Math.floor(68 * (1 - syncProgress) + 153 * syncProgress);
+    const alpha = 0.05 + syncProgress * 0.1;
+
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    ctx.fill();
+  });
+
+  // Draw grid lines when synced enough
+  if (syncProgress > 0.5) {
+    const gridAlpha = (syncProgress - 0.5) * 0.04;
+    ctx.strokeStyle = `rgba(52, 211, 153, ${gridAlpha})`;
+    ctx.lineWidth = 0.5;
+
+    const startX = (canvas.width - GRID_COLS * SPACING) / 2;
+    const startY = (canvas.height - GRID_ROWS * SPACING) / 2;
+
+    for (let col = 0; col <= GRID_COLS; col++) {
+      ctx.beginPath();
+      ctx.moveTo(startX + col * SPACING, startY);
+      ctx.lineTo(startX + col * SPACING, startY + GRID_ROWS * SPACING);
+      ctx.stroke();
+    }
+    for (let row = 0; row <= GRID_ROWS; row++) {
+      ctx.beginPath();
+      ctx.moveTo(startX, startY + row * SPACING);
+      ctx.lineTo(startX + GRID_COLS * SPACING, startY + row * SPACING);
+      ctx.stroke();
+    }
+  }
+
+  requestAnimationFrame(animate);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+---
+title: Create Commands
+description: Use syncular create to scaffold libraries or generate a runnable demo project.
+---
+
+# Create Commands
+
+`syncular create --template ...` covers four templates:
+
+- **syncular-libraries:** generate `src/syncular/*` modules, config, migration script, and package scripts
+- **syncular-demo:** generate a runnable full demo project
+- **spaces-app:** generate a managed Spaces app scaffold
+- **spaces-demo:** generate the managed Spaces demo project scaffold
+
+Run commands with one of:
+
+- `syncular ...` (global install)
+- `npx @syncular/cli ...`
+- `bunx @syncular/cli ...`
+
+## Create libraries
+
+Run the interactive wizard:
+
+```bash
+syncular create --template syncular-libraries
+```
+
+Run non-interactive:
+
+```bash
+syncular create --template syncular-libraries --no-interactive \
+  --dir ./my-app \
+  --targets server,react,expo \
+  --server-dialect postgres
+```
+
+### Targets
+
+Supported `--targets` values:
+
+- `server`
+- `react`
+- `vanilla`
+- `expo`
+- `react-native`
+- `electron`
+- `proxy-api`
+
+If `--targets` is omitted, defaults are `server,react`.
+
+### Dialects
+
+| Target | Dialect flags |
+|---|---|
+| `server` | `--server-dialect postgres|sqlite` |
+| `react` | `--react-dialect wa-sqlite|pglite|bun-sqlite|better-sqlite3|sqlite3` |
+| `vanilla` | `--vanilla-dialect wa-sqlite|pglite|bun-sqlite|better-sqlite3|sqlite3` |
+| `electron` | `--electron-dialect electron-sqlite|better-sqlite3` |
+| `expo` | fixed: `expo-sqlite` |
+| `react-native` | fixed: `react-native-nitro-sqlite` |
+| `proxy-api` | no dialect flag |
+
+### Generated output (libraries mode)
+
+Always generated:
+
+- `syncular.config.json`
+- `scripts/syncular-migrate.ts`
+- `scripts/syncular-typegen.ts`
+- `package.json` scripts:
+  - `db:migrate:status`
+  - `db:migrate`
+  - `db:migrate:reset`
+  - `db:typegen`
+  - `db:prepare`
+
+Generated per selected target:
+
+- `src/syncular/server/index.ts`
+- `src/syncular/react/index.ts`
+- `src/syncular/vanilla/index.ts`
+- `src/syncular/expo/index.ts`
+- `src/syncular/react-native/index.ts`
+- `src/syncular/electron/index.ts`
+- `src/syncular/proxy-api/index.ts`
+
+## Create demo
+
+Generate a runnable demo project:
+
+```bash
+syncular create --template syncular-demo --dir ./syncular-demo
+cd ./syncular-demo
+bun install
+bun dev
+```
+
+What demo mode generates:
+
+- Hono server (`src/server/index.ts`)
+- Vite React client (`src/client/*`)
+- shared schema + migrations (`src/shared/db.ts`, `scripts/syncular-migrate.ts`)
+- `syncular.config.json`
+
+## Flags
+
+Shared create flags:
+
+- `--dir <path>` (default `.`)
+- `--force <true|false>` (overwrite generated files)

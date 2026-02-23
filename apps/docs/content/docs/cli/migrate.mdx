@@ -1,0 +1,95 @@
+---
+title: Migrate Commands
+description: Wire a migration adapter and run status/up migrations from the Syncular CLI.
+---
+
+# Migrate Commands
+
+The migrate commands call the adapter configured in `syncular.config.json`.
+
+Run commands with one of:
+
+- `syncular ...` (global install)
+- `npx @syncular/cli ...`
+- `bunx @syncular/cli ...`
+
+## Required config
+
+```json
+{
+  "migrate": {
+    "adapter": "./scripts/syncular-migrate.ts",
+    "export": "migrationRunner"
+  }
+}
+```
+
+If `export` is omitted, the CLI defaults to `migrationRunner`.
+
+## Adapter contract
+
+The configured export must provide:
+
+```ts
+interface MigrationAdapter {
+  status(input: { cwd: string }): Promise<{
+    currentVersion: number;
+    targetVersion: number;
+    pendingVersions: number[];
+    trackingTable?: string;
+  }>;
+  up(input: {
+    cwd: string;
+    onChecksumMismatch: 'error' | 'reset';
+    dryRun: boolean;
+  }): Promise<{
+    appliedVersions: number[];
+    currentVersion: number;
+    wasReset?: boolean;
+    dryRun?: boolean;
+  }>;
+}
+```
+
+## `migrate-status`
+
+```bash
+syncular migrate-status --config syncular.config.json
+```
+
+Output includes:
+
+- current migration version
+- target migration version
+- pending versions
+- optional tracking table name
+
+## `migrate-up`
+
+Apply pending migrations:
+
+```bash
+syncular migrate-up --config syncular.config.json
+```
+
+Dry-run (plan only):
+
+```bash
+syncular migrate-up --dry-run true --config syncular.config.json
+```
+
+Checksum reset mode (explicit confirmation required):
+
+```bash
+syncular migrate-up \
+  --on-checksum-mismatch reset \
+  --yes true \
+  --config syncular.config.json
+```
+
+### Flags
+
+- `--config <path>`: config file path (default `syncular.config.json`)
+- `--on-checksum-mismatch error|reset`: mismatch behavior (default `error`)
+- `--dry-run <true|false>`: compute pending migrations without applying
+- `--yes <true|false>`: required when using `--on-checksum-mismatch reset`

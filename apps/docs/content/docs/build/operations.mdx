@@ -1,0 +1,546 @@
+---
+title: Operations Console
+description: Monitoring, maintenance, and management APIs
+---
+
+The console provides monitoring dashboards, maintenance operations, and management APIs for your Syncular deployment.
+
+For UI/operator workflows, see the dedicated [Console docs](/docs/console). This page focuses on route setup and endpoint behavior.
+For integration options (CLI serve, mount API, components), see [Console Integration](/docs/build/console-integration).
+
+## Setup
+
+```typescript
+import {
+  createConsoleRoutes,
+  createConsoleEventEmitter,
+  createTokenAuthenticator,
+} from '@syncular/server-hono';
+
+const eventEmitter = createConsoleEventEmitter();
+
+const consoleRoutes = createConsoleRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate: createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN),
+  corsOrigins: '*',
+  eventEmitter,
+  websocket: {
+    enabled: true,
+    upgradeWebSocket,
+    heartbeatIntervalMs: 30000,
+  },
+  compact: { fullHistoryHours: 168 }, // 7 days
+  prune: {
+    activeWindowMs: 14 * 24 * 60 * 60 * 1000,  // 14 days
+    fallbackMaxAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 days
+    keepNewestCommits: 1000,
+  },
+});
+
+app.route('/api/console', consoleRoutes);
+```
+
+All paths below are **relative to where you mount** `createConsoleRoutes` (example above mounts at `/api/console`).
+
+To serve the Console UI itself, add:
+
+```typescript
+import { mountConsoleUi } from '@syncular/server-hono';
+
+mountConsoleUi(app, {
+  mountPath: '/console',
+  apiBasePath: '/api',
+  resolveToken: async (c) => {
+    const session = await getSession(c);
+    return session?.consoleToken;
+  },
+});
+```
+
+## Gateway Mode (Multi-Instance)
+
+Use `createConsoleGatewayRoutes` when operators need one Console view across multiple Syncular instances.
+
+```typescript
+import {
+  createConsoleGatewayRoutes,
+  createTokenAuthenticator,
+} from '@syncular/server-hono';
+
+const authenticate = createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN);
+
+const consoleGatewayRoutes = createConsoleGatewayRoutes({
+  authenticate,
+  corsOrigins: '*',
+  instances: [
+    {
+      instanceId: 'feature-a',
+      label: 'Feature A',
+      baseUrl: 'https://api.acme.dev/feature-a',
+    },
+    {
+      instanceId: 'feature-b',
+      label: 'Feature B',
+      baseUrl: 'https://api.acme.dev/feature-b',
+    },
+    {
+      instanceId: 'legacy',
+      label: 'Legacy',
+      baseUrl: 'https://api.acme.dev/internal/legacy-sync',
+      token: process.env.LEGACY_CONSOLE_TOKEN, // optional override
+    },
+  ],
+  websocket: {
+    enabled: true,
+    upgradeWebSocket,
+    heartbeatIntervalMs: 30000,
+  },
+});
+
+app.route('/api/console', consoleGatewayRoutes);
+```
+
+Gateway auth behavior:
+
+- If an instance entry omits `token`, the gateway forwards the inbound bearer token to that instance.
+- Set per-instance `token` only when one downstream uses a different credential.
+
+Gateway filtering and safety:
+
+- Read endpoints support `instanceId` / `instanceIds` filters and return merged responses.
+- Write/config endpoints require exactly one target instance (`instanceId` or a single-value `instanceIds`).
+
+Gateway health probe:
+
+- `GET /instances/health` runs a lightweight probe (`/console/stats`) against selected downstream instances.
+- Response includes per-instance `healthy`, `status`, `reason`, `responseTimeMs`, and `checkedAt`.
+- Supports `instanceId` / `instanceIds` filters.
+
+## Statistics Endpoints
+
+### Overall Stats
+
+**GET /stats**
+
+Returns aggregate sync statistics:
+
+```typescript
+interface SyncStats {
+  commitCount: number;
+  changeCount: number;
+  minCommitSeq: number;
+  maxCommitSeq: number;
+  clientCount: number;
+  activeClientCount: number;
+  minActiveClientCursor: number;
+  maxActiveClientCursor: number;
+}
+```
+
+### Time Series Metrics
+
+**GET /stats/timeseries**
+
+Query parameters:
+- `interval`: `minute` | `hour` | `day`
+- `range`: `1h` | `6h` | `24h` | `7d` | `30d`
+
+Returns buckets with `pushCount`, `pullCount`, `errorCount`, `avgLatencyMs`.
+
+### Latency Percentiles
+
+**GET /stats/latency**
+
+Query parameters:
+- `range`: `1h` | `6h` | `24h` | `7d` | `30d`
+
+Returns p50, p90, p99 percentiles for push and pull operations.
+
+## Commit Management
+
+### List Commits
+
+**GET /commits**
+
+Query parameters:
+- `limit`: 1-100 (default: 50)
+- `offset`: pagination offset
+
+Response includes `X-Total-Count` header.
+
+```typescript
+interface ConsoleCommitListItem {
+  commitSeq: number;
+  actorId: string;
+  clientId: string;
+  clientCommitId: string;
+  createdAt: string;
+  changeCount: number;
+  affectedTables: string[];
+}
+```
+
+### Commit Details
+
+**GET /commits/:seq**
+
+Returns full commit with all changes:
+
+```typescript
+interface ConsoleCommitDetail {
+  commitSeq: number;
+  actorId: string;
+  // ...
+  changes: Array<{
+    changeId: number;
+    table: string;
+    rowId: string;
+    op: 'upsert' | 'delete';
+    rowJson: unknown;
+    rowVersion: number | null;
+    scopes: Record<string, string>;
+  }>;
+}
+```
+
+## Client Management
+
+### List Clients
+
+**GET /clients**
+
+Returns clients with their cursor positions and last-known effective scopes (scope values).
+
+### Evict Client
+
+**DELETE /clients/:id**
+
+Removes client cursor record, forcing the client to bootstrap on next sync.
+
+```typescript
+// Response
+{ evicted: boolean }
+```
+
+## Maintenance Operations
+
+### Pruning
+
+Removes old commits to manage database size.
+
+**POST /prune/preview** - Dry run
+
+```typescript
+// Response
+{
+  watermarkCommitSeq: number;  // Commits at or below will be deleted
+  commitsToDelete: number;
+}
+```
+
+**POST /prune** - Execute
+
+```typescript
+// Response
+{ deletedCommits: number }
+```
+
+Pruning strategy:
+1. Find active clients (cursor updated within `activeWindowMs`)
+2. Watermark = minimum cursor across active clients
+3. Apply fallback for stuck cursors (older than `fallbackMaxAgeMs`)
+4. Preserve `keepNewestCommits` newest commits
+5. Cascade delete from `sync_commits` and `sync_changes`
+
+### Compaction
+
+Removes intermediate change history while preserving newest state per row.
+
+**POST /compact**
+
+```typescript
+// Response
+{ deletedChanges: number }
+```
+
+Keeps full history for last N hours (`fullHistoryHours`), then compacts older changes to just the newest per (table, row_id, scopes).
+
+## Storage Endpoints (Optional)
+
+Console storage APIs are enabled only when `blobBucket` is provided:
+
+```typescript
+const consoleRoutes = createConsoleRoutes({
+  db,
+  dialect,
+  handlers,
+  authenticate: createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN),
+  blobBucket: {
+    list: async ({ prefix, cursor, limit }) => bucket.list({ prefix, cursor, limit }),
+    get: async (key) => bucket.get(key),
+    delete: async (key) => bucket.delete(key),
+    head: async (key) => bucket.head(key),
+  },
+});
+```
+
+Endpoints:
+
+- `GET /storage` - list objects (prefix/cursor/limit)
+- `GET /storage/:key/download` - download object bytes
+- `DELETE /storage/:key` - delete object
+
+Notes:
+
+- These are mounted under your console prefix (for example `/api/console/storage`).
+- Storage routes are part of direct console routes; gateway mode does not proxy storage endpoints.
+
+## Request Events
+
+Track sync request history for debugging and analytics.
+
+### List Events
+
+**GET /events**
+
+Query parameters:
+- `limit`, `offset`: Pagination
+- `eventType`: `push` | `pull`
+- `actorId`, `clientId`: Filter by client
+- `outcome`: `success` | `error`
+
+```typescript
+interface ConsoleRequestEvent {
+  id: string;
+  eventType: 'push' | 'pull';
+  actorId: string;
+  clientId: string;
+  statusCode: number;
+  outcome: 'success' | 'error';
+  durationMs: number;
+  commitSeq?: number;
+  operationCount?: number;
+  rowCount?: number;
+  affectedScopes?: Record<string, string[]>;
+  errorMessage?: string;
+  createdAt: string;
+}
+```
+
+### Event Details
+
+**GET /events/:id**
+
+### Clear Events
+
+**DELETE /events** - Delete all events
+
+**POST /events/prune** - Delete events older than 7 days or keep newest 10,000
+
+## Live Events (WebSocket)
+
+**GET /events/live**
+
+Connect via WebSocket for real-time activity monitoring:
+
+```typescript
+const ws = new WebSocket('wss://api.example.com/console/events/live?token=YOUR_TOKEN');
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+
+  switch (data.type) {
+    case 'connected':
+      console.log('Connected at', data.timestamp);
+      break;
+    case 'heartbeat':
+      // Keep-alive
+      break;
+    case 'push':
+    case 'pull':
+    case 'commit':
+    case 'client_update':
+      console.log('Activity:', data);
+      break;
+  }
+};
+```
+
+## API Key Management
+
+Manage API keys for relay servers, proxies, and admin access.
+
+### List Keys
+
+**GET /api-keys**
+
+Query parameters:
+- `limit`, `offset`: Pagination
+- `type`: `relay` | `proxy` | `admin`
+
+### Create Key
+
+**POST /api-keys**
+
+```typescript
+// Request
+{
+  name: string;
+  keyType: 'relay' | 'proxy' | 'admin';
+  scopes?: Record<string, string[]>;
+  actorId?: string;
+  expiresInDays?: number;
+}
+
+// Response
+{
+  key: ConsoleApiKey;
+  secretKey: string;  // Only returned on creation!
+}
+```
+
+Secret key format: `sk_{keyType}_{random_hex}`
+
+### Revoke Key
+
+**DELETE /api-keys/:id**
+
+Soft-deletes the key (sets `revoked_at`).
+
+### Rotate Key
+
+**POST /api-keys/:id/rotate**
+
+Revokes old key and creates new one with same properties.
+
+```typescript
+// Response
+{
+  key: ConsoleApiKey;
+  secretKey: string;
+}
+```
+
+### Key Validation
+
+Use `validateApiKey` for authenticating API requests:
+
+```typescript
+import { validateApiKey } from '@syncular/server-hono';
+
+const authenticate = async (c: Context) => {
+  const result = await validateApiKey(db, c.req.header('Authorization'));
+  if (!result) return null;
+
+  return {
+    actorId: result.actorId,
+    scopes: result.scopes,
+    keyType: result.keyType,
+  };
+};
+```
+
+## Authentication
+
+### Token Authentication
+
+Simple bearer token:
+
+```typescript
+import { createTokenAuthenticator } from '@syncular/server-hono';
+
+const authenticate = createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN);
+```
+
+Checks `Authorization: Bearer <token>` header or `token` query parameter.
+
+### Custom Authentication
+
+```typescript
+authenticate: async (c) => {
+  const session = await getSession(c);
+  if (!session?.isAdmin) return null;
+
+  return { consoleUserId: session.userId };
+}
+```
+
+## Configuration Reference
+
+```typescript
+interface CreateConsoleRoutesOptions {
+  // Required
+  db: Kysely<any>;
+  dialect: ServerSyncDialect;
+  handlers: ServerTableHandler[];
+  authenticate: (c: Context) => Promise<ConsoleAuthResult | null>;
+
+  // Optional
+  corsOrigins?: string[] | '*';
+  eventEmitter?: ConsoleEventEmitter;
+
+  websocket?: {
+    enabled?: boolean;
+    upgradeWebSocket?: UpgradeWebSocket;
+    heartbeatIntervalMs?: number;  // Default: 30000
+  };
+
+  compact?: {
+    fullHistoryHours?: number;     // Default: 168 (7 days)
+  };
+
+  prune?: {
+    activeWindowMs?: number;       // Default: 14 days
+    fallbackMaxAgeMs?: number;     // Default: 30 days
+    keepNewestCommits?: number;    // Default: 1000
+  };
+}
+```
+
+## Monitoring Best Practices
+
+### Set Up Alerts
+
+Monitor these metrics:
+- **Active client count** dropping unexpectedly
+- **Error rate** in request events
+- **Latency percentiles** increasing
+- **Commit rate** for capacity planning
+
+### Regular Maintenance
+
+Schedule regular operations:
+
+```bash
+# Daily: Prune old events
+curl -X POST https://api.example.com/console/events/prune
+
+# Weekly: Compact changes
+curl -X POST https://api.example.com/console/compact
+
+# Monthly: Prune old commits
+curl -X POST https://api.example.com/console/prune
+```
+
+### Dashboard Integration
+
+Use the stats endpoints to build monitoring dashboards:
+
+```typescript
+// Fetch metrics every minute
+const stats = await fetch('/console/stats').then((r) => r.json());
+const timeseries = await fetch('/console/stats/timeseries?interval=minute&range=1h')
+  .then((r) => r.json());
+
+// Push to your monitoring system
+metrics.gauge('syncular.commits', stats.commitCount);
+metrics.gauge('syncular.active_clients', stats.activeClientCount);
+```
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) - Full server configuration
+- [Testing Guide](/docs/build/testing) - Test your sync setup
+- [Architecture](/docs/introduction/architecture) - System design overview

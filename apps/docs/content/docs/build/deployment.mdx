@@ -1,0 +1,386 @@
+---
+title: Deployment
+description: Deploy Syncular to production with Docker, Cloudflare Workers, fly.io, Railway, and other platforms.
+---
+
+# Deployment
+
+Syncular's server is built on Hono, making it portable across Node.js, Bun, Cloudflare Workers, Deno, and other runtimes. This guide covers common deployment patterns and production best practices.
+
+## What you'll learn
+
+- Deploying with Docker (Bun and Node.js)
+- Deploying to Cloudflare Workers
+- Deploying to fly.io and Railway
+- Environment variable configuration
+- Health checks, CORS, and rate limiting
+- A production readiness checklist
+
+## Prerequisites
+
+- A working Syncular server setup ([Server Setup](/docs/build/server-setup))
+- A PostgreSQL or SQLite database for production use
+- Basic familiarity with Docker or your target deployment platform
+
+## Environment Variables
+
+Configure your server with environment variables. Here is a recommended set:
+
+```bash
+# Database
+DATABASE_URL=postgres://user:pass@host:5432/mydb
+
+# Authentication
+AUTH_SECRET=your-jwt-secret-here
+
+# Syncular Console (optional)
+CONSOLE_TOKEN=a-strong-random-token
+
+# Server
+PORT=3000
+HOST=0.0.0.0
+
+# CORS (comma-separated origins, or * for development)
+CORS_ORIGINS=https://app.example.com,https://staging.example.com
+
+# WebSocket (optional)
+WS_HEARTBEAT_INTERVAL_MS=30000
+
+# Pruning (optional)
+PRUNE_ACTIVE_WINDOW_MS=1209600000   # 14 days
+PRUNE_MIN_INTERVAL_MS=300000        # 5 minutes
+```
+
+## Docker Deployment
+
+### Bun Dockerfile
+
+```dockerfile
+FROM oven/bun:1 AS base
+WORKDIR /app
+
+# Install dependencies
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile --production
+
+# Copy application
+COPY . .
+
+# Build (if using TypeScript)
+RUN bun run build
+
+EXPOSE 3000
+
+CMD ["bun", "run", "start"]
+```
+
+### Node.js Dockerfile
+
+```dockerfile
+FROM node:20-slim AS base
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --production
+
+COPY . .
+RUN npm run build
+
+EXPOSE 3000
+
+CMD ["node", "dist/index.js"]
+```
+
+### Docker Compose with PostgreSQL
+
+```yaml
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://syncular:syncular@db:5432/syncular
+      CONSOLE_TOKEN: ${CONSOLE_TOKEN}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: syncular
+      POSTGRES_PASSWORD: syncular
+      POSTGRES_DB: syncular
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syncular"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+```
+
+## Health Checks
+
+Add a health check endpoint to your Hono app:
+
+```typescript
+import { Hono } from 'hono';
+
+const app = new Hono();
+
+app.get('/health', async (c) => {
+  try {
+    // Verify database connectivity
+    await db.selectFrom('sync_commits')
+      .select('commit_seq')
+      .limit(1)
+      .execute();
+
+    return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  } catch (err) {
+    return c.json(
+      { status: 'error', message: 'Database unavailable' },
+      503
+    );
+  }
+});
+```
+
+## CORS Configuration
+
+Configure CORS for your Hono server:
+
+```typescript
+import { cors } from 'hono/cors';
+
+const origins = process.env.CORS_ORIGINS?.split(',') ?? ['http://localhost:5173'];
+
+app.use('/*', cors({
+  origin: origins,
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+}));
+```
+
+For WebSocket connections, ensure your CORS configuration allows the upgrade request from your client's origin.
+
+## Cloudflare Workers
+
+Syncular works on Cloudflare Workers with some considerations. See the [Cloudflare Adapter](/docs/client-sdk/server/cloudflare-adapter) page for the full adapter setup.
+
+Key points for Workers deployment:
+
+```typescript
+// wrangler.toml
+// name = "syncular-api"
+// main = "src/index.ts"
+// compatibility_date = "2024-01-01"
+//
+// [vars]
+// CONSOLE_TOKEN = "your-token"
+//
+// [[d1_databases]]
+// binding = "DB"
+// database_name = "syncular"
+// database_id = "your-database-id"
+
+import { Hono } from 'hono';
+
+const app = new Hono();
+
+// Mount sync routes
+app.route('/api', syncRoutes);
+
+export default app;
+```
+
+Considerations for Workers:
+- Use D1 or Hyperdrive for database access
+- WebSocket support requires Durable Objects or uses the Workers WebSocket API
+- No filesystem access -- use R2 for blob storage
+- Worker invocations have CPU time limits; large bootstrap snapshots may need chunking
+
+## fly.io
+
+```toml
+# fly.toml
+app = "my-syncular-app"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  HOST = "0.0.0.0"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+
+[[services.http_checks]]
+  interval = 10000
+  timeout = 2000
+  path = "/health"
+```
+
+Deploy:
+
+```bash
+fly launch
+fly secrets set DATABASE_URL=postgres://...
+fly secrets set CONSOLE_TOKEN=your-token
+fly deploy
+```
+
+For WebSocket support on fly.io, ensure your app handles the upgrade correctly. Fly's proxy supports WebSocket connections natively.
+
+### Scaling with fly.io
+
+For multi-instance deployments, configure a realtime broadcaster so WebSocket wake-ups reach all instances:
+
+```typescript
+import { createSyncRoutes } from '@syncular/server-hono';
+
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    websocket: { enabled: true, upgradeWebSocket },
+    realtime: {
+      broadcaster: myRedisBroadcaster, // or NATS, etc.
+    },
+  },
+});
+```
+
+## Railway
+
+Railway auto-detects Dockerfiles. Add your environment variables in the Railway dashboard:
+
+```bash
+# In Railway dashboard or CLI
+railway variables set DATABASE_URL=postgres://...
+railway variables set CONSOLE_TOKEN=your-token
+railway variables set CORS_ORIGINS=https://app.example.com
+```
+
+Railway provides a PostgreSQL plugin that provisions a database automatically. Use the `DATABASE_URL` variable it provides.
+
+## Rate Limiting
+
+Syncular includes built-in rate limiting for sync routes. Configure it in production:
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    rateLimit: {
+      pull: { windowMs: 60_000, max: 60 },
+      push: { windowMs: 60_000, max: 30 },
+    },
+    // Or disable entirely:
+    // rateLimit: false,
+  },
+});
+```
+
+## WebSocket Connection Limits
+
+Configure WebSocket limits to protect your server:
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  // ...
+  sync: {
+    websocket: {
+      enabled: true,
+      upgradeWebSocket,
+      heartbeatIntervalMs: 30_000,
+      maxConnectionsTotal: 5000,    // Per process
+      maxConnectionsPerClient: 3,   // Per clientId
+    },
+  },
+});
+```
+
+## Pruning and Compaction
+
+Enable automatic maintenance in production to keep the commit log manageable:
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  // ...
+  sync: {
+    prune: {
+      minIntervalMs: 5 * 60 * 1000, // Every 5 minutes
+      options: {
+        activeWindowMs: 14 * 24 * 60 * 60 * 1000, // 14 day active window
+        fallbackMaxAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 day hard cap
+        keepNewestCommits: 1000,
+      },
+    },
+    compact: {
+      minIntervalMs: 30 * 60 * 1000, // Every 30 minutes
+      options: {
+        fullHistoryHours: 48, // Keep 48h of full history
+      },
+    },
+  },
+});
+```
+
+## Production Checklist
+
+Before going live, verify the following:
+
+- **Database**
+  - [ ] PostgreSQL (recommended for production) or SQLite with WAL mode
+  - [ ] Connection pooling configured (e.g., PgBouncer or Hyperdrive)
+  - [ ] Sync tables created (`sync_commits`, `sync_changes`, `sync_client_cursors`, `sync_table_commits`, `sync_snapshot_chunks`)
+  - [ ] Database backups configured
+
+- **Authentication**
+  - [ ] `authenticate` function validates tokens/sessions properly
+  - [ ] Auth secrets stored in environment variables, not source code
+
+- **Networking**
+  - [ ] HTTPS enforced (TLS termination at load balancer or platform level)
+  - [ ] CORS origins restricted to your app domains
+  - [ ] Rate limiting enabled
+  - [ ] WebSocket connection limits set
+
+- **Maintenance**
+  - [ ] Pruning enabled to prevent unbounded commit log growth
+  - [ ] Compaction enabled for storage efficiency
+  - [ ] Health check endpoint configured
+  - [ ] Monitoring and alerting on health endpoint
+
+- **Console** (if enabled)
+  - [ ] `CONSOLE_TOKEN` set to a strong random value
+  - [ ] Console CORS restricted appropriately
+
+- **Multi-instance** (if applicable)
+  - [ ] Realtime broadcaster configured (Redis, NATS, etc.)
+  - [ ] Sticky sessions not required (Syncular is stateless except WebSocket connections)
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) - Configure sync routes and handlers
+- [Performance & Scaling](/docs/build/performance) - Optimize for large datasets
+- [Realtime](/docs/build/realtime) - Configure WebSocket wake-ups

@@ -1,0 +1,61 @@
+---
+title: Operations
+description: Run maintenance actions safely with preview, auditability, and partition targeting
+---
+
+# Operations
+
+The Ops view contains maintenance controls and an operation audit trail.
+
+## Actions
+
+### Prune
+
+- **Preview Prune** first to inspect delete scope.
+- **Prune** removes commits below the calculated watermark while honoring active-client protections.
+
+### Compact
+
+- Compacts change history according to compaction policy.
+- Reduces storage pressure while preserving current row state.
+
+### Notify Data Change
+
+Use after out-of-band writes/imports performed outside normal push flow.
+
+- Creates a synthetic commit.
+- Invalidates cached snapshot chunks for affected tables.
+- Triggers clients to re-bootstrap affected data.
+
+## Safe operation order
+
+1. Confirm issue and partition scope in Command/Fleet.
+2. Use `Notify Data Change` for external writes.
+3. Use `Prune Preview` before pruning.
+4. Run prune/compact during low-traffic windows when possible.
+5. Verify results in Operation Audit and Stream timeline.
+
+## Gateway safety rules
+
+In gateway mode, maintenance and config mutations are intentionally single-instance.
+
+- Select one instance in the top-nav selector before running prune, compact, notify, or evict.
+- If no instance (or multiple) is selected, write operations are rejected with an instance-required validation error.
+- Use `GET /console/instances/health` to verify downstream reachability before running actions during incidents.
+
+## Audit trail
+
+Every action is logged with:
+
+- operation type
+- actor
+- partition target
+- result summary
+
+## Related API pages
+
+- [Prune preview](/docs/api/postConsolePrunePreview)
+- [Prune](/docs/api/postConsolePrune)
+- [Compact](/docs/api/postConsoleCompact)
+- [Notify data change](/docs/api/postConsoleNotifyDataChange)
+- [Operations](/docs/api/getConsoleOperations)

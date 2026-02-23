@@ -1,0 +1,365 @@
+---
+title: End-to-End Encryption
+description: Encrypt sensitive fields before they leave the client using XChaCha20-Poly1305 and share keys securely with BIP39 mnemonics.
+---
+
+# End-to-End Encryption
+
+Syncular's E2EE plugin encrypts individual fields on the client before push and decrypts them after pull. The server never sees plaintext for encrypted columns.
+
+## What you'll learn
+
+- How to install and configure the field encryption plugin
+- Defining encryption rules for specific tables and fields
+- Managing symmetric keys (static and dynamic)
+- Sharing keys via BIP39 mnemonics, QR codes, and X25519 key wrapping
+- How the XChaCha20-Poly1305 envelope format works under the hood
+
+## Prerequisites
+
+- A working Syncular client setup ([Client Setup](/docs/build/client-setup))
+- Familiarity with the SyncProvider and plugin system
+
+## Installation
+
+```bash
+bun install @syncular/client-plugin-encryption
+```
+
+The plugin depends on `@noble/ciphers`, `@noble/curves`, `@noble/hashes`, and `@scure/bip39` for cryptographic primitives. These are installed automatically.
+
+## Plugin Setup
+
+The encryption plugin intercepts push and pull operations to encrypt/decrypt fields transparently:
+
+```typescript
+import {
+  createFieldEncryptionPlugin,
+  createStaticFieldEncryptionKeys,
+} from '@syncular/client-plugin-encryption';
+
+const encryptionPlugin = createFieldEncryptionPlugin({
+  rules: [
+    {
+      scope: 'notes',
+      table: 'notes',
+      fields: ['title', 'body'],
+    },
+  ],
+  keys: createStaticFieldEncryptionKeys({
+    keys: {
+      default: 'hex:your-64-char-hex-encoded-32-byte-key-here...',
+    },
+  }),
+});
+```
+
+Then pass the plugin to your SyncProvider:
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={clientId}
+  plugins={[encryptionPlugin]}
+>
+  {children}
+</SyncProvider>
+```
+
+## Encryption Rules
+
+Each rule specifies which fields to encrypt for a given scope and table:
+
+```typescript
+interface FieldEncryptionRule {
+  /** Scope identifier (typically the subscription table name) */
+  scope: string;
+  /** Table name. Recommended for correctness. Use '*' or omit for wildcard. */
+  table?: string;
+  /** Column names to encrypt/decrypt */
+  fields: string[];
+  /** Row id column in snapshot rows (defaults to "id") */
+  rowIdField?: string;
+}
+```
+
+### Multiple rules
+
+You can define rules for different tables and scopes:
+
+```typescript
+const encryptionPlugin = createFieldEncryptionPlugin({
+  rules: [
+    {
+      scope: 'notes',
+      table: 'notes',
+      fields: ['title', 'body'],
+    },
+    {
+      scope: 'messages',
+      table: 'messages',
+      fields: ['content', 'attachments_json'],
+    },
+  ],
+  keys: myKeys,
+});
+```
+
+### Wildcard rules
+
+Omitting `table` (or setting it to `'*'`) applies the rule to all tables within a scope. This works only if the scope has a single table, or if snapshot rows include a `table_name` or `__table` field:
+
+```typescript
+{
+  scope: 'notes',
+  // No table specified - applies to all tables in the "notes" scope
+  fields: ['title', 'body'],
+}
+```
+
+## Key Management
+
+### Static keys
+
+The simplest approach uses `createStaticFieldEncryptionKeys` with a map of key IDs to key material:
+
+```typescript
+import { createStaticFieldEncryptionKeys } from '@syncular/client-plugin-encryption';
+
+const keys = createStaticFieldEncryptionKeys({
+  keys: {
+    default: 'hex:a1b2c3d4...', // 64 hex chars = 32 bytes
+    'v2': 'base64url:SGVsbG8gV29ybGQ...', // base64url-encoded 32 bytes
+  },
+  encryptionKid: 'default', // Which key to use for new encryptions
+});
+```
+
+Key material can be provided as:
+- `Uint8Array` (raw 32 bytes)
+- `hex:` prefixed hex string
+- `base64:` prefixed base64 string
+- `base64url:` prefixed base64url string
+- A bare 64-character hex string (auto-detected)
+- A bare base64url string (auto-detected)
+
+### Dynamic keys
+
+For per-user or per-group keys, implement the `FieldEncryptionKeys` interface directly:
+
+```typescript
+import type { FieldEncryptionKeys } from '@syncular/client-plugin-encryption';
+
+const dynamicKeys: FieldEncryptionKeys = {
+  async getKey(kid: string): Promise<Uint8Array> {
+    // Fetch from secure storage, derive from password, etc.
+    const key = await myKeyStore.getKey(kid);
+    if (!key) throw new Error(`Unknown key: ${kid}`);
+    return key;
+  },
+  async getEncryptionKid(ctx, { scope, table, rowId, field }) {
+    // Choose key based on context
+    return `user:${ctx.actorId}`;
+  },
+};
+```
+
+### Key rotation
+
+The plugin stores the key ID (`kid`) in the ciphertext envelope. Old data encrypted with a previous key remains readable as long as the old key is still in the key map. New writes use the key specified by `encryptionKid` (or the `getEncryptionKid` callback):
+
+```typescript
+const keys = createStaticFieldEncryptionKeys({
+  keys: {
+    'v1': oldKeyBytes, // Keep for decryption of existing data
+    'v2': newKeyBytes, // Used for new encryptions
+  },
+  encryptionKid: 'v2',
+});
+```
+
+## Key Sharing
+
+The plugin provides utilities for securely sharing keys between users.
+
+### BIP39 mnemonics
+
+Convert a 32-byte key to a human-readable 24-word phrase:
+
+```typescript
+import {
+  generateSymmetricKey,
+  keyToMnemonic,
+  mnemonicToKey,
+} from '@syncular/client-plugin-encryption';
+
+// Generate a new key
+const key = generateSymmetricKey(); // 32 random bytes
+
+// Convert to mnemonic for sharing (e.g., read aloud, write down)
+const phrase = keyToMnemonic(key);
+// => "abandon ability able about above absent absorb abstract absurd abuse ..."
+
+// Recipient converts back to key bytes
+const restored = mnemonicToKey(phrase);
+```
+
+### Share URLs and QR codes
+
+Encode keys as compact URLs suitable for QR codes:
+
+```typescript
+import {
+  keyToShareUrl,
+  parseShareUrl,
+  keyToBase64Url,
+} from '@syncular/client-plugin-encryption';
+
+// Create a shareable URL
+const url = keyToShareUrl(key, 'my-key-id');
+// => "sync://k/1/SGVsbG8gV29ybGQ.../my-key-id"
+
+// Parse it back
+const parsed = parseShareUrl(url);
+// => { type: 'symmetric', key: Uint8Array, kid: 'my-key-id' }
+```
+
+### X25519 key wrapping (asymmetric)
+
+Wrap a symmetric key for a specific recipient using their public key. Uses X25519 ECDH + HKDF-SHA256 + XChaCha20-Poly1305:
+
+```typescript
+import {
+  generateKeypair,
+  wrapKeyForRecipient,
+  unwrapKey,
+  encodeWrappedKey,
+  decodeWrappedKey,
+} from '@syncular/client-plugin-encryption';
+
+// Each user generates a keypair (store privateKey securely)
+const alice = generateKeypair();
+const bob = generateKeypair();
+
+// Alice wraps the shared key for Bob
+const wrapped = wrapKeyForRecipient(bob.publicKey, sharedSymmetricKey);
+
+// Serialize for transmission
+const encoded = encodeWrappedKey(wrapped);
+
+// Bob unwraps with his private key
+const decoded = decodeWrappedKey(encoded);
+const unwrapped = unwrapKey(bob.privateKey, decoded);
+// unwrapped === sharedSymmetricKey
+```
+
+Public keys can also be shared as mnemonics or URLs:
+
+```typescript
+import {
+  publicKeyToMnemonic,
+  publicKeyToShareUrl,
+} from '@syncular/client-plugin-encryption';
+
+const pubMnemonic = publicKeyToMnemonic(alice.publicKey);
+const pubUrl = publicKeyToShareUrl(alice.publicKey);
+```
+
+## Complete Working Example
+
+```typescript
+import {
+  createFieldEncryptionPlugin,
+  createStaticFieldEncryptionKeys,
+  generateSymmetricKey,
+  keyToMnemonic,
+} from '@syncular/client-plugin-encryption';
+import { createSyncularReact } from '@syncular/client-react';
+
+// 1. Generate or restore a key
+const encryptionKey = generateSymmetricKey();
+console.log('Share this mnemonic:', keyToMnemonic(encryptionKey));
+
+// 2. Configure static keys
+const keys = createStaticFieldEncryptionKeys({
+  keys: { default: encryptionKey },
+});
+
+// 3. Create the encryption plugin
+const encryptionPlugin = createFieldEncryptionPlugin({
+  rules: [
+    {
+      scope: 'notes',
+      table: 'notes',
+      fields: ['title', 'body'],
+    },
+  ],
+  keys,
+  decryptionErrorMode: 'throw', // or 'keepCiphertext' to show raw ciphertext
+});
+
+// 4. Use in React
+const { SyncProvider, useSyncQuery, useMutation } = createSyncularReact<MyDb>();
+
+function App() {
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      sync={sync}
+      identity={{ actorId: userId }}
+      clientId={clientId}
+      plugins={[encryptionPlugin]}
+    >
+      <Notes />
+    </SyncProvider>
+  );
+}
+```
+
+## Decryption Error Handling
+
+The `decryptionErrorMode` option controls what happens when decryption fails (missing key, corrupted data, wrong AAD):
+
+- `'throw'` (default): throws an error, which surfaces in your query hooks
+- `'keepCiphertext'`: returns the raw ciphertext string as-is, letting the UI decide how to handle it
+
+```typescript
+createFieldEncryptionPlugin({
+  rules: [...],
+  keys: myKeys,
+  decryptionErrorMode: 'keepCiphertext',
+});
+```
+
+## How It Works
+
+Under the hood, the plugin:
+
+1. **Before push**: encrypts specified fields in outgoing operations using XChaCha20-Poly1305 with a 24-byte random nonce
+2. **After pull**: decrypts fields in incoming commits and bootstrap snapshots
+3. **After push** (conflicts): decrypts `server_row` fields in conflict responses
+
+Each encrypted value is stored as an envelope string:
+
+```
+dgsync:e2ee:1:<kid>:<nonce-base64url>:<ciphertext-base64url>
+```
+
+The cipher uses Additional Authenticated Data (AAD) composed of `scope`, `table`, `rowId`, and `field` joined by unit separator characters. This binds each ciphertext to its exact location, preventing copy-paste attacks between rows or fields.
+
+## Security Properties
+
+- **XChaCha20-Poly1305**: 256-bit key, 192-bit nonce (no nonce-reuse concerns), authenticated encryption
+- **AAD binding**: ciphertext is bound to scope, table, row, and field -- moving ciphertext to a different location will fail authentication
+- **Server-blind**: the server stores only ciphertext and cannot read or tamper with encrypted fields
+- **Key ID in envelope**: enables key rotation without re-encrypting existing data
+
+## Next Steps
+
+- [Key Sharing Demo](https://github.com/nickreese/syncular) - See E2EE in action
+- [Authentication](/docs/build/auth) - Secure your transport layer
+- [Data Modeling](/docs/build/data-modeling) - Design schemas for encrypted data

@@ -1,0 +1,88 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "files": {
+    "includes": [
+      "**/*.ts",
+      "**/*.tsx",
+      "!**/*.d.ts",
+      "!.ignore",
+      "!**/.source",
+      "!**/.next",
+      "!**/build",
+      "!**/generated.ts",
+      "!**/generated"
+    ]
+  },
+  "vcs": {
+    "useIgnoreFile": true
+  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": true,
+    "useEditorconfig": true,
+    "indentWidth": 2,
+    "indentStyle": "space",
+    "lineWidth": 80
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "quoteProperties": "asNeeded",
+      "semicolons": "always",
+      "trailingCommas": "es5"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "a11y": {
+        "useKeyWithClickEvents": "off",
+        "useIframeTitle": "off",
+        "noSvgWithoutTitle": "off"
+      },
+      "correctness": {
+        "useHookAtTopLevel": "off",
+        "noUnusedVariables": {
+          "level": "error",
+          "fix": "none"
+        },
+        "noUnusedImports": {
+          "level": "error",
+          "fix": "none"
+        },
+        "useUniqueElementIds": {
+          "level": "off"
+        }
+      },
+      "performance": {
+        "noDelete": "off"
+      },
+      "suspicious": {
+        "noAssignInExpressions": "off",
+        "noArrayIndexKey": "off",
+        "noExplicitAny": "off",
+        "noNonNullAssertedOptionalChain": "off"
+      },
+      "style": {
+        "useConst": {
+          "level": "error",
+          "fix": "none"
+        },
+        "noParameterAssign": "off",
+        "noNonNullAssertion": "off",
+        "useAsConstAssertion": "error",
+        "useDefaultParameterLast": "error",
+        "useEnumInitializers": "error",
+        "useSelfClosingElements": "error",
+        "useSingleVarDeclarator": "error",
+        "noUnusedTemplateLiteral": "error",
+        "useNumberNamespace": "error",
+        "noInferrableTypes": "error",
+        "noUselessElse": "error"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "extends": "@syncular/config/tsconfig.react.json",
+  "include": [
+    "src/**/*"
+  ],
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/__tests__/**"
+  ]
+}

@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — The Network Beneath</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"Bricolage Grotesque"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            forest: {
+              50: '#f0f5e8',
+              100: '#dce8cc',
+              200: '#b8d199',
+              300: '#8fb65e',
+              400: '#6a9a32',
+              500: '#4e7a1e',
+              600: '#3d6118',
+              700: '#2f4a13',
+              800: '#1a2b0b',
+              900: '#0d1606',
+              950: '#080a06',
+            },
+            mycelium: {
+              light: '#d4c9a8',
+              DEFAULT: '#a89870',
+              warm: '#c4a54d',
+              amber: '#d4a843',
+              glow: '#e8c84a',
+            },
+            spore: {
+              green: '#6b8f3c',
+              lime: '#8db654',
+              moss: '#4a6b2a',
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+      background: #080a06;
+      color: #d4c9a8;
+      overflow-x: hidden;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+    /* Organic glow */
+    .glow-mycelium {
+      text-shadow: 0 0 30px rgba(212, 168, 67, 0.4), 0 0 80px rgba(212, 168, 67, 0.15);
+    }
+    .glow-green {
+      text-shadow: 0 0 20px rgba(107, 143, 60, 0.5), 0 0 60px rgba(107, 143, 60, 0.2);
+    }
+
+    /* Nutrient card */
+    .nutrient-card {
+      background: linear-gradient(145deg, rgba(26, 43, 11, 0.6), rgba(13, 22, 6, 0.8));
+      border: 1px solid rgba(168, 152, 112, 0.15);
+      border-radius: 20px;
+      transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .nutrient-card:hover {
+      border-color: rgba(168, 152, 112, 0.35);
+      box-shadow: 0 0 40px rgba(107, 143, 60, 0.08), 0 8px 32px rgba(0, 0, 0, 0.3);
+      transform: translateY(-2px);
+    }
+
+    /* Install box */
+    .install-box {
+      background: linear-gradient(135deg, rgba(26, 43, 11, 0.5), rgba(13, 22, 6, 0.7));
+      border: 1px solid rgba(168, 152, 112, 0.25);
+      border-radius: 16px;
+    }
+    .install-box:hover {
+      border-color: rgba(212, 168, 67, 0.4);
+      box-shadow: 0 0 30px rgba(212, 168, 67, 0.06);
+    }
+
+    /* Subtle organic noise texture overlay */
+    .noise-overlay::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 256px 256px;
+      pointer-events: none;
+    }
+
+    /* Pulsing keyframes */
+    @keyframes gentlePulse {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
+    @keyframes slowFloat {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+
+    /* Resilience timeline */
+    .resilience-step {
+      position: relative;
+    }
+    .resilience-step::before {
+      content: '';
+      position: absolute;
+      left: 24px;
+      top: 56px;
+      bottom: -8px;
+      width: 2px;
+      background: linear-gradient(to bottom, rgba(168, 152, 112, 0.3), transparent);
+    }
+    .resilience-step:last-child::before {
+      display: none;
+    }
+
+    /* Nav */
+    nav {
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    /* Canvas fade at bottom */
+    .canvas-fade {
+      background: linear-gradient(to bottom, transparent 60%, #080a06 100%);
+    }
+
+    /* Selection color */
+    ::selection {
+      background: rgba(107, 143, 60, 0.4);
+      color: #f0f5e8;
+    }
+
+    /* Scroll-triggered animations */
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.8s cubic-bezier(0.23, 1, 0.32, 1), transform 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body class="relative noise-overlay">
+
+  <!-- ===== NAV ===== -->
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/5 bg-forest-950/70">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="#" class="flex items-center gap-2.5">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" class="opacity-90">
+          <circle cx="14" cy="14" r="4" fill="#a89870" opacity="0.9"/>
+          <circle cx="5" cy="8" r="2.5" fill="#6b8f3c" opacity="0.7"/>
+          <circle cx="23" cy="8" r="2.5" fill="#6b8f3c" opacity="0.7"/>
+          <circle cx="5" cy="20" r="2.5" fill="#6b8f3c" opacity="0.7"/>
+          <circle cx="23" cy="20" r="2.5" fill="#6b8f3c" opacity="0.7"/>
+          <path d="M14 14 C10 12 7 10 5 8" stroke="#a89870" stroke-width="1" opacity="0.4" fill="none"/>
+          <path d="M14 14 C18 12 21 10 23 8" stroke="#a89870" stroke-width="1" opacity="0.4" fill="none"/>
+          <path d="M14 14 C10 16 7 18 5 20" stroke="#a89870" stroke-width="1" opacity="0.4" fill="none"/>
+          <path d="M14 14 C18 16 21 18 23 20" stroke="#a89870" stroke-width="1" opacity="0.4" fill="none"/>
+        </svg>
+        <span class="font-display font-700 text-lg tracking-tight text-mycelium-light">syncular</span>
+      </a>
+      <div class="hidden md:flex items-center gap-8 text-sm text-mycelium/70">
+        <a href="#nutrients" class="hover:text-mycelium-light transition-colors">Nutrients</a>
+        <a href="#resilience" class="hover:text-mycelium-light transition-colors">Resilience</a>
+        <a href="#install" class="hover:text-mycelium-light transition-colors">Install</a>
+        <a href="https://github.com/nicknisi/syncular" class="hover:text-mycelium-light transition-colors">GitHub</a>
+        <a href="#install" class="px-4 py-1.5 rounded-full bg-spore-moss/40 border border-spore-green/30 text-spore-lime text-sm font-medium hover:bg-spore-moss/60 transition-all">
+          Get Started
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ===== HERO ===== -->
+  <section class="relative min-h-screen flex flex-col items-center justify-center overflow-hidden pt-16">
+    <!-- Mycelium Canvas -->
+    <canvas id="myceliumCanvas" class="absolute inset-0 w-full h-full"></canvas>
+    <!-- Fade overlay -->
+    <div class="absolute inset-0 canvas-fade pointer-events-none"></div>
+    <!-- Radial gradient center glow -->
+    <div class="absolute inset-0 pointer-events-none" style="background: radial-gradient(ellipse 50% 40% at 50% 45%, rgba(107, 143, 60, 0.06) 0%, transparent 100%)"></div>
+
+    <div class="relative z-10 text-center max-w-4xl mx-auto px-6">
+      <div class="mb-6">
+        <span class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-forest-800/60 border border-spore-moss/30 text-spore-lime/80 text-xs font-mono tracking-wider uppercase">
+          <span class="w-1.5 h-1.5 rounded-full bg-spore-lime animate-pulse"></span>
+          Offline-First Sync Framework
+        </span>
+      </div>
+      <h1 class="font-display font-800 text-5xl sm:text-6xl md:text-7xl lg:text-8xl tracking-tight leading-[0.95] mb-8 text-forest-50 glow-mycelium">
+        The Network<br/>
+        <span class="text-mycelium-warm">Beneath</span>
+      </h1>
+      <p class="text-lg sm:text-xl text-mycelium/80 max-w-2xl mx-auto leading-relaxed mb-10">
+        Like the mycelium connecting every tree in a forest, Syncular weaves an invisible network between your clients. Connections that persist, adapt when links break, and restore when nodes return.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center items-center">
+        <a href="#install" class="group px-7 py-3 rounded-full bg-gradient-to-r from-spore-moss to-spore-green text-forest-50 font-semibold text-base hover:brightness-110 transition-all shadow-lg shadow-spore-green/10">
+          Start Growing
+          <span class="inline-block ml-1 group-hover:translate-x-0.5 transition-transform">&rarr;</span>
+        </a>
+        <a href="#nutrients" class="px-7 py-3 rounded-full border border-mycelium/20 text-mycelium-light/80 font-medium text-base hover:border-mycelium/40 hover:text-mycelium-light transition-all">
+          Explore the Network
+        </a>
+      </div>
+    </div>
+
+    <!-- Scroll hint -->
+    <div class="absolute bottom-10 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2 text-mycelium/30">
+      <span class="text-xs font-mono tracking-widest uppercase">Dig deeper</span>
+      <svg width="16" height="24" viewBox="0 0 16 24" fill="none" class="animate-bounce">
+        <path d="M8 4v12m0 0l-4-4m4 4l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ===== NUTRIENTS (FEATURES) ===== -->
+  <section id="nutrients" class="relative py-32 px-6">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-20 reveal">
+        <span class="font-mono text-xs tracking-widest uppercase text-spore-green/70 mb-4 block">What flows through the network</span>
+        <h2 class="font-display font-800 text-4xl sm:text-5xl md:text-6xl tracking-tight text-forest-50 mb-6">
+          Nutrients
+        </h2>
+        <p class="text-mycelium/70 text-lg max-w-2xl mx-auto leading-relaxed">
+          In a forest, mycelium transfers water, carbon, nitrogen, and phosphorus between trees. In Syncular, these are the vital resources that flow between your clients and server.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Nutrient 1: Data Sync -->
+        <div class="nutrient-card p-7 reveal">
+          <div class="w-12 h-12 rounded-2xl bg-spore-moss/30 flex items-center justify-center mb-5">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8db654" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v18m-6-6c0 3.3 2.7 6 6 6s6-2.7 6-6M6 9c0-3.3 2.7-6 6-6s6 2.7 6 6"/>
+              <circle cx="12" cy="12" r="2"/>
+            </svg>
+          </div>
+          <h3 class="font-display font-700 text-xl text-forest-50 mb-3">Carbon &mdash; Data Sync</h3>
+          <p class="text-mycelium/60 leading-relaxed text-sm">
+            The backbone nutrient. Commit-log sync pushes and pulls changes with conflict resolution. Every mutation is tracked, every state recoverable.
+          </p>
+        </div>
+
+        <!-- Nutrient 2: Offline-First -->
+        <div class="nutrient-card p-7 reveal">
+          <div class="w-12 h-12 rounded-2xl bg-spore-moss/30 flex items-center justify-center mb-5">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8db654" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12h4l3-9 4 18 3-9h4"/>
+            </svg>
+          </div>
+          <h3 class="font-display font-700 text-xl text-forest-50 mb-3">Water &mdash; Offline-First</h3>
+          <p class="text-mycelium/60 leading-relaxed text-sm">
+            Life persists without rain. Your app works without a connection. Local-first storage with an outbox queue ensures nothing is lost in drought.
+          </p>
+        </div>
+
+        <!-- Nutrient 3: Realtime -->
+        <div class="nutrient-card p-7 reveal">
+          <div class="w-12 h-12 rounded-2xl bg-spore-moss/30 flex items-center justify-center mb-5">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8db654" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+            </svg>
+          </div>
+          <h3 class="font-display font-700 text-xl text-forest-50 mb-3">Nitrogen &mdash; Realtime</h3>
+          <p class="text-mycelium/60 leading-relaxed text-sm">
+            The growth signal. WebSocket wake-ups and presence data flow instantly through the network. When something changes, every connected node knows.
+          </p>
+        </div>
+
+        <!-- Nutrient 4: Blobs -->
+        <div class="nutrient-card p-7 reveal">
+          <div class="w-12 h-12 rounded-2xl bg-spore-moss/30 flex items-center justify-center mb-5">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8db654" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+              <path d="M7 10l5 5 5-5"/>
+              <path d="M12 15V3"/>
+            </svg>
+          </div>
+          <h3 class="font-display font-700 text-xl text-forest-50 mb-3">Phosphorus &mdash; Blobs</h3>
+          <p class="text-mycelium/60 leading-relaxed text-sm">
+            The heavy payload. Files, images, and binary data stored and synced alongside your structured data. Large nutrients delivered reliably.
+          </p>
+        </div>
+
+        <!-- Nutrient 5: Encryption -->
+        <div class="nutrient-card p-7 reveal">
+          <div class="w-12 h-12 rounded-2xl bg-spore-moss/30 flex items-center justify-center mb-5">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8db654" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0110 0v4"/>
+              <circle cx="12" cy="16" r="1"/>
+            </svg>
+          </div>
+          <h3 class="font-display font-700 text-xl text-forest-50 mb-3">Minerals &mdash; E2E Encryption</h3>
+          <p class="text-mycelium/60 leading-relaxed text-sm">
+            Hidden compounds only the right roots can absorb. End-to-end encrypted data that even the server cannot read. Plugin-based key sharing between clients.
+          </p>
+        </div>
+
+        <!-- Nutrient 6: Scopes -->
+        <div class="nutrient-card p-7 reveal">
+          <div class="w-12 h-12 rounded-2xl bg-spore-moss/30 flex items-center justify-center mb-5">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8db654" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
+              <path d="M2 12h20"/>
+            </svg>
+          </div>
+          <h3 class="font-display font-700 text-xl text-forest-50 mb-3">Sugars &mdash; Scoped Sync</h3>
+          <p class="text-mycelium/60 leading-relaxed text-sm">
+            Trees share selectively. Scope keys let each client subscribe to exactly the data slices it needs. No wasted bandwidth, no unwanted exposure.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== RESILIENCE ===== -->
+  <section id="resilience" class="relative py-32 px-6">
+    <!-- Subtle background gradient -->
+    <div class="absolute inset-0 pointer-events-none" style="background: radial-gradient(ellipse 70% 50% at 30% 50%, rgba(74, 107, 42, 0.04) 0%, transparent 100%)"></div>
+
+    <div class="max-w-4xl mx-auto relative">
+      <div class="text-center mb-20 reveal">
+        <span class="font-mono text-xs tracking-widest uppercase text-spore-green/70 mb-4 block">How the network heals</span>
+        <h2 class="font-display font-800 text-4xl sm:text-5xl md:text-6xl tracking-tight text-forest-50 mb-6">
+          Resilience
+        </h2>
+        <p class="text-mycelium/70 text-lg max-w-2xl mx-auto leading-relaxed">
+          When a tree falls, the mycelium reroutes. When a device goes offline, Syncular adapts. The network is never broken &mdash; only resting.
+        </p>
+      </div>
+
+      <!-- Timeline -->
+      <div class="space-y-10 max-w-xl mx-auto">
+        <!-- Step 1 -->
+        <div class="resilience-step flex gap-6 reveal">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-spore-green/20 border border-spore-green/40 flex items-center justify-center">
+            <div class="w-3 h-3 rounded-full bg-spore-lime shadow-lg shadow-spore-lime/30"></div>
+          </div>
+          <div class="pt-1">
+            <h3 class="font-display font-700 text-lg text-forest-50 mb-2">Connected &mdash; Nutrients flow</h3>
+            <p class="text-mycelium/60 text-sm leading-relaxed">
+              All nodes are online. Data syncs in real-time through the commit log. Changes propagate instantly. The network hums with activity &mdash; threads glow bright.
+            </p>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="resilience-step flex gap-6 reveal">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-mycelium-amber/15 border border-mycelium-amber/30 flex items-center justify-center">
+            <div class="w-3 h-3 rounded-full bg-mycelium-amber shadow-lg shadow-mycelium-amber/30"></div>
+          </div>
+          <div class="pt-1">
+            <h3 class="font-display font-700 text-lg text-forest-50 mb-2">Disconnected &mdash; A thread goes dark</h3>
+            <p class="text-mycelium/60 text-sm leading-relaxed">
+              A device loses connectivity. Its threads fade. But the node keeps working &mdash; reading, writing, queuing mutations in its local outbox. The tree still grows.
+            </p>
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="resilience-step flex gap-6 reveal">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-mycelium/15 border border-mycelium/30 flex items-center justify-center">
+            <div class="w-3 h-3 rounded-full bg-mycelium shadow-lg shadow-mycelium/20"></div>
+          </div>
+          <div class="pt-1">
+            <h3 class="font-display font-700 text-lg text-forest-50 mb-2">Adapting &mdash; The network reroutes</h3>
+            <p class="text-mycelium/60 text-sm leading-relaxed">
+              Other nodes continue syncing without interruption. Scope subscriptions ensure every remaining client still gets exactly what it needs. No single point of failure.
+            </p>
+          </div>
+        </div>
+
+        <!-- Step 4 -->
+        <div class="resilience-step flex gap-6 reveal">
+          <div class="flex-shrink-0 w-12 h-12 rounded-full bg-spore-green/20 border border-spore-green/40 flex items-center justify-center">
+            <div class="w-3 h-3 rounded-full bg-mycelium-glow shadow-lg shadow-mycelium-glow/40 animate-pulse"></div>
+          </div>
+          <div class="pt-1">
+            <h3 class="font-display font-700 text-lg text-forest-50 mb-2">Reconnected &mdash; Nutrients surge</h3>
+            <p class="text-mycelium/60 text-sm leading-relaxed">
+              The device comes back. Threads light up. Queued mutations push upstream. Missed changes pull downstream. Conflicts resolve automatically. The forest is whole again.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resilience visual mini-canvas -->
+      <div class="mt-20 reveal">
+        <canvas id="resilienceCanvas" class="w-full rounded-2xl border border-white/5" style="height: 200px;"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== INSTALL ===== -->
+  <section id="install" class="relative py-32 px-6">
+    <div class="max-w-3xl mx-auto text-center">
+      <div class="reveal">
+        <span class="font-mono text-xs tracking-widest uppercase text-spore-green/70 mb-4 block">Plant the first spore</span>
+        <h2 class="font-display font-800 text-4xl sm:text-5xl md:text-6xl tracking-tight text-forest-50 mb-6">
+          Get Started
+        </h2>
+        <p class="text-mycelium/70 text-lg max-w-xl mx-auto leading-relaxed mb-12">
+          One command. Two packages. An entire underground network ready to grow beneath your app.
+        </p>
+      </div>
+
+      <div class="reveal">
+        <div class="install-box p-6 sm:p-8 transition-all duration-300 max-w-xl mx-auto">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-spore-moss/60"></div>
+              <div class="w-3 h-3 rounded-full bg-mycelium-amber/40"></div>
+              <div class="w-3 h-3 rounded-full bg-mycelium/30"></div>
+            </div>
+            <button onclick="navigator.clipboard.writeText('bun add @syncular/client @syncular/server')" class="text-xs font-mono text-mycelium/40 hover:text-mycelium-light transition-colors cursor-pointer">
+              copy
+            </button>
+          </div>
+          <div class="text-left">
+            <code class="font-mono text-sm sm:text-base">
+              <span class="text-spore-lime/70">$</span>
+              <span class="text-mycelium-light ml-2">bun add</span>
+              <span class="text-mycelium-warm"> @syncular/client</span>
+              <span class="text-mycelium-warm"> @syncular/server</span>
+            </code>
+          </div>
+        </div>
+      </div>
+
+      <!-- Secondary actions -->
+      <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mt-10 reveal">
+        <a href="#" class="group px-6 py-3 rounded-full bg-spore-moss/40 border border-spore-green/30 text-spore-lime font-semibold text-sm hover:bg-spore-moss/60 transition-all">
+          Read the Docs
+          <span class="inline-block ml-1 group-hover:translate-x-0.5 transition-transform">&rarr;</span>
+        </a>
+        <a href="#" class="px-6 py-3 rounded-full border border-mycelium/15 text-mycelium/60 font-medium text-sm hover:border-mycelium/30 hover:text-mycelium-light transition-all">
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="border-t border-white/5 py-16 px-6">
+    <div class="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+      <div class="flex items-center gap-2.5">
+        <svg width="20" height="20" viewBox="0 0 28 28" fill="none" class="opacity-60">
+          <circle cx="14" cy="14" r="4" fill="#a89870" opacity="0.9"/>
+          <circle cx="5" cy="8" r="2.5" fill="#6b8f3c" opacity="0.5"/>
+          <circle cx="23" cy="8" r="2.5" fill="#6b8f3c" opacity="0.5"/>
+          <circle cx="5" cy="20" r="2.5" fill="#6b8f3c" opacity="0.5"/>
+          <circle cx="23" cy="20" r="2.5" fill="#6b8f3c" opacity="0.5"/>
+        </svg>
+        <span class="font-display font-600 text-sm text-mycelium/50">syncular</span>
+      </div>
+      <div class="flex items-center gap-8 text-xs text-mycelium/30 font-mono">
+        <a href="#" class="hover:text-mycelium/60 transition-colors">Docs</a>
+        <a href="#" class="hover:text-mycelium/60 transition-colors">GitHub</a>
+        <a href="#" class="hover:text-mycelium/60 transition-colors">Discord</a>
+        <span>MIT License</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ===== MYCELIUM CANVAS SCRIPT ===== -->
+  <script>
+  (() => {
+    // ---- HERO CANVAS ----
+    const canvas = document.getElementById('myceliumCanvas');
+    const ctx = canvas.getContext('2d');
+    let W, H;
+    let nodes = [];
+    let connections = [];
+    let particles = [];
+    const NODE_COUNT = 18;
+    const MAX_DIST = 220;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      W = canvas.clientWidth;
+      H = canvas.clientHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function rand(a, b) { return a + Math.random() * (b - a); }
+    function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    class Node {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.baseX = x;
+        this.baseY = y;
+        this.radius = rand(3, 7);
+        this.phase = rand(0, Math.PI * 2);
+        this.speed = rand(0.003, 0.008);
+        this.drift = rand(4, 12);
+        this.alive = true;
+        this.aliveTimer = 0;
+        this.deadDuration = 0;
+        this.brightness = 1;
+        this.reconnectGlow = 0;
+      }
+      update(t) {
+        // Organic drift
+        this.x = this.baseX + Math.sin(t * this.speed + this.phase) * this.drift;
+        this.y = this.baseY + Math.cos(t * this.speed * 0.7 + this.phase * 1.3) * this.drift * 0.6;
+
+        // Alive/dead cycle
+        this.aliveTimer += 1;
+        if (this.alive && this.aliveTimer > rand(600, 1800)) {
+          if (Math.random() < 0.005) {
+            this.alive = false;
+            this.aliveTimer = 0;
+            this.deadDuration = rand(120, 360);
+          }
+        }
+        if (!this.alive) {
+          this.deadDuration -= 1;
+          if (this.deadDuration <= 0) {
+            this.alive = true;
+            this.aliveTimer = 0;
+            this.reconnectGlow = 1;
+          }
+        }
+
+        // Brightness
+        const targetBrightness = this.alive ? 1 : 0.12;
+        this.brightness = lerp(this.brightness, targetBrightness, 0.03);
+        this.reconnectGlow = lerp(this.reconnectGlow, 0, 0.015);
+      }
+      draw(ctx, t) {
+        const pulse = 0.5 + 0.5 * Math.sin(t * 0.003 + this.phase);
+        const r = this.radius * (0.85 + 0.15 * pulse);
+        const alpha = this.brightness;
+        const glow = this.reconnectGlow;
+
+        // Outer glow on reconnect
+        if (glow > 0.05) {
+          const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r * 8);
+          grad.addColorStop(0, `rgba(232, 200, 74, ${glow * 0.4})`);
+          grad.addColorStop(1, 'rgba(232, 200, 74, 0)');
+          ctx.beginPath();
+          ctx.arc(this.x, this.y, r * 8, 0, Math.PI * 2);
+          ctx.fillStyle = grad;
+          ctx.fill();
+        }
+
+        // Node glow
+        const glowGrad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, r * 3);
+        glowGrad.addColorStop(0, `rgba(141, 182, 84, ${0.25 * alpha})`);
+        glowGrad.addColorStop(1, 'rgba(141, 182, 84, 0)');
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, r * 3, 0, Math.PI * 2);
+        ctx.fillStyle = glowGrad;
+        ctx.fill();
+
+        // Core
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, r, 0, Math.PI * 2);
+        const coreColor = this.alive
+          ? `rgba(168, 152, 112, ${0.6 + 0.4 * alpha})`
+          : `rgba(80, 70, 50, ${0.3 + 0.2 * alpha})`;
+        ctx.fillStyle = coreColor;
+        ctx.fill();
+      }
+    }
+
+    class Connection {
+      constructor(a, b) {
+        this.a = a;
+        this.b = b;
+        this.strength = 0;
+        this.targetStrength = 0;
+        // Organic curve control offset
+        this.cx = rand(-40, 40);
+        this.cy = rand(-40, 40);
+        this.age = 0;
+      }
+      update() {
+        this.age += 1;
+        const d = dist(this.a, this.b);
+        const bothAlive = this.a.alive && this.b.alive;
+        this.targetStrength = (bothAlive && d < MAX_DIST) ? Math.max(0, 1 - d / MAX_DIST) : 0;
+        this.strength = lerp(this.strength, this.targetStrength, 0.04);
+      }
+      draw(ctx) {
+        if (this.strength < 0.01) return;
+        const midX = (this.a.x + this.b.x) / 2 + this.cx;
+        const midY = (this.a.y + this.b.y) / 2 + this.cy;
+
+        ctx.beginPath();
+        ctx.moveTo(this.a.x, this.a.y);
+        ctx.quadraticCurveTo(midX, midY, this.b.x, this.b.y);
+        ctx.strokeStyle = `rgba(168, 152, 112, ${this.strength * 0.18})`;
+        ctx.lineWidth = 0.8 + this.strength * 0.8;
+        ctx.stroke();
+
+        // Bright inner thread if strong
+        if (this.strength > 0.4) {
+          ctx.beginPath();
+          ctx.moveTo(this.a.x, this.a.y);
+          ctx.quadraticCurveTo(midX, midY, this.b.x, this.b.y);
+          ctx.strokeStyle = `rgba(141, 182, 84, ${(this.strength - 0.4) * 0.2})`;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        }
+      }
+    }
+
+    class Particle {
+      constructor(conn) {
+        this.conn = conn;
+        this.t = 0;
+        this.speed = rand(0.003, 0.008);
+        this.alive = true;
+      }
+      update() {
+        this.t += this.speed;
+        if (this.t >= 1) this.alive = false;
+      }
+      draw(ctx) {
+        if (!this.alive || this.conn.strength < 0.2) return;
+        const a = this.conn.a;
+        const b = this.conn.b;
+        const midX = (a.x + b.x) / 2 + this.conn.cx;
+        const midY = (a.y + b.y) / 2 + this.conn.cy;
+        const t = this.t;
+        // Quadratic bezier position
+        const x = (1-t)*(1-t)*a.x + 2*(1-t)*t*midX + t*t*b.x;
+        const y = (1-t)*(1-t)*a.y + 2*(1-t)*t*midY + t*t*b.y;
+        const alpha = Math.sin(t * Math.PI) * this.conn.strength;
+
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, 4);
+        grad.addColorStop(0, `rgba(212, 168, 67, ${alpha * 0.7})`);
+        grad.addColorStop(1, 'rgba(212, 168, 67, 0)');
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      }
+    }
+
+    function init() {
+      resize();
+      nodes = [];
+      connections = [];
+      particles = [];
+
+      // Place nodes organically (avoid too-close placement)
+      const padding = 80;
+      for (let i = 0; i < NODE_COUNT; i++) {
+        let attempts = 0;
+        let x, y;
+        do {
+          x = rand(padding, W - padding);
+          y = rand(padding, H - padding);
+          attempts++;
+        } while (attempts < 50 && nodes.some(n => Math.hypot(n.x - x, n.y - y) < 80));
+        nodes.push(new Node(x, y));
+      }
+
+      // Create connections for nearby pairs
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const d = dist(nodes[i], nodes[j]);
+          if (d < MAX_DIST) {
+            connections.push(new Connection(nodes[i], nodes[j]));
+          }
+        }
+      }
+    }
+
+    let t = 0;
+    function animate() {
+      t += 1;
+      ctx.clearRect(0, 0, W, H);
+
+      // Update
+      nodes.forEach(n => n.update(t));
+      connections.forEach(c => c.update());
+
+      // Spawn particles
+      if (Math.random() < 0.06) {
+        const activeConns = connections.filter(c => c.strength > 0.3);
+        if (activeConns.length > 0) {
+          const c = activeConns[Math.floor(Math.random() * activeConns.length)];
+          particles.push(new Particle(c));
+        }
+      }
+      particles.forEach(p => p.update());
+      particles = particles.filter(p => p.alive);
+
+      // Draw connections
+      connections.forEach(c => c.draw(ctx));
+      // Draw particles
+      particles.forEach(p => p.draw(ctx));
+      // Draw nodes
+      nodes.forEach(n => n.draw(ctx, t));
+
+      requestAnimationFrame(animate);
+    }
+
+    window.addEventListener('resize', () => {
+      resize();
+      // Reposition nodes proportionally
+      nodes.forEach(n => {
+        n.baseX = (n.baseX / W) * canvas.clientWidth || rand(80, canvas.clientWidth - 80);
+        n.baseY = (n.baseY / H) * canvas.clientHeight || rand(80, canvas.clientHeight - 80);
+      });
+      resize();
+    });
+
+    init();
+    animate();
+
+    // ---- RESILIENCE MINI CANVAS ----
+    const rCanvas = document.getElementById('resilienceCanvas');
+    const rCtx = rCanvas.getContext('2d');
+    let rW, rH;
+    let rNodes = [];
+    let rConns = [];
+    let rPhase = 0; // 0=connected, 1=disconnecting, 2=disconnected, 3=reconnecting
+    let rTimer = 0;
+
+    function rResize() {
+      const dpr = window.devicePixelRatio || 1;
+      rW = rCanvas.clientWidth;
+      rH = rCanvas.clientHeight;
+      rCanvas.width = rW * dpr;
+      rCanvas.height = rH * dpr;
+      rCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function rInit() {
+      rResize();
+      rNodes = [];
+      rConns = [];
+      // 7 nodes in a loose horizontal arrangement
+      const spacing = rW / 8;
+      const positions = [
+        { x: spacing * 1, y: rH * 0.4 },
+        { x: spacing * 2, y: rH * 0.6 },
+        { x: spacing * 3, y: rH * 0.35 },
+        { x: spacing * 3.8, y: rH * 0.65 },
+        { x: spacing * 5, y: rH * 0.45 },
+        { x: spacing * 6, y: rH * 0.55 },
+        { x: spacing * 7, y: rH * 0.4 },
+      ];
+      positions.forEach((p, i) => {
+        rNodes.push({
+          x: p.x, y: p.y, baseX: p.x, baseY: p.y,
+          radius: rand(3, 5),
+          phase: rand(0, Math.PI * 2),
+          alive: true,
+          brightness: 1,
+          isTarget: i === 3, // Node 3 will disconnect
+          reconnectGlow: 0,
+        });
+      });
+      // Connections: chain + some extras
+      const pairs = [[0,1],[1,2],[2,3],[2,4],[3,4],[4,5],[5,6],[0,2],[3,5]];
+      pairs.forEach(([i, j]) => {
+        rConns.push({
+          a: rNodes[i], b: rNodes[j],
+          strength: 1,
+          cx: rand(-15, 15), cy: rand(-15, 15),
+          involvesTarget: i === 3 || j === 3,
+        });
+      });
+    }
+
+    function rAnimate() {
+      rTimer += 1;
+      rCtx.clearRect(0, 0, rW, rH);
+
+      // Phase cycle
+      const cycleDuration = 480;
+      const phaseProgress = (rTimer % cycleDuration) / cycleDuration;
+
+      rNodes.forEach(n => {
+        // Drift
+        n.x = n.baseX + Math.sin(rTimer * 0.005 + n.phase) * 4;
+        n.y = n.baseY + Math.cos(rTimer * 0.004 + n.phase) * 3;
+
+        if (n.isTarget) {
+          if (phaseProgress < 0.25) {
+            // Connected
+            n.alive = true;
+            n.brightness = lerp(n.brightness, 1, 0.05);
+            n.reconnectGlow = lerp(n.reconnectGlow, 0, 0.03);
+          } else if (phaseProgress < 0.4) {
+            // Disconnecting
+            n.alive = false;
+            n.brightness = lerp(n.brightness, 0.1, 0.03);
+          } else if (phaseProgress < 0.7) {
+            // Disconnected
+            n.alive = false;
+            n.brightness = lerp(n.brightness, 0.08, 0.02);
+          } else if (phaseProgress < 0.85) {
+            // Reconnecting
+            n.alive = true;
+            n.brightness = lerp(n.brightness, 1, 0.05);
+            n.reconnectGlow = lerp(n.reconnectGlow, 1, 0.06);
+          } else {
+            // Connected again
+            n.alive = true;
+            n.brightness = lerp(n.brightness, 1, 0.05);
+            n.reconnectGlow = lerp(n.reconnectGlow, 0, 0.02);
+          }
+        } else {
+          n.brightness = lerp(n.brightness, 1, 0.05);
+        }
+      });
+
+      // Draw connections
+      rConns.forEach(c => {
+        const bothAlive = c.a.alive && c.b.alive;
+        const target = bothAlive ? 1 : 0.05;
+        c.strength = lerp(c.strength, target, 0.04);
+
+        if (c.strength < 0.01) return;
+        const midX = (c.a.x + c.b.x) / 2 + c.cx;
+        const midY = (c.a.y + c.b.y) / 2 + c.cy;
+        rCtx.beginPath();
+        rCtx.moveTo(c.a.x, c.a.y);
+        rCtx.quadraticCurveTo(midX, midY, c.b.x, c.b.y);
+        rCtx.strokeStyle = `rgba(168, 152, 112, ${c.strength * 0.3})`;
+        rCtx.lineWidth = 0.8 + c.strength * 0.6;
+        rCtx.stroke();
+      });
+
+      // Draw nodes
+      rNodes.forEach(n => {
+        const pulse = 0.5 + 0.5 * Math.sin(rTimer * 0.003 + n.phase);
+        const r = n.radius * (0.85 + 0.15 * pulse);
+
+        // Reconnect glow
+        if (n.reconnectGlow > 0.05) {
+          const grad = rCtx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 10);
+          grad.addColorStop(0, `rgba(232, 200, 74, ${n.reconnectGlow * 0.5})`);
+          grad.addColorStop(1, 'rgba(232, 200, 74, 0)');
+          rCtx.beginPath();
+          rCtx.arc(n.x, n.y, r * 10, 0, Math.PI * 2);
+          rCtx.fillStyle = grad;
+          rCtx.fill();
+        }
+
+        // Glow
+        const glowGrad = rCtx.createRadialGradient(n.x, n.y, 0, n.x, n.y, r * 3);
+        glowGrad.addColorStop(0, `rgba(141, 182, 84, ${0.3 * n.brightness})`);
+        glowGrad.addColorStop(1, 'rgba(141, 182, 84, 0)');
+        rCtx.beginPath();
+        rCtx.arc(n.x, n.y, r * 3, 0, Math.PI * 2);
+        rCtx.fillStyle = glowGrad;
+        rCtx.fill();
+
+        // Core
+        rCtx.beginPath();
+        rCtx.arc(n.x, n.y, r, 0, Math.PI * 2);
+        rCtx.fillStyle = n.alive
+          ? `rgba(168, 152, 112, ${0.5 + 0.5 * n.brightness})`
+          : `rgba(80, 70, 50, 0.3)`;
+        rCtx.fill();
+
+        // Label
+        if (n.isTarget) {
+          rCtx.font = '10px "JetBrains Mono", monospace';
+          rCtx.textAlign = 'center';
+          const label = n.alive
+            ? (n.reconnectGlow > 0.3 ? 'syncing...' : 'online')
+            : 'offline';
+          rCtx.fillStyle = n.alive
+            ? `rgba(141, 182, 84, ${0.5 * n.brightness})`
+            : 'rgba(168, 152, 112, 0.25)';
+          rCtx.fillText(label, n.x, n.y + n.radius + 16);
+        }
+      });
+
+      requestAnimationFrame(rAnimate);
+    }
+
+    window.addEventListener('resize', () => {
+      rResize();
+    });
+
+    // Start resilience canvas when visible
+    const rObserver = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        rInit();
+        rAnimate();
+        rObserver.disconnect();
+      }
+    }, { threshold: 0.1 });
+    rObserver.observe(rCanvas);
+
+    // ---- SCROLL REVEAL ----
+    const revealObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+    document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
+  })();
+  </script>
+
+</body>
+</html>

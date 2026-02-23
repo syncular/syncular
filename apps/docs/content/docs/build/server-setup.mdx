@@ -1,0 +1,314 @@
+---
+title: Server Setup
+description: Set up a Syncular server with Postgres and Hono
+---
+
+# Server Setup
+
+## What you'll learn
+
+- How to connect to Postgres and create sync infrastructure tables
+- How to define table handlers with scope-based authorization
+- How to mount sync routes with Hono
+- How to add real-time WebSocket support
+
+## Prerequisites
+
+- Node.js 18+ or Bun
+- Postgres 14+ (logical replication not required)
+- Familiarity with [How Sync Works](/docs/introduction/architecture)
+
+## Install packages
+
+```bash
+npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install kysely pg hono
+```
+
+## 1. Database setup
+
+### Create the Kysely instance
+
+```typescript
+import { Kysely, PostgresDialect } from 'kysely';
+import { Pool } from 'pg';
+
+const db = new Kysely({
+  dialect: new PostgresDialect({
+    pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+  }),
+});
+```
+
+### Run sync migrations
+
+This creates the commit log tables (`sync_commits`, `sync_changes`, `sync_client_cursors`, `sync_snapshot_chunks`):
+
+```typescript
+import { ensureSyncSchema } from '@syncular/server';
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+const dialect = createPostgresServerDialect();
+await ensureSyncSchema(db, dialect);
+```
+
+### Create your app tables
+
+Every synced table needs a `server_version` column for conflict detection:
+
+```sql
+CREATE TABLE tasks (
+  id            TEXT PRIMARY KEY,
+  title         TEXT NOT NULL,
+  completed     INTEGER NOT NULL DEFAULT 0,
+  user_id       TEXT NOT NULL,
+  project_id    TEXT,
+  server_version INTEGER NOT NULL DEFAULT 1
+);
+```
+
+## 2. Define table handlers
+
+Table handlers define **what data syncs** and **who can access it**. The `createServerHandler` utility handles snapshots, operations, and scope extraction automatically.
+
+### Simple handler (user-owned data)
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({
+    user_id: [ctx.actorId],
+  }),
+});
+```
+
+How this works:
+
+```
+  1. Client subscribes:  { table: 'tasks', scopes: { user_id: '123' } }
+  2. Server calls resolveScopes → { user_id: ['123'] }
+  3. Effective scopes = requested ∩ allowed = { user_id: '123' }
+  4. Server returns only data where user_id = '123'
+  5. On push: scopes auto-extracted from rows, tagged on changes
+```
+
+### Multi-scope handler (project membership)
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  resolveScopes: async (ctx) => {
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: memberships.map((m) => m.project_id),
+    };
+  },
+});
+```
+
+See [Table Handlers](/docs/build/table-handlers) for advanced patterns and [Auth](/docs/build/auth) for authorization strategies.
+
+## 3. Create sync routes
+
+### Basic setup
+
+```typescript
+import { Hono } from 'hono';
+import { createSyncServer } from '@syncular/server-hono';
+
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate: async (c) => {
+    const token = c.req.header('authorization')?.replace('Bearer ', '');
+    if (!token) return null;
+
+    const payload = await verifyToken(token);
+    return payload ? { actorId: payload.userId } : null;
+  },
+});
+
+const app = new Hono();
+app.route('/api/sync', syncRoutes);
+```
+
+### With CORS
+
+```typescript
+import { cors } from 'hono/cors';
+
+app.use('/api/*', cors({
+  origin: ['http://localhost:5173'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+}));
+app.route('/api/sync', syncRoutes);
+```
+
+### Endpoints
+
+Mounted at your route prefix (e.g., `/api/sync`):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/push` | POST | Push a commit with operations |
+| `/pull` | POST | Pull commits and snapshots |
+| `/snapshot-chunks/:chunkId` | GET | Download large snapshot chunks |
+| `/realtime` | GET | WebSocket connection (if enabled) |
+
+## 4. Add real-time (optional)
+
+WebSocket enables instant updates instead of polling:
+
+```typescript
+import { createBunWebSocket } from 'hono/bun';
+
+const { upgradeWebSocket } = createBunWebSocket();
+
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  upgradeWebSocket,
+});
+```
+
+See [Real-time Guide](/docs/build/realtime) for multi-instance broadcasting and client setup.
+
+## 5. Add the console (optional)
+
+The admin console gives you monitoring, commit browsing, and maintenance tools:
+
+```typescript
+const { syncRoutes, consoleRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  console: {
+    token: process.env.SYNC_CONSOLE_TOKEN,
+    corsOrigins: '*',
+  },
+});
+
+app.route('/api/sync', syncRoutes);
+if (consoleRoutes) app.route('/api/console', consoleRoutes);
+```
+
+Serve the Console UI with one helper:
+
+```typescript
+import { mountConsoleUi } from '@syncular/server-hono';
+
+mountConsoleUi(app, {
+  mountPath: '/console',
+  apiBasePath: '/api',
+  resolveToken: async (c) => {
+    const session = await getSession(c);
+    return session?.consoleToken;
+  },
+});
+```
+
+See [Operations Guide](/docs/build/operations) for console API details.
+
+> **Migration note:** `createSyncServer` no longer enables console routes by default and no longer falls back to `demo-token`. To enable console routes, pass `console: { ... }` and configure either `console.token` or `SYNC_CONSOLE_TOKEN`.
+
+## Configuration reference
+
+```typescript
+createSyncServer({
+  // Required
+  db,                    // Kysely instance
+  dialect,               // Server dialect (postgres or sqlite)
+  handlers,              // Array of table handlers
+  authenticate,          // Auth function: (c: Context) => { actorId } | null
+
+  // Optional features
+  upgradeWebSocket,      // Enable WebSocket realtime
+  console: {             // Enable admin console
+    token: 'secret',     // Console auth token
+    corsOrigins: '*',    // Console CORS origins
+  },
+
+  // Optional limits
+  sync: {
+    maxPullLimitCommits: 100,         // Max commits per pull (default: 100)
+    maxSubscriptionsPerPull: 200,     // Max subscriptions per request (default: 200)
+    maxPullLimitSnapshotRows: 5000,   // Max snapshot rows per page (default: 5000)
+    maxOperationsPerPush: 200,        // Max operations per push (default: 200)
+  },
+});
+```
+
+## Complete example
+
+```typescript
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { createBunWebSocket } from 'hono/bun';
+import { Kysely, PostgresDialect } from 'kysely';
+import { Pool } from 'pg';
+import { createSyncServer } from '@syncular/server-hono';
+import { ensureSyncSchema, createServerHandler } from '@syncular/server';
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+// Database
+const db = new Kysely({
+  dialect: new PostgresDialect({
+    pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+  }),
+});
+const dialect = createPostgresServerDialect();
+await ensureSyncSchema(db, dialect);
+
+// Handlers
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+
+// WebSocket
+const { upgradeWebSocket } = createBunWebSocket();
+
+// Sync server
+const { syncRoutes, consoleRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate: async (c) => {
+    const userId = c.req.header('x-user-id');
+    return userId ? { actorId: userId } : null;
+  },
+  upgradeWebSocket,
+  console: { token: process.env.SYNC_CONSOLE_TOKEN },
+});
+
+// App
+const app = new Hono();
+app.use('/api/*', cors({ origin: ['http://localhost:5173'] }));
+app.route('/api/sync', syncRoutes);
+if (consoleRoutes) app.route('/api/console', consoleRoutes);
+
+Bun.serve({ fetch: app.fetch, port: 3001 });
+```
+
+## Next steps
+
+- [Client Setup](/docs/build/client-setup) — set up the React client
+- [Table Handlers](/docs/build/table-handlers) — deep dive into handlers
+- [Auth](/docs/build/auth) — authorization patterns
+- [Deployment](/docs/build/deployment) — production deployment

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 18: Event Horizon Terminal</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'JetBrains Mono', monospace;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    overflow-x: hidden;
+  }
+
+  /* Terminal chrome */
+  .terminal {
+    background: #0d0d0d;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .terminal-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 16px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .terminal-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .terminal-body {
+    padding: 20px;
+    font-size: 12px;
+    line-height: 1.8;
+  }
+
+  /* Syntax highlighting */
+  .kw { color: rgba(198, 120, 221, 0.8); } /* keyword */
+  .fn { color: rgba(97, 175, 239, 0.8); } /* function */
+  .str { color: rgba(152, 195, 121, 0.8); } /* string */
+  .cm { color: rgba(255,255,255,0.15); } /* comment */
+  .op { color: rgba(255,255,255,0.4); } /* operator */
+  .ty { color: rgba(229, 192, 123, 0.8); } /* type */
+  .num { color: rgba(209, 154, 102, 0.8); } /* number */
+  .prompt { color: rgba(152, 195, 121, 0.5); }
+
+  /* Animated typing cursor */
+  @keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+  .cursor {
+    display: inline-block;
+    width: 7px;
+    height: 14px;
+    background: rgba(255,255,255,0.5);
+    animation: blink-cursor 1s step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 2px;
+  }
+
+  /* Title — code-style */
+  .hero-title {
+    font-size: clamp(2.5rem, 7vw, 5rem);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+
+  /* Animations */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(15px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fi { animation: fade-in 0.6s ease forwards; opacity: 0; }
+  .fi1 { animation-delay: 0.1s; }
+  .fi2 { animation-delay: 0.2s; }
+  .fi3 { animation-delay: 0.4s; }
+  .fi4 { animation-delay: 0.6s; }
+  .fi5 { animation-delay: 0.8s; }
+
+  /* Scrolling log output */
+  @keyframes scroll-log {
+    0% { transform: translateY(0); }
+    100% { transform: translateY(-50%); }
+  }
+  .log-scroll {
+    animation: scroll-log 20s linear infinite;
+  }
+
+  /* CTA */
+  .cta-terminal {
+    background: rgba(152, 195, 121, 0.08);
+    border: 1px solid rgba(152, 195, 121, 0.15);
+    transition: all 0.3s ease;
+  }
+  .cta-terminal:hover {
+    background: rgba(152, 195, 121, 0.15);
+    border-color: rgba(152, 195, 121, 0.3);
+    box-shadow: 0 0 30px rgba(152, 195, 121, 0.05);
+  }
+
+  /* Feature list styled as CLI output */
+  .cli-feature {
+    display: flex;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+  }
+  .cli-feature:last-child { border: none; }
+  .cli-check { color: rgba(152, 195, 121, 0.6); }
+  .cli-name { color: rgba(255,255,255,0.5); width: 140px; flex-shrink: 0; }
+  .cli-desc { color: rgba(255,255,255,0.15); }
+</style>
+</head>
+<body>
+
+<!-- Background ambient -->
+<div class="fixed inset-0 z-0 pointer-events-none" style="background: radial-gradient(ellipse at 50% 30%, rgba(152,195,121,0.01) 0%, transparent 50%);"></div>
+
+<!-- Nav -->
+<header class="fixed top-0 left-0 right-0 z-50 px-6 py-4">
+  <nav class="max-w-5xl mx-auto flex items-center justify-between">
+    <span class="text-xs font-bold text-white/40">syncular</span>
+    <div class="flex items-center gap-4">
+      <a href="#" class="text-[10px] text-white/20 hover:text-white/50 transition-colors">docs</a>
+      <a href="#" class="text-[10px] text-white/20 hover:text-white/50 transition-colors">github</a>
+    </div>
+  </nav>
+</header>
+
+<!-- Hero — a terminal IS the hero -->
+<section class="relative min-h-screen flex items-center z-10 px-6">
+  <div class="max-w-4xl mx-auto w-full">
+    <div class="text-[10px] text-white/12 mb-6 fi fi1">// the event horizon of data sync</div>
+
+    <h1 class="hero-title fi fi2">
+      <span class="text-white/70">syncular</span><span class="text-white/15">.init()</span>
+    </h1>
+    <p class="mt-4 text-[11px] text-white/18 leading-relaxed max-w-lg fi fi3">
+      An offline-first sync engine. Write to local SQLite.
+      Push commits to server. Pull merged truth back.
+      Everything past the event horizon syncs.
+    </p>
+
+    <div class="mt-6 flex items-center gap-3 fi fi4">
+      <a href="#" class="cta-terminal px-6 py-2 rounded-md text-[10px] text-green-300/70">
+        bun add @syncular/client
+      </a>
+      <a href="#" class="text-[10px] text-white/15 hover:text-white/40 transition-colors">
+        view source →
+      </a>
+    </div>
+
+    <!-- Main terminal -->
+    <div class="terminal mt-12 fi fi5">
+      <div class="terminal-bar">
+        <div class="terminal-dot" style="background: rgba(255,95,87,0.7);"></div>
+        <div class="terminal-dot" style="background: rgba(255,189,46,0.7);"></div>
+        <div class="terminal-dot" style="background: rgba(39,201,63,0.7);"></div>
+        <span class="text-[10px] text-white/15 ml-3">syncular — event horizon</span>
+      </div>
+      <div class="terminal-body">
+        <div><span class="cm">// 1. Define your sync handlers</span></div>
+        <div>
+          <span class="kw">const</span> <span class="op">server</span> = <span class="fn">createServer</span>({
+        </div>
+        <div>&nbsp;&nbsp;<span class="op">tables</span>: {</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="str">tasks</span>: <span class="fn">defineTable</span>({</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="op">columns</span>: { <span class="op">title</span>: <span class="ty">string</span>, <span class="op">done</span>: <span class="ty">boolean</span> },</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="op">scopes</span>: (<span class="op">row</span>) => [<span class="str">`user:${row.userId}`</span>]</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;})</div>
+        <div>&nbsp;&nbsp;}</div>
+        <div>})</div>
+        <div>&nbsp;</div>
+        <div><span class="cm">// 2. Client writes locally, syncs automatically</span></div>
+        <div>
+          <span class="kw">const</span> <span class="op">client</span> = <span class="fn">createClient</span>({ <span class="op">db</span>: <span class="str">'sqlite'</span> })
+        </div>
+        <div><span class="kw">await</span> <span class="op">client</span>.<span class="fn">mutate</span>(<span class="str">'tasks'</span>, { <span class="op">title</span>: <span class="str">'Ship v1.0'</span> })</div>
+        <div>&nbsp;</div>
+        <div><span class="cm">// 3. Query at the speed of light</span></div>
+        <div>
+          <span class="kw">const</span> <span class="op">tasks</span> = <span class="kw">await</span> <span class="op">client</span>.<span class="fn">query</span>(<span class="str">'tasks'</span>)
+        </div>
+        <div><span class="cm">// → [{title: 'Ship v1.0', done: false}]  <span class="num">&lt;0.1ms</span></span></div>
+        <div>&nbsp;</div>
+        <div><span class="prompt">$</span> <span class="cursor"></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Live sync log -->
+<section class="relative z-10 px-6 py-24">
+  <div class="max-w-4xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-sm font-bold text-white/40">sync.log</h2>
+      <div class="flex items-center gap-2">
+        <div class="w-1.5 h-1.5 rounded-full bg-green-400/60 animate-pulse"></div>
+        <span class="text-[9px] text-green-400/40">live</span>
+      </div>
+    </div>
+    <div class="terminal">
+      <div class="terminal-body text-[10px] overflow-hidden" style="height: 200px;">
+        <div class="log-scroll">
+          <div class="text-white/10">[<span class="num">00:00:01</span>] <span class="str">client.write</span> → INSERT tasks <span class="cm">(local)</span></div>
+          <div class="text-white/10">[<span class="num">00:00:01</span>] <span class="str">outbox.queue</span> → commit <span class="ty">a3f8c1</span></div>
+          <div class="text-white/10">[<span class="num">00:00:02</span>] <span class="fn">sync.push</span> → 1 commit → server</div>
+          <div class="text-white/10">[<span class="num">00:00:02</span>] <span class="fn">server.merge</span> → commit <span class="ty">a3f8c1</span> accepted</div>
+          <div class="text-white/10">[<span class="num">00:00:03</span>] <span class="fn">sync.pull</span> → 0 new commits</div>
+          <div class="text-white/10">[<span class="num">00:00:05</span>] <span class="str">client.write</span> → UPDATE tasks <span class="cm">(local)</span></div>
+          <div class="text-white/10">[<span class="num">00:00:05</span>] <span class="str">outbox.queue</span> → commit <span class="ty">b7d2e4</span></div>
+          <div class="text-white/10">[<span class="num">00:00:06</span>] <span class="fn">sync.push</span> → 1 commit → server</div>
+          <div class="text-white/10">[<span class="num">00:00:06</span>] <span class="fn">sync.pull</span> → 2 new commits from <span class="ty">client-b</span></div>
+          <div class="text-white/10">[<span class="num">00:00:06</span>] <span class="fn">client.apply</span> → 2 commits merged</div>
+          <div class="text-white/10">[<span class="num">00:00:08</span>] <span class="str">client.query</span> → SELECT * FROM tasks <span class="num">(0.04ms)</span></div>
+          <!-- Duplicate for infinite scroll -->
+          <div class="text-white/10">[<span class="num">00:00:01</span>] <span class="str">client.write</span> → INSERT tasks <span class="cm">(local)</span></div>
+          <div class="text-white/10">[<span class="num">00:00:01</span>] <span class="str">outbox.queue</span> → commit <span class="ty">a3f8c1</span></div>
+          <div class="text-white/10">[<span class="num">00:00:02</span>] <span class="fn">sync.push</span> → 1 commit → server</div>
+          <div class="text-white/10">[<span class="num">00:00:02</span>] <span class="fn">server.merge</span> → commit <span class="ty">a3f8c1</span> accepted</div>
+          <div class="text-white/10">[<span class="num">00:00:03</span>] <span class="fn">sync.pull</span> → 0 new commits</div>
+          <div class="text-white/10">[<span class="num">00:00:05</span>] <span class="str">client.write</span> → UPDATE tasks <span class="cm">(local)</span></div>
+          <div class="text-white/10">[<span class="num">00:00:05</span>] <span class="str">outbox.queue</span> → commit <span class="ty">b7d2e4</span></div>
+          <div class="text-white/10">[<span class="num">00:00:06</span>] <span class="fn">sync.push</span> → 1 commit → server</div>
+          <div class="text-white/10">[<span class="num">00:00:06</span>] <span class="fn">sync.pull</span> → 2 new commits from <span class="ty">client-b</span></div>
+          <div class="text-white/10">[<span class="num">00:00:06</span>] <span class="fn">client.apply</span> → 2 commits merged</div>
+          <div class="text-white/10">[<span class="num">00:00:08</span>] <span class="str">client.query</span> → SELECT * FROM tasks <span class="num">(0.04ms)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features as CLI output -->
+<section class="relative z-10 px-6 py-24">
+  <div class="max-w-3xl mx-auto">
+    <h2 class="text-sm font-bold text-white/40 mb-6">syncular --features</h2>
+    <div class="terminal">
+      <div class="terminal-body text-[11px]">
+        <div class="cli-feature">
+          <span class="cli-check">✓</span>
+          <span class="cli-name">offline-first</span>
+          <span class="cli-desc">local SQLite, works without network</span>
+        </div>
+        <div class="cli-feature">
+          <span class="cli-check">✓</span>
+          <span class="cli-name">commit-log</span>
+          <span class="cli-desc">git-style ordered mutation history</span>
+        </div>
+        <div class="cli-feature">
+          <span class="cli-check">✓</span>
+          <span class="cli-name">scoped-auth</span>
+          <span class="cli-desc">row-level security via scopes</span>
+        </div>
+        <div class="cli-feature">
+          <span class="cli-check">✓</span>
+          <span class="cli-name">instant-queries</span>
+          <span class="cli-desc">sub-ms reads, zero round-trips</span>
+        </div>
+        <div class="cli-feature">
+          <span class="cli-check">✓</span>
+          <span class="cli-name">type-safe-sql</span>
+          <span class="cli-desc">Kysely + TypeScript inference</span>
+        </div>
+        <div class="cli-feature">
+          <span class="cli-check">✓</span>
+          <span class="cli-name">self-hosted</span>
+          <span class="cli-desc">MIT license, deploy anywhere</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="relative z-10 px-6 py-12 border-t border-white/[0.03]">
+  <div class="max-w-4xl mx-auto flex items-center justify-between">
+    <span class="text-[9px] text-white/12">syncular — MIT license</span>
+    <div class="flex gap-6">
+      <a href="#" class="text-[9px] text-white/12 hover:text-white/30 transition-colors">docs</a>
+      <a href="#" class="text-[9px] text-white/12 hover:text-white/30 transition-colors">github</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

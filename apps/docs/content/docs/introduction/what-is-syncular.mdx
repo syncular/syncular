@@ -1,0 +1,158 @@
+---
+title: What is Syncular?
+description: Understanding Syncular's approach to offline-first sync
+---
+
+# What is Syncular?
+
+Syncular is a **sync framework** for building offline-first applications. It handles the hard parts of synchronization — local storage, incremental sync, conflict detection, authorization, and real-time updates — so you can focus on building your app.
+
+## The problem
+
+Modern apps are expected to work everywhere — on planes, in subways, with spotty connections. But building offline support from scratch means solving:
+
+1. **Local state** — Where does data live when offline?
+2. **Sync logic** — How do you reconcile changes when connectivity returns?
+3. **Conflicts** — What happens when two users edit the same thing?
+4. **Authorization** — Who can see what, and how do you enforce it during sync?
+5. **Real-time** — How do you push changes to connected clients?
+
+Most teams underestimate this. They start with REST APIs, add caching, try to patch offline support, and end up with a fragile system that breaks in edge cases.
+
+## Three design decisions
+
+Syncular is built on three opinionated choices that make the whole system simpler:
+
+### 1. SQLite on the client
+
+Your app queries local SQLite, not a remote server. This gives you:
+
+- **Instant queries** — no network round-trips, sub-millisecond reads
+- **Full SQL power** — joins, aggregations, complex filters
+- **Reliable offline** — data is always available locally
+
+```typescript
+// Runs against local SQLite — instant, works offline
+const { data: tasks } = useSyncQuery(({ selectFrom }) =>
+  selectFrom('tasks')
+    .selectAll()
+    .where('completed', '=', 0)
+    .orderBy('created_at', 'desc')
+);
+```
+
+### 2. Commit-log sync
+
+Instead of replicating database state (complex), Syncular replicates a **log of commits** (simple).
+
+```
+Commit Log
+─────────────────────────────────────────────────────────
+  seq 1  │  client-A  │  created task-1
+  seq 2  │  client-B  │  created task-2
+  seq 3  │  client-A  │  updated task-1 (title changed)
+  seq 4  │  client-B  │  deleted task-2
+─────────────────────────────────────────────────────────
+           ▲ Client B is here (cursor: 2)
+           │ Needs: commits 3 and 4
+```
+
+Clients track their position in the log (a cursor). To sync, they ask: *"Give me commits after my cursor."* This gives you:
+
+- **Incremental sync** — only fetch what you haven't seen
+- **Global ordering** — all clients see changes in the same order
+- **Easy debugging** — the log is append-only and immutable
+- **Idempotent pushes** — retrying a push returns the same result
+
+### 3. Scope-based authorization
+
+Every change is tagged with **scopes** — key-value pairs extracted automatically from row data:
+
+```
+┌───────────────────────────────────────────────────────┐
+│  Row: { id: 't1', title: 'Buy milk', user_id: '123' }│
+│                                                       │
+│  Scope pattern: 'user:{user_id}'                      │
+│  Extracted scope: { user_id: '123' }                  │
+│                                                       │
+│  Stored on the change in the commit log.              │
+│  Only clients subscribed to user_id: '123' receive it.│
+└───────────────────────────────────────────────────────┘
+```
+
+On pull, the server computes **effective scopes** as the intersection of what the client requested and what the user is allowed to access:
+
+```
+  Requested:  { project_id: 'A' }
+  Allowed:    { user_id: '123', project_id: ['A', 'B'] }
+                         ┌───────┐
+  Effective:             │   A   │  ← only project A data returned
+                         └───────┘
+```
+
+This makes authorization **automatic** (extracted from data), **explicit** (stored on every change), **auditable** (queryable in the database), and **composable** (combine user, project, team scopes).
+
+## How it fits together
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                         CLIENT                                 │
+│                                                                │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐   │
+│  │  React  │───▶│ Kysely  │───▶│ SQLite  │    │ Changes  │   │
+│  │  UI     │    │ (typed) │    │ (local) │    │ appear   │   │
+│  └────┬────┘    └─────────┘    └─────────┘    │ instantly │   │
+│       │                                        └──────────┘   │
+│       │ mutate                                                 │
+│       ▼                                                        │
+│  ┌──────────┐                                                  │
+│  │ Outbox   │ ← pending commits, survives app restart          │
+│  └────┬─────┘                                                  │
+└───────┼────────────────────────────────────────────────────────┘
+        │ push (HTTP POST)                pull (HTTP POST)
+        ▼                                       │
+┌───────────────────────────────────────────────────────────────┐
+│                         SERVER                                 │
+│                                                                │
+│  ┌───────────────┐    ┌───────────┐    ┌───────────────┐      │
+│  │ Table Handlers│◀──▶│  Kysely   │───▶│   Postgres    │      │
+│  │ (your logic)  │    │  (typed)  │    │               │      │
+│  └───────────────┘    └───────────┘    └───────┬───────┘      │
+│                                                │               │
+│        Commit Log ─ append-only, scoped ◀──────┘               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+## Key concepts at a glance
+
+| Concept | What it is |
+|---------|-----------|
+| **Scopes** | Key-value pairs (`user_id`, `project_id`) auto-extracted from rows. Define who can access each change. |
+| **Table handlers** | Server-side definitions of how each table syncs. Clients subscribe by table name. |
+| **Subscriptions** | Client requests for data: a table + scope values. Example: `{ table: 'tasks', scopes: { project_id: 'A' } }` |
+| **Commits** | Atomic bundles of changes in the commit log. Globally ordered by `commit_seq`. |
+| **Cursors** | Client's position in the commit log. Used for incremental sync. |
+| **Outbox** | Client-side queue for pending changes. Survives offline and app restarts. |
+| **Table handlers** | Server-side: validate and apply operations. Client-side: apply incoming changes (defaults provided). |
+
+## When to use Syncular
+
+**Good fit:**
+- Apps that need offline support (field work, mobile, unreliable networks)
+- Collaborative features with clear data ownership
+- Existing Postgres infrastructure
+- Teams that value type safety and debuggability
+- Need explicit control over sync behavior and authorization
+
+**Consider alternatives:**
+- [Zero](/docs/introduction/comparison/vs-zero) — reactive queries with minimal setup
+- [Jazz](/docs/introduction/comparison/vs-jazz) — real-time collaborative editing with CRDTs
+- [PowerSync](/docs/introduction/comparison/vs-powersync) — managed service with strong mobile SDKs
+- [Electric SQL](/docs/introduction/comparison/vs-electric) — read-path sync from Postgres
+
+## Next steps
+
+- [Quick Start](/docs/introduction/quick-start) — see it running in 30 seconds
+- [How Sync Works](/docs/introduction/architecture) — deep dive into the commit log
+- [Scopes](/docs/introduction/scopes) — understand authorization
+- [Comparison](/docs/introduction/comparison) — how we stack up against alternatives

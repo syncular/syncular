@@ -1,0 +1,22 @@
+{
+  "root": true,
+  "title": "Introduction",
+  "icon": "BookOpen",
+  "pages": [
+    "index",
+    "adoption-paths",
+    "quick-start",
+    "demo",
+    "installation",
+    "---Core Concepts---",
+    "what-is-syncular",
+    "architecture",
+    "scopes",
+    "subscriptions",
+    "commits",
+    "conflict-resolution",
+    "---Evaluate---",
+    "comparison",
+    "glossary"
+  ]
+}

@@ -1,0 +1,456 @@
+---
+title: Observability
+description: Configure logs, traces, metrics, and exceptions for Syncular with Sentry or any custom backend.
+---
+
+# Observability
+
+Syncular emits telemetry through `@syncular/core` using a pluggable runtime backend:
+
+- Structured logs
+- Traces/spans
+- Metrics (count, gauge, distribution)
+- Captured exceptions
+
+By default, telemetry logs to console JSON. In production, configure a backend like Sentry or implement your own (e.g., OpenTelemetry, Datadog, custom logging).
+
+## Telemetry architecture
+
+`@syncular/core` owns the telemetry contract and global runtime hooks:
+
+- `configureSyncTelemetry(telemetry)`
+- `logSyncEvent(event)`
+- `startSyncSpan(options, callback)`
+- `countSyncMetric`, `gaugeSyncMetric`, `distributionSyncMetric`
+- `captureSyncException(error, context)`
+
+`@syncular/observability-sentry` adapts those hooks to Sentry primitives. You can also implement the `SyncTelemetry` interface yourself to integrate with any observability platform.
+
+## The `SyncTelemetry` interface
+
+Every telemetry backend implements this interface from `@syncular/core`:
+
+```ts
+import type {
+  SyncTelemetry,
+  SyncTelemetryEvent,
+  SyncTracer,
+  SyncSpan,
+  SyncSpanOptions,
+  SyncMetrics,
+  SyncMetricOptions,
+} from '@syncular/core';
+
+interface SyncTelemetry {
+  /** Emit a structured log event. */
+  log(event: SyncTelemetryEvent): void;
+
+  /** Tracing — wrap operations in spans. */
+  tracer: SyncTracer;
+
+  /** Metrics — counters, gauges, distributions. */
+  metrics: SyncMetrics;
+
+  /** Capture an exception with optional context. */
+  captureException(error: unknown, context?: Record<string, unknown>): void;
+}
+```
+
+### Supporting types
+
+```ts
+interface SyncTelemetryEvent {
+  event: string;
+  level?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+  userId?: string;
+  durationMs?: number;
+  error?: string;
+  [key: string]: unknown; // extensible
+}
+
+interface SyncTracer {
+  startSpan<T>(options: SyncSpanOptions, callback: (span: SyncSpan) => T): T;
+}
+
+interface SyncSpan {
+  setAttribute(name: string, value: string | number | boolean): void;
+  setAttributes(attributes: Record<string, string | number | boolean>): void;
+  setStatus(status: 'ok' | 'error'): void;
+}
+
+interface SyncMetrics {
+  count(name: string, value?: number, options?: SyncMetricOptions): void;
+  gauge(name: string, value: number, options?: SyncMetricOptions): void;
+  distribution(name: string, value: number, options?: SyncMetricOptions): void;
+}
+
+interface SyncMetricOptions {
+  attributes?: Record<string, string | number | boolean>;
+  unit?: string;
+}
+```
+
+## What Syncular emits out of the box
+
+### Spans
+
+- `sync.server.push`
+- `sync.server.pull`
+- `sync.client.sync`
+
+### Metrics
+
+| Metric | Type | Emitted by |
+| --- | --- | --- |
+| `sync.server.push.requests` | count | Server push |
+| `sync.server.push.operations` | count | Server push |
+| `sync.server.push.duration_ms` | distribution | Server push |
+| `sync.server.pull.requests` | count | Server pull |
+| `sync.server.pull.duration_ms` | distribution | Server pull |
+| `sync.server.pull.commits` | distribution | Server pull |
+| `sync.server.pull.changes` | distribution | Server pull |
+| `sync.client.sync.attempts` | count | Client sync loop |
+| `sync.client.sync.results` | count | Client sync loop |
+| `sync.client.sync.duration_ms` | distribution | Client sync loop |
+| `sync.client.ws.events` | count | Client realtime |
+| `sync.client.ws.delivery.events` | count | Client realtime delivery |
+
+### Key log events
+
+- `sync.push`
+- `sync.pull`
+- `sync.client.sync`
+- `sync.server.push`
+- `sync.server.pull`
+
+## Sentry setup
+
+## Install
+
+```bash
+bun add @syncular/observability-sentry
+```
+
+## Browser app
+
+```ts
+import { initAndConfigureBrowserSentry } from '@syncular/observability-sentry';
+
+initAndConfigureBrowserSentry({
+  dsn: process.env.SYNCULAR_SENTRY_DSN,
+  environment: process.env.SYNCULAR_SENTRY_ENVIRONMENT,
+  release: process.env.SYNCULAR_SENTRY_RELEASE,
+  enableLogs: true,
+  tracesSampleRate: 0.2,
+});
+```
+
+`initAndConfigureBrowserSentry` configures Syncular telemetry and ensures browser tracing integration is enabled when needed.
+
+## Cloudflare Worker
+
+```ts
+import {
+  configureCloudflareSentryTelemetry,
+  withCloudflareSentry,
+} from '@syncular/observability-sentry';
+
+configureCloudflareSentryTelemetry();
+
+export default withCloudflareSentry(
+  (env) => ({
+    dsn: env.SENTRY_DSN,
+    environment: env.SENTRY_ENVIRONMENT,
+    release: env.SENTRY_RELEASE,
+    enableLogs: true,
+    tracesSampleRate: 0.2,
+  }),
+  {
+    async fetch(request, env, ctx) {
+      return new Response('ok');
+    },
+  }
+);
+```
+
+## Emit custom telemetry
+
+### Using `@syncular/core` helpers (works with any backend)
+
+These functions route through whatever backend is configured via `configureSyncTelemetry`:
+
+```ts
+import {
+  logSyncEvent,
+  startSyncSpan,
+  countSyncMetric,
+  distributionSyncMetric,
+  captureSyncException,
+} from '@syncular/core';
+
+// Structured log
+logSyncEvent({
+  event: 'checkout.completed',
+  level: 'info',
+  userId: 'user_123',
+  orderId: 'ord_456',
+  amount: 49.9,
+});
+
+// Span (sync or async)
+const result = startSyncSpan({ name: 'checkout.process', op: 'task' }, (span) => {
+  span.setAttribute('orderId', 'ord_456');
+  // ... do work ...
+  span.setStatus('ok');
+  return { success: true };
+});
+
+// Metrics
+countSyncMetric('checkout.orders', 1, { attributes: { plan: 'pro' } });
+distributionSyncMetric('checkout.duration_ms', 342, { unit: 'millisecond' });
+
+// Exception
+captureSyncException(new Error('Payment failed'), { orderId: 'ord_456' });
+```
+
+### Sentry-specific helpers
+
+For Sentry log ingestion and message/issue events, use the platform-specific helpers:
+
+```ts
+import {
+  logBrowserSentryMessage,
+  captureBrowserSentryMessage,
+} from '@syncular/observability-sentry';
+
+logBrowserSentryMessage('checkout.completed', {
+  level: 'info',
+  attributes: {
+    orderId: 'ord_123',
+    amount: 49.9,
+    hasDiscount: true,
+  },
+});
+
+captureBrowserSentryMessage('checkout.unusual_state', {
+  level: 'warning',
+  tags: { flow: 'checkout' },
+});
+```
+
+Use `logCloudflareSentryMessage` and `captureCloudflareSentryMessage` similarly on workers.
+
+## Environment variables
+
+### Browser
+
+- `SYNCULAR_SENTRY_DSN`
+- `SYNCULAR_SENTRY_ENVIRONMENT`
+- `SYNCULAR_SENTRY_RELEASE`
+
+You can also inject these via `<meta>` tags for static builds.
+
+### Worker
+
+- `SENTRY_DSN`
+- `SENTRY_ENVIRONMENT`
+- `SENTRY_RELEASE`
+
+For Cloudflare, you can fall back to `CF_VERSION_METADATA.id` as release.
+
+## Custom telemetry backend
+
+You can replace the default console backend with any observability platform by implementing the `SyncTelemetry` interface and calling `configureSyncTelemetry`.
+
+### Minimal example
+
+```ts
+import { configureSyncTelemetry } from '@syncular/core';
+import type { SyncTelemetry } from '@syncular/core';
+
+const myTelemetry: SyncTelemetry = {
+  log(event) {
+    myLogger.log(event.level ?? 'info', event.event, event);
+  },
+  tracer: {
+    startSpan(options, callback) {
+      const span = myTracer.startSpan(options.name);
+      try {
+        return callback({
+          setAttribute(k, v) { span.setAttribute(k, v); },
+          setAttributes(attrs) { for (const [k, v] of Object.entries(attrs)) span.setAttribute(k, v); },
+          setStatus(s) { span.setStatus({ code: s === 'ok' ? 1 : 2 }); },
+        });
+      } finally {
+        span.end();
+      }
+    },
+  },
+  metrics: {
+    count(name, value, options) { myMetrics.increment(name, value ?? 1, options?.attributes); },
+    gauge(name, value, options) { myMetrics.gauge(name, value, options?.attributes); },
+    distribution(name, value, options) { myMetrics.histogram(name, value, options?.attributes); },
+  },
+  captureException(error, context) {
+    myErrorReporter.captureException(error, { extra: context });
+  },
+};
+
+configureSyncTelemetry(myTelemetry);
+```
+
+Call `configureSyncTelemetry` once at startup, before creating any Syncular client or server instance. All internal Syncular telemetry will route through your implementation.
+
+### OpenTelemetry example
+
+A full OpenTelemetry backend using `@opentelemetry/api`:
+
+```ts
+import { configureSyncTelemetry } from '@syncular/core';
+import type { SyncTelemetry, SyncSpan } from '@syncular/core';
+import { trace, metrics, SpanStatusCode } from '@opentelemetry/api';
+
+function createOtelSyncTelemetry(): SyncTelemetry {
+  const otelTracer = trace.getTracer('syncular');
+  const otelMeter = metrics.getMeter('syncular');
+
+  // Pre-create instruments for known metrics, or create lazily
+  const counters = new Map<string, ReturnType<typeof otelMeter.createCounter>>();
+  const histograms = new Map<string, ReturnType<typeof otelMeter.createHistogram>>();
+  const gauges = new Map<string, ReturnType<typeof otelMeter.createObservableGauge>>();
+  const gaugeValues = new Map<string, { value: number; attributes?: Record<string, string | number | boolean> }>();
+
+  function getCounter(name: string) {
+    let c = counters.get(name);
+    if (!c) {
+      c = otelMeter.createCounter(name);
+      counters.set(name, c);
+    }
+    return c;
+  }
+
+  function getHistogram(name: string, unit?: string) {
+    let h = histograms.get(name);
+    if (!h) {
+      h = otelMeter.createHistogram(name, unit ? { unit } : undefined);
+      histograms.set(name, h);
+    }
+    return h;
+  }
+
+  function getGauge(name: string) {
+    if (!gauges.has(name)) {
+      const g = otelMeter.createObservableGauge(name);
+      g.addCallback((result) => {
+        const entry = gaugeValues.get(name);
+        if (entry) result.observe(entry.value, entry.attributes);
+      });
+      gauges.set(name, g);
+    }
+  }
+
+  return {
+    log(event) {
+      // OTel logs: emit as a span event on the active span, or use a log bridge
+      const activeSpan = trace.getActiveSpan();
+      if (activeSpan) {
+        const { event: name, level, ...rest } = event;
+        activeSpan.addEvent(name, rest as Record<string, string | number | boolean>);
+      }
+    },
+
+    tracer: {
+      startSpan(options, callback) {
+        return otelTracer.startActiveSpan(
+          options.name,
+          { attributes: options.attributes },
+          (otelSpan) => {
+            const span: SyncSpan = {
+              setAttribute(k, v) { otelSpan.setAttribute(k, v); },
+              setAttributes(attrs) { otelSpan.setAttributes(attrs); },
+              setStatus(status) {
+                otelSpan.setStatus({
+                  code: status === 'ok' ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+                });
+              },
+            };
+            try {
+              return callback(span);
+            } finally {
+              otelSpan.end();
+            }
+          }
+        );
+      },
+    },
+
+    metrics: {
+      count(name, value, options) {
+        getCounter(name).add(value ?? 1, options?.attributes);
+      },
+      gauge(name, value, options) {
+        getGauge(name);
+        gaugeValues.set(name, { value, attributes: options?.attributes });
+      },
+      distribution(name, value, options) {
+        getHistogram(name, options?.unit).record(value, options?.attributes);
+      },
+    },
+
+    captureException(error, context) {
+      const activeSpan = trace.getActiveSpan();
+      if (activeSpan && error instanceof Error) {
+        activeSpan.recordException(error);
+      }
+      // Also log via your OTel log pipeline if available
+      console.error('[syncular]', error, context);
+    },
+  };
+}
+
+// Call at startup
+configureSyncTelemetry(createOtelSyncTelemetry());
+```
+
+This requires a configured OTel SDK (e.g., `@opentelemetry/sdk-node` for Node.js or `@opentelemetry/sdk-trace-web` for browsers) with your desired exporters (OTLP, Jaeger, Prometheus, etc.). Syncular does not manage the OTel SDK lifecycle — initialize it before calling `configureSyncTelemetry`.
+
+### Tips for custom backends
+
+- **Partial implementations are fine.** If you only need logging, use no-op implementations for tracing and metrics. Import `createDefaultSyncTelemetry()` and override just the parts you need:
+
+```ts
+import { createDefaultSyncTelemetry, configureSyncTelemetry } from '@syncular/core';
+
+const telemetry = createDefaultSyncTelemetry();
+telemetry.log = (event) => myLogger.log(event);
+configureSyncTelemetry(telemetry);
+```
+
+- **Attribute values are always primitives** (`string | number | boolean`). You do not need to handle complex objects in your metric or span attribute setters.
+- **`startSpan` must call the callback synchronously** and return its result. The callback may return a `Promise` for async operations — your implementation should pass it through transparently.
+- **Call `configureSyncTelemetry` before creating clients/servers.** Telemetry is resolved at call time via a global singleton, so late configuration works, but early setup ensures nothing is missed.
+- **Use `resetSyncTelemetry()`** in tests to restore the default console backend between test runs.
+
+## Release and sourcemaps
+
+Use one consistent release value across client and server builds. In this repo, deploy uses stamped versions from `scripts/stamp-versions.ts`; pass the same version into Sentry release settings and sourcemap upload.
+
+## Troubleshooting
+
+If you don't see logs or traces:
+
+1. Confirm DSN is present at runtime (browser meta/env or worker env).
+2. Confirm `enableLogs: true` is set.
+3. Confirm tracing is enabled (`tracesSampleRate` or `tracesSampler`).
+4. Check Sentry filters for project/environment/time range.
+5. Check whether you're emitting logs (`log*`) vs message events (`capture*`).
+6. Verify attributes are primitives (`string | number | boolean`) or serializable values.
+
+## Demo reference
+
+For working production examples in this repo:
+
+- Browser init: `apps/demo/src/main.tsx`
+- Browser Sentry options: `apps/demo/src/client/sentry.ts`
+- Service worker server init: `apps/demo/src/sw/server.ts`
+- Cloudflare worker init: `apps/demo/src/cf/index.ts`

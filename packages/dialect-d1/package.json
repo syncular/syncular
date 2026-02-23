@@ -1,0 +1,60 @@
+{
+  "name": "@syncular/dialect-d1",
+  "version": "0.0.0",
+  "description": "Cloudflare D1 dialect for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/dialect-d1"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "cloudflare",
+    "d1",
+    "sqlite"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "*",
+    "kysely-d1": "^0.4.0"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

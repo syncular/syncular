@@ -1,0 +1,148 @@
+---
+title: External Changes
+description: Notify sync clients about data changes made outside the sync push flow
+---
+
+# External Changes
+
+## What you'll learn
+
+- How to notify sync clients when data changes outside the normal push flow
+- When to use `notifyExternalDataChange` vs the sync push API
+- Common patterns: REST mutations, webhooks, cron jobs, pipeline imports
+
+## Prerequisites
+
+- Familiarity with [Server Setup](/docs/build/server-setup) and [Table Handlers](/docs/build/table-handlers)
+
+---
+
+## The Problem
+
+Data doesn't always change through the sync push flow. REST endpoints, webhooks, cron jobs, and background pipelines can modify rows directly in the database. When this happens, connected sync clients won't know about the change unless you notify the sync framework.
+
+## notifyExternalDataChange
+
+Use `notifyExternalDataChange` to tell the sync framework that tables were modified externally. On the next pull, affected subscriptions will re-bootstrap (full snapshot) instead of doing an incremental pull, ensuring clients receive the updated data.
+
+```typescript
+import { notifyExternalDataChange } from '@syncular/server';
+
+// After modifying data outside the sync push flow
+await notifyExternalDataChange({
+  db,
+  dialect,
+  tables: ['team_connections'],
+});
+```
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `db` | `Kysely<DB>` | Yes | Database connection |
+| `dialect` | `ServerSyncDialect` | Yes | Server dialect for transaction execution |
+| `tables` | `string[]` | Yes | Table names that were externally modified |
+| `partitionId` | `string` | No | Partition key (default: `'default'`) |
+| `actorId` | `string` | No | Actor for the synthetic commit (default: `'__external__'`) |
+
+### Return value
+
+```typescript
+interface NotifyExternalDataChangeResult {
+  commitSeq: number;    // Sequence number of the synthetic commit
+  tables: string[];     // Tables that were notified
+  deletedChunks: number; // Number of snapshot chunks cleared
+}
+```
+
+## Common Patterns
+
+### REST endpoint that modifies synced data
+
+```typescript
+app.post('/api/team-connections/:id/accept', async (c) => {
+  const id = c.req.param('id');
+
+  // Modify data directly
+  await db.updateTable('team_connections')
+    .set({ status: 'accepted', accepted_at: new Date().toISOString() })
+    .where('id', '=', id)
+    .execute();
+
+  // Notify sync framework
+  await notifyExternalDataChange({
+    db,
+    dialect,
+    tables: ['team_connections'],
+  });
+
+  return c.json({ ok: true });
+});
+```
+
+### Webhook handler
+
+```typescript
+app.post('/webhooks/stripe', async (c) => {
+  const event = await c.req.json();
+
+  if (event.type === 'checkout.session.completed') {
+    await db.updateTable('subscriptions')
+      .set({ status: 'active', plan: event.data.plan })
+      .where('stripe_customer_id', '=', event.data.customer)
+      .execute();
+
+    await notifyExternalDataChange({
+      db,
+      dialect,
+      tables: ['subscriptions'],
+    });
+  }
+
+  return c.json({ received: true });
+});
+```
+
+### Background job / cron
+
+```typescript
+async function archiveOldSurgeries() {
+  await db.updateTable('surgeries')
+    .set({ archived: true })
+    .where('date', '<', thirtyDaysAgo())
+    .execute();
+
+  // Notify multiple tables if needed
+  await notifyExternalDataChange({
+    db,
+    dialect,
+    tables: ['surgeries', 'op_slot_allocations'],
+  });
+}
+```
+
+## How It Works
+
+1. Inserts a synthetic commit with `client_id = '__external__'`
+2. Creates `sync_table_commits` entries so pull detects the change
+3. Deletes cached snapshot chunks for affected tables
+4. On next pull, subscriptions for those tables trigger a re-bootstrap
+
+The entire operation runs in a single transaction.
+
+## When to Use
+
+| Scenario | Use |
+|----------|-----|
+| Client-initiated mutations | Normal sync push (not this) |
+| Server REST endpoints modifying synced data | `notifyExternalDataChange` |
+| Webhooks from third-party services | `notifyExternalDataChange` |
+| Cron jobs / background pipelines | `notifyExternalDataChange` |
+| Database migrations adding seed data | `notifyExternalDataChange` |
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) -- Configure the sync server
+- [Table Handlers](/docs/build/table-handlers) -- Define sync behavior per table
+- [Realtime](/docs/build/realtime) -- Push updates to clients immediately

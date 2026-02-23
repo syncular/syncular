@@ -1,0 +1,56 @@
+{
+  "name": "@syncular/server-service-worker",
+  "version": "0.0.0",
+  "description": "Service Worker server/runtime + wake transport helpers for Syncular",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server-service-worker"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "service-worker",
+    "realtime",
+    "typescript"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "sideEffects": false,
+  "dependencies": {
+    "@syncular/core": "workspace:*",
+    "@syncular/transport-http": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

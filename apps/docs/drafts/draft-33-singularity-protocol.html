@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — Singularity Protocol</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400;1,6..72,600&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            mono: ['"Space Mono"', 'monospace'],
+            serif: ['"Newsreader"', 'Georgia', 'serif'],
+          },
+          colors: {
+            electric: '#2563eb',
+            bg: '#0a0a0a',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Space Mono', monospace;
+      background: #0a0a0a;
+      color: #d4d4d4;
+      overflow-x: hidden;
+    }
+
+    .font-serif { font-family: 'Newsreader', Georgia, serif !important; }
+
+    /* Blueprint grid background */
+    .blueprint-grid {
+      background-image:
+        repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 39px,
+          rgba(37, 99, 235, 0.04) 39px,
+          rgba(37, 99, 235, 0.04) 40px
+        ),
+        repeating-linear-gradient(
+          90deg,
+          transparent,
+          transparent 39px,
+          rgba(37, 99, 235, 0.04) 39px,
+          rgba(37, 99, 235, 0.04) 40px
+        );
+    }
+
+    /* Major grid lines every 200px */
+    .blueprint-grid::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background-image:
+        repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 199px,
+          rgba(37, 99, 235, 0.07) 199px,
+          rgba(37, 99, 235, 0.07) 200px
+        ),
+        repeating-linear-gradient(
+          90deg,
+          transparent,
+          transparent 199px,
+          rgba(37, 99, 235, 0.07) 199px,
+          rgba(37, 99, 235, 0.07) 200px
+        );
+    }
+
+    /* Animated flow dots */
+    @keyframes flowRight {
+      0% { transform: translateX(-8px); opacity: 0; }
+      15% { opacity: 1; }
+      85% { opacity: 1; }
+      100% { transform: translateX(calc(var(--flow-distance, 200px))); opacity: 0; }
+    }
+
+    @keyframes flowLeft {
+      0% { transform: translateX(8px); opacity: 0; }
+      15% { opacity: 1; }
+      85% { opacity: 1; }
+      100% { transform: translateX(calc(var(--flow-distance, -200px))); opacity: 0; }
+    }
+
+    .flow-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #2563eb;
+      position: absolute;
+      box-shadow: 0 0 6px #2563eb, 0 0 12px rgba(37, 99, 235, 0.3);
+    }
+
+    .flow-right .flow-dot {
+      animation: flowRight var(--duration, 2.5s) linear infinite;
+    }
+
+    .flow-left .flow-dot {
+      animation: flowLeft var(--duration, 2.5s) linear infinite;
+    }
+
+    /* Server glow pulse */
+    @keyframes serverGlow {
+      0%, 100% { box-shadow: 0 0 20px rgba(37, 99, 235, 0.15), inset 0 0 20px rgba(37, 99, 235, 0.03); }
+      50% { box-shadow: 0 0 40px rgba(37, 99, 235, 0.25), inset 0 0 30px rgba(37, 99, 235, 0.06); }
+    }
+
+    .server-glow {
+      animation: serverGlow 3s ease-in-out infinite;
+    }
+
+    /* Status indicator blink */
+    @keyframes statusBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .status-active {
+      animation: statusBlink 2s ease-in-out infinite;
+    }
+
+    /* Terminal cursor blink */
+    @keyframes cursorBlink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+
+    .terminal-cursor {
+      animation: cursorBlink 1s step-end infinite;
+    }
+
+    /* Mini flow animations for spec sections */
+    @keyframes miniFlowRight {
+      0% { left: 0; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { left: 100%; opacity: 0; }
+    }
+
+    .mini-flow-track {
+      position: relative;
+      height: 2px;
+      background: rgba(37, 99, 235, 0.15);
+      overflow: hidden;
+    }
+
+    .mini-flow-track::after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, #2563eb, transparent);
+      animation: miniFlowRight 2s linear infinite;
+    }
+
+    /* Code block styling */
+    .code-block {
+      background: rgba(37, 99, 235, 0.03);
+      border: 1px solid rgba(37, 99, 235, 0.1);
+      border-left: 2px solid rgba(37, 99, 235, 0.3);
+    }
+
+    /* Section divider */
+    .spec-divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.2), transparent);
+    }
+
+    /* Schematic connector animation */
+    @keyframes dataPacket {
+      0% { offset-distance: 0%; opacity: 0; }
+      5% { opacity: 1; }
+      95% { opacity: 1; }
+      100% { offset-distance: 100%; opacity: 0; }
+    }
+
+    /* Badge styling */
+    .spec-badge {
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      padding: 3px 8px;
+      border: 1px solid rgba(37, 99, 235, 0.3);
+      color: #93c5fd;
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0a0a; }
+    ::-webkit-scrollbar-thumb { background: rgba(37, 99, 235, 0.3); border-radius: 3px; }
+
+    /* Nav active indicator */
+    .nav-link { position: relative; }
+    .nav-link::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      left: 0;
+      width: 0;
+      height: 1px;
+      background: #2563eb;
+      transition: width 0.3s ease;
+    }
+    .nav-link:hover::after { width: 100%; }
+
+    /* Component box internal list */
+    .component-item {
+      font-size: 10px;
+      line-height: 1.6;
+      color: #737373;
+    }
+
+    .component-item.active {
+      color: #93c5fd;
+    }
+
+    /* SVG schematic animations */
+    @keyframes dashFlow {
+      to { stroke-dashoffset: -20; }
+    }
+
+    .dashed-line {
+      stroke-dasharray: 6, 4;
+      animation: dashFlow 1s linear infinite;
+    }
+
+    @keyframes packetMove {
+      0% { opacity: 0; }
+      5% { opacity: 1; }
+      95% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    /* Section number styling */
+    .section-num {
+      color: #2563eb;
+      font-size: 12px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body class="blueprint-grid">
+
+  <!-- ======================================================================
+       NAV
+       ====================================================================== -->
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-white/5" style="background: rgba(10, 10, 10, 0.9); backdrop-filter: blur(12px);">
+    <div class="max-w-6xl mx-auto px-6 h-12 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-xs tracking-[0.3em] text-white/80 uppercase">Syncular</span>
+        <span class="text-[10px] text-white/20">|</span>
+        <span class="text-[10px] tracking-widest text-white/30 uppercase">Protocol Specification</span>
+      </div>
+      <div class="flex items-center gap-6">
+        <a href="#protocol" class="nav-link text-[11px] tracking-wider text-white/40 hover:text-white/70 transition-colors uppercase">Schematic</a>
+        <a href="#spec" class="nav-link text-[11px] tracking-wider text-white/40 hover:text-white/70 transition-colors uppercase">Spec</a>
+        <a href="#requirements" class="nav-link text-[11px] tracking-wider text-white/40 hover:text-white/70 transition-colors uppercase">Requirements</a>
+        <a href="#install" class="nav-link text-[11px] tracking-wider text-white/40 hover:text-white/70 transition-colors uppercase">Install</a>
+        <a href="https://github.com/puredata-ec/syncular" class="text-[11px] tracking-wider text-white/40 hover:text-electric transition-colors uppercase">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ======================================================================
+       HERO — Protocol Schematic
+       ====================================================================== -->
+  <section id="protocol" class="relative min-h-screen flex flex-col items-center justify-center pt-12 px-6">
+    <div class="relative z-10 w-full max-w-5xl">
+
+      <!-- Title block -->
+      <div class="text-center mb-12">
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <div class="h-px w-12 bg-gradient-to-r from-transparent to-electric/30"></div>
+          <span class="text-[10px] tracking-[0.4em] text-electric/50 uppercase">Distributed Sync Framework</span>
+          <div class="h-px w-12 bg-gradient-to-l from-transparent to-electric/30"></div>
+        </div>
+        <h1 class="text-3xl md:text-4xl font-bold tracking-[0.15em] text-white uppercase mb-4">
+          Syncular Protocol <span class="text-electric">v1</span>
+        </h1>
+        <p class="font-serif italic text-lg md:text-xl text-white/50 max-w-xl mx-auto leading-relaxed">
+          The singular point where distributed state becomes consistent.
+        </p>
+      </div>
+
+      <!-- Badges -->
+      <div class="flex items-center justify-center gap-3 mb-16">
+        <span class="spec-badge">TypeScript</span>
+        <span class="spec-badge">MIT License</span>
+        <span class="spec-badge">v0.1.0-alpha</span>
+        <span class="spec-badge">Offline-First</span>
+      </div>
+
+      <!-- ================================================================
+           PROTOCOL SCHEMATIC DIAGRAM (SVG)
+           ================================================================ -->
+      <div class="relative w-full" style="max-width: 960px; margin: 0 auto;">
+        <svg viewBox="0 0 960 520" xmlns="http://www.w3.org/2000/svg" class="w-full h-auto">
+          <defs>
+            <!-- Arrow markers -->
+            <marker id="arrowRight" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6" fill="none" stroke="#2563eb" stroke-width="1"/>
+            </marker>
+            <marker id="arrowLeft" markerWidth="8" markerHeight="6" refX="0" refY="3" orient="auto">
+              <path d="M8,0 L0,3 L8,6" fill="none" stroke="#2563eb" stroke-width="1"/>
+            </marker>
+
+            <!-- Glow filter for server -->
+            <filter id="serverGlow" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+              <feColorMatrix in="blur" values="0 0 0 0 0.145  0 0 0 0 0.388  0 0 0 0 0.921  0 0 0 0.3 0" result="glow"/>
+              <feMerge>
+                <feMergeNode in="glow"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+
+            <!-- Dot glow -->
+            <filter id="dotGlow" x="-100%" y="-100%" width="300%" height="300%">
+              <feGaussianBlur stdDeviation="3" result="blur"/>
+              <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+          </defs>
+
+          <!-- ===== CONNECTION LINES ===== -->
+
+          <!-- Client A -> Server (push) - top line -->
+          <line x1="235" y1="155" x2="370" y2="155" stroke="rgba(37,99,235,0.15)" stroke-width="1"/>
+          <text x="303" y="147" text-anchor="middle" fill="rgba(37,99,235,0.5)" font-family="Space Mono" font-size="9" letter-spacing="0.1em">PUSH</text>
+
+          <!-- Server -> Client A (pull) - bottom line -->
+          <line x1="370" y1="185" x2="235" y2="185" stroke="rgba(37,99,235,0.15)" stroke-width="1"/>
+          <text x="303" y="200" text-anchor="middle" fill="rgba(37,99,235,0.3)" font-family="Space Mono" font-size="9" letter-spacing="0.1em">PULL</text>
+
+          <!-- Server -> Client B (push) - top line -->
+          <line x1="590" y1="155" x2="725" y2="155" stroke="rgba(37,99,235,0.15)" stroke-width="1"/>
+          <text x="657" y="147" text-anchor="middle" fill="rgba(37,99,235,0.3)" font-family="Space Mono" font-size="9" letter-spacing="0.1em">PUSH</text>
+
+          <!-- Client B -> Server (pull) - bottom line -->
+          <line x1="725" y1="185" x2="590" y2="185" stroke="rgba(37,99,235,0.15)" stroke-width="1"/>
+          <text x="657" y="200" text-anchor="middle" fill="rgba(37,99,235,0.5)" font-family="Space Mono" font-size="9" letter-spacing="0.1em">PULL</text>
+
+          <!-- Transport labels -->
+          <text x="303" y="130" text-anchor="middle" fill="rgba(255,255,255,0.12)" font-family="Space Mono" font-size="8" letter-spacing="0.15em">HTTP / WS</text>
+          <text x="657" y="130" text-anchor="middle" fill="rgba(255,255,255,0.12)" font-family="Space Mono" font-size="8" letter-spacing="0.15em">HTTP / WS</text>
+
+          <!-- ===== ANIMATED FLOW DOTS ===== -->
+
+          <!-- Client A -> Server push dots -->
+          <circle r="3" fill="#2563eb" filter="url(#dotGlow)">
+            <animateMotion dur="2.5s" repeatCount="indefinite" path="M235,155 L370,155"/>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.5s" repeatCount="indefinite"/>
+          </circle>
+          <circle r="3" fill="#2563eb" filter="url(#dotGlow)">
+            <animateMotion dur="2.5s" repeatCount="indefinite" begin="0.8s" path="M235,155 L370,155"/>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.5s" repeatCount="indefinite" begin="0.8s"/>
+          </circle>
+
+          <!-- Server -> Client A pull dots -->
+          <circle r="2.5" fill="#60a5fa" filter="url(#dotGlow)">
+            <animateMotion dur="3s" repeatCount="indefinite" begin="0.5s" path="M370,185 L235,185"/>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="3s" repeatCount="indefinite" begin="0.5s"/>
+          </circle>
+
+          <!-- Server -> Client B push dots -->
+          <circle r="2.5" fill="#60a5fa" filter="url(#dotGlow)">
+            <animateMotion dur="3s" repeatCount="indefinite" begin="1s" path="M590,155 L725,155"/>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="3s" repeatCount="indefinite" begin="1s"/>
+          </circle>
+
+          <!-- Client B -> Server pull dots -->
+          <circle r="3" fill="#2563eb" filter="url(#dotGlow)">
+            <animateMotion dur="2.5s" repeatCount="indefinite" begin="0.3s" path="M725,185 L590,185"/>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.5s" repeatCount="indefinite" begin="0.3s"/>
+          </circle>
+          <circle r="3" fill="#2563eb" filter="url(#dotGlow)">
+            <animateMotion dur="2.5s" repeatCount="indefinite" begin="1.6s" path="M725,185 L590,185"/>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.1;0.9;1" dur="2.5s" repeatCount="indefinite" begin="1.6s"/>
+          </circle>
+
+          <!-- ===== CLIENT A BOX ===== -->
+          <g>
+            <rect x="40" y="110" width="195" height="120" rx="2" fill="rgba(37,99,235,0.02)" stroke="rgba(37,99,235,0.2)" stroke-width="1"/>
+            <!-- Header bar -->
+            <rect x="40" y="110" width="195" height="24" rx="2" fill="rgba(37,99,235,0.06)"/>
+            <text x="52" y="126" fill="#93c5fd" font-family="Space Mono" font-size="10" font-weight="bold" letter-spacing="0.1em">CLIENT A</text>
+            <!-- Status dot -->
+            <circle cx="222" cy="122" r="3" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/>
+            </circle>
+
+            <!-- Internal stack -->
+            <text x="56" y="150" fill="rgba(255,255,255,0.5)" font-family="Space Mono" font-size="9">SQLite (local)</text>
+            <text x="56" y="164" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">outbox queue</text>
+            <text x="56" y="178" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">conflict detection</text>
+            <text x="56" y="192" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">reactive queries</text>
+
+            <!-- Status indicators -->
+            <circle cx="207" cy="146" r="2" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.4;1" dur="3s" repeatCount="indefinite"/>
+            </circle>
+            <circle cx="207" cy="160" r="2" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.4;1" dur="2.5s" repeatCount="indefinite" begin="0.5s"/>
+            </circle>
+            <circle cx="207" cy="174" r="2" fill="#737373"/>
+            <circle cx="207" cy="188" r="2" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.4;1" dur="4s" repeatCount="indefinite" begin="1s"/>
+            </circle>
+          </g>
+
+          <!-- ===== SERVER BOX (with glow) ===== -->
+          <g filter="url(#serverGlow)">
+            <rect x="370" y="90" width="220" height="160" rx="2" fill="rgba(37,99,235,0.04)" stroke="rgba(37,99,235,0.35)" stroke-width="1.5">
+              <animate attributeName="stroke-opacity" values="0.35;0.6;0.35" dur="3s" repeatCount="indefinite"/>
+            </rect>
+            <!-- Header bar -->
+            <rect x="370" y="90" width="220" height="28" rx="2" fill="rgba(37,99,235,0.1)"/>
+            <text x="385" y="109" fill="#93c5fd" font-family="Space Mono" font-size="11" font-weight="bold" letter-spacing="0.15em">SERVER</text>
+            <text x="498" y="109" fill="rgba(37,99,235,0.4)" font-family="Space Mono" font-size="8" letter-spacing="0.1em">SINGULARITY</text>
+
+            <!-- Central convergence indicator -->
+            <circle cx="480" cy="170" r="18" fill="none" stroke="rgba(37,99,235,0.15)" stroke-width="1">
+              <animate attributeName="r" values="18;22;18" dur="3s" repeatCount="indefinite"/>
+              <animate attributeName="stroke-opacity" values="0.15;0.3;0.15" dur="3s" repeatCount="indefinite"/>
+            </circle>
+            <circle cx="480" cy="170" r="8" fill="none" stroke="rgba(37,99,235,0.25)" stroke-width="1">
+              <animate attributeName="r" values="8;12;8" dur="3s" repeatCount="indefinite"/>
+            </circle>
+            <circle cx="480" cy="170" r="3" fill="#2563eb">
+              <animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
+            </circle>
+
+            <!-- Internal stack -->
+            <text x="385" y="136" fill="rgba(255,255,255,0.5)" font-family="Space Mono" font-size="9">Postgres / SQLite</text>
+            <text x="385" y="150" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">commit ordering</text>
+            <text x="385" y="164" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">scope filtering</text>
+            <text x="385" y="178" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">snapshot chunks</text>
+            <text x="385" y="192" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">blob storage</text>
+            <text x="385" y="206" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">realtime wake-ups</text>
+
+            <!-- Status indicators -->
+            <circle cx="572" cy="132" r="2" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/>
+            </circle>
+            <circle cx="572" cy="146" r="2" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.4;1" dur="2.5s" repeatCount="indefinite" begin="0.3s"/>
+            </circle>
+            <circle cx="572" cy="160" r="2" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.4;1" dur="3s" repeatCount="indefinite" begin="0.7s"/>
+            </circle>
+            <circle cx="572" cy="174" r="2" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.4;1" dur="3.5s" repeatCount="indefinite" begin="1s"/>
+            </circle>
+            <circle cx="572" cy="188" r="2" fill="#737373"/>
+            <circle cx="572" cy="202" r="2" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+            </circle>
+          </g>
+
+          <!-- ===== CLIENT B BOX ===== -->
+          <g>
+            <rect x="725" y="110" width="195" height="120" rx="2" fill="rgba(37,99,235,0.02)" stroke="rgba(37,99,235,0.2)" stroke-width="1"/>
+            <!-- Header bar -->
+            <rect x="725" y="110" width="195" height="24" rx="2" fill="rgba(37,99,235,0.06)"/>
+            <text x="737" y="126" fill="#93c5fd" font-family="Space Mono" font-size="10" font-weight="bold" letter-spacing="0.1em">CLIENT B</text>
+            <circle cx="907" cy="122" r="3" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.3;1" dur="2.5s" repeatCount="indefinite" begin="0.5s"/>
+            </circle>
+
+            <!-- Internal stack -->
+            <text x="741" y="150" fill="rgba(255,255,255,0.5)" font-family="Space Mono" font-size="9">SQLite (local)</text>
+            <text x="741" y="164" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">local writes</text>
+            <text x="741" y="178" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">blob sync</text>
+            <text x="741" y="192" fill="rgba(255,255,255,0.3)" font-family="Space Mono" font-size="9">reactive queries</text>
+
+            <!-- Status indicators -->
+            <circle cx="892" cy="146" r="2" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.4;1" dur="3s" repeatCount="indefinite" begin="1s"/>
+            </circle>
+            <circle cx="892" cy="160" r="2" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.4;1" dur="2.5s" repeatCount="indefinite" begin="1.5s"/>
+            </circle>
+            <circle cx="892" cy="174" r="2" fill="#737373"/>
+            <circle cx="892" cy="188" r="2" fill="#22c55e">
+              <animate attributeName="opacity" values="1;0.4;1" dur="4s" repeatCount="indefinite" begin="2s"/>
+            </circle>
+          </g>
+
+          <!-- ===== VERTICAL CONNECTORS TO DETAIL ROWS ===== -->
+
+          <!-- Client A vertical -->
+          <line x1="137" y1="230" x2="137" y2="290" stroke="rgba(37,99,235,0.1)" stroke-width="1" stroke-dasharray="3,3"/>
+
+          <!-- Server vertical -->
+          <line x1="480" y1="250" x2="480" y2="290" stroke="rgba(37,99,235,0.1)" stroke-width="1" stroke-dasharray="3,3"/>
+
+          <!-- Client B vertical -->
+          <line x1="822" y1="230" x2="822" y2="290" stroke="rgba(37,99,235,0.1)" stroke-width="1" stroke-dasharray="3,3"/>
+
+          <!-- ===== DETAIL ROWS ===== -->
+
+          <!-- Client A details -->
+          <g>
+            <rect x="40" y="290" width="195" height="100" rx="2" fill="none" stroke="rgba(37,99,235,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+            <text x="52" y="308" fill="rgba(37,99,235,0.4)" font-family="Space Mono" font-size="8" letter-spacing="0.15em">LOCAL ENGINE</text>
+            <text x="52" y="326" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">write() -> outbox</text>
+            <text x="52" y="340" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">outbox -> push(ops)</text>
+            <text x="52" y="354" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">pull() -> apply commits</text>
+            <text x="52" y="368" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">detect conflicts</text>
+            <text x="52" y="382" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">notify subscribers</text>
+          </g>
+
+          <!-- Server details -->
+          <g>
+            <rect x="370" y="290" width="220" height="100" rx="2" fill="none" stroke="rgba(37,99,235,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+            <text x="385" y="308" fill="rgba(37,99,235,0.4)" font-family="Space Mono" font-size="8" letter-spacing="0.15em">CONVERGENCE ENGINE</text>
+            <text x="385" y="326" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">validate ops</text>
+            <text x="385" y="340" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">assign commit_seq</text>
+            <text x="385" y="354" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">field-merge conflicts</text>
+            <text x="385" y="368" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">scope-filter changes</text>
+            <text x="385" y="382" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">broadcast wake-up</text>
+          </g>
+
+          <!-- Client B details -->
+          <g>
+            <rect x="725" y="290" width="195" height="100" rx="2" fill="none" stroke="rgba(37,99,235,0.08)" stroke-width="1" stroke-dasharray="4,4"/>
+            <text x="737" y="308" fill="rgba(37,99,235,0.4)" font-family="Space Mono" font-size="8" letter-spacing="0.15em">LOCAL ENGINE</text>
+            <text x="737" y="326" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">subscribe(scopes)</text>
+            <text x="737" y="340" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">pull() -> apply commits</text>
+            <text x="737" y="354" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">bootstrap snapshot</text>
+            <text x="737" y="368" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">reactive query</text>
+            <text x="737" y="382" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">blob download</text>
+          </g>
+
+          <!-- ===== LEGEND ===== -->
+          <g>
+            <text x="40" y="440" fill="rgba(255,255,255,0.15)" font-family="Space Mono" font-size="8" letter-spacing="0.2em">LEGEND</text>
+            <!-- Active -->
+            <circle cx="48" cy="458" r="3" fill="#22c55e"/>
+            <text x="58" y="461" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">CONNECTED</text>
+            <!-- Processing -->
+            <circle cx="148" cy="458" r="3" fill="#2563eb">
+              <animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/>
+            </circle>
+            <text x="158" y="461" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">SYNCING</text>
+            <!-- Idle -->
+            <circle cx="238" cy="458" r="3" fill="#737373"/>
+            <text x="248" y="461" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">IDLE</text>
+            <!-- Data flow -->
+            <line x1="310" y1="458" x2="340" y2="458" stroke="rgba(37,99,235,0.3)" stroke-width="1"/>
+            <circle cx="325" cy="458" r="2.5" fill="#2563eb" filter="url(#dotGlow)"/>
+            <text x="348" y="461" fill="rgba(255,255,255,0.25)" font-family="Space Mono" font-size="8">DATA FLOW</text>
+          </g>
+
+          <!-- ===== PROTOCOL VERSION STAMP ===== -->
+          <text x="920" y="500" text-anchor="end" fill="rgba(255,255,255,0.08)" font-family="Space Mono" font-size="8" letter-spacing="0.2em">SYNCULAR-PROTOCOL-V1.0-ALPHA</text>
+          <text x="920" y="512" text-anchor="end" fill="rgba(255,255,255,0.06)" font-family="Space Mono" font-size="7" letter-spacing="0.1em">SCHEMATIC REV 2026.02</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Scroll indicator -->
+    <div class="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2 opacity-30">
+      <span class="text-[9px] tracking-[0.3em] uppercase">Scroll for specification</span>
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1">
+        <path d="M2 4 L6 8 L10 4"/>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       SPECIFICATION SECTIONS
+       ====================================================================== -->
+  <section id="spec" class="relative z-10 max-w-4xl mx-auto px-6 pb-32">
+
+    <!-- Section header -->
+    <div class="mb-20 pt-8">
+      <div class="spec-divider mb-8"></div>
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-[10px] tracking-[0.4em] text-electric/40 uppercase">Technical Reference</span>
+      </div>
+      <h2 class="text-xl tracking-[0.1em] text-white/80 uppercase">Protocol Specification</h2>
+      <p class="font-serif italic text-white/30 mt-2">Formal definition of the Syncular sync protocol. All operations are atomic, ordered, and scoped.</p>
+    </div>
+
+    <!-- ================================================================
+         S1 PUSH PROTOCOL
+         ================================================================ -->
+    <article class="mb-24">
+      <div class="flex items-baseline gap-4 mb-6">
+        <span class="section-num font-bold">&sect;1</span>
+        <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">Push Protocol</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            Clients collect local writes into an <span class="text-white/60">outbox queue</span>. When connectivity is available, the outbox is flushed as a <span class="text-electric/70">push request</span> containing one or more operations (upsert/delete) against named tables.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            The server validates each operation, assigns a monotonic <span class="text-white/60">commit_seq</span>, detects field-level conflicts against <span class="text-white/60">base_version</span>, and returns per-operation results: <span class="text-electric/70">applied</span>, <span class="text-white/60">conflict</span>, or <span class="text-white/60">error</span>.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed">
+            Rejected commits are idempotent via <span class="text-white/60">clientCommitId</span> deduplication. The server atomically applies all operations or rejects the entire commit.
+          </p>
+        </div>
+
+        <div>
+          <!-- Code block -->
+          <div class="code-block p-4 text-[11px] leading-relaxed overflow-x-auto">
+            <div class="text-white/20 mb-2">// Push request shape</div>
+            <div><span class="text-electric/70">interface</span> <span class="text-white/70">SyncPushRequest</span> {</div>
+            <div class="pl-4"><span class="text-white/40">clientId</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-4"><span class="text-white/40">clientCommitId</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-4"><span class="text-white/40">schemaVersion</span>: <span class="text-electric/50">number</span>;</div>
+            <div class="pl-4"><span class="text-white/40">operations</span>: {</div>
+            <div class="pl-8"><span class="text-white/30">table</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-8"><span class="text-white/30">row_id</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-8"><span class="text-white/30">op</span>: <span class="text-electric/50">"upsert"</span> | <span class="text-electric/50">"delete"</span>;</div>
+            <div class="pl-8"><span class="text-white/30">payload</span>: <span class="text-electric/50">Record&lt;string, unknown&gt;</span>;</div>
+            <div class="pl-8"><span class="text-white/30">base_version</span>?: <span class="text-electric/50">number</span>;</div>
+            <div class="pl-4">}[];</div>
+            <div>}</div>
+          </div>
+
+          <!-- Mini flow diagram -->
+          <div class="mt-4 flex items-center gap-2 text-[9px] text-white/20">
+            <span class="text-white/40">CLIENT</span>
+            <div class="mini-flow-track flex-1"></div>
+            <span class="text-electric/60">SERVER</span>
+          </div>
+          <div class="flex items-center gap-2 text-[9px] text-white/20 mt-1">
+            <span>outbox</span>
+            <span class="text-white/10">&rarr;</span>
+            <span>validate</span>
+            <span class="text-white/10">&rarr;</span>
+            <span>commit_seq</span>
+            <span class="text-white/10">&rarr;</span>
+            <span class="text-electric/40">applied</span>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <div class="spec-divider mb-24"></div>
+
+    <!-- ================================================================
+         S2 PULL PROTOCOL
+         ================================================================ -->
+    <article class="mb-24">
+      <div class="flex items-baseline gap-4 mb-6">
+        <span class="section-num font-bold">&sect;2</span>
+        <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">Pull Protocol</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            Clients maintain a <span class="text-white/60">cursor</span> (commit_seq) per subscription. A pull request sends all active subscriptions with their cursors. The server returns commits after each cursor, filtered by effective scopes.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            Each commit contains changes with full <span class="text-white/60">row_json</span> (the entire row state), <span class="text-white/60">row_version</span>, operation type, and scope metadata. Clients apply commits in order and advance their cursor.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed">
+            The pull response includes per-subscription status: <span class="text-electric/70">active</span> (has data) or <span class="text-white/60">revoked</span> (scope access removed). Revoked subscriptions trigger local cleanup.
+          </p>
+        </div>
+
+        <div>
+          <div class="code-block p-4 text-[11px] leading-relaxed overflow-x-auto">
+            <div class="text-white/20 mb-2">// Pull request shape</div>
+            <div><span class="text-electric/70">interface</span> <span class="text-white/70">SyncPullRequest</span> {</div>
+            <div class="pl-4"><span class="text-white/40">clientId</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-4"><span class="text-white/40">limitCommits</span>: <span class="text-electric/50">number</span>;</div>
+            <div class="pl-4"><span class="text-white/40">subscriptions</span>: {</div>
+            <div class="pl-8"><span class="text-white/30">id</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-8"><span class="text-white/30">shape</span>: <span class="text-electric/50">string</span>;</div>
+            <div class="pl-8"><span class="text-white/30">scopes</span>: <span class="text-electric/50">Record&lt;string, string | string[]&gt;</span>;</div>
+            <div class="pl-8"><span class="text-white/30">cursor</span>: <span class="text-electric/50">number</span>;</div>
+            <div class="pl-4">}[];</div>
+            <div>}</div>
+          </div>
+
+          <div class="mt-4 flex items-center gap-2 text-[9px] text-white/20">
+            <span class="text-electric/60">SERVER</span>
+            <div class="mini-flow-track flex-1"></div>
+            <span class="text-white/40">CLIENT</span>
+          </div>
+          <div class="flex items-center gap-2 text-[9px] text-white/20 mt-1">
+            <span>filter scopes</span>
+            <span class="text-white/10">&rarr;</span>
+            <span>commits[]</span>
+            <span class="text-white/10">&rarr;</span>
+            <span>apply local</span>
+            <span class="text-white/10">&rarr;</span>
+            <span class="text-electric/40">cursor++</span>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <div class="spec-divider mb-24"></div>
+
+    <!-- ================================================================
+         S3 SCOPE RESOLUTION
+         ================================================================ -->
+    <article class="mb-24">
+      <div class="flex items-baseline gap-4 mb-6">
+        <span class="section-num font-bold">&sect;3</span>
+        <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">Scope Resolution</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            Every subscription declares <span class="text-white/60">scope keys</span> that determine which rows the client receives. The server computes <span class="text-electric/70">effective scopes</span> by intersecting requested scopes with allowed scopes (set during auth).
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            Each change carries scope metadata. During pull, the server filters changes to only include those matching the subscription's effective scopes. This ensures <span class="text-white/60">zero data leakage</span> across tenants.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed">
+            Scopes support single values and arrays. A scope key <span class="text-white/60">orgId: ["a", "b"]</span> matches changes scoped to org "a" or org "b". This enables multi-tenant and multi-workspace patterns.
+          </p>
+        </div>
+
+        <div>
+          <div class="code-block p-4 text-[11px] leading-relaxed overflow-x-auto">
+            <div class="text-white/20 mb-2">// Scope resolution</div>
+            <div class="text-white/20 mb-2">// Client requests:</div>
+            <div>scopes: { <span class="text-white/40">orgId</span>: <span class="text-electric/50">"org_123"</span>,</div>
+            <div class="pl-8"> <span class="text-white/40">teamId</span>: [<span class="text-electric/50">"t1"</span>, <span class="text-electric/50">"t2"</span>] }</div>
+            <div class="text-white/20 mt-3 mb-2">// Server allowed (from auth):</div>
+            <div>allowed: { <span class="text-white/40">orgId</span>: [<span class="text-electric/50">"org_123"</span>, <span class="text-electric/50">"org_456"</span>],</div>
+            <div class="pl-9"> <span class="text-white/40">teamId</span>: [<span class="text-electric/50">"t1"</span>, <span class="text-electric/50">"t2"</span>, <span class="text-electric/50">"t3"</span>] }</div>
+            <div class="text-white/20 mt-3 mb-2">// Effective (intersection):</div>
+            <div>effective: { <span class="text-white/60">orgId</span>: <span class="text-electric/70">"org_123"</span>,</div>
+            <div class="pl-11"> <span class="text-white/60">teamId</span>: [<span class="text-electric/70">"t1"</span>, <span class="text-electric/70">"t2"</span>] }</div>
+          </div>
+
+          <!-- Scope diagram -->
+          <div class="mt-4 border border-white/5 p-3">
+            <div class="text-[9px] text-white/20 tracking-wider mb-2">SCOPE INTERSECTION</div>
+            <div class="flex items-center gap-3 text-[9px]">
+              <div class="border border-white/10 px-2 py-1 text-white/30">REQUESTED</div>
+              <span class="text-electric/40">&cap;</span>
+              <div class="border border-white/10 px-2 py-1 text-white/30">ALLOWED</div>
+              <span class="text-electric/40">=</span>
+              <div class="border border-electric/30 px-2 py-1 text-electric/60">EFFECTIVE</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <div class="spec-divider mb-24"></div>
+
+    <!-- ================================================================
+         S4 CONFLICT RESOLUTION
+         ================================================================ -->
+    <article class="mb-24">
+      <div class="flex items-baseline gap-4 mb-6">
+        <span class="section-num font-bold">&sect;4</span>
+        <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">Conflict Resolution</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            Syncular uses <span class="text-electric/70">server-authoritative commit ordering</span>. Every push includes a <span class="text-white/60">base_version</span> per operation. The server compares this against the current row version to detect conflicts.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            When a conflict is detected, the server performs <span class="text-white/60">field-level merging</span>: if the client and server changed different fields, the changes are merged automatically. Only true field-level conflicts are rejected.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed">
+            Rejected operations return the current <span class="text-white/60">server_row</span> and <span class="text-white/60">server_version</span>, enabling the client to resolve and retry. The commit is atomic: all operations succeed or all are rejected.
+          </p>
+        </div>
+
+        <div>
+          <div class="code-block p-4 text-[11px] leading-relaxed overflow-x-auto">
+            <div class="text-white/20 mb-2">// Conflict detection flow</div>
+            <div><span class="text-white/30">client_base_version:</span> <span class="text-electric/50">5</span></div>
+            <div><span class="text-white/30">server_current_version:</span> <span class="text-electric/50">7</span></div>
+            <div class="text-white/20 mt-2 mb-1">// Version mismatch detected</div>
+            <div class="mt-2"><span class="text-white/30">client_changed:</span> { <span class="text-electric/50">name</span> }</div>
+            <div><span class="text-white/30">server_changed:</span> { <span class="text-electric/50">email</span> }</div>
+            <div class="text-white/20 mt-2 mb-1">// Different fields -> auto-merge</div>
+            <div class="mt-2 text-white/50">result: <span class="text-green-500/70">"applied"</span></div>
+            <div class="text-white/50">merged: { <span class="text-electric/60">name</span>: client, <span class="text-electric/60">email</span>: server }</div>
+            <div class="mt-3 text-white/20">// Same field -> reject with server state</div>
+            <div class="text-white/50">result: <span class="text-red-400/70">"conflict"</span></div>
+            <div class="text-white/50">server_row: { ... }, server_version: <span class="text-electric/50">7</span></div>
+          </div>
+
+          <div class="mt-4 flex items-center gap-2 text-[9px] text-white/20">
+            <span class="text-white/40">CHECK</span>
+            <div class="mini-flow-track flex-1"></div>
+            <span class="text-electric/60">RESOLVE</span>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <div class="spec-divider mb-24"></div>
+
+    <!-- ================================================================
+         S5 SNAPSHOT BOOTSTRAP
+         ================================================================ -->
+    <article class="mb-24">
+      <div class="flex items-baseline gap-4 mb-6">
+        <span class="section-num font-bold">&sect;5</span>
+        <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">Snapshot Bootstrap</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            New clients need the full current state, not the entire commit history. Syncular provides <span class="text-electric/70">chunked snapshot bootstrap</span>: the server materializes the current state as a snapshot and delivers it in pages.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed mb-4">
+            The bootstrap state tracks progress: <span class="text-white/60">asOfCommitSeq</span> (snapshot point), <span class="text-white/60">tableIndex</span> (current table), and <span class="text-white/60">rowCursor</span> (pagination within a table). Clients resume interrupted bootstraps from where they left off.
+          </p>
+          <p class="text-[13px] text-white/40 leading-relaxed">
+            Once bootstrap is complete, the client transitions to normal incremental pull mode, starting from <span class="text-white/60">asOfCommitSeq</span>. Snapshot chunks are gzip-compressed and cached by scope key hash.
+          </p>
+        </div>
+
+        <div>
+          <div class="code-block p-4 text-[11px] leading-relaxed overflow-x-auto">
+            <div class="text-white/20 mb-2">// Bootstrap state tracking</div>
+            <div><span class="text-electric/70">interface</span> <span class="text-white/70">SyncBootstrapState</span> {</div>
+            <div class="pl-4"><span class="text-white/40">asOfCommitSeq</span>: <span class="text-electric/50">number</span>;</div>
+            <div class="pl-4"><span class="text-white/40">tables</span>: <span class="text-electric/50">string[]</span>;</div>
+            <div class="pl-4"><span class="text-white/40">tableIndex</span>: <span class="text-electric/50">number</span>;</div>
+            <div class="pl-4"><span class="text-white/40">rowCursor</span>: <span class="text-electric/50">string | null</span>;</div>
+            <div>}</div>
+            <div class="mt-3 text-white/20">// Bootstrap sequence:</div>
+            <div class="text-white/30">1. cursor=0 &rarr; server sends snapshot page 1</div>
+            <div class="text-white/30">2. resume with bootstrapState &rarr; page 2</div>
+            <div class="text-white/30">3. ... until all tables paged</div>
+            <div class="text-white/30">4. transition to incremental pull</div>
+          </div>
+
+          <!-- Bootstrap sequence diagram -->
+          <div class="mt-4 border border-white/5 p-3">
+            <div class="text-[9px] text-white/20 tracking-wider mb-3">BOOTSTRAP SEQUENCE</div>
+            <div class="flex items-center gap-1 text-[8px]">
+              <div class="border border-electric/30 px-2 py-1 text-electric/60">SNAPSHOT</div>
+              <div class="h-px w-4 bg-electric/20"></div>
+              <div class="border border-electric/20 px-2 py-1 text-electric/40">CHUNK 1</div>
+              <div class="h-px w-4 bg-electric/20"></div>
+              <div class="border border-electric/20 px-2 py-1 text-electric/40">CHUNK 2</div>
+              <div class="h-px w-4 bg-electric/20"></div>
+              <div class="border border-white/10 px-2 py-1 text-white/30">...</div>
+              <div class="h-px w-4 bg-electric/20"></div>
+              <div class="border border-green-500/30 px-2 py-1 text-green-500/60">LIVE</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <!-- ======================================================================
+       SYSTEM REQUIREMENTS
+       ====================================================================== -->
+  <section id="requirements" class="relative z-10 max-w-4xl mx-auto px-6 pb-24">
+    <div class="spec-divider mb-12"></div>
+
+    <div class="flex items-baseline gap-4 mb-8">
+      <span class="section-num font-bold">&sect;6</span>
+      <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">System Requirements</h3>
+    </div>
+
+    <div class="border border-white/5 overflow-hidden">
+      <!-- Table header -->
+      <div class="grid grid-cols-3 bg-white/[0.02] border-b border-white/5">
+        <div class="px-5 py-3 text-[10px] tracking-[0.2em] text-white/30 uppercase">Component</div>
+        <div class="px-5 py-3 text-[10px] tracking-[0.2em] text-white/30 uppercase">Requirement</div>
+        <div class="px-5 py-3 text-[10px] tracking-[0.2em] text-white/30 uppercase">Notes</div>
+      </div>
+      <!-- Runtime -->
+      <div class="grid grid-cols-3 border-b border-white/[0.03]">
+        <div class="px-5 py-3 text-[12px] text-white/50">Runtime</div>
+        <div class="px-5 py-3 text-[12px] text-electric/60">Bun &ge; 1.0 <span class="text-white/20">or</span> Node &ge; 20</div>
+        <div class="px-5 py-3 text-[11px] text-white/25">Bun recommended for SQLite</div>
+      </div>
+      <!-- Language -->
+      <div class="grid grid-cols-3 border-b border-white/[0.03]">
+        <div class="px-5 py-3 text-[12px] text-white/50">Language</div>
+        <div class="px-5 py-3 text-[12px] text-electric/60">TypeScript &ge; 5.0</div>
+        <div class="px-5 py-3 text-[11px] text-white/25">Strict mode enabled</div>
+      </div>
+      <!-- Server DB -->
+      <div class="grid grid-cols-3 border-b border-white/[0.03]">
+        <div class="px-5 py-3 text-[12px] text-white/50">Server Database</div>
+        <div class="px-5 py-3 text-[12px] text-electric/60">PostgreSQL &ge; 14 <span class="text-white/20">or</span> SQLite</div>
+        <div class="px-5 py-3 text-[11px] text-white/25">Postgres recommended for prod</div>
+      </div>
+      <!-- Client DB -->
+      <div class="grid grid-cols-3 border-b border-white/[0.03]">
+        <div class="px-5 py-3 text-[12px] text-white/50">Client Database</div>
+        <div class="px-5 py-3 text-[12px] text-electric/60">SQLite</div>
+        <div class="px-5 py-3 text-[11px] text-white/25">via Bun or better-sqlite3</div>
+      </div>
+      <!-- Transport -->
+      <div class="grid grid-cols-3 border-b border-white/[0.03]">
+        <div class="px-5 py-3 text-[12px] text-white/50">Transport</div>
+        <div class="px-5 py-3 text-[12px] text-electric/60">HTTP <span class="text-white/20">+</span> WebSocket</div>
+        <div class="px-5 py-3 text-[11px] text-white/25">WS for realtime wake-ups</div>
+      </div>
+      <!-- Framework -->
+      <div class="grid grid-cols-3">
+        <div class="px-5 py-3 text-[12px] text-white/50">Server Framework</div>
+        <div class="px-5 py-3 text-[12px] text-electric/60">Hono</div>
+        <div class="px-5 py-3 text-[11px] text-white/25">Adapter included</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       INSTALL
+       ====================================================================== -->
+  <section id="install" class="relative z-10 max-w-4xl mx-auto px-6 pb-32">
+    <div class="spec-divider mb-12"></div>
+
+    <div class="flex items-baseline gap-4 mb-8">
+      <span class="section-num font-bold">&sect;7</span>
+      <h3 class="text-lg tracking-[0.1em] text-white/90 uppercase">Installation</h3>
+    </div>
+
+    <p class="text-[13px] text-white/40 leading-relaxed mb-8 max-w-xl">
+      Install the core packages. The client runs in the browser or any JS runtime with SQLite access. The server runs on Bun or Node with Hono.
+    </p>
+
+    <!-- Terminal window -->
+    <div class="border border-white/10 bg-black/50 overflow-hidden max-w-2xl">
+      <!-- Terminal title bar -->
+      <div class="flex items-center gap-2 px-4 py-2 border-b border-white/5 bg-white/[0.02]">
+        <div class="w-2.5 h-2.5 rounded-full bg-white/10"></div>
+        <div class="w-2.5 h-2.5 rounded-full bg-white/10"></div>
+        <div class="w-2.5 h-2.5 rounded-full bg-white/10"></div>
+        <span class="text-[9px] text-white/20 ml-3 tracking-wider">terminal</span>
+      </div>
+      <!-- Terminal content -->
+      <div class="p-5 text-[13px] leading-loose">
+        <div class="flex items-center">
+          <span class="text-electric/60 mr-2">$</span>
+          <span class="text-white/60">bun add @syncular/client @syncular/server</span>
+          <span class="terminal-cursor text-electric/80 ml-1">_</span>
+        </div>
+        <div class="mt-4 text-white/20 text-[11px]"># Optional: transport + React bindings</div>
+        <div class="flex items-center mt-1">
+          <span class="text-electric/40 mr-2">$</span>
+          <span class="text-white/40">bun add @syncular/transport-http @syncular/transport-ws</span>
+        </div>
+        <div class="flex items-center mt-1">
+          <span class="text-electric/40 mr-2">$</span>
+          <span class="text-white/40">bun add @syncular/client-react</span>
+        </div>
+        <div class="mt-4 text-white/20 text-[11px]"># Server adapter (Hono)</div>
+        <div class="flex items-center mt-1">
+          <span class="text-electric/40 mr-2">$</span>
+          <span class="text-white/40">bun add @syncular/server-hono</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick start code -->
+    <div class="mt-8 max-w-2xl">
+      <div class="text-[10px] tracking-[0.2em] text-white/20 uppercase mb-3">Quick Start</div>
+      <div class="code-block p-5 text-[11px] leading-relaxed overflow-x-auto">
+        <div class="text-white/20">// server.ts</div>
+        <div><span class="text-electric/70">import</span> { <span class="text-white/60">createSyncServer</span> } <span class="text-electric/70">from</span> <span class="text-electric/50">"@syncular/server"</span>;</div>
+        <div><span class="text-electric/70">import</span> { <span class="text-white/60">createHonoApp</span> } <span class="text-electric/70">from</span> <span class="text-electric/50">"@syncular/server-hono"</span>;</div>
+        <div class="mt-2"><span class="text-electric/70">const</span> <span class="text-white/60">sync</span> = <span class="text-white/50">createSyncServer</span>({ <span class="text-white/40">dialect</span>: <span class="text-electric/50">"postgres"</span> });</div>
+        <div><span class="text-electric/70">const</span> <span class="text-white/60">app</span> = <span class="text-white/50">createHonoApp</span>({ sync });</div>
+        <div class="mt-3 text-white/20">// client.ts</div>
+        <div><span class="text-electric/70">import</span> { <span class="text-white/60">createSyncClient</span> } <span class="text-electric/70">from</span> <span class="text-electric/50">"@syncular/client"</span>;</div>
+        <div><span class="text-electric/70">import</span> { <span class="text-white/60">createHttpTransport</span> } <span class="text-electric/70">from</span> <span class="text-electric/50">"@syncular/transport-http"</span>;</div>
+        <div class="mt-2"><span class="text-electric/70">const</span> <span class="text-white/60">client</span> = <span class="text-white/50">createSyncClient</span>({</div>
+        <div class="pl-4"><span class="text-white/40">transport</span>: <span class="text-white/50">createHttpTransport</span>({ <span class="text-white/40">baseUrl</span>: <span class="text-electric/50">"http://localhost:3000"</span> }),</div>
+        <div>});</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================
+       FOOTER
+       ====================================================================== -->
+  <footer class="relative z-10 border-t border-white/5">
+    <div class="max-w-4xl mx-auto px-6 py-8 flex items-center justify-between">
+      <div class="flex items-center gap-6">
+        <span class="text-[10px] tracking-[0.3em] text-white/20 uppercase">Syncular</span>
+        <span class="text-[10px] text-white/10">MIT License</span>
+      </div>
+      <div class="flex items-center gap-6">
+        <a href="https://github.com/puredata-ec/syncular" class="text-[10px] tracking-wider text-white/20 hover:text-electric/60 transition-colors uppercase">GitHub</a>
+        <a href="#" class="text-[10px] tracking-wider text-white/20 hover:text-electric/60 transition-colors uppercase">Docs</a>
+        <a href="#" class="text-[10px] tracking-wider text-white/20 hover:text-electric/60 transition-colors uppercase">NPM</a>
+      </div>
+    </div>
+    <div class="max-w-4xl mx-auto px-6 pb-8">
+      <p class="font-serif italic text-[12px] text-white/15">
+        "The point where all distributed state collapses into consistency."
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>

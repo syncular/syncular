@@ -1,0 +1,41 @@
+{
+  "name": "@syncular/tests-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "test": "bun test __tests__",
+    "test:browser": "bun test __tests__/browser.runtime.test.ts",
+    "test:demo": "bun test __tests__/demo.split-screen.smoke.test.ts",
+    "test:cloudflare": "SYNCULAR_TEST_RUN_CLOUDFLARE=true bun test __tests__/cloudflare.runtime.test.ts",
+    "test:d1": "SYNCULAR_TEST_RUN_D1=true bun test __tests__/d1.runtime.test.ts",
+    "measure:demo-latency": "bun run scripts/demo-sync-latency.ts",
+    "test:relay": "bun test __tests__/relay.runtime.test.ts",
+    "test:node": "bun test __tests__/node.runtime.test.ts",
+    "test:deno": "bun test __tests__/deno.runtime.test.ts",
+    "test:electron": "bun test __tests__/electron.runtime.test.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@playwright/test": "^1.58.2",
+    "@syncular/client": "workspace:*",
+    "@syncular/config": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-d1": "workspace:*",
+    "@syncular/dialect-electron-sqlite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/dialect-wa-sqlite": "workspace:*",
+    "@syncular/relay": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-cloudflare": "workspace:*",
+    "@syncular/server-dialect-sqlite": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/testkit": "workspace:*",
+    "@syncular/transport-http": "workspace:*",
+    "hono": "*",
+    "kysely": "*",
+    "wrangler": "*"
+  }
+}

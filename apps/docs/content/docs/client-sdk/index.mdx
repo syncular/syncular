@@ -1,0 +1,66 @@
+---
+title: Client SDK Reference
+description: JavaScript and React SDK documentation for Syncular
+---
+
+# Client SDK Reference
+
+> **You are here:** Reference (SDK APIs).
+>
+> If you're implementing Syncular in an app, start with [Build](/docs/build). For installation commands and dialect selection, see [Installation](/docs/introduction/installation).
+
+## Quick Example
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { type SyncClientDb } from '@syncular/client';
+import { createHttpTransport } from '@syncular/transport-http';
+
+type Task = { id: string; title: string };
+type Db = SyncClientDb & { tasks: Task };
+
+const { SyncProvider, useSyncQuery, useMutations } = createSyncularReact<Db>();
+
+function App() {
+  const transport = createHttpTransport({ baseUrl: '/api' });
+  const sync = {
+    handlers: [tasksClientHandler],
+    subscriptions: ({ actorId }) => [
+      { id: 'tasks', table: 'tasks', scopes: { user_id: actorId } },
+    ],
+  };
+
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      sync={sync}
+      identity={{ actorId: userId }}
+      clientId={deviceId}
+    >
+      <TaskList />
+    </SyncProvider>
+  );
+}
+
+function TaskList() {
+  const { data: tasks } = useSyncQuery(({ selectFrom }) =>
+    selectFrom('tasks').selectAll()
+  );
+
+  const m = useMutations();
+
+  return (
+    <ul>
+      {tasks?.map(task => (
+        <li key={task.id}>{task.title}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## SDKs
+
+- [JavaScript SDK](/docs/client-sdk/javascript/overview) — Core sync engine and utilities
+- [React SDK](/docs/client-sdk/react/overview) — React hooks and components for sync

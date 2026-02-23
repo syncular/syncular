@@ -1,0 +1,45 @@
+{
+  "name": "syncular-docs",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "prepare:openapi": "cp ../../packages/server-hono/openapi.json ./openapi.json",
+    "build": "bun run prepare:openapi && next build",
+    "build:cf": "opennextjs-cloudflare build",
+    "preview:cf": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "pub": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "dev": "bun run prepare:openapi && next dev --turbopack",
+    "start": "next start",
+    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
+    "postinstall": "fumadocs-mdx",
+    "tsgo": "tsgo --noEmit",
+    "generate": "bun generate:schema && bun generate:openapi",
+    "generate:schema": "bun --cwd ../../packages/server-hono generate:openapi",
+    "generate:openapi": "bun run prepare:openapi && bun scripts/generate-openapi.ts"
+  },
+  "dependencies": {
+    "@syncular/ui": "workspace:*",
+    "fumadocs-core": "16.6.3",
+    "fumadocs-mdx": "14.2.7",
+    "fumadocs-openapi": "^10.3.6",
+    "fumadocs-ui": "16.6.3",
+    "lucide-react": "^0.575.0",
+    "next": "16.1.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@opennextjs/cloudflare": "^1.16.5",
+    "@tailwindcss/postcss": "^4.2.0",
+    "@types/mdx": "^2.0.13",
+    "@types/node": "^25.3.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@webgpu/types": "^0.1.69",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.9.3",
+    "wrangler": "*"
+  }
+}

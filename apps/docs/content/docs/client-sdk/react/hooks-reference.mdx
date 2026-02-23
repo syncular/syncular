@@ -1,0 +1,440 @@
+---
+title: Hooks Reference
+description: Complete reference for all React hooks
+---
+
+Complete reference for all React hooks in `@syncular/client-react`.
+
+## useSyncStatus
+
+Monitor sync status.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncStatus } = createSyncularReact<AppDb>();
+
+function StatusBar() {
+  const {
+    isOnline,
+    isSyncing,
+    lastSyncAt,
+    isStale,
+    error,
+    pendingCount,
+  } = useSyncStatus({ staleAfterMs: 60_000 });
+
+  return (
+    <div>
+      {isOnline ? 'Online' : 'Offline'}
+      {isSyncing && ' (syncing...)'}
+      {isStale && ' (stale)'}
+      {pendingCount > 0 && ` (${pendingCount} pending)`}
+    </div>
+  );
+}
+```
+
+## useSyncEngine
+
+Access the sync engine directly.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { Button } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useSyncEngine } = createSyncularReact<AppDb>();
+
+function SyncControls() {
+  const {
+    sync,
+    disconnect,
+    reconnect,
+    start,
+    getDiagnostics,
+    getInspectorSnapshot,
+    awaitPhase,
+    awaitBootstrapComplete,
+  } = useSyncEngine();
+
+  return (
+    <div>
+      <Button onClick={() => sync()}>Sync Now</Button>
+      <Button onClick={disconnect}>Disconnect</Button>
+      <Button onClick={reconnect}>Reconnect</Button>
+      <Button onClick={() => start()}>Start</Button>
+      <Button onClick={() => awaitPhase('live', { timeoutMs: 60_000 })}>
+        Wait For Live
+      </Button>
+      <Button onClick={() => awaitBootstrapComplete()}>
+        Wait For Bootstrap
+      </Button>
+      <Button onClick={async () => console.log(await getDiagnostics())}>
+        Dump Diagnostics
+      </Button>
+      <Button onClick={async () => console.log(await getInspectorSnapshot())}>
+        Dump Inspector Snapshot
+      </Button>
+    </div>
+  );
+}
+```
+
+## useSyncConnection
+
+Monitor WebSocket connection state.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncConnection } = createSyncularReact<AppDb>();
+
+function ConnectionStatus() {
+  const { state, isConnected, reconnect } = useSyncConnection();
+
+  return (
+    <div>
+      <span>{state}</span>
+      {!isConnected && <Button onClick={reconnect}>Reconnect</Button>}
+    </div>
+  );
+}
+```
+
+### Connection States
+
+- `disconnected` - Not connected
+- `connecting` - Connection in progress
+- `connected` - Connected and receiving events
+- `reconnecting` - Realtime transport dropped; reconnect in progress
+
+## useTransportHealth
+
+Monitor transport mode + fallback details.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useTransportHealth } = createSyncularReact<AppDb>();
+
+function TransportBadge() {
+  const { health } = useTransportHealth();
+
+  return (
+    <div>
+      mode={health.mode}, connected={String(health.connected)}
+    </div>
+  );
+}
+```
+
+## useSyncProgress
+
+Get first-class sync/bootstrap progress.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncProgress } = createSyncularReact<AppDb>();
+
+function BootstrapProgress() {
+  const { progress, isLoading } = useSyncProgress({ pollIntervalMs: 500 });
+
+  if (isLoading || !progress) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <p>Phase: {progress.channelPhase}</p>
+      <p>{progress.progressPercent}%</p>
+    </div>
+  );
+}
+```
+
+## useSyncInspector
+
+Get a serializable debug payload (diagnostics + recent events) for in-app devtools.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncInspector } = createSyncularReact<AppDb>();
+
+function InspectorDump() {
+  const { snapshot, isLoading, refresh } = useSyncInspector({
+    pollIntervalMs: 2000,
+    eventLimit: 200,
+  });
+
+  if (isLoading || !snapshot) return <div>Loading inspector...</div>;
+
+  return (
+    <div>
+      <button onClick={() => refresh()}>Refresh</button>
+      <pre>{JSON.stringify(snapshot, null, 2)}</pre>
+    </div>
+  );
+}
+```
+
+## useSyncSubscriptions
+
+Read persisted subscription metadata without raw SQL.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncSubscriptions } = createSyncularReact<AppDb>();
+
+function SubscriptionsPanel() {
+  const { subscriptions } = useSyncSubscriptions({ status: 'active' });
+  return <pre>{JSON.stringify(subscriptions, null, 2)}</pre>;
+}
+```
+
+## useSyncSubscription
+
+Read one persisted subscription metadata row.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncSubscription } = createSyncularReact<AppDb>();
+
+function TeamBootstrapState() {
+  const { subscription } = useSyncSubscription('app-team-members');
+  return <pre>{JSON.stringify(subscription, null, 2)}</pre>;
+}
+```
+
+## useConflicts
+
+Get pending conflicts.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useConflicts } = createSyncularReact<AppDb>();
+
+function ConflictList() {
+  const { conflicts, isLoading } = useConflicts();
+
+  return (
+    <ul>
+      {conflicts.map((c) => (
+        <li key={c.id}>{c.message}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## useResolveConflict
+
+Resolve a conflict.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { Button } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useResolveConflict } = createSyncularReact<AppDb>();
+
+function ConflictItem({ conflict }) {
+  const { resolve, isPending } = useResolveConflict();
+
+  return (
+    <div>
+      <p>{conflict.message}</p>
+      <Button onClick={() => resolve(conflict.id, 'accept')} disabled={isPending}>
+        Accept Server
+      </Button>
+      <Button onClick={() => resolve(conflict.id, 'reject')} disabled={isPending}>
+        Keep Mine
+      </Button>
+    </div>
+  );
+}
+```
+
+### Resolution Types
+
+```typescript
+type ConflictResolution = 'accept' | 'reject' | 'merge';
+```
+
+## useOutbox
+
+Get outbox status.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { Button } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useOutbox } = createSyncularReact<AppDb>();
+
+function OutboxStatus() {
+  const { pending, failed, isLoading } = useOutbox();
+
+  return (
+    <div>
+      <p>{pending.length} pending</p>
+      <p>{failed.length} failed</p>
+    </div>
+  );
+}
+```
+
+## useSyncContext
+
+Access raw sync context.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncContext } = createSyncularReact<AppDb>();
+
+function Component() {
+  const { engine, db, transport, handlers } = useSyncContext();
+  // ...
+}
+```
+
+## useEngine
+
+Access just the sync engine.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useEngine } = createSyncularReact<AppDb>();
+
+function Component() {
+  const engine = useEngine();
+  // ...
+}
+```
+
+## usePresence
+
+Observe who's present in a scope (read-only).
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { usePresence } = createSyncularReact<AppDb>();
+
+function OnlineUsers({ projectId }: { projectId: string }) {
+  const { presence, isLoading } = usePresence<{ cursor?: { x: number; y: number } }>(
+    `project:${projectId}`
+  );
+
+  return (
+    <div>
+      {presence.map((entry) => (
+        <span key={entry.clientId}>{entry.actorId}</span>
+      ))}
+    </div>
+  );
+}
+```
+
+### Returns
+
+- `presence: PresenceEntry<TMetadata>[]` - Current presence entries for the scope
+- `isLoading: boolean` - Whether initial presence data is loading
+
+## usePresenceWithJoin
+
+Observe and participate in a scope's presence. Sends join/leave/update messages through the WebSocket transport.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { usePresenceWithJoin } = createSyncularReact<AppDb>();
+
+function Editor({ docId }: { docId: string }) {
+  const { presence, updateMetadata, isJoined, join, leave } =
+    usePresenceWithJoin<{ isEditing: boolean }>(
+      `document:${docId}`,
+      { metadata: { isEditing: false }, autoJoin: true }
+    );
+
+  return (
+    <div>
+      <span>{presence.length} collaborators</span>
+      <Button onClick={() => updateMetadata({ isEditing: true })}>
+        Start Editing
+      </Button>
+    </div>
+  );
+}
+```
+
+### Options
+
+- `metadata?: TMetadata` - Initial metadata to send on join
+- `autoJoin?: boolean` - Automatically join on mount and leave on unmount (default: `true`)
+
+### Returns
+
+- `presence: PresenceEntry<TMetadata>[]` - Current presence entries
+- `isJoined: boolean` - Whether this client has joined
+- `join(metadata?)` - Manually join the scope
+- `leave()` - Manually leave the scope
+- `updateMetadata(metadata)` - Update this client's metadata
+
+## SyncEngine Events
+
+The sync engine emits events:
+
+```typescript
+engine.on('sync:start', () => { ... });
+engine.on('sync:complete', (result) => { ... });
+engine.on('sync:live', ({ timestamp }) => { ... });
+engine.on('sync:error', (error) => { ... });
+engine.on('bootstrap:start', ({ stateId, subscriptionId }) => { ... });
+engine.on('bootstrap:progress', ({ progress }) => { ... });
+engine.on('bootstrap:complete', ({ durationMs }) => { ... });
+engine.on('data:change', ({ scopes }) => { ... });
+engine.on('connection:change', ({ previous, current }) => { ... });
+engine.on('outbox:change', (stats) => { ... });
+engine.on('presence:change', ({ scopeKey, presence }) => { ... });
+```
+
+## useSyncGroup
+
+Aggregate multiple sync engines (multi-channel apps).
+
+```tsx
+import { useSyncGroup } from '@syncular/client-react';
+
+const group = useSyncGroup({
+  channels: [
+    { id: 'catalog', engine: catalogEngine },
+    { id: 'user', engine: userEngine },
+    { id: 'team', engine: teamEngine },
+  ],
+});
+
+await group.syncNow();
+```
+
+## Next Steps
+
+- [Plugins](/docs/client-sdk/javascript/plugins) - Extending functionality
+- [Conflict Resolution](/docs/introduction/conflict-resolution) - Handling conflicts

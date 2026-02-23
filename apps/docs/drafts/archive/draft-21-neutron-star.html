@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 21: Neutron Star</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Azeret+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Azeret Mono', monospace;
+    background: #000;
+    color: #c8d6e5;
+    overflow-x: hidden;
+    font-size: 13px;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+  }
+  .display { font-family: 'Space Grotesk', sans-serif; }
+
+  /* ── Neutron star core ── */
+  .ns-core {
+    position: relative;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    animation: core-pulse 2.4s ease-in-out infinite;
+    box-shadow:
+      0 0 4px 2px rgba(255,255,255,0.9),
+      0 0 12px 4px rgba(176,196,222,0.6),
+      0 0 30px 10px rgba(176,196,222,0.3),
+      0 0 60px 20px rgba(100,149,237,0.15),
+      0 0 100px 40px rgba(70,130,180,0.08);
+    z-index: 10;
+  }
+
+  @keyframes core-pulse {
+    0%, 100% {
+      transform: scale(1);
+      box-shadow:
+        0 0 4px 2px rgba(255,255,255,0.9),
+        0 0 12px 4px rgba(176,196,222,0.6),
+        0 0 30px 10px rgba(176,196,222,0.3),
+        0 0 60px 20px rgba(100,149,237,0.15),
+        0 0 100px 40px rgba(70,130,180,0.08);
+    }
+    50% {
+      transform: scale(1.15);
+      box-shadow:
+        0 0 6px 3px rgba(255,255,255,1),
+        0 0 16px 6px rgba(176,196,222,0.8),
+        0 0 40px 14px rgba(176,196,222,0.4),
+        0 0 80px 28px rgba(100,149,237,0.2),
+        0 0 130px 50px rgba(70,130,180,0.1);
+    }
+  }
+
+  /* ── Pressure shells ── */
+  .shell {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(176,196,222,0.12);
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    animation: shell-breathe 3s ease-in-out infinite;
+  }
+  .shell-1 { width: 40px; height: 40px; animation-delay: 0s; border-color: rgba(176,196,222,0.25); }
+  .shell-2 { width: 58px; height: 58px; animation-delay: 0.15s; border-color: rgba(176,196,222,0.18); }
+  .shell-3 { width: 74px; height: 74px; animation-delay: 0.3s; border-color: rgba(176,196,222,0.13); }
+  .shell-4 { width: 88px; height: 88px; animation-delay: 0.45s; border-color: rgba(176,196,222,0.09); }
+  .shell-5 { width: 100px; height: 100px; animation-delay: 0.6s; border-color: rgba(176,196,222,0.06); }
+  .shell-6 { width: 112px; height: 112px; animation-delay: 0.75s; border-color: rgba(176,196,222,0.04); }
+
+  @keyframes shell-breathe {
+    0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    50% { transform: translate(-50%, -50%) scale(0.96); opacity: 0.7; }
+  }
+
+  /* ── Density stat badges ── */
+  .density-badge {
+    border: 1px solid rgba(176,196,222,0.2);
+    background: rgba(176,196,222,0.04);
+    padding: 4px 10px;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .density-badge:hover {
+    border-color: rgba(176,196,222,0.45);
+    background: rgba(176,196,222,0.08);
+  }
+  .density-badge .val {
+    color: #fff;
+    font-weight: 600;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13px;
+    margin-right: 4px;
+  }
+
+  /* ── Features table ── */
+  .feat-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .feat-table th {
+    text-align: left;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: rgba(176,196,222,0.4);
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(176,196,222,0.1);
+    font-weight: 500;
+  }
+  .feat-table td {
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(176,196,222,0.06);
+    vertical-align: top;
+  }
+  .feat-table tr:hover td {
+    background: rgba(176,196,222,0.03);
+  }
+  .feat-table .feat-name {
+    color: #fff;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 500;
+    font-size: 13px;
+    padding-right: 16px;
+    white-space: nowrap;
+  }
+  .feat-table .feat-desc {
+    color: rgba(176,196,222,0.65);
+    font-size: 12px;
+  }
+  .feat-table .feat-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border: 1px solid rgba(176,196,222,0.15);
+    color: rgba(176,196,222,0.5);
+    white-space: nowrap;
+  }
+
+  /* ── Install block ── */
+  .install-cmd {
+    background: rgba(176,196,222,0.04);
+    border: 1px solid rgba(176,196,222,0.12);
+    padding: 10px 16px;
+    font-size: 13px;
+    color: #fff;
+    position: relative;
+    overflow: hidden;
+  }
+  .install-cmd::before {
+    content: '>';
+    color: rgba(100,149,237,0.6);
+    margin-right: 8px;
+    font-weight: 700;
+  }
+  .install-cmd .blink {
+    animation: blink 1s step-end infinite;
+    color: rgba(100,149,237,0.6);
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* ── Gravitational lensing lines (background) ── */
+  .grav-line {
+    position: fixed;
+    pointer-events: none;
+    background: rgba(176,196,222,0.03);
+    z-index: 0;
+  }
+
+  /* ── Section dividers ── */
+  .section-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent 0%, rgba(176,196,222,0.15) 30%, rgba(176,196,222,0.15) 70%, transparent 100%);
+  }
+
+  /* ── Nav ── */
+  nav a {
+    color: rgba(176,196,222,0.5);
+    text-decoration: none;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    transition: color 0.15s;
+  }
+  nav a:hover { color: #fff; }
+
+  /* ── Scroll fade-in ── */
+  .fade-up {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: fadeUp 0.6s ease forwards;
+  }
+  @keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .delay-1 { animation-delay: 0.1s; }
+  .delay-2 { animation-delay: 0.2s; }
+  .delay-3 { animation-delay: 0.3s; }
+  .delay-4 { animation-delay: 0.4s; }
+  .delay-5 { animation-delay: 0.5s; }
+  .delay-6 { animation-delay: 0.6s; }
+  .delay-7 { animation-delay: 0.7s; }
+
+  /* ── Background grid (compressed) ── */
+  .bg-grid {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(176,196,222,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(176,196,222,0.025) 1px, transparent 1px);
+    background-size: 24px 24px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Pressure annotation ── */
+  .pressure-label {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(176,196,222,0.25);
+    writing-mode: vertical-rl;
+    position: absolute;
+  }
+
+  /* ── Mass indicator ── */
+  .mass-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px dashed rgba(100,149,237,0.1);
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    animation: mass-rotate 60s linear infinite;
+  }
+  .mass-ring-1 { width: 160px; height: 160px; }
+  .mass-ring-2 { width: 200px; height: 200px; animation-direction: reverse; animation-duration: 80s; }
+
+  @keyframes mass-rotate {
+    from { transform: translate(-50%, -50%) rotate(0deg); }
+    to { transform: translate(-50%, -50%) rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+
+<!-- Background grid -->
+<div class="bg-grid"></div>
+
+<!-- ── NAV ── -->
+<nav class="relative z-10 flex items-center justify-between px-6 py-3 border-b border-white/5">
+  <div class="display font-semibold text-white text-sm tracking-tight">syncular</div>
+  <div class="flex items-center gap-5">
+    <a href="#density">Density</a>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/nicknisi/syncular" target="_blank">GitHub</a>
+    <a href="/docs" class="text-white/80 border border-white/10 px-3 py-1 hover:border-white/25">Docs</a>
+  </div>
+</nav>
+
+<!-- ── HERO ── -->
+<section class="relative z-10 flex flex-col items-center pt-16 pb-10 px-6 fade-up">
+
+  <!-- Core visual -->
+  <div class="relative flex items-center justify-center mb-8" style="width: 200px; height: 200px;">
+    <div class="ns-core"></div>
+    <div class="shell shell-1"></div>
+    <div class="shell shell-2"></div>
+    <div class="shell shell-3"></div>
+    <div class="shell shell-4"></div>
+    <div class="shell shell-5"></div>
+    <div class="shell shell-6"></div>
+    <div class="mass-ring mass-ring-1"></div>
+    <div class="mass-ring mass-ring-2"></div>
+    <div class="pressure-label" style="right: -18px; top: 50%; transform: translateY(-50%);">pressure</div>
+    <div class="pressure-label" style="left: -14px; top: 50%; transform: translateY(-50%) rotate(180deg);">density</div>
+  </div>
+
+  <!-- Title -->
+  <h1 class="display text-white text-center font-bold leading-none tracking-tight fade-up delay-1" style="font-size: clamp(28px, 5vw, 48px);">
+    Infinite mass.<br>Zero footprint.
+  </h1>
+
+  <!-- Tagline -->
+  <p class="text-center mt-3 max-w-md leading-snug fade-up delay-2" style="color: rgba(176,196,222,0.55); font-size: 12px;">
+    A neutron star compresses a sun into a city block. Syncular compresses
+    your entire sync infrastructure into a few kilobytes of client code.
+    Offline-first. Realtime. Impossibly dense.
+  </p>
+
+  <!-- Micro-badges row -->
+  <div class="flex items-center gap-2 mt-5 flex-wrap justify-center fade-up delay-3">
+    <span class="density-badge"><span class="val">TypeScript</span></span>
+    <span class="density-badge"><span class="val">Offline-first</span></span>
+    <span class="density-badge"><span class="val">Realtime</span></span>
+    <span class="density-badge"><span class="val">E2EE</span></span>
+  </div>
+</section>
+
+<div class="section-rule mx-6"></div>
+
+<!-- ── DENSITY STATS ── -->
+<section id="density" class="relative z-10 px-6 py-8 fade-up delay-4">
+  <div class="max-w-2xl mx-auto">
+    <div class="flex items-baseline gap-2 mb-4">
+      <span class="display text-white font-semibold text-sm">Density metrics</span>
+      <span style="font-size: 10px; color: rgba(176,196,222,0.3);">&#8212; mass per unit volume</span>
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <!-- Stat 1 -->
+      <div class="border border-white/5 p-3 hover:border-white/15 transition-colors">
+        <div class="display text-white font-bold text-xl leading-none">4KB</div>
+        <div style="font-size: 10px; color: rgba(176,196,222,0.4); margin-top: 4px;">client gzipped</div>
+      </div>
+      <!-- Stat 2 -->
+      <div class="border border-white/5 p-3 hover:border-white/15 transition-colors">
+        <div class="display text-white font-bold text-xl leading-none">&lt;1ms</div>
+        <div style="font-size: 10px; color: rgba(176,196,222,0.4); margin-top: 4px;">local reads</div>
+      </div>
+      <!-- Stat 3 -->
+      <div class="border border-white/5 p-3 hover:border-white/15 transition-colors">
+        <div class="display text-white font-bold text-xl leading-none">0</div>
+        <div style="font-size: 10px; color: rgba(176,196,222,0.4); margin-top: 4px;">runtime deps</div>
+      </div>
+      <!-- Stat 4 -->
+      <div class="border border-white/5 p-3 hover:border-white/15 transition-colors">
+        <div class="display text-white font-bold text-xl leading-none">&infin;</div>
+        <div style="font-size: 10px; color: rgba(176,196,222,0.4); margin-top: 4px;">offline duration</div>
+      </div>
+    </div>
+
+    <!-- Density comparison -->
+    <div class="mt-3 flex items-center gap-3" style="font-size: 10px; color: rgba(176,196,222,0.25);">
+      <span>&#9632; 1 tsp neutron star = 1 billion tons</span>
+      <span>|</span>
+      <span>&#9632; 1 syncular client = entire sync stack</span>
+    </div>
+  </div>
+</section>
+
+<div class="section-rule mx-6"></div>
+
+<!-- ── FEATURES TABLE ── -->
+<section id="features" class="relative z-10 px-6 py-8 fade-up delay-5">
+  <div class="max-w-2xl mx-auto">
+    <div class="flex items-baseline gap-2 mb-3">
+      <span class="display text-white font-semibold text-sm">Compressed feature set</span>
+      <span style="font-size: 10px; color: rgba(176,196,222,0.3);">&#8212; everything, tightly packed</span>
+    </div>
+
+    <table class="feat-table">
+      <thead>
+        <tr>
+          <th style="width: 170px;">Feature</th>
+          <th>Description</th>
+          <th style="width: 80px; text-align: right;">Layer</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="feat-name">Offline-first</td>
+          <td class="feat-desc">All reads/writes hit local SQLite. Network is optional, never blocking.</td>
+          <td class="text-right"><span class="feat-tag">client</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Commit-log sync</td>
+          <td class="feat-desc">Append-only operations log. Pull deltas, push outbox. Conflict-free by design.</td>
+          <td class="text-right"><span class="feat-tag">core</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Realtime</td>
+          <td class="feat-desc">WebSocket wake-ups trigger instant pulls. Sub-second propagation across clients.</td>
+          <td class="text-right"><span class="feat-tag">transport</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Presence</td>
+          <td class="feat-desc">Ephemeral cursor/status sharing over the same WebSocket channel.</td>
+          <td class="text-right"><span class="feat-tag">transport</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Scope keys</td>
+          <td class="feat-desc">Partition data per-user, per-team, per-anything. Fine-grained access boundaries.</td>
+          <td class="text-right"><span class="feat-tag">server</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Snapshot chunks</td>
+          <td class="feat-desc">Bootstrap new clients from compressed snapshots instead of replaying full history.</td>
+          <td class="text-right"><span class="feat-tag">server</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">E2E encryption</td>
+          <td class="feat-desc">Client-side plugin encrypts payloads before they leave the device. Server is zero-knowledge.</td>
+          <td class="text-right"><span class="feat-tag">plugin</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Blob storage</td>
+          <td class="feat-desc">Binary attachments synced alongside structured data. Lazy-loaded, deduplicated.</td>
+          <td class="text-right"><span class="feat-tag">core</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Edge relay</td>
+          <td class="feat-desc">Deploy read replicas at the edge. Clients connect to nearest relay, relay syncs to origin.</td>
+          <td class="text-right"><span class="feat-tag">infra</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">React bindings</td>
+          <td class="feat-desc">Hooks for queries, mutations, sync status, presence. Suspense-compatible.</td>
+          <td class="text-right"><span class="feat-tag">client</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Admin console</td>
+          <td class="feat-desc">Built-in web UI for inspecting tables, operations, connected clients, and sync health.</td>
+          <td class="text-right"><span class="feat-tag">server</span></td>
+        </tr>
+        <tr>
+          <td class="feat-name">Pruning</td>
+          <td class="feat-desc">Automatic compaction of old operations. Keep the log dense, never bloated.</td>
+          <td class="text-right"><span class="feat-tag">server</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="section-rule mx-6"></div>
+
+<!-- ── ARCHITECTURE ── -->
+<section class="relative z-10 px-6 py-8 fade-up delay-6">
+  <div class="max-w-2xl mx-auto">
+    <div class="flex items-baseline gap-2 mb-4">
+      <span class="display text-white font-semibold text-sm">Internal structure</span>
+      <span style="font-size: 10px; color: rgba(176,196,222,0.3);">&#8212; layers under compression</span>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      <div class="border border-white/5 p-3">
+        <div class="display text-white font-medium text-xs mb-1">@syncular/client</div>
+        <div style="font-size: 11px; color: rgba(176,196,222,0.45); line-height: 1.4;">
+          Local SQLite &middot; Outbox queue &middot; Conflict resolution &middot; Plugin system &middot; Blob cache &middot; React hooks
+        </div>
+      </div>
+      <div class="border border-white/5 p-3">
+        <div class="display text-white font-medium text-xs mb-1">@syncular/server</div>
+        <div style="font-size: 11px; color: rgba(176,196,222,0.45); line-height: 1.4;">
+          Push/pull engine &middot; Scope subscriptions &middot; Snapshot chunks &middot; Pruning &middot; Blob store &middot; Admin proxy
+        </div>
+      </div>
+      <div class="border border-white/5 p-3">
+        <div class="display text-white font-medium text-xs mb-1">transports</div>
+        <div style="font-size: 11px; color: rgba(176,196,222,0.45); line-height: 1.4;">
+          HTTP (OpenAPI) &middot; WebSocket (realtime + presence) &middot; Edge relay &middot; Custom adapters
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="section-rule mx-6"></div>
+
+<!-- ── INSTALL ── -->
+<section id="install" class="relative z-10 px-6 py-8 fade-up delay-7">
+  <div class="max-w-2xl mx-auto">
+    <div class="flex items-baseline gap-2 mb-3">
+      <span class="display text-white font-semibold text-sm">Collapse into your project</span>
+      <span style="font-size: 10px; color: rgba(176,196,222,0.3);">&#8212; one command</span>
+    </div>
+
+    <div class="install-cmd">bun add @syncular/client @syncular/server<span class="blink">_</span></div>
+
+    <div class="flex items-center gap-4 mt-3" style="font-size: 11px;">
+      <a href="/docs" class="text-white/50 hover:text-white transition-colors border-b border-white/10 hover:border-white/30 pb-px">Read the docs</a>
+      <a href="https://github.com/nicknisi/syncular" class="text-white/50 hover:text-white transition-colors border-b border-white/10 hover:border-white/30 pb-px">View source</a>
+      <a href="/docs/getting-started" class="text-white/50 hover:text-white transition-colors border-b border-white/10 hover:border-white/30 pb-px">Quick start</a>
+    </div>
+  </div>
+</section>
+
+<div class="section-rule mx-6"></div>
+
+<!-- ── FOOTER ── -->
+<footer class="relative z-10 px-6 py-4 flex items-center justify-between" style="font-size: 10px; color: rgba(176,196,222,0.2);">
+  <div class="flex items-center gap-3">
+    <span class="display text-white/20 font-semibold" style="font-size: 11px;">syncular</span>
+    <span>&middot;</span>
+    <span>Offline-first sync, compressed to the essential</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <span>MIT License</span>
+    <span>&middot;</span>
+    <a href="https://github.com/nicknisi/syncular" class="hover:text-white/40 transition-colors">GitHub</a>
+  </div>
+</footer>
+
+</body>
+</html>

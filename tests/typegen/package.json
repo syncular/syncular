@@ -1,0 +1,15 @@
+{
+  "name": "@syncular/tests-typegen",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "test": "bun test ."
+  },
+  "devDependencies": {
+    "@syncular/typegen": "workspace:*",
+    "@syncular/migrations": "workspace:*",
+    "kysely": "*",
+    "@syncular/config": "workspace:*"
+  }
+}

@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Syncular — Draft 16: Pulsar</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@200;300;400;700;900&family=Overpass+Mono:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Overpass Mono', monospace;
+    background: #000;
+    color: #fff;
+    overflow-x: hidden;
+  }
+  .display { font-family: 'Unbounded', sans-serif; }
+
+  /* Pulsar — a rotating beam that sweeps across the page */
+  .pulsar-core {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    background: #fff;
+    box-shadow:
+      0 0 15px 5px rgba(255,255,255,0.3),
+      0 0 40px 15px rgba(255,255,255,0.1);
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  /* Rotating beam */
+  .pulsar-beam {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: 2000px;
+    height: 3px;
+    transform-origin: 0 50%;
+    transform: translate(0, -50%);
+    animation: beam-rotate 4s linear infinite;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(90deg,
+      rgba(255,255,255,0.2) 0%,
+      rgba(255,255,255,0.05) 10%,
+      transparent 40%
+    );
+  }
+  .pulsar-beam::after {
+    content: '';
+    position: absolute;
+    top: -15px;
+    left: 0;
+    width: 100%;
+    height: 33px;
+    background: linear-gradient(90deg,
+      rgba(255,255,255,0.03) 0%,
+      transparent 30%
+    );
+  }
+
+  @keyframes beam-rotate {
+    from { transform: translate(0, -50%) rotate(0deg); }
+    to { transform: translate(0, -50%) rotate(360deg); }
+  }
+
+  /* Magnetic field lines */
+  .field-line {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    border-radius: 50%;
+    border: 0.5px solid rgba(255,255,255,0.02);
+    transform: translate(-50%, -50%) rotateX(75deg);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Pulse signal — the "heartbeat" of sync */
+  .signal-strip {
+    height: 40px;
+    position: relative;
+    overflow: hidden;
+  }
+  .signal-strip svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Title */
+  .hero-title {
+    font-size: clamp(3rem, 9vw, 7rem);
+    font-weight: 900;
+    line-height: 0.9;
+    letter-spacing: -0.04em;
+    text-transform: uppercase;
+  }
+
+  /* Animations */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fi { animation: fade-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
+  .fi1 { animation-delay: 0.1s; }
+  .fi2 { animation-delay: 0.3s; }
+  .fi3 { animation-delay: 0.5s; }
+  .fi4 { animation-delay: 0.7s; }
+  .fi5 { animation-delay: 0.9s; }
+
+  /* Pulse indicator */
+  @keyframes heartbeat {
+    0%, 70%, 100% { transform: scale(1); }
+    15% { transform: scale(1.3); }
+    30% { transform: scale(1); }
+    45% { transform: scale(1.15); }
+  }
+  .heartbeat {
+    animation: heartbeat 1.5s ease-in-out infinite;
+  }
+
+  /* Feature rows — like radio signal readouts */
+  .signal-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+    transition: all 0.3s ease;
+  }
+  .signal-row:hover {
+    padding-left: 8px;
+    border-color: rgba(255,255,255,0.06);
+  }
+  .signal-row:hover .signal-indicator {
+    background: rgba(255,255,255,0.6);
+    box-shadow: 0 0 8px rgba(255,255,255,0.3);
+  }
+  .signal-indicator {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.15);
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+  }
+
+  /* CTA */
+  .cta-pulse {
+    border: 1px solid rgba(255,255,255,0.1);
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .cta-pulse::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.03);
+    transform: translateX(-100%);
+    transition: transform 0.5s ease;
+  }
+  .cta-pulse:hover::before { transform: translateX(0); }
+  .cta-pulse:hover {
+    border-color: rgba(255,255,255,0.2);
+    box-shadow: 0 0 30px rgba(255,255,255,0.03);
+  }
+
+  /* Period counter */
+  .period-counter {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.05em;
+  }
+</style>
+</head>
+<body>
+
+<!-- Pulsar visualization -->
+<div class="pulsar-core"></div>
+<div class="pulsar-beam"></div>
+
+<!-- Magnetic field lines -->
+<div class="field-line" style="width: 300px; height: 300px;"></div>
+<div class="field-line" style="width: 500px; height: 500px;"></div>
+<div class="field-line" style="width: 700px; height: 700px;"></div>
+
+<!-- Nav -->
+<header class="fixed top-0 left-0 right-0 z-50 px-8 py-6">
+  <nav class="max-w-6xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-2 h-2 rounded-full bg-white/40 heartbeat"></div>
+      <span class="display text-[10px] font-bold tracking-wider uppercase text-white/40">Syncular</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="#" class="text-[10px] text-white/20 hover:text-white/50 transition-colors">docs</a>
+      <a href="#" class="text-[10px] text-white/20 hover:text-white/50 transition-colors">github</a>
+    </div>
+  </nav>
+</header>
+
+<!-- Hero -->
+<section class="relative min-h-screen flex flex-col justify-end z-10 px-8 pb-20">
+  <div class="max-w-5xl mx-auto w-full">
+    <div class="text-[9px] tracking-[0.5em] uppercase text-white/15 mb-6 fi fi1">
+      periodic signal — offline-first sync
+    </div>
+    <h1 class="display hero-title fi fi2">
+      <span class="text-white/80">Every</span><br>
+      <span class="text-white/80">rotation,</span><br>
+      <span class="text-white/25">a sync.</span>
+    </h1>
+    <p class="mt-6 text-[11px] text-white/18 leading-relaxed max-w-md fi fi3">
+      Like a pulsar broadcasting its position with metronomic precision —
+      Syncular emits a steady signal. Push. Pull. Push. Pull.
+      Every client locked to the beat.
+    </p>
+    <div class="mt-8 flex items-center gap-4 fi fi4">
+      <a href="#" class="cta-pulse px-7 py-2.5 rounded-lg display text-[10px] font-bold tracking-wider uppercase text-white/60 relative z-10">
+        Lock on
+      </a>
+      <a href="#" class="text-[10px] text-white/15 hover:text-white/40 transition-colors">
+        Source →
+      </a>
+    </div>
+
+    <!-- Period stats -->
+    <div class="mt-16 flex items-center gap-10 fi fi5">
+      <div>
+        <div class="text-[8px] tracking-wider uppercase text-white/10">Sync period</div>
+        <div class="display text-lg font-light text-white/30 period-counter mt-1" id="period">0.000s</div>
+      </div>
+      <div class="w-px h-5 bg-white/5"></div>
+      <div>
+        <div class="text-[8px] tracking-wider uppercase text-white/10">Query latency</div>
+        <div class="display text-lg font-light text-white/30 mt-1">&lt;1ms</div>
+      </div>
+      <div class="w-px h-5 bg-white/5"></div>
+      <div>
+        <div class="text-[8px] tracking-wider uppercase text-white/10">Uptime</div>
+        <div class="display text-lg font-light text-white/30 mt-1">Offline</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Sync signal pattern -->
+<section class="relative z-10 px-8 py-32">
+  <div class="max-w-4xl mx-auto">
+    <h2 class="display text-2xl font-bold uppercase text-white/50 mb-4">Signal pattern</h2>
+    <p class="text-[10px] text-white/15 mb-8">Each pulse carries data. Each silence is local work.</p>
+
+    <!-- SVG heartbeat/pulsar signal -->
+    <div class="signal-strip border border-white/[0.03] rounded-lg p-4 mb-16">
+      <svg viewBox="0 0 800 40" preserveAspectRatio="none">
+        <path d="M0,20 L100,20 L110,5 L120,35 L130,20 L250,20 L260,5 L270,35 L280,20 L400,20 L410,5 L420,35 L430,20 L550,20 L560,5 L570,35 L580,20 L700,20 L710,5 L720,35 L730,20 L800,20"
+          stroke="rgba(255,255,255,0.15)" stroke-width="1" fill="none"/>
+      </svg>
+      <div class="flex justify-between mt-2">
+        <span class="text-[8px] text-white/10">write locally</span>
+        <span class="text-[8px] text-white/20">push</span>
+        <span class="text-[8px] text-white/10">write locally</span>
+        <span class="text-[8px] text-white/20">pull</span>
+        <span class="text-[8px] text-white/10">write locally</span>
+        <span class="text-[8px] text-white/20">push</span>
+      </div>
+    </div>
+
+    <!-- Features as signal readouts -->
+    <div class="signal-row">
+      <div class="signal-indicator"></div>
+      <span class="text-[11px] text-white/40 flex-1">Offline-First</span>
+      <span class="text-[9px] text-white/12">Local SQLite — write between pulses</span>
+    </div>
+    <div class="signal-row">
+      <div class="signal-indicator"></div>
+      <span class="text-[11px] text-white/40 flex-1">Commit-Log</span>
+      <span class="text-[9px] text-white/12">Each pulse carries ordered commits</span>
+    </div>
+    <div class="signal-row">
+      <div class="signal-indicator"></div>
+      <span class="text-[11px] text-white/40 flex-1">Scope-Based Auth</span>
+      <span class="text-[9px] text-white/12">Signal filtered per receiver</span>
+    </div>
+    <div class="signal-row">
+      <div class="signal-indicator"></div>
+      <span class="text-[11px] text-white/40 flex-1">Sub-ms Queries</span>
+      <span class="text-[9px] text-white/12">Read local data between pulses</span>
+    </div>
+    <div class="signal-row">
+      <div class="signal-indicator"></div>
+      <span class="text-[11px] text-white/40 flex-1">Type-Safe SQL</span>
+      <span class="text-[9px] text-white/12">Kysely — compile-time signal integrity</span>
+    </div>
+    <div class="signal-row" style="border: none;">
+      <div class="signal-indicator"></div>
+      <span class="text-[11px] text-white/40 flex-1">Self-Hosted</span>
+      <span class="text-[9px] text-white/12">Your pulsar. MIT license.</span>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section class="relative z-10 px-8 py-24">
+  <div class="max-w-2xl mx-auto text-center">
+    <h2 class="display text-3xl font-bold uppercase text-white/40 mb-12">
+      Tune in
+    </h2>
+    <div class="border border-white/[0.04] rounded-xl p-6 text-left bg-white/[0.01]">
+      <code class="text-[11px] text-white/25">
+        <span class="text-white/10">$</span> bun add @syncular/client @syncular/server
+      </code>
+    </div>
+  </div>
+</section>
+
+<footer class="relative z-10 px-8 py-12 border-t border-white/[0.03]">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
+    <span class="text-[9px] text-white/12">syncular — MIT</span>
+    <div class="flex gap-6">
+      <a href="#" class="text-[9px] text-white/12 hover:text-white/30 transition-colors">docs</a>
+      <a href="#" class="text-[9px] text-white/12 hover:text-white/30 transition-colors">github</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Animate period counter
+const periodEl = document.getElementById('period');
+let t = 0;
+setInterval(() => {
+  t = (t + 0.016) % 4;
+  periodEl.textContent = t.toFixed(3) + 's';
+}, 16);
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "@syncular/tests-integration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "test": "bun test __tests__"
+  },
+  "devDependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/client-plugin-encryption": "workspace:*",
+    "@syncular/config": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/testkit": "workspace:*",
+    "@syncular/transport-http": "workspace:*",
+    "hono": "*",
+    "kysely": "*"
+  }
+}

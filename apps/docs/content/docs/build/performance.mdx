@@ -1,0 +1,465 @@
+---
+title: Performance & Scaling
+description: Optimize Syncular for large datasets with snapshot chunking, pruning, compaction, indexing, and connection management.
+---
+
+# Performance & Scaling
+
+Syncular is designed to handle datasets ranging from small personal apps to large catalogs with hundreds of thousands of rows. This guide covers the server and client configurations that keep sync fast and storage efficient.
+
+## What you'll learn
+
+- How snapshot chunking works and how to tune it
+- Configuring pruning and compaction for commit log maintenance
+- Query optimization and indexing recommendations
+- Connection limit management for WebSocket scaling
+- Large dataset patterns for catalog-style workloads
+
+## Prerequisites
+
+- A working Syncular setup ([Server Setup](/docs/build/server-setup), [Client Setup](/docs/build/client-setup))
+- A PostgreSQL database for production workloads (recommended)
+
+## Snapshot Chunking
+
+When a client subscribes to a scope for the first time (or after pruned history), it receives a **bootstrap snapshot** -- a full dump of the current data for that scope. For large datasets, embedding this in a single pull response would be slow and memory-intensive.
+
+Syncular uses **snapshot chunks**: the server encodes rows with `json-row-frame-v1`, compresses the payload with gzip, caches it, and returns chunk references in the pull response. The client then downloads chunks separately via `GET /sync/snapshot-chunks/:chunkId`.
+
+Each chunk may contain multiple snapshot pages for a table in a single payload (bounded by `maxSnapshotPages` and server-side limits), which reduces the number of round trips on bootstrap.
+
+### Server-side configuration
+
+Control chunking behavior through the sync route configuration:
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    // Maximum rows per snapshot page (default: 5000)
+    maxPullLimitSnapshotRows: 5000,
+    // Maximum snapshot pages per subscription per pull (default: 10)
+    maxPullMaxSnapshotPages: 10,
+  },
+});
+```
+
+These are server-enforced upper bounds. The client can request smaller values, but requests above these limits are clamped by the server.
+
+### Client-side configuration
+
+The client controls how many rows and pages it requests per pull:
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={clientId}
+  // Rows per snapshot page (capped by server's maxPullLimitSnapshotRows)
+  limitSnapshotRows={1000}
+  // Pages per pull cycle (capped by server's maxPullMaxSnapshotPages)
+  maxSnapshotPages={5}
+  // Commits per pull request (default varies)
+  limitCommits={100}
+>
+  {children}
+</SyncProvider>
+```
+
+### Tuning for large datasets
+
+For catalog-style workloads (e.g., a product catalog with 100k+ rows):
+
+- **Increase `maxPullLimitSnapshotRows`** to 10,000-50,000 to reduce the number of chunk downloads
+- **Increase `maxPullMaxSnapshotPages`** for bootstrap-heavy flows (for example `20`) to reduce pull round-trips
+- **Keep client `maxSnapshotPages` aligned** with server caps; if client asks for `20` but server cap is `10`, the server will clamp to `10`
+- The client automatically continues paginated bootstraps across multiple pull cycles
+
+### Chunk caching and storage
+
+Snapshot chunks are cached in the `sync_snapshot_chunks` table with an expiration time. Expired chunks are cleaned up automatically.
+
+For very large deployments, use external chunk storage (S3, R2, etc.) by passing `chunkStorage` to your sync routes:
+
+```typescript
+const chunkStorage = createDbMetadataChunkStorage({
+  db,
+  blobAdapter: r2Adapter, // or S3 adapter
+});
+
+const routes = createSyncRoutes({
+  db,
+  dialect,
+  handlers,
+  authenticate,
+  chunkStorage,
+});
+```
+
+If your adapter implements `storeChunkStream`, Syncular writes gzip output as a stream (no full compressed-buffer materialization required). `storeChunkStream.byteLength` is optional.
+
+## Pruning
+
+The commit log (`sync_commits` + `sync_changes`) grows indefinitely. Pruning deletes old commits that all active clients have already consumed.
+
+### How pruning works
+
+1. The server tracks each client's pull cursor in `sync_client_cursors`
+2. A client is "active" if it has pulled within the `activeWindowMs` window
+3. The **watermark** is the minimum cursor across all active clients
+4. Commits with `commit_seq <= watermark` are deleted
+5. A `fallbackMaxAgeMs` safety cap ensures old commits are pruned even if a client is stuck
+6. A `keepNewestCommits` floor prevents pruning the most recent N commits
+
+Clients that fall behind pruned history will be forced to re-bootstrap.
+
+### Configuration
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    prune: {
+      // How often to check for prunable commits (default: 5 minutes)
+      minIntervalMs: 5 * 60 * 1000,
+      options: {
+        // Consider clients active if they pulled within this window (default: 14 days)
+        activeWindowMs: 14 * 24 * 60 * 60 * 1000,
+        // Hard cap: prune commits older than this even if watermark is stuck (default: 30 days)
+        fallbackMaxAgeMs: 30 * 24 * 60 * 60 * 1000,
+        // Always keep at least this many recent commits (default: 1000)
+        keepNewestCommits: 1000,
+      },
+    },
+  },
+});
+```
+
+### Tuning pruning
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Clients connect daily | `activeWindowMs: 3 days`, `keepNewestCommits: 500` |
+| Clients may be offline for weeks | `activeWindowMs: 30 days`, `keepNewestCommits: 5000` |
+| High write volume (100+ commits/hour) | Lower `keepNewestCommits` and `fallbackMaxAgeMs` |
+| Storage is cheap, correctness is critical | Higher `keepNewestCommits`, longer `activeWindowMs` |
+
+### Manual pruning
+
+You can also invoke pruning directly:
+
+```typescript
+import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
+
+const watermark = await computePruneWatermarkCommitSeq(db, {
+  activeWindowMs: 14 * 24 * 60 * 60 * 1000,
+});
+
+const deleted = await pruneSync(db, {
+  watermarkCommitSeq: watermark,
+  keepNewestCommits: 1000,
+});
+
+console.log(`Pruned ${deleted} commits`);
+```
+
+## Compaction
+
+Compaction is complementary to pruning. While pruning deletes entire commits, compaction removes **intermediate history** within the retained window, keeping only the latest change per (table, row_id, scope) for older data.
+
+### Configuration
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    compact: {
+      // How often to run compaction (default: 30 minutes)
+      minIntervalMs: 30 * 60 * 1000,
+      options: {
+        // Keep full (non-compacted) history for the most recent N hours
+        fullHistoryHours: 48,
+      },
+    },
+  },
+});
+```
+
+Changes newer than `fullHistoryHours` keep their full history. Older changes are compacted so only the latest state per row survives.
+
+### When to use compaction vs pruning
+
+- **Pruning** removes old commits entirely. Clients behind the watermark must re-bootstrap.
+- **Compaction** keeps the latest state for each row but removes intermediate edits. Clients can still do incremental pulls through compacted ranges.
+
+For most applications, enable both:
+
+```typescript
+sync: {
+  prune: {
+    minIntervalMs: 5 * 60 * 1000,
+    options: { activeWindowMs: 14 * 24 * 60 * 60 * 1000 },
+  },
+  compact: {
+    minIntervalMs: 30 * 60 * 1000,
+    options: { fullHistoryHours: 48 },
+  },
+}
+```
+
+## Indexing Recommendations
+
+### Server-side (PostgreSQL)
+
+The sync infrastructure tables already have the indexes they need. For your application tables, add indexes on:
+
+1. **Scope columns** used in subscription filters:
+
+```sql
+CREATE INDEX idx_notes_user_id ON notes (user_id);
+```
+
+2. **Primary keys** (created automatically by most schema tools)
+
+3. **Snapshot query columns** -- if your handler's `getSnapshot` uses custom filters:
+
+```sql
+CREATE INDEX idx_notes_user_id_updated ON notes (user_id, updated_at);
+```
+
+### Client-side (SQLite)
+
+SQLite in the browser (wa-sqlite) benefits from targeted indexes on columns you query frequently:
+
+```typescript
+async function initializeDatabase(db: Kysely<MyDb>) {
+  await ensureClientSyncSchema(db);
+
+  await db.schema.createTable('notes').ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text')
+    .addColumn('title', 'text')
+    .addColumn('body', 'text')
+    .addColumn('created_at', 'text')
+    .addColumn('server_version', 'integer')
+    .execute();
+
+  // Index for common query patterns
+  await db.schema
+    .createIndex('idx_notes_created_at')
+    .ifNotExists()
+    .on('notes')
+    .column('created_at')
+    .execute();
+}
+```
+
+Keep client-side indexes minimal -- each index costs write performance on every sync-applied change.
+
+## Query Optimization
+
+### Use selective subscriptions
+
+Only subscribe to the data you need. Broad subscriptions pull more data and slow down sync:
+
+```tsx
+// Good: scoped subscription in your sync config
+sync.addHandler({
+  table: 'notes',
+  scopes: ['user:{user_id}'],
+  subscribe: ({ identity }) => ({
+    id: `notes-${identity.actorId}`,
+    table: 'notes',
+    scopes: { user_id: identity.actorId },
+  }),
+});
+
+// Avoid: overly broad scopes in subscribe() (pulls far more rows)
+sync.addHandler({
+  table: 'notes',
+  scopes: ['user:{user_id}'],
+  subscribe: () => ({
+    id: 'all-notes',
+    table: 'notes',
+    scopes: {},
+  }),
+});
+```
+
+### Limit commits per pull
+
+For high-volume tables, limit the commit batch size to keep pull latency predictable:
+
+```tsx
+<SyncProvider
+  limitCommits={50} // Smaller batches, more frequent pulls
+  // ...
+>
+```
+
+### Fingerprint-based rerendering
+
+Syncular's `useSyncQuery` hook uses fingerprint-based diffing to avoid unnecessary React rerenders. It tracks mutation timestamps per row and only updates the component when the actual query result changes. Ensure your queries include an `id` column (or configure `keyField`) for optimal fingerprinting:
+
+```typescript
+const { data } = useSyncQuery(
+  (ctx) => ctx.db.selectFrom('notes').selectAll().orderBy('created_at', 'desc'),
+  { keyField: 'id' } // Default is 'id'
+);
+```
+
+## Connection Management
+
+### WebSocket limits
+
+For production deployments with many concurrent users, configure connection limits:
+
+```typescript
+sync: {
+  websocket: {
+    enabled: true,
+    upgradeWebSocket,
+    // Maximum concurrent WebSocket connections per process (default: 5000)
+    maxConnectionsTotal: 5000,
+    // Maximum connections per clientId (default: 3)
+    maxConnectionsPerClient: 3,
+    // Heartbeat interval to detect stale connections (default: 30s)
+    heartbeatIntervalMs: 30_000,
+  },
+}
+```
+
+### Polling fallback
+
+When the WebSocket connection drops, the client automatically falls back to polling:
+
+```tsx
+<SyncProvider
+  realtimeEnabled={true}
+  // Fallback poll interval when WebSocket is reconnecting (default: 30s)
+  realtimeFallbackPollMs={30_000}
+  // Standard poll interval if not using realtime at all
+  pollIntervalMs={10_000}
+  // ...
+>
+```
+
+### Multi-instance broadcasting
+
+When running multiple server instances behind a load balancer, WebSocket wake-ups only reach the instance that received the push. Use a realtime broadcaster to distribute events:
+
+```typescript
+sync: {
+  realtime: {
+    broadcaster: myRedisBroadcaster,
+  },
+}
+```
+
+## Large Dataset Patterns
+
+### Catalog-style data (read-heavy, large bootstraps)
+
+For product catalogs, reference data, or other large read-heavy datasets:
+
+1. **Use generous snapshot chunking**: `maxPullLimitSnapshotRows: 50_000`
+2. **Enable chunk caching**: chunks are automatically cached in `sync_snapshot_chunks`
+3. **Consider external chunk storage** for very large datasets (S3/R2)
+4. **Use aggressive pruning** since catalog data changes infrequently
+
+### Collaborative editing (write-heavy)
+
+For real-time collaborative apps with frequent writes:
+
+1. **Enable realtime WebSocket** for instant wake-ups
+2. **Keep `limitCommits` moderate** (50-100) for frequent small pulls
+3. **Enable compaction** with a short `fullHistoryHours` (6-24h)
+4. **Use optimistic concurrency** (`base_version`) to detect conflicts early
+
+### Multi-scope subscriptions
+
+If a client subscribes to many scopes (e.g., a user's personal data + shared workspaces):
+
+```tsx
+sync.addHandler({
+  table: 'notes',
+  scopes: ['user:{user_id}', 'workspace:{workspace_id}'],
+  subscribe: ({ identity }) => [
+    { id: `notes-user-${identity.actorId}`, table: 'notes', scopes: { user_id: identity.actorId } },
+    { id: `notes-workspace-${workspaceId}`, table: 'notes', scopes: { workspace_id: workspaceId } },
+  ],
+});
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['workspace:{workspace_id}'],
+  subscribe: () => ({
+    id: `tasks-workspace-${workspaceId}`,
+    table: 'tasks',
+    scopes: { workspace_id: workspaceId },
+  }),
+});
+```
+
+The server enforces a maximum subscription count per pull (default: 200, configurable via `maxSubscriptionsPerPull`).
+
+### Operations per push
+
+The server limits operations per push request (default: 200, configurable via `maxOperationsPerPush`). For batch imports, split into multiple commits:
+
+```typescript
+const BATCH_SIZE = 100;
+for (let i = 0; i < allItems.length; i += BATCH_SIZE) {
+  const batch = allItems.slice(i, i + BATCH_SIZE);
+  await mutations.commit(async (tx) => {
+    for (const item of batch) {
+      tx.notes.upsert(item.id, item);
+    }
+  });
+}
+```
+
+## Monitoring
+
+### Server-side metrics
+
+Track these metrics in production:
+
+- **Commit rate**: commits per minute in `sync_commits`
+- **Active clients**: count of rows in `sync_client_cursors` with recent `updated_at`
+- **Prune effectiveness**: number of deleted rows per prune cycle
+- **Snapshot chunk cache hit rate**: ratio of cache hits vs. regenerations
+- **Pull latency**: time per pull request (available via Hono middleware)
+
+### Client-side monitoring
+
+Use `useSyncStatus` and `useOutbox` to surface metrics:
+
+```typescript
+const status = useSyncStatus();
+// status.pendingCount -- unsent mutations
+// status.retryCount -- current retry attempts
+// status.lastSyncAt -- last successful sync
+
+const outbox = useOutbox();
+// outbox.stats.pending -- pending commits
+// outbox.stats.failed -- failed commits
+// outbox.stats.total -- total outbox size
+```
+
+## Next Steps
+
+- [Deployment](/docs/build/deployment) - Deploy to production
+- [Schema Migrations](/docs/build/migrations) - Evolve your schema
+- [Realtime](/docs/build/realtime) - Configure WebSocket wake-ups

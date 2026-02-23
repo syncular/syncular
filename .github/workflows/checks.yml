@@ -1,0 +1,287 @@
+name: Checks
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+    branches: [main, release]
+  workflow_dispatch:
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
+      runtime_electron: ${{ steps.filter.outputs.runtime_electron }}
+      expo: ${{ steps.filter.outputs.expo }}
+      demo: ${{ steps.filter.outputs.demo }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            runtime:
+              - 'tests/runtime/**'
+              - 'packages/dialect-wa-sqlite/**'
+              - 'packages/dialect-better-sqlite3/**'
+              - 'packages/dialect-d1/**'
+              - 'packages/client/**'
+              - 'packages/transport-http/**'
+            runtime_electron:
+              - 'tests/runtime/__tests__/electron.runtime.test.ts'
+              - 'packages/dialect-electron-sqlite/**'
+              - 'packages/dialect-sqlite3/**'
+            expo:
+              - 'tests/expo-app/**'
+              - 'packages/dialect-expo-sqlite/**'
+              - 'packages/core/src/kysely-serialize.ts'
+            demo:
+              - 'apps/demo/**'
+              - 'packages/client/**'
+              - 'packages/client-react/**'
+              - 'packages/dialect-pglite/**'
+              - 'packages/dialect-wa-sqlite/**'
+              - 'packages/server/**'
+              - 'packages/server-hono/**'
+              - 'packages/server-dialect-postgres/**'
+              - 'packages/server-dialect-sqlite/**'
+              - 'packages/transport-ws/**'
+              - 'packages/observability-sentry/**'
+              - 'tests/runtime/**'
+
+  test:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Type checks and linting
+        run: bun check
+
+      - name: Unit and integration tests
+        run: bun run test:coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  perf:
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run performance tests
+        id: perf
+        run: bun test tests/perf 2>&1 | tee perf-results.txt
+
+      - name: Extract regression report
+        id: report
+        run: |
+          if grep -q "Performance Regression Detected" perf-results.txt; then
+            echo "has_regression=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_regression=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR with performance results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const results = fs.readFileSync('perf-results.txt', 'utf8');
+
+            const lines = results.split('\n');
+            const tableStart = lines.findIndex(l => l.includes('| Benchmark |'));
+            const reportStart = lines.findIndex(l => l.includes('Performance'));
+
+            let body = '## Performance Test Results\n\n';
+
+            if (tableStart >= 0) {
+              let tableEnd = tableStart;
+              while (tableEnd < lines.length && lines[tableEnd].startsWith('|')) {
+                tableEnd++;
+              }
+              body += lines.slice(tableStart, tableEnd).join('\n') + '\n\n';
+            }
+
+            if (reportStart >= 0) {
+              body += lines.slice(reportStart).join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('Performance Test Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                comment_id: botComment.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body
+              });
+            }
+
+  runtime-browser:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run browser runtime tests
+        run: bun test:runtime:browser
+
+  demo-smoke:
+    needs: changes
+    if: needs.changes.outputs.demo == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run demo split-screen smoke test
+        run: bun test:runtime:demo
+
+  runtime-cloudflare:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run Cloudflare Worker runtime tests
+        run: bun test:runtime:cloudflare
+
+  runtime-d1:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run D1 runtime tests
+        run: bun test:runtime:d1
+
+  runtime-node:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Install better-sqlite3 for Node
+        run: |
+          mkdir -p /tmp/better-sqlite3 && cd /tmp/better-sqlite3
+          npm init -y > /dev/null 2>&1
+          npm install better-sqlite3
+          ln -sf /tmp/better-sqlite3/node_modules/better-sqlite3 $GITHUB_WORKSPACE/node_modules/better-sqlite3
+
+      - name: Run Node.js runtime tests
+        run: bun test:runtime:node
+
+  runtime-deno:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run Deno runtime tests
+        run: bun test:runtime:deno
+
+  runtime-electron:
+    needs: changes
+    if: needs.changes.outputs.runtime_electron == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run Electron runtime bridge tests
+        run: bun test:runtime:electron
+
+  maestro-ios:
+    needs: changes
+    if: needs.changes.outputs.expo == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Install Maestro
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Start Metro (dev client)
+        working-directory: tests/expo-app
+        run: |
+          bun run start:dev-client > metro.log 2>&1 &
+          echo $! > metro.pid
+          for i in {1..60}; do
+            if nc -z 127.0.0.1 8081; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat metro.log
+          exit 1
+
+      - name: Build + install iOS app
+        working-directory: tests/expo-app
+        run: bun run ios:build
+
+      - name: Run Maestro flows
+        working-directory: tests/expo-app
+        run: bun run maestro:test
+
+      - name: Stop Metro
+        if: always()
+        working-directory: tests/expo-app
+        run: |
+          if [ -f metro.pid ]; then
+            kill "$(cat metro.pid)" || true
+          fi
+          cat metro.log || true

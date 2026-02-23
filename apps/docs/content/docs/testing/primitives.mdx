@@ -1,0 +1,141 @@
+---
+title: Testkit Primitives
+description: Protocol builders, response parsers, deterministic IDs/clocks, and scenario flow helpers.
+---
+
+# Testkit Primitives
+
+Use these helpers to remove test boilerplate without binding your tests to a specific runner.
+
+## Protocol builders
+
+Build sync payloads with typed helpers instead of hand-writing JSON objects:
+
+- `createSyncUpsertOperation(...)`
+- `createSyncDeleteOperation(...)`
+- `createSyncSubscription(...)`
+- `createSyncPushRequest(...)`
+- `createSyncPullRequest(...)`
+- `createSyncCombinedRequest(...)`
+
+```ts
+import {
+  createSyncCombinedRequest,
+  createSyncSubscription,
+  createSyncUpsertOperation,
+} from '@syncular/testkit';
+
+const request = createSyncCombinedRequest({
+  clientId: 'client-a',
+  push: {
+    clientCommitId: 'commit-1',
+    schemaVersion: 1,
+    operations: [
+      createSyncUpsertOperation({
+        table: 'tasks',
+        rowId: 't1',
+        payload: { title: 'Task', completed: 0, project_id: 'p0' },
+      }),
+    ],
+  },
+  pull: {
+    limitCommits: 50,
+    subscriptions: [
+      createSyncSubscription({
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { user_id: 'u1', project_id: 'p0' },
+      }),
+    ],
+  },
+});
+```
+
+## Response parsing
+
+Validate sync responses at runtime with schema-backed parsers:
+
+- `parseSyncCombinedResponse(...)`
+- `parseSyncPushResponse(...)`
+- `parseSyncPullResponse(...)`
+- `readSyncCombinedResponse(response)`
+- `readSyncPushResponse(response)`
+- `readSyncPullResponse(response)`
+
+Use these when tests hit real HTTP routes and you want strict protocol validation.
+
+## Deterministic IDs and clock
+
+Use deterministic helpers instead of ad-hoc counters and `Date.now()` coupling:
+
+- `createIdFactory(...)`
+- `createCommitIdFactory(...)`
+- `createFakeClock(...)`
+
+```ts
+import { createCommitIdFactory, createFakeClock } from '@syncular/testkit';
+
+const commits = createCommitIdFactory({ prefix: 'commit', startAt: 1 });
+const clock = createFakeClock({ startMs: 1_700_000_000_000, tickMs: 1000 });
+
+const id1 = commits.next();
+const t1 = clock.tick();
+```
+
+## Scenario flow helpers
+
+Wrap existing client fixtures/harness clients to avoid repeated sync plumbing:
+
+- `createScenarioFlow(client)`
+- `runPushPullCycle(client, options)`
+
+```ts
+import {
+  createScenarioFlow,
+  createSyncSubscription,
+  createSyncUpsertOperation,
+} from '@syncular/testkit';
+
+const flow = createScenarioFlow(client);
+
+const subscription = createSyncSubscription({
+  id: 'tasks',
+  table: 'tasks',
+  scopes: { user_id: 'u1', project_id: 'p1' },
+});
+
+await flow.pull({ subscriptions: [subscription] });
+
+await flow.pushThenPull({
+  enqueue: {
+    operations: [
+      createSyncUpsertOperation({
+        table: 'tasks',
+        rowId: 'new-task',
+        payload: { title: 'New Task', completed: 0, project_id: 'p1' },
+      }),
+    ],
+  },
+  pull: { subscriptions: [subscription] },
+});
+```
+
+## Runtime WebSocket helpers
+
+For runtime suites (node/deno/cloudflare/browser), use:
+
+- `createRealtimeWsUrl(...)`
+- `openRealtimeWs(...)`
+- `waitForWsOpen(...)`
+- `waitForWsMessage(...)`
+- `waitForWsJsonMessage(...)`
+- `closeWsSafe(...)`
+
+These keep realtime tests concise and consistent while staying runner-agnostic.
+
+## Resource lifecycle helpers
+
+If you want to remove cleanup boilerplate, use [Resource Lifecycle (`using`)](/docs/testing/lifecycle):
+
+- callback wrappers: `withSyncFixture`, `withTestServer`, `withTestClient`, `withRealtimeWs`
+- resource wrappers: `createSyncFixtureResource`, `createTestServerResource`, `createTestClientResource`, `openRealtimeWsResource`

@@ -1,0 +1,53 @@
+---
+title: Config and API Keys
+description: Manage console connection settings, operator preferences, and API key lifecycle
+---
+
+# Config and API Keys
+
+The Config view is split into connection settings, API key lifecycle controls, and local UI preferences.
+
+## Connection settings
+
+- server URL
+- console token
+- `Save + Connect`, `Test Connection`, `Disconnect`
+
+Use `Disconnect` with credential clearing when rotating operators or changing environments.
+
+## API key lifecycle
+
+Supported key operations:
+
+- create key (`relay`, `proxy`, `admin`)
+- set expiration (`expiresInDays`)
+- filter by type/status/expiring window
+- bulk revoke selected keys
+- staged rotate (`rotate/stage`) followed by old-key revocation
+
+Track key health through created/last-used/expiry/status columns.
+
+Gateway note:
+
+- In gateway mode, API key operations apply to exactly one selected instance.
+- Select a single instance before listing, creating, rotating, or revoking keys.
+
+## Preferences
+
+Operator-level UI preferences include:
+
+- refresh interval
+- page size
+- time format
+- sparkline visibility
+
+These are local browser preferences and do not affect server behavior.
+
+## Related API pages
+
+- [List keys](/docs/api/getConsoleApiKeys)
+- [Create key](/docs/api/postConsoleApiKeys)
+- [Bulk revoke keys](/docs/api/postConsoleApiKeysBulkRevoke)
+- [Rotate key (stage)](/docs/api/postConsoleApiKeysByIdRotateStage)
+- [Rotate key (immediate)](/docs/api/postConsoleApiKeysByIdRotate)
+- [Revoke key](/docs/api/deleteConsoleApiKeysById)

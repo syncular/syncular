@@ -1,0 +1,213 @@
+---
+title: Glossary
+description: Key terminology for Syncular
+---
+
+# Glossary
+
+Quick reference for the terms used throughout Syncular's documentation and API.
+
+---
+
+## Sync Flow
+
+### Bootstrap
+
+The initial full snapshot sent when a client first subscribes to a [Table](#table) (cursor is `-1`) or when its cursor is too old. The server sends all current rows for the subscription's effective [Scopes](#scope), delivered as compressed [Snapshot Chunks](#snapshot-chunk). After bootstrap completes, the client switches to [Incremental Sync](#incremental-sync).
+
+```typescript
+{ cursor: -1 }  // Triggers bootstrap
+```
+
+See [Commits -- Pull Lifecycle](/docs/introduction/commits#pull-lifecycle-server-to-client).
+
+### Commit
+
+Atomic unit of change in the sync protocol. Every commit has a global `commitSeq` (assigned by the server), an `actorId`, a timestamp, and an array of [Changes](#change). Commits are the entries in Syncular's append-only log.
+
+```typescript
+{ commitSeq: 42, actorId: 'user-1', changes: [{ table: 'tasks', ... }] }
+```
+
+See [Commits](/docs/introduction/commits).
+
+### Change
+
+A single row-level modification inside a [Commit](#commit). Each change records the `table`, `row_id`, `op` (`upsert` or `delete`), the full `row_json`, a `row_version`, and [Scopes](#scope).
+
+```typescript
+{ table: 'tasks', row_id: 'task-1', op: 'upsert', row_json: { ... }, scopes: { user_id: '123' } }
+```
+
+### Cursor
+
+A client's position in the commit log, represented by a `commitSeq` number. On each pull, the client sends its cursor and receives only commits after that position. A cursor of `-1` means "start from scratch" (triggers [Bootstrap](#bootstrap)).
+
+```typescript
+{ cursor: 100 }  // Give me everything after commit_seq 100
+```
+
+### Incremental Sync
+
+After [Bootstrap](#bootstrap), the client receives only [Commits](#commit) since its last [Cursor](#cursor) position. Much more efficient than re-fetching everything.
+
+### Snapshot Chunk
+
+A compressed (`json-row-frame-v1` + gzip) bundle of one or more snapshot pages sent during [Bootstrap](#bootstrap). Chunks are cached on the server with a TTL and can be stored in external storage (S3, etc.) for large datasets.
+
+---
+
+## Data Model
+
+### Scope
+
+Authorization boundary stored as key-value pairs on each [Change](#change). Scopes define data partitions -- clients only receive changes for scopes they are authorized to access. See [Scopes](/docs/introduction/scopes).
+
+```typescript
+{ user_id: '123' }                 // User's private data
+{ project_id: '456' }              // Project data
+{ user_id: '123', org_id: 'A' }   // User within organization
+```
+
+### Table
+
+A server-defined sync unit. Clients request [Subscriptions](#subscription) by `table` and [Scopes](#scope). Each table maps to a server-side [Handler](#handler) that controls access, snapshots, and mutations.
+
+```typescript
+// Client subscribes to the "tasks" table
+{ table: 'tasks', scopes: { user_id: '123' } }
+```
+
+See [Subscriptions](/docs/introduction/subscriptions).
+
+### Subscription
+
+A client's active request to receive data for a specific [Table](#table) and [Scopes](#scope). Each subscription has an `id`, a `cursor`, and resolved scope values. The server tracks subscriptions per-pull and returns per-subscription responses.
+
+```typescript
+{
+  id: 'sub-tasks',
+  table: 'tasks',
+  scopes: { user_id: '123' },
+  cursor: 42,
+}
+```
+
+See [Subscriptions](/docs/introduction/subscriptions).
+
+### SyncOperation
+
+Client-to-server operation in a push. Contains the `table`, `row_id`, `op`, `payload`, and optional `base_version` for [Conflict](#conflict) detection. One or more operations make up a [Commit](#commit).
+
+```typescript
+{ table: 'tasks', row_id: 'task-1', op: 'upsert', payload: { title: 'New' }, base_version: 5 }
+```
+
+---
+
+## Client Concepts
+
+### Outbox
+
+Client-side queue of pending commits waiting to be pushed to the server. Mutations write to the local database and the outbox immediately. When the device is online, the outbox drains in order. See [Commits -- Push Lifecycle](/docs/introduction/commits#push-lifecycle-client-to-server).
+
+```
+User action --> Local DB + Outbox --> [when online] --> Server
+```
+
+### Conflict
+
+Occurs when a client's [SyncOperation](#syncoperation) has a `base_version` that does not match the server's current `server_version`. The server rejects the commit and returns the conflict details. Conflicts are stored in the client's `sync_conflicts` table for resolution. See [Conflict Resolution](/docs/introduction/conflict-resolution).
+
+### Fingerprinting
+
+An optimization used by `@syncular/client` and `@syncular/client-react` to avoid expensive deep-equality checks on query results. A fingerprint is a string combining row count, row IDs, and mutation timestamps. React hooks compare fingerprints to decide whether to re-render.
+
+```typescript
+// Fingerprint format: "count:id1@ts1,id2@ts2,..."
+"3:abc@1706123456789,def@1706123456790,ghi@0"
+```
+
+### Plugin
+
+A hook into the client sync lifecycle. Plugins can transform push requests before sending (`beforePush`), process push responses (`afterPush`), and transform pull responses before applying (`afterPull`). Plugins have a priority for ordering (lower runs first).
+
+```typescript
+import { createIncrementingVersionPlugin } from '@syncular/client';
+
+const plugins = [createIncrementingVersionPlugin()];
+```
+
+Built-in plugins include the incrementing version plugin (auto-sets `base_version`) and the E2EE encryption plugin (`@syncular/client-plugin-encryption`).
+
+---
+
+## Architecture
+
+### Actor ID
+
+Authenticated user identifier. Used for authorization checks and tracking who made each [Commit](#commit). Passed to [Handlers](#handler) and stored on every commit.
+
+### Client ID
+
+Unique identifier for each device or browser instance. Paired with `clientCommitId` to form the idempotency key that prevents duplicate commit processing.
+
+### Handler
+
+Server-side (`ServerTableHandler`) or client-side (`ClientTableHandler`) implementation that defines how a table syncs.
+
+**Server handler** responsibilities: resolve scopes, build snapshots, apply operations, extract scopes from rows.
+
+**Client handler** responsibilities: apply incoming changes, apply snapshots, clear scoped data.
+
+```typescript
+// Server handler key methods
+{
+  table: 'tasks',
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+  extractScopes: (row) => ({ user_id: row.user_id }),
+  snapshot: async (ctx) => ({ rows: [...], nextCursor: null }),
+  applyOperation: async (ctx, op, opIndex) => ({ result: ..., emittedChanges: [...] }),
+}
+```
+
+See [Table Handlers](/docs/build/table-handlers).
+
+### Transport
+
+The network layer that moves data between client and server. Implements `pull()`, `push()`, and snapshot-chunk fetch (`fetchSnapshotChunk()` with optional `fetchSnapshotChunkStream()` for streaming). Syncular ships two transports:
+
+- **HTTP** (`@syncular/transport-http`) -- Uses `fetch` for pull/push and snapshot chunk download (bytes or stream). Supports typed API client generation.
+- **WebSocket** (`@syncular/transport-ws`) -- Adds realtime wake-ups and [Presence](#presence) on top of HTTP pull/push.
+
+```typescript
+import { createHttpTransport } from '@syncular/transport-http';
+
+const transport = createHttpTransport({ baseUrl: '/api' });
+```
+
+### Presence
+
+Realtime awareness of other connected users (cursor positions, online status, custom state). Delivered over WebSocket. Not part of the commit log -- presence is ephemeral.
+
+See [Presence Guide](/docs/build/presence).
+
+### resolveScopes
+
+Function on server [Handlers](#handler) that determines what [Scopes](#scope) the authenticated user can access. Called during pull to compute effective scopes for each [Subscription](#subscription).
+
+```typescript
+async resolveScopes(ctx) {
+  return { user_id: [ctx.actorId] };
+}
+```
+
+---
+
+## See Also
+
+- [Architecture](/docs/introduction/architecture) -- System overview
+- [Scopes](/docs/introduction/scopes) -- Authorization model
+- [Subscriptions](/docs/introduction/subscriptions) -- How subscriptions work
+- [Commits](/docs/introduction/commits) -- Commit structure and lifecycle
+- [Conflict Resolution](/docs/introduction/conflict-resolution) -- Handling concurrent edits

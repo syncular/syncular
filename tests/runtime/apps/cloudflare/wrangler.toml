@@ -1,0 +1,20 @@
+name = "runtime-cloudflare-test"
+main = "worker.ts"
+compatibility_date = "2026-02-06"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "test-db"
+database_id = "local-test-id"
+
+[durable_objects]
+bindings = [{ name = "SYNC_DO", class_name = "SyncDO" }]
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "test-blobs"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SyncDO"]

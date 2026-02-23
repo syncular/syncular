@@ -1,0 +1,4 @@
+{
+  "title": "JavaScript SDK",
+  "pages": ["overview", "sync-engine", "mutations", "plugins"]
+}

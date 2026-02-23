@@ -1,0 +1,325 @@
+---
+title: Admin Database Proxy
+description: Execute SQL queries via WebSocket with automatic sync integration
+---
+
+The admin database proxy enables authenticated admins to execute raw SQL queries against the database while automatically creating sync oplog entries for mutations.
+
+## Overview
+
+When you make changes directly to the database (bypassing the normal sync push flow), those changes won't automatically sync to clients. The proxy solves this by:
+
+1. Accepting SQL queries via WebSocket
+2. Executing them against the database
+3. Automatically creating sync commits for mutations
+4. Allowing clients whose subscriptions match the affected scopes to receive the changes
+
+## Server Setup
+
+```typescript
+import { createProxyRoutes } from '@syncular/server-hono';
+import { createProxyHandlerCollection } from '@syncular/server';
+
+// Define which tables should generate sync entries
+const proxyHandlers = createProxyHandlerCollection([
+  {
+    table: 'tasks',
+    primaryKey: 'id',
+    versionColumn: 'server_version',
+    computeScopes: (row) => ({ user_id: String(row.user_id) }),
+  },
+  {
+    table: 'projects',
+    computeScopes: (row) => ({ project_id: String(row.id) }),
+  },
+]);
+
+// Create proxy routes
+app.route('/proxy', createProxyRoutes({
+  db,
+  dialect,
+  handlers: proxyHandlers,
+  authenticate: async (c) => {
+    // Browser WebSocket clients cannot send custom headers.
+    // Support either:
+    // - Header auth (server-to-server clients), or
+    // - Query param auth (browser clients), or
+    // - Cookie/session auth
+    const apiKey =
+      c.req.header('x-api-key') ??
+      c.req.query('apiKey') ??
+      c.req.query('token');
+    if (!validateAdminKey(apiKey)) return null;
+    return { actorId: `admin:${getAdminId(apiKey)}` };
+  },
+  upgradeWebSocket,
+  maxConnections: 100,
+  idleTimeoutMs: 30000,
+}));
+```
+
+## ProxyTableHandler
+
+Each table that should generate sync entries needs a handler:
+
+```typescript
+interface ProxyTableHandler {
+  table: string;           // Database table name
+  primaryKey?: string;     // Primary key column (default: 'id')
+  versionColumn?: string;  // Version column (default: 'server_version')
+  computeScopes(row: Record<string, unknown>): Record<string, string>;
+}
+```
+
+The `computeScopes` function determines which subscriptions will see changes to a row.
+
+## Client Connection
+
+### WebSocket Protocol
+
+Connect via WebSocket with authentication:
+
+```typescript
+// Browser client: use cookie auth or query param auth
+const ws = new WebSocket('wss://api.example.com/proxy?token=SHORT_LIVED_TOKEN');
+
+ws.onopen = () => {
+  // Send handshake
+  ws.send(JSON.stringify({
+    type: 'handshake',
+    actorId: 'admin:123',
+    clientId: 'admin-client-abc',
+  }));
+};
+
+ws.onmessage = (event) => {
+  const response = JSON.parse(event.data);
+  if (response.type === 'handshake_ack') {
+    console.log('Connected to proxy');
+  }
+};
+```
+
+> Browser WebSocket APIs cannot attach custom headers.
+> If your auth relies on headers (like `Authorization`), use a server-side WS client
+> or adapt `authenticate` to accept cookies/query params for browser clients.
+
+### Message Types
+
+**Query (client → server):**
+
+```typescript
+interface ProxyMessage {
+  id: string;                         // Correlation ID
+  type: 'query' | 'begin' | 'commit' | 'rollback';
+  sql?: string;                       // SQL query
+  parameters?: readonly unknown[];    // Parameters ($1, $2, etc.)
+}
+```
+
+**Response (server → client):**
+
+```typescript
+interface ProxyResponse {
+  id: string;            // Matches request ID
+  type: 'result' | 'error';
+  rows?: unknown[];      // SELECT results
+  rowCount?: number;     // Affected rows for mutations
+  error?: string;        // Error message
+}
+```
+
+## Executing Queries
+
+### Simple Queries
+
+```typescript
+function query(sql: string, parameters: unknown[] = []): Promise<ProxyResponse> {
+  return new Promise((resolve) => {
+    const id = crypto.randomUUID();
+    const handler = (event: MessageEvent) => {
+      const response = JSON.parse(event.data);
+      if (response.id === id) {
+        ws.removeEventListener('message', handler);
+        resolve(response);
+      }
+    };
+    ws.addEventListener('message', handler);
+    ws.send(JSON.stringify({ id, type: 'query', sql, parameters }));
+  });
+}
+
+// Usage
+const result = await query('SELECT * FROM tasks WHERE user_id = $1', ['user-123']);
+console.log(result.rows);
+
+// Mutation - automatically creates sync entries
+await query('UPDATE tasks SET completed = $1 WHERE id = $2', [true, 'task-456']);
+```
+
+### Transactions
+
+```typescript
+async function runTransaction(operations: () => Promise<void>) {
+  await query('', [], 'begin');
+  try {
+    await operations();
+    await query('', [], 'commit');
+  } catch (error) {
+    await query('', [], 'rollback');
+    throw error;
+  }
+}
+
+// Usage
+await runTransaction(async () => {
+  await query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [100, 'acc-1']);
+  await query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [100, 'acc-2']);
+});
+```
+
+## How Mutations Work
+
+When you execute a mutation on a registered table:
+
+1. **Query Detection**: The proxy detects INSERT/UPDATE/DELETE statements
+2. **RETURNING Clause**: Automatically appends `RETURNING *` if not present
+3. **Execute Mutation**: Runs the query and gets affected rows
+4. **Create Commit**: Creates a `sync_commits` entry with your actor/client IDs
+5. **Create Changes**: For each affected row, creates `sync_changes` entries
+6. **Compute Scopes**: Uses your `computeScopes` function on each row
+7. **Notify Clients**: Clients whose subscriptions match those scopes receive changes
+
+## Authentication
+
+The proxy supports multiple authentication methods:
+
+### API Key Authentication
+
+```typescript
+authenticate: async (c) => {
+  const authHeader = c.req.header('Authorization');
+  const apiKey =
+    authHeader?.replace('Bearer ', '') ??
+    c.req.query('token') ??
+    c.req.query('apiKey');
+  if (!apiKey) return null;
+
+  const admin = await validateApiKey(apiKey);
+  if (!admin) return null;
+
+  return { actorId: `admin:${admin.id}` };
+}
+```
+
+For browser clients, prefer short-lived query tokens or same-origin secure cookies.
+For server-side clients, prefer `Authorization`/custom headers.
+
+### Session Authentication
+
+```typescript
+authenticate: async (c) => {
+  const session = await getSession(c);
+  if (!session?.isAdmin) return null;
+
+  return { actorId: session.userId };
+}
+```
+
+## Connection Limits
+
+Configure connection limits to prevent resource exhaustion:
+
+```typescript
+createProxyRoutes({
+  // ...
+  maxConnections: 100,     // Max concurrent connections
+  idleTimeoutMs: 30000,    // Close idle connections after 30s
+})
+```
+
+When limits are exceeded:
+- New connections receive HTTP 429 with code `PROXY_CONNECTION_LIMIT`
+- Idle connections are closed with WebSocket code 4000
+
+## Security Considerations
+
+### Actor ID Validation
+
+The server validates that the handshake `actorId` matches the authenticated `actorId`:
+
+```typescript
+// If authenticate returns { actorId: 'admin:123' }
+// Then handshake must include actorId: 'admin:123'
+// Mismatches result in connection close (code 4001)
+```
+
+### Query Restrictions
+
+Consider implementing query restrictions in your authenticate function:
+
+```typescript
+authenticate: async (c) => {
+  const admin = await getAdmin(c);
+  if (!admin) return null;
+
+  // Could add role-based restrictions
+  return {
+    actorId: `admin:${admin.id}`,
+    // Custom fields for authorization
+  };
+}
+```
+
+### Audit Logging
+
+All proxy mutations are tracked via the normal sync commit log:
+- `actor_id` shows who made the change
+- `client_commit_id` is prefixed with `proxy:` for identification
+- Changes flow through the normal sync protocol
+
+## Use Cases
+
+### Admin Dashboards
+
+Build admin interfaces that modify data directly while keeping clients in sync:
+
+```typescript
+// Admin marks all overdue tasks as archived
+await query(`
+  UPDATE tasks
+  SET archived = true, archived_at = NOW()
+  WHERE due_date < NOW() AND completed = false
+`);
+// All affected users' clients receive the changes
+```
+
+### Data Migrations
+
+Run migrations that sync to clients:
+
+```typescript
+// Add default value to existing rows
+await query(`
+  UPDATE user_preferences
+  SET theme = 'system'
+  WHERE theme IS NULL
+`);
+```
+
+### Bulk Operations
+
+Perform bulk operations with transactional safety:
+
+```typescript
+await runTransaction(async () => {
+  await query('DELETE FROM notifications WHERE read = true AND created_at < $1', [thirtyDaysAgo]);
+  await query('UPDATE users SET notification_count = 0 WHERE notification_count > 0');
+});
+```
+
+## Next Steps
+
+- [Operations Guide](/docs/build/operations) - Console and monitoring
+- [Server Setup](/docs/build/server-setup) - Full server configuration
+- [Auth Guide](/docs/build/auth) - Authentication patterns

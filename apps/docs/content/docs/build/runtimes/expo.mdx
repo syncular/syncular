@@ -1,0 +1,30 @@
+---
+title: Expo / React Native
+description: Mobile SQLite dialects (expo-sqlite, Nitro SQLite) and setup notes for offline-first apps
+---
+
+# Expo / React Native
+
+Mobile users expect apps to work offline. Syncular’s “local SQLite is the primary read + write path” model maps well to React Native.
+
+## Recommended dialects
+
+- **Expo managed workflow:** `@syncular/dialect-expo-sqlite`
+- **React Native (Nitro SQLite):** `@syncular/dialect-react-native-nitro-sqlite`
+
+## Minimal setup (expo-sqlite)
+
+```ts
+import { openDatabaseSync } from 'expo-sqlite';
+import { createExpoSqliteDb } from '@syncular/dialect-expo-sqlite';
+import { ensureClientSyncSchema } from '@syncular/client';
+
+const db = createExpoSqliteDb({ name: 'app.db', openDatabaseSync });
+await ensureClientSyncSchema(db);
+```
+
+## Next steps
+
+- [Client Setup](/docs/build/client-setup)
+- [Performance](/docs/build/performance) (bootstrap strategy for large datasets)
+

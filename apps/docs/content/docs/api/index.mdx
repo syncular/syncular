@@ -1,0 +1,78 @@
+---
+title: API Reference
+description: Syncular HTTP API reference for sync and console endpoints
+---
+
+# API Reference
+
+The Syncular server exposes HTTP endpoints for synchronization and optional console/ops endpoints.
+
+All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at `/sync` and `/console/*`).
+
+## Base Endpoints
+
+### Sync Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/sync` | Combined sync (`push` and/or `pull`) |
+| `GET` | `/sync/realtime` | WebSocket "wake-up" connection (not part of OpenAPI) |
+| `GET` | `/sync/snapshot-chunks/{chunkId}` | Download snapshot chunks for large bootstraps |
+| `POST` | `/sync/blobs/upload` | Initiate a blob upload (optional feature) |
+| `POST` | `/sync/blobs/{hash}/complete` | Mark a blob upload complete |
+| `GET` | `/sync/blobs/{hash}/url` | Get a signed download URL for a blob |
+
+### Console Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/console/stats` | Get server stats |
+| `GET` | `/console/commits` | Browse commit history |
+| `GET` | `/console/clients` | List connected clients |
+| `GET` | `/console/handlers` | List table handlers |
+| `GET` | `/console/storage` | List storage/blob objects (optional, requires `console.blobBucket`) |
+| `GET` | `/console/storage/{key}/download` | Download a storage/blob object (optional) |
+| `DELETE` | `/console/storage/{key}` | Delete a storage/blob object (optional) |
+
+## Authentication
+
+Syncular does not prescribe an authentication mechanism. The server calls your `authenticate()` function and uses whatever you decide (Bearer tokens, cookies, session headers, etc).
+
+Typical Bearer token auth looks like:
+
+```http
+Authorization: Bearer <your-token>
+```
+
+## Request/Response Format
+
+All endpoints use JSON for request and response bodies:
+
+```http
+Content-Type: application/json
+Accept: application/json
+```
+
+## OpenAPI Specification
+
+The repo includes a generated OpenAPI spec:
+
+- **Source**: `packages/server-hono/openapi.json`
+
+If you want to serve it at runtime, mount the handler:
+
+```ts
+import { createOpenAPIHandler } from '@syncular/server-hono';
+
+app.get('/openapi.json', createOpenAPIHandler(app, { title: 'Syncular API' }));
+```
+
+### Regenerating OpenAPI
+
+To regenerate the OpenAPI specification:
+
+```bash
+bun generate:openapi
+```
+
+This will update the `openapi.json` file based on the current route definitions.

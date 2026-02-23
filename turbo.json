@@ -1,0 +1,24 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "globalDependencies": ["tsconfig.json"],
+  "globalPassThroughEnv": [
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "npm_config_registry"
+  ],
+  "tasks": {
+    "tsgo": {
+      "cache": true,
+      "outputs": [".turbo/**"]
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "release": {
+      "dependsOn": ["build"],
+      "cache": false
+    }
+  }
+}

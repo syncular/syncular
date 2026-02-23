@@ -1,0 +1,29 @@
+# @syncular/dialect-expo-sqlite
+
+Expo SQLite Kysely dialect for React Native (expo-sqlite).
+
+## Install
+
+```bash
+npm install @syncular/dialect-expo-sqlite
+```
+
+## Usage
+
+```ts
+import { openDatabaseSync } from 'expo-sqlite';
+import { createExpoSqliteDb } from '@syncular/dialect-expo-sqlite';
+
+const db = createExpoSqliteDb<MyDb>({ name: 'app.db', openDatabaseSync });
+```
+
+## Documentation
+
+- Dialect selection: https://syncular.dev/docs/introduction/installation#client-database-dialects
+
+## Links
+
+- GitHub: https://github.com/syncular/syncular
+- Issues: https://github.com/syncular/syncular/issues
+
+> Status: Alpha. APIs may change between releases.

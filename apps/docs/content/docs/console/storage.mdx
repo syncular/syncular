@@ -1,0 +1,66 @@
+---
+title: Storage
+description: Inspect, download, and delete blob storage objects from the Console.
+---
+
+# Storage
+
+Storage is the blob/object inspection view in Console.
+
+Use it to:
+
+- list stored blob objects
+- filter by key prefix
+- download an object
+- delete an object
+
+## Availability
+
+Storage endpoints are only available when your backend enables `console.blobBucket`.
+
+If `blobBucket` is not configured, the Storage view cannot load `/console/storage`.
+
+## Configure `blobBucket`
+
+```ts
+import { createSyncServer } from '@syncular/server-hono';
+
+const { syncRoutes, consoleRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers,
+  authenticate,
+  console: {
+    token: process.env.SYNC_CONSOLE_TOKEN,
+    blobBucket: {
+      list: async ({ prefix, cursor, limit }) => myBucket.list({ prefix, cursor, limit }),
+      get: async (key) => myBucket.get(key),
+      delete: async (key) => myBucket.delete(key),
+      head: async (key) => myBucket.head(key),
+    },
+  },
+});
+```
+
+`blobBucket` is intentionally adapter-agnostic. You can map it to R2/S3 wrappers or your own object storage abstraction.
+
+## Workflow
+
+1. Open **Storage** from the Console top nav.
+2. Enter a prefix (optional) to narrow the key set.
+3. Use **Download** to fetch a local copy of the selected object.
+4. Use **Delete** to remove a key (with confirmation).
+
+## API endpoints used by the view
+
+- `GET /console/storage`
+- `GET /console/storage/:key/download`
+- `DELETE /console/storage/:key`
+
+All endpoints require console bearer auth, same as the rest of Console.
+
+## Related guides
+
+- [Operations Console setup](/docs/build/operations)
+- [Blob Storage](/docs/build/blob-storage)
+- [Console Integration](/docs/build/console-integration)

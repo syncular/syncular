@@ -1,0 +1,229 @@
+---
+title: Sync Engine
+description: Low-level sync control
+---
+
+The sync engine provides fine-grained control over the sync process. These are low-level building blocks -- most applications should use the [`Client` class](/docs/client-sdk/javascript/overview) instead.
+
+### What you'll learn
+
+- How the outbox queue works (enqueue, send, acknowledge)
+- How to manage conflicts at the low level
+- How to read and update subscription state directly
+- The core protocol types used by the sync engine
+
+## Sync Engine States
+
+The sync engine manages its own lifecycle through a set of well-defined states. Understanding these transitions helps when debugging sync issues or building custom transport integrations.
+
+```
+                 start()
+                   |
+                   v
+  +------------> IDLE <-----------+
+  |              / |              |
+  |   (poll or  /  | sync()      | success
+  |   wakeup)  /   v             |
+  |           / SYNCING ------>--+
+  |          /     |
+  |         /      | error
+  |        /       v
+  |       /    RETRYING (exponential backoff)
+  |      /        |
+  |     /         | retry timer fires
+  |    /          v
+  +---<-----  SYNCING
+
+  stop() / destroy() ---> STOPPED
+  (from any state)
+
+  Connection states (for realtime transport):
+    disconnected --> connecting --> connected
+         ^                            |
+         |         reconnecting  <----+
+         +----------------------------+
+```
+
+## Outbox
+
+### enqueueOutboxCommit
+
+Add a commit to the outbox. Use this when you need full control over the operations array, for example when building a custom mutations layer or migrating from another sync system.
+
+```typescript
+import { enqueueOutboxCommit } from '@syncular/client';
+
+await enqueueOutboxCommit(db, {
+  clientCommitId: crypto.randomUUID(),
+  operations: [
+    {
+      table: 'tasks',
+      row_id: 'task-1',
+      op: 'upsert',
+      payload: { title: 'New Task' },
+    },
+  ],
+});
+```
+
+### getNextSendableOutboxCommit
+
+Gets the next commit ready to be sent (excludes failed commits). Useful when implementing a custom push loop instead of relying on the built-in sync engine.
+
+```typescript
+import { getNextSendableOutboxCommit } from '@syncular/client';
+
+const nextCommit = await getNextSendableOutboxCommit(db);
+if (nextCommit) {
+  // Send this commit
+}
+```
+
+### markOutboxCommitAcked
+
+Mark a commit as acknowledged by the server. Call this after a successful push to advance the outbox cursor and clean up sent commits.
+
+```typescript
+import { markOutboxCommitAcked } from '@syncular/client';
+
+await markOutboxCommitAcked(db, {
+  id: outboxCommit.id,
+  commitSeq: response.commitSeq,
+  response,
+});
+```
+
+## Conflicts
+
+### listPendingConflicts
+
+Retrieve all unresolved conflicts. Use this to build a custom conflict resolution UI or to programmatically resolve conflicts on startup.
+
+```typescript
+import { listPendingConflicts } from '@syncular/client';
+
+const conflicts = await listPendingConflicts(db);
+```
+
+### resolveConflict
+
+Resolve a pending conflict by accepting the server version, rejecting it (keeping the local version), or providing a merged payload.
+
+```typescript
+import { resolveConflict } from '@syncular/client';
+
+await resolveConflict(db, {
+  id: conflict.id,
+  resolution: 'accept', // or 'reject', 'merge:{...}'
+});
+```
+
+## Subscription State
+
+### getSubscriptionState
+
+Read the current cursor and status for a subscription. Useful for debugging or displaying sync progress per subscription.
+
+```typescript
+import { getSubscriptionState } from '@syncular/client';
+
+const state = await getSubscriptionState(db, {
+  stateId: 'default',
+  subscriptionId: 'my-tasks',
+});
+```
+
+### upsertSubscriptionState
+
+Create or update a subscription's state. Use this when manually managing subscription cursors, for example after a full reset or when migrating subscription tables.
+
+```typescript
+import { upsertSubscriptionState } from '@syncular/client';
+
+await upsertSubscriptionState(db, {
+  stateId: 'default',
+  subscriptionId: 'my-tasks',
+  table: 'tasks',
+  scopes: { user_id: '123' },
+  params: {},
+  cursor: 100,
+  status: 'active',
+});
+```
+
+### listSubscriptionStates
+
+List subscription state rows without coupling to raw table shape:
+
+```typescript
+import { listSubscriptionStates } from '@syncular/client';
+
+const all = await listSubscriptionStates(db, { stateId: 'default' });
+```
+
+## Operational APIs
+
+These are available on `SyncEngine` and surfaced by `Client`.
+
+```typescript
+const progress = await engine.getProgress();
+const diagnostics = await engine.getDiagnostics();
+const inspector = await engine.getInspectorSnapshot({ eventLimit: 200 });
+await engine.awaitPhase('live', { timeoutMs: 60_000 });
+await engine.awaitBootstrapComplete({ stateId: 'default' });
+
+await engine.reset({
+  scope: 'subscription',
+  stateId: 'default',
+  subscriptionIds: ['my-tasks'],
+  clearSyncedTables: true,
+});
+
+await engine.repair({
+  mode: 'rebootstrap-missing-chunks',
+  stateId: 'default',
+});
+```
+
+## Types
+
+### SyncSubscriptionRequest
+
+```typescript
+interface SyncSubscriptionRequest {
+  id: string;
+  table: string;
+  scopes: Record<string, unknown>;
+  params?: Record<string, unknown>;
+  cursor: number;
+  bootstrapState?: SyncBootstrapState | null;
+}
+```
+
+### SyncPushRequest
+
+```typescript
+interface SyncPushRequest {
+  clientId: string;
+  clientCommitId: string;
+  operations: SyncOperation[];
+  schemaVersion: number;
+}
+```
+
+### SyncOperation
+
+```typescript
+interface SyncOperation {
+  table: string;
+  row_id: string;
+  op: 'upsert' | 'delete';
+  payload: Record<string, unknown> | null;
+  base_version?: number | null;
+}
+```
+
+## Next Steps
+
+- [Mutations](/docs/client-sdk/javascript/mutations) - High-level mutation API
+- [Plugins](/docs/client-sdk/javascript/plugins) - Extending functionality

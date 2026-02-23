@@ -1,0 +1,98 @@
+{
+  "name": "@syncular/console",
+  "version": "0.0.0",
+  "description": "Embeddable Syncular console UI",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/console"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "console",
+    "react"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./runtime-config": {
+      "bun": "./src/runtime-config.ts",
+      "import": {
+        "types": "./dist/runtime-config.d.ts",
+        "default": "./dist/runtime-config.js"
+      }
+    },
+    "./browser-main": {
+      "bun": "./src/browser-main.tsx",
+      "import": {
+        "types": "./dist/browser-main.d.ts",
+        "default": "./dist/browser-main.js"
+      }
+    },
+    "./server": {
+      "bun": "./src/server.ts",
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      }
+    },
+    "./static": "./web-dist/index.html",
+    "./static/*": "./web-dist/*",
+    "./styles.css": "./dist/styles.css",
+    "./styles.source.css": "./src/styles/globals.css",
+    "./static/console.css": "./web-dist/console.css"
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo && bun run build:web",
+    "build:web": "bun run build-static.ts",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/observability-sentry": "workspace:*",
+    "@syncular/transport-http": "workspace:*",
+    "@syncular/ui": "workspace:*",
+    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-router": "^1.161.3",
+    "lucide-react": "^0.575.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@tailwindcss/vite": "^4.2.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^5.1.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "tailwindcss": "^4.2.0",
+    "vite": "^7.3.1"
+  },
+  "files": [
+    "dist",
+    "src",
+    "web-dist"
+  ]
+}

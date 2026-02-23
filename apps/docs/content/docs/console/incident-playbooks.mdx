@@ -1,0 +1,44 @@
+---
+title: Incident Playbooks
+description: Practical response playbooks for common sync production incidents
+---
+
+# Incident Playbooks
+
+Use these playbooks as deterministic response flows. Start broad in Command, narrow in Stream/Fleet, then execute actions in Ops.
+
+## 1) "Row missing on one client"
+
+1. In **Fleet**, locate the affected client and inspect lag/activity state.
+2. In **Stream**, filter by `table:` and `client:` to confirm related commits/events.
+3. Open linked commit/event details to verify scope and payload content.
+4. If client cursor/state is inconsistent, evict that client.
+5. If data changed out-of-band, run `Notify Data Change` for affected table(s).
+
+## 2) "Backlog growing, clients falling behind"
+
+1. In **Command**, confirm Pending and latency trends.
+2. In **Fleet**, identify specific lagging clients and connection modes.
+3. Validate network/availability first; avoid destructive actions before stabilization.
+4. Use `Prune Preview` only after active lag normalizes.
+
+## 3) "External import completed but clients still stale"
+
+1. Confirm external writes bypassed normal push flow.
+2. Run `Notify Data Change` with exact table list and partition.
+3. Verify synthetic commit in Stream/Command.
+4. Confirm client cursors advance in Fleet.
+
+## 4) "Repeated push errors"
+
+1. In **Stream**, switch to Events and filter `outcome:error`.
+2. Open event details, inspect `errorCode`, `status`, request payload snapshot.
+3. Group failures by actor/client/table to detect pattern scope.
+4. Apply server fix, then monitor error-rate drop and successful pushes.
+
+## Post-incident checklist
+
+1. Export relevant timeline rows and commit/event IDs.
+2. Capture operation-audit entries for maintenance actions taken.
+3. Record partition, actor/client IDs, and exact action timestamps.
+4. Add a regression test where feasible (API route or UI flow).

@@ -1,0 +1,45 @@
+---
+title: Command
+description: Interpret the command dashboard for health, topology, and recent change activity
+---
+
+# Command
+
+Command is the high-level operational dashboard. Use it to answer: "Are we healthy?" and "Where should I drill in next?"
+
+## What to watch first
+
+1. **Error Rate**: first indicator of active failures.
+2. **Pending**: commit backlog against active client cursors.
+3. **Active Clients**: sudden drops usually indicate auth or connectivity regressions.
+4. **Recent Commits**: sanity-check actor/table patterns.
+
+## Panels and data sources
+
+- **Sync Topology**: client activity state and connection mode.
+- **KPI Strip**: range-scoped metrics (`ops`, latency, error rate, client counts).
+- **Activity / Latency charts**: push/pull volume and percentile trends.
+- **Recent Commits table**: latest commit summaries with actor/table context.
+- **Live Feed**: realtime event stream from console live WebSocket.
+
+## Multi-instance gateway behavior
+
+When connected through a console gateway, Command shows a merged view across selected instances.
+
+- Use the top-nav instance selector to scope metrics and tables to one instance.
+- Leave instance empty to view merged totals and timelines.
+- In merged mode, partial downstream failures surface as degraded/partial responses rather than full dashboard failure.
+
+## Investigation pivot points
+
+- Go to **Stream** when you need event-level detail or payloads.
+- Go to **Fleet** when lag/backlog appears client-specific.
+- Go to **Ops** when external writes or compaction/pruning actions are needed.
+- Go to **Storage** when troubleshooting blob/object availability.
+
+## Related API pages
+
+- [Stats](/docs/api/getConsoleStats)
+- [Timeseries](/docs/api/getConsoleStatsTimeseries)
+- [Latency](/docs/api/getConsoleStatsLatency)
+- [Commits](/docs/api/getConsoleCommits)

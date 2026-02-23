@@ -1,0 +1,54 @@
+{
+  "name": "@syncular/server-storage-filesystem",
+  "version": "0.0.0",
+  "description": "Filesystem blob storage adapter for Syncular server",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server-storage-filesystem"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "blob",
+    "storage",
+    "filesystem"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@syncular/server": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

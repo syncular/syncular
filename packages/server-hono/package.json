@@ -1,0 +1,88 @@
+{
+  "name": "@syncular/server-hono",
+  "version": "0.0.0",
+  "description": "Hono adapter for the Syncular server with OpenAPI support",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server-hono"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "hono",
+    "openapi"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./blobs": {
+      "bun": "./src/blobs.ts",
+      "import": {
+        "types": "./dist/blobs.d.ts",
+        "default": "./dist/blobs.js"
+      }
+    },
+    "./create-server": {
+      "bun": "./src/create-server.ts",
+      "import": {
+        "types": "./dist/create-server.d.ts",
+        "default": "./dist/create-server.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test src/__tests__",
+    "tsgo": "tsgo --noEmit",
+    "generate": "bun generate:openapi",
+    "generate:openapi": "bun scripts/generate-openapi.ts",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@hono/standard-validator": "^0.2.2",
+    "@standard-community/standard-json": "^0.3.5",
+    "@standard-community/standard-openapi": "^0.2.9",
+    "@syncular/console": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@types/json-schema": "^7.0.15",
+    "hono-openapi": "^1.2.0",
+    "openapi-types": "^12.1.3"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/server-dialect-postgres": "workspace:*",
+    "kysely": "*",
+    "zod": "*"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0",
+    "kysely": "^0.28.0",
+    "zod": "^4.0.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

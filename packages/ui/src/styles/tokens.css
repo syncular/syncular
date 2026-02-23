@@ -1,0 +1,110 @@
+@theme inline {
+  --color-background: var(--syncular-color-background);
+  --color-surface: var(--syncular-color-surface);
+  --color-panel: var(--syncular-color-panel);
+  --color-panel-alt: var(--syncular-color-panel-alt);
+  --color-border: var(--syncular-color-border);
+  --color-border-bright: var(--syncular-color-border-bright);
+
+  --color-healthy: var(--syncular-color-healthy);
+  --color-syncing: var(--syncular-color-syncing);
+  --color-offline: var(--syncular-color-offline);
+
+  --color-flow: var(--syncular-color-flow);
+  --color-relay: var(--syncular-color-relay);
+  --color-encrypt: var(--syncular-color-encrypt);
+
+  --color-foreground: var(--syncular-color-foreground);
+  --color-foreground-muted: var(--syncular-color-foreground-muted);
+
+  --color-primary: var(--syncular-color-primary);
+  --color-destructive: var(--syncular-color-destructive);
+  --color-secondary: var(--syncular-color-secondary);
+
+  --font-display: var(--syncular-font-display);
+  --font-mono: var(--syncular-font-mono);
+
+  --radius-sm: var(--syncular-radius-sm);
+  --radius-md: var(--syncular-radius-md);
+  --radius-lg: var(--syncular-radius-lg);
+  --radius-xl: var(--syncular-radius-xl);
+}
+
+:where(.syncular-console-root, .syncular-ui-root) {
+  /* ── Surface ── */
+  --syncular-color-background: #0c0c0c;
+  --syncular-color-surface: #0c0c0c;
+  --syncular-color-panel: #111111;
+  --syncular-color-panel-alt: #0e0e0e;
+  --syncular-color-border: #1e1e1e;
+  --syncular-color-border-bright: #2a2a2a;
+
+  /* ── Status ── */
+  --syncular-color-healthy: #22c55e;
+  --syncular-color-syncing: #f59e0b;
+  --syncular-color-offline: #ef4444;
+
+  /* ── Flow ── */
+  --syncular-color-flow: #3b82f6;
+  --syncular-color-relay: #8b5cf6;
+  --syncular-color-encrypt: #f472b6;
+
+  /* ── Text ── */
+  --syncular-color-foreground: #e5e5e5;
+  --syncular-color-foreground-muted: #737373;
+
+  /* ── Semantic ── */
+  --syncular-color-primary: #22c55e;
+  --syncular-color-destructive: #ef4444;
+  --syncular-color-secondary: #1e1e1e;
+
+  /* ── Fonts ── */
+  --syncular-font-display: 'Inter Tight', system-ui, sans-serif;
+  --syncular-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo,
+    Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+
+  /* ── Radii ── */
+  --syncular-radius-sm: 4px;
+  --syncular-radius-md: 6px;
+  --syncular-radius-lg: 8px;
+  --syncular-radius-xl: 10px;
+
+  /* ── Glows ── */
+  --syncular-glow-healthy: 0 0 6px #22c55e;
+  --syncular-glow-syncing: 0 0 6px #f59e0b;
+  --syncular-glow-offline: 0 0 6px #ef4444;
+  --syncular-glow-flow: 0 0 6px #3b82f6;
+  --syncular-glow-relay: 0 0 6px #8b5cf6;
+  --syncular-glow-encrypt: 0 0 6px #f472b6;
+
+  /* Backward token aliases used by chart primitives */
+  --color-background: var(--syncular-color-background);
+  --color-surface: var(--syncular-color-surface);
+  --color-panel: var(--syncular-color-panel);
+  --color-panel-alt: var(--syncular-color-panel-alt);
+  --color-border: var(--syncular-color-border);
+  --color-border-bright: var(--syncular-color-border-bright);
+  --color-healthy: var(--syncular-color-healthy);
+  --color-syncing: var(--syncular-color-syncing);
+  --color-offline: var(--syncular-color-offline);
+  --color-flow: var(--syncular-color-flow);
+  --color-relay: var(--syncular-color-relay);
+  --color-encrypt: var(--syncular-color-encrypt);
+  --color-foreground: var(--syncular-color-foreground);
+  --color-foreground-muted: var(--syncular-color-foreground-muted);
+  --color-primary: var(--syncular-color-primary);
+  --color-destructive: var(--syncular-color-destructive);
+  --color-secondary: var(--syncular-color-secondary);
+  --font-display: var(--syncular-font-display);
+  --font-mono: var(--syncular-font-mono);
+  --radius-sm: var(--syncular-radius-sm);
+  --radius-md: var(--syncular-radius-md);
+  --radius-lg: var(--syncular-radius-lg);
+  --radius-xl: var(--syncular-radius-xl);
+  --sync-glow-healthy: var(--syncular-glow-healthy);
+  --sync-glow-syncing: var(--syncular-glow-syncing);
+  --sync-glow-offline: var(--syncular-glow-offline);
+  --sync-glow-flow: var(--syncular-glow-flow);
+  --sync-glow-relay: var(--syncular-glow-relay);
+  --sync-glow-encrypt: var(--syncular-glow-encrypt);
+}

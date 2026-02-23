@@ -1,0 +1,255 @@
+---
+title: Subscriptions
+description: How clients request and receive data
+---
+
+# Subscriptions
+
+Subscriptions define what data a client wants to sync. Each subscription pairs a **table** (a server-defined table handler) with **scope values** that filter the data.
+
+## What you'll learn
+
+- The structure of a subscription and what each field means
+- Why table handlers are server-defined (not arbitrary client queries)
+- The full subscription lifecycle from bootstrap to removal
+- Why subscription IDs must be stable and what happens if they change
+- How to add, remove, and modify subscriptions at runtime
+- Scope-aware data clearing
+
+---
+
+## Why Server-Defined Table Handlers?
+
+Arbitrary client queries create real problems:
+
+- **Security** -- Filter bugs silently become authorization bugs
+- **Maintenance** -- You end up maintaining a query DSL forever
+- **Performance** -- Arbitrary predicates are hard to optimize
+
+Syncular uses **pre-defined table handlers** instead. The client requests data by table name and scope values; the server validates access via `resolveScopes`. For details on how scope validation works, see [Scopes](/docs/introduction/scopes).
+
+---
+
+## Subscription Structure
+
+A subscription has three fields:
+
+```typescript
+{
+  id: 'my-tasks',              // Stable, client-chosen identifier
+  table: 'tasks',              // Name of a server-defined table handler
+  scopes: { user_id: '123' },  // Scope values to filter by
+}
+```
+
+### Why the ID Must Be Stable
+
+The `id` is how Syncular tracks this subscription across pull cycles. It determines:
+
+- **Cursor tracking** -- The server remembers the last commit cursor delivered for each subscription ID. A stable ID means incremental pulls resume where they left off.
+- **Local data ownership** -- The client associates locally cached rows with a subscription ID. Changing the ID makes the system treat it as a brand-new subscription, triggering a full re-bootstrap and clearing data tied to the old ID.
+- **Revocation matching** -- When the server revokes access, it targets a specific subscription ID.
+
+**Rules for choosing IDs:**
+
+```typescript
+// Good: deterministic, derived from the data being requested
+{ id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } }
+{ id: `project-${projectId}`, table: 'tasks', scopes: { project_id: projectId } }
+
+// Bad: random or unstable IDs cause re-bootstraps on every render
+{ id: crypto.randomUUID(), table: 'tasks', scopes: { user_id: userId } }
+{ id: `tasks-${Date.now()}`, table: 'tasks', scopes: { user_id: userId } }
+```
+
+---
+
+## Subscription Lifecycle
+
+A subscription moves through distinct phases. Here is the full lifecycle:
+
+```
+  Client adds subscription             Client removes subscription
+  with cursor: -1                       (stops including it in pulls)
+        |                                         |
+        v                                         v
+  +-----------+     +-------------+     +---------+
+  | Bootstrap |---->| Incremental |---->| Removed |
+  +-----------+     +-------------+     +---------+
+                          |
+                          | Server returns status: 'revoked'
+                          | (actor lost access)
+                          v
+                    +---------+
+                    | Revoked |
+                    +---------+
+```
+
+### Phase by phase
+
+1. **Bootstrap** -- The client sends the subscription for the first time with `cursor: -1`. The server returns a full snapshot of all matching rows. For large datasets, this may be delivered in chunks across multiple pulls.
+
+2. **Incremental** -- After bootstrap completes, subsequent pulls include only commits that occurred since the last cursor. This is the steady-state phase where the subscription lives for most of its life.
+
+3. **Removed** -- The client stops including the subscription in its pull request. The server no longer delivers data for it. The client clears locally cached data associated with this subscription.
+
+4. **Revoked** -- The server determines (via `resolveScopes`) that the actor no longer has access to the requested scopes. The server returns `status: 'revoked'`. The client clears local data and stops pulling for this subscription. See [Scopes: Revoked Access](/docs/introduction/scopes#when-the-intersection-is-empty-revoked-access) for details on how revocation works.
+
+---
+
+## Client Usage
+
+### Static Subscriptions
+
+The most common pattern -- subscriptions declared once and unchanged:
+
+```tsx
+const sync = defineClientSync<AppDb, AppScopes, { actorId: string }>({ codecs });
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  subscribe: ({ identity }) => [
+    { id: 'my-tasks', table: 'tasks', scopes: { user_id: identity.actorId } },
+    { id: 'project-a', table: 'tasks', scopes: { project_id: 'a' } },
+  ],
+});
+
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+>
+```
+
+### Multiple Scope Values
+
+A single subscription can request multiple scope values at once:
+
+```tsx
+const sync = defineClientSync<AppDb, AppScopes, { actorId: string }>({ codecs });
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['project:{project_id}'],
+  subscribe: () => ({
+    id: 'my-projects',
+    table: 'tasks',
+    scopes: { project_id: ['proj-a', 'proj-b', 'proj-c'] },
+  }),
+});
+
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+>
+```
+
+The server intersects the requested scope values with the actor's allowed scopes. See [Scopes: The Intersection Model](/docs/introduction/scopes#effective-scopes-the-intersection-model) for how this works.
+
+---
+
+## Runtime Subscription Changes
+
+Subscriptions are reactive. When the list changes, the sync engine handles adding, removing, and re-bootstrapping automatically.
+
+### Adding and Removing Based on UI State
+
+```tsx
+function App() {
+  const [selectedProjects, setSelectedProjects] = useState<string[]>(['a']);
+  const sync = useMemo(() => {
+    const config = defineClientSync<AppDb, AppScopes, { actorId: string }>({
+      codecs,
+    });
+
+    config.addHandler({
+      table: 'tasks',
+      scopes: ['user:{user_id}', 'project:{project_id}'],
+      subscribe: ({ identity }) => [
+        // Always sync the user's own tasks
+        { id: 'my-tasks', table: 'tasks', scopes: { user_id: identity.actorId } },
+
+        // Sync tasks for each selected project
+        ...selectedProjects.map((pid) => ({
+          id: `project-${pid}`,
+          table: 'tasks',
+          scopes: { project_id: pid },
+        })),
+      ],
+    });
+
+    return config;
+  }, [selectedProjects]);
+
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      sync={sync}
+      identity={{ actorId: userId }}
+    >
+      <ProjectPicker
+        selected={selectedProjects}
+        onChange={setSelectedProjects}
+      />
+      <TaskList />
+    </SyncProvider>
+  );
+}
+```
+
+**What happens when `selectedProjects` changes from `['a']` to `['a', 'b']`:**
+
+1. Subscription `project-a` continues incrementally (its ID is stable, its cursor is preserved).
+2. Subscription `project-b` is new -- it bootstraps with `cursor: -1`.
+
+**What happens when `selectedProjects` changes from `['a', 'b']` to `['b']`:**
+
+1. Subscription `project-b` continues incrementally.
+2. Subscription `project-a` is removed -- its local data is cleared.
+
+### Switching Users
+
+When the user changes (e.g., logout/login), all subscription IDs change and the entire local dataset is re-bootstrapped:
+
+```tsx
+// Keep subscription IDs stable and pass the current actor through identity.
+// When identity.actorId changes, remount the provider with a key.
+<SyncProvider key={userId} sync={sync} identity={{ actorId: userId }} ... />
+```
+
+---
+
+## Scope-Aware Clearing
+
+When a subscription is removed or revoked, the system clears locally cached data. The default behavior deletes all rows from the table. For tables with mixed-scope data, you can implement custom clearing:
+
+```typescript
+const tasksClientHandler = createClientHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+
+  async clearAll(ctx) {
+    const userIds = ctx.scopes.user_id;
+    if (Array.isArray(userIds)) {
+      await ctx.trx
+        .deleteFrom('tasks')
+        .where('user_id', 'in', userIds)
+        .execute();
+    }
+  },
+});
+```
+
+> Custom `clearAll` is only needed when a table has rows from multiple subscriptions and you want to clear only the rows belonging to the removed subscription. The default works for most apps.
+
+---
+
+## Next Steps
+
+- [Scopes](/docs/introduction/scopes) -- How scopes control authorization
+- [Commits](/docs/introduction/commits) -- The atomic unit of change

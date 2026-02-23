@@ -1,0 +1,68 @@
+---
+title: Console Command
+description: Run a local Syncular Console instance from the CLI.
+---
+
+# Console Command
+
+`syncular console` starts a real local Console server and serves static assets from `@syncular/console`.
+
+Run commands with one of:
+
+- `syncular ...` (global install)
+- `npx @syncular/cli ...`
+- `bunx @syncular/cli ...`
+
+## Quick start
+
+Start Console on default host/port:
+
+```bash
+syncular console
+```
+
+Start and open a browser tab:
+
+```bash
+syncular console --open
+```
+
+Point Console at your local app API and preconfigure token from env:
+
+```bash
+export SYNC_CONSOLE_TOKEN="your-operator-token"
+syncular console \
+  --server-url http://localhost:9811/api \
+  --token-env SYNC_CONSOLE_TOKEN \
+  --open
+```
+
+## Flags
+
+- `--host <host>` bind host (default `127.0.0.1`)
+- `--port <port>` bind port (default `4310`, `0` for random)
+- `--open` open browser after startup
+- `--server-url <url>` preconfigure Console API server URL
+- `--token <token>` preconfigure Console API bearer token
+- `--token-env <name>` read bearer token from environment variable
+
+## What the command does
+
+- resolves static distributable files from `@syncular/console/static/*`
+- serves them over a local HTTP server
+- serves Vite-built JS/CSS assets (same distributables shipped in `@syncular/console`)
+- injects runtime meta config into `index.html`:
+  - `syncular-console-server-url`
+  - `syncular-console-token`
+  - `syncular-console-basepath`
+- keeps running until `Ctrl+C`
+
+## Notes
+
+- Prefer `--token-env` over `--token` to avoid leaking secrets in shell history.
+- `--server-url` should be the same API base where you mount console routes (for example `http://localhost:9811/api` when routes are under `/api/console`).
+
+## Related guides
+
+- [Console integration paths](/docs/build/console-integration)
+- [Operations Console route setup](/docs/build/operations)

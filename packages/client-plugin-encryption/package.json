@@ -1,0 +1,65 @@
+{
+  "name": "@syncular/client-plugin-encryption",
+  "version": "0.0.0",
+  "description": "End-to-end encryption plugin for the Syncular client",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/client-plugin-encryption"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "encryption",
+    "e2ee",
+    "security"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.1.1",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "@scure/bip39": "^2.0.1",
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely-bun-sqlite": "^0.4.0"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

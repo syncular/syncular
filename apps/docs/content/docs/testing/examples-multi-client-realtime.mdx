@@ -1,0 +1,115 @@
+---
+title: Multi-Client Realtime Sync
+description: Test that one client push is observed by another client through realtime and pull.
+---
+
+# Multi-Client Realtime Sync
+
+This pattern matches collaborative apps where one client writes and other connected clients should refresh quickly.
+
+## What this test should prove
+
+- client A push is accepted
+- client B receives a realtime wakeup (`sync` event)
+- client B pulls and sees the new row
+
+## Example
+
+```ts
+import {
+  closeWsSafe,
+  createRealtimeWsUrl,
+  createSyncCombinedRequest,
+  createSyncSubscription,
+  createSyncUpsertOperation,
+  findSubscriptionChange,
+  postSyncCombinedRequest,
+  subscriptionChangeRow,
+  waitForWsJsonMessage,
+  waitForWsOpen,
+} from '@syncular/testkit';
+
+const baseUrl = process.env.SYNC_BASE_URL!;
+const actorId = 'u1';
+
+const sub = createSyncSubscription({
+  id: 'tasks',
+  table: 'tasks',
+  scopes: { user_id: actorId, project_id: 'p1' },
+});
+
+// Register scopes for client B first
+await postSyncCombinedRequest({
+  fetch,
+  url: `${baseUrl}/sync`,
+  actorId,
+  body: createSyncCombinedRequest({
+    clientId: 'client-b',
+    pull: { limitCommits: 50, subscriptions: [sub] },
+  }),
+});
+
+const ws = new WebSocket(
+  createRealtimeWsUrl({
+    baseUrl,
+    path: '/sync/realtime',
+    actorId,
+    actorQueryParam: 'userId',
+    clientId: 'client-b',
+  })
+);
+
+await waitForWsOpen(ws);
+const syncEventPromise = waitForWsJsonMessage(ws, {
+  predicate: (message) => message.event === 'sync',
+});
+
+// Client A writes
+await postSyncCombinedRequest({
+  fetch,
+  url: `${baseUrl}/sync`,
+  actorId,
+  body: createSyncCombinedRequest({
+    clientId: 'client-a',
+    push: {
+      clientCommitId: 'commit-1',
+      schemaVersion: 1,
+      operations: [
+        createSyncUpsertOperation({
+          table: 'tasks',
+          rowId: 'task-rt-1',
+          payload: { title: 'Live update', completed: 0, project_id: 'p1' },
+        }),
+      ],
+    },
+  }),
+});
+
+await syncEventPromise;
+
+// Client B pulls after wakeup
+const pullRes = await postSyncCombinedRequest({
+  fetch,
+  url: `${baseUrl}/sync`,
+  actorId,
+  body: createSyncCombinedRequest({
+    clientId: 'client-b',
+    pull: { limitCommits: 50, subscriptions: [sub] },
+  }),
+});
+
+const row = subscriptionChangeRow(
+  findSubscriptionChange(pullRes.json.pull?.subscriptions, 'tasks', 'task-rt-1')
+);
+
+if (!row || row.title !== 'Live update') {
+  throw new Error('Client B did not observe the realtime write');
+}
+
+await closeWsSafe(ws);
+```
+
+## Production tips
+
+- Keep a fallback pull interval even when realtime is enabled.
+- Include one test where websocket disconnects and reconnects under the same `clientId`.

@@ -1,0 +1,405 @@
+---
+title: Error Handling
+description: Handle sync errors gracefully with retry strategies, error callbacks, and user-facing status indicators.
+---
+
+# Error Handling
+
+Syncular's client sync engine provides structured error handling with automatic retries, error event callbacks, and React hooks for displaying sync status to users.
+
+## What you'll learn
+
+- The sync error type system and error codes
+- How automatic retry behavior works (exponential backoff)
+- Using `onError` callbacks in SyncProvider
+- Monitoring sync status with `useSyncStatus`
+- Building user-facing error indicators
+- Network error recovery patterns
+
+## Prerequisites
+
+- A working Syncular React setup ([Client Setup](/docs/build/client-setup))
+- Familiarity with SyncProvider and basic hooks
+
+## Sync Error Types
+
+Every sync error is represented by the `SyncError` interface:
+
+```typescript
+interface SyncError {
+  /** Error classification */
+  code:
+    | 'NETWORK_ERROR'
+    | 'AUTH_FAILED'
+    | 'SNAPSHOT_CHUNK_NOT_FOUND'
+    | 'MIGRATION_FAILED'
+    | 'CONFLICT'
+    | 'SYNC_ERROR'
+    | 'UNKNOWN';
+  /** Human-readable error message */
+  message: string;
+  /** Whether automatic retry should continue */
+  retryable: boolean;
+  /** HTTP status if the error came from transport */
+  httpStatus?: number;
+  /** Original error if available */
+  cause?: Error;
+  /** Timestamp when the error occurred */
+  timestamp: number;
+}
+```
+
+### Error codes
+
+| Code | When it occurs |
+|------|---------------|
+| `NETWORK_ERROR` | Transport-level failure (fetch failed, timeout, DNS) |
+| `AUTH_FAILED` | Transport returned `401`/`403` |
+| `SNAPSHOT_CHUNK_NOT_FOUND` | Snapshot bootstrap chunk returned `404` |
+| `MIGRATION_FAILED` | Client migration function failed before sync start |
+| `CONFLICT` | Push operation rejected due to version conflict |
+| `SYNC_ERROR` | Generic sync error outside specific categories |
+| `UNKNOWN` | Unexpected error that does not match other categories |
+
+## Automatic Retry Behavior
+
+The sync engine retries failed sync operations automatically using exponential backoff:
+
+- **Initial delay**: 1 second
+- **Exponential factor**: 2x per attempt
+- **Maximum delay**: 60 seconds
+- **Default max retries**: 5
+
+The retry sequence is: 1s, 2s, 4s, 8s, 16s (capped at 60s).
+
+After each successful sync, the retry counter resets to 0. Non-retryable errors (for example auth failures) stop automatic retry and require explicit remediation.
+
+### Configuring retries
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={clientId}
+  maxRetries={10} // Default is 5
+>
+  {children}
+</SyncProvider>
+```
+
+Setting `maxRetries` to `0` disables automatic retries. You can still trigger manual syncs via `useSyncEngine().sync()`.
+
+## The onError Callback
+
+The `onError` prop on SyncProvider is called whenever a sync error occurs. Use this for logging, analytics, or triggering application-level error recovery:
+
+```tsx
+function App() {
+  const handleSyncError = useCallback((error: SyncError) => {
+    // Log to your error tracking service
+    console.error(`[Sync Error] ${error.code}: ${error.message}`);
+
+    // Report to analytics
+    analytics.track('sync_error', {
+      code: error.code,
+      message: error.message,
+      timestamp: error.timestamp,
+    });
+
+    // Show a toast for certain errors
+    if (error.code === 'NETWORK_ERROR') {
+      toast.warning('Connection lost. Changes will sync when reconnected.');
+    }
+  }, []);
+
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      sync={sync}
+      identity={{ actorId: userId }}
+      clientId={clientId}
+      onError={handleSyncError}
+    >
+      {children}
+    </SyncProvider>
+  );
+}
+```
+
+## The onMigrationError Callback
+
+The `onMigrationError` prop is called specifically when the `migrate` function fails. This is useful for migration-specific error handling (e.g., prompting the user to clear app data):
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={clientId}
+  migrate={migrateClientDb}
+  onMigrationError={(error) => {
+    // Migration-specific handling
+    console.error('Migration failed:', error.message);
+    toast.error('Database upgrade failed. Please clear app data and reload.');
+  }}
+  onError={handleSyncError}
+>
+  {children}
+</SyncProvider>
+```
+
+When migration fails, the sync engine does not start syncing. Both `onMigrationError` (with the raw `Error`) and `onError` (with a `SyncError` wrapping it) are called.
+```
+
+## Monitoring with useSyncStatus
+
+The `useSyncStatus` hook provides a reactive view of the sync engine's state:
+
+```typescript
+interface SyncStatus {
+  /** Whether sync is enabled (actorId and clientId are set) */
+  enabled: boolean;
+  /** Whether the transport is connected */
+  isOnline: boolean;
+  /** Whether a sync cycle is in progress */
+  isSyncing: boolean;
+  /** Timestamp of the last successful sync */
+  lastSyncAt: number | null;
+  /** Number of pending outbox commits */
+  pendingCount: number;
+  /** Current error (cleared on next successful sync) */
+  error: SyncError | null;
+  /** Whether the engine is waiting to retry */
+  isRetrying: boolean;
+  /** Current retry attempt count (resets on success) */
+  retryCount: number;
+}
+```
+
+### Basic usage
+
+```tsx
+function SyncStatusBar() {
+  const status = useSyncStatus();
+
+  if (!status.enabled) {
+    return <span>Sync disabled</span>;
+  }
+
+  if (status.error) {
+    return (
+      <span className="text-red-500">
+        Sync error: {status.error.message}
+        {status.isRetrying && ` (retry ${status.retryCount}...)`}
+      </span>
+    );
+  }
+
+  if (status.isSyncing) {
+    return <span>Syncing...</span>;
+  }
+
+  if (!status.isOnline) {
+    return <span className="text-yellow-500">Offline</span>;
+  }
+
+  return (
+    <span className="text-green-500">
+      Synced
+      {status.pendingCount > 0 && ` (${status.pendingCount} pending)`}
+    </span>
+  );
+}
+```
+
+## Connection State Monitoring
+
+Use `useSyncConnection` for more detailed connection state:
+
+```tsx
+import { Button } from '@syncular/ui/primitives';
+
+function ConnectionIndicator() {
+  const connection = useSyncConnection();
+
+  return (
+    <div>
+      <span>Mode: {connection.mode}</span> {/* 'polling' or 'realtime' */}
+      <span>State: {connection.state}</span> {/* 'disconnected' | 'connecting' | 'connected' | 'reconnecting' */}
+
+      {connection.isReconnecting && (
+        <Button onClick={connection.reconnect}>
+          Reconnect Now
+        </Button>
+      )}
+    </div>
+  );
+}
+```
+
+### Connection states
+
+| State | Meaning |
+|-------|---------|
+| `disconnected` | Not connected, sync disabled or stopped |
+| `connecting` | Establishing connection (realtime mode) |
+| `connected` | Active connection, sync is operational |
+| `reconnecting` | Connection lost, attempting to reconnect (realtime mode uses fallback polling during this phase) |
+
+## Event-Based Error Handling
+
+For more granular control, subscribe to sync engine events directly:
+
+```tsx
+function useErrorLogger() {
+  const { state, sync } = useSyncEngine();
+
+  useEffect(() => {
+    // Access the engine directly for event subscriptions
+    // Events: 'sync:start', 'sync:complete', 'sync:error', 'connection:change'
+  }, []);
+
+  return state;
+}
+```
+
+The engine emits these events:
+
+| Event | Payload | When |
+|-------|---------|------|
+| `sync:start` | `{ timestamp }` | A sync cycle begins |
+| `sync:complete` | `{ timestamp, pushedCommits, pullRounds, pullResponse }` | A sync cycle succeeds |
+| `sync:error` | `SyncError` | A sync cycle fails |
+| `connection:change` | `{ previous, current }` | Connection state transitions |
+| `outbox:change` | `{ pendingCount, sendingCount, failedCount, ackedCount }` | Outbox statistics update |
+| `data:change` | `{ scopes, timestamp }` | Data tables changed (from pull or local mutation) |
+
+## Network Error Recovery
+
+### Offline-first resilience
+
+Syncular is designed for offline-first use. When the network is unavailable:
+
+1. Local mutations are saved to the outbox (SQLite)
+2. The sync engine enters retry mode with exponential backoff
+3. When connectivity returns, pending mutations are pushed automatically
+4. The pull catches up on missed server changes
+
+### Manual reconnection
+
+```tsx
+import { Button } from '@syncular/ui/primitives';
+
+function OfflineBanner() {
+  const status = useSyncStatus();
+  const { reconnect, sync } = useSyncEngine();
+
+  if (status.isOnline) return null;
+
+  return (
+    <div className="bg-yellow-100 p-2 flex items-center justify-between">
+      <span>You are offline. Changes are saved locally.</span>
+      <Button
+        onClick={() => {
+          reconnect();
+          // Optionally trigger an immediate sync attempt
+          sync().catch(() => {
+            // Handled by onError callback
+          });
+        }}
+      >
+        Try Reconnecting
+      </Button>
+    </div>
+  );
+}
+```
+
+### Clearing failed commits
+
+If mutations keep failing (e.g., due to permanent server-side validation errors), you can clear them from the outbox:
+
+```tsx
+import { Button } from '@syncular/ui/primitives';
+
+function FailedCommitsManager() {
+  const outbox = useOutbox();
+
+  if (!outbox.hasUnsent) return null;
+
+  return (
+    <div>
+      <p>{outbox.stats.failed} failed commits</p>
+      <Button onClick={outbox.clearFailed}>
+        Discard Failed Commits
+      </Button>
+    </div>
+  );
+}
+```
+
+## Conflict Handling
+
+When a push operation encounters a version conflict, the server returns conflict details. Use `useConflicts` and `useResolveConflict` to manage them:
+
+```tsx
+import { Button } from '@syncular/ui/primitives';
+
+function ConflictResolver() {
+  const { conflicts, hasConflicts } = useConflicts();
+  const { resolve } = useResolveConflict({
+    onSuccess: (conflictId) => {
+      toast.success('Conflict resolved');
+    },
+  });
+
+  if (!hasConflicts) return null;
+
+  return (
+    <div>
+      <h3>Conflicts ({conflicts.length})</h3>
+      {conflicts.map((conflict) => (
+        <div key={conflict.id}>
+          <p>
+            Table: {conflict.table}, Row: {conflict.rowId}
+          </p>
+          <p>{conflict.message}</p>
+          <Button onClick={() => resolve(conflict.id, 'accept')}>
+            Accept Server Version
+          </Button>
+          <Button onClick={() => resolve(conflict.id, 'reject')}>
+            Keep Local Version
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+Resolution options:
+- `'accept'` -- accept the server's version, discard local changes
+- `'reject'` -- reject the server's version, keep the local change
+- `'merge'` -- provide merged data combining both versions
+
+## Best Practices
+
+1. **Always provide an `onError` callback** for production apps to capture errors in your monitoring system.
+
+2. **Show sync status to users** so they know when they are offline or changes are pending. A small indicator in the app header is usually sufficient.
+
+3. **Handle the "retry exhausted" case** -- when `retryCount` reaches `maxRetries`, the engine stops retrying. Show a manual retry button at that point.
+
+4. **Use `pendingCount`** to warn users before they close the browser tab with unsent changes.
+
+5. **Clear stale failed commits** rather than letting them accumulate indefinitely in the outbox.
+
+## Next Steps
+
+- [Realtime](/docs/build/realtime) - WebSocket wake-ups for instant updates
+- [Operations](/docs/build/operations) - Mutations and the outbox
+- [Troubleshooting](/docs/build/troubleshooting) - Common issues and solutions

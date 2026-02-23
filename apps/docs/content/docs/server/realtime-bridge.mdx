@@ -1,0 +1,124 @@
+---
+title: Realtime Bridge
+description: Multi-instance realtime with broadcasters
+---
+
+For multiple server instances, use a broadcaster to coordinate WebSocket wake-ups across instances.
+
+## WebSocketConnectionManager
+
+Manages WebSocket connections on a single instance. Connections are grouped by **scopes** (e.g. `user:123`, `project:456`).
+
+```typescript
+import { WebSocketConnectionManager } from '@syncular/server-hono';
+
+const wsManager = new WebSocketConnectionManager({
+  heartbeatIntervalMs: 30000,
+});
+
+// Register a connection
+wsManager.register(connection, ['user:123']);
+
+// Update scopes (Syncular does this automatically after pulls)
+wsManager.updateClientScopeKeys(clientId, ['user:123', 'project:456']);
+
+// Notify clients of changes
+wsManager.notifyScopeKeys(['user:123'], commitSeq);
+```
+
+## SyncRealtimeBroadcaster
+
+For multi-instance deployments, implement a `SyncRealtimeBroadcaster` (pub/sub) and pass it into `createSyncRoutes`.
+
+Syncular includes an in-memory broadcaster for tests and single-process setups:
+
+```typescript
+import { InMemorySyncRealtimeBroadcaster } from '@syncular/server';
+
+const broadcaster = new InMemorySyncRealtimeBroadcaster();
+```
+
+### Configuration
+
+```typescript
+export interface SyncRealtimeBroadcaster {
+  publish(event: SyncRealtimeEvent): Promise<void>;
+  subscribe(handler: (event: SyncRealtimeEvent) => void): () => void;
+  close(): Promise<void>;
+}
+```
+
+### Usage with Sync Routes
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  sync: {
+    realtime: {
+      broadcaster,
+    },
+    websocket: {
+      enabled: true,
+      upgradeWebSocket,
+    },
+  },
+});
+```
+
+For production, use Redis/NATS/Postgres NOTIFY/etc. as the transport and implement the interface.
+
+## How It Works
+
+1. When a commit is pushed, the server emits affected scopes
+2. The broadcaster publishes a commit wake-up event to all instances
+3. All server instances receive the notification
+4. Each instance notifies relevant WebSocket connections
+5. Clients receive realtime updates
+
+## Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐
+│   Instance A    │     │   Instance B    │
+│                 │     │                 │
+│ ┌─────────────┐ │     │ ┌─────────────┐ │
+│ │ WS Manager  │ │     │ │ WS Manager  │ │
+│ └──────┬──────┘ │     │ └──────┬──────┘ │
+│        │        │     │        │        │
+│ ┌──────▼──────┐ │     │ ┌──────▼──────┐ │
+│ │ Broadcaster │◄├─────┼►│ Broadcaster │ │
+│ └──────┬──────┘ │     │ └──────┬──────┘ │
+└────────┼────────┘     └────────┼────────┘
+         │                       │
+         └───────────┬───────────┘
+                     │
+              ┌──────▼──────┐
+              │  PostgreSQL │
+              │   NOTIFY    │
+              └─────────────┘
+```
+
+## Single Instance
+
+For single-instance deployments, you don't need a broadcaster:
+
+```typescript
+const syncRoutes = createSyncRoutes({
+  // ...
+  sync: {
+    websocket: {
+      enabled: true,
+      upgradeWebSocket,
+    },
+    // No realtime.broadcaster needed
+  },
+});
+```
+
+## Next Steps
+
+- [Realtime Guide](/docs/build/realtime) - Complete realtime setup
+- [Hono Adapter](/docs/server/hono-adapter) - Route configuration

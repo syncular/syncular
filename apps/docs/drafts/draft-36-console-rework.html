@@ -1,0 +1,1209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — Console</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['"Inter Tight"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            surface: '#0c0c0c',
+            panel: '#111111',
+            border: '#1e1e1e',
+            'border-bright': '#2a2a2a',
+            healthy: '#22c55e',
+            syncing: '#f59e0b',
+            offline: '#ef4444',
+            flow: '#3b82f6',
+            relay: '#8b5cf6',
+            encrypt: '#f472b6',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter Tight', system-ui, sans-serif;
+      background: #0c0c0c;
+      color: #e5e5e5;
+      overflow: hidden;
+      height: 100vh;
+    }
+    .font-mono { font-family: 'JetBrains Mono', monospace !important; }
+
+    /* ── Grain texture overlay ── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 10000;
+      pointer-events: none;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.012) 1px, transparent 0);
+      background-size: 3px 3px;
+    }
+
+    /* ── Animations ── */
+    @keyframes dotPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    @keyframes dashFlow {
+      0% { stroke-dashoffset: 20; }
+      100% { stroke-dashoffset: 0; }
+    }
+    .line-active {
+      stroke-dasharray: 4 2;
+      animation: dashFlow 1s linear infinite;
+    }
+    @keyframes streamSlide {
+      0% { opacity: 0; transform: translateY(-6px); }
+      15% { opacity: 1; transform: translateY(0); }
+    }
+    .stream-entry { animation: streamSlide 0.35s ease-out; }
+    @keyframes pageIn {
+      0% { opacity: 0; transform: translateY(6px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes scanSweep {
+      0% { top: 0; opacity: 0; }
+      10% { opacity: 0.6; }
+      90% { opacity: 0.6; }
+      100% { top: 100%; opacity: 0; }
+    }
+    @keyframes heartbeat {
+      0%, 40%, 100% { transform: scaleY(1); }
+      10% { transform: scaleY(2.5); }
+      25% { transform: scaleY(1.5); }
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 3px; height: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+    /* ── Nav bar ── */
+    .nav-bar {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      height: 42px;
+      border-bottom: 1px solid #1e1e1e;
+      background: rgba(12,12,12,0.88);
+      backdrop-filter: blur(16px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+    .nav-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: #555;
+      background: transparent;
+      border: none;
+      padding: 4px 14px;
+      cursor: pointer;
+      position: relative;
+      transition: color 0.2s;
+    }
+    .nav-pill:hover { color: #999; }
+    .nav-pill.active { color: #fff; }
+    .nav-pill.active::after {
+      content: '';
+      position: absolute;
+      bottom: -10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 16px;
+      height: 2px;
+      background: #3b82f6;
+      border-radius: 1px;
+      box-shadow: 0 0 8px rgba(59,130,246,0.5);
+    }
+
+    /* ── Pages ── */
+    .page { display: none; height: 100%; }
+    .page.active { display: block; animation: pageIn 0.3s ease-out; }
+
+    /* ── Panels ── */
+    .panel {
+      border: 1px solid #1e1e1e;
+      background: #111111;
+      border-radius: 8px;
+      transition: border-color 0.15s;
+    }
+    .panel:hover { border-color: #222; }
+    .panel-hdr {
+      padding: 10px 16px;
+      border-bottom: 1px solid #1e1e1e;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .panel-lbl {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+    }
+
+    /* ── Dot grid background ── */
+    .dot-grid {
+      background-image: radial-gradient(circle at 1px 1px, #1a1a1a 1px, transparent 0);
+      background-size: 24px 24px;
+    }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .badge-healthy { background: rgba(34,197,94,0.1); color: #22c55e; border: 1px solid rgba(34,197,94,0.2); }
+    .badge-syncing { background: rgba(245,158,11,0.1); color: #f59e0b; border: 1px solid rgba(245,158,11,0.2); }
+    .badge-offline { background: rgba(239,68,68,0.1); color: #ef4444; border: 1px solid rgba(239,68,68,0.2); }
+    .badge-flow { background: rgba(59,130,246,0.1); color: #3b82f6; border: 1px solid rgba(59,130,246,0.2); }
+    .badge-relay { background: rgba(139,92,246,0.1); color: #8b5cf6; border: 1px solid rgba(139,92,246,0.2); }
+    .badge-ghost { background: transparent; color: #555; border: 1px solid #2a2a2a; }
+
+    /* ── Buttons ── */
+    .cmd-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 14px;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      background: transparent;
+      color: #888;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .cmd-btn:hover { border-color: #444; color: #fff; }
+    .cmd-btn.primary { border-color: rgba(59,130,246,0.4); color: #3b82f6; background: rgba(59,130,246,0.05); }
+    .cmd-btn.primary:hover { border-color: #3b82f6; background: rgba(59,130,246,0.1); }
+    .cmd-btn.danger { border-color: rgba(239,68,68,0.25); color: #ef4444; background: rgba(239,68,68,0.04); }
+    .cmd-btn.danger:hover { border-color: #ef4444; background: rgba(239,68,68,0.08); }
+
+    /* ── Terminal rows ── */
+    .term-row {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      line-height: 28px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border-bottom: 1px solid #141414;
+      cursor: default;
+      transition: background 0.1s;
+    }
+    .term-row:hover { background: rgba(255,255,255,0.015); }
+    .term-col { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ── Inputs ── */
+    .input-field {
+      background: #0a0a0a;
+      border: 1px solid #1e1e1e;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: #e5e5e5;
+      outline: none;
+      width: 100%;
+      transition: border-color 0.15s;
+    }
+    .input-field:focus { border-color: #3b82f6; }
+    .input-field::placeholder { color: #333; }
+
+    /* ── Switch ── */
+    .sw-track {
+      width: 34px; height: 18px;
+      background: #2a2a2a;
+      border-radius: 9px;
+      cursor: pointer;
+      position: relative;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    .sw-track.on { background: #22c55e; }
+    .sw-dot {
+      width: 14px; height: 14px;
+      background: #fff;
+      border-radius: 50%;
+      position: absolute;
+      top: 2px; left: 2px;
+      transition: transform 0.2s;
+    }
+    .sw-track.on .sw-dot { transform: translateX(16px); }
+
+    /* ── Bottom bar ── */
+    .bottom-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 100;
+      height: 32px;
+      border-top: 1px solid #1e1e1e;
+      background: rgba(12,12,12,0.92);
+      backdrop-filter: blur(12px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+    }
+
+    /* ── Heartbeat bars ── */
+    .heartbeat-bar {
+      width: 2px;
+      height: 6px;
+      background: #22c55e;
+      border-radius: 1px;
+      animation: heartbeat 1.2s ease-in-out infinite;
+    }
+
+    /* ── Filter pill ── */
+    .filter-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: #555;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      padding: 3px 10px;
+      cursor: pointer;
+      background: transparent;
+      transition: all 0.15s;
+    }
+    .filter-pill:hover { color: #999; }
+    .filter-pill.active { color: #fff; border-color: #2a2a2a; background: rgba(255,255,255,0.03); }
+
+    /* ── Topology scan line ── */
+    .scan-line {
+      position: absolute;
+      left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(59,130,246,0.3), transparent);
+      animation: scanSweep 6s ease-in-out infinite;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ══════════ NAV BAR ══════════ -->
+  <nav class="nav-bar">
+    <div class="flex items-center gap-3">
+      <span class="w-2 h-2 rounded-full bg-healthy flex-shrink-0" style="box-shadow: 0 0 6px #22c55e;"></span>
+      <span class="font-display font-bold text-white text-sm tracking-tight">syncular</span>
+      <span class="font-mono text-[9px] text-neutral-600 uppercase tracking-widest">console</span>
+    </div>
+    <div class="flex items-center gap-0.5">
+      <button class="nav-pill active" onclick="navigateTo('command')">Command</button>
+      <button class="nav-pill" onclick="navigateTo('stream')">Stream</button>
+      <button class="nav-pill" onclick="navigateTo('fleet')">Fleet</button>
+      <button class="nav-pill" onclick="navigateTo('ops')">Ops</button>
+      <button class="nav-pill" onclick="navigateTo('config')">Config</button>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="w-1.5 h-1.5 rounded-full bg-healthy" style="box-shadow: 0 0 4px #22c55e;"></span>
+      <span class="font-mono text-[10px] text-healthy">Connected</span>
+      <span class="font-mono text-[10px] text-neutral-600">34ms</span>
+    </div>
+  </nav>
+
+  <!-- ══════════ MAIN ══════════ -->
+  <div style="padding-top: 42px; padding-bottom: 32px; height: 100vh; overflow: hidden;">
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!-- PAGE: COMMAND                                        -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <div class="page active" id="page-command">
+      <div class="h-full overflow-y-auto">
+
+        <!-- ── Topology Hero ── -->
+        <div class="relative dot-grid overflow-hidden" style="height: 420px; background: radial-gradient(ellipse at 35% 50%, rgba(59,130,246,0.06) 0%, transparent 50%), radial-gradient(ellipse at 68% 50%, rgba(139,92,246,0.04) 0%, transparent 40%), #0c0c0c;">
+          <div class="scan-line"></div>
+          <div class="absolute top-4 left-5 z-10">
+            <span class="panel-lbl">Sync Topology</span>
+          </div>
+          <div class="absolute top-4 right-5 z-10 flex items-center gap-3">
+            <span class="font-mono text-[10px] text-neutral-600">7 nodes</span>
+            <span class="font-mono text-[10px] text-neutral-600">·</span>
+            <span class="font-mono text-[10px] text-healthy">5 online</span>
+            <span class="font-mono text-[10px] text-neutral-600">·</span>
+            <span class="font-mono text-[10px] text-offline">2 offline</span>
+          </div>
+          <svg id="topology" viewBox="0 0 1200 380" class="w-full h-full" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+
+        <!-- ── Telemetry Strip ── -->
+        <div class="border-b border-border px-6 py-3 flex items-center justify-between flex-wrap gap-4" style="background: linear-gradient(to bottom, rgba(17,17,17,0.8), #0c0c0c);">
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+            <span class="font-mono text-[10px] text-neutral-500 uppercase">Operations</span>
+            <span class="font-mono text-sm text-white font-semibold" id="metOps">2,847</span>
+            <span class="font-mono text-[10px] text-healthy">+12.3%</span>
+          </div>
+          <div class="w-px h-4 bg-border"></div>
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-healthy"></span>
+            <span class="font-mono text-[10px] text-neutral-500 uppercase">P50 Latency</span>
+            <span class="font-mono text-sm text-white font-semibold" id="metLat">34<span class="text-xs text-neutral-600">ms</span></span>
+          </div>
+          <div class="w-px h-4 bg-border"></div>
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-syncing"></span>
+            <span class="font-mono text-[10px] text-neutral-500 uppercase">Active Clients</span>
+            <span class="font-mono text-sm text-white font-semibold" id="metClients">5<span class="text-xs text-neutral-600">/7</span></span>
+          </div>
+          <div class="w-px h-4 bg-border"></div>
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full" style="background: #555;"></span>
+            <span class="font-mono text-[10px] text-neutral-500 uppercase">Error Rate</span>
+            <span class="font-mono text-sm text-neutral-400 font-semibold" id="metErr">0.4<span class="text-xs text-neutral-600">%</span></span>
+          </div>
+          <div class="w-px h-4 bg-border"></div>
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-syncing"></span>
+            <span class="font-mono text-[10px] text-neutral-500 uppercase">Pending</span>
+            <span class="font-mono text-sm text-syncing font-semibold" id="metPending">12</span>
+          </div>
+        </div>
+
+        <!-- ── Activity + Live Feed ── -->
+        <div class="flex" style="min-height: 320px;">
+          <!-- Left: Activity Chart + Latency + Recent Commits -->
+          <div class="flex-1 border-r border-border">
+            <!-- Activity Chart -->
+            <div class="px-5 pt-4 pb-3 border-b border-border">
+              <div class="flex items-center justify-between mb-3">
+                <span class="panel-lbl">Activity</span>
+                <div class="flex items-center gap-4">
+                  <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-healthy/70"></span><span class="font-mono text-[9px] text-neutral-500">Push</span></div>
+                  <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-flow/70"></span><span class="font-mono text-[9px] text-neutral-500">Pull</span></div>
+                  <div class="flex gap-0.5 ml-2">
+                    <button class="filter-pill active" style="font-size:9px;padding:2px 7px;">1h</button>
+                    <button class="filter-pill" style="font-size:9px;padding:2px 7px;">6h</button>
+                    <button class="filter-pill" style="font-size:9px;padding:2px 7px;">24h</button>
+                    <button class="filter-pill" style="font-size:9px;padding:2px 7px;">7d</button>
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-end gap-[2px]" style="height: 64px;" id="activityBars"></div>
+              <div class="flex justify-between mt-1.5">
+                <span class="font-mono text-[8px] text-neutral-600">-1h</span>
+                <span class="font-mono text-[8px] text-neutral-600">-30m</span>
+                <span class="font-mono text-[8px] text-neutral-600">now</span>
+              </div>
+            </div>
+            <!-- Latency Percentiles (compact) -->
+            <div class="px-5 py-3 border-b border-border">
+              <div class="flex items-center gap-8">
+                <span class="panel-lbl">Latency</span>
+                <div class="flex items-center gap-6">
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-[9px] text-neutral-500">P50</span>
+                    <div class="flex gap-1 items-end" style="height:20px;">
+                      <div class="w-3 rounded-t bg-healthy/60" style="height: 35%;"></div>
+                      <div class="w-3 rounded-t bg-flow/60" style="height: 28%;"></div>
+                    </div>
+                    <span class="font-mono text-[10px] text-neutral-400">34 / 28ms</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-[9px] text-neutral-500">P90</span>
+                    <div class="flex gap-1 items-end" style="height:20px;">
+                      <div class="w-3 rounded-t bg-healthy/60" style="height: 60%;"></div>
+                      <div class="w-3 rounded-t bg-flow/60" style="height: 50%;"></div>
+                    </div>
+                    <span class="font-mono text-[10px] text-neutral-400">72 / 61ms</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-mono text-[9px] text-neutral-500">P99</span>
+                    <div class="flex gap-1 items-end" style="height:20px;">
+                      <div class="w-3 rounded-t bg-healthy/60" style="height: 90%;"></div>
+                      <div class="w-3 rounded-t bg-flow/60" style="height: 75%;"></div>
+                    </div>
+                    <span class="font-mono text-[10px] text-neutral-400">142 / 118ms</span>
+                  </div>
+                </div>
+                <!-- Outcomes donut (inline) -->
+                <div class="flex items-center gap-2 ml-auto">
+                  <svg viewBox="0 0 36 36" class="w-7 h-7">
+                    <circle cx="18" cy="18" r="14" fill="none" stroke="#1e1e1e" stroke-width="4"/>
+                    <circle cx="18" cy="18" r="14" fill="none" stroke="#22c55e" stroke-width="4"
+                      stroke-dasharray="86 88" transform="rotate(-90 18 18)" stroke-linecap="round"/>
+                  </svg>
+                  <span class="font-mono text-[10px] text-neutral-400">99.6% <span class="text-neutral-600">success</span></span>
+                </div>
+              </div>
+            </div>
+            <!-- Recent Commits (terminal style) -->
+            <div class="px-5 pt-3 pb-2">
+              <div class="flex items-center justify-between mb-2">
+                <span class="panel-lbl">Recent Commits</span>
+                <button class="cmd-btn" style="font-size:9px;padding:2px 8px;" onclick="navigateTo('stream')">View all →</button>
+              </div>
+              <!-- Header row -->
+              <div class="term-row" style="color:#444; border-bottom-color: #1e1e1e; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; line-height: 22px;">
+                <span class="term-col" style="width:60px;">Seq</span>
+                <span class="term-col" style="width:100px;">Actor</span>
+                <span class="term-col" style="width:50px;">Chg</span>
+                <span class="term-col" style="flex:1;">Tables</span>
+                <span class="term-col" style="width:70px;text-align:right;">Time</span>
+              </div>
+              <div id="recentCommits"></div>
+            </div>
+          </div>
+
+          <!-- Right: Live Activity Feed -->
+          <div class="flex-shrink-0" style="width: 360px;">
+            <div class="px-4 py-2.5 border-b border-border flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="panel-lbl">Live Feed</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-healthy" style="animation: dotPulse 1.5s ease-in-out infinite;"></span>
+              </div>
+              <span class="font-mono text-[9px] text-neutral-600">WebSocket</span>
+            </div>
+            <div class="px-3 py-2 space-y-0.5 overflow-y-auto" style="max-height: calc(100vh - 42px - 420px - 56px - 32px - 40px);" id="liveFeed"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!-- PAGE: STREAM                                         -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <div class="page" id="page-stream">
+      <div class="h-full overflow-y-auto flex flex-col">
+        <!-- Filter bar -->
+        <div class="px-5 py-3 border-b border-border flex items-center gap-4 flex-wrap">
+          <div class="flex items-center gap-1">
+            <button class="filter-pill active">All</button>
+            <button class="filter-pill">Commits</button>
+            <button class="filter-pill">Events</button>
+          </div>
+          <div class="w-px h-4 bg-border"></div>
+          <div class="flex items-center gap-1">
+            <span class="font-mono text-[9px] text-neutral-500 mr-1">TYPE</span>
+            <button class="filter-pill active">All</button>
+            <button class="filter-pill">Push</button>
+            <button class="filter-pill">Pull</button>
+          </div>
+          <div class="w-px h-4 bg-border"></div>
+          <div class="flex items-center gap-1">
+            <span class="font-mono text-[9px] text-neutral-500 mr-1">OUTCOME</span>
+            <button class="filter-pill active">All</button>
+            <button class="filter-pill">Applied</button>
+            <button class="filter-pill">Rejected</button>
+            <button class="filter-pill">Error</button>
+          </div>
+          <input class="input-field" placeholder="Filter by client or actor..." style="max-width: 200px; font-size: 10px; padding: 4px 10px;" />
+          <div class="ml-auto flex items-center gap-2">
+            <button class="cmd-btn" style="font-size:10px;padding:3px 10px;">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+              Refresh
+            </button>
+            <button class="cmd-btn" style="font-size:10px;padding:3px 10px;">Export</button>
+            <button class="cmd-btn danger" style="font-size:10px;padding:3px 10px;">Clear</button>
+          </div>
+        </div>
+
+        <!-- Terminal header -->
+        <div class="term-row" style="color:#444; border-bottom-color: #1e1e1e; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; line-height: 24px; background: rgba(255,255,255,0.01);">
+          <span class="term-col" style="width:50px;">Time</span>
+          <span class="term-col" style="width:65px;">Type</span>
+          <span class="term-col" style="width:55px;">ID</span>
+          <span class="term-col" style="width:65px;">Outcome</span>
+          <span class="term-col" style="width:50px;">Dur</span>
+          <span class="term-col" style="width:100px;">Actor</span>
+          <span class="term-col" style="width:120px;">Client</span>
+          <span class="term-col" style="flex:1;">Detail</span>
+        </div>
+
+        <!-- Terminal log entries -->
+        <div class="flex-1 overflow-y-auto" id="streamLog"></div>
+
+        <!-- Pagination -->
+        <div class="px-5 py-2.5 border-t border-border flex items-center justify-between">
+          <span class="font-mono text-[10px] text-neutral-600">1,247 items · Page 1 of 63</span>
+          <div class="flex items-center gap-2">
+            <button class="cmd-btn" style="font-size:10px;padding:2px 8px;opacity:0.3;">← Prev</button>
+            <button class="cmd-btn" style="font-size:10px;padding:2px 8px;">Next →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!-- PAGE: FLEET                                          -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <div class="page" id="page-fleet">
+      <div class="h-full overflow-y-auto px-5 py-5 space-y-5">
+
+        <!-- Sync Horizon -->
+        <div class="panel">
+          <div class="panel-hdr">
+            <span class="panel-lbl">Sync Horizon</span>
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-neutral-500">Head</span>
+                <span class="font-mono text-xs text-white font-semibold">#1,247</span>
+              </div>
+              <div class="w-px h-3 bg-border"></div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] text-neutral-500">Max lag</span>
+                <span class="font-mono text-xs text-syncing font-semibold">67</span>
+              </div>
+            </div>
+          </div>
+          <div class="p-4">
+            <!-- Cursor positions on a timeline -->
+            <div class="relative h-8 mb-3 rounded" style="background: #0a0a0a;">
+              <!-- Scale markers -->
+              <div class="absolute inset-0 flex items-center justify-between px-2">
+                <span class="font-mono text-[8px] text-neutral-700">#1,180</span>
+                <span class="font-mono text-[8px] text-neutral-700">#1,200</span>
+                <span class="font-mono text-[8px] text-neutral-700">#1,220</span>
+                <span class="font-mono text-[8px] text-neutral-700">#1,247</span>
+              </div>
+              <!-- Head line -->
+              <div class="absolute right-0 top-0 bottom-0 w-px bg-flow/40" style="right: 2%;"></div>
+              <!-- Client cursors (positioned absolutely) -->
+              <div id="cursorMarkers"></div>
+            </div>
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-healthy"></span><span class="font-mono text-[9px] text-neutral-500">Caught up</span></div>
+              <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-syncing"></span><span class="font-mono text-[9px] text-neutral-500">Behind</span></div>
+              <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-offline opacity-50"></span><span class="font-mono text-[9px] text-neutral-500">Offline</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fleet Cards -->
+        <div class="grid grid-cols-3 gap-3" id="fleetCards"></div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!-- PAGE: OPS                                            -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <div class="page" id="page-ops">
+      <div class="h-full overflow-y-auto px-5 py-5 space-y-4">
+
+        <!-- Handlers + Maintenance row -->
+        <div class="grid grid-cols-[1fr_1fr] gap-4">
+
+          <!-- HANDLERS -->
+          <div class="panel">
+            <div class="panel-hdr">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+                <span class="panel-lbl">Handlers</span>
+              </div>
+              <span class="font-mono text-[10px] text-neutral-600">4 tables</span>
+            </div>
+            <div>
+              <div class="term-row" style="color:#444;font-size:9px;letter-spacing:1px;text-transform:uppercase;line-height:24px;">
+                <span class="term-col" style="flex:1;">Table</span>
+                <span class="term-col" style="width:100px;">Depends On</span>
+                <span class="term-col" style="width:70px;text-align:right;">Chunk TTL</span>
+              </div>
+              <div class="term-row"><span class="term-col text-white" style="flex:1;">todos</span><span class="term-col text-neutral-600" style="width:100px;">—</span><span class="term-col text-neutral-500" style="width:70px;text-align:right;">default</span></div>
+              <div class="term-row"><span class="term-col text-white" style="flex:1;">projects</span><span class="term-col text-neutral-600" style="width:100px;">—</span><span class="term-col text-neutral-500" style="width:70px;text-align:right;">24h</span></div>
+              <div class="term-row"><span class="term-col text-white" style="flex:1;">notes</span><span class="term-col" style="width:100px;"><span class="badge badge-ghost">projects</span></span><span class="term-col text-neutral-500" style="width:70px;text-align:right;">12h</span></div>
+              <div class="term-row" style="border:none;"><span class="term-col text-white" style="flex:1;">users</span><span class="term-col text-neutral-600" style="width:100px;">—</span><span class="term-col text-neutral-500" style="width:70px;text-align:right;">default</span></div>
+            </div>
+          </div>
+
+          <!-- ALERTS -->
+          <div class="panel">
+            <div class="panel-hdr">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-offline"></span>
+                <span class="panel-lbl">Alerts</span>
+              </div>
+              <div class="sw-track on" onclick="this.classList.toggle('on')"><div class="sw-dot"></div></div>
+            </div>
+            <div class="p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <span class="font-mono text-[10px] text-neutral-500">P90 latency threshold</span>
+                <input class="input-field" type="number" value="1000" style="width: 100px; font-size: 11px; padding: 4px 8px; text-align: right;" />
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="font-mono text-[10px] text-neutral-500">Error rate threshold</span>
+                <input class="input-field" type="number" value="5" style="width: 100px; font-size: 11px; padding: 4px 8px; text-align: right;" />
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="font-mono text-[10px] text-neutral-500">Client lag threshold</span>
+                <input class="input-field" type="number" value="50" style="width: 100px; font-size: 11px; padding: 4px 8px; text-align: right;" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- MAINTENANCE row -->
+        <div class="grid grid-cols-2 gap-4">
+
+          <!-- PRUNE -->
+          <div class="panel">
+            <div class="panel-hdr">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-syncing"></span>
+                <span class="panel-lbl">Prune</span>
+              </div>
+            </div>
+            <div class="p-4">
+              <p class="font-mono text-[10px] text-neutral-500 leading-relaxed mb-4">Remove commits older than the oldest active client cursor. All active clients have already synced past these commits.</p>
+              <div class="grid grid-cols-3 gap-3 mb-4">
+                <div>
+                  <div class="font-mono text-[9px] text-neutral-600 uppercase tracking-wider mb-1">Total</div>
+                  <div class="font-mono text-lg text-white font-semibold">1,247</div>
+                </div>
+                <div>
+                  <div class="font-mono text-[9px] text-neutral-600 uppercase tracking-wider mb-1">Range</div>
+                  <div class="font-mono text-sm text-neutral-400">1 — 1,247</div>
+                </div>
+                <div>
+                  <div class="font-mono text-[9px] text-neutral-600 uppercase tracking-wider mb-1">Min Cursor</div>
+                  <div class="font-mono text-sm text-syncing">#1,180</div>
+                </div>
+              </div>
+              <button class="cmd-btn danger">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                Preview Prune
+              </button>
+            </div>
+          </div>
+
+          <!-- COMPACT -->
+          <div class="panel">
+            <div class="panel-hdr">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-flow"></span>
+                <span class="panel-lbl">Compact</span>
+              </div>
+            </div>
+            <div class="p-4">
+              <p class="font-mono text-[10px] text-neutral-500 leading-relaxed mb-4">Merge multiple changes to the same row into a single change. Reduces storage without losing the latest state.</p>
+              <div class="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                  <div class="font-mono text-[9px] text-neutral-600 uppercase tracking-wider mb-1">Total Changes</div>
+                  <div class="font-mono text-lg text-white font-semibold">8,491</div>
+                </div>
+                <div>
+                  <div class="font-mono text-[9px] text-neutral-600 uppercase tracking-wider mb-1">Commits</div>
+                  <div class="font-mono text-lg text-white font-semibold">1,247</div>
+                </div>
+              </div>
+              <button class="cmd-btn primary">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                Run Compaction
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!-- PAGE: CONFIG                                         -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <div class="page" id="page-config">
+      <div class="h-full overflow-y-auto px-5 py-5 space-y-4">
+
+        <!-- CONNECTION -->
+        <div class="panel">
+          <div class="panel-hdr">
+            <div class="flex items-center gap-2">
+              <span class="w-1.5 h-1.5 rounded-full bg-healthy" style="box-shadow: 0 0 4px #22c55e;"></span>
+              <span class="panel-lbl">Connection</span>
+            </div>
+            <span class="badge badge-healthy">Connected</span>
+          </div>
+          <div class="p-5 space-y-4">
+            <p class="font-mono text-[10px] text-neutral-500">Configure the server endpoint and authentication token.</p>
+            <div>
+              <label class="font-mono text-[9px] text-neutral-500 uppercase tracking-wider block mb-1.5">Server URL</label>
+              <input class="input-field" value="http://localhost:3001/api" />
+            </div>
+            <div>
+              <label class="font-mono text-[9px] text-neutral-500 uppercase tracking-wider block mb-1.5">Console Token</label>
+              <input class="input-field" type="password" value="sk-console-abc123xyz" />
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="cmd-btn danger">Disconnect</button>
+              <button class="cmd-btn">Test Connection</button>
+            </div>
+            <div class="font-mono text-[10px] text-healthy">Connection successful · 34ms latency</div>
+          </div>
+        </div>
+
+        <!-- API KEYS -->
+        <div class="panel">
+          <div class="panel-hdr">
+            <span class="panel-lbl">API Keys</span>
+            <button class="cmd-btn primary" style="font-size:10px;padding:3px 10px;">+ Create Key</button>
+          </div>
+          <!-- Header row -->
+          <div class="term-row" style="color:#444;font-size:9px;letter-spacing:1px;text-transform:uppercase;line-height:24px;">
+            <span class="term-col" style="width:140px;">Name</span>
+            <span class="term-col" style="width:70px;">Type</span>
+            <span class="term-col" style="flex:1;">Prefix</span>
+            <span class="term-col" style="width:90px;">Created</span>
+            <span class="term-col" style="width:80px;text-align:right;">Actions</span>
+          </div>
+          <div class="term-row">
+            <span class="term-col text-white" style="width:140px;">Backend Relay</span>
+            <span class="term-col" style="width:70px;"><span class="badge badge-relay">relay</span></span>
+            <span class="term-col text-neutral-500" style="flex:1;">sk-relay-a8f3...</span>
+            <span class="term-col text-neutral-600" style="width:90px;">2 days ago</span>
+            <span class="term-col flex gap-2 justify-end" style="width:80px;">
+              <button class="cmd-btn" style="font-size:9px;padding:2px 6px;">Rotate</button>
+              <button class="cmd-btn danger" style="font-size:9px;padding:2px 6px;">Revoke</button>
+            </span>
+          </div>
+          <div class="term-row">
+            <span class="term-col text-white" style="width:140px;">Admin Dashboard</span>
+            <span class="term-col" style="width:70px;"><span class="badge badge-flow">admin</span></span>
+            <span class="term-col text-neutral-500" style="flex:1;">sk-admin-7b2e...</span>
+            <span class="term-col text-neutral-600" style="width:90px;">5 days ago</span>
+            <span class="term-col flex gap-2 justify-end" style="width:80px;">
+              <button class="cmd-btn" style="font-size:9px;padding:2px 6px;">Rotate</button>
+              <button class="cmd-btn danger" style="font-size:9px;padding:2px 6px;">Revoke</button>
+            </span>
+          </div>
+          <div class="term-row" style="border:none;">
+            <span class="term-col text-white" style="width:140px;">Proxy Service</span>
+            <span class="term-col" style="width:70px;"><span class="badge badge-ghost">proxy</span></span>
+            <span class="term-col text-neutral-500" style="flex:1;">sk-proxy-c1d4...</span>
+            <span class="term-col text-neutral-600" style="width:90px;">1 week ago</span>
+            <span class="term-col flex gap-2 justify-end" style="width:80px;">
+              <button class="cmd-btn" style="font-size:9px;padding:2px 6px;">Rotate</button>
+              <button class="cmd-btn danger" style="font-size:9px;padding:2px 6px;">Revoke</button>
+            </span>
+          </div>
+        </div>
+
+        <!-- PREFERENCES -->
+        <div class="panel">
+          <div class="panel-hdr">
+            <span class="panel-lbl">Preferences</span>
+            <button class="cmd-btn" style="font-size:9px;padding:2px 8px;">Reset defaults</button>
+          </div>
+          <div class="p-4 space-y-4">
+            <div class="flex items-center justify-between">
+              <span class="font-mono text-[11px] text-neutral-400">Auto-refresh interval</span>
+              <div class="flex gap-0.5">
+                <button class="filter-pill">5s</button>
+                <button class="filter-pill active">10s</button>
+                <button class="filter-pill">30s</button>
+                <button class="filter-pill">1m</button>
+                <button class="filter-pill">Off</button>
+              </div>
+            </div>
+            <div class="border-t border-border"></div>
+            <div class="flex items-center justify-between">
+              <span class="font-mono text-[11px] text-neutral-400">Items per page</span>
+              <div class="flex gap-0.5">
+                <button class="filter-pill">10</button>
+                <button class="filter-pill active">20</button>
+                <button class="filter-pill">50</button>
+                <button class="filter-pill">100</button>
+              </div>
+            </div>
+            <div class="border-t border-border"></div>
+            <div class="flex items-center justify-between">
+              <span class="font-mono text-[11px] text-neutral-400">Time format</span>
+              <div class="flex gap-0.5">
+                <button class="filter-pill active">Relative</button>
+                <button class="filter-pill">Absolute</button>
+              </div>
+            </div>
+            <div class="border-t border-border"></div>
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="font-mono text-[11px] text-neutral-400">Show sparklines</span>
+                <p class="font-mono text-[9px] text-neutral-600 mt-0.5">Display mini trend charts in metrics</p>
+              </div>
+              <div class="sw-track on" onclick="this.classList.toggle('on')"><div class="sw-dot"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══════════ BOTTOM BAR ══════════ -->
+  <div class="bottom-bar">
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-[2px]">
+        <div class="heartbeat-bar" style="animation-delay: 0s;"></div>
+        <div class="heartbeat-bar" style="animation-delay: 0.1s;"></div>
+        <div class="heartbeat-bar" style="animation-delay: 0.2s;"></div>
+        <div class="heartbeat-bar" style="animation-delay: 0.3s;"></div>
+        <div class="heartbeat-bar" style="animation-delay: 0.4s;"></div>
+      </div>
+      <span class="font-mono text-[9px] text-healthy uppercase tracking-widest">Live</span>
+    </div>
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-1.5">
+        <span class="font-mono text-[9px] text-neutral-600">OPS/S</span>
+        <span class="font-mono text-[10px] text-neutral-300" id="bbOps">12.4</span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="font-mono text-[9px] text-neutral-600">LATENCY</span>
+        <span class="font-mono text-[10px] text-neutral-300" id="bbLat">34ms</span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="font-mono text-[9px] text-neutral-600">CLIENTS</span>
+        <span class="font-mono text-[10px] text-neutral-300">5/7</span>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="font-mono text-[9px] text-neutral-600">ERRORS</span>
+        <span class="font-mono text-[10px] text-neutral-300">0.4%</span>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="font-mono text-[9px] text-neutral-600">UPTIME</span>
+      <span class="font-mono text-[10px] text-neutral-400">99.97%</span>
+    </div>
+  </div>
+
+  <!-- ══════════ JAVASCRIPT ══════════ -->
+  <script>
+    // ──────────── DATA ────────────
+    const clients = [
+      { id: 'client-a1b2c3', type: 'mobile',  status: 'online',  cursor: 1247, actor: 'user-alice',  mode: 'realtime', dialect: 'wa-sqlite', scopes: ['project:alpha'], lastSeen: '2s ago' },
+      { id: 'client-d4e5f6', type: 'desktop', status: 'online',  cursor: 1247, actor: 'user-bob',    mode: 'realtime', dialect: 'PGlite', scopes: ['project:alpha','project:beta'], lastSeen: 'just now' },
+      { id: 'client-g7h8i9', type: 'tablet',  status: 'syncing', cursor: 1235, actor: 'user-carol',  mode: 'polling',  dialect: 'SQLite', scopes: ['project:alpha'], lastSeen: '1s ago' },
+      { id: 'client-j0k1l2', type: 'edge',    status: 'online',  cursor: 1240, actor: 'user-dave',   mode: 'realtime', dialect: 'wa-sqlite', scopes: ['project:beta'], lastSeen: '5s ago' },
+      { id: 'client-m3n4o5', type: 'mobile',  status: 'online',  cursor: 1244, actor: 'user-eve',    mode: 'realtime', dialect: 'PGlite', scopes: ['project:alpha','project:beta','project:gamma'], lastSeen: '3s ago' },
+      { id: 'client-p6q7r8', type: 'laptop',  status: 'offline', cursor: 1200, actor: 'user-frank',  mode: 'polling',  dialect: 'SQLite', scopes: ['project:gamma'], lastSeen: '4m ago' },
+      { id: 'client-s9t0u1', type: 'iot',     status: 'offline', cursor: 1180, actor: 'svc-monitor', mode: 'polling',  dialect: 'SQLite', scopes: ['telemetry'], lastSeen: '12m ago' },
+    ];
+    const headSeq = 1247;
+    const tables = ['todos', 'projects', 'notes', 'users'];
+    const relayIds = ['client-m3n4o5','client-p6q7r8','client-s9t0u1'];
+
+    // ──────────── NAVIGATION ────────────
+    function navigateTo(page) {
+      document.querySelectorAll('.nav-pill').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      const pill = [...document.querySelectorAll('.nav-pill')].find(p => p.textContent.trim().toLowerCase() === page);
+      if (pill) pill.classList.add('active');
+      const el = document.getElementById('page-' + page);
+      if (el) el.classList.add('active');
+    }
+
+    // ──────────── FILTER PILL TOGGLE ────────────
+    document.addEventListener('click', e => {
+      if (e.target.classList.contains('filter-pill')) {
+        const group = e.target.parentElement;
+        group.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+        e.target.classList.add('active');
+      }
+    });
+
+    // ──────────── TOPOLOGY ────────────
+    function renderTopology() {
+      const svg = document.getElementById('topology');
+      const sX = 420, sY = 190; // server
+      const rX = 780, rY = 190; // relay
+
+      const pos = {
+        'client-a1b2c3': { x: 160, y: 100 },
+        'client-d4e5f6': { x: 140, y: 210 },
+        'client-g7h8i9': { x: 180, y: 310 },
+        'client-j0k1l2': { x: 420, y: 340 },
+        'client-m3n4o5': { x: 1020, y: 90 },
+        'client-p6q7r8': { x: 1050, y: 200 },
+        'client-s9t0u1': { x: 1020, y: 310 },
+      };
+
+      let s = '';
+
+      // Orbit rings
+      s += `<ellipse cx="${sX}" cy="${sY}" rx="280" ry="160" fill="none" stroke="#1a1a1a" stroke-width="0.5" stroke-dasharray="6 10"/>`;
+      s += `<ellipse cx="${rX}" cy="${rY}" rx="260" ry="140" fill="none" stroke="#1a1a1a" stroke-width="0.5" stroke-dasharray="6 10"/>`;
+
+      // Server ↔ Relay backbone
+      s += `<line x1="${sX}" y1="${sY}" x2="${rX}" y2="${rY}" stroke="#8b5cf6" stroke-width="2" opacity="0.3"/>`;
+      s += `<line x1="${sX}" y1="${sY}" x2="${rX}" y2="${rY}" stroke="#8b5cf6" stroke-width="1" class="line-active" opacity="0.6"/>`;
+      s += `<circle r="3" fill="#8b5cf6" opacity="0.8"><animateMotion dur="2.5s" repeatCount="indefinite" path="M${sX},${sY} L${rX},${rY}"/><animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.5s" repeatCount="indefinite"/></circle>`;
+      s += `<circle r="3" fill="#8b5cf6" opacity="0.8"><animateMotion dur="2.5s" begin="1.25s" repeatCount="indefinite" path="M${rX},${rY} L${sX},${sY}"/><animate attributeName="opacity" values="0;0.8;0.8;0" dur="2.5s" begin="1.25s" repeatCount="indefinite"/></circle>`;
+      s += `<text x="${(sX+rX)/2}" y="${sY-20}" text-anchor="middle" fill="#8b5cf6" font-family="JetBrains Mono" font-size="8" opacity="0.4" letter-spacing="2">BACKBONE</text>`;
+
+      // Connection lines + particles
+      clients.forEach(c => {
+        const p = pos[c.id];
+        if (!p) return;
+        const isRelay = relayIds.includes(c.id);
+        const tX = isRelay ? rX : sX;
+        const tY = isRelay ? rY : sY;
+        const color = c.status === 'online' ? '#22c55e' : c.status === 'syncing' ? '#f59e0b' : '#ef4444';
+        const w = c.status === 'syncing' ? 2.5 : 1.5;
+
+        if (c.status === 'offline') {
+          s += `<line x1="${tX}" y1="${tY}" x2="${p.x}" y2="${p.y}" stroke="${color}" stroke-width="1" stroke-dasharray="3 6" opacity="0.2"/>`;
+        } else {
+          s += `<line x1="${tX}" y1="${tY}" x2="${p.x}" y2="${p.y}" stroke="${color}" stroke-width="${w}" class="line-active"/>`;
+          const dur = c.status === 'syncing' ? '1.2s' : '2.8s';
+          s += `<circle r="2.5" fill="${color}" opacity="0.7"><animateMotion dur="${dur}" repeatCount="indefinite" path="M${tX},${tY} L${p.x},${p.y}"/><animate attributeName="opacity" values="0;0.7;0.7;0" dur="${dur}" repeatCount="indefinite"/></circle>`;
+          s += `<circle r="2" fill="${color}" opacity="0.5"><animateMotion dur="${dur}" begin="${parseFloat(dur)/2}s" repeatCount="indefinite" path="M${p.x},${p.y} L${tX},${tY}"/><animate attributeName="opacity" values="0;0.5;0.5;0" dur="${dur}" begin="${parseFloat(dur)/2}s" repeatCount="indefinite"/></circle>`;
+        }
+      });
+
+      // Server node with pulse
+      s += `
+        <circle cx="${sX}" cy="${sY}" r="50" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="32" to="60" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${sX}" cy="${sY}" r="50" fill="none" stroke="#3b82f6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="32" to="60" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.25" to="0" dur="3s" begin="1.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${sX}" cy="${sY}" r="32" fill="#0c0c0c" stroke="#3b82f6" stroke-width="2" style="filter: drop-shadow(0 0 12px rgba(59,130,246,0.4));"/>
+        <circle cx="${sX}" cy="${sY}" r="16" fill="rgba(59,130,246,0.12)" stroke="#3b82f6" stroke-width="0.8"/>
+        <circle cx="${sX}" cy="${sY}" r="6" fill="#3b82f6"/>
+        <text x="${sX}" y="${sY+48}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="9" letter-spacing="2.5">SERVER</text>
+      `;
+
+      // Relay node with pulse
+      s += `
+        <circle cx="${rX}" cy="${rY}" r="40" fill="none" stroke="#8b5cf6" stroke-width="0.5" opacity="0.15">
+          <animate attributeName="r" from="26" to="48" dur="3.5s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" from="0.2" to="0" dur="3.5s" repeatCount="indefinite"/>
+        </circle>
+        <circle cx="${rX}" cy="${rY}" r="26" fill="#0c0c0c" stroke="#8b5cf6" stroke-width="2" style="filter: drop-shadow(0 0 10px rgba(139,92,246,0.35));"/>
+        <circle cx="${rX}" cy="${rY}" r="13" fill="rgba(139,92,246,0.12)" stroke="#8b5cf6" stroke-width="0.8"/>
+        <circle cx="${rX}" cy="${rY}" r="5" fill="#8b5cf6"/>
+        <text x="${rX}" y="${rY+42}" text-anchor="middle" fill="#444" font-family="JetBrains Mono" font-size="9" letter-spacing="2.5">RELAY</text>
+      `;
+
+      // Client nodes
+      clients.forEach(c => {
+        const p = pos[c.id];
+        if (!p) return;
+        const color = c.status === 'online' ? '#22c55e' : c.status === 'syncing' ? '#f59e0b' : '#ef4444';
+        const op = c.status === 'offline' ? '0.25' : '1';
+        const label = c.actor.replace('user-','').replace('svc-','');
+        s += `
+          <g opacity="${op}">
+            <circle cx="${p.x}" cy="${p.y}" r="20" fill="#0c0c0c" stroke="${color}" stroke-width="1.5"/>
+            <circle cx="${p.x}" cy="${p.y}" r="5" fill="${color}"/>
+            <text x="${p.x}" y="${p.y+32}" text-anchor="middle" fill="#555" font-family="JetBrains Mono" font-size="9">${label}</text>
+            <text x="${p.x}" y="${p.y+42}" text-anchor="middle" fill="#333" font-family="JetBrains Mono" font-size="7">${c.type}${relayIds.includes(c.id) ? ' · relay' : ''}</text>
+          </g>
+        `;
+      });
+
+      svg.innerHTML = s;
+    }
+
+    // ──────────── ACTIVITY CHART ────────────
+    function renderActivity() {
+      const el = document.getElementById('activityBars');
+      let html = '';
+      for (let i = 0; i < 40; i++) {
+        const pushH = 15 + Math.random() * 55;
+        const pullH = 8 + Math.random() * 30;
+        html += `<div style="flex:1;display:flex;flex-direction:column;gap:1px;height:64px;justify-content:flex-end;">
+          <div style="height:${pullH}%;background:rgba(59,130,246,0.6);border-radius:2px 2px 0 0;min-height:2px;"></div>
+          <div style="height:${pushH}%;background:rgba(34,197,94,0.6);border-radius:2px 2px 0 0;min-height:2px;"></div>
+        </div>`;
+      }
+      el.innerHTML = html;
+    }
+
+    // ──────────── RECENT COMMITS ────────────
+    function renderCommits() {
+      const el = document.getElementById('recentCommits');
+      const data = [
+        { seq: 1247, actor: 'user-bob',   changes: 3, tbl: 'todos',    time: '2s ago' },
+        { seq: 1246, actor: 'user-alice',  changes: 1, tbl: 'projects', time: '8s ago' },
+        { seq: 1245, actor: 'user-carol',  changes: 5, tbl: 'notes',    time: '15s ago' },
+        { seq: 1244, actor: 'user-eve',    changes: 2, tbl: 'users',    time: '23s ago' },
+        { seq: 1243, actor: 'user-dave',   changes: 1, tbl: 'todos',    time: '31s ago' },
+        { seq: 1242, actor: 'user-bob',    changes: 4, tbl: 'projects', time: '45s ago' },
+      ];
+      el.innerHTML = data.map(c => `
+        <div class="term-row">
+          <span class="term-col text-flow font-medium" style="width:60px;">#${c.seq}</span>
+          <span class="term-col text-neutral-400" style="width:100px;">${c.actor}</span>
+          <span class="term-col text-white" style="width:50px;">${c.changes}</span>
+          <span class="term-col" style="flex:1;"><span class="badge badge-ghost">${c.tbl}</span></span>
+          <span class="term-col text-neutral-600" style="width:70px;text-align:right;">${c.time}</span>
+        </div>
+      `).join('');
+    }
+
+    // ──────────── LIVE FEED ────────────
+    const feedOps = ['PUSH','PULL','ACK','PUSH','PULL'];
+    function addFeedEntry() {
+      const el = document.getElementById('liveFeed');
+      const op = feedOps[Math.floor(Math.random() * feedOps.length)];
+      const c = clients[Math.floor(Math.random() * 5)];
+      const tbl = tables[Math.floor(Math.random() * tables.length)];
+      const ts = new Date().toTimeString().split(' ')[0];
+      const bc = op === 'PUSH' ? 'badge-syncing' : op === 'PULL' ? 'badge-healthy' : 'badge-flow';
+
+      const entry = document.createElement('div');
+      entry.className = 'stream-entry flex items-center gap-2 py-1';
+      entry.innerHTML = `<span class="badge ${bc}" style="font-size:8px;padding:1px 5px;">${op}</span>
+        <span class="font-mono text-[10px] text-neutral-400 truncate flex-1">${c.actor} · ${tbl}</span>
+        <span class="font-mono text-[9px] text-neutral-600">${ts}</span>`;
+
+      if (el.firstChild) el.insertBefore(entry, el.firstChild);
+      else el.appendChild(entry);
+      while (el.children.length > 20) el.removeChild(el.lastChild);
+    }
+
+    // ──────────── STREAM LOG ────────────
+    function renderStreamLog() {
+      const el = document.getElementById('streamLog');
+      const items = [
+        { type:'commit', id:'#1247', outcome:'—',       dur:'—',    actor:'user-bob',   client:'client-d4e5f6', detail:'3 chg · todos' },
+        { type:'push',   id:'E892',  outcome:'applied', dur:'34ms', actor:'user-bob',   client:'client-d4e5f6', detail:'todos' },
+        { type:'pull',   id:'E891',  outcome:'applied', dur:'28ms', actor:'user-alice',  client:'client-a1b2c3', detail:'synced 3 commits' },
+        { type:'commit', id:'#1246', outcome:'—',       dur:'—',    actor:'user-alice',  client:'client-a1b2c3', detail:'1 chg · projects' },
+        { type:'push',   id:'E890',  outcome:'applied', dur:'41ms', actor:'user-alice',  client:'client-a1b2c3', detail:'projects' },
+        { type:'pull',   id:'E889',  outcome:'cached',  dur:'12ms', actor:'user-carol',  client:'client-g7h8i9', detail:'no new commits' },
+        { type:'commit', id:'#1245', outcome:'—',       dur:'—',    actor:'user-carol',  client:'client-g7h8i9', detail:'5 chg · todos, notes' },
+        { type:'push',   id:'E888',  outcome:'applied', dur:'67ms', actor:'user-carol',  client:'client-g7h8i9', detail:'todos, notes' },
+        { type:'pull',   id:'E887',  outcome:'applied', dur:'52ms', actor:'user-eve',    client:'client-m3n4o5', detail:'synced 2 commits' },
+        { type:'commit', id:'#1244', outcome:'—',       dur:'—',    actor:'user-eve',    client:'client-m3n4o5', detail:'2 chg · users' },
+        { type:'push',   id:'E886',  outcome:'applied', dur:'39ms', actor:'user-eve',    client:'client-m3n4o5', detail:'users' },
+        { type:'pull',   id:'E885',  outcome:'error',   dur:'—',    actor:'user-dave',   client:'client-j0k1l2', detail:'timeout after 5000ms' },
+        { type:'commit', id:'#1243', outcome:'—',       dur:'—',    actor:'user-dave',   client:'client-j0k1l2', detail:'1 chg · todos' },
+        { type:'push',   id:'E884',  outcome:'applied', dur:'29ms', actor:'user-dave',   client:'client-j0k1l2', detail:'todos' },
+        { type:'pull',   id:'E883',  outcome:'applied', dur:'31ms', actor:'user-bob',    client:'client-d4e5f6', detail:'synced 1 commit' },
+        { type:'commit', id:'#1242', outcome:'—',       dur:'—',    actor:'user-bob',    client:'client-d4e5f6', detail:'4 chg · projects' },
+      ];
+
+      const ts = ['2s','2s','3s','8s','8s','10s','15s','15s','18s','23s','23s','25s','31s','31s','35s','45s'];
+
+      el.innerHTML = items.map((it, i) => {
+        const typeColor = it.type === 'commit' ? 'text-flow' : it.type === 'push' ? 'text-syncing' : 'text-healthy';
+        const outcomeColor = it.outcome === 'applied' ? 'text-healthy' : it.outcome === 'error' ? 'text-offline' : it.outcome === 'cached' ? 'text-syncing' : 'text-neutral-600';
+        return `<div class="term-row">
+          <span class="term-col text-neutral-600" style="width:50px;">${ts[i]} ago</span>
+          <span class="term-col ${typeColor} font-medium" style="width:65px;">${it.type.toUpperCase()}</span>
+          <span class="term-col text-flow" style="width:55px;">${it.id}</span>
+          <span class="term-col ${outcomeColor}" style="width:65px;">${it.outcome}</span>
+          <span class="term-col text-neutral-500" style="width:50px;">${it.dur}</span>
+          <span class="term-col text-neutral-400" style="width:100px;">${it.actor}</span>
+          <span class="term-col text-neutral-600" style="width:120px;" title="${it.client}">${it.client.substring(0,14)}…</span>
+          <span class="term-col text-neutral-500" style="flex:1;">${it.detail}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // ──────────── FLEET CARDS ────────────
+    function renderFleetCards() {
+      const el = document.getElementById('fleetCards');
+      el.innerHTML = clients.map(c => {
+        const lag = headSeq - c.cursor;
+        const pct = Math.min(100, (c.cursor / headSeq) * 100);
+        const lagColor = lag === 0 ? '#22c55e' : lag < 10 ? '#f59e0b' : lag < 50 ? '#f97316' : '#ef4444';
+        const statusBadge = c.status === 'online' ? '<span class="badge badge-healthy">online</span>'
+          : c.status === 'syncing' ? '<span class="badge badge-syncing">syncing</span>'
+          : '<span class="badge badge-offline">offline</span>';
+        const modeBadge = c.mode === 'realtime' ? '<span class="badge badge-flow">realtime</span>' : '<span class="badge badge-ghost">polling</span>';
+        const scopesHtml = c.scopes.slice(0,2).map(s => `<span class="badge badge-ghost">${s}</span>`).join(' ')
+          + (c.scopes.length > 2 ? ` <span class="font-mono text-[9px] text-neutral-600">+${c.scopes.length-2}</span>` : '');
+
+        return `<div class="panel" style="border-left: 3px solid ${lagColor};">
+          <div class="panel-hdr" style="padding: 8px 14px;">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="font-mono text-[11px] text-white truncate" title="${c.id}">${c.id.substring(0,14)}…</span>
+            </div>
+            <div class="flex items-center gap-1.5 flex-shrink-0">${statusBadge}${modeBadge}</div>
+          </div>
+          <div class="p-3 space-y-3">
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="font-mono text-[9px] text-neutral-600">#${c.cursor.toLocaleString()}</span>
+                <span class="font-mono text-[9px] text-neutral-600">#${headSeq.toLocaleString()}</span>
+              </div>
+              <div class="h-1 rounded-full" style="background:#0a0a0a;">
+                <div class="h-full rounded-full transition-all" style="width:${pct}%;background:${lagColor};"></div>
+              </div>
+              <div class="font-mono text-[9px] mt-1" style="color:${lagColor};">${lag === 0 ? 'Caught up' : lag + ' behind'}</div>
+            </div>
+            <div class="space-y-1">
+              <div class="flex justify-between"><span class="font-mono text-[9px] text-neutral-600">Actor</span><span class="font-mono text-[10px] text-neutral-400">${c.actor}</span></div>
+              <div class="flex justify-between"><span class="font-mono text-[9px] text-neutral-600">Dialect</span><span class="font-mono text-[10px] text-neutral-400">${c.dialect}</span></div>
+              <div class="flex justify-between"><span class="font-mono text-[9px] text-neutral-600">Last seen</span><span class="font-mono text-[10px] text-neutral-400">${c.lastSeen}</span></div>
+              <div class="flex justify-between items-start"><span class="font-mono text-[9px] text-neutral-600">Scopes</span><div class="flex gap-1 flex-wrap justify-end">${scopesHtml}</div></div>
+            </div>
+            <button class="cmd-btn danger w-full justify-center" style="font-size:9px;padding:3px 8px;">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M18.36 6.64a9 9 0 11-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+              Evict
+            </button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    // ──────────── CURSOR MARKERS ────────────
+    function renderCursorMarkers() {
+      const el = document.getElementById('cursorMarkers');
+      const minSeq = 1170;
+      const range = headSeq - minSeq;
+      el.innerHTML = clients.map(c => {
+        const pct = ((c.cursor - minSeq) / range) * 96 + 2;
+        const color = c.status === 'online' ? '#22c55e' : c.status === 'syncing' ? '#f59e0b' : '#ef4444';
+        const op = c.status === 'offline' ? '0.4' : '1';
+        return `<div class="absolute" style="left:${pct}%;top:50%;transform:translate(-50%,-50%);opacity:${op};" title="${c.id} → #${c.cursor}">
+          <div class="w-2.5 h-2.5 rounded-full" style="background:${color};box-shadow:0 0 4px ${color};"></div>
+        </div>`;
+      }).join('');
+    }
+
+    // ──────────── BOTTOM BAR UPDATES ────────────
+    function updateBottomBar() {
+      document.getElementById('bbOps').textContent = (10 + Math.random() * 6).toFixed(1);
+      document.getElementById('bbLat').textContent = Math.floor(28 + Math.random() * 20) + 'ms';
+    }
+
+    // ──────────── INIT ────────────
+    renderTopology();
+    renderActivity();
+    renderCommits();
+    renderStreamLog();
+    renderFleetCards();
+    renderCursorMarkers();
+
+    for (let i = 0; i < 8; i++) addFeedEntry();
+
+    setInterval(addFeedEntry, 1200 + Math.random() * 800);
+    setInterval(updateBottomBar, 3000);
+  </script>
+
+</body>
+</html>

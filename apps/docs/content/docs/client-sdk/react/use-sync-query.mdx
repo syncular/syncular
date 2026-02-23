@@ -1,0 +1,159 @@
+---
+title: useSyncQuery
+description: Query local data with reactive updates
+---
+
+`useSyncQuery` queries local data with reactive updates. Automatically re-runs when sync completes.
+
+## Basic Usage
+
+```tsx
+	import { createSyncularReact } from '@syncular/client-react';
+	import type { AppDb } from './db-types';
+
+	const { useSyncQuery } = createSyncularReact<AppDb>();
+
+	function TaskList() {
+	  const { data: tasks, isLoading, error } = useSyncQuery(
+	    ({ selectFrom }) => selectFrom('tasks').selectAll().orderBy('created_at', 'desc')
+	  );
+
+  if (isLoading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+
+  return (
+    <ul>
+      {tasks?.map((task) => <li key={task.id}>{task.title}</li>)}
+    </ul>
+  );
+}
+```
+
+## Query Context
+
+The query function receives a context with `selectFrom`:
+
+```typescript
+interface QueryContext<DB> {
+  selectFrom: <TB extends keyof DB & string>(
+    table: TB
+  ) => SelectQueryBuilder<DB, TB, Record<never, never>>;
+}
+```
+
+## Query Builder Style (Returns Arrays)
+
+```tsx
+const { data: tasks } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('tasks').selectAll().where('completed', '=', 0)
+);
+```
+
+## Async Function Style (Returns Any Shape)
+
+For complex queries or aggregates:
+
+```tsx
+const { data } = useSyncQuery<{ total: number }>(async ({ selectFrom }) => {
+  const row = await selectFrom('tasks')
+    .select((eb) => [eb.fn.count('id').as('total')])
+    .executeTakeFirst();
+
+  return { total: Number(row?.total ?? 0) };
+});
+```
+
+## Options
+
+```typescript
+interface UseSyncQueryOptions {
+  enabled?: boolean;      // Enable/disable query (default: true)
+  deps?: unknown[];       // Additional dependencies that trigger re-fetch
+  keyField?: string;      // Primary key field for fingerprinting (default: 'id')
+  watchTables?: string[]; // Additional tables to invalidate on data:change
+  pollIntervalMs?: number; // Optional local polling interval in ms
+  staleAfterMs?: number;  // Mark result stale after this many ms since last sync
+}
+```
+
+### Conditional Queries
+
+```tsx
+const { data } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('tasks').selectAll(),
+  { enabled: userId !== null }
+);
+```
+
+### With Dependencies
+
+```tsx
+const [filter, setFilter] = useState('all');
+
+const { data } = useSyncQuery(
+  ({ selectFrom }) => {
+    let query = selectFrom('tasks').selectAll();
+    if (filter === 'completed') {
+      query = query.where('completed', '=', 1);
+    }
+    return query;
+  },
+  { deps: [filter] }
+);
+```
+
+### Watch Additional Tables
+
+```tsx
+const { data } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('sync_subscription_state').selectAll(),
+  { watchTables: ['tasks', 'projects'] }
+);
+```
+
+### Local Polling
+
+```tsx
+const { data } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('sync_subscription_state').selectAll(),
+  { pollIntervalMs: 500 }
+);
+```
+
+## Result
+
+```typescript
+interface UseSyncQueryResult<T> {
+  data: T | undefined;
+  isLoading: boolean;
+  error: Error | null;
+  isStale: boolean;
+  lastSyncAt: number | null;
+  refetch: () => Promise<void>;
+}
+```
+
+### Staleness Metadata
+
+```tsx
+const { data, isStale, lastSyncAt } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('tasks').selectAll(),
+  { staleAfterMs: 60_000 }
+);
+```
+
+## Fingerprinting
+
+For large datasets, use `keyField` to optimize re-renders:
+
+```tsx
+const { data: tasks } = useSyncQuery(
+  ({ selectFrom }) => selectFrom('tasks').selectAll(),
+  { keyField: 'id' }
+);
+```
+
+## Next Steps
+
+- [useMutations](/docs/client-sdk/react/use-mutations) - Making changes
+- [Hooks Reference](/docs/client-sdk/react/hooks-reference) - All hooks

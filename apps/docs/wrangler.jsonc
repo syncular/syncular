@@ -1,0 +1,16 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "336bfd20ccb2f56e24ac0afeca6b4837",
+	"main": ".open-next/worker.js",
+	"name": "syncular-docs",
+	"compatibility_date": "2026-01-16",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": false,
+	"routes": [
+		{ "pattern": "docs.syncular.dev", "custom_domain": true }
+	],
+	"assets": {
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
+	}
+}

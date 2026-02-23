@@ -1,0 +1,6 @@
+{
+  "root": true,
+  "title": "Client SDK",
+  "icon": "Smartphone",
+  "pages": ["index", "javascript", "react"]
+}

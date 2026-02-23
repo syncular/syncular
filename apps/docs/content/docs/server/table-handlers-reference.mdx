@@ -1,0 +1,147 @@
+---
+title: Table Handlers Reference
+description: createServerHandler options and ServerTableHandler interface
+---
+
+Table handlers define how each table syncs. Pass them as an array to `createSyncServer`:
+
+```typescript
+import { createSyncServer } from '@syncular/server-hono';
+import { createServerHandler } from '@syncular/server';
+
+const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  handlers: [tasksHandler, projectsHandler],
+  authenticate,
+});
+```
+
+## createServerHandler Options
+
+The `createServerHandler` factory builds a `ServerTableHandler` with sensible defaults for snapshot, apply, authorization, scope extraction, and version tracking.
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+import { codecs } from '@syncular/core';
+
+const handler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+  // Required
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+
+  // Optional
+  primaryKey: 'id',              // default: 'id'
+  versionColumn: 'server_version', // default: 'server_version'
+  dependsOn: ['users'],           // bootstrap ordering
+  snapshotChunkTtlMs: 60_000,     // TTL for cached snapshots
+
+  // Column codecs: App values on wire, DB values at storage boundary
+  // Match by table/column in runtime paths (`sqlType` is optional here)
+  columnCodecs: (col) => {
+    if (col.table === 'tasks' && col.column === 'completed') {
+      return codecs.numberBoolean();
+    }
+    if (col.table === 'tasks' && col.column === 'metadata') {
+      return codecs.stringJson();
+    }
+    return undefined;
+  },
+  codecDialect: 'sqlite',         // default: 'sqlite'
+
+  // Advanced transforms (optional escape hatch)
+  transformInbound: (row, ctx) => ({ ...row }),
+  transformOutbound: (row) => ({ ...row }),
+
+  // Per-operation authorization
+  authorize: async (ctx, op) => true,
+
+  // Custom scope extraction (when column name differs from pattern)
+  extractScopes: (row) => ({ user_id: String(row.owner_id) }),
+
+  // Override default snapshot/apply entirely
+  snapshot: async (ctx, params) => ({ rows: [], nextCursor: null }),
+  applyOperation: async (ctx, op, opIndex) => ({ result: { opIndex, status: 'applied' }, emittedChanges: [] }),
+});
+```
+
+### What the defaults handle
+
+- **Snapshot**: Paginated `SELECT *` filtered by scope columns, cursor-based pagination by primary key
+- **Apply (upsert)**: Insert or update with automatic `server_version` increment, constraint error classification, version conflict detection
+- **Apply (delete)**: Delete by primary key with scope extraction from the existing row
+- **Scope extraction**: Reads scope values from row columns derived from scope patterns
+
+## ServerTableHandler Interface
+
+For advanced use cases where `createServerHandler` doesn't fit, you can implement the interface directly and pass it in the `handlers` array:
+
+```typescript
+interface ServerTableHandler<DB extends SyncCoreDb = SyncCoreDb> {
+  table: string;
+  scopePatterns: string[];
+  dependsOn?: string[];
+  snapshotChunkTtlMs?: number;
+
+  resolveScopes(ctx: ServerContext<DB>): Promise<ScopeValues>;
+  extractScopes(row: Record<string, unknown>): StoredScopes;
+  snapshot(ctx: ServerSnapshotContext<DB>, params: Record<string, unknown> | undefined): Promise<{ rows: unknown[]; nextCursor: string | null }>;
+  applyOperation(ctx: ServerApplyOperationContext<DB>, op: SyncOperation, opIndex: number): Promise<ApplyOperationResult>;
+}
+```
+
+### Context Types
+
+```typescript
+interface ServerContext<DB extends SyncCoreDb> {
+  db: Kysely<DB> | Transaction<DB>;
+  actorId: string;
+}
+
+interface ServerSnapshotContext<DB extends SyncCoreDb> extends ServerContext<DB> {
+  scopeValues: ScopeValues;
+  cursor: string | null;
+  limit: number;
+}
+
+interface ServerApplyOperationContext<DB extends SyncCoreDb> extends ServerContext<DB> {
+  trx: Transaction<DB>;
+  clientId: string;
+  commitId: string;
+  schemaVersion?: number;
+}
+```
+
+### Result Types
+
+```typescript
+interface ApplyOperationResult {
+  result: SyncOperationResult;
+  emittedChanges: EmittedChange[];
+}
+```
+
+When emitting changes, include scopes so the realtime system knows which clients to notify:
+
+```typescript
+emittedChanges.push({
+  table: 'tasks',
+  row_id: op.row_id,
+  op: 'upsert',
+  row_json: updated,
+  row_version: updated.server_version,
+  scopes: { user_id: row.user_id, project_id: row.project_id },
+});
+```
+
+## Next Steps
+
+- [Table Handlers Guide](/docs/build/table-handlers) -- Patterns and authorization
+- [Subscription Registry](/docs/server/subscription-registry) -- Configure scopes

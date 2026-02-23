@@ -1,0 +1,125 @@
+{
+  "name": "@syncular/ui",
+  "version": "0.0.0",
+  "description": "Reusable Syncular UI components and styles",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/ui"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "ui",
+    "react"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./charts": {
+      "bun": "./src/charts/index.ts",
+      "browser": "./src/charts/index.ts",
+      "import": {
+        "types": "./dist/charts/index.d.ts",
+        "default": "./dist/charts/index.js"
+      }
+    },
+    "./console": {
+      "bun": "./src/console/index.ts",
+      "browser": "./src/console/index.ts",
+      "import": {
+        "types": "./dist/console/index.d.ts",
+        "default": "./dist/console/index.js"
+      }
+    },
+    "./forms": {
+      "bun": "./src/forms/index.ts",
+      "browser": "./src/forms/index.ts",
+      "import": {
+        "types": "./dist/forms/index.d.ts",
+        "default": "./dist/forms/index.js"
+      }
+    },
+    "./primitives": {
+      "bun": "./src/primitives/index.ts",
+      "browser": "./src/primitives/index.ts",
+      "import": {
+        "types": "./dist/primitives/index.d.ts",
+        "default": "./dist/primitives/index.js"
+      }
+    },
+    "./observable-universe": {
+      "bun": "./src/observable-universe/index.ts",
+      "browser": "./src/observable-universe/index.ts",
+      "import": {
+        "types": "./dist/observable-universe/index.d.ts",
+        "default": "./dist/observable-universe/index.js"
+      }
+    },
+    "./demo": {
+      "bun": "./src/demo/index.ts",
+      "browser": "./src/demo/index.ts",
+      "import": {
+        "types": "./dist/demo/index.d.ts",
+        "default": "./dist/demo/index.js"
+      }
+    },
+    "./navigation": {
+      "bun": "./src/navigation/index.ts",
+      "browser": "./src/navigation/index.ts",
+      "import": {
+        "types": "./dist/navigation/index.d.ts",
+        "default": "./dist/navigation/index.js"
+      }
+    },
+    "./styles.css": "./dist/styles.css",
+    "./styles.source.css": "./src/styles/styles.css",
+    "./styles/tokens.css": "./src/styles/tokens.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build:css": "bunx @tailwindcss/cli -i src/styles/styles.css -o dist/styles.css",
+    "build": "tsgo && bun run build:css",
+    "release": "bunx syncular-publish"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.575.0",
+    "recharts": "^3.7.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@tailwindcss/cli": "^4.2.0",
+    "@types/react": "^19.2.14"
+  }
+}

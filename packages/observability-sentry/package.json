@@ -1,0 +1,76 @@
+{
+  "name": "@syncular/observability-sentry",
+  "version": "0.0.0",
+  "description": "Sentry adapters for Syncular telemetry",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/observability-sentry"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "observability",
+    "sentry",
+    "telemetry"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      }
+    },
+    "./browser": {
+      "bun": "./src/browser.ts",
+      "import": {
+        "types": "./src/browser.ts",
+        "default": "./src/browser.ts"
+      }
+    },
+    "./cloudflare": {
+      "bun": "./src/cloudflare.ts",
+      "import": {
+        "types": "./src/cloudflare.ts",
+        "default": "./src/cloudflare.ts"
+      }
+    },
+    "./shared": {
+      "bun": "./src/shared.ts",
+      "import": {
+        "types": "./src/shared.ts",
+        "default": "./src/shared.ts"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test src",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@sentry/cloudflare": "^10.39.0",
+    "@sentry/react": "^10.39.0",
+    "@syncular/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

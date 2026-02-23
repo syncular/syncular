@@ -1,0 +1,64 @@
+---
+title: Console
+description: Operator guides for triage, payload forensics, and maintenance workflows
+---
+
+# Console
+
+The Console is the operator surface for Syncular deployments. Use it to investigate incidents, inspect request payloads, and run operational actions safely.
+
+> **You are here:** Console guides (human workflows).
+>
+> **API reference:** use [/docs/api](/docs/api) for request/response schemas.
+>
+> **Integration paths:** see [Console Integration](/docs/build/console-integration).
+
+## Start here
+
+<Cards>
+  <Card title="Connect and Auth" href="/docs/console/connect-and-auth">
+    Configure endpoint, token auth, and partition context
+  </Card>
+  <Card title="Command" href="/docs/console/command">
+    Read topology, KPIs, and live activity
+  </Card>
+  <Card title="Stream Investigation" href="/docs/console/stream-investigation">
+    Drill into commits, events, and payload snapshots
+  </Card>
+</Cards>
+
+## Operate
+
+<Cards>
+  <Card title="Fleet" href="/docs/console/fleet">
+    Monitor client lag, health, and evict behavior
+  </Card>
+  <Card title="Operations" href="/docs/console/operations">
+    Prune, compact, notify-data-change, and audit
+  </Card>
+  <Card title="Storage" href="/docs/console/storage">
+    Browse blob objects, filter by prefix, download, and delete
+  </Card>
+  <Card title="Config and API Keys" href="/docs/console/config-and-api-keys">
+    Manage credentials, filters, and key lifecycle
+  </Card>
+</Cards>
+
+## Runbooks
+
+<Cards>
+  <Card title="Incident Playbooks" href="/docs/console/incident-playbooks">
+    Step-by-step operational responses for common failures
+  </Card>
+  <Card title="Troubleshooting" href="/docs/console/troubleshooting">
+    Fast diagnosis for connectivity and data visibility issues
+  </Card>
+</Cards>
+
+## Related API pages
+
+- [Timeline endpoint](/docs/api/getConsoleTimeline)
+- [Operations endpoint](/docs/api/getConsoleOperations)
+- [Request payload endpoint](/docs/api/getConsoleEventsByIdPayload)
+- [Notify data change endpoint](/docs/api/postConsoleNotifyDataChange)
+- Storage endpoints: `GET /console/storage`, `GET /console/storage/{key}/download`, `DELETE /console/storage/{key}`

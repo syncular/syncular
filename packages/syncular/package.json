@@ -1,0 +1,331 @@
+{
+  "name": "syncular",
+  "version": "0.0.0",
+  "description": "Offline-first sync framework for TypeScript",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/syncular"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./client": {
+      "bun": "./src/client.ts",
+      "import": {
+        "types": "./dist/client.d.ts",
+        "default": "./dist/client.js"
+      }
+    },
+    "./core": {
+      "bun": "./src/core.ts",
+      "import": {
+        "types": "./dist/core.d.ts",
+        "default": "./dist/core.js"
+      }
+    },
+    "./client-react": {
+      "bun": "./src/client-react.ts",
+      "import": {
+        "types": "./dist/client-react.d.ts",
+        "default": "./dist/client-react.js"
+      }
+    },
+    "./console": {
+      "bun": "./src/console.ts",
+      "import": {
+        "types": "./dist/console.d.ts",
+        "default": "./dist/console.js"
+      }
+    },
+    "./console/styles.css": "./src/console-styles.css",
+    "./console/styles.source.css": "./src/console-styles.source.css",
+    "./console-server": {
+      "bun": "./src/console-server.ts",
+      "import": {
+        "types": "./dist/console-server.d.ts",
+        "default": "./dist/console-server.js"
+      }
+    },
+    "./ui": {
+      "bun": "./src/ui.ts",
+      "import": {
+        "types": "./dist/ui.d.ts",
+        "default": "./dist/ui.js"
+      }
+    },
+    "./ui/observable-universe": {
+      "bun": "./src/ui-observable-universe.ts",
+      "import": {
+        "types": "./dist/ui-observable-universe.d.ts",
+        "default": "./dist/ui-observable-universe.js"
+      }
+    },
+    "./ui/styles.css": "./src/ui-styles.css",
+    "./client-plugin-encryption": {
+      "bun": "./src/client-plugin-encryption.ts",
+      "import": {
+        "types": "./dist/client-plugin-encryption.d.ts",
+        "default": "./dist/client-plugin-encryption.js"
+      }
+    },
+    "./server": {
+      "bun": "./src/server.ts",
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      }
+    },
+    "./server-hono": {
+      "bun": "./src/server-hono.ts",
+      "import": {
+        "types": "./dist/server-hono.d.ts",
+        "default": "./dist/server-hono.js"
+      }
+    },
+    "./server-service-worker": {
+      "bun": "./src/server-service-worker.ts",
+      "import": {
+        "types": "./dist/server-service-worker.d.ts",
+        "default": "./dist/server-service-worker.js"
+      }
+    },
+    "./server-storage-filesystem": {
+      "bun": "./src/server-storage-filesystem.ts",
+      "import": {
+        "types": "./dist/server-storage-filesystem.d.ts",
+        "default": "./dist/server-storage-filesystem.js"
+      }
+    },
+    "./server-storage-s3": {
+      "bun": "./src/server-storage-s3.ts",
+      "import": {
+        "types": "./dist/server-storage-s3.d.ts",
+        "default": "./dist/server-storage-s3.js"
+      }
+    },
+    "./server-cloudflare": {
+      "bun": "./src/server-cloudflare.ts",
+      "import": {
+        "types": "./dist/server-cloudflare.d.ts",
+        "default": "./dist/server-cloudflare.js"
+      }
+    },
+    "./server-dialect-sqlite": {
+      "bun": "./src/server-dialect-sqlite.ts",
+      "import": {
+        "types": "./dist/server-dialect-sqlite.d.ts",
+        "default": "./dist/server-dialect-sqlite.js"
+      }
+    },
+    "./server-dialect-postgres": {
+      "bun": "./src/server-dialect-postgres.ts",
+      "import": {
+        "types": "./dist/server-dialect-postgres.d.ts",
+        "default": "./dist/server-dialect-postgres.js"
+      }
+    },
+    "./transport-http": {
+      "bun": "./src/transport-http.ts",
+      "import": {
+        "types": "./dist/transport-http.d.ts",
+        "default": "./dist/transport-http.js"
+      }
+    },
+    "./transport-ws": {
+      "bun": "./src/transport-ws.ts",
+      "import": {
+        "types": "./dist/transport-ws.d.ts",
+        "default": "./dist/transport-ws.js"
+      }
+    },
+    "./relay": {
+      "bun": "./src/relay.ts",
+      "import": {
+        "types": "./dist/relay.d.ts",
+        "default": "./dist/relay.js"
+      }
+    },
+    "./migrations": {
+      "bun": "./src/migrations.ts",
+      "import": {
+        "types": "./dist/migrations.d.ts",
+        "default": "./dist/migrations.js"
+      }
+    },
+    "./typegen": {
+      "bun": "./src/typegen.ts",
+      "import": {
+        "types": "./dist/typegen.d.ts",
+        "default": "./dist/typegen.js"
+      }
+    },
+    "./encryption": {
+      "bun": "./src/encryption.ts",
+      "import": {
+        "types": "./dist/encryption.d.ts",
+        "default": "./dist/encryption.js"
+      }
+    },
+    "./observability-sentry": {
+      "bun": "./src/observability-sentry.ts",
+      "import": {
+        "types": "./dist/observability-sentry.d.ts",
+        "default": "./dist/observability-sentry.js"
+      }
+    },
+    "./testkit": {
+      "bun": "./src/testkit.ts",
+      "import": {
+        "types": "./dist/testkit.d.ts",
+        "default": "./dist/testkit.js"
+      }
+    },
+    "./dialect-bun-sqlite": {
+      "bun": "./src/dialect-bun-sqlite.ts",
+      "import": {
+        "types": "./dist/dialect-bun-sqlite.d.ts",
+        "default": "./dist/dialect-bun-sqlite.js"
+      }
+    },
+    "./dialect-better-sqlite3": {
+      "bun": "./src/dialect-better-sqlite3.ts",
+      "import": {
+        "types": "./dist/dialect-better-sqlite3.d.ts",
+        "default": "./dist/dialect-better-sqlite3.js"
+      }
+    },
+    "./dialect-electron-sqlite": {
+      "bun": "./src/dialect-electron-sqlite.ts",
+      "import": {
+        "types": "./dist/dialect-electron-sqlite.d.ts",
+        "default": "./dist/dialect-electron-sqlite.js"
+      }
+    },
+    "./dialect-pglite": {
+      "bun": "./src/dialect-pglite.ts",
+      "import": {
+        "types": "./dist/dialect-pglite.d.ts",
+        "default": "./dist/dialect-pglite.js"
+      }
+    },
+    "./dialect-sqlite3": {
+      "bun": "./src/dialect-sqlite3.ts",
+      "import": {
+        "types": "./dist/dialect-sqlite3.d.ts",
+        "default": "./dist/dialect-sqlite3.js"
+      }
+    },
+    "./dialect-neon": {
+      "bun": "./src/dialect-neon.ts",
+      "import": {
+        "types": "./dist/dialect-neon.d.ts",
+        "default": "./dist/dialect-neon.js"
+      }
+    },
+    "./dialect-libsql": {
+      "bun": "./src/dialect-libsql.ts",
+      "import": {
+        "types": "./dist/dialect-libsql.d.ts",
+        "default": "./dist/dialect-libsql.js"
+      }
+    },
+    "./dialect-d1": {
+      "bun": "./src/dialect-d1.ts",
+      "import": {
+        "types": "./dist/dialect-d1.d.ts",
+        "default": "./dist/dialect-d1.js"
+      }
+    },
+    "./dialect-wa-sqlite": {
+      "bun": "./src/dialect-wa-sqlite.ts",
+      "import": {
+        "types": "./dist/dialect-wa-sqlite.d.ts",
+        "default": "./dist/dialect-wa-sqlite.js"
+      }
+    },
+    "./dialect-expo-sqlite": {
+      "bun": "./src/dialect-expo-sqlite.ts",
+      "import": {
+        "types": "./dist/dialect-expo-sqlite.d.ts",
+        "default": "./dist/dialect-expo-sqlite.js"
+      }
+    },
+    "./dialect-react-native-nitro-sqlite": {
+      "bun": "./src/dialect-react-native-nitro-sqlite.ts",
+      "import": {
+        "types": "./dist/dialect-react-native-nitro-sqlite.d.ts",
+        "default": "./dist/dialect-react-native-nitro-sqlite.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/client-plugin-encryption": "workspace:*",
+    "@syncular/client-react": "workspace:*",
+    "@syncular/console": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-better-sqlite3": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-d1": "workspace:*",
+    "@syncular/dialect-electron-sqlite": "workspace:*",
+    "@syncular/dialect-expo-sqlite": "workspace:*",
+    "@syncular/dialect-libsql": "workspace:*",
+    "@syncular/dialect-neon": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-react-native-nitro-sqlite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/dialect-wa-sqlite": "workspace:*",
+    "@syncular/migrations": "workspace:*",
+    "@syncular/observability-sentry": "workspace:*",
+    "@syncular/relay": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-cloudflare": "workspace:*",
+    "@syncular/server-dialect-postgres": "workspace:*",
+    "@syncular/server-dialect-sqlite": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/server-service-worker": "workspace:*",
+    "@syncular/server-storage-filesystem": "workspace:*",
+    "@syncular/server-storage-s3": "workspace:*",
+    "@syncular/testkit": "workspace:*",
+    "@syncular/transport-http": "workspace:*",
+    "@syncular/transport-ws": "workspace:*",
+    "@syncular/typegen": "workspace:*",
+    "@syncular/ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@syncular/config": "workspace:*"
+  }
+}

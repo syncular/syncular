@@ -1,0 +1,44 @@
+{
+  "name": "@syncular/tests-dialects",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./harness.ts",
+  "types": "./harness.ts",
+  "exports": {
+    ".": {
+      "types": "./harness.ts",
+      "import": "./harness.ts"
+    },
+    "./conformance-db": {
+      "types": "./conformance-db.ts",
+      "import": "./conformance-db.ts"
+    },
+    "./schema": {
+      "types": "./schema.ts",
+      "import": "./schema.ts"
+    },
+    "./column-codecs": {
+      "types": "./column-codecs.ts",
+      "import": "./column-codecs.ts"
+    },
+    "./json": {
+      "types": "./json.ts",
+      "import": "./json.ts"
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "test": "bun test ."
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-better-sqlite3": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-libsql": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "kysely": "*"
+  }
+}

@@ -1,0 +1,40 @@
+---
+title: Fleet
+description: Monitor per-client sync state, lag, and eviction actions
+---
+
+# Fleet
+
+Fleet is the client-centric operational view. Use it to identify which clients are behind, stale, or disconnected.
+
+## Key concepts
+
+- **Head**: latest commit sequence on the server.
+- **Cursor**: last commit sequence acknowledged by a client.
+- **Lag**: `head - cursor` for each client.
+- **Activity state**: online, syncing, or stale/offline.
+
+## What to check
+
+1. **Max lag** trend over time.
+2. **Which clients are behind** and by how much.
+3. **Connection mode** (`realtime` vs `polling`) and path (`direct` vs `relay`).
+4. **Effective scopes** for clients that appear missing data.
+
+## Evicting a client
+
+Use **Evict** when a client has irrecoverable cursor/state issues.
+
+Effect:
+
+- deletes that client cursor record
+- forces bootstrap on next sync cycle
+- creates an operation-audit entry
+
+Use partition filters before eviction in multi-tenant setups.
+
+## Related API pages
+
+- [Clients](/docs/api/getConsoleClients)
+- [Evict client](/docs/api/deleteConsoleClientsById)
+- [Operations log](/docs/api/getConsoleOperations)

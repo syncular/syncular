@@ -1,0 +1,15 @@
+{
+  "name": "@syncular/config",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "tsgo": "tsgo --noEmit -p tsconfig.bun.json"
+  },
+  "bin": {
+    "syncular-publish": "./bin/publish.ts",
+    "syncular-fix-esm-imports": "./bin/fix-esm-imports.ts"
+  },
+  "dependencies": {
+    "@types/node": "^25.3.0"
+  }
+}

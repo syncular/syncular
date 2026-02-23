@@ -1,0 +1,42 @@
+---
+title: Web
+description: Browser runtimes, WASM SQLite dialects, persistence, and setup tips
+---
+
+# Web
+
+For web apps, Syncular runs fully client-side: your UI reads and writes to **local SQLite**, then sync runs in the background.
+
+For browser-hosted server APIs (no remote backend), see [Service Worker Server](/docs/build/service-worker-server).
+
+## Recommended dialects
+
+Pick one of these:
+
+- **`@syncular/dialect-wa-sqlite`**: default recommendation for most web apps
+- **`@syncular/dialect-pglite`**: if you specifically want Postgres compatibility locally
+
+## Minimal setup (wa-sqlite)
+
+```ts
+import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
+import { ensureClientSyncSchema } from '@syncular/client';
+
+const db = createWaSqliteDb({ fileName: 'app.db' });
+await ensureClientSyncSchema(db);
+```
+
+Then wire it into your React provider (see [Client Setup](/docs/build/client-setup)).
+
+## Persistence + storage notes
+
+Browser storage has constraints (quota, eviction, cross-browser behavior). In practice:
+- Keep the DB file name stable.
+- Plan for “cold start” bootstrap to be resilient (snapshots + incremental pulls).
+- Treat the local DB as the primary read/write path, but expect that users can clear site data.
+
+## Next steps
+
+- [Client Setup](/docs/build/client-setup)
+- [Performance](/docs/build/performance) (bootstrap and large datasets)
+- [Service Worker Server](/docs/build/service-worker-server)

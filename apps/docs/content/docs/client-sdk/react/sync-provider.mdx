@@ -1,0 +1,124 @@
+---
+title: SyncProvider
+description: Configure sync context for your React app
+---
+
+SyncProvider provides sync context to child components.
+
+## Basic Usage
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { SyncProvider } = createSyncularReact<AppDb>();
+
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={deviceId}
+>
+  <App />
+</SyncProvider>
+```
+
+## Props
+
+| Prop | Type | Required | Description |
+|------|------|----------|-------------|
+| `db` | `Kysely<DB>` | Yes | Database instance |
+| `transport` | `SyncTransport` | Yes | HTTP or WebSocket transport |
+| `sync` | `ClientSyncConfig<DB, Identity>` | Yes | Sync contract (`handlers` + `subscriptions(identity)`) |
+| `identity` | `Identity` | Yes | Identity passed to `sync.subscriptions(identity)` |
+| `clientId` | `string \| null` | No | Device/installation ID |
+| `limitCommits` | `number` | No | Commits per pull (default: 50) |
+| `limitSnapshotRows` | `number` | No | Snapshot rows per page (default: 1000) |
+| `maxSnapshotPages` | `number` | No | Snapshot pages per pull (default: 1) |
+| `stateId` | `string` | No | State row ID (multi-profile support) |
+| `pollIntervalMs` | `number` | No | Polling interval in ms |
+| `maxRetries` | `number` | No | Max retries before giving up |
+| `migrate` | `Function` | No | Migration function |
+| `realtimeEnabled` | `boolean` | No | Enable WebSocket realtime |
+| `realtimeFallbackPollMs` | `number` | No | Fallback poll interval |
+| `plugins` | `SyncClientPlugin[]` | No | Client plugins |
+| `autoStart` | `boolean` | No | Start on mount (default: true) |
+| `renderWhileStarting` | `boolean` | No | Render before ready (default: false) |
+| `onError` | `Function` | No | Error callback |
+| `onConflict` | `Function` | No | Conflict callback |
+| `onDataChange` | `Function` | No | Data change callback |
+
+## Dynamic Subscriptions
+
+```tsx
+const [projectId, setProjectId] = useState('default');
+const sync = defineClientSync<AppDb, ['user:{user_id}', 'project:{project_id}'], { actorId: string }>({});
+
+sync.addHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  subscribe: ({ identity }) => [
+    { id: 'my-tasks', table: 'tasks', scopes: { user_id: identity.actorId } },
+    { id: `project-${projectId}`, table: 'tasks', scopes: { project_id: projectId } },
+  ],
+});
+
+<SyncProvider
+  sync={sync}
+  identity={{ actorId: userId }}
+  ...
+>
+  {children}
+</SyncProvider>
+```
+
+## With Plugins
+
+```tsx
+import { createIncrementingVersionPlugin } from '@syncular/client';
+
+const plugins = [createIncrementingVersionPlugin()];
+
+<SyncProvider plugins={plugins} ... />
+```
+
+## With Realtime
+
+```tsx
+<SyncProvider
+  transport={wsTransport}
+  realtimeEnabled={true}
+  realtimeFallbackPollMs={10000}
+  ...
+/>
+```
+
+## Migration Function
+
+```tsx
+<SyncProvider
+  migrate={async (db) => {
+    await ensureClientSyncSchema(db);
+    await migrateAppSchema(db);
+  }}
+  ...
+/>
+```
+
+## Conditional Sync
+
+Disable sync when user is logged out:
+
+```tsx
+{isLoggedIn ? (
+  <SyncProvider identity={{ actorId: userId }} ... />
+) : (
+  <LoggedOutScreen />
+)}
+```
+
+## Next Steps
+
+- [useSyncQuery](/docs/client-sdk/react/use-sync-query) - Querying data
+- [useMutations](/docs/client-sdk/react/use-mutations) - Making changes

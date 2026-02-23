@@ -1,0 +1,127 @@
+---
+title: Server Overview
+description: Server-side sync infrastructure for Syncular
+---
+
+The `@syncular/server` and `@syncular/server-hono` packages provide server-side infrastructure for Syncular. This page is an **API reference** -- for step-by-step setup instructions, see the [Server Setup Guide](/docs/build/server-setup).
+
+### What you'll learn
+
+- How to install and configure the server packages
+- Table handlers and the `createServerHandler` factory
+- What database tables the sync engine creates
+- Available HTTP/WebSocket endpoints
+- How to add blob storage support
+
+## Installation
+
+```bash
+npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install kysely pg hono
+```
+
+## Quick Start
+
+```typescript
+import { Hono } from 'hono';
+import { createSyncRoutes } from '@syncular/server-hono';
+import { ensureSyncSchema } from '@syncular/server';
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+// Run migrations
+const dialect = createPostgresServerDialect();
+await ensureSyncSchema(db, dialect);
+
+// Register table handlers
+const handlers = [tasksHandler];
+
+// Create routes
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers,
+  authenticate,
+});
+
+const app = new Hono();
+app.route('/api/sync', syncRoutes);
+```
+
+## Core Concepts
+
+### Table Handlers
+
+Each synced table needs a handler that defines authorization and sync behavior. Use `createServerHandler` for declarative setup:
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+
+const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+
+// Pass handlers as an array to createSyncServer
+const { syncRoutes } = createSyncServer({
+  db, dialect,
+  handlers: [tasksHandler, projectsHandler],
+  authenticate,
+};
+```
+
+## Sync Tables
+
+Running migrations creates these tables:
+
+| Table | Purpose |
+|-------|---------|
+| `sync_commits` | Commit log with idempotency keys |
+| `sync_changes` | Individual changes within commits (with JSONB scopes) |
+| `sync_client_cursors` | Per-client cursor tracking |
+| `sync_snapshot_chunks` | Large bootstrap chunk storage |
+
+## Endpoints
+
+The sync routes provide:
+
+These endpoints are **relative to where you mount** the sync routes (e.g. mount at `/api/sync` → sync is `POST /api/sync`).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | POST | Combined sync (`push` and/or `pull`) |
+| `/snapshot-chunks/:chunkId` | GET | Download large snapshot chunks |
+| `/realtime` | GET | WebSocket connection (if enabled) |
+
+## Blob Storage
+
+Handle binary files with the blob manager:
+
+```typescript
+import { createBlobManager, createDatabaseBlobStorageAdapter, createHmacTokenSigner } from '@syncular/server';
+import { createBlobRoutes } from '@syncular/server-hono';
+
+// Create storage adapter
+const tokenSigner = createHmacTokenSigner(process.env.BLOB_SECRET!);
+const adapter = createDatabaseBlobStorageAdapter({ db, baseUrl, tokenSigner });
+
+// Create blob manager
+const blobManager = createBlobManager({ db, adapter });
+
+// Add blob routes
+const blobRoutes = createBlobRoutes({ blobManager, authenticate, tokenSigner, db });
+app.route('/api/sync', blobRoutes);
+```
+
+See the [Blob Storage Guide](/docs/build/blob-storage) for full documentation.
+
+## Next Steps
+
+**Reference pages** (detailed API docs):
+- [Table Handlers Reference](/docs/server/table-handlers-reference) - Define table handlers
+- [Table Handlers & Scopes](/docs/server/subscription-registry) - Configure scopes
+- [Hono Adapter](/docs/server/hono-adapter) - Route configuration
+
+**Guides** (step-by-step tutorials):
+- [Server Setup Guide](/docs/build/server-setup) - End-to-end server setup walkthrough
+- [Blob Storage](/docs/build/blob-storage) - Binary file handling

@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Syncular — Event Horizon IDE</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Geist', 'system-ui', 'sans-serif'],
+            mono: ['"Geist Mono"', 'monospace'],
+          },
+          colors: {
+            surface: '#09090b',
+            accent: '#f59e0b',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Geist', system-ui, sans-serif;
+      background: #09090b;
+      color: #e4e4e7;
+      overflow-x: hidden;
+    }
+    .font-mono { font-family: 'Geist Mono', monospace !important; }
+
+    /* ── Syntax highlighting ── */
+    .syn-kw  { color: #c084fc; }          /* keywords: await, const, import, from */
+    .syn-fn  { color: #60a5fa; }          /* function / method names */
+    .syn-str { color: #4ade80; }          /* strings */
+    .syn-ty  { color: #22d3ee; }          /* types / interfaces */
+    .syn-num { color: #fb923c; }          /* numbers / booleans */
+    .syn-cm  { color: rgba(255,255,255,0.25); } /* comments */
+    .syn-op  { color: rgba(255,255,255,0.45); } /* operators, punctuation */
+    .syn-pr  { color: #a78bfa; }          /* property names */
+
+    /* ── Editor chrome ── */
+    .editor {
+      background: #111113;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      overflow: hidden;
+      min-height: 320px;
+    }
+    .editor-titlebar {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      gap: 7px;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .dot-r { background: #ef4444; opacity: 0.7; }
+    .dot-y { background: #eab308; opacity: 0.7; }
+    .dot-g { background: #22c55e; opacity: 0.7; }
+    .editor-tab {
+      margin-left: 12px;
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,0.5);
+      padding: 3px 10px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .editor-tab.active {
+      color: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.07);
+    }
+    .editor-body {
+      padding: 16px 0;
+      font-family: 'Geist Mono', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      min-height: 240px;
+      display: flex;
+    }
+    .line-numbers {
+      padding: 0 12px 0 16px;
+      text-align: right;
+      color: rgba(255,255,255,0.12);
+      user-select: none;
+      font-size: 12px;
+      line-height: 1.7;
+      min-width: 44px;
+    }
+    .code-content {
+      padding: 0 16px 0 8px;
+      flex: 1;
+      overflow: hidden;
+      white-space: pre;
+    }
+
+    /* ── Cursor ── */
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 16px;
+      background: #f59e0b;
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+      margin-left: 1px;
+    }
+
+    /* ── Event horizon line ── */
+    .event-horizon {
+      width: 2px;
+      background: linear-gradient(180deg, transparent 0%, #f59e0b 30%, #f59e0b 70%, transparent 100%);
+      position: relative;
+      flex-shrink: 0;
+      margin: 0 -1px;
+      z-index: 10;
+    }
+    .event-horizon::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      width: 40px;
+      left: -19px;
+      background: radial-gradient(ellipse at center, rgba(245,158,11,0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    /* ── Sync dot traveling ── */
+    @keyframes travelRight {
+      0% { left: 0; opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { left: 100%; opacity: 0; }
+    }
+    .sync-dot {
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      background: #f59e0b;
+      border-radius: 50%;
+      box-shadow: 0 0 12px 3px rgba(245,158,11,0.6);
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    /* ── Commit log ticker ── */
+    .commit-log {
+      background: #0c0c0e;
+      border: 1px solid rgba(255,255,255,0.05);
+      border-radius: 8px;
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+      line-height: 1.8;
+      padding: 12px 16px;
+      overflow: hidden;
+      max-height: 80px;
+    }
+    .log-entry {
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    .log-entry.visible { opacity: 1; }
+    .log-ts { color: rgba(255,255,255,0.2); }
+    .log-src { color: #60a5fa; }
+    .log-op { color: #f59e0b; }
+    .log-detail { color: rgba(255,255,255,0.35); }
+
+    /* ── Architecture strip ── */
+    .arch-node {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 6px;
+      padding: 10px 16px;
+      font-family: 'Geist Mono', monospace;
+      font-size: 12px;
+      color: rgba(255,255,255,0.6);
+      white-space: nowrap;
+      position: relative;
+    }
+    .arch-arrow {
+      width: 48px;
+      height: 2px;
+      background: rgba(255,255,255,0.08);
+      position: relative;
+      flex-shrink: 0;
+      align-self: center;
+    }
+    .arch-arrow-dot {
+      position: absolute;
+      width: 5px;
+      height: 5px;
+      background: #f59e0b;
+      border-radius: 50%;
+      top: -1.5px;
+      box-shadow: 0 0 6px rgba(245,158,11,0.5);
+    }
+    @keyframes archFlow {
+      0% { left: 0; }
+      100% { left: calc(100% - 5px); }
+    }
+
+    /* ── Feature code blocks ── */
+    .feature-block {
+      background: #111113;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .feature-block-header {
+      padding: 10px 16px;
+      background: rgba(255,255,255,0.02);
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,0.35);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .feature-block-body {
+      padding: 16px;
+      font-family: 'Geist Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.75;
+      overflow-x: auto;
+    }
+
+    /* ── Stats bar ── */
+    .stat-item {
+      text-align: center;
+      padding: 20px 0;
+    }
+    .stat-value {
+      font-family: 'Geist Mono', monospace;
+      font-size: 20px;
+      font-weight: 600;
+      color: #f59e0b;
+    }
+    .stat-label {
+      font-size: 13px;
+      color: rgba(255,255,255,0.35);
+      margin-top: 4px;
+    }
+
+    /* ── Misc ── */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-in {
+      opacity: 0;
+      animation: fadeInUp 0.6s ease forwards;
+    }
+    .delay-1 { animation-delay: 0.1s; }
+    .delay-2 { animation-delay: 0.25s; }
+    .delay-3 { animation-delay: 0.4s; }
+    .delay-4 { animation-delay: 0.6s; }
+
+    /* ── Section labels ── */
+    .section-label {
+      font-family: 'Geist Mono', monospace;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: rgba(255,255,255,0.2);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════ NAV ═══════════════ -->
+  <nav class="fixed top-0 left-0 right-0 z-50" style="background: rgba(9,9,11,0.85); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(255,255,255,0.04);">
+    <div class="max-w-6xl mx-auto flex items-center justify-between px-6 py-3">
+      <div class="flex items-center gap-6">
+        <a href="#" class="font-mono text-sm font-medium text-white/80 hover:text-white transition">syncular</a>
+        <div class="hidden sm:flex items-center gap-1 font-mono text-xs text-white/20">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500/60 inline-block"></span>
+          <span>v0.1.0-alpha</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-5 font-mono text-xs">
+        <a href="#architecture" class="text-white/30 hover:text-white/70 transition">arch</a>
+        <a href="#features" class="text-white/30 hover:text-white/70 transition">api</a>
+        <a href="#install" class="text-white/30 hover:text-white/70 transition">install</a>
+        <a href="https://github.com/nicknisi/syncular" class="text-white/30 hover:text-white/70 transition">github</a>
+        <a href="/docs" class="text-white/30 hover:text-white/70 transition">docs</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ═══════════════ HERO ═══════════════ -->
+  <section class="min-h-screen flex flex-col justify-center pt-20 pb-16 px-4">
+    <div class="max-w-6xl mx-auto w-full">
+
+      <!-- Title -->
+      <div class="text-center mb-10 animate-in">
+        <p class="section-label mb-3">the singularity between your clients</p>
+        <h1 class="text-3xl sm:text-4xl md:text-5xl font-semibold tracking-tight text-white/90 leading-tight">
+          Write locally. Query instantly.<br />
+          <span class="text-white/40">Sync invisibly.</span>
+        </h1>
+        <p class="mt-4 font-mono text-sm text-white/25 max-w-xl mx-auto">
+          Offline-first SQLite sync for TypeScript. Every client gets a full database. Every mutation syncs through the event horizon.
+        </p>
+      </div>
+
+      <!-- Dual editor panes -->
+      <div class="flex flex-col lg:flex-row items-stretch gap-0 animate-in delay-2" id="hero-editors">
+        <!-- Client A -->
+        <div class="editor flex-1 min-w-0">
+          <div class="editor-titlebar">
+            <div class="dot dot-r"></div>
+            <div class="dot dot-y"></div>
+            <div class="dot dot-g"></div>
+            <div class="editor-tab active">client-a.ts</div>
+            <div class="ml-auto font-mono text-[10px] text-white/15">CLIENT A</div>
+          </div>
+          <div class="editor-body">
+            <div class="line-numbers" id="linesA">1
+2
+3
+4
+5
+6</div>
+            <div class="code-content" id="codeA"></div>
+          </div>
+        </div>
+
+        <!-- Event Horizon -->
+        <div class="hidden lg:flex flex-col items-center justify-center relative" style="width: 48px;">
+          <div class="event-horizon flex-1"></div>
+          <div class="absolute font-mono text-[9px] text-amber-500/40 -rotate-90 whitespace-nowrap" style="letter-spacing: 0.2em;">EVENT HORIZON</div>
+          <div id="syncDotTrack" class="absolute inset-0" style="pointer-events: none;"></div>
+        </div>
+
+        <!-- Client B -->
+        <div class="editor flex-1 min-w-0">
+          <div class="editor-titlebar">
+            <div class="dot dot-r"></div>
+            <div class="dot dot-y"></div>
+            <div class="dot dot-g"></div>
+            <div class="editor-tab active">client-b.ts</div>
+            <div class="ml-auto font-mono text-[10px] text-white/15">CLIENT B</div>
+          </div>
+          <div class="editor-body">
+            <div class="line-numbers" id="linesB">1
+2
+3
+4</div>
+            <div class="code-content" id="codeB"><span class="syn-cm">// waiting for sync...</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Commit log ticker -->
+      <div class="commit-log mt-4 animate-in delay-3" id="commitLog">
+        <div class="log-entry visible">
+          <span class="log-ts">[--:--.---]</span> <span class="syn-cm">waiting for mutations...</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ═══════════════ ARCHITECTURE STRIP ═══════════════ -->
+  <section id="architecture" class="py-24 px-4" style="border-top: 1px solid rgba(255,255,255,0.04);">
+    <div class="max-w-5xl mx-auto">
+      <p class="section-label text-center mb-10">data flow</p>
+
+      <!-- Desktop arch diagram -->
+      <div class="hidden md:flex items-center justify-center gap-0 overflow-x-auto" id="archStrip">
+        <div class="arch-node">
+          <span class="syn-ty">Client</span> <span class="syn-cm">(SQLite)</span>
+        </div>
+        <div class="arch-arrow">
+          <div class="arch-arrow-dot" style="animation: archFlow 2s linear infinite;"></div>
+        </div>
+        <div class="arch-node">
+          <span class="syn-fn">HTTP</span><span class="syn-op">/</span><span class="syn-fn">WS</span> <span class="syn-cm">Transport</span>
+        </div>
+        <div class="arch-arrow">
+          <div class="arch-arrow-dot" style="animation: archFlow 2s linear infinite; animation-delay: 0.5s;"></div>
+        </div>
+        <div class="arch-node" style="border-color: rgba(245,158,11,0.2); background: rgba(245,158,11,0.03);">
+          <span class="syn-ty">Server</span> <span class="syn-cm">(Postgres / SQLite)</span>
+        </div>
+        <div class="arch-arrow">
+          <div class="arch-arrow-dot" style="animation: archFlow 2s linear infinite; animation-delay: 1s;"></div>
+        </div>
+        <div class="arch-node">
+          <span class="syn-fn">HTTP</span><span class="syn-op">/</span><span class="syn-fn">WS</span> <span class="syn-cm">Transport</span>
+        </div>
+        <div class="arch-arrow">
+          <div class="arch-arrow-dot" style="animation: archFlow 2s linear infinite; animation-delay: 1.5s;"></div>
+        </div>
+        <div class="arch-node">
+          <span class="syn-ty">Client</span> <span class="syn-cm">(SQLite)</span>
+        </div>
+      </div>
+
+      <!-- Mobile arch diagram -->
+      <div class="md:hidden flex flex-col items-center gap-3 font-mono text-xs text-white/40">
+        <div class="arch-node w-full text-center">Client (SQLite)</div>
+        <div class="text-white/10">|</div>
+        <div class="arch-node w-full text-center">HTTP / WS Transport</div>
+        <div class="text-white/10">|</div>
+        <div class="arch-node w-full text-center" style="border-color: rgba(245,158,11,0.2);">Server (Postgres / SQLite)</div>
+        <div class="text-white/10">|</div>
+        <div class="arch-node w-full text-center">HTTP / WS Transport</div>
+        <div class="text-white/10">|</div>
+        <div class="arch-node w-full text-center">Client (SQLite)</div>
+      </div>
+
+      <p class="text-center font-mono text-xs text-white/15 mt-8">
+        Commit-log sync. Every mutation is a versioned commit. Clients push and pull diffs, not full state.
+      </p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ CODE FEATURES ═══════════════ -->
+  <section id="features" class="py-24 px-4" style="border-top: 1px solid rgba(255,255,255,0.04);">
+    <div class="max-w-5xl mx-auto">
+      <p class="section-label text-center mb-4">the api</p>
+      <h2 class="text-2xl sm:text-3xl font-semibold text-center text-white/85 tracking-tight mb-16">
+        Everything is a code example
+      </h2>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        <!-- Feature 1: Schema -->
+        <div class="feature-block">
+          <div class="feature-block-header">
+            <span class="w-1.5 h-1.5 rounded-full bg-cyan-500/60 inline-block"></span>
+            schema.ts — Define your tables
+          </div>
+          <div class="feature-block-body">
+<span class="syn-kw">import</span> <span class="syn-op">{</span> <span class="syn-ty">SyncSchema</span> <span class="syn-op">}</span> <span class="syn-kw">from</span> <span class="syn-str">'@syncular/client'</span>
+
+<span class="syn-kw">export const</span> <span class="syn-pr">schema</span> <span class="syn-op">=</span> <span class="syn-kw">new</span> <span class="syn-ty">SyncSchema</span><span class="syn-op">({</span>
+  <span class="syn-pr">tables</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+    <span class="syn-pr">todos</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+      <span class="syn-pr">columns</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+        <span class="syn-pr">id</span><span class="syn-op">:</span> <span class="syn-str">'text'</span><span class="syn-op">,</span>
+        <span class="syn-pr">title</span><span class="syn-op">:</span> <span class="syn-str">'text'</span><span class="syn-op">,</span>
+        <span class="syn-pr">done</span><span class="syn-op">:</span> <span class="syn-str">'boolean'</span><span class="syn-op">,</span>
+      <span class="syn-op">}</span>
+    <span class="syn-op">}</span>
+  <span class="syn-op">}</span>
+<span class="syn-op">})</span>
+          </div>
+        </div>
+
+        <!-- Feature 2: Local writes -->
+        <div class="feature-block">
+          <div class="feature-block-header">
+            <span class="w-1.5 h-1.5 rounded-full bg-green-500/60 inline-block"></span>
+            mutations.ts — Write locally, sync later
+          </div>
+          <div class="feature-block-body">
+<span class="syn-cm">// Writes go to local SQLite instantly</span>
+<span class="syn-cm">// Sync happens in the background</span>
+
+<span class="syn-kw">await</span> <span class="syn-pr">db</span><span class="syn-op">.</span><span class="syn-fn">insertInto</span><span class="syn-op">(</span><span class="syn-str">'todos'</span><span class="syn-op">)</span>
+  <span class="syn-op">.</span><span class="syn-fn">values</span><span class="syn-op">({</span>
+    <span class="syn-pr">id</span><span class="syn-op">:</span> <span class="syn-fn">crypto</span><span class="syn-op">.</span><span class="syn-fn">randomUUID</span><span class="syn-op">(),</span>
+    <span class="syn-pr">title</span><span class="syn-op">:</span> <span class="syn-str">'Ship v1'</span><span class="syn-op">,</span>
+    <span class="syn-pr">done</span><span class="syn-op">:</span> <span class="syn-num">false</span>
+  <span class="syn-op">})</span>
+  <span class="syn-op">.</span><span class="syn-fn">execute</span><span class="syn-op">()</span>
+          </div>
+        </div>
+
+        <!-- Feature 3: Reactive queries -->
+        <div class="feature-block">
+          <div class="feature-block-header">
+            <span class="w-1.5 h-1.5 rounded-full bg-purple-500/60 inline-block"></span>
+            TodoList.tsx — Reactive queries with React
+          </div>
+          <div class="feature-block-body">
+<span class="syn-kw">import</span> <span class="syn-op">{</span> <span class="syn-fn">useQuery</span> <span class="syn-op">}</span> <span class="syn-kw">from</span> <span class="syn-str">'@syncular/client-react'</span>
+
+<span class="syn-kw">function</span> <span class="syn-fn">TodoList</span><span class="syn-op">() {</span>
+  <span class="syn-kw">const</span> <span class="syn-pr">todos</span> <span class="syn-op">=</span> <span class="syn-fn">useQuery</span><span class="syn-op">(</span>
+    <span class="syn-pr">db</span><span class="syn-op">.</span><span class="syn-fn">selectFrom</span><span class="syn-op">(</span><span class="syn-str">'todos'</span><span class="syn-op">).</span><span class="syn-fn">selectAll</span><span class="syn-op">()</span>
+  <span class="syn-op">)</span>
+
+  <span class="syn-cm">// Re-renders when local DB changes</span>
+  <span class="syn-cm">// No loading states. Data is always there.</span>
+  <span class="syn-kw">return</span> <span class="syn-op">&lt;</span><span class="syn-ty">ul</span><span class="syn-op">&gt;{</span><span class="syn-pr">todos</span><span class="syn-op">.</span><span class="syn-fn">map</span><span class="syn-op">(</span><span class="syn-pr">t</span> <span class="syn-op">=&gt;</span> <span class="syn-op">&lt;</span><span class="syn-ty">li</span><span class="syn-op">&gt;{</span><span class="syn-pr">t</span><span class="syn-op">.</span><span class="syn-pr">title</span><span class="syn-op">}&lt;/</span><span class="syn-ty">li</span><span class="syn-op">&gt;)}&lt;/</span><span class="syn-ty">ul</span><span class="syn-op">&gt;</span>
+<span class="syn-op">}</span>
+          </div>
+        </div>
+
+        <!-- Feature 4: Scoped subscriptions -->
+        <div class="feature-block">
+          <div class="feature-block-header">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500/60 inline-block"></span>
+            server.ts — Scoped subscriptions
+          </div>
+          <div class="feature-block-body">
+<span class="syn-cm">// Clients only get the data they subscribe to</span>
+
+<span class="syn-pr">shapes</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+  <span class="syn-pr">todos</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+    <span class="syn-fn">computeScopes</span><span class="syn-op">(</span><span class="syn-pr">row</span><span class="syn-op">) {</span>
+      <span class="syn-cm">// Each workspace is a scope</span>
+      <span class="syn-kw">return</span> <span class="syn-op">[</span><span class="syn-str">`workspace:</span><span class="syn-op">${</span><span class="syn-pr">row</span><span class="syn-op">.</span><span class="syn-pr">workspaceId</span><span class="syn-op">}</span><span class="syn-str">`</span><span class="syn-op">]</span>
+    <span class="syn-op">},</span>
+    <span class="syn-fn">authorizeSubscription</span><span class="syn-op">(</span><span class="syn-pr">scope</span><span class="syn-op">,</span> <span class="syn-pr">ctx</span><span class="syn-op">) {</span>
+      <span class="syn-kw">return</span> <span class="syn-pr">ctx</span><span class="syn-op">.</span><span class="syn-pr">user</span><span class="syn-op">.</span><span class="syn-pr">workspaces</span><span class="syn-op">.</span><span class="syn-fn">includes</span><span class="syn-op">(</span><span class="syn-pr">scope</span><span class="syn-op">)</span>
+    <span class="syn-op">}</span>
+  <span class="syn-op">}</span>
+<span class="syn-op">}</span>
+          </div>
+        </div>
+
+        <!-- Feature 5: Conflict resolution -->
+        <div class="feature-block lg:col-span-2">
+          <div class="feature-block-header">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500/60 inline-block"></span>
+            conflicts.ts — Server-side conflict resolution
+          </div>
+          <div class="feature-block-body">
+<span class="syn-cm">// When two clients mutate the same row, the server decides</span>
+
+<span class="syn-pr">shapes</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+  <span class="syn-pr">todos</span><span class="syn-op">:</span> <span class="syn-op">{</span>
+    <span class="syn-kw">async</span> <span class="syn-fn">onPush</span><span class="syn-op">(</span><span class="syn-pr">commit</span><span class="syn-op">,</span> <span class="syn-pr">ctx</span><span class="syn-op">) {</span>
+      <span class="syn-kw">const</span> <span class="syn-pr">existing</span> <span class="syn-op">=</span> <span class="syn-kw">await</span> <span class="syn-pr">ctx</span><span class="syn-op">.</span><span class="syn-fn">getRow</span><span class="syn-op">(</span><span class="syn-pr">commit</span><span class="syn-op">.</span><span class="syn-pr">id</span><span class="syn-op">)</span>
+      <span class="syn-kw">if</span> <span class="syn-op">(</span><span class="syn-pr">existing</span> <span class="syn-op">&&</span> <span class="syn-pr">existing</span><span class="syn-op">.</span><span class="syn-pr">updatedAt</span> <span class="syn-op">&gt;</span> <span class="syn-pr">commit</span><span class="syn-op">.</span><span class="syn-pr">updatedAt</span><span class="syn-op">) {</span>
+        <span class="syn-kw">return</span> <span class="syn-str">'reject'</span>  <span class="syn-cm">// last-write-wins</span>
+      <span class="syn-op">}</span>
+      <span class="syn-kw">return</span> <span class="syn-str">'accept'</span>
+    <span class="syn-op">}</span>
+  <span class="syn-op">}</span>
+<span class="syn-op">}</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ STATS BAR ═══════════════ -->
+  <section class="py-16 px-4" style="border-top: 1px solid rgba(255,255,255,0.04);">
+    <div class="max-w-4xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-6">
+      <div class="stat-item">
+        <div class="stat-value">&lt; 1ms</div>
+        <div class="stat-label">local reads</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">forever</div>
+        <div class="stat-label">offline capable</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">&lt; 50ms</div>
+        <div class="stat-label">sync latency</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-value">0</div>
+        <div class="stat-label">loading states</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ INSTALL ═══════════════ -->
+  <section id="install" class="py-24 px-4" style="border-top: 1px solid rgba(255,255,255,0.04);">
+    <div class="max-w-xl mx-auto text-center">
+      <p class="section-label mb-4">get started</p>
+      <h2 class="text-2xl font-semibold text-white/85 tracking-tight mb-8">One command</h2>
+
+      <div class="feature-block">
+        <div class="feature-block-header">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500/60 inline-block"></span>
+          terminal
+        </div>
+        <div class="feature-block-body text-left">
+<span class="syn-cm"># Install the core packages</span>
+<span class="syn-fn">bun</span> add <span class="syn-str">@syncular/client</span> <span class="syn-str">@syncular/server</span>
+
+<span class="syn-cm"># Add a transport</span>
+<span class="syn-fn">bun</span> add <span class="syn-str">@syncular/transport-http</span>
+
+<span class="syn-cm"># Optional: React bindings</span>
+<span class="syn-fn">bun</span> add <span class="syn-str">@syncular/client-react</span>
+        </div>
+      </div>
+
+      <div class="mt-8 flex items-center justify-center gap-4 font-mono text-sm">
+        <a href="/docs" class="px-5 py-2.5 rounded-lg text-black font-medium transition" style="background: #f59e0b;">
+          Read the docs
+        </a>
+        <a href="https://github.com" class="px-5 py-2.5 rounded-lg text-white/60 hover:text-white/90 transition" style="border: 1px solid rgba(255,255,255,0.1);">
+          View source
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ FOOTER ═══════════════ -->
+  <footer class="py-12 px-4" style="border-top: 1px solid rgba(255,255,255,0.04);">
+    <div class="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="font-mono text-xs text-white/15">
+        syncular &middot; offline-first sync for typescript
+      </div>
+      <div class="flex items-center gap-6 font-mono text-xs text-white/20">
+        <a href="/docs" class="hover:text-white/50 transition">docs</a>
+        <a href="#" class="hover:text-white/50 transition">github</a>
+        <a href="#" class="hover:text-white/50 transition">discord</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ═══════════════ ANIMATION SCRIPT ═══════════════ -->
+  <script>
+    // ── Configuration ──
+    const TYPING_SPEED = 45;
+    const PAUSE_AFTER_TYPE = 800;
+    const SYNC_DOT_TRAVEL = 600;
+    const RESULT_APPEAR_DELAY = 200;
+    const HOLD_RESULT = 3000;
+    const RESTART_DELAY = 1500;
+
+    // ── Code strings (Client A mutation) ──
+    const clientACode = `await db.insertInto('todos')
+  .values({
+    id: 'abc',
+    title: 'Ship v1',
+    done: false
+  })
+  .execute()`;
+
+    // ── Syntax-highlighted versions ──
+    function highlightClientA(text) {
+      // Build highlighted version character by character is complex,
+      // so we highlight the final result
+      return `<span class="syn-kw">await</span> <span class="syn-pr">db</span><span class="syn-op">.</span><span class="syn-fn">insertInto</span><span class="syn-op">(</span><span class="syn-str">'todos'</span><span class="syn-op">)</span>
+  <span class="syn-op">.</span><span class="syn-fn">values</span><span class="syn-op">({</span>
+    <span class="syn-pr">id</span><span class="syn-op">:</span> <span class="syn-str">'abc'</span><span class="syn-op">,</span>
+    <span class="syn-pr">title</span><span class="syn-op">:</span> <span class="syn-str">'Ship v1'</span><span class="syn-op">,</span>
+    <span class="syn-pr">done</span><span class="syn-op">:</span> <span class="syn-num">false</span>
+  <span class="syn-op">})</span>
+  <span class="syn-op">.</span><span class="syn-fn">execute</span><span class="syn-op">()</span>`;
+    }
+
+    const clientBResult = `<span class="syn-kw">const</span> <span class="syn-pr">todos</span> <span class="syn-op">=</span> <span class="syn-kw">await</span> <span class="syn-pr">db</span>
+  <span class="syn-op">.</span><span class="syn-fn">selectFrom</span><span class="syn-op">(</span><span class="syn-str">'todos'</span><span class="syn-op">)</span>
+  <span class="syn-op">.</span><span class="syn-fn">selectAll</span><span class="syn-op">()</span>
+  <span class="syn-op">.</span><span class="syn-fn">execute</span><span class="syn-op">()</span>
+
+<span class="syn-cm">// Result:</span>
+<span class="syn-cm">// [{ id: 'abc', title: 'Ship v1', done: false }]</span>`;
+
+    // ── DOM refs ──
+    const codeA = document.getElementById('codeA');
+    const codeB = document.getElementById('codeB');
+    const linesA = document.getElementById('linesA');
+    const linesB = document.getElementById('linesB');
+    const commitLog = document.getElementById('commitLog');
+    const syncDotTrack = document.getElementById('syncDotTrack');
+
+    // ── Helpers ──
+    function updateLineNumbers(el, count) {
+      el.textContent = Array.from({ length: count }, (_, i) => i + 1).join('\n');
+    }
+
+    function formatTime(ms) {
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      const sRem = s % 60;
+      const msRem = ms % 1000;
+      return `${String(m).padStart(2, '0')}:${String(sRem).padStart(2, '0')}.${String(msRem).padStart(3, '0')}`;
+    }
+
+    let animStart = 0;
+    function logTime() {
+      return formatTime(Date.now() - animStart);
+    }
+
+    function addLogEntry(html) {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.innerHTML = html;
+      commitLog.appendChild(entry);
+      // Trigger visibility
+      requestAnimationFrame(() => entry.classList.add('visible'));
+      // Keep only last 4
+      const entries = commitLog.querySelectorAll('.log-entry');
+      if (entries.length > 4) {
+        entries[0].remove();
+      }
+      // Scroll to bottom
+      commitLog.scrollTop = commitLog.scrollHeight;
+    }
+
+    // ── Sync dot animation ──
+    function fireSyncDot() {
+      return new Promise(resolve => {
+        if (!syncDotTrack) { resolve(); return; }
+        const dot = document.createElement('div');
+        dot.className = 'sync-dot';
+        dot.style.cssText = `
+          position: absolute;
+          top: 50%;
+          transform: translateY(-50%);
+          left: 0;
+          transition: left ${SYNC_DOT_TRAVEL}ms cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s;
+          opacity: 0;
+        `;
+        syncDotTrack.appendChild(dot);
+        requestAnimationFrame(() => {
+          dot.style.opacity = '1';
+          dot.style.left = '100%';
+        });
+        setTimeout(() => {
+          dot.style.opacity = '0';
+          setTimeout(() => dot.remove(), 200);
+          resolve();
+        }, SYNC_DOT_TRAVEL);
+      });
+    }
+
+    // ── Typing animation ──
+    function typeText(el, text, lineNumEl) {
+      return new Promise(resolve => {
+        let i = 0;
+        el.innerHTML = '';
+        function tick() {
+          if (i <= text.length) {
+            // Render raw text with cursor
+            const typed = text.slice(0, i);
+            // Simple escaping
+            const escaped = typed
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;');
+            el.innerHTML = escaped + '<span class="cursor"></span>';
+            // Update line numbers
+            const lineCount = (typed.match(/\n/g) || []).length + 1;
+            updateLineNumbers(lineNumEl, Math.max(lineCount, 1));
+            i++;
+            setTimeout(tick, TYPING_SPEED);
+          } else {
+            // Replace with highlighted version
+            el.innerHTML = highlightClientA();
+            updateLineNumbers(lineNumEl, clientACode.split('\n').length);
+            resolve();
+          }
+        }
+        tick();
+      });
+    }
+
+    // ── Main animation loop ──
+    async function runAnimation() {
+      animStart = Date.now();
+
+      // Clear
+      codeA.innerHTML = '<span class="cursor"></span>';
+      codeB.innerHTML = '<span class="syn-cm">// waiting for sync...</span>';
+      commitLog.innerHTML = '<div class="log-entry visible"><span class="log-ts">[00:00.000]</span> <span class="syn-cm">ready — watching for mutations...</span></div>';
+      updateLineNumbers(linesA, 1);
+      updateLineNumbers(linesB, 1);
+
+      // Step 1: Type code in Client A
+      await new Promise(r => setTimeout(r, 600));
+      await typeText(codeA, clientACode, linesA);
+
+      // Step 2: Log the push event
+      await new Promise(r => setTimeout(r, PAUSE_AFTER_TYPE));
+      addLogEntry(
+        `<span class="log-ts">[${logTime()}]</span> <span class="log-src">client-a</span> <span class="syn-op">\u2192</span> <span class="log-op">push</span> <span class="log-detail">{ table: 'todos', op: 'INSERT', id: 'abc' }</span>`
+      );
+
+      // Step 3: Fire sync dot across event horizon
+      await new Promise(r => setTimeout(r, 300));
+      await fireSyncDot();
+
+      // Step 4: Log server processing
+      addLogEntry(
+        `<span class="log-ts">[${logTime()}]</span> <span class="log-src">server</span> <span class="syn-op">\u2192</span> <span class="log-op">commit</span> <span class="log-detail">seq: 1, table: 'todos', accepted</span>`
+      );
+
+      await new Promise(r => setTimeout(r, 200));
+
+      // Step 5: Show result in Client B
+      addLogEntry(
+        `<span class="log-ts">[${logTime()}]</span> <span class="log-src">server</span> <span class="syn-op">\u2192</span> <span class="log-op">pull</span> <span class="log-detail">client-b synced (1 commit)</span>`
+      );
+
+      await new Promise(r => setTimeout(r, RESULT_APPEAR_DELAY));
+      codeB.innerHTML = clientBResult;
+      updateLineNumbers(linesB, clientBResult.split('\n').length);
+
+      // Hold for a moment
+      await new Promise(r => setTimeout(r, HOLD_RESULT));
+
+      // Step 6: Show a second mutation — update
+      const updateCode = `await db.updateTable('todos')
+  .set({ done: true })
+  .where('id', '=', 'abc')
+  .execute()`;
+
+      const updateHighlighted = `<span class="syn-kw">await</span> <span class="syn-pr">db</span><span class="syn-op">.</span><span class="syn-fn">updateTable</span><span class="syn-op">(</span><span class="syn-str">'todos'</span><span class="syn-op">)</span>
+  <span class="syn-op">.</span><span class="syn-fn">set</span><span class="syn-op">({</span> <span class="syn-pr">done</span><span class="syn-op">:</span> <span class="syn-num">true</span> <span class="syn-op">})</span>
+  <span class="syn-op">.</span><span class="syn-fn">where</span><span class="syn-op">(</span><span class="syn-str">'id'</span><span class="syn-op">,</span> <span class="syn-str">'='</span><span class="syn-op">,</span> <span class="syn-str">'abc'</span><span class="syn-op">)</span>
+  <span class="syn-op">.</span><span class="syn-fn">execute</span><span class="syn-op">()</span>`;
+
+      const updateResult = `<span class="syn-kw">const</span> <span class="syn-pr">todos</span> <span class="syn-op">=</span> <span class="syn-kw">await</span> <span class="syn-pr">db</span>
+  <span class="syn-op">.</span><span class="syn-fn">selectFrom</span><span class="syn-op">(</span><span class="syn-str">'todos'</span><span class="syn-op">)</span>
+  <span class="syn-op">.</span><span class="syn-fn">selectAll</span><span class="syn-op">()</span>
+  <span class="syn-op">.</span><span class="syn-fn">execute</span><span class="syn-op">()</span>
+
+<span class="syn-cm">// Result:</span>
+<span class="syn-cm">// [{ id: 'abc', title: 'Ship v1', done: true }]</span>`;
+
+      // Type update in A
+      codeA.innerHTML = '<span class="cursor"></span>';
+      updateLineNumbers(linesA, 1);
+      let ui = 0;
+      await new Promise(resolve => {
+        function tick() {
+          if (ui <= updateCode.length) {
+            const typed = updateCode.slice(0, ui)
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;');
+            codeA.innerHTML = typed + '<span class="cursor"></span>';
+            const lc = (updateCode.slice(0, ui).match(/\n/g) || []).length + 1;
+            updateLineNumbers(linesA, Math.max(lc, 1));
+            ui++;
+            setTimeout(tick, TYPING_SPEED);
+          } else {
+            codeA.innerHTML = updateHighlighted;
+            updateLineNumbers(linesA, updateCode.split('\n').length);
+            resolve();
+          }
+        }
+        tick();
+      });
+
+      await new Promise(r => setTimeout(r, PAUSE_AFTER_TYPE));
+      addLogEntry(
+        `<span class="log-ts">[${logTime()}]</span> <span class="log-src">client-a</span> <span class="syn-op">\u2192</span> <span class="log-op">push</span> <span class="log-detail">{ table: 'todos', op: 'UPDATE', id: 'abc' }</span>`
+      );
+
+      await new Promise(r => setTimeout(r, 300));
+      await fireSyncDot();
+
+      addLogEntry(
+        `<span class="log-ts">[${logTime()}]</span> <span class="log-src">server</span> <span class="syn-op">\u2192</span> <span class="log-op">pull</span> <span class="log-detail">client-b synced (2 commits)</span>`
+      );
+
+      await new Promise(r => setTimeout(r, RESULT_APPEAR_DELAY));
+      codeB.innerHTML = updateResult;
+      updateLineNumbers(linesB, updateResult.split('\n').length);
+
+      // Hold then restart
+      await new Promise(r => setTimeout(r, HOLD_RESULT + RESTART_DELAY));
+      runAnimation();
+    }
+
+    // ── Start ──
+    runAnimation();
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,165 @@
+---
+title: Console Integration
+description: Integrate Syncular Console via CLI distributables, mount API, or component composition.
+---
+
+# Console Integration
+
+Use one of these integration paths depending on how much control you need.
+
+| Path | Best for | What you manage |
+|---|---|---|
+| CLI + distributables | Local ops tooling, quick usage | `syncular console` flags |
+| Backend route helper (`mountConsoleUi`) | Fast server integration | mount path + token resolver |
+| Mount API | Embed full Console app in your frontend | container + config props |
+| Component composition | Build a custom dashboard shell | routing/layout/page composition |
+
+## 1) Distributables (CLI-backed)
+
+`syncular console` serves prebuilt assets from `@syncular/console/static/*`.
+
+Published distributables include:
+
+- `@syncular/console/static/index.html`
+- `@syncular/console/static/console.css`
+- JS/assets under `@syncular/console/static/*`
+
+```bash
+export SYNC_CONSOLE_TOKEN="your-operator-token"
+syncular console \
+  --server-url http://localhost:9811/api \
+  --token-env SYNC_CONSOLE_TOKEN \
+  --open
+```
+
+This is the fastest path when your app server is already running and you want a dedicated Console UI immediately.
+
+See full command details in [CLI Console Command](/docs/cli/console).
+
+## 2) Backend helper (`@syncular/server-hono`)
+
+If you already run Hono, use `mountConsoleUi` to serve the Console app and prefill runtime config.
+
+```ts
+import { mountConsoleUi } from '@syncular/server-hono';
+
+mountConsoleUi(app, {
+  mountPath: '/console',
+  apiBasePath: '/api',
+  resolveToken: async (c) => {
+    const session = await getSession(c);
+    return session?.consoleToken;
+  },
+});
+```
+
+This automatically serves `@syncular/console/static/*` and injects:
+
+- `syncular-console-basepath`
+- `syncular-console-server-url`
+- `syncular-console-token`
+
+## 3) Generic backend helper (`@syncular/console/server`)
+
+Use this when your backend is not Hono.
+
+```ts
+import { createConsoleStaticResponder } from '@syncular/console/server';
+
+const serveConsole = createConsoleStaticResponder({ mountPath: '/console' });
+
+const response = await serveConsole(request, {
+  prefill: {
+    serverUrl: `${new URL(request.url).origin}/api`,
+    token: await getConsoleToken(request),
+  },
+});
+
+if (response) return response; // otherwise continue your normal router
+```
+
+## 4) Mount API (embed full app)
+
+Use `mountSyncularConsoleApp` to mount the full Console app into your own page.
+
+```tsx
+import '@syncular/console/styles.css';
+import { mountSyncularConsoleApp } from '@syncular/console';
+
+mountSyncularConsoleApp('#console-root', {
+  basePath: '/console',
+  defaultConfig: {
+    serverUrl: 'https://api.example.com',
+    token: window.__SYNCULAR_CONSOLE_TOKEN__,
+  },
+});
+```
+
+`defaultConfig` is optional. If omitted, Console reads runtime meta tags (`syncular-console-server-url`, `syncular-console-token`, `syncular-console-basepath`).
+
+`@syncular/console/styles.css` is precompiled and self-contained. Host apps do not need Tailwind source scanning for Syncular internals.
+
+Console theme tokens are scoped under the console root (`.syncular-console-root`) and applied automatically by `mountSyncularConsoleApp`.
+
+### Tailwind v4 host app note (unstyled Console)
+
+If Console renders without styling in a Tailwind v4 app:
+
+- verify you imported `@syncular/console/styles.css` (not only your app stylesheet)
+- hard-refresh after dependency updates (cached CSS is a common cause)
+- ensure your bundler is resolving package exports from `@syncular/console` correctly
+
+You do not need to add `@syncular/*` paths to Tailwind scanning for the mount/distributable paths.
+
+## 5) Component composition (custom shell)
+
+If you want your own route structure or layout, compose from exported components.
+
+### Full app component
+
+```tsx
+import '@syncular/console/styles.css';
+import { App as SyncularConsoleApp } from '@syncular/console';
+
+<SyncularConsoleApp
+  basePath="/console"
+  defaultConfig={{
+    serverUrl: 'https://api.example.com',
+    token: token,
+  }}
+/>
+```
+
+### Route-level composition
+
+```tsx
+import '@syncular/console/styles.css';
+import {
+  ConnectionProvider,
+  ConsoleLayout,
+  Command,
+  Stream,
+  Fleet,
+  Ops,
+  Storage,
+  Config,
+} from '@syncular/console';
+
+<ConnectionProvider defaultConfig={{ serverUrl, token }}>
+  <ConsoleLayout basePath="/console" />
+</ConnectionProvider>
+```
+
+Then map pages (`Command`, `Stream`, `Fleet`, `Ops`, `Storage`, `Config`) into your router exactly where you want them.
+
+## Security guidance
+
+- Use short-lived operator tokens when possible.
+- Prefer environment-based token injection server-side or via `--token-env` in CLI.
+- Avoid putting permanent tokens in URLs.
+
+## Related guides
+
+- [Operations Console route setup](/docs/build/operations)
+- [Console operator workflows](/docs/console)
+- [CLI Console Command](/docs/cli/console)

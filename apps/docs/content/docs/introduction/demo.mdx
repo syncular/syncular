@@ -1,0 +1,112 @@
+---
+title: Try the Demo
+description: Run the current Syncular demo (Service Worker server + built-in Console) and explore key workflows.
+---
+
+# Try the Demo
+
+The demo app runs the full Syncular stack in-browser:
+
+- React app shell
+- Sync + console APIs served by a Service Worker server
+- Local SQLite persistence (wa-sqlite) plus a PGlite client variant
+- Built-in Console UI at `/console`
+
+This is intentionally close to a real deployment flow, but with no external backend dependency.
+
+## Run it
+
+```bash
+bun install
+bun --cwd apps/demo dev
+```
+
+By default, the demo prints a local URL such as:
+
+- app: `http://localhost:9811/`
+- console: `http://localhost:9811/console`
+
+## Important runtime behavior
+
+- Service Worker mode is required for API handling in this demo.
+- `/api/*` is handled by the Service Worker server.
+- The network dev server intentionally does not serve live `/api/*` sync endpoints.
+
+If Service Worker registration or health check fails, the app renders an explicit startup error screen instead of silently falling back.
+
+## Demo tabs
+
+## 1) Split Screen
+
+Two independent clients sync against the same server state:
+
+- left panel: wa-sqlite
+- right panel: PGlite
+
+Try:
+
+1. Create/update tasks on one side and verify propagation to the other.
+2. Toggle sync controls to queue writes, then resume and observe replay.
+3. Make conflicting edits to inspect conflict handling behavior.
+
+## 2) Media Sync
+
+Covers blob-aware workflows (upload/download + metadata references in synced rows).
+
+Try:
+
+1. Upload media in one panel.
+2. Verify sync metadata propagation and retrieval behavior on the other panel.
+
+## 3) Large Catalog
+
+Exercises large bootstrap and chunked snapshot behavior.
+
+Try:
+
+1. Seed a large dataset.
+2. Observe bootstrap paging/chunk behavior.
+3. Filter/query locally after bootstrap completes.
+
+## 4) E2EE Key Share
+
+Demonstrates field-level encryption plus mnemonic-based key exchange.
+
+Try:
+
+1. Write encrypted data as owner.
+2. Observe ciphertext on peer before key share.
+3. Share mnemonic and verify peer decryption.
+
+## 5) Symmetric E2EE
+
+Demonstrates a shared-key encrypted flow from the start.
+
+## Built-in Console (`/console`)
+
+The demo includes Console in the same app shell so you can move between app and operator views quickly.
+
+Console views:
+
+- **Command**: high-level health + KPIs
+- **Stream**: timeline for commits/events/payload drill-down
+- **Fleet**: client cursor/lag and eviction workflows
+- **Ops**: prune/compact/notify data change + audit trail
+- **Storage**: blob/object view (available when storage routes are enabled)
+- **Config**: endpoint/auth/preferences and API key controls
+
+## Where the code lives
+
+| Component | Path |
+|-----------|------|
+| Demo app routes + tabs | `apps/demo/src/routes` and `apps/demo/src/tabs` |
+| Service Worker server runtime | `apps/demo/src/sw/server.ts` |
+| Demo dev server (asset + worker script serving) | `apps/demo/src/server/index.ts` |
+| Demo backend route wiring | `apps/demo/src/server/routes.ts` |
+| Console package | `packages/console/src` |
+
+## Next steps
+
+- [Quick Start](/docs/introduction/quick-start)
+- [Service Worker Server](/docs/build/service-worker-server)
+- [Console docs](/docs/console)

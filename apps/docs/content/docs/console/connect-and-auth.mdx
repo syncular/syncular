@@ -1,0 +1,62 @@
+---
+title: Connect and Auth
+description: Connect the Console UI to your server and secure access with console tokens
+---
+
+# Connect and Auth
+
+The Console connects to your Syncular server base URL and calls `/console/*` APIs with bearer-token authentication.
+
+## Server URL
+
+Set the server URL to the same base you use for sync transport.
+
+- If sync is mounted at `/api/sync` and console at `/api/console`, use `https://your-host/api`.
+- In the local demo, the URL is typically `http://localhost:9811/api`.
+
+## Token
+
+The Console sends `Authorization: Bearer <token>` on API requests.
+
+Configure the token server-side through `createSyncServer({ console: { token } })` and distribute it only to authorized operators.
+
+## Gateway mode
+
+When the Console points at a gateway (`createConsoleGatewayRoutes`), it still authenticates with a single bearer token.
+
+- The gateway forwards that token to each configured downstream instance by default.
+- Downstream overrides are optional (`instances[].token`) when one target needs a different credential.
+- The top-nav instance selector maps to gateway filters (`instanceId` / `instanceIds`) so operators can switch between merged and single-instance views.
+
+## Prefill from query params
+
+You can prefill connection settings using URL params:
+
+- `server`: server base URL
+- `token`: console token
+
+Example:
+
+```text
+/console/?server=http%3A%2F%2Flocalhost%3A9811%2Fapi&token=demo-token
+```
+
+## Partition context
+
+The top navigation partition input scopes list/detail queries to one partition.
+
+- Empty value means all partitions.
+- Set a partition when investigating tenant-specific issues.
+
+## Connection lifecycle
+
+`Save + Connect` persists settings and validates the backend before marking the Console connected.
+
+If the Console is disconnected but config is already saved, use `Connect` from the fallback screen.
+
+## Related API pages
+
+- [Stats](/docs/api/getConsoleStats)
+- [Clients](/docs/api/getConsoleClients)
+- [Timeline](/docs/api/getConsoleTimeline)
+- [Operations setup (including gateway mode)](/docs/build/operations)

@@ -1,0 +1,83 @@
+---
+title: Quick Start
+description: See Syncular running in 30 seconds
+---
+
+# Quick Start
+
+> **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
+
+## See it running (30 seconds)
+
+The fastest way to understand Syncular is to **clone the monorepo** and run the demo.
+
+> Prefer scaffolding a new project? See the [CLI docs](/docs/cli) and run `syncular create --template syncular-demo --dir ./my-syncular-demo` (or `npx @syncular/cli create --template syncular-demo --dir ./my-syncular-demo`).
+
+```bash
+git clone https://github.com/syncular/syncular.git
+cd syncular
+bun install
+bun --cwd apps/demo dev
+```
+
+Open `http://localhost:5173`. You'll see two sync clients side-by-side. Add a task in the left panel — it appears on the right within a second. That's two independent SQLite databases syncing through a commit log.
+
+## What you just saw
+
+In the demo you’re seeing Syncular’s core model:
+- **Local SQLite is the primary read + write path** (instant UI, works offline).
+- **Outbox writes**: changes queue durably and sync when online.
+- **Push/Pull over HTTP** through an **append-only commit log**.
+- **Scopes** drive auth and partial sync (requested ∩ allowed).
+
+If you want the canonical deep dive, read [How Sync Works](/docs/introduction/architecture).
+
+## Build your own app (canonical path)
+
+Syncular packages are published on npm under the `@syncular` scope. The recommended implementation path is:
+
+1. [Server Setup](/docs/build/server-setup)
+2. [Client Setup](/docs/build/client-setup)
+3. [Table Handlers](/docs/build/table-handlers)
+4. Learn the concepts: [Scopes](/docs/introduction/scopes) and [Subscriptions](/docs/introduction/subscriptions)
+5. Then add features as needed: blobs, encryption, migrations, observability, console, relay
+
+If you’re not sure where to start, see [Adoption Paths](/docs/introduction/adoption-paths).
+
+## What happens on a write (high level)
+
+Here's the full lifecycle of adding a task:
+
+```
+  You click "Add Task"
+       │
+       ▼
+  ┌─────────────────┐
+  │ 1. Local write   │  Task inserted into SQLite → UI updates instantly
+  │ 2. Outbox queue  │  Commit added to outbox table
+  └────────┬────────┘
+           │  (next sync cycle, or immediately if online)
+           ▼
+  ┌─────────────────┐
+  │ 3. Push to server│  POST /api/sync with `push` commit payload
+  │ 4. Server applies│  Handler validates, inserts row, extracts scopes
+  │ 5. Commit log    │  Change written to sync_commits + sync_changes
+  │ 6. Ack           │  Server returns commit_seq, client marks acked
+  └────────┬────────┘
+           │  (other clients pull)
+           ▼
+  ┌─────────────────┐
+  │ 7. Other clients │  Pull returns new commits since their cursor
+  │    apply changes │  Rows upserted/deleted in their local SQLite
+  └─────────────────┘
+```
+
+**Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/docs/introduction/first-sync).
+
+**Conflicts:** Version conflicts are detected on push; your app chooses resolution. See [Conflict Resolution](/docs/introduction/conflict-resolution).
+
+## Next steps
+
+- [Build](/docs/build) — canonical build path
+- [Try the Demo](/docs/introduction/demo) — explore features hands-on (encryption, large datasets, console)
+- [How Sync Works](/docs/introduction/architecture) — canonical deep dive

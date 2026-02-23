@@ -1,0 +1,219 @@
+---
+title: Syncular vs Electric SQL
+description: Commit-log sync vs read-path Postgres sync
+lastVerified: 2026-02-03
+---
+
+# Syncular vs Electric SQL
+
+[Electric SQL](https://electric-sql.com) is a read-path sync engine for Postgres. It's fully open-source (Apache 2.0) with optional Electric Cloud hosting.
+
+> **Last verified:** February 2026. Electric SQL is actively evolving — check their docs for the latest.
+
+## Methodology
+
+This comparison focuses on:
+
+- How data is selected for replication (**scopes/subscriptions** vs **shapes**)
+- Whether the system includes a first-class offline write path
+- Where **authorization** and **conflict semantics** live
+
+## The trade-off
+
+| | Syncular | Electric SQL |
+|---|----------|--------------|
+| **Sync mechanism** | Commit log (push/pull) | Postgres → client shapes (HTTP) |
+| **Open source** | Yes (MIT) | Yes (Apache 2.0) |
+| **Auth model** | JSONB scopes | Typically proxy through your API (BYO auth) |
+| **Write handling** | Offline writes built-in | Typically via your API/DB |
+| **Conflict semantics** | App-defined | Your backend/database |
+| **Client** | SQLite/PGlite | TanStack DB, PGlite, any HTTP client |
+| **Self-hosted** | Yes | Yes |
+| **Managed option** | No | Yes (Electric Cloud) |
+
+## What Electric SQL does well
+
+**Read-path replication**: Electric is excellent at streaming server changes to clients. If you already have a stable write API, Electric can slot in as a fast “keep clients up-to-date” layer.
+
+**Shapes**: Define what data syncs using shape queries:
+
+```typescript
+const { data } = useShape({
+  url: `http://localhost:3000/v1/shape`,
+  params: {
+    table: `tasks`,
+    where: `user_id = '123'`,
+  },
+});
+```
+
+**Fully open source**: Apache 2.0 license. No proprietary components.
+
+**Multiple clients**: Works with TanStack DB, PGlite, or any HTTP client.
+
+**Security posture**: Electric recommends proxying shape requests through your backend API so you can enforce authentication and authorization in one place.
+
+## Where Electric SQL has limits
+
+**Write path**: Electric’s Shape API is about streaming changes *out* of Postgres. Offline write semantics (outbox, retries, conflict handling) live in your app/backend.
+
+**Authorization**: Because Electric is a streaming data layer, you generally enforce access control at your proxy/backend (and map that to shape parameters/filters).
+
+**Not a full sync framework**: If you want “one system that handles offline writes + conflict behavior + auth + replication”, you’ll assemble those pieces yourself.
+
+## Where Syncular differs
+
+**Bidirectional sync**: Built-in push and pull with commit-log semantics.
+
+**Explicit scopes**: JSONB scopes give you auditable, composable authorization.
+
+**Custom conflict semantics**: You define how conflicts are resolved (per table/field, if you want).
+
+**Typed SQL**: Kysely-first query/handler model in TypeScript.
+
+## Code comparison
+
+### Electric SQL
+
+```typescript
+import { useShape } from '@electric-sql/react';
+
+function TaskList() {
+  // Stream data from Postgres via Electric
+  const { data: tasks } = useShape({
+    url: `http://localhost:3000/v1/shape`,
+    params: {
+      table: `tasks`,
+      where: `completed = false`,
+    },
+  });
+
+  return (
+    <ul>
+      {tasks.map(task => (
+        <li key={task.id}>{task.title}</li>
+      ))}
+    </ul>
+  );
+}
+
+// Writes go through your API
+const createTask = async (title: string) => {
+  await fetch('/api/tasks', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+};
+```
+
+Electric streams reads. Writes are separate (via your API).
+
+### Syncular
+
+```typescript
+	import { createSyncularReact } from '@syncular/client-react';
+	import { Button } from '@syncular/ui/primitives';
+	import type { AppDb } from './db-types';
+
+	const { useSyncQuery, useMutations } = createSyncularReact<AppDb>();
+
+	function TaskList() {
+	  const { data: tasks } = useSyncQuery(
+    ({ selectFrom }) =>
+      selectFrom('tasks')
+        .selectAll()
+        .where('completed', '=', false)
+  );
+
+  const m = useMutations();
+
+  return (
+    <ul>
+      {tasks?.map(task => (
+        <li key={task.id}>
+          {task.title}
+          <Button onClick={() => m.tasks.update(task.id, { completed: 1 })}>
+            Complete
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+Syncular handles reads and writes in one system.
+
+## Architecture comparison
+
+### Electric SQL
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Client    │◄────►│   Electric  │◄────►│   Postgres  │
+│  (any)      │      │  (shapes)   │      │ (logical    │
+└─────────────┘      └─────────────┘      │ replication)│
+       │                                    └─────────────┘
+       │ (writes via API)
+       ▼
+┌─────────────┐
+│  Your API   │
+└─────────────┘
+```
+
+Electric handles read-path sync. You handle writes separately.
+
+### Syncular
+
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Client    │◄────►│ Your Server │◄────►│   Postgres  │
+│  (SQLite)   │      │   (Hono)    │      │             │
+└─────────────┘      └─────────────┘      └─────────────┘
+```
+
+Syncular handles both read and write sync.
+
+## When to choose Electric SQL
+
+- You want simple read-path sync from Postgres
+- You're comfortable handling writes separately
+- You want fully open-source (Apache 2.0)
+- You need CDN-scalable data delivery
+
+## When to choose Syncular
+
+- You want bidirectional sync in one system
+- You need explicit, auditable authorization
+- You want custom conflict resolution
+- You value Kysely's type safety
+
+## Migration notes
+
+### Electric → Syncular
+
+1. Keep your Postgres schema
+2. Create table handlers for each table
+3. Implement `resolveScopes` for authorization
+4. Replace `useShape` with `useSyncQuery`
+5. Move write logic into table handlers
+
+### Syncular → Electric
+
+1. Set up Electric in front of Postgres
+2. Define Electric shapes based on your scope patterns
+3. Replace Syncular hooks with `useShape`
+4. Implement write API separately
+
+## Summary
+
+| Choose Electric if... | Choose Syncular if... |
+|-----------------------|----------------------|
+| Read-path sync is sufficient | Bidirectional sync needed |
+| You want simplest setup | You need custom auth logic |
+| CDN scalability matters | You want explicit conflict handling |
+| You prefer shape-based filtering | You prefer scope-based auth |
+
+---
+
+*Sources: [Electric SQL docs](https://electric-sql.com/docs), [Writing your own client (proxy/auth guidance)](https://electric-sql.com/docs/build/client-development/writing-your-own-client), [Electric Shape API](https://electric-sql.com/api/openapi), [Electric GitHub](https://github.com/electric-sql/electric)*

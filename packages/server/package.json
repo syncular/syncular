@@ -1,0 +1,80 @@
+{
+  "name": "@syncular/server",
+  "version": "0.0.0",
+  "description": "Server-side sync engine with push/pull, pruning, and snapshot support",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/server"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./dialect/types": {
+      "bun": "./src/dialect/types.ts",
+      "import": {
+        "types": "./dist/dialect/types.d.ts",
+        "default": "./dist/dialect/types.js"
+      }
+    },
+    "./schema": {
+      "bun": "./src/schema.ts",
+      "import": {
+        "types": "./dist/schema.d.ts",
+        "default": "./dist/schema.js"
+      }
+    },
+    "./snapshot-chunks": {
+      "bun": "./src/snapshot-chunks/index.ts",
+      "import": {
+        "types": "./dist/snapshot-chunks/index.d.ts",
+        "default": "./dist/snapshot-chunks/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "kysely": "^0.28.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*",
+    "zod": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

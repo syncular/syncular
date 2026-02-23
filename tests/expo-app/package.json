@@ -1,0 +1,32 @@
+{
+  "name": "@syncular/tests-expo-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "tsgo": "tsgo --noEmit",
+    "start:dev-client": "expo start --dev-client --localhost",
+    "ios:build": "expo run:ios --no-bundler --no-build-cache --device \"iPhone 16\"",
+    "maestro:test": "maestro test ./maestro"
+  },
+  "dependencies": {
+    "expo": "~54.0.33"
+  },
+  "devDependencies": {
+    "@syncular/dialect-expo-sqlite": "workspace:*",
+    "expo-sqlite": "^16.0.10",
+    "expo-status-bar": "~3.0.9",
+    "expo-system-ui": "^6.0.9",
+    "expo-updates": "^29.0.16",
+    "kysely": "*",
+    "react": "19.2.4",
+    "react-native": "0.84.0",
+    "@types/react": "~19.2.14",
+    "typescript": "~5.9.3"
+  }
+}

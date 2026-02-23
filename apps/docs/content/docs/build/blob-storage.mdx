@@ -1,0 +1,445 @@
+---
+title: Blob Storage
+description: Handle binary files with content-addressable storage
+---
+
+# Blob Storage
+
+## What you'll learn
+
+- How content-addressable blob storage works
+- How to set up the server (database or S3/R2 backends)
+- How to implement client-side blob storage (browser OPFS, React Native)
+- How to upload, download, and cache blobs
+- How to manage the upload queue and garbage collection
+
+## Prerequisites
+
+- A working [Server Setup](/docs/build/server-setup) and [Client Setup](/docs/build/client-setup)
+
+---
+
+Syncular includes a content-addressable blob storage system for handling binary files (images, videos, PDFs, etc.) in your offline-first application. Blobs are stored separately from your sync data and are identified by their SHA-256 hash, enabling automatic deduplication.
+
+## Overview
+
+The blob storage system provides:
+
+- **Content-addressable storage**: Files are identified by SHA-256 hash
+- **Automatic deduplication**: Same content = same hash = stored once
+- **Offline-first**: Upload queue with background processing
+- **Client-side caching**: Local storage with configurable policies
+- **Pluggable storage backends**: S3, Cloudflare R2, filesystem, or database storage
+- **Presigned URLs**: Secure direct uploads/downloads
+
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Client    │     │   Server    │     │ Blob Store  │
+│             │     │             │     │ (S3/R2/DB)  │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │
+       │ 1. Initiate       │                   │
+       │──────────────────>│                   │
+       │   presigned URL   │                   │
+       │<──────────────────│                   │
+       │                   │                   │
+       │ 2. Upload blob    │                   │
+       │───────────────────────────────────────>
+       │                   │                   │
+       │ 3. Complete       │                   │
+       │──────────────────>│                   │
+       │                   │                   │
+       │ 4. Use blob ref   │                   │
+       │   in sync data    │                   │
+       │──────────────────>│                   │
+```
+
+## Server Setup
+
+### 1. Add Database Schema
+
+Run the blob storage migrations:
+
+```typescript
+import { ensureBlobStorageSchemaPostgres } from '@syncular/server';
+import { db } from './your-db';
+
+await ensureBlobStorageSchemaPostgres(db);
+```
+
+### 2. Create Storage Adapter
+
+Choose a storage backend:
+
+```typescript
+import {
+  createDatabaseBlobStorageAdapter,
+  createHmacTokenSigner,
+} from '@syncular/server';
+import { createFilesystemBlobStorageAdapter } from '@syncular/server-storage-filesystem';
+import { createS3BlobStorageAdapter } from '@syncular/server-storage-s3';
+
+const tokenSigner = createHmacTokenSigner(process.env.BLOB_SECRET!);
+
+// Option A: Database storage (development/small deployments)
+const adapter = createDatabaseBlobStorageAdapter({
+  db,
+  baseUrl: 'https://api.example.com/api/sync',
+  tokenSigner,
+});
+
+// Option B: Filesystem storage (single-server deployments)
+const adapter = createFilesystemBlobStorageAdapter({
+  basePath: '/data/blobs',
+  baseUrl: 'https://api.example.com/api/sync',
+  tokenSigner,
+});
+
+// Option C: S3/R2 storage (production, scalable)
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+
+const adapter = createS3BlobStorageAdapter({
+  client: new S3Client({ region: 'us-east-1' }),
+  bucket: 'my-blobs',
+  keyPrefix: 'blobs/',
+  commands: { PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand },
+  getSignedUrl,
+});
+```
+
+### 3. Create Blob Manager
+
+```typescript
+import { createBlobManager } from '@syncular/server';
+
+const blobManager = createBlobManager({
+  db,
+  adapter,
+  defaultExpiresIn: 3600, // 1 hour presigned URL expiration
+  uploadTtlSeconds: 86400, // 24 hour cleanup for incomplete uploads
+});
+```
+
+### 4. Add Blob Routes
+
+```typescript
+import { createBlobRoutes } from '@syncular/server-hono';
+
+const blobRoutes = createBlobRoutes({
+  blobManager,
+  authenticate: async (c) => {
+    const user = await getUser(c);
+    return user ? { actorId: user.id } : null;
+  },
+  // Required for database adapter
+  tokenSigner,
+  db,
+  // Optional: Custom access control
+  canAccessBlob: async ({ actorId, hash }) => {
+    // Check if user can access this blob
+    return true;
+  },
+});
+
+app.route('/api/sync', blobRoutes);
+```
+
+### 5. Set Up Garbage Collection
+
+Clean up expired uploads periodically:
+
+```typescript
+import { createBlobCleanupScheduler } from '@syncular/server';
+
+const cleanupScheduler = createBlobCleanupScheduler({
+  blobManager,
+  intervalMs: 60 * 60 * 1000, // Run every hour
+  deleteFromStorage: true,
+  onCleanup: (result) => {
+    console.log(`Cleaned up ${result.deleted} expired uploads`);
+  },
+});
+
+// Start on server boot
+cleanupScheduler.start({ immediate: true });
+
+// Stop on shutdown
+process.on('SIGTERM', () => cleanupScheduler.stop());
+```
+
+## Client Setup
+
+### 1. Create Blob Storage Adapter
+
+Implement the `ClientBlobStorage` interface for your platform:
+
+```typescript
+import type { ClientBlobStorage } from '@syncular/client';
+
+// Example: Browser OPFS implementation
+async function createOpfsBlobStorage(): Promise<ClientBlobStorage> {
+  const root = await navigator.storage.getDirectory();
+  const blobsDir = await root.getDirectoryHandle('blobs', { create: true });
+
+  return {
+    async write(hash: string, data: Uint8Array | ReadableStream<Uint8Array>) {
+      const file = await blobsDir.getFileHandle(hash, { create: true });
+      const writable = await file.createWritable();
+      if (data instanceof Uint8Array) {
+        await writable.write(data);
+      } else {
+        await data.pipeTo(writable);
+        return;
+      }
+      await writable.close();
+    },
+
+    async read(hash: string): Promise<Uint8Array | null> {
+      try {
+        const file = await blobsDir.getFileHandle(hash);
+        const blob = await file.getFile();
+        return new Uint8Array(await blob.arrayBuffer());
+      } catch {
+        return null;
+      }
+    },
+
+    async delete(hash: string) {
+      try {
+        await blobsDir.removeEntry(hash);
+      } catch {
+        // Ignore if not found
+      }
+    },
+
+    async exists(hash: string): Promise<boolean> {
+      try {
+        await blobsDir.getFileHandle(hash);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async clear() {
+      for await (const [name] of blobsDir.entries()) {
+        await blobsDir.removeEntry(name);
+      }
+    },
+  };
+}
+
+const blobStorage = await createOpfsBlobStorage();
+```
+
+For React Native with Expo:
+
+```typescript
+import * as FileSystem from 'expo-file-system';
+import type { ClientBlobStorage } from '@syncular/client';
+
+function createExpoBlobStorage(): ClientBlobStorage {
+  const blobsDir = `${FileSystem.documentDirectory}blobs/`;
+
+  // Ensure directory exists
+  FileSystem.makeDirectoryAsync(blobsDir, { intermediates: true }).catch(() => {});
+
+  return {
+    async write(hash: string, data: Uint8Array) {
+      const path = `${blobsDir}${hash}`;
+      const base64 = btoa(String.fromCharCode(...data));
+      await FileSystem.writeAsStringAsync(path, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    },
+
+    async read(hash: string): Promise<Uint8Array | null> {
+      const path = `${blobsDir}${hash}`;
+      const info = await FileSystem.getInfoAsync(path);
+      if (!info.exists) return null;
+      const base64 = await FileSystem.readAsStringAsync(path, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const binary = atob(base64);
+      return new Uint8Array([...binary].map((c) => c.charCodeAt(0)));
+    },
+
+    async delete(hash: string) {
+      const path = `${blobsDir}${hash}`;
+      await FileSystem.deleteAsync(path, { idempotent: true });
+    },
+
+    async exists(hash: string): Promise<boolean> {
+      const path = `${blobsDir}${hash}`;
+      const info = await FileSystem.getInfoAsync(path);
+      return info.exists;
+    },
+
+    async clear() {
+      await FileSystem.deleteAsync(blobsDir, { idempotent: true });
+      await FileSystem.makeDirectoryAsync(blobsDir, { intermediates: true });
+    },
+  };
+}
+
+const blobStorage = createExpoBlobStorage();
+```
+
+### 2. Create Client with Blob Support
+
+```typescript
+import { Client } from '@syncular/client';
+import { createHttpTransport } from '@syncular/transport-http';
+
+const transport = createHttpTransport({
+  baseUrl: '/api',
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+});
+
+const client = new Client({
+  db,
+  transport,
+  handlers,
+  clientId: 'device-123',
+  actorId: 'user-456',
+  subscriptions: [...],
+  blobStorage, // Enable blob support
+});
+
+await client.start();
+```
+
+## Usage
+
+### Upload a File
+
+```typescript
+// Upload immediately (blocks until complete)
+const blobRef = await client.blobs.store(file, { immediate: true });
+console.log(blobRef);
+// { hash: 'sha256:abc123...', size: 12345, mimeType: 'image/jpeg' }
+
+// Queue for background upload
+const blobRef = await client.blobs.store(file);
+// Process queue when online
+await client.blobs.processUploadQueue();
+```
+
+### Download a File
+
+```typescript
+// Download blob (uses cache if available)
+const data = await client.blobs.retrieve(blobRef);
+
+// Check if cached locally
+const isCached = await client.blobs.isLocal(blobRef.hash);
+```
+
+### Store Blob Reference in Sync Data
+
+Store the blob hash in your synced data:
+
+```typescript
+await client.mutations.tasks.update(taskId, {
+  attachment_hash: blobRef.hash,
+  attachment_name: file.name,
+  attachment_size: blobRef.size,
+  attachment_mime: blobRef.mimeType,
+});
+```
+
+### Manage Cache
+
+```typescript
+// Get cache statistics
+const stats = await client.blobs.getCacheStats();
+console.log(`Cache: ${stats.count} blobs, ${stats.totalBytes} bytes`);
+
+// Manually prune cache
+await client.blobs.pruneCache(50 * 1024 * 1024); // Keep under 50MB
+
+// Clear entire cache
+await client.blobs.clearCache();
+```
+
+### Upload Queue
+
+```typescript
+// Get queue statistics
+const queueStats = await client.blobs.getUploadQueueStats();
+console.log(`Pending: ${queueStats.pending}, Failed: ${queueStats.failed}`);
+
+// Process queue manually
+const result = await client.blobs.processUploadQueue();
+console.log(`Uploaded: ${result.uploaded}, Failed: ${result.failed}`);
+```
+
+### Blob Events
+
+```typescript
+client.on('blob:upload:complete', (blobRef) => {
+  console.log(`Uploaded: ${blobRef.hash}`);
+});
+
+client.on('blob:upload:error', ({ hash, error }) => {
+  console.error(`Upload failed for ${hash}: ${error}`);
+});
+```
+
+## ClientBlobStorage Interface
+
+For custom storage implementations:
+
+```typescript
+interface ClientBlobStorage {
+  /** Write blob data */
+  write(hash: string, data: Uint8Array | ReadableStream<Uint8Array>): Promise<void>;
+
+  /** Read blob data, null if not found */
+  read(hash: string): Promise<Uint8Array | null>;
+
+  /** Read as stream (optional) */
+  readStream?(hash: string): Promise<ReadableStream<Uint8Array> | null>;
+
+  /** Delete blob */
+  delete(hash: string): Promise<void>;
+
+  /** Check if blob exists */
+  exists(hash: string): Promise<boolean>;
+
+  /** Get storage usage in bytes (optional) */
+  getUsage?(): Promise<number>;
+
+  /** Clear all blobs (optional) */
+  clear?(): Promise<void>;
+}
+```
+
+## BlobRef Type
+
+```typescript
+interface BlobRef {
+  hash: string;      // "sha256:abc123..."
+  size: number;      // Byte size
+  mimeType: string;  // "image/jpeg"
+}
+```
+
+For complete API documentation, see the [API Reference](/docs/api).
+
+## Best Practices
+
+1. **Use background uploads** for better UX - don't block the UI on upload completion
+2. **Set appropriate cache limits** based on your app's needs and device constraints
+3. **Handle upload failures gracefully** - the queue will retry automatically
+4. **Clean up unused blobs** - run garbage collection regularly on the server
+5. **Consider encryption** for sensitive files using the encryption plugin

@@ -1,0 +1,89 @@
+---
+title: Offline Reconnect Flow
+description: Verify offline writes, reconnect replay, and outbox cleanup.
+---
+
+# Offline Reconnect Flow
+
+This pattern matches mobile and field apps where users write data offline, then reconnect later.
+
+## What this test should prove
+
+- local writes are stored while network is unavailable
+- outbox commits are replayed when transport recovers
+- server and client converge to the same row state
+
+## Example
+
+```ts
+import {
+  assertOutboxEmpty,
+  assertOutboxHas,
+  assertRowExists,
+  createScenarioFlow,
+  createSyncFixture,
+  createSyncSubscription,
+  createSyncUpsertOperation,
+  withFaults,
+} from '@syncular/testkit';
+
+const fixture = await createSyncFixture({
+  serverDialect: 'sqlite',
+  defaultClientDialect: 'bun-sqlite',
+});
+
+const client = await fixture.createClient({
+  mode: 'raw',
+  actorId: 'u1',
+  clientId: 'device-a',
+});
+
+const { transport: flakyTransport, setOptions } = withFaults(client.transport, {
+  failOnPush: true,
+  failAfter: 0,
+});
+
+const flow = createScenarioFlow({
+  ...client,
+  transport: flakyTransport,
+});
+
+const sub = createSyncSubscription({
+  id: 'tasks-p1',
+  table: 'tasks',
+  scopes: { user_id: 'u1', project_id: 'p1' },
+});
+
+await flow.pull({ subscriptions: [sub] });
+
+await flow.enqueue({
+  operations: [
+    createSyncUpsertOperation({
+      table: 'tasks',
+      rowId: 'task-1',
+      payload: { title: 'Inspect site', completed: 0, project_id: 'p1' },
+    }),
+  ],
+});
+
+await assertOutboxHas(client.db, 1);
+
+// Offline push fails and remains retryable
+await flow.push().catch(() => {});
+
+// Network recovers
+setOptions({ failAfter: undefined, failOnPush: false });
+
+await flow.push();
+await flow.pull({ subscriptions: [sub] });
+
+await assertOutboxEmpty(client.db);
+await assertRowExists(client.db, 'tasks', 'task-1', { title: 'Inspect site' });
+
+await fixture.destroyAll();
+```
+
+## Production tips
+
+- Add a second actor updating the same row while device A is offline to verify conflict behavior.
+- Keep this flow in your CI "core behavior" suite, not only in slow end-to-end tests.

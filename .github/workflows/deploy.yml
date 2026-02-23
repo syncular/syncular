@@ -1,0 +1,306 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["Checks"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-docs:
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' ||
+        (github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: ./.github/actions/setup-environment
+
+      - name: Stamp versions
+        run: bun scripts/stamp-versions.ts ${{ github.run_number }}
+      - run: bun run build
+      - run: bun generate:openapi
+
+      - name: Deploy (production)
+        if: github.event.workflow_run.event == 'push'
+        working-directory: apps/docs
+        run: |
+          attempts=3
+          delay_seconds=20
+
+          for attempt in $(seq 1 "$attempts"); do
+            echo "Docs deploy attempt ${attempt}/${attempts}"
+
+            set +e
+            deploy_output=$(bun run pub 2>&1)
+            deploy_status=$?
+            set -e
+
+            echo "$deploy_output"
+
+            if [ "$deploy_status" -eq 0 ]; then
+              echo "Docs deploy succeeded on attempt ${attempt}/${attempts}"
+              exit 0
+            fi
+
+            is_transient_error=0
+            if echo "$deploy_output" | grep -qiE 'Internal authentication error|code:\s*10500|A request to the Cloudflare API'; then
+              is_transient_error=1
+            fi
+
+            if [ "$is_transient_error" -eq 1 ] && [ "$attempt" -lt "$attempts" ]; then
+              echo "Transient Cloudflare deploy error detected. Retrying in ${delay_seconds}s..."
+              sleep "$delay_seconds"
+              delay_seconds=$((delay_seconds * 2))
+              continue
+            fi
+
+            echo "Docs deploy failed with a non-retryable error, or retries were exhausted."
+            exit "$deploy_status"
+          done
+
+          exit 1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Deploy (preview)
+        if: github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/docs
+        run: |
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          cat wrangler.jsonc | \
+            jq "del(.routes) | .name = \"syncular-docs-pr-${PR_NUMBER}\" | .workers_dev = true" \
+            > wrangler.preview.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  deploy-console:
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' ||
+        (github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    env:
+      SENTRY_ORG: syncular
+      SENTRY_PROJECT_CONSOLE_BROWSER: syncular-console-browser
+      SYNCULAR_SENTRY_DSN: https://3688bef717469e3a35b69b343e0bf96a@o4510874608730112.ingest.de.sentry.io/4510874623213648
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: ./.github/actions/setup-environment
+
+      - name: Resolve Sentry release
+        id: sentry_release
+        run: |
+          RELEASE=$(bun scripts/print-stamped-version.ts ${{ github.run_number }})
+          echo "value=${RELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp versions
+        run: bun scripts/stamp-versions.ts ${{ github.run_number }}
+      - run: bun run build
+
+      - name: Deploy (production)
+        if: github.event.workflow_run.event == 'push'
+        working-directory: apps/console
+        run: |
+          bun run build
+
+          if [ -n "$SENTRY_AUTH_TOKEN" ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_PROJECT_CONSOLE_BROWSER" ]; then
+            bunx @sentry/cli sourcemaps upload \
+              --org "$SENTRY_ORG" \
+              --project "$SENTRY_PROJECT_CONSOLE_BROWSER" \
+              --release "$SENTRY_RELEASE" \
+              --url-prefix "~/" \
+              --validate \
+              --wait \
+              dist
+          else
+            echo "Skipping console sourcemap upload (missing Sentry env)."
+          fi
+
+          bunx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SYNCULAR_SENTRY_ENVIRONMENT: production
+          SYNCULAR_SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      - name: Deploy (preview)
+        if: github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/console
+        run: |
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          export SYNCULAR_SENTRY_ENVIRONMENT="preview-pr-${PR_NUMBER}"
+          bun run build
+
+          if [ -n "$SENTRY_AUTH_TOKEN" ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_PROJECT_CONSOLE_BROWSER" ]; then
+            bunx @sentry/cli sourcemaps upload \
+              --org "$SENTRY_ORG" \
+              --project "$SENTRY_PROJECT_CONSOLE_BROWSER" \
+              --release "$SENTRY_RELEASE" \
+              --url-prefix "~/" \
+              --validate \
+              --wait \
+              dist
+          else
+            echo "Skipping console sourcemap upload (missing Sentry env)."
+          fi
+
+          cat wrangler.jsonc | \
+            jq "del(.routes) | .name = \"syncular-console-pr-${PR_NUMBER}\" | .workers_dev = true" \
+            > wrangler.preview.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SYNCULAR_SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+  deploy-demo:
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' ||
+        (github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    env:
+      SENTRY_ORG: syncular
+      SENTRY_PROJECT_DEMO_BROWSER: syncular-demo-browser
+      SENTRY_DSN_DEMO_WORKER: https://061deba4780baa892b47a8edec1e504e@o4510874608730112.ingest.de.sentry.io/4510874623344720
+      SYNCULAR_SENTRY_DSN: https://7d23a70ce5130ced322134387cfb4265@o4510874608730112.ingest.de.sentry.io/4510874623279184
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: ./.github/actions/setup-environment
+
+      - name: Resolve Sentry release
+        id: sentry_release
+        run: |
+          RELEASE=$(bun scripts/print-stamped-version.ts ${{ github.run_number }})
+          echo "value=${RELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp versions
+        run: bun scripts/stamp-versions.ts ${{ github.run_number }}
+      - run: bun run build
+
+      - name: Deploy (production)
+        if: github.event.workflow_run.event == 'push'
+        working-directory: apps/demo
+        run: |
+          bun run build
+
+          if [ -n "$SENTRY_AUTH_TOKEN" ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_PROJECT_DEMO_BROWSER" ]; then
+            bunx @sentry/cli sourcemaps upload \
+              --org "$SENTRY_ORG" \
+              --project "$SENTRY_PROJECT_DEMO_BROWSER" \
+              --release "$SENTRY_RELEASE" \
+              --url-prefix "~/" \
+              --validate \
+              --wait \
+              dist
+          else
+            echo "Skipping demo sourcemap upload (missing Sentry env)."
+          fi
+
+          cat wrangler.jsonc | \
+            jq '.vars.SENTRY_DSN = (env.SENTRY_DSN_DEMO_WORKER // "") | .vars.SENTRY_ENVIRONMENT = "production" | .vars.SENTRY_RELEASE = (env.SENTRY_RELEASE // "")' \
+            > wrangler.deploy.json
+
+          bunx wrangler deploy --config wrangler.deploy.json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SYNCULAR_SENTRY_ENVIRONMENT: production
+          SYNCULAR_SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      - name: Deploy (preview)
+        if: github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/demo
+        run: |
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          export SYNCULAR_SENTRY_ENVIRONMENT="preview-pr-${PR_NUMBER}"
+          bun run build
+
+          if [ -n "$SENTRY_AUTH_TOKEN" ] && [ -n "$SENTRY_ORG" ] && [ -n "$SENTRY_PROJECT_DEMO_BROWSER" ]; then
+            bunx @sentry/cli sourcemaps upload \
+              --org "$SENTRY_ORG" \
+              --project "$SENTRY_PROJECT_DEMO_BROWSER" \
+              --release "$SENTRY_RELEASE" \
+              --url-prefix "~/" \
+              --validate \
+              --wait \
+              dist
+          else
+            echo "Skipping demo sourcemap upload (missing Sentry env)."
+          fi
+
+          cat wrangler.jsonc | \
+            jq "del(.routes) | .name = \"syncular-demo-pr-${PR_NUMBER}\" | .workers_dev = true | .vars.SENTRY_DSN = (env.SENTRY_DSN_DEMO_WORKER // \"\") | .vars.SENTRY_ENVIRONMENT = (env.SYNCULAR_SENTRY_ENVIRONMENT // \"preview\") | .vars.SENTRY_RELEASE = (env.SENTRY_RELEASE // \"\")" \
+            > wrangler.preview.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SYNCULAR_SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+  comment-urls:
+    if: |
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    needs: [deploy-docs, deploy-console, deploy-demo]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment preview URLs on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          number: ${{ github.event.workflow_run.pull_requests[0].number }}
+          header: deploy-preview
+          message: |
+            ## Deploy Previews
+
+            | App | URL |
+            |-----|-----|
+            | Docs | ${{ needs.deploy-docs.outputs.url || 'N/A' }} |
+            | Console | ${{ needs.deploy-console.outputs.url || 'N/A' }} |
+            | Demo | ${{ needs.deploy-demo.outputs.url || 'N/A' }} |
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

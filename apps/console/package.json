@@ -1,0 +1,29 @@
+{
+  "name": "@syncular/console-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun ./index.html",
+    "build": "rm -rf dist && bun run build.ts",
+    "pub": "bun run build && wrangler deploy",
+    "tsgo": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@syncular/console": "workspace:*",
+    "@syncular/observability-sentry": "workspace:*",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "bun-plugin-tailwind": "^0.1.2",
+    "tailwindcss": "^4.2.0",
+    "wrangler": "*"
+  }
+}

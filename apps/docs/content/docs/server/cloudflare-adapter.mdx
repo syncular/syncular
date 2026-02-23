@@ -1,0 +1,325 @@
+---
+title: Cloudflare Adapter
+description: Deploy Syncular on Cloudflare Workers and Durable Objects
+---
+
+The `@syncular/server-cloudflare` package provides adapters for deploying Syncular on Cloudflare's edge infrastructure.
+
+## Two Deployment Modes
+
+| Mode | WebSocket | Use Case |
+|------|-----------|----------|
+| **Worker** | Polling only | Simple deployments, lower latency reads |
+| **Durable Object** | Full realtime | Real-time collaboration, presence |
+
+## Installation
+
+```bash
+bun add @syncular/server-cloudflare @syncular/server-hono @syncular/dialect-d1 @syncular/server-dialect-sqlite hono
+```
+
+For Postgres (Neon) instead of D1:
+
+```bash
+bun add @syncular/dialect-neon @syncular/server-dialect-postgres
+```
+
+## Worker (Polling Only)
+
+Use `createSyncWorker` for stateless polling-only deployments. No WebSocket support, but simpler and works everywhere.
+
+```typescript
+// src/index.ts
+import { createSyncWorker } from '@syncular/server-cloudflare/worker';
+import { createD1Db } from '@syncular/dialect-d1';
+import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server-dialect-sqlite';
+import { createSyncServer } from '@syncular/server-hono';
+import { tasksHandler } from './handlers/tasks';
+
+type Env = { DB: D1Database };
+
+export default createSyncWorker<Env>(async (app, env) => {
+  const db = createD1Db(env.DB);
+  const dialect = createSqliteServerDialect();
+  await ensureSyncSchema(db, dialect);
+
+  const { syncRoutes, consoleRoutes } = createSyncServer({
+    db,
+    dialect,
+    handlers: [tasksHandler],
+    authenticate: async (c) => {
+      const userId = c.req.header('x-user-id');
+      return userId ? { actorId: userId } : null;
+    },
+  });
+
+  app.route('/sync', syncRoutes);
+  if (consoleRoutes) app.route('/console', consoleRoutes);
+});
+```
+
+### wrangler.toml
+
+```toml
+name = "my-sync-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sync-db"
+database_id = "your-database-id"
+```
+
+## Durable Object (WebSocket + Polling)
+
+Use `SyncDurableObject` for full realtime support. Durable Objects can hold persistent WebSocket connections.
+When a Durable Object wakes from hibernation, previously attached sockets are closed so clients reconnect and re-establish handlers. Realtime delivery remains best-effort; clients should always rely on sync pulls as the source of truth.
+
+```typescript
+// src/index.ts
+import {
+  SyncDurableObject,
+  createSyncWorkerWithDO,
+} from '@syncular/server-cloudflare/durable-object';
+import { createD1Db } from '@syncular/dialect-d1';
+import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server-dialect-sqlite';
+import { createSyncServer } from '@syncular/server-hono';
+import { tasksHandler } from './handlers/tasks';
+
+type Env = {
+  DB: D1Database;
+  SYNC_DO: DurableObjectNamespace;
+};
+
+// Durable Object class — holds WebSocket connections
+export class SyncDO extends SyncDurableObject<Env> {
+  async setup(app, env, upgradeWebSocket) {
+    const db = createD1Db(env.DB);
+    const dialect = createSqliteServerDialect();
+    await ensureSyncSchema(db, dialect);
+
+    const { syncRoutes, consoleRoutes } = createSyncServer({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const userId = c.req.header('x-user-id');
+        return userId ? { actorId: userId } : null;
+      },
+      upgradeWebSocket, // Enable WebSocket realtime
+    });
+
+    app.route('/sync', syncRoutes);
+    if (consoleRoutes) app.route('/console', consoleRoutes);
+  }
+}
+
+// Worker entry — routes all requests to the DO
+export default createSyncWorkerWithDO<Env>('SYNC_DO');
+```
+
+### wrangler.toml
+
+```toml
+name = "my-sync-do"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sync-db"
+database_id = "your-database-id"
+
+[[durable_objects.bindings]]
+name = "SYNC_DO"
+class_name = "SyncDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SyncDO"]
+```
+
+## Multi-Tenant Routing
+
+By default, all requests go to a single DO instance. For multi-tenant apps, route to different DO instances per tenant:
+
+```typescript
+export default createSyncWorkerWithDO<Env>('SYNC_DO', {
+  getStubId: (ns, request, env) => {
+    // Extract tenant from header, path, or subdomain
+    const tenant = request.headers.get('x-tenant-id') || 'default';
+    return ns.idFromName(`tenant:${tenant}`);
+  },
+});
+```
+
+## Using Neon (Postgres)
+
+Replace D1 with Neon for Postgres:
+
+```typescript
+import { createNeonDb } from '@syncular/dialect-neon';
+import { createPostgresServerDialect, ensureSyncSchema } from '@syncular/server-dialect-postgres';
+
+export default createSyncWorker<Env>(async (app, env) => {
+  const db = createNeonDb(env.DATABASE_URL);
+  const dialect = createPostgresServerDialect();
+  await ensureSyncSchema(db, dialect);
+
+  // ... rest is the same
+});
+```
+
+### wrangler.toml for Neon
+
+```toml
+[vars]
+DATABASE_URL = "postgres://..."
+
+# Or use secrets:
+# wrangler secret put DATABASE_URL
+```
+
+## R2 Blob Storage
+
+For blob storage (images, files, etc.), use the R2 adapter with native R2Bucket binding. No AWS SDK required.
+
+```typescript
+import { createR2BlobStorageAdapter, createHmacTokenSigner } from '@syncular/server-cloudflare/r2';
+
+type Env = {
+  DB: D1Database;
+  BLOBS: R2Bucket;
+  BLOB_SECRET: string;
+};
+
+export default createSyncWorker<Env>(async (app, env) => {
+  const db = createD1Db(env.DB);
+  const dialect = createSqliteServerDialect();
+  await ensureSyncSchema(db, dialect);
+
+  const blobStorage = createR2BlobStorageAdapter({
+    bucket: env.BLOBS,
+    baseUrl: 'https://api.example.com/sync',
+    tokenSigner: createHmacTokenSigner(env.BLOB_SECRET),
+  });
+
+  const { syncRoutes, consoleRoutes } = createSyncServer({
+    db,
+    dialect,
+    handlers: [tasksHandler],
+    blobStorage, // Enable blob support
+    authenticate: async (c) => {
+      const userId = c.req.header('x-user-id');
+      return userId ? { actorId: userId } : null;
+    },
+  });
+
+  app.route('/sync', syncRoutes);
+  if (consoleRoutes) app.route('/console', consoleRoutes);
+});
+```
+
+### wrangler.toml for R2
+
+```toml
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "my-sync-blobs"
+
+[vars]
+BLOB_SECRET = "your-secret-key"
+# Or use secrets:
+# wrangler secret put BLOB_SECRET
+```
+
+The R2 adapter uses Worker-proxied uploads/downloads with HMAC-signed tokens (since R2 bindings don't support presigned URLs). This is secure and works well for most use cases.
+
+For S3-compatible presigned URLs (direct client-to-R2 uploads), use the S3 adapter from `@syncular/server` with R2's S3 API endpoint instead.
+
+## API Reference
+
+### createSyncWorker
+
+```typescript
+function createSyncWorker<Bindings extends object>(
+  setup: (app: Hono, env: Bindings) => void | Promise<void>
+): ExportedHandler<Bindings>
+```
+
+Creates a stateless Worker handler. The `setup` function is called once per isolate on the first request.
+
+### SyncDurableObject
+
+```typescript
+abstract class SyncDurableObject<E extends object> {
+  protected ctx: DurableObjectState;
+  protected env: E;
+
+  abstract setup(
+    app: Hono,
+    env: E,
+    upgradeWebSocket: UpgradeWebSocket
+  ): void | Promise<void>;
+
+  fetch(request: Request): Promise<Response>;
+  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
+  webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void>;
+  webSocketError(ws: WebSocket, error: unknown): Promise<void>;
+}
+```
+
+Base class for Durable Objects with Hono routing and WebSocket support. Bridges Cloudflare's hibernation API to Hono's `UpgradeWebSocket` interface.
+
+### createSyncWorkerWithDO
+
+```typescript
+function createSyncWorkerWithDO<E extends object>(
+  bindingName: string & keyof E,
+  options?: {
+    getStubId?: (ns: DurableObjectNamespace, request: Request, env: E) => DurableObjectId;
+  }
+): ExportedHandler<E>
+```
+
+Creates a Worker that routes all requests to a Durable Object.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `bindingName` | required | DO namespace binding name |
+| `getStubId` | `ns.idFromName('sync')` | Custom DO instance routing |
+
+### createR2BlobStorageAdapter
+
+```typescript
+function createR2BlobStorageAdapter(options: {
+  bucket: R2Bucket;
+  baseUrl: string;
+  tokenSigner: BlobTokenSigner;
+  keyPrefix?: string;
+}): BlobStorageAdapter
+```
+
+Creates a blob storage adapter using native R2 binding.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `bucket` | required | R2 bucket binding |
+| `baseUrl` | required | Base URL for blob routes |
+| `tokenSigner` | required | Token signer for authorization |
+| `keyPrefix` | `''` | Prefix for blob keys |
+
+### createHmacTokenSigner
+
+```typescript
+function createHmacTokenSigner(secret: string): BlobTokenSigner
+```
+
+Creates an HMAC-SHA256 token signer for securing blob uploads/downloads.
+
+## Next Steps
+
+- [Hono Adapter](/docs/server/hono-adapter) - Hono route configuration
+- [Dialects](/docs/server/dialects) - Database dialect options
+- [Realtime](/docs/build/realtime) - Client-side realtime setup

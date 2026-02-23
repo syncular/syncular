@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 104 104" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;">
+    <g id="ArtBoard1" transform="matrix(0.742857,0,0,0.742857,0,0)">
+        <rect x="0" y="0" width="140" height="140" style="fill:none;"/>
+        <g transform="matrix(1.230769,0,0,1.230769,-24.230769,-16.153846)">
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="70" cy="70" r="18" style="fill:none;stroke:rgb(59,130,246);stroke-opacity:0.85;stroke-width:1.8px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <g transform="matrix(1,-0,-0,1,18,12)">
+                    <use xlink:href="#_Image1" x="41.557" y="47.557" width="21px" height="21px"/>
+                </g>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="70" cy="70" r="4.5" style="fill:rgb(59,130,246);"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="70" cy="70" r="44" style="fill:none;stroke:rgb(59,130,246);stroke-opacity:0.1;stroke-width:0.4px;stroke-dasharray:3,5;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="70" cy="26" r="12" style="fill:none;stroke:rgb(34,197,94);stroke-opacity:0.2;stroke-width:0.4px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="70" cy="26" r="8" style="fill:none;stroke:rgb(34,197,94);stroke-opacity:0.7;stroke-width:1px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <g transform="matrix(1,-0,-0,1,18,12)">
+                    <use xlink:href="#_Image2" x="46.969" y="8.969" width="10px" height="10px"/>
+                </g>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="70" cy="26" r="2" style="fill:rgb(34,197,94);"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <path d="M70,34L70,52" style="fill:none;fill-rule:nonzero;stroke:rgb(34,197,94);stroke-opacity:0.25;stroke-width:0.6px;stroke-dasharray:2,2;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="108" cy="92" r="12" style="fill:none;stroke:rgb(139,92,246);stroke-opacity:0.2;stroke-width:0.4px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="108" cy="92" r="8" style="fill:none;stroke:rgb(139,92,246);stroke-opacity:0.7;stroke-width:1px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <g transform="matrix(1,-0,-0,1,18,12)">
+                    <use xlink:href="#_Image2" x="84.969" y="74.969" width="10px" height="10px"/>
+                </g>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="108" cy="92" r="2" style="fill:rgb(139,92,246);"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <path d="M102,87L84,77" style="fill:none;fill-rule:nonzero;stroke:rgb(139,92,246);stroke-opacity:0.25;stroke-width:0.6px;stroke-dasharray:2,2;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="32" cy="92" r="12" style="fill:none;stroke:rgb(245,158,11);stroke-opacity:0.2;stroke-width:0.4px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="32" cy="92" r="8" style="fill:none;stroke:rgb(245,158,11);stroke-opacity:0.7;stroke-width:1px;"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <g transform="matrix(1,-0,-0,1,18,12)">
+                    <use xlink:href="#_Image2" x="8.969" y="74.969" width="10px" height="10px"/>
+                </g>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <circle cx="32" cy="92" r="2" style="fill:rgb(245,158,11);"/>
+            </g>
+            <g transform="matrix(1.09375,0,0,1.09375,0,0)">
+                <path d="M38,87L56,77" style="fill:none;fill-rule:nonzero;stroke:rgb(245,158,11);stroke-opacity:0.25;stroke-width:0.6px;stroke-dasharray:2,2;"/>
+            </g>
+        </g>
+    </g>
+    <defs>
+        <image id="_Image1" width="21px" height="21px" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABUAAAAVCAYAAACpF6WWAAAACXBIWXMAAA7EAAAOxAGVKw4bAAABgUlEQVQ4ja3UP09TURzG8U8Pd7rRGk1aFDr5Bohu5sZNB02YfD936EthdDUkOLlwJ52tcWEBAhQkJnATEykM51zTQFtD22e8yfne35/n97RMUdGvH6KHdXSxgr84wgH2qzKvJ71tTYAFvE6wPRzjDFfI0MEqnmNQlfnXmdCiX3fwHt/xA9fTOklvX6Rutqsy/30HOgb8jIsZsNt6gjf4WJX5BYQEDHg3BxB+4UsqyD+oOMPBHMBGQ5wW/XoDWmnLm/hk9gz/p4AP2ArioPcWBMJItNpqEK1zvCCw0QnWgmjssyVBj7AexEu5WhL0Eu0gnl62JGgb50EsubMk6FMcBGljS4J2cRiwL4bDnXC5pzI8wzCk+BqI4bCICuxWZT5qzvSbeASP5wT2kFVl/pN0+1WZX2Mbb91/aT28wk7z4XaePhDT5lSsfjQDloktZ9ipyvzPROgYfAMvRWeciLa7xCPRKV1xKbtNy+OauvGiX68kwJqYD22cpx8dYliV+cRObgB4/2l8hGjGJAAAAABJRU5ErkJggg=="/>
+        <image id="_Image2" width="10px" height="10px" xlink:href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAoklEQVQYlXXQMWrDQBSE4c+bxpBCOBBcGFIoBne5wN5Fh9u7qExjQrps4S4RxicQdvMUhLCnnPczbxgWavuuaftus/RXM+CAPc5hveBUc/n6BwNq8L0Iese15nJMYezvQPCDXdt36antuwbP+LsDwhpjQnoATLpilWoulyj+SFsMU9opii/1hqHmMs7n+cAOv/FuG9Ansx0DTngNf6i5jNPtBtzGKsdWTRInAAAAAElFTkSuQmCC"/>
+    </defs>
+</svg>

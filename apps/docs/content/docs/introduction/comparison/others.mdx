@@ -1,0 +1,61 @@
+---
+title: Others
+description: Related options that come up when evaluating local-first sync
+lastVerified: 2026-02-15
+---
+
+# Others
+
+Many products that "work offline" solve very different problems. This page maps adjacent categories so you can compare architecture first, then vendors.
+
+## Category map
+
+| Category | Examples | Best when | Usually not enough when |
+|---|---|---|---|
+| Offline cache + revalidation | TanStack Query, Apollo | You need fast reads and can tolerate offline read-only mode | You need durable offline writes and multi-device sync |
+| Client-side local-first data layers | LiveStore, TinyBase, Evolu | You want strong local UX and app-side data/state primitives | You need an end-to-end server-authoritative sync boundary out of the box |
+| Backend platforms with built-in local sync | Instant | You want auth, storage, realtime, and offline in one platform | You require strict self-hosting and full backend control |
+| CRDT collaboration stacks | Yjs, Automerge | You are building Google Docs-style collaboration and want automatic merge | You need relational SQL workflows and explicit server conflict policy |
+| Classic replication stacks | CouchDB + PouchDB | You prefer document replication with a mature replication model | You need relational modeling and custom app auth semantics per sync domain |
+
+## Instant, LiveStore, TinyBase, Evolu: where they usually fit
+
+### Instant
+
+- Fits teams that want a batteries-included backend platform with realtime and offline-friendly client behavior.
+- Usually trades low-level backend control for faster setup and integrated features.
+
+### LiveStore
+
+- Fits apps that want client-centric local-first state/data built around reactive SQLite.
+- Usually needs a clear plan for backend authority, auth boundaries, and cross-client policy at system level.
+
+### TinyBase
+
+- Fits apps that want a lightweight reactive local data/state layer and selective persistence/sync adapters.
+- Usually needs additional server-side architecture for full multi-user sync semantics.
+
+### Evolu
+
+- Fits TypeScript local-first apps that want strongly typed local data workflows with an opinionated stack.
+- Usually still requires evaluating how its model maps to your backend ownership, policy, and operations constraints.
+
+## Quick decision questions
+
+- Do you need durable offline writes across app restarts?
+- Is your primary model relational SQL or document/object/CRDT?
+- Do you want explicit server-side sync boundaries and auditable auth semantics?
+- Do you need self-hosting control, or do you prefer a managed platform?
+
+If you answer "yes" to offline writes + multi-user + SQL + custom auth, compare sync frameworks directly from the [Comparison Overview](/docs/introduction/comparison).
+
+## Sources
+
+- [Instant](https://www.instantdb.com)
+- [LiveStore](https://livestore.dev) and [How LiveStore works](https://docs.livestore.dev/evaluation/how-livestore-works/)
+- [TinyBase](https://tinybase.org) and [TinyBase synchronization guide](https://tinybase.org/guides/synchronization/)
+- [Evolu](https://www.evolu.dev) and [Get started with local-first](https://www.evolu.dev/docs/local-first)
+- [Yjs](https://yjs.dev)
+- [Automerge](https://automerge.org)
+- [CouchDB](https://couchdb.apache.org)
+- [PouchDB](https://pouchdb.com)

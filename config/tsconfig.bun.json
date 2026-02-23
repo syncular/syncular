@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "customConditions": ["bun"],
+    "lib": ["ES2022", "DOM"]
+  }
+}

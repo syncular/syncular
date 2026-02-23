@@ -1,0 +1,65 @@
+{
+  "name": "@syncular/testkit",
+  "version": "0.0.0",
+  "description": "Testing fixtures and utilities for Syncular",
+  "license": "MIT",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/testkit"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "testing",
+    "testkit",
+    "typescript"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-libsql": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/server": "workspace:*",
+    "@syncular/server-dialect-postgres": "workspace:*",
+    "@syncular/server-dialect-sqlite": "workspace:*",
+    "@syncular/server-hono": "workspace:*",
+    "@syncular/transport-http": "workspace:*",
+    "hono": "^4.12.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "kysely": "*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

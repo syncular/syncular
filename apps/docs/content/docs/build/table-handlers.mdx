@@ -1,0 +1,227 @@
+---
+title: Table Handlers
+description: Define how each table syncs and who can access it
+---
+
+# Table Handlers
+
+## What you'll learn
+
+- How server handlers control authorization and sync behavior
+- How to add per-operation authorization with `authorize`
+- When and how to customize client handlers
+- Common patterns: user-owned data, project membership, admin access
+- How to register handlers on both server and client
+
+## Prerequisites
+
+- Familiarity with [Scopes](/docs/introduction/scopes) and [Server Setup](/docs/build/server-setup)
+
+---
+
+Table handlers define how data syncs. You need a **server handler** for each synced table. **Client handlers** are optional -- the system provides defaults.
+
+## Server Handler (Required)
+
+The server handler controls authorization and sync behavior:
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+
+export const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+The `scopes` pattern tells the system to:
+1. Extract `user_id` from row data automatically
+2. Tag changes with scopes: `{ user_id: 'value-from-row' }`
+3. Filter by scope intersection during sync
+
+### With project membership
+
+```typescript
+export const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  resolveScopes: async (ctx) => {
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: memberships.map(m => m.project_id),
+    };
+  },
+});
+```
+
+### With authorization
+
+```typescript
+export const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+  
+  // Validate operations before applying
+  authorize: async (ctx, op) => {
+    if (op.op === 'upsert') {
+      const userId = op.payload?.user_id;
+      if (userId !== ctx.actorId) {
+        return { error: 'Cannot create tasks for other users', code: 'FORBIDDEN' };
+      }
+    }
+    return true;
+  },
+});
+```
+
+## Client Handler (Optional)
+
+Client handlers are only needed for custom behavior. The system provides defaults that:
+- Apply snapshots (upsert all rows)
+- Apply changes (upsert/delete)
+- Clear data when scopes are revoked
+
+### Custom clear behavior
+
+```typescript
+import { createClientHandler } from '@syncular/client';
+
+export const tasksClientHandler = createClientHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+
+  // Clear only rows for the unsubscribed user
+  async clearAll(ctx) {
+    const userIds = ctx.scopes.user_id;
+    if (Array.isArray(userIds)) {
+      await ctx.trx.deleteFrom('tasks').where('user_id', 'in', userIds).execute();
+    }
+  },
+});
+```
+
+### Soft delete pattern
+
+```typescript
+export const tasksClientHandler = createClientHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+
+  // Mark rows as stale at start of snapshot
+  onSnapshotStart: async (ctx) => {
+    await ctx.trx.updateTable('tasks')
+      .set({ _sync_stale: 1 })
+      .where('user_id', '=', ctx.scopeKey.split(':')[1])
+      .execute();
+  },
+
+  // Delete stale rows at end of snapshot
+  onSnapshotEnd: async (ctx) => {
+    await ctx.trx.deleteFrom('tasks')
+      .where('_sync_stale', '=', 1)
+      .execute();
+  },
+});
+```
+
+## Registration
+
+### Server
+
+```typescript
+const handlers = [tasksHandler, projectsHandler];
+
+app.route('/api/sync', createSyncRoutes({
+  db,
+  dialect,
+  handlers,
+  authenticate,
+}));
+```
+
+### Client (only if using custom handlers)
+
+```typescript
+const sync = {
+  handlers: [tasksClientHandler, projectsClientHandler],
+  subscriptions: ({ actorId }) => [
+    { id: 'tasks', table: 'tasks', scopes: { user_id: actorId } },
+    { id: 'projects', table: 'projects', scopes: { user_id: actorId } },
+  ],
+};
+
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  ...
+/>
+```
+
+## Common Patterns
+
+### User-owned data
+
+```typescript
+const handler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+### Project-based access
+
+```typescript
+const handler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  resolveScopes: async (ctx) => {
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: memberships.map(m => m.project_id),
+    };
+  },
+});
+```
+
+### Admin access
+
+```typescript
+const handler = createServerHandler({
+  table: 'users',
+  scopes: ['org:{org_id}'],
+  resolveScopes: async (ctx) => {
+    const user = await ctx.db
+      .selectFrom('users')
+      .select(['role', 'org_id'])
+      .where('id', '=', ctx.actorId)
+      .executeTakeFirst();
+
+    if (user?.role === 'admin') {
+      return { org_id: [user.org_id] };
+    }
+    return {};  // No access
+  },
+});
+```
+
+## Next Steps
+
+- [Authorization](/docs/build/auth) — Auth patterns with scopes
+- [Conflict Resolution](/docs/introduction/conflict-resolution) — Handle conflicts

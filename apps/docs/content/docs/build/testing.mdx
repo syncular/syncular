@@ -1,0 +1,36 @@
+---
+title: Testing
+description: Testing strategy in the build flow and where to find the testkit docs.
+---
+
+# Testing in the Build Flow
+
+Use this page for strategy. Use the dedicated [Testing](/docs/testing) section for concrete `@syncular/testkit` APIs and examples.
+
+## Recommended test layers
+
+1. Fast in-process tests for handler logic and conflict behavior.
+2. Real HTTP integration tests for auth headers, routes, and subscriptions.
+3. Runtime tests (node/deno/cloudflare) for environment-specific behavior.
+
+## What to verify before production
+
+- Scope filtering and authorization behavior.
+- Conflict detection and resolution paths.
+- Offline queueing and retry semantics.
+- Bootstrap + incremental pull correctness.
+- Realtime wake-up behavior (if enabled).
+
+## Next
+
+<Cards>
+  <Card title="Testing Section" href="/docs/testing">
+    Canonical testkit reference and runner-agnostic examples
+  </Card>
+  <Card title="Runtime Testing" href="/docs/testing/runtime">
+    Runtime-safe patterns for node, deno, and cloudflare
+  </Card>
+  <Card title="Troubleshooting" href="/docs/build/troubleshooting">
+    Debug sync behavior and common failure modes
+  </Card>
+</Cards>

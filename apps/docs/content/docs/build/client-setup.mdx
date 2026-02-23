@@ -1,0 +1,282 @@
+---
+title: Client Setup
+description: Configure the React client with local SQLite and background sync
+---
+
+import { Step, Steps } from 'fumadocs-ui/components/steps';
+
+# Client Setup
+
+## What you'll learn
+
+- How to create a local database (wa-sqlite, PGlite, or bun-sqlite)
+- How to run sync and app migrations
+- How to register client table handlers
+- How to set up HTTP transport (with optional WebSocket wake-ups)
+- How to wire everything into React with `SyncProvider`
+
+## Prerequisites
+
+- A running [Syncular server](/docs/build/server-setup)
+- React 18+
+- Familiarity with [How Sync Works](/docs/introduction/architecture)
+
+---
+
+The client runs a **local database first** (SQLite or PGlite via Kysely), then syncs with your server in the background.
+
+This guide shows the recommended setup for React + `@syncular/client-react`. For non-React usage, see the [JavaScript SDK Overview](/docs/client-sdk/javascript/overview).
+
+<Steps>
+<Step>
+
+### Create a local database
+
+```typescript
+import type { DB } from './db-types';
+
+import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
+const db = createWaSqliteDb<DB>({ fileName: 'app.sqlite' });
+```
+
+> Need a different runtime/dialect (Electron, Expo/RN, Bun/Node, Cloudflare, PGlite)? See [Runtimes](/docs/build/runtimes).
+
+</Step>
+<Step>
+
+### Run migrations (sync tables + your tables)
+
+```typescript
+import { ensureClientSyncSchema } from '@syncular/client';
+
+await ensureClientSyncSchema(db);
+
+// Then create your app tables (example)
+await db.schema
+  .createTable('tasks')
+  .ifNotExists()
+  .addColumn('id', 'text', (col) => col.primaryKey())
+  .addColumn('title', 'text', (col) => col.notNull())
+  .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+  .addColumn('user_id', 'text', (col) => col.notNull())
+  .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+  .execute();
+```
+
+> If you already have migrations, use the `migrate` prop on `SyncProvider` so sync migrations and app migrations happen together.
+
+</Step>
+<Step>
+
+### Create client table handlers (one per synced table)
+
+You *register* client handlers so Syncular knows how to apply snapshots/changes and how to clear data when a subscription is removed or revoked.
+
+You typically don’t write any custom logic — `createClientHandler` provides good defaults. Only customize behavior for cases like soft-deletes or partial clears.
+
+```typescript
+import { createClientHandler } from '@syncular/client';
+
+const handlers = [
+  createClientHandler({
+    table: 'tasks',
+    scopes: ['user:{user_id}'],
+  }),
+];
+```
+
+</Step>
+<Step>
+
+### Create a transport (HTTP + optional WebSocket wake-ups)
+
+One canonical pattern (recommended):
+
+```typescript
+import { createHttpTransport } from '@syncular/transport-http';
+
+// If your server mounts sync at `${API_BASE}/sync`, then transport baseUrl is `API_BASE`.
+const API_BASE = '/api';
+
+const transport = createHttpTransport({
+  baseUrl: API_BASE,
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+});
+```
+
+Transport operations also accept per-call options:
+- `signal` to cancel an in-flight request
+- `authLifecycle` to provide `onAuthExpired`, `refreshToken`, and `retryWithFreshToken`
+
+Recommended auth refresh flow (shared lifecycle):
+
+```typescript
+const transport = createHttpTransport({
+  baseUrl: API_BASE,
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+  authLifecycle: {
+    onAuthExpired: ({ operation, status }) => {
+      console.warn('Auth expired', operation, status);
+    },
+    refreshToken: async () => auth.refreshToken(),
+    retryWithFreshToken: async ({ refreshResult }) => refreshResult,
+  },
+});
+```
+
+Legacy per-call override (`onAuthError`) is still supported when you need one-off behavior for a specific request.
+
+For realtime wake-ups:
+
+```typescript
+import { createWebSocketTransport } from '@syncular/transport-ws';
+
+const transport = createWebSocketTransport({
+  baseUrl: API_BASE,
+  // wsUrl defaults to `${baseUrl}/sync/realtime`
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+  // Browser note: WebSocket cannot send custom headers. Use cookies (same-origin)
+  // or pass a short-lived non-sensitive query param via getRealtimeParams.
+});
+```
+
+</Step>
+<Step>
+
+### Use SyncProvider in React
+
+```tsx
+	import { createSyncularReact } from '@syncular/client-react';
+	import { defineClientSync } from '@syncular/client';
+	import type { AppDb } from './db-types';
+	import type { AppScopes } from './scopes';
+
+	const { SyncProvider } = createSyncularReact<AppDb>();
+  const sync = defineClientSync<AppDb, AppScopes, { actorId: string }>({ codecs });
+
+  sync.addHandler({
+    table: 'tasks',
+    scopes: ['user:{user_id}'],
+    subscribe: ({ identity }) => ({
+      id: `my-tasks-${identity.actorId}`,
+      table: 'tasks',
+      scopes: { user_id: identity.actorId },
+    }),
+  });
+
+	<SyncProvider
+	  db={db}
+	  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={deviceId}
+>
+  <App />
+</SyncProvider>
+```
+
+</Step>
+</Steps>
+
+## Important: keep critical props stable
+
+Treat `db`, `transport`, `sync`, `identity.actorId`, and `clientId` as **stable for the lifetime of the provider**. If those values change, remount using a React `key`:
+
+```tsx
+<SyncProvider key={`${identity.actorId}:${clientId}`} ... />
+```
+
+## StrictMode-safe async initialization
+
+When initializing DB clients or other expensive async resources in React, use `useCachedAsyncValue` so duplicate StrictMode mounts do not re-run the same initializer.
+
+```tsx
+import {
+  createAsyncInitRegistry,
+  useCachedAsyncValue,
+} from '@syncular/client-react';
+
+const dbInitRegistry = createAsyncInitRegistry<string, AppDb>();
+
+function AppRoot() {
+  const [db, dbError] = useCachedAsyncValue(
+    () =>
+      dbInitRegistry.run('primary-db', async () => {
+        const database = createWaSqliteDb<AppDb>({ fileName: 'app.sqlite' });
+        await ensureClientSyncSchema(database);
+        return database;
+      }),
+    { key: 'primary-db' }
+  );
+
+  if (dbError) return <div>DB init failed: {dbError.message}</div>;
+  if (!db) return <div>Initializing DB...</div>;
+
+  return (
+    <SyncProvider
+      db={db}
+      transport={transport}
+      sync={sync}
+      identity={{ actorId: userId }}
+    />
+  );
+}
+```
+
+`useCachedAsyncValue` returns `[value, error]` and caches outside component state.
+
+## Customizing client handlers
+
+### applySnapshot
+
+Called when bootstrapping (cursor = -1). Receives entire page of rows.
+
+```typescript
+async applySnapshot(ctx) {
+  for (const row of ctx.rows) {
+    await ctx.trx.insertInto('tasks')
+      .values(row)
+      .onConflict((oc) => oc.column('id').doUpdateSet(row))
+      .execute();
+  }
+}
+```
+
+### applyChange
+
+Called for each commit during incremental sync.
+
+```typescript
+async applyChange(ctx, change) {
+  const { op, row_id, row_json } = change;
+  if (op === 'delete') {
+    await ctx.trx.deleteFrom('tasks').where('id', '=', row_id).execute();
+  } else {
+    await ctx.trx.insertInto('tasks')
+      .values(row_json)
+      .onConflict((oc) => oc.column('id').doUpdateSet(row_json))
+      .execute();
+  }
+}
+```
+
+### clearAll
+
+Called when a subscription is removed. Default deletes all rows.
+
+```typescript
+async clearAll(ctx) {
+  const userIds = ctx.scopes.user_id;
+  if (Array.isArray(userIds)) {
+    await ctx.trx.deleteFrom('tasks')
+      .where('user_id', 'in', userIds)
+      .execute();
+  }
+}
+```
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) - Server configuration
+- [Authentication](/docs/build/auth) - Securing your data
+- [Table Handlers](/docs/build/table-handlers) - Server handlers

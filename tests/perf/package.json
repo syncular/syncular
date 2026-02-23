@@ -1,0 +1,22 @@
+{
+  "name": "@syncular/tests-perf",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "test": "bun test .",
+    "update-baseline": "bun run update-baseline.ts"
+  },
+  "devDependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/config": "workspace:*",
+    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialect-libsql": "workspace:*",
+    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/testkit": "workspace:*",
+    "@syncular/tests-dialects": "workspace:*",
+    "kysely": "*"
+  }
+}

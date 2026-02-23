@@ -1,0 +1,64 @@
+---
+title: Fault Injection
+description: Simulate retries, flaky networks, and latency with testkit transport wrappers.
+---
+
+# Fault Injection
+
+Use `withFaults` to simulate transport failures without monkey-patching your test runner or app code.
+
+## Deterministic failure after N requests
+
+```ts
+import { withFaults } from '@syncular/testkit';
+
+const wrapped = withFaults(client.transport, {
+  failAfter: 1,
+  failOnPush: true,
+  failWith: new Error('simulated push failure'),
+});
+
+client.transport = wrapped.transport;
+
+await client.push(); // succeeds
+await client.push(); // throws simulated push failure
+```
+
+## Flaky + latency simulation
+
+```ts
+const wrapped = withFaults(client.transport, {
+  flaky: 0.3,      // 30% failure probability
+  latencyMs: 150,  // add fixed latency per request
+});
+
+client.transport = wrapped.transport;
+```
+
+## Request recording
+
+Use `withRecording` when you need to assert exact sync request payloads:
+
+```ts
+import { withRecording } from '@syncular/testkit';
+
+const recorded = withRecording(client.transport);
+client.transport = recorded.transport;
+
+await client.syncOnce({
+  subscriptions: [{ id: 'my-tasks', table: 'tasks', scopes: { user_id: 'u1' } }],
+});
+
+console.log(recorded.syncRequests.length);
+console.log(recorded.fetchRequests.length);
+```
+
+## Useful assertions
+
+Pair fault wrappers with assertion helpers:
+
+- `assertOutboxEmpty(...)`
+- `assertOutboxStatus(...)`
+- `assertConflictCount(...)`
+- `waitForOutboxEmpty(...)`
+- `waitForAckedCommits(...)`

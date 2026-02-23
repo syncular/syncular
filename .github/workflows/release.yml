@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["Checks"]
+    types: [completed]
+    branches: [main, release]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: |
+      (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'release'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - uses: ./.github/actions/setup-environment
+
+      - name: Stamp versions
+        run: bun scripts/stamp-versions.ts ${{ github.run_number }}
+
+      - name: Publish
+        run: |
+          npm config set registry https://registry.npmjs.org/
+          bun run release

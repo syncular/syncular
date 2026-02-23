@@ -1,0 +1,257 @@
+---
+title: JavaScript SDK Overview
+description: Core client SDK for Syncular
+---
+
+The `@syncular/client` package provides the core sync functionality for JavaScript applications.
+
+### What you'll learn
+
+- How to install and configure the `Client` class
+- The high-level mutations API for insert, update, delete, and batch operations
+- How to register table handlers and subscriptions
+- Available events, methods, and static utilities
+- When to reach for the low-level APIs
+
+## Installation
+
+```bash
+npm install @syncular/client @syncular/transport-http kysely
+npm install @syncular/transport-ws # optional (realtime wake-ups)
+```
+
+## Quick Start
+
+```typescript
+import { Client } from '@syncular/client';
+import { createHttpTransport } from '@syncular/transport-http';
+
+// Create transport
+const transport = createHttpTransport({
+  // baseUrl is the prefix *before* `/sync` (e.g. /api → /api/sync)
+  baseUrl: '/api',
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+});
+
+// Register client table handlers
+const tableHandlers = [tasksHandler, projectsHandler];
+
+// Create client
+const client = new Client({
+  db,
+  transport,
+  tableHandlers,
+  clientId: 'device-123',
+  actorId: 'user-456',
+  subscriptions: [
+    { id: 'my-tasks', table: 'tasks', scopes: {} },
+  ],
+});
+
+// Start syncing
+await client.start();
+
+// Use mutations
+await client.mutations.tasks.insert({ title: 'New task' });
+
+// Listen for events
+client.on('sync:complete', () => console.log('synced'));
+client.on('data:change', ({ scopes }) => console.log('changed:', scopes));
+```
+
+## Client Class
+
+The unified `Client` class is the main entry point for sync operations.
+
+### Constructor Options
+
+```typescript
+interface ClientOptions<DB> {
+  db: Kysely<DB>;
+  transport: SyncTransport;
+  tableHandlers: ClientTableHandler<DB>[];
+  clientId: string;
+  actorId: string;
+  subscriptions: Array<{
+    id: string;
+    table: string;
+    scopes?: Record<string, string | string[]>;
+    params?: Record<string, unknown>;
+  }>;
+  blobStorage?: ClientBlobStorage;  // Optional: for blob support
+  plugins?: SyncClientPlugin[];
+  realtimeEnabled?: boolean;
+  pollIntervalMs?: number;
+}
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `start()` | Start the client (runs migrations, starts sync) |
+| `stop()` | Stop syncing (can be restarted) |
+| `destroy()` | Destroy the client (cannot be restarted) |
+| `sync()` | Trigger a manual sync |
+| `updateSubscriptions(subs)` | Update subscriptions |
+| `getState()` | Get current client state |
+| `subscribe(callback)` | Subscribe to state changes |
+| `on(event, handler)` | Subscribe to events |
+| `getTransportHealth()` | Get transport mode/fallback health |
+| `getProgress()` | Get computed channel + subscription progress |
+| `getDiagnostics()` | Get a support/debug diagnostics snapshot |
+| `getInspectorSnapshot(options?)` | Get a serializable inspector payload (diagnostics + recent events) |
+| `awaitPhase(phase, options?)` | Wait until the channel reaches a target phase |
+| `awaitBootstrapComplete(options?)` | Wait for bootstrap completion (state/subscription scoped) |
+| `listSubscriptionStates()` | List persisted subscription state metadata |
+| `getSubscriptionState(id)` | Get one persisted subscription state row |
+| `getConflicts()` | Get pending conflicts |
+| `resolveConflict(id, resolution)` | Resolve a conflict |
+| `getOutboxStats()` | Get outbox statistics |
+| `clearFailedCommits()` | Clear failed commits |
+| `reset(options)` | Reset sync metadata/data with scoped options |
+| `repair(options)` | Run built-in repair flows (for example rebootstrap) |
+
+### Events
+
+```typescript
+client.on('sync:start', ({ timestamp }) => {});
+client.on('sync:complete', (result) => {});
+client.on('sync:live', ({ timestamp }) => {});
+client.on('sync:error', ({ code, message }) => {});
+client.on('bootstrap:start', ({ stateId, subscriptionId }) => {});
+client.on('bootstrap:progress', ({ progress }) => {});
+client.on('bootstrap:complete', ({ durationMs }) => {});
+client.on('connection:change', ({ previous, current }) => {});
+client.on('data:change', ({ scopes, timestamp }) => {});
+client.on('outbox:change', (stats) => {});
+client.on('conflict:new', (conflict) => {});
+client.on('conflict:resolved', (conflict) => {});
+```
+
+## Mutations
+
+Built-in mutations API with type safety:
+
+```typescript
+// Insert
+const { id } = await client.mutations.tasks.insert({ title: 'Task 1' });
+
+// Update
+await client.mutations.tasks.update(id, { title: 'Updated' });
+
+// Delete
+await client.mutations.tasks.delete(id);
+
+// Batch operations
+await client.mutations.$commit(async (tx) => {
+  const id = await tx.tasks.insert({ title: 'Task' });
+  await tx.comments.insert({ taskId: id, text: 'First!' });
+});
+```
+
+## Client Handler Collection
+
+Client-side table handlers are provided as a plain array.
+
+```typescript
+const handlers = [tasksHandler, projectsHandler];
+```
+
+## ClientTableHandler
+
+Interface for client table handlers.
+
+```typescript
+interface ClientTableHandler {
+  table: string;
+
+  applySnapshot(ctx: ApplyContext, snapshot: SyncSnapshot): Promise<void>;
+  applyChange(ctx: ApplyContext, change: SyncChange): Promise<void>;
+  clearAll(ctx: ClearContext): Promise<void>;
+}
+
+interface ApplyContext {
+  trx: Transaction<any>;
+}
+
+interface ClearContext extends ApplyContext {
+  /** Scope values to clear (data matching these scopes should be removed) */
+  scopes: Record<string, string | string[]>;
+}
+```
+
+## Blob Storage
+
+Handle binary files with optional blob storage:
+
+```typescript
+import { Client } from '@syncular/client';
+
+const client = new Client({
+  db,
+  transport,
+  tableHandlers,
+  clientId: 'device-123',
+  actorId: 'user-456',
+  subscriptions: [...],
+  blobStorage, // Provide a ClientBlobStorage implementation
+});
+
+await client.start();
+
+// Store a blob
+const blobRef = await client.blobs.store(file, { immediate: true });
+
+// Use in mutation
+await client.mutations.tasks.update(taskId, {
+  attachment_hash: blobRef.hash,
+  attachment_size: blobRef.size,
+});
+
+// Retrieve a blob
+const data = await client.blobs.retrieve(blobRef);
+```
+
+See the [Blob Storage Guide](/docs/build/blob-storage) for adapter examples.
+
+## Static Methods
+
+### Migrations
+
+```typescript
+// Check if migrations are needed
+const { needsMigration } = await Client.checkMigrations(db);
+
+// Run migrations manually (usually automatic in start())
+await Client.migrate(db, { blobs: true });
+```
+
+## Low-Level APIs
+
+For advanced use cases, you can use the lower-level APIs directly. Most applications should use the `Client` class above instead.
+
+```typescript
+import { syncOnce, SyncEngine, createOutboxMutations } from '@syncular/client';
+
+// Direct sync call — useful for one-shot scripts or tests
+const result = await syncOnce(db, transport, handlers, {
+  clientId: 'device-123',
+  actorId: 'user-456',
+  subscriptions: [...],
+});
+
+// Manual SyncEngine — when you need full lifecycle control
+const engine = new SyncEngine({ db, transport, handlers, ... });
+await engine.start();
+
+// Standalone mutations — when you only need to enqueue changes
+const mutations = createOutboxMutations({ db });
+```
+
+## Next Steps
+
+- [Client Setup Guide](/docs/build/client-setup) - Detailed setup instructions
+- [Mutations](/docs/client-sdk/javascript/mutations) - Making changes
+- [Plugins](/docs/client-sdk/javascript/plugins) - Extending functionality
+- [Blob Storage](/docs/build/blob-storage) - Binary file handling

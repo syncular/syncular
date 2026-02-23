@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.react.json",
+  "compilerOptions": {
+    "jsxImportSource": "nativewind",
+    "jsx": "react-native"
+  }
+}

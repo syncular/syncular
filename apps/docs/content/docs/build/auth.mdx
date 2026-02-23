@@ -1,0 +1,260 @@
+---
+title: Authorization
+description: Implement scope-based authorization patterns
+---
+
+# Authorization
+
+## What you'll learn
+
+- How authorization works at pull and push time
+- How to implement `resolveScopes` for common patterns
+- HTTP authentication (JWT, cookies, sessions)
+- Role-based and hierarchical access control
+- How membership changes affect data visibility
+
+## Prerequisites
+
+- Familiarity with [Scopes](/docs/introduction/scopes) and [Table Handlers](/docs/build/table-handlers)
+
+---
+
+Syncular uses scopes for authorization. Every change is automatically tagged with scopes extracted from row data, and clients only receive changes for scopes they're authorized to access.
+
+## How It Works
+
+Authorization happens at two points:
+
+1. **Pull**: Server resolves what scopes the user can access, intersects with requested scopes
+2. **Push**: Server validates emitted scopes (auto-extracted from row data) are within the allowed set
+
+```
+Client requests { table: 'tasks', scopes: { project_id: 'A' } }
+  → Server calls resolveScopes → { user_id: '123', project_id: ['A', 'B'] }
+  → Effective scopes: { project_id: 'A' }
+  → Server returns data for project_id: 'A' only
+```
+
+## Implementing resolveScopes
+
+This is the core authorization function:
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    const scopes: ScopeValues = {
+      user_id: [ctx.actorId],  // Always access own data
+    };
+
+    // Add project memberships
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .where('status', '=', 'active')
+      .execute();
+
+    scopes.project_id = memberships.map(m => m.project_id);
+
+    return scopes;
+  },
+});
+```
+
+> **Note:** The `scopes` pattern tells the system to automatically extract scope values from row data. No manual scope tagging needed.
+
+## Common Patterns
+
+### User-Owned Data
+
+Simplest pattern — users only see their own data:
+
+```typescript
+const handler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+### Project Membership
+
+Users see data for projects they're members of:
+
+```typescript
+const handler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    const [user, memberships] = await Promise.all([
+      ctx.db.selectFrom('users')
+        .select(['id', 'role'])
+        .where('id', '=', ctx.actorId)
+        .executeTakeFirst(),
+      ctx.db.selectFrom('project_members')
+        .select('project_id')
+        .where('user_id', '=', ctx.actorId)
+        .execute(),
+    ]);
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: memberships.map(m => m.project_id),
+    };
+  },
+});
+```
+
+### Role-Based Access
+
+Admins see all org data, users see only theirs:
+
+```typescript
+const handler = createServerHandler({
+  table: 'users',
+  scopes: ['org:{org_id}'],
+
+  async resolveScopes(ctx) {
+    const user = await ctx.db
+      .selectFrom('users')
+      .select(['role', 'org_id'])
+      .where('id', '=', ctx.actorId)
+      .executeTakeFirst();
+
+    if (!user) return {};
+
+    // Admins see all users in their org
+    if (user.role === 'admin') {
+      return { org_id: [user.org_id] };
+    }
+
+    // Regular users see only themselves
+    return { user_id: [ctx.actorId] };
+  },
+});
+```
+
+### Hierarchical Access
+
+Org → Team → User levels:
+
+```typescript
+async resolveScopes(ctx) {
+  const [user, memberships] = await Promise.all([
+    ctx.db.selectFrom('users')
+      .select(['org_id', 'role'])
+      .where('id', '=', ctx.actorId)
+      .executeTakeFirst(),
+    ctx.db.selectFrom('team_members')
+      .select('team_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute(),
+  ]);
+
+  if (!user) return {};
+
+  const scopes: ScopeValues = {
+    user_id: [ctx.actorId],
+    team_id: memberships.map(m => m.team_id),
+  };
+
+  // Org admins see org-wide data
+  if (user.role === 'org_admin') {
+    scopes.org_id = [user.org_id];
+  }
+
+  return scopes;
+}
+```
+
+## HTTP Authentication
+
+### Header-Based Auth
+
+```typescript
+const authenticate = async (c: Context) => {
+  const token = c.req.header('authorization')?.replace('Bearer ', '');
+  if (!token) return null;
+
+  const payload = await verifyJWT(token, JWT_SECRET);
+  return payload ? { actorId: payload.userId } : null;
+};
+```
+
+### Cookie-Based Auth
+
+```typescript
+const authenticate = async (c: Context) => {
+  const sessionId = getCookie(c, 'session');
+  if (!sessionId) return null;
+
+  const session = await db
+    .selectFrom('sessions')
+    .select('user_id')
+    .where('id', '=', sessionId)
+    .where('expires_at', '>', new Date())
+    .executeTakeFirst();
+
+  return session ? { actorId: session.user_id } : null;
+};
+```
+
+## Push Authorization
+
+The framework validates pushes automatically:
+
+1. Your handler's `scopes` pattern extracts scopes from row data
+2. Framework checks every scope value is in `resolveScopes` result
+3. If any scope is unauthorized, the commit is rejected
+
+This prevents bugs from leaking data between users.
+
+## Membership Changes
+
+### User Gains Access
+
+1. `resolveScopes` returns the new scope values
+2. User adds a subscription for that scope
+3. Client bootstraps the new data
+
+### User Loses Access
+
+1. `resolveScopes` no longer returns the scope values
+2. On next pull, subscription returns `status: 'revoked'`
+3. Client clears local data for those scopes
+4. User no longer sees the data
+
+## Scope Patterns
+
+Patterns define which scope variables a table uses:
+
+```typescript
+scopes: ['user:{user_id}', 'project:{project_id}']
+```
+
+This means changes can be tagged with:
+- `{ user_id: '123' }` — User's private tasks
+- `{ project_id: '456' }` — Project tasks
+- `{ user_id: '123', project_id: '456' }` — User's tasks in project
+
+The system automatically extracts these from row data.
+
+## Best Practices
+
+1. **Keep it simple** — Start with user-scoped data, add complexity only when needed
+2. **Consistent patterns** — Use the same scope names across tables
+3. **Auditability** — Scopes are stored in the database; you can query who had access to what
+4. **Test membership changes** — Verify users lose access when removed from projects
+5. **Avoid high-cardinality scopes** — Don't use `row_id` as a scope; use group IDs instead
+
+## Next Steps
+
+- [Scopes](/docs/introduction/scopes) — Deep dive into scope model
+- [Table Handlers](/docs/build/table-handlers) — Implement handlers
+- [Server Setup](/docs/build/server-setup) — Full server setup

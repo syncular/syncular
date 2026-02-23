@@ -1,0 +1,300 @@
+---
+title: Edge Relay
+description: Local relay servers for offline-first network architectures
+---
+
+The relay server enables offline-first architectures where local clients can sync even when disconnected from the main server.
+
+## Overview
+
+A relay server acts as a local sync server that:
+- Accepts pushes from nearby clients immediately
+- Forwards commits to the main server when online
+- Pulls changes from the main server and distributes locally
+- Tracks its own commit sequence with mappings to main server sequences
+
+This is useful for:
+- Branch offices with unreliable internet
+- Field devices that sync locally then batch-upload
+- Edge deployments with intermittent connectivity
+
+## Installation
+
+```bash
+npm install @syncular/relay @syncular/server-dialect-sqlite
+```
+
+## Basic Setup
+
+```typescript
+import { createRelayServer } from '@syncular/relay';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createHttpTransport } from '@syncular/transport-http';
+import Database from 'better-sqlite3';
+import { Kysely, SqliteDialect } from 'kysely';
+
+// Local SQLite database for relay state
+const db = new Kysely({
+  dialect: new SqliteDialect({ database: new Database('./relay.db') }),
+});
+
+// Transport to main server
+const mainServerTransport = createHttpTransport({
+  // baseUrl is the prefix *before* `/sync` (e.g. https://api.example.com → https://api.example.com/sync)
+  baseUrl: 'https://api.example.com',
+  getHeaders: () => ({
+    Authorization: `Bearer ${process.env.RELAY_API_KEY}`,
+  }),
+});
+
+const relay = createRelayServer({
+  db,
+  dialect: createSqliteServerDialect(),
+  mainServerTransport,
+  mainServerClientId: 'relay-branch-001',
+  mainServerActorId: 'relay-service',
+  tables: ['tasks', 'projects'],
+  scopes: { branch_id: 'west-coast' },
+  handlers,
+});
+
+// Start relay engines
+await relay.start();
+
+// Mount routes for local clients
+app.route('/sync', await relay.getRoutes());
+```
+
+## Database Schema
+
+The relay creates additional tables beyond the standard sync schema:
+
+### relay_forward_outbox
+
+Queue for commits awaiting forwarding to main server:
+
+| Column | Description |
+|--------|-------------|
+| `id` | Unique identifier |
+| `local_commit_seq` | Relay's local sequence |
+| `client_id`, `client_commit_id` | Original client info for idempotency |
+| `operations_json` | Operations to forward |
+| `status` | `pending` \| `forwarding` \| `forwarded` \| `failed` |
+| `main_commit_seq` | Main server's sequence (null until confirmed) |
+| `attempt_count` | Retry counter |
+
+### relay_sequence_map
+
+Maps local to main server commit sequences:
+
+| Column | Description |
+|--------|-------------|
+| `local_commit_seq` | Relay's local sequence (primary key) |
+| `main_commit_seq` | Main server's sequence |
+| `status` | `pending` \| `forwarded` \| `confirmed` |
+
+### relay_forward_conflicts
+
+Commits rejected by the main server:
+
+| Column | Description |
+|--------|-------------|
+| `id` | Unique identifier |
+| `local_commit_seq` | Local sequence that was rejected |
+| `response_json` | Full rejection response from main |
+| `resolved_at` | When conflict was resolved (null if pending) |
+
+## Operating Modes
+
+The relay tracks connectivity state:
+
+```typescript
+type RelayMode = 'online' | 'offline' | 'reconnecting';
+```
+
+### Mode Transitions
+
+```
+offline → reconnecting → online
+                ↓
+            offline (on failure)
+```
+
+The relay automatically:
+- Detects connectivity via health checks (empty pulls)
+- Uses exponential backoff for reconnection (1s → 60s max)
+- Reports status via `modeChange` events
+
+```typescript
+relay.on('modeChange', (mode) => {
+  console.log(`Relay is now ${mode}`);
+  updateStatusIndicator(mode);
+});
+```
+
+## Events
+
+### modeChange
+
+Fired when connectivity state changes:
+
+```typescript
+relay.on('modeChange', (mode: RelayMode) => {
+  if (mode === 'offline') {
+    notifyUsers('Working in offline mode');
+  } else if (mode === 'online') {
+    notifyUsers('Connected to main server');
+  }
+});
+```
+
+### forwardConflict
+
+Fired when the main server rejects a commit:
+
+```typescript
+relay.on('forwardConflict', (conflict) => {
+  console.error('Commit rejected:', {
+    localSeq: conflict.local_commit_seq,
+    clientId: conflict.client_id,
+    response: conflict.response_json,
+  });
+
+  // Handle conflict - notify affected client, log for review, etc.
+});
+```
+
+### error
+
+Fired for unhandled errors in background engines:
+
+```typescript
+relay.on('error', (error) => {
+  logger.error('Relay error:', error);
+});
+```
+
+## Configuration Options
+
+```typescript
+createRelayServer({
+  // Required
+  db: Kysely<any>,
+  dialect: ServerSyncDialect,
+  mainServerTransport: SyncTransport,
+  mainServerClientId: string,
+  mainServerActorId: string,
+  tables: string[],
+  scopes: Record<string, string | string[]>,
+  handlers: ServerHandlerCollection,
+
+  // Optional timing
+  heartbeatIntervalMs: 30000,     // WebSocket keepalive
+  forwardRetryIntervalMs: 5000,   // Retry failed forwards
+  pullIntervalMs: 10000,          // Poll main server
+  healthCheckIntervalMs: 30000,   // Check connectivity
+});
+```
+
+## Data Flow
+
+### Client Push (Local → Relay → Main)
+
+```
+Local Client
+    ↓ POST /push
+Relay /push endpoint
+    ↓ Store in relay_forward_outbox
+    ↓ Create pending sequence mapping
+Forward Engine (background)
+    ↓ transport.push() → Main Server
+    ↓ If conflict → Store in relay_forward_conflicts
+    ↓ If success → Mark forwarded, update sequence map
+Notify local clients via WebSocket
+```
+
+### Main Server Pull (Main → Relay → Clients)
+
+```
+Pull Engine (background)
+    ↓ transport.pull() → Main Server
+    ↓ Get commits since cursor
+Apply locally via pushCommit()
+    ↓ Create confirmed sequence mappings
+Update cursors in relay_config
+    ↓
+Notify local clients via WebSocket
+```
+
+## Manual Operations
+
+For testing or manual control:
+
+```typescript
+// Trigger single forward attempt
+await relay.forwardOnce();
+
+// Trigger single pull from main
+await relay.pullOnce();
+
+// Check current mode
+const mode = relay.getMode();
+
+// Get scopes being synced
+const scopes = relay.getScopes();
+```
+
+## Deployment Considerations
+
+### Database Choice
+
+SQLite is recommended for relay servers:
+- Single-file, easy backup
+- No separate database server needed
+- Good enough for typical branch office loads
+
+### Conflict Handling
+
+Forward conflicts require attention:
+
+```typescript
+relay.on('forwardConflict', async (conflict) => {
+  // Log for admin review
+  await logConflict(conflict);
+
+  // Decide your policy:
+  // - surface this to an operator/admin UI
+  // - keep retrying after manual resolution
+  // - or notify clients via your own app channel
+});
+```
+
+### Monitoring
+
+Track relay health:
+
+```typescript
+// Expose status endpoint
+app.get('/status', (c) => {
+  return c.json({
+    mode: relay.getMode(),
+    scopes: relay.getScopes(),
+    // Add your own metrics
+  });
+});
+```
+
+### Graceful Shutdown
+
+```typescript
+process.on('SIGTERM', async () => {
+  await relay.stop();
+  process.exit(0);
+});
+```
+
+## Next Steps
+
+- [Server Setup](/docs/build/server-setup) - Main server configuration
+- [Realtime Guide](/docs/build/realtime) - WebSocket for instant updates
+- [Architecture](/docs/introduction/architecture) - System design overview

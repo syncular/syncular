@@ -1,0 +1,54 @@
+---
+title: CLI
+description: Scaffold projects, run migrations, and inspect local setup with the Syncular CLI.
+---
+
+# CLI
+
+The Syncular CLI provides two core workflows:
+
+- scaffold projects (`create --template ...`)
+- run migration adapter operations (`migrate-status`, `migrate-up`)
+
+## Run the CLI
+
+Global install:
+
+```bash
+syncular --help
+```
+
+Run without global install:
+
+```bash
+npx @syncular/cli --help
+bunx @syncular/cli --help
+```
+
+## Command reference
+
+| Command | What it does |
+|---|---|
+| `syncular create --template syncular-libraries` | Scaffold integration libraries (default template) |
+| `syncular create --template syncular-demo` | Scaffold a runnable full demo (Hono + Vite React + WA-SQLite) |
+| `syncular create --template spaces-app` | Scaffold a managed Spaces app |
+| `syncular create --template spaces-demo` | Scaffold the managed Spaces demo project |
+| `syncular migrate-status` | Show current/target/pending migration versions via adapter |
+| `syncular migrate-up` | Apply migrations via adapter |
+| `syncular doctor` | Run local checks (runtime + workspace + git) |
+| `syncular console` | Serve a local Syncular Console instance (use `--server-url`/`--token-env` to preconfigure) |
+| `syncular interactive` | Open the full TUI menu |
+
+## Guides
+
+<Cards>
+  <Card title="Create Commands" href="/docs/cli/create">
+    Libraries scaffolding, demo scaffolding, targets, and dialect selection
+  </Card>
+  <Card title="Migrate Commands" href="/docs/cli/migrate">
+    Adapter contract, config wiring, and migration command flags
+  </Card>
+  <Card title="Console Command" href="/docs/cli/console">
+    Serve a local Console instance and preconfigure API URL/token
+  </Card>
+</Cards>

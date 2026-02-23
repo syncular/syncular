@@ -1,0 +1,68 @@
+---
+title: Stream Investigation
+description: Use timeline filters and detail views to investigate commits, request events, and payload snapshots
+---
+
+# Stream Investigation
+
+Stream is the primary forensics view. It merges commits and request events into one timeline and supports deep drill-down.
+
+## Timeline modes
+
+- **All**: commits and events together.
+- **Commits**: commit-only sequence for ordering checks.
+- **Events**: push/pull request behavior only.
+
+## Gateway and federated IDs
+
+In gateway mode, Stream merges records from multiple instances.
+
+- Each row includes a source instance label.
+- Detail routes use federated IDs (`<instanceId>:<localId>`) to avoid cross-instance collisions.
+- Use instance filters when you want local IDs and strict single-instance context.
+
+## Search tokens
+
+Use tokenized filters in the search box:
+
+- `actor:<id>`
+- `client:<id>`
+- `table:<table_name>`
+- `request:<request_id>`
+- `trace:<trace_id>`
+
+Free text still works and combines with token filters.
+
+## Event detail
+
+Event detail includes:
+
+- sync path and transport path
+- status/outcome/duration
+- request and trace correlation IDs
+- linked commit sequence
+- payload reference and payload snapshot (when retained)
+
+Use **Open linked commit** to pivot directly to commit detail.
+
+## Commit detail
+
+Commit detail includes:
+
+- actor/client metadata
+- affected tables
+- per-change row IDs, operations, versions, and row JSON
+
+Use this when you need an exact ordered view of what changed.
+
+## Payload and trace drill-in
+
+- Payload snapshots are available through `GET /console/events/:id/payload`.
+- External trace links can be configured via `VITE_CONSOLE_TRACE_URL_TEMPLATE` in the Console app.
+
+## Related API pages
+
+- [Timeline](/docs/api/getConsoleTimeline)
+- [Event detail](/docs/api/getConsoleEventsById)
+- [Event payload](/docs/api/getConsoleEventsByIdPayload)
+- [Commit detail](/docs/api/getConsoleCommitsBySeq)

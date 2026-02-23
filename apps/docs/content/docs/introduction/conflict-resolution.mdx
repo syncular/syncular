@@ -1,0 +1,348 @@
+---
+title: Conflict Resolution
+description: Handle concurrent edits with optimistic concurrency
+---
+
+# Conflict Resolution
+
+<Callout title="What you'll learn">
+- How Syncular detects conflicts using optimistic concurrency control
+- How field-level merge works to auto-resolve non-overlapping edits
+- The three resolution strategies: accept server, keep local, custom merge
+- How to build a complete conflict resolution UI in React
+</Callout>
+
+Conflicts occur when multiple clients edit the same row concurrently. Syncular detects conflicts using version numbers and gives you full control over how to resolve them.
+
+## How Conflicts Happen
+
+Here is a timeline of a typical conflict:
+
+```
+Time  Client A                Server              Client B
+----  --------                ------              --------
+ t0   Pull task v5            task v5             Pull task v5
+      title: "Draft"                              title: "Draft"
+
+ t1                                               Edit title to "Final"
+                                                  Push base_version: 5
+
+ t2                           Apply B's edit
+                              task v6
+                              title: "Final"
+
+ t3   Edit title to "Review"
+      Push base_version: 5
+                              Compare: base=5,
+                              server=6
+                              --> CONFLICT
+
+ t4   Receives conflict
+      response with
+      server_row at v6
+```
+
+Client A based its edit on version 5, but the server is already at version 6 (because Client B pushed first). The server rejects Client A's commit and returns the conflict details.
+
+## Conflict Detection
+
+The server compares the `base_version` sent by the client with the current `server_version` of the row. If they do not match, the operation is rejected as a conflict:
+
+```typescript
+// Inside a table handler's applyOperation
+if (existing && op.base_version != null) {
+  if (existing.server_version !== op.base_version) {
+    return {
+      result: {
+        opIndex,
+        status: 'conflict',
+        message: `Version conflict: server=${existing.server_version}`,
+        server_version: existing.server_version,
+        server_row: existing,
+      },
+      emittedChanges: [],
+    };
+  }
+}
+```
+
+The entire commit is rolled back if any operation conflicts. The client receives a `rejected` response with per-operation results, and the conflict is stored in the local `sync_conflicts` table for resolution.
+
+## Field-Level Merge
+
+Before showing a conflict to the user, you can attempt a **field-level merge**. If Client A edited the `title` and Client B edited the `description`, those changes do not actually conflict -- they can be merged automatically.
+
+Syncular provides `performFieldLevelMerge` in `@syncular/core`:
+
+```typescript
+import { performFieldLevelMerge } from '@syncular/core';
+
+const result = performFieldLevelMerge(
+  baseRow,        // Row state when client started editing (at base_version)
+  serverRow,      // Current server row state
+  clientPayload   // Client's intended changes
+);
+
+if (result.canMerge) {
+  // Non-overlapping edits -- apply the merged payload
+  console.log(result.mergedPayload);
+} else {
+  // True conflict -- same field(s) changed to different values
+  console.log('Conflicting fields:', result.conflictingFields);
+}
+```
+
+**Merge logic:**
+- If only the client changed a field, use the client's value
+- If only the server changed a field, keep the server's value
+- If both changed the same field to the same value, no conflict
+- If both changed the same field to different values, that field is a true conflict
+
+**Example:**
+
+```typescript
+const base    = { title: 'Draft', description: 'Old', priority: 1 };
+const server  = { title: 'Draft', description: 'Updated by B', priority: 1 };
+const client  = { title: 'Review', description: 'Old', priority: 1 };
+
+const result = performFieldLevelMerge(base, server, client);
+// result = {
+//   canMerge: true,
+//   mergedPayload: { title: 'Review', description: 'Updated by B', priority: 1 }
+// }
+// Client changed title, server changed description -- no overlap, merge succeeds.
+```
+
+## Auto-Resolution Patterns
+
+### Last-Write-Wins
+
+For non-critical data where you want to avoid user intervention, you can auto-resolve with a last-write-wins strategy. Resolve the conflict by accepting the server version, then immediately push the client's changes with the updated `base_version`:
+
+```typescript
+import { resolveConflict } from '@syncular/client';
+
+async function lastWriteWins(db, conflict, mutations) {
+  // Accept the server version to clear the conflict
+  await resolveConflict(db, {
+    id: conflict.id,
+    resolution: 'accept',
+  });
+
+  // Re-apply the client's intent on top of the latest version
+  // (base_version is now correct since we accepted the server row)
+  await mutations.tasks.update(conflict.rowId, conflict.localPayload);
+}
+```
+
+### Field-Level Auto-Merge
+
+Combine `performFieldLevelMerge` with auto-resolution:
+
+```typescript
+import { performFieldLevelMerge } from '@syncular/core';
+import { resolveConflict } from '@syncular/client';
+
+async function autoMerge(db, conflict, mutations) {
+  const serverRow = JSON.parse(conflict.serverRowJson);
+  const result = performFieldLevelMerge(
+    conflict.baseRow,
+    serverRow,
+    conflict.localPayload
+  );
+
+  if (result.canMerge) {
+    // No overlapping field changes -- merge automatically
+    await resolveConflict(db, { id: conflict.id, resolution: 'accept' });
+    await mutations.tasks.update(conflict.rowId, result.mergedPayload);
+  } else {
+    // True conflict on specific fields -- show UI
+    console.log('Manual resolution needed for:', result.conflictingFields);
+  }
+}
+```
+
+## Resolution Strategies
+
+### 1. Accept Server Version
+
+Keep the server's version and discard local changes:
+
+```typescript
+import { resolveConflict } from '@syncular/client';
+
+await resolveConflict(db, {
+  id: conflict.id,
+  resolution: 'accept',
+});
+```
+
+### 2. Keep Local Change (Retry)
+
+Overwrite with your local intent by resolving the conflict, then retrying the mutation:
+
+```typescript
+await resolveConflict(db, {
+  id: conflict.id,
+  resolution: 'reject',
+});
+
+// Retry the mutation (now with the correct base_version)
+await m.tasks.update(task.id, { title: 'My title' });
+```
+
+### 3. Custom Merge
+
+Show a UI and let the user pick field by field:
+
+```typescript
+async function mergeAndResolve(db, conflict, userChoices, mutations) {
+  const serverRow = JSON.parse(conflict.serverRowJson);
+
+  // Build merged payload from user's per-field choices
+  const merged = { ...serverRow };
+  for (const [field, choice] of Object.entries(userChoices)) {
+    if (choice === 'local') {
+      merged[field] = conflict.localPayload[field];
+    }
+    // 'server' keeps the value already in merged
+  }
+
+  // Clear the conflict
+  await resolveConflict(db, {
+    id: conflict.id,
+    resolution: 'accept',
+  });
+
+  // Apply the merged data as a new mutation
+  await mutations.tasks.update(conflict.rowId, merged);
+}
+```
+
+## Conflict Resolution UI (React)
+
+Here is a complete, copy-pasteable conflict resolver component:
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import { performFieldLevelMerge } from '@syncular/core';
+import { Button } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useConflicts, useResolveConflict, useMutations } =
+  createSyncularReact<AppDb>();
+
+function ConflictBanner() {
+  const { conflicts, isLoading } = useConflicts();
+
+  if (isLoading || conflicts.length === 0) return null;
+
+  return (
+    <div style={{ padding: 16, background: '#fef3cd', borderRadius: 8 }}>
+      <strong>{conflicts.length} conflict(s) need resolution</strong>
+      {conflicts.map((conflict) => (
+        <ConflictCard key={conflict.id} conflict={conflict} />
+      ))}
+    </div>
+  );
+}
+
+function ConflictCard({ conflict }: { conflict: ConflictInfo }) {
+  const { resolve, isPending } = useResolveConflict({
+    syncAfterResolve: true,
+    onSuccess: () => console.log('Conflict resolved'),
+    onError: (err) => console.error('Resolution failed:', err),
+  });
+  const m = useMutations();
+
+  const serverRow = conflict.serverRowJson
+    ? JSON.parse(conflict.serverRowJson)
+    : null;
+
+  return (
+    <div style={{ marginTop: 12, padding: 12, background: 'white', borderRadius: 4 }}>
+      <p>
+        <strong>Table:</strong> {conflict.table} | <strong>Row:</strong>{' '}
+        {conflict.rowId}
+      </p>
+      <p style={{ color: '#856404' }}>{conflict.message}</p>
+
+      {serverRow && (
+        <details>
+          <summary>Server version (v{conflict.serverVersion})</summary>
+          <pre style={{ fontSize: 12 }}>{JSON.stringify(serverRow, null, 2)}</pre>
+        </details>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Button
+          disabled={isPending}
+          onClick={() => resolve(conflict.id, 'accept')}
+        >
+          Accept Server
+        </Button>
+        <Button
+          disabled={isPending}
+          onClick={async () => {
+            await resolve(conflict.id, 'reject');
+            // Optionally retry the mutation here
+          }}
+        >
+          Keep Mine
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export { ConflictBanner };
+```
+
+### React Hooks Reference
+
+**`useConflicts()`** -- Returns pending conflicts:
+
+```tsx
+const { conflicts, isLoading, refresh } = useConflicts();
+```
+
+**`useResolveConflict(options?)`** -- Resolves a conflict:
+
+```tsx
+const { resolve, isPending } = useResolveConflict({
+  syncAfterResolve: true,  // Trigger a sync after resolving (default: true)
+  onSuccess: (id) => {},   // Called after successful resolution
+  onError: (err) => {},    // Called on error
+});
+
+await resolve(conflictId, 'accept'); // or 'reject'
+```
+
+## Auto-Version Plugin
+
+Automatically track versions with the incrementing version plugin so you do not have to manually set `base_version` on every mutation:
+
+```typescript
+import { createIncrementingVersionPlugin } from '@syncular/client';
+
+const plugins = [createIncrementingVersionPlugin()];
+
+// Pass to SyncProvider
+<SyncProvider plugins={plugins} ... />
+```
+
+This plugin reads the current local row version and sets `base_version` on each outgoing operation automatically.
+
+## Best Practices
+
+1. **Design for low conflicts** -- Structure data to minimize concurrent edits. Per-user data and append-only patterns naturally reduce conflicts.
+2. **Show conflicts promptly** -- Do not let them pile up. A banner or badge draws attention.
+3. **Auto-resolve when safe** -- Use field-level merge or last-write-wins for non-critical data. Reserve manual resolution for cases where data loss matters.
+4. **Provide context** -- Show both the server version and the local intent so the user can make an informed decision.
+5. **Test offline scenarios** -- Conflicts are most common after extended offline periods. Test by disabling the network, making edits on two devices, then reconnecting.
+
+## Next Steps
+
+- [Commits](/docs/introduction/commits) -- How the commit log works
+- [Glossary](/docs/introduction/glossary) -- Key terms (Conflict, Outbox, Scope)
+- [Table Handlers](/docs/build/table-handlers) -- Implement server-side conflict detection

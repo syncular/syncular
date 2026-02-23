@@ -1,0 +1,143 @@
+---
+title: Plugins
+description: Extending Syncular functionality
+---
+
+Plugins hook into the sync lifecycle to add functionality.
+
+## SyncClientPlugin Interface
+
+```typescript
+interface SyncClientPlugin {
+  name: string;
+
+  beforePush?(
+    ctx: { actorId: string; clientId: string },
+    request: SyncPushRequest
+  ): Promise<SyncPushRequest> | SyncPushRequest;
+
+  afterPush?(
+    ctx: { actorId: string; clientId: string },
+    args: { request: SyncPushRequest; response: SyncPushResponse }
+  ): Promise<SyncPushResponse> | SyncPushResponse;
+
+  afterPull?(
+    ctx: { actorId: string; clientId: string },
+    args: { request: SyncPullRequest; response: SyncPullResponse }
+  ): Promise<SyncPullResponse> | SyncPullResponse;
+}
+```
+
+## Built-in Plugins
+
+### createIncrementingVersionPlugin
+
+Automatically tracks `server_version` for conflict detection.
+
+```typescript
+import { createIncrementingVersionPlugin } from '@syncular/client';
+
+const plugin = createIncrementingVersionPlugin();
+
+// Use with syncOnce
+await syncOnce(db, transport, handlers, {
+  ...options,
+  plugins: [plugin],
+});
+
+// Or with React
+<SyncProvider plugins={[plugin]} ... />
+```
+
+This plugin:
+1. Reads the current `server_version` from local rows
+2. Sets `base_version` on outbox operations automatically
+3. No manual version tracking needed
+
+## Custom Plugin Example
+
+```typescript
+const loggingPlugin: SyncClientPlugin = {
+  name: 'logging',
+
+  async beforePush(_ctx, request) {
+    console.log('Pushing:', request.operations.length, 'operations');
+    return request;
+  },
+
+  async afterPush(_ctx, { response }) {
+    console.log('Push result:', response.status);
+    return response;
+  },
+
+  async afterPull(_ctx, { response }) {
+    console.log('Pulled:', response.subscriptions.length, 'subscriptions');
+    return response;
+  },
+};
+```
+
+## Plugin Order
+
+Plugins execute in order:
+1. `beforePush` - first to last
+2. `afterPush` - first to last
+3. `afterPull` - first to last
+
+```typescript
+const plugins = [plugin1, plugin2, plugin3];
+// beforePush: plugin1 → plugin2 → plugin3
+// afterPush:  plugin1 → plugin2 → plugin3
+// afterPull:  plugin1 → plugin2 → plugin3
+```
+
+## Modifying Requests
+
+`beforePush` can modify the request:
+
+```typescript
+const addMetadataPlugin: SyncClientPlugin = {
+  name: 'add-metadata',
+
+  async beforePush(_ctx, request) {
+    return {
+      ...request,
+      operations: request.operations.map((op) =>
+        op.op === 'upsert' && op.payload
+          ? { ...op, payload: { ...op.payload, _client_ts: Date.now() } }
+          : op
+      ),
+    };
+  },
+};
+```
+
+## Encryption Plugin
+
+For end-to-end encryption:
+
+```typescript
+import {
+  createFieldEncryptionPlugin,
+  createStaticFieldEncryptionKeys,
+} from '@syncular/client-plugin-encryption';
+
+const keys = createStaticFieldEncryptionKeys({
+  keys: { default: process.env.ENCRYPTION_KEY },
+});
+
+const encryption = createFieldEncryptionPlugin({
+  rules: [
+    { scope: 'messages', table: 'messages', fields: ['body'] },
+    { scope: 'notes', table: 'notes', fields: ['content', 'title'] },
+  ],
+  keys,
+});
+
+<SyncProvider plugins={[encryption]} ... />
+```
+
+## Next Steps
+
+- [React SDK](/docs/client-sdk/react/overview) - React integration
+- [Conflict Resolution](/docs/introduction/conflict-resolution) - Handling conflicts

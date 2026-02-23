@@ -1,0 +1,563 @@
+---
+title: Schema Migrations
+description: Evolve your database schema safely with server-side and client-side migrations, schema versioning, and type generation.
+---
+
+# Schema Migrations
+
+As your application evolves, you need to add tables, rename columns, and change data types. Syncular supports schema migrations on both the server and client, with a `schemaVersion` field in push requests to ensure the server can handle operations from clients on different schema versions.
+
+## What you'll learn
+
+- How schema versioning works in the push protocol
+- Server-side migration patterns (adding/removing tables, evolving schemas)
+- Client-side migration with `ensureClientSyncSchema`
+- Generating TypeScript types from migrations with `@syncular/typegen`
+- Strategies for rolling deployments with mixed client versions
+
+## Prerequisites
+
+- A working Syncular setup with server and client ([Server Setup](/docs/build/server-setup), [Client Setup](/docs/build/client-setup))
+- Familiarity with Kysely's schema builder
+
+## Schema Version in the Protocol
+
+Every push request includes a `schemaVersion` field:
+
+```typescript
+// From @syncular/core - SyncPushRequest schema
+{
+  clientId: string;
+  clientCommitId: string;
+  operations: SyncOperation[];
+  schemaVersion: number; // Integer >= 1
+}
+```
+
+The client stores the schema version in each outbox commit (`schema_version` column in `sync_outbox_commits`). When the server receives a push, it can inspect `schemaVersion` to decide how to handle operations from older or newer clients.
+
+This lets you deploy server changes first, then roll out client updates gradually, without breaking clients still running the previous version.
+
+## Server-Side Migrations
+
+### Sync infrastructure tables
+
+Syncular's server uses these core tables (defined in `@syncular/server`):
+
+- `sync_commits` -- commit log (one row per push)
+- `sync_changes` -- change log (one row per emitted change, scoped)
+- `sync_client_cursors` -- per-client pull cursor tracking
+- `sync_table_commits` -- commit routing index for fast pulls
+- `sync_snapshot_chunks` -- cached bootstrap snapshot chunks
+
+Create these tables using your database migration tool (Kysely migrations, Drizzle, Prisma, raw SQL, etc.). Here is an example using Kysely:
+
+```typescript
+import type { Kysely } from 'kysely';
+
+export async function up(db: Kysely<any>): Promise<void> {
+  // Application tables
+  await db.schema
+    .createTable('notes')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('body', 'text', (col) => col.notNull().defaultTo(''))
+    .addColumn('server_version', 'integer')
+    .addColumn('created_at', 'timestamptz', (col) =>
+      col.notNull().defaultTo(db.fn('now'))
+    )
+    .addColumn('updated_at', 'timestamptz', (col) =>
+      col.notNull().defaultTo(db.fn('now'))
+    )
+    .execute();
+
+  // Index for scope-based queries
+  await db.schema
+    .createIndex('idx_notes_user_id')
+    .on('notes')
+    .column('user_id')
+    .execute();
+}
+```
+
+### Adding a new table
+
+When you add a new table:
+
+1. Create a server migration that adds the table
+2. Register a new server table handler for it
+3. Create the corresponding client table and handler
+4. Bump the schema version on the client
+
+```typescript
+// Server migration (v2)
+export async function up(db: Kysely<any>): Promise<void> {
+  await db.schema
+    .createTable('tags')
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('name', 'text', (col) => col.notNull())
+    .addColumn('color', 'text')
+    .addColumn('server_version', 'integer')
+    .execute();
+}
+```
+
+```typescript
+// New server handler
+import { createServerHandler } from '@syncular/server';
+
+const tagsHandler = createServerHandler<ServerDB, ClientDB, 'tags'>({
+  table: 'tags',
+  scopes: ['user:{user_id}'],
+  primaryKey: 'id',
+});
+```
+
+### Evolving an existing table
+
+When adding a column to an existing table:
+
+```typescript
+// Server migration (v3)
+export async function up(db: Kysely<any>): Promise<void> {
+  await db.schema
+    .alterTable('notes')
+    .addColumn('pinned', 'boolean', (col) => col.defaultTo(false))
+    .execute();
+}
+```
+
+The server handler does not need changes for simple column additions -- the sync protocol sends row payloads as JSON objects, so new columns appear naturally. Older clients that do not send the `pinned` field will have it set to the default value.
+
+### Handling mixed schema versions on push
+
+If you need version-aware logic on the server, check `schemaVersion` in a custom handler's `applyOperation`:
+
+```typescript
+const notesHandler = createServerHandler<ServerDB, ClientDB, 'notes'>({
+  table: 'notes',
+  scopes: ['user:{user_id}'],
+  primaryKey: 'id',
+  applyOperation: async (ctx, op) => {
+    if (op.request.schemaVersion < 3) {
+      // Client hasn't upgraded yet -- set default for new column
+      if (op.operation.op === 'upsert' && op.operation.payload) {
+        op.operation.payload.pinned = op.operation.payload.pinned ?? false;
+      }
+    }
+    // Proceed with default apply logic
+    return undefined;
+  },
+});
+```
+
+## Client-Side Migrations
+
+### The sync schema
+
+Syncular's client requires three internal tables for tracking sync state:
+
+- `sync_subscription_state` -- per-subscription cursor and bootstrap progress
+- `sync_outbox_commits` -- outgoing mutation queue
+- `sync_conflicts` -- server-rejected operations pending resolution
+
+Use `ensureClientSyncSchema` from `@syncular/client` to create these tables. It is idempotent and safe to call on every app startup:
+
+```typescript
+import { ensureClientSyncSchema } from '@syncular/client';
+
+async function initializeDatabase(db: Kysely<MyDb>) {
+  // Create sync infrastructure tables
+  await ensureClientSyncSchema(db);
+
+  // Create your application tables
+  await db.schema
+    .createTable('notes')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('body', 'text', (col) => col.notNull().defaultTo(''))
+    .addColumn('server_version', 'integer')
+    .execute();
+}
+```
+
+### Using versioned migrations
+
+The recommended approach is to use `@syncular/migrations` for tracked, versioned client migrations with automatic checksum validation:
+
+```typescript
+import { dropClientSyncSchema, ensureClientSyncSchema } from '@syncular/client';
+import { defineMigrations, runMigrations } from '@syncular/migrations';
+
+const clientMigrations = defineMigrations<MyDb>({
+  v1: async (db) => {
+    await db.schema
+      .createTable('notes')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'integer')
+      .execute();
+  },
+  v2: async (db) => {
+    await db.schema
+      .alterTable('notes')
+      .addColumn('pinned', 'integer', (col) => col.defaultTo(0))
+      .execute();
+  },
+});
+
+async function migrateClientDb(db: Kysely<MyDb>) {
+  await ensureClientSyncSchema(db);
+  await runMigrations({
+    db,
+    migrations: clientMigrations,
+    onChecksumMismatch: 'reset',
+    beforeReset: async (db) => {
+      await db.schema.dropTable('notes').ifExists().execute();
+      await dropClientSyncSchema(db);
+      await ensureClientSyncSchema(db);
+    },
+  });
+}
+```
+
+#### Checksum mismatch handling
+
+Each migration function is checksummed when first applied. If the function body changes later, `runMigrations` detects the mismatch. You control what happens next:
+
+| `onChecksumMismatch` | Behavior |
+|---------------------|----------|
+| `'error'` (default) | Throws an error. You must manually reset the client DB or add a new migration version. |
+| `'reset'` | Calls `beforeReset`, clears the migration tracking table, and re-runs all migrations from v1. The client re-bootstraps from the server on the next sync. |
+
+The `beforeReset` callback is where you drop your application tables so migrations can recreate them cleanly. The result object includes `wasReset: boolean` so callers can detect when a reset occurred.
+
+#### Whitespace-resilient checksums
+
+Checksums are computed after normalizing the function source: stripping comments and collapsing whitespace. This means reformatting your migration code (changing indentation, adding/removing comments) will not trigger a checksum mismatch. Only actual logic changes trigger it.
+
+### Using the migrate prop
+
+Pass your migration function to SyncProvider's `migrate` prop. It runs before the first sync:
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={clientId}
+  migrate={migrateClientDb}
+>
+  {children}
+</SyncProvider>
+```
+
+If migration fails, the engine emits a `SYNC_ERROR` through the `onError` callback and does not start syncing. You can also use the `onMigrationError` prop for migration-specific error handling:
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  clientId={clientId}
+  migrate={migrateClientDb}
+  onMigrationError={(error) => {
+    console.error('Migration failed:', error);
+    // e.g. show a "please clear app data" prompt
+  }}
+>
+  {children}
+</SyncProvider>
+```
+
+#### Outbox drain before migration
+
+When the `migrate` prop is used, the sync engine attempts a best-effort push of any pending outbox commits before running the migration. This ensures that if the migration triggers a database reset, unsynced local changes are pushed to the server first. If the network is down or the outbox table doesn't exist (first launch), the push silently fails and migration proceeds.
+
+### Adding a table on the client
+
+When adding support for a new synced table on the client:
+
+```typescript
+async function initializeDatabase(db: Kysely<MyDb>) {
+  await ensureClientSyncSchema(db);
+
+  // Existing tables
+  await db.schema
+    .createTable('notes')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text')
+    .addColumn('title', 'text')
+    .addColumn('body', 'text')
+    .addColumn('server_version', 'integer')
+    .execute();
+
+  // New table (v2)
+  await db.schema
+    .createTable('tags')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text')
+    .addColumn('name', 'text')
+    .addColumn('color', 'text')
+    .addColumn('server_version', 'integer')
+    .execute();
+}
+```
+
+Since SQLite `CREATE TABLE IF NOT EXISTS` is idempotent, this safely handles both fresh installs and upgrades.
+
+For column additions, use `ALTER TABLE ... ADD COLUMN` wrapped in a try/catch (SQLite does not have `IF NOT EXISTS` for columns):
+
+```typescript
+// Add the "pinned" column if it doesn't exist
+try {
+  await db.schema
+    .alterTable('notes')
+    .addColumn('pinned', 'integer', (col) => col.defaultTo(0))
+    .execute();
+} catch {
+  // Column already exists, ignore
+}
+```
+
+### Dropping the sync schema
+
+To fully reset sync state (e.g., when a user logs out), use `dropClientSyncSchema`:
+
+```typescript
+import { dropClientSyncSchema } from '@syncular/client';
+
+async function resetSyncState(db: Kysely<MyDb>) {
+  await dropClientSyncSchema(db);
+  // Optionally drop application tables too
+}
+```
+
+This removes `sync_conflicts`, `sync_outbox_commits`, and `sync_subscription_state`. The next app startup will recreate them fresh via `ensureClientSyncSchema`.
+
+### Scoped reset and repair from the engine
+
+For operational recovery without dropping the whole database, use `engine.reset()` or `engine.repair()`:
+
+```typescript
+// Clear one subscription and re-bootstrap it
+await engine.reset({
+  scope: 'subscription',
+  subscriptionIds: ['app-team-members'],
+  clearSyncedTables: true,
+});
+
+// Built-in repair flow for missing snapshot chunks
+await engine.repair({
+  mode: 'rebootstrap-missing-chunks',
+});
+```
+
+This is useful when bootstrap metadata is stale/corrupt and you need a controlled re-bootstrap.
+
+## Type Generation with @syncular/typegen
+
+`@syncular/typegen` introspects your migrations and generates TypeScript interfaces for your database:
+
+```bash
+bun install @syncular/typegen
+```
+
+### Usage
+
+```typescript
+import { generateTypes } from '@syncular/typegen';
+import { migrations } from './migrations';
+
+await generateTypes({
+  migrations,
+  output: './src/db.generated.ts',
+  extendsSyncClientDb: true, // Include SyncClientDb base tables
+  syncularImportType: 'umbrella', // Optional. Default: 'scoped'
+  includeVersionHistory: false, // Only generate types for the latest schema
+});
+```
+
+### In a build script
+
+Add a script to your `package.json`:
+
+```json
+{
+  "scripts": {
+    "generate:types": "bun run scripts/generate-types.ts"
+  }
+}
+```
+
+```typescript
+// scripts/generate-types.ts
+import { generateTypes } from '@syncular/typegen';
+import { migrations } from '../src/migrations';
+
+const result = await generateTypes({
+  migrations,
+  output: './src/db.generated.ts',
+  extendsSyncClientDb: true,
+  syncularImportType: 'umbrella',
+});
+
+console.log(
+  `Generated types for ${result.tableCount} tables (version ${result.currentVersion})`
+);
+```
+
+The generated file exports a `DB` interface that you can use with Kysely and Syncular:
+
+```typescript
+// db.generated.ts (auto-generated)
+import type { SyncClientDb } from '@syncular/client';
+
+export interface NotesTable {
+  id: string;
+  user_id: string;
+  title: string;
+  body: string;
+  server_version: number | null;
+}
+
+export interface DB extends SyncClientDb {
+  notes: NotesTable;
+}
+```
+
+### Column codecs for type + runtime consistency
+
+Use `columnCodecs` to define a column once and drive generated TypeScript types plus runtime DB conversion:
+
+```typescript
+import { codecs } from '@syncular/core';
+import { generateTypes } from '@syncular/typegen';
+
+await generateTypes({
+  migrations,
+  output: './src/db.generated.ts',
+  columnCodecs: (col) => {
+    if (
+      col.table === 'notes' &&
+      col.column === 'completed' &&
+      col.sqlType?.toLowerCase().includes('int')
+    ) {
+      return codecs.numberBoolean();
+    }
+    if (col.table === 'notes' && col.column === 'metadata') {
+      return codecs.stringJson({
+        import: { name: 'NoteMetadata', from: './types' },
+      });
+    }
+    return undefined;
+  },
+});
+```
+
+PostgreSQL note: `numeric`/`decimal` columns are generated as `string` by default (matching common pg driver return types). Override with a codec `ts` type when you parse them to `number` at runtime.
+
+For regular Kysely queries outside Syncular handlers/mutations, attach the codec plugin so `selectFrom`/`insertInto` also use the same conversions:
+
+```typescript
+import { createColumnCodecsPlugin } from '@syncular/core';
+import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+
+const baseDb = createBunSqliteDb<DB>({ path: ':memory:' });
+const db = baseDb.withPlugin(
+  createColumnCodecsPlugin({
+    dialect: 'sqlite',
+    columnCodecs: (col) => {
+      if (col.table === 'notes' && col.column === 'completed') {
+        return codecs.numberBoolean();
+      }
+      if (col.table === 'notes' && col.column === 'metadata') {
+        return codecs.stringJson<NoteMetadata>();
+      }
+      return undefined;
+    },
+  })
+);
+```
+
+Use one conversion path per query. If Syncular handlers/mutations already apply `columnCodecs`, keep a separate plugin-wrapped DB instance for app-level ad-hoc queries to avoid double conversion on the same statement.
+
+### Filtering tables
+
+Generate types for only specific tables:
+
+```typescript
+await generateTypes({
+  migrations,
+  output: './src/db.generated.ts',
+  tables: ['notes', 'tags'], // Only these tables
+});
+```
+
+### Version history
+
+Generate types for all schema versions (useful for migration code that needs types for intermediate states):
+
+```typescript
+await generateTypes({
+  migrations,
+  output: './src/db.generated.ts',
+  includeVersionHistory: true,
+});
+```
+
+## Migration Strategies
+
+### Deploy order
+
+The recommended deployment order:
+
+1. **Deploy server** with the new migration (server can handle old and new schema versions)
+2. **Roll out client** updates (clients migrate their local SQLite and bump `schemaVersion`)
+
+This works because:
+- The server can inspect `schemaVersion` to handle old clients
+- New columns have defaults, so old clients that omit them still work
+- New tables are simply unused by old clients
+
+### Breaking changes
+
+For changes that are not backward-compatible (e.g., renaming a column the server handler depends on):
+
+1. Deploy the server with support for both old and new column names
+2. Roll out the client update
+3. After all clients have upgraded, remove the old column support from the server
+
+### Resetting client state
+
+If a migration is too complex to handle incrementally, the recommended approach is to use `onChecksumMismatch: 'reset'` with `@syncular/migrations` (see [Using versioned migrations](#using-versioned-migrations) above). This automatically detects when a migration function has changed and resets the database.
+
+For manual reset control (e.g., when a user logs out or you need to force a reset outside of migrations):
+
+```typescript
+import { dropClientSyncSchema, ensureClientSyncSchema } from '@syncular/client';
+
+async function resetDatabase(db: Kysely<MyDb>) {
+  await dropClientSyncSchema(db);
+  await db.schema.dropTable('notes').ifExists().execute();
+  await db.schema.dropTable('tags').ifExists().execute();
+  await ensureClientSyncSchema(db);
+  // Re-run migrations to recreate tables
+}
+```
+
+The client will re-bootstrap from the server on the next sync cycle.
+
+## Next Steps
+
+- [Table Handlers](/docs/build/table-handlers) - Define server-side table handlers
+- [Data Modeling](/docs/build/data-modeling) - Design schemas for sync
+- [Performance & Scaling](/docs/build/performance) - Optimize for large datasets

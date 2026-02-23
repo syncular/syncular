@@ -1,0 +1,10 @@
+{
+  "extends": "@syncular/config/tsconfig.bun.json",
+  "include": [
+    "**/*.ts"
+  ],
+  "exclude": [
+    "load/scripts/*.js",
+    "load/lib/*.js"
+  ]
+}

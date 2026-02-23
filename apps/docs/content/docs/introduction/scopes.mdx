@@ -1,0 +1,317 @@
+---
+title: Scopes
+description: Understanding Syncular's authorization model
+---
+
+# Scopes
+
+Scopes are key-value pairs that tag every change with its authorization context. They determine who can access what data -- and the system handles the mechanics automatically.
+
+## What you'll learn
+
+- What scopes are and why they exist
+- How to define scope patterns on your server handlers
+- How to implement `resolveScopes` to control access
+- How the server computes effective scopes (the intersection model)
+- What happens when access is revoked
+- Common patterns: user-owned, project-based, and team-based data
+- Cardinality guidelines and advanced customization
+
+---
+
+## The Simplest Case: User-Owned Data
+
+Most apps start here. Every row belongs to a user, and that user should only see their own rows.
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+
+  // Pattern: read user_id from each row to tag changes
+  scopes: ['user:{user_id}'],
+
+  // This actor can only access rows where user_id matches their own ID
+  resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+That is the entire setup. When a row is inserted with `user_id: 'alice'`, Syncular tags the resulting change with scope `{ user_id: 'alice' }`. When Alice pulls, `resolveScopes` returns `{ user_id: ['alice'] }`, and she receives only her own rows.
+
+---
+
+## What Are Scopes?
+
+Scopes are JSONB key-value pairs automatically attached to every change in `sync_changes`. They represent the authorization context of that change:
+
+```typescript
+{ user_id: '123' }                    // User's private data
+{ project_id: '456' }                 // Project members can access
+{ user_id: '123', project_id: '456' } // User's data within a project
+{ team_id: '789' }                    // Team-shared data
+```
+
+## How the Automatic Flow Works
+
+With `createServerHandler`, scope handling is fully automatic:
+
+1. **You define the pattern** once in your handler via the `scopes` array.
+2. **System extracts from row data** -- When a row is inserted or updated, the system reads the referenced columns (e.g., `user_id`, `project_id`) and creates scope tags.
+3. **System tags changes** -- Changes stored in `sync_changes` carry these extracted scopes.
+4. **Server filters on pull** -- Only changes matching the actor's allowed scopes are returned.
+
+> **You don't manually tag changes.** The system handles scope extraction and tagging based on your pattern.
+
+---
+
+## Defining Scope Patterns
+
+The `scopes` array uses a `prefix:{column}` syntax:
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+
+  // Extract user_id and project_id from each row
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    return {
+      user_id: [ctx.actorId],
+      project_id: await getProjectIds(ctx.actorId),
+    };
+  },
+});
+```
+
+- `{user_id}` tells the system to read the `user_id` column from row data.
+- The prefix (`user:`, `project:`) is a namespace -- it keeps scope keys distinct.
+
+---
+
+## Effective Scopes: The Intersection Model
+
+When a client pulls data, the server computes **effective scopes** as the intersection of what the client requested (via its [subscription](/docs/introduction/subscriptions)) and what `resolveScopes` allows:
+
+```
+  +------------------------------+
+  |        Requested             |
+  |   (from subscription)        |
+  |                              |
+  |      +----------------+      |        +-----------------------------+
+  |      |                |      |        |          Allowed            |
+  |      |   Effective    |<-----|------->|    (from resolveScopes)     |
+  |      |   (delivered)  |      |        |                             |
+  |      +----------------+      |        +-----------------------------+
+  |                              |
+  +------------------------------+
+
+  Effective = Requested  ∩  Allowed
+```
+
+**Concrete example:**
+
+```
+Requested (subscription): { project_id: 'A' }
+Allowed   (resolveScopes): { user_id: '123', project_id: ['A', 'B'] }
+                                                         ───
+Effective (delivered):     { project_id: 'A' }
+```
+
+The client asked for project A. The server confirms this actor has access to projects A and B. The intersection yields project A -- so only project A data is delivered.
+
+### When the Intersection Is Empty: Revoked Access
+
+If the intersection produces no matching scopes, the subscription is **revoked**. This happens when an actor loses access -- for example, being removed from a project.
+
+```
+Requested (subscription): { project_id: 'A' }
+Allowed   (resolveScopes): { user_id: '123', project_id: ['B', 'C'] }
+                                                          ───
+Effective:                  (empty)  -->  status: 'revoked'
+```
+
+**What happens on the client:**
+1. The server returns `status: 'revoked'` for this subscription.
+2. The client clears locally cached data for the revoked scopes.
+3. The subscription is marked as revoked -- the client no longer pulls data for it.
+
+**Real-world scenario:** Bob is a member of Project Alpha. He syncs tasks for that project. An admin removes Bob from Project Alpha. On his next pull:
+
+```typescript
+// Bob's subscription
+{ id: 'project-alpha-tasks', table: 'tasks', scopes: { project_id: 'alpha' } }
+
+// Server runs resolveScopes for Bob
+resolveScopes(ctx) => { project_id: ['beta'] }  // Bob only has 'beta' now
+
+// Intersection: { project_id: 'alpha' } ∩ { project_id: ['beta'] } = empty
+// Result: subscription 'project-alpha-tasks' is revoked
+// Bob's local Project Alpha data is cleared
+```
+
+---
+
+## Implementing resolveScopes
+
+`resolveScopes` is the single function you write to control access. It receives the actor context and returns the set of scope values this actor is allowed to access.
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    const scopes: ScopeValues = {};
+
+    // User always has access to their own data
+    scopes.user_id = [ctx.actorId];
+
+    // Add project memberships from your database
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .where('status', '=', 'active')
+      .execute();
+
+    scopes.project_id = memberships.map((m) => m.project_id);
+
+    return scopes;
+  },
+});
+```
+
+The returned object keys must match the column names used in your `scopes` patterns. Each value is an array of allowed IDs.
+
+---
+
+## Common Patterns
+
+### User-Owned Data
+
+The simplest pattern -- each user sees only their own rows.
+
+```typescript
+createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+### Project Membership
+
+Users can access their own data plus any project they belong to.
+
+```typescript
+createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: memberships.map((m) => m.project_id),
+    };
+  },
+});
+```
+
+### Team-Shared Data
+
+Same principle -- query the team membership table.
+
+```typescript
+createServerHandler({
+  table: 'documents',
+  scopes: ['team:{team_id}'],
+
+  async resolveScopes(ctx) {
+    const teams = await ctx.db
+      .selectFrom('team_members')
+      .select('team_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      team_id: teams.map((t) => t.team_id),
+    };
+  },
+});
+```
+
+### Scope Migration (Row Moves Between Scopes)
+
+When a row moves between scopes (e.g., a task moves from project A to project B), the system automatically emits:
+1. A **DELETE** for the old scope
+2. An **UPSERT** for the new scope
+
+This ensures clients subscribed to project A see the task removed, while clients subscribed to project B see it added. No manual handling required.
+
+---
+
+## Scope Guidelines
+
+### Good Scope Keys
+
+- `user_id` -- Per-user private data
+- `project_id` -- Project-scoped collaboration
+- `team_id` -- Team-shared resources
+- `org_id` -- Organization-wide data
+
+### Avoid
+
+- `row_id` -- Creates too many scope values (cardinality explosion)
+- Time-based scopes -- Rows move between time partitions unpredictably
+
+## Cardinality Considerations
+
+Keep scope values manageable per client:
+- **Good**: Tens to hundreds of scope values
+- **Problematic**: Thousands of scope values per client
+
+If you need fine-grained access, prefer hierarchical scopes:
+
+```typescript
+// Instead of subscribing to 1000 individual docs
+// Subscribe to the project that contains them
+{ project_id: 'A' }
+```
+
+---
+
+## Advanced: Custom Scope Extraction
+
+For complex cases where the column name does not directly map to the scope value, you can provide a custom `extractScopes` function:
+
+```typescript
+createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+
+  // Only needed when default column extraction is insufficient
+  extractScopes(row) {
+    return {
+      user_id: String(row.user_id),
+      // Custom transformation logic here
+    };
+  },
+});
+```
+
+> `extractScopes` is optional. The default column-based extraction works for the vast majority of cases.
+
+---
+
+## Next Steps
+
+- [Subscriptions](/docs/introduction/subscriptions) -- How clients request data using scopes
+- [Authorization Guide](/docs/build/auth) -- Implementing auth patterns
+- [Data Modeling with Scopes](/docs/build/data-modeling) -- Practical schema + scope design

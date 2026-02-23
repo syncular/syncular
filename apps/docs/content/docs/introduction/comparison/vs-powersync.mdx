@@ -1,0 +1,145 @@
+---
+title: Syncular vs PowerSync
+description: Open-source sync vs open-core sync service
+lastVerified: 2026-02-03
+---
+
+# Syncular vs PowerSync
+
+[PowerSync](https://powersync.com) is a sync engine for building local-first apps. Client SDKs are open-source, and the PowerSync Service source is available under the Functional Source License (and later becomes Apache 2.0).
+
+> **Last verified:** February 2026. PowerSync is actively evolving — check their docs for the latest.
+
+## Methodology
+
+This comparison focuses on:
+
+- How you express “what data belongs on a device” (**Syncular scopes** vs **PowerSync sync rules**)
+- Licensing/hosting differences (fully OSS vs source-available service + managed option)
+- Conflict semantics defaults (and where you customize them)
+
+## The trade-off
+
+| | Syncular | PowerSync |
+|---|----------|-----------|
+| **Licensing** | MIT (fully open) | SDKs Apache 2.0; service source-available |
+| **Deployment** | Self-hosted | Self-hosted (Open Edition) or managed |
+| **Source code** | Fully open | Client open, server source-available |
+| **Pricing** | Free | Free (Open Edition), usage-based (managed) |
+| **Auth model** | JSONB scopes | Sync rules (YAML) |
+| **Supported DBs** | Postgres | Postgres, MongoDB, MySQL (beta), SQL Server (alpha) |
+| **Mobile support** | React Native | Flutter, React Native, Swift, Kotlin |
+| **Conflict semantics** | App-defined | Default LWW per-field; configurable |
+
+## What PowerSync does well
+
+**Multiple databases**: Supports Postgres, MongoDB, MySQL (beta), and SQL Server (alpha).
+
+**Strong mobile SDKs**: First-class Flutter, React Native, Swift, and Kotlin SDKs.
+
+**Sync rules**: Declarative sync rules in YAML:
+
+```yaml
+sync_rules:
+  - table: tasks
+    filter: user_id = :user_id OR project_id IN (
+      SELECT project_id FROM project_members WHERE user_id = :user_id
+    )
+```
+
+**Professional support**: Team and Enterprise plans include SLA-backed support.
+
+**Open Edition**: Self-host the PowerSync Service for free (source-available, not OSI-approved open source).
+
+## Where PowerSync has limits
+
+**Server licensing**: The PowerSync Service Open Edition is source-available, not fully open source. Enterprise features require a paid license.
+
+**Complex sync rules**: Sync rules are powerful but can become complex for hierarchical permissions.
+
+**Cost at scale**: Managed service pricing scales with usage (data synced, connections).
+
+## Where Syncular differs
+
+**Fully open source**: Everything is MIT-licensed. No distinction between client and server.
+
+**No per-user fees**: Run on your infrastructure with no usage-based costs.
+
+**Scopes for auth**: Programmatic scope resolution in TypeScript:
+
+```typescript
+async resolveScopes(ctx) {
+  const memberships = await ctx.db
+    .selectFrom('project_members')
+    .select('project_id')
+    .where('user_id', '=', ctx.actorId)
+    .execute();
+
+  return {
+    user_id: [ctx.actorId],
+    project_id: memberships.map(m => m.project_id),
+  };
+}
+```
+
+**Type safety**: End-to-end TypeScript with Kysely.
+
+## Auth model comparison
+
+### PowerSync (Sync Rules)
+
+```yaml
+sync_rules:
+  - table: tasks
+    filter: user_id = :user_id
+```
+
+- **Pros**: Declarative, simple for basic cases
+- **Cons**: Limited expressiveness, SQL-only logic
+
+### Syncular (Scopes)
+
+```typescript
+async resolveScopes(ctx) {
+  // Any TypeScript logic
+  const memberships = await ctx.db
+    .selectFrom('project_members')
+    .where('user_id', '=', ctx.actorId)
+    .execute();
+
+  return {
+    user_id: [ctx.actorId],
+    project_id: memberships.map(m => m.project_id),
+  };
+}
+```
+
+- **Pros**: Fully programmable, composable
+- **Cons**: More code to write
+
+## When to choose PowerSync
+
+- You need support for MongoDB or SQL Server
+- Mobile (especially Flutter) is your primary platform
+- You want professional support and SLA guarantees
+- Sync rules are sufficient for your auth model
+
+## When to choose Syncular
+
+- You want fully MIT-licensed code
+- Cost control is important (no usage fees)
+- You need flexible, programmatic authorization
+- You're already using Kysely
+
+## Summary
+
+| Choose PowerSync if... | Choose Syncular if... |
+|------------------------|----------------------|
+| You need MongoDB/SQL Server support | Postgres-only is fine |
+| Mobile Flutter is primary | Web/React Native focus |
+| Professional support/SLA needed | Community support sufficient |
+| Source-available server is acceptable | Fully MIT-licensed required |
+
+---
+
+*Sources: [PowerSync docs](https://docs.powersync.com), [Sync Rules](https://docs.powersync.com/sync-rules), [Conflict resolution](https://docs.powersync.com/usage/conflict-resolution), [License](https://docs.powersync.com/license/), [PowerSync Open Source](https://www.powersync.com/open-source)*
