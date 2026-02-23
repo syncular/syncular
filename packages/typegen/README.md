@@ -2,7 +2,7 @@
 
 Generate TypeScript database types from your migrations.
 
-Supports SQLite and Postgres introspection with column-level codec type overrides via `columnCodecs`.
+Supports SQLite and Postgres introspection with column-level codec type overrides via `codecs`.
 
 ## Install
 
@@ -21,7 +21,7 @@ await generateTypes({
   migrations,
   output: './src/db.generated.ts',
   dialect: 'postgres',
-  columnCodecs: (col) => {
+  codecs: (col) => {
     if (col.table === 'events' && col.column === 'payload') {
       return codecs.stringJson({
         import: { name: 'EventPayload', from: './domain' },
