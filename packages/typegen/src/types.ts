@@ -116,7 +116,7 @@ export interface GenerateTypesOptions<DB = unknown> {
    * Optional column codec resolver for per-column type overrides.
    * Receives full column metadata (table, column, sqlType, dialect, etc.).
    */
-  columnCodecs?: ColumnCodecResolver;
+  codecs?: ColumnCodecResolver;
 }
 
 /**

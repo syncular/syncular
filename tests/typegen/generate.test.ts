@@ -103,13 +103,13 @@ describe('generateTypes - SQLite', () => {
     expect(result.code).toContain('extends SyncClientDb');
   });
 
-  it('applies columnCodecs ts overrides', async () => {
+  it('applies codecs ts overrides', async () => {
     const output = join(tmpDir, 'column-codecs.generated.ts');
     const seenColumnSqlTypes = new Map<string, string>();
     const result = await generateTypes({
       migrations: sqliteMigrations,
       output,
-      columnCodecs: (col) => {
+      codecs: (col) => {
         seenColumnSqlTypes.set(
           `${col.table}.${col.column}`,
           col.sqlType.toLowerCase()

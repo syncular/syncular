@@ -237,7 +237,7 @@ describe('createServerHandler', () => {
       table: 'task_codecs',
       scopes: ['user:{user_id}'],
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-      columnCodecs: (col) => {
+      codecs: (col) => {
         if (col.table !== 'task_codecs') return undefined;
         if (col.column === 'enabled') return codecs.numberBoolean();
         if (col.column === 'metadata') {

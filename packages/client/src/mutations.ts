@@ -400,7 +400,7 @@ export interface OutboxCommitConfig<DB extends SyncClientDb> {
   idColumn?: string;
   versionColumn?: string | null;
   omitColumns?: string[];
-  columnCodecs?: ColumnCodecSource;
+  codecs?: ColumnCodecSource;
   codecDialect?: ColumnCodecDialect;
 }
 
@@ -432,8 +432,8 @@ export function createOutboxCommit<DB extends SyncClientDb>(
           table: string,
           row: Record<string, unknown>
         ) => {
-          const columnCodecs = config.columnCodecs;
-          if (!columnCodecs) return {};
+          const codecs = config.codecs;
+          if (!codecs) return {};
           const columns = Object.keys(row);
           if (columns.length === 0) return {};
 
@@ -450,7 +450,7 @@ export function createOutboxCommit<DB extends SyncClientDb>(
           const cached = tableCache.get(cacheKey);
           if (cached) return cached;
 
-          const resolved = toTableColumnCodecs(table, columnCodecs, columns, {
+          const resolved = toTableColumnCodecs(table, codecs, columns, {
             dialect: codecDialect,
           });
           tableCache.set(cacheKey, resolved);

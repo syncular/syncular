@@ -33,7 +33,7 @@ describe('createClientHandler column codecs', () => {
         table: 'tasks',
         scopes: ['user:{user_id}'],
         versionColumn: 'server_version',
-        columnCodecs: (col) => {
+        codecs: (col) => {
           if (col.table !== 'tasks') return undefined;
           if (col.column === 'enabled') return codecs.numberBoolean();
           if (col.column === 'metadata') {

@@ -82,7 +82,7 @@ export interface CreateClientHandlerOptions<
    * Optional column codec resolver.
    * Receives `{ table, column, sqlType?, dialect? }` and returns a codec.
    */
-  columnCodecs?: ColumnCodecSource;
+  codecs?: ColumnCodecSource;
 
   /**
    * Dialect used for codec dialect overrides.
@@ -178,14 +178,14 @@ export function createClientHandler<
   const codecDialect = options.codecDialect ?? 'sqlite';
   const codecCache = new Map<string, ReturnType<typeof toTableColumnCodecs>>();
   const resolveTableCodecs = (row: Record<string, unknown>) => {
-    const columnCodecs = options.columnCodecs;
-    if (!columnCodecs) return {};
+    const codecs = options.codecs;
+    if (!codecs) return {};
     const columns = Object.keys(row);
     if (columns.length === 0) return {};
     const cacheKey = columns.slice().sort().join('\u0000');
     const cached = codecCache.get(cacheKey);
     if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, columnCodecs, columns, {
+    const resolved = toTableColumnCodecs(table, codecs, columns, {
       dialect: codecDialect,
     });
     codecCache.set(cacheKey, resolved);

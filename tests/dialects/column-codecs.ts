@@ -28,7 +28,7 @@ export function createConformanceColumnCodecsPlugin(
 ) {
   return createColumnCodecsPlugin({
     dialect,
-    columnCodecs: (col) => {
+    codecs: (col) => {
       if (col.table !== 'dialect_conformance') return undefined;
       if (BOOLEAN_COLUMNS.has(col.column)) return codecs.numberBoolean();
       if (JSON_COLUMNS.has(col.column)) return conformanceJsonCodec();

@@ -436,7 +436,7 @@ export interface DB extends SyncClientDb {
 
 ### Column codecs for type + runtime consistency
 
-Use `columnCodecs` to define a column once and drive generated TypeScript types plus runtime DB conversion:
+Use `codecs` to define a column once and drive generated TypeScript types plus runtime DB conversion:
 
 ```typescript
 import { codecs } from '@syncular/core';
@@ -445,7 +445,7 @@ import { generateTypes } from '@syncular/typegen';
 await generateTypes({
   migrations,
   output: './src/db.generated.ts',
-  columnCodecs: (col) => {
+  codecs: (col) => {
     if (
       col.table === 'notes' &&
       col.column === 'completed' &&
@@ -475,7 +475,7 @@ const baseDb = createBunSqliteDb<DB>({ path: ':memory:' });
 const db = baseDb.withPlugin(
   createColumnCodecsPlugin({
     dialect: 'sqlite',
-    columnCodecs: (col) => {
+    codecs: (col) => {
       if (col.table === 'notes' && col.column === 'completed') {
         return codecs.numberBoolean();
       }
@@ -488,7 +488,7 @@ const db = baseDb.withPlugin(
 );
 ```
 
-Use one conversion path per query. If Syncular handlers/mutations already apply `columnCodecs`, keep a separate plugin-wrapped DB instance for app-level ad-hoc queries to avoid double conversion on the same statement.
+Use one conversion path per query. If Syncular handlers/mutations already apply `codecs`, keep a separate plugin-wrapped DB instance for app-level ad-hoc queries to avoid double conversion on the same statement.
 
 ### Filtering tables
 

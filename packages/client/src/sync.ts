@@ -28,9 +28,9 @@ export type ClientSyncHandlerOptionsForTable<
   Identity,
 > = Omit<
   CreateClientHandlerOptions<DB, TableName, ScopeDefs>,
-  'columnCodecs' | 'codecDialect' | 'subscribe'
+  'codecs' | 'codecDialect' | 'subscribe'
 > & {
-  columnCodecs?: ColumnCodecSource;
+  codecs?: ColumnCodecSource;
   codecDialect?: ColumnCodecDialect;
   subscribe?:
     | ClientSyncSubscription<ScopeDefs>
@@ -126,7 +126,7 @@ export function defineClientSync<
         createClientHandler({
           ...handlerOptions,
           subscribe: false,
-          columnCodecs: options.codecs,
+          codecs: options.codecs,
           codecDialect: options.codecDialect,
         })
       );

@@ -151,7 +151,7 @@ export interface CreateServerHandlerOptions<
    * Only used by default snapshot/apply paths when the corresponding
    * transform hook is not provided.
    */
-  columnCodecs?: ColumnCodecSource;
+  codecs?: ColumnCodecSource;
 
   /**
    * Dialect used for codec dialect overrides.
@@ -248,20 +248,20 @@ export function createServerHandler<
     resolveScopes,
     transformInbound,
     transformOutbound,
-    columnCodecs,
+    codecs,
     codecDialect = 'sqlite',
     authorize,
     extractScopes: customExtractScopes,
   } = options;
   const codecCache = new Map<string, ReturnType<typeof toTableColumnCodecs>>();
   const resolveTableCodecs = (row: Record<string, unknown>) => {
-    if (!columnCodecs) return {};
+    if (!codecs) return {};
     const columns = Object.keys(row);
     if (columns.length === 0) return {};
     const cacheKey = columns.slice().sort().join('\u0000');
     const cached = codecCache.get(cacheKey);
     if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, columnCodecs, columns, {
+    const resolved = toTableColumnCodecs(table, codecs, columns, {
       dialect: codecDialect,
     });
     codecCache.set(cacheKey, resolved);

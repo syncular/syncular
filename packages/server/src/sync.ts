@@ -22,7 +22,7 @@ export type ServerSyncHandlerOptionsForTable<
   ScopeDefs extends readonly ScopeDefinition[],
 > = Omit<
   CreateServerHandlerOptions<ServerDB, ClientDB, TableName, Auth, ScopeDefs>,
-  'columnCodecs' | 'codecDialect'
+  'codecs' | 'codecDialect'
 >;
 
 export interface ServerSyncConfig<
@@ -88,7 +88,7 @@ export function defineServerSync<
       handlers.push(
         createServerHandler({
           ...handlerOptions,
-          columnCodecs: options.codecs,
+          codecs: options.codecs,
           codecDialect: options.codecDialect,
         })
       );

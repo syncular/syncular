@@ -33,7 +33,7 @@ import {
 } from './column-codecs';
 
 interface ColumnCodecPluginOptions {
-  columnCodecs: ColumnCodecSource;
+  codecs: ColumnCodecSource;
   dialect?: ColumnCodecDialect;
 }
 
@@ -349,14 +349,14 @@ function cacheKey(table: string, columns: readonly string[]): string {
 }
 
 class ColumnCodecsTransformer extends OperationNodeTransformer {
-  readonly #columnCodecs: ColumnCodecSource;
+  readonly #codecs: ColumnCodecSource;
   readonly #dialect: ColumnCodecDialect;
   readonly #tableCodecsCache = new Map<string, TableColumnCodecs>();
   #currentUpdateTable: string | null = null;
 
   constructor(options: ColumnCodecPluginOptions) {
     super();
-    this.#columnCodecs = options.columnCodecs;
+    this.#codecs = options.codecs;
     this.#dialect = options.dialect ?? 'sqlite';
   }
 
@@ -367,7 +367,7 @@ class ColumnCodecsTransformer extends OperationNodeTransformer {
     const key = cacheKey(table, columns);
     const cached = this.#tableCodecsCache.get(key);
     if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, this.#columnCodecs, columns, {
+    const resolved = toTableColumnCodecs(table, this.#codecs, columns, {
       dialect: this.#dialect,
     });
     this.#tableCodecsCache.set(key, resolved);
@@ -485,12 +485,12 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
   readonly #dialect: ColumnCodecDialect;
   readonly #transformer: ColumnCodecsTransformer;
   readonly #resultPlans = new WeakMap<object, QueryResultPlan>();
-  readonly #columnCodecs: ColumnCodecSource;
+  readonly #codecs: ColumnCodecSource;
   readonly #resultCodecCache = new Map<string, TableColumnCodecs>();
 
   constructor(options: ColumnCodecPluginOptions) {
     this.#dialect = options.dialect ?? 'sqlite';
-    this.#columnCodecs = options.columnCodecs;
+    this.#codecs = options.codecs;
     this.#transformer = new ColumnCodecsTransformer(options);
   }
 
@@ -528,7 +528,7 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
     const key = cacheKey(table, columns);
     const cached = this.#resultCodecCache.get(key);
     if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, this.#columnCodecs, columns, {
+    const resolved = toTableColumnCodecs(table, this.#codecs, columns, {
       dialect: this.#dialect,
     });
     this.#resultCodecCache.set(key, resolved);

@@ -45,7 +45,7 @@ const handler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
 
   // Column codecs: App values on wire, DB values at storage boundary
   // Match by table/column in runtime paths (`sqlType` is optional here)
-  columnCodecs: (col) => {
+  codecs: (col) => {
     if (col.table === 'tasks' && col.column === 'completed') {
       return codecs.numberBoolean();
     }

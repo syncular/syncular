@@ -22,7 +22,7 @@ import type {
 function applyTypeMappings(
   schemas: VersionedSchema[],
   dialect: TypegenDialect,
-  columnCodecs?: ColumnCodecResolver
+  codecs?: ColumnCodecResolver
 ): {
   schemas: VersionedSchema[];
   customImports: Array<{ name: string; from: string }>;
@@ -43,7 +43,7 @@ function applyTypeMappings(
           hasDefault: col.hasDefault,
           dialect,
         } as const;
-        const codec = columnCodecs?.(columnInfo);
+        const codec = codecs?.(columnInfo);
         const resolved = resolveColumnType(columnInfo, codec?.ts);
         allImports.push(...resolved.imports);
         return {
@@ -83,7 +83,7 @@ export async function generateTypes<DB>(
     includeVersionHistory,
     tables,
     dialect = 'sqlite',
-    columnCodecs,
+    codecs,
   } = options;
 
   // Introspect schemas (raw SQL types, no TS mapping yet)
@@ -99,7 +99,7 @@ export async function generateTypes<DB>(
   const { schemas, customImports } = applyTypeMappings(
     rawSchemas,
     dialect,
-    columnCodecs
+    codecs
   );
 
   // Render TypeScript code

@@ -41,7 +41,7 @@ function createDb<T>(fileName: string) {
   }).withPlugin(
     createColumnCodecsPlugin({
       dialect: 'sqlite',
-      columnCodecs: (col) => {
+      codecs: (col) => {
         if (col.table !== 'dialect_conformance') return undefined;
         if (col.column === 'b_bool' || col.column === 'nullable_bool') {
           return codecs.numberBoolean();

@@ -26,7 +26,7 @@ describe('ColumnCodecsPlugin', () => {
   const dbWithCodecs = db.withPlugin(
     createColumnCodecsPlugin({
       dialect: 'sqlite',
-      columnCodecs: (col) => {
+      codecs: (col) => {
         if (col.column === 'enabled') {
           if (col.table === 'tasks' || col.table === 'flags') {
             return codecs.numberBoolean();
@@ -237,7 +237,7 @@ describe('ColumnCodecsPlugin', () => {
     const dbWithDialectOverride = db.withPlugin(
       createColumnCodecsPlugin({
         dialect: 'postgres',
-        columnCodecs: (col) => {
+        codecs: (col) => {
           if (col.table !== 'tasks' || col.column !== 'metadata') {
             return undefined;
           }
@@ -299,7 +299,7 @@ describe('ColumnCodecsPlugin', () => {
 
     const dbWithoutCodecs = db.withPlugin(
       createColumnCodecsPlugin({
-        columnCodecs: () => undefined,
+        codecs: () => undefined,
       })
     );
 

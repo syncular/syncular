@@ -63,14 +63,14 @@ function createAutoHandler<
   table: string,
   scopes: string[],
   options: {
-    columnCodecs?: ColumnCodecSource;
+    codecs?: ColumnCodecSource;
     codecDialect?: ColumnCodecDialect;
   }
 ): ClientTableHandler<DB, TableName> {
   return createClientHandler<DB, TableName>({
     table: table as TableName,
     scopes: scopes as ScopeDefinition[],
-    columnCodecs: options.columnCodecs,
+    codecs: options.codecs,
     codecDialect: options.codecDialect,
   });
 }
@@ -153,7 +153,7 @@ interface CreateClientOptions<DB extends SyncClientDb> {
   stateId?: string;
 
   /** Optional: Column codec resolver */
-  columnCodecs?: ColumnCodecSource;
+  codecs?: ColumnCodecSource;
 
   /** Optional: Codec dialect override (default: 'sqlite') */
   codecDialect?: ColumnCodecDialect;
@@ -220,7 +220,7 @@ export async function createClient<DB extends SyncClientDb>(
     blobStorage,
     plugins,
     stateId,
-    columnCodecs,
+    codecs,
     codecDialect,
     autoStart = true,
   } = options;
@@ -238,7 +238,7 @@ export async function createClient<DB extends SyncClientDb>(
     providedHandlers ??
     tables!.map((table) =>
       createAutoHandler<DB, keyof DB & string>(table, scopes!, {
-        columnCodecs,
+        codecs,
         codecDialect,
       })
     );
@@ -311,7 +311,7 @@ export async function createClient<DB extends SyncClientDb>(
     blobStorage,
     plugins,
     stateId,
-    columnCodecs,
+    codecs,
     codecDialect,
     realtimeEnabled: sync.realtime ?? true,
     pollIntervalMs: sync.pollIntervalMs,

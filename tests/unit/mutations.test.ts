@@ -88,7 +88,7 @@ describe('mutations API', () => {
     it('applies column codecs for local DB writes while keeping payload app-shaped', async () => {
       const commit = createOutboxCommit({
         db,
-        columnCodecs: (col) => {
+        codecs: (col) => {
           if (col.table !== 'tasks') return undefined;
           if (col.column === 'user_id') {
             return {

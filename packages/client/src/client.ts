@@ -132,7 +132,7 @@ export interface ClientOptions<DB extends SyncClientDb> {
   omitColumns?: string[];
 
   /** Optional: Column codec resolver */
-  columnCodecs?: ColumnCodecSource;
+  codecs?: ColumnCodecSource;
 
   /** Optional: Codec dialect override (default: 'sqlite') */
   codecDialect?: ColumnCodecDialect;
@@ -341,7 +341,7 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       idColumn: options.idColumn ?? 'id',
       versionColumn: options.versionColumn ?? 'server_version',
       omitColumns: options.omitColumns ?? [],
-      columnCodecs: options.columnCodecs,
+      codecs: options.codecs,
       codecDialect: options.codecDialect,
     });
     this.mutations = createMutationsApi(commitFn) as MutationsApi<DB>;
