@@ -7,8 +7,8 @@
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import { createD1Dialect } from '@syncular/dialect-d1';
 import {
-  createDatabase,
   createBlobManager,
+  createDatabase,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
   type SyncBlobUploadsDb,
