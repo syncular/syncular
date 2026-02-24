@@ -20,7 +20,7 @@ import demoApp from '../../index.html';
 async function main() {
   const portRaw = process.env.PORT;
   const portParsed = portRaw ? Number(portRaw) : Number.NaN;
-  const port = Number.isFinite(portParsed) ? portParsed : 9811;
+  const preferredPort = Number.isFinite(portParsed) ? portParsed : 9811;
 
   const consoleToken = process.env.SYNC_CONSOLE_TOKEN ?? 'demo-token';
 
@@ -38,44 +38,64 @@ async function main() {
   const pgliteFsBundle = Bun.file(fsBundlePath);
   const pgliteWasm = Bun.file(wasmPath);
 
-  const server = serve({
-    port,
-    development: {
-      hmr: true,
-      console: true,
-    },
-    routes: {
-      // API is intentionally disabled in network server mode.
-      // Browser clients must use the Service Worker server path.
-      '/api/health': () => responseForHealth(),
-      '/api/*': () => responseForDisabledApi(),
-
-      // WASM/Worker assets
-      '/__demo/pglite/pglite.data': () =>
-        responseForFile(pgliteFsBundle, 'application/octet-stream'),
-      '/__demo/pglite/pglite.wasm': () =>
-        responseForFile(pgliteWasm, 'application/wasm'),
-      '/__demo/wasqlite/wa-sqlite-async.wasm': () =>
-        responseForFile(wasqliteAsyncWasm, 'application/wasm'),
-      '/__demo/wasqlite/wa-sqlite.wasm': () =>
-        responseForFile(wasqliteSyncWasm, 'application/wasm'),
-      '/__demo/wasqlite/*': (req) => {
-        const url = new URL(req.url);
-        const name = url.pathname.slice('/__demo/wasqlite/'.length);
-        const asset = wasqliteAssets.get(name);
-        if (!asset) return new Response('Not found', { status: 404 });
-        return responseForBuildArtifact(asset);
+  const createServer = (port: number) =>
+    serve({
+      port,
+      development: {
+        hmr: true,
+        console: true,
       },
-      '/__demo/sw-server.js': () =>
-        responseForServiceWorkerScript(swServerAsset),
+      routes: {
+        // API is intentionally disabled in network server mode.
+        // Browser clients must use the Service Worker server path.
+        '/api/health': () => responseForHealth(),
+        '/api/*': () => responseForDisabledApi(),
 
-      // Demo React app - catch-all for SPA
-      '/*': demoApp,
-    },
-    fetch() {
-      return new Response('Not found', { status: 404 });
-    },
-  });
+        // WASM/Worker assets
+        '/__demo/pglite/pglite.data': () =>
+          responseForFile(pgliteFsBundle, 'application/octet-stream'),
+        '/__demo/pglite/pglite.wasm': () =>
+          responseForFile(pgliteWasm, 'application/wasm'),
+        '/__demo/wasqlite/wa-sqlite-async.wasm': () =>
+          responseForFile(wasqliteAsyncWasm, 'application/wasm'),
+        '/__demo/wasqlite/wa-sqlite.wasm': () =>
+          responseForFile(wasqliteSyncWasm, 'application/wasm'),
+        '/__demo/wasqlite/*': (req) => {
+          const url = new URL(req.url);
+          const name = url.pathname.slice('/__demo/wasqlite/'.length);
+          const asset = wasqliteAssets.get(name);
+          if (!asset) return new Response('Not found', { status: 404 });
+          return responseForBuildArtifact(asset);
+        },
+        '/__demo/sw-server.js': () =>
+          responseForServiceWorkerScript(swServerAsset),
+
+        // Demo React app - catch-all for SPA
+        '/*': demoApp,
+      },
+      fetch() {
+        return new Response('Not found', { status: 404 });
+      },
+    });
+
+  let server: ReturnType<typeof serve>;
+  try {
+    server = createServer(preferredPort);
+  } catch (error) {
+    if (
+      preferredPort === 9811 &&
+      (!portRaw || !Number.isFinite(portParsed)) &&
+      isAddressInUseError(error)
+    ) {
+      server = createServer(0);
+      const fallbackPort = new URL(server.url).port;
+      console.warn(
+        `[demo] Port 9811 is already in use; started on port ${fallbackPort}. Set PORT to override.`
+      );
+    } else {
+      throw error;
+    }
+  }
 
   console.log(`Demo app:   ${server.url}`);
   console.log(
@@ -85,6 +105,12 @@ async function main() {
 }
 
 await main();
+
+function isAddressInUseError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const withCode = error as Error & { code?: string };
+  return withCode.code === 'EADDRINUSE';
+}
 
 function responseForBuildArtifact(artifact: BuildArtifact): Response {
   const headers = new Headers();
