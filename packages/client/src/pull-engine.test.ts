@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { gzipSync } from 'node:zlib';
 import {
+  createDatabase,
   encodeSnapshotRows,
   type SyncPullResponse,
   type SyncTransport,

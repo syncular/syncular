@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   ensureSyncSchema,

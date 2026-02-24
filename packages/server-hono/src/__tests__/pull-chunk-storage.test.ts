@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
 import {
   configureSyncTelemetry,
+  createDatabase,
   decodeSnapshotRows,
   getSyncTelemetry,
   SyncCombinedResponseSchema,

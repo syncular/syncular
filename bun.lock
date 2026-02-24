@@ -258,6 +258,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/core": "workspace:*",
         "kysely": "*",
       },
       "peerDependencies": {
@@ -269,6 +270,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/core": "workspace:*",
         "kysely": "*",
       },
       "peerDependencies": {
@@ -325,6 +327,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/core": "workspace:*",
         "kysely": "*",
         "react-native-nitro-sqlite": "^9.4.0",
       },

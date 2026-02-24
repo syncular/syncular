@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { SyncTransport } from '@syncular/core';
+import { createDatabase, type SyncTransport } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';

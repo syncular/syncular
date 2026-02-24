@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { BlobStorageAdapter } from '@syncular/core';
+import { type BlobStorageAdapter, createDatabase } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';

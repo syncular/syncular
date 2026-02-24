@@ -7,7 +7,8 @@
 
 import sqlite from 'node:sqlite';
 import { Hono } from 'hono';
-import { Kysely, SqliteDialect } from 'kysely';
+import { SqliteDialect } from 'kysely';
+import { createDatabase } from '../../../../packages/core/src/index';
 import type { SyncCoreDb } from '../../../../packages/server/src/index';
 import { ensureSyncSchema } from '../../../../packages/server/src/index';
 import { createSqliteServerDialect } from '../../../../packages/server-dialect-sqlite/src/index';
@@ -69,16 +70,14 @@ function wrapDatabase(raw: sqlite.DatabaseSync) {
   };
 }
 
-function createNodeSqliteDb<T>(path: string): Kysely<T> {
+function createNodeSqliteDialect(path: string): SqliteDialect {
   const raw = new sqlite.DatabaseSync(path);
   const wrapped = wrapDatabase(raw);
 
   const database: ConstructorParameters<typeof SqliteDialect>[0]['database'] =
     wrapped;
 
-  return new Kysely<T>({
-    dialect: new SqliteDialect({ database }),
-  });
+  return new SqliteDialect({ database });
 }
 
 interface ServerDb extends SyncCoreDb {
@@ -87,7 +86,10 @@ interface ServerDb extends SyncCoreDb {
 
 async function main() {
   const dialect = createSqliteServerDialect();
-  const db = createNodeSqliteDb<ServerDb>(':memory:');
+  const db = createDatabase<ServerDb>({
+    dialect: createNodeSqliteDialect(':memory:'),
+    family: 'sqlite',
+  });
 
   await ensureSyncSchema(db, dialect);
   if (dialect.ensureConsoleSchema) {

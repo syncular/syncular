@@ -11,6 +11,7 @@ import {
   type SyncClientDb,
   SyncEngine,
 } from '@syncular/client';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { cleanup, render } from '@testing-library/react';
 import type { Kysely } from 'kysely';

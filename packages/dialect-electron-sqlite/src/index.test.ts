@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import type {
   DatabaseConnection,
   Dialect,
@@ -280,9 +281,12 @@ describe('electron sqlite dialect', () => {
       electronAPI: { app: bridge },
     };
 
-    db = createElectronSqliteDialectFromWindow<TestDb>({
-      bridgeKey: 'app',
-      window: windowLike,
+    db = createDatabase<TestDb>({
+      dialect: createElectronSqliteDialectFromWindow<TestDb>({
+        bridgeKey: 'app',
+        window: windowLike,
+      }),
+      family: 'sqlite',
     });
 
     const row = await db

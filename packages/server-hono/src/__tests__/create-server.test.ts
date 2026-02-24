@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   createServerHandler,

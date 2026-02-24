@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
+    "@syncular/core": "workspace:*",
     "kysely": "*"
   },
   "files": [
