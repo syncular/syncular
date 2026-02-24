@@ -11,7 +11,6 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
 import {
   createOutboxCommit,
   createOutboxMutations,
@@ -20,7 +19,7 @@ import {
   ensureClientSyncSchema,
   type SyncClientDb,
 } from '@syncular/client';
-import { codecs } from '@syncular/core';
+import { codecs, createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import type { Kysely } from 'kysely';
 
@@ -40,7 +39,10 @@ describe('mutations API', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
 
     await ensureClientSyncSchema(db);
 

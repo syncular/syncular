@@ -1,7 +1,7 @@
 import { createExpoSqliteDialect } from '@syncular/dialect-expo-sqlite';
 import { openDatabaseSync } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
-import { Kysely, type ColumnType } from 'kysely';
+import { type ColumnType, Kysely } from 'kysely';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,

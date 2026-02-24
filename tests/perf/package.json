@@ -11,6 +11,7 @@
   "devDependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/config": "workspace:*",
+    "@syncular/core": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
     "@syncular/dialect-libsql": "workspace:*",
     "@syncular/dialect-pglite": "workspace:*",

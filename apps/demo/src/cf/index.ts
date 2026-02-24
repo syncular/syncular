@@ -215,7 +215,10 @@ class SyncDOBase extends SyncDurableObject<Env> {
     env: Env,
     upgradeWebSocket: UpgradeWebSocket<WebSocket>
   ) {
-    const db = createDatabase<ServerDb>({ dialect: createD1Dialect(env.DB), family: 'sqlite' });
+    const db = createDatabase<ServerDb>({
+      dialect: createD1Dialect(env.DB),
+      family: 'sqlite',
+    });
     const dialect = createSqliteServerDialect({ supportsTransactions: false });
 
     // Ensure runtime schema/migrations once per isolate and only when needed.

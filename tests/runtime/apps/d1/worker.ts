@@ -13,7 +13,11 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
-import { codecs, createColumnCodecsPlugin } from '@syncular/core';
+import {
+  codecs,
+  createColumnCodecsPlugin,
+  createDatabase,
+} from '@syncular/core';
 import { createD1Dialect } from '@syncular/dialect-d1';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { Kysely } from 'kysely';
@@ -52,7 +56,10 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 // --- Conformance ---
 
 async function runConformance(env: Env): Promise<void> {
-  const db = createDatabase<ConformanceDb>({ dialect: createD1Dialect(env.DB), family: 'sqlite' }).withPlugin(
+  const db = createDatabase<ConformanceDb>({
+    dialect: createD1Dialect(env.DB),
+    family: 'sqlite',
+  }).withPlugin(
     createColumnCodecsPlugin({
       dialect: 'sqlite',
       codecs: (col) => {
@@ -292,7 +299,10 @@ async function runConformance(env: Env): Promise<void> {
 // --- Sync scenarios ---
 
 async function createSyncClient(env: Env, serverUrl: string, actorId: string) {
-  const db = createDatabase<RuntimeClientDb>({ dialect: createD1Dialect(env.DB), family: 'sqlite' });
+  const db = createDatabase<RuntimeClientDb>({
+    dialect: createD1Dialect(env.DB),
+    family: 'sqlite',
+  });
   await ensureClientSyncSchema(db);
 
   await db.schema

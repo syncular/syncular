@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { Kysely, type Kysely as KyselyType } from 'kysely';
-import { createSqlite3Dialect, createSqlite3Dialect } from './index';
+import { createSqlite3Dialect } from './index';
 
 interface TestDb {
   tasks: {
@@ -13,7 +14,10 @@ describe('sqlite3 dialect RETURNING behavior', () => {
   let db: KyselyType<TestDb>;
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createSqlite3Dialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createSqlite3Dialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await db.schema
       .createTable('tasks')
       .addColumn('id', 'text', (col) => col.primaryKey())

@@ -25,7 +25,10 @@ describe('server utilities', () => {
   let dialect: ReturnType<typeof createSqliteServerDialect>;
 
   beforeEach(async () => {
-    db = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<SyncCoreDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     dialect = createSqliteServerDialect();
     await ensureSyncSchema(db, dialect);
   });
@@ -314,8 +317,14 @@ describe('server utilities', () => {
 
   describe('maintenance debounce isolation', () => {
     it('does not share prune debounce state across databases', async () => {
-      const db1 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
-      const db2 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+      const db1 = createDatabase<SyncCoreDb>({
+        dialect: createBunSqliteDialect({ path: ':memory:' }),
+        family: 'sqlite',
+      });
+      const db2 = createDatabase<SyncCoreDb>({
+        dialect: createBunSqliteDialect({ path: ':memory:' }),
+        family: 'sqlite',
+      });
       const localDialect = createSqliteServerDialect();
       await ensureSyncSchema(db1, localDialect);
       await ensureSyncSchema(db2, localDialect);
@@ -393,8 +402,14 @@ describe('server utilities', () => {
     });
 
     it('does not share compaction debounce state across databases', async () => {
-      const db1 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
-      const db2 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+      const db1 = createDatabase<SyncCoreDb>({
+        dialect: createBunSqliteDialect({ path: ':memory:' }),
+        family: 'sqlite',
+      });
+      const db2 = createDatabase<SyncCoreDb>({
+        dialect: createBunSqliteDialect({ path: ':memory:' }),
+        family: 'sqlite',
+      });
       const localDialect = createSqliteServerDialect();
       await ensureSyncSchema(db1, localDialect);
       await ensureSyncSchema(db2, localDialect);

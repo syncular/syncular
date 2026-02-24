@@ -17,7 +17,7 @@
  *   LOAD_DB_DIALECT=sqlite SEED_ROWS=100000 SEED_USERS=1000 bun tests/load/server.ts
  */
 
-import type { SyncOperation } from '@syncular/core';
+import { createDatabase, type SyncOperation } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
@@ -339,8 +339,14 @@ async function main() {
   console.log('Initializing database...');
   const db =
     dbDialect === 'pglite'
-      ? createDatabase<ServerDb>({ dialect: createPgliteDialect(), family: 'postgres' })
-      : createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: sqlitePath }), family: 'sqlite' });
+      ? createDatabase<ServerDb>({
+          dialect: createPgliteDialect(),
+          family: 'postgres',
+        })
+      : createDatabase<ServerDb>({
+          dialect: createBunSqliteDialect({ path: sqlitePath }),
+          family: 'sqlite',
+        });
   const dialect: ServerSyncDialect =
     dbDialect === 'pglite'
       ? createPostgresServerDialect()

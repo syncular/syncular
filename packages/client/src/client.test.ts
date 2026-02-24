@@ -151,7 +151,10 @@ describe('Client conflict events', () => {
   }
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureClientSyncSchema(db);
     await db.schema
       .createTable('tasks')
@@ -270,7 +273,10 @@ describe('Client blob upload queue recovery', () => {
   }
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureClientSyncSchema(db);
     await ensureClientBlobSchema(db);
     initiateCalls = 0;
@@ -373,7 +379,10 @@ describe('Client inspector snapshot', () => {
   let client: Client<TestDb>;
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureClientSyncSchema(db);
 
     const handlers: ClientHandlerCollection<TestDb> = [];

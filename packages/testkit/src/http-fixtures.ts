@@ -13,7 +13,7 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
-import type { SyncTransport } from '@syncular/core';
+import { createDatabase, type SyncTransport } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
@@ -98,8 +98,14 @@ export async function createHttpServerFixture<DB extends SyncCoreDb>(
 ): Promise<HttpServerFixture<DB>> {
   const db =
     options.serverDialect === 'pglite'
-      ? createDatabase<DB>({ dialect: createPgliteDialect(), family: 'postgres' })
-      : createDatabase<DB>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+      ? createDatabase<DB>({
+          dialect: createPgliteDialect(),
+          family: 'postgres',
+        })
+      : createDatabase<DB>({
+          dialect: createBunSqliteDialect({ path: ':memory:' }),
+          family: 'sqlite',
+        });
 
   const dialect =
     options.serverDialect === 'pglite'
@@ -165,8 +171,14 @@ export async function createHttpClientFixture<DB extends SyncClientDb>(
 ): Promise<HttpClientFixture<DB>> {
   const db =
     options.clientDialect === 'pglite'
-      ? createDatabase<DB>({ dialect: createPgliteDialect(), family: 'postgres' })
-      : createDatabase<DB>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+      ? createDatabase<DB>({
+          dialect: createPgliteDialect(),
+          family: 'postgres',
+        })
+      : createDatabase<DB>({
+          dialect: createBunSqliteDialect({ path: ':memory:' }),
+          family: 'sqlite',
+        });
 
   await ensureClientSyncSchema(db);
   await options.createTables(db);

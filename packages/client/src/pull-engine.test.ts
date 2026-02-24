@@ -40,7 +40,10 @@ describe('applyPullResponse chunk streaming', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureClientSyncSchema(db);
     await db.schema
       .createTable('items')

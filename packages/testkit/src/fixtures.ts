@@ -19,6 +19,7 @@ import {
   syncPushOnce,
 } from '@syncular/client';
 import {
+  createDatabase,
   isRecord,
   type SyncCombinedResponse,
   type SyncOperation,
@@ -161,14 +162,23 @@ function createTestSqliteDb<T>(
   options: { path?: string; url?: string } = {}
 ): Kysely<T> {
   if (dialect === 'bun-sqlite') {
-    return createDatabase<T>({ dialect: createBunSqliteDialect({ path: options.path ?? ':memory:' }), family: 'sqlite' });
+    return createDatabase<T>({
+      dialect: createBunSqliteDialect({ path: options.path ?? ':memory:' }),
+      family: 'sqlite',
+    });
   }
 
   if (dialect === 'sqlite3') {
-    return createDatabase<T>({ dialect: createSqlite3Dialect({ path: options.path ?? ':memory:' }), family: 'sqlite' });
+    return createDatabase<T>({
+      dialect: createSqlite3Dialect({ path: options.path ?? ':memory:' }),
+      family: 'sqlite',
+    });
   }
 
-  return createDatabase<T>({ dialect: createLibsqlDialect({ url: options.url ?? ':memory:' }), family: 'sqlite' });
+  return createDatabase<T>({
+    dialect: createLibsqlDialect({ url: options.url ?? ':memory:' }),
+    family: 'sqlite',
+  });
 }
 
 function parseTaskPayload(payload: SyncOperation['payload']): {
@@ -643,7 +653,10 @@ export async function createTestServer(
 ): Promise<TestServer> {
   if (serverDialect === 'pglite') {
     return setupTestServer(
-      createDatabase<TasksServerDb>({ dialect: createPgliteDialect(), family: 'postgres' }),
+      createDatabase<TasksServerDb>({
+        dialect: createPgliteDialect(),
+        family: 'postgres',
+      }),
       createPostgresServerDialect()
     );
   }
@@ -670,7 +683,10 @@ export async function createTestClient(
 ): Promise<TestClient> {
   const db =
     clientDialect === 'pglite'
-      ? createDatabase<TasksClientDb>({ dialect: createPgliteDialect(), family: 'postgres' })
+      ? createDatabase<TasksClientDb>({
+          dialect: createPgliteDialect(),
+          family: 'postgres',
+        })
       : createTestSqliteDb<TasksClientDb>(clientDialect);
 
   await ensureClientSyncSchema(db);

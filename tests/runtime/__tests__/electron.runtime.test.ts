@@ -11,6 +11,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createDatabase } from '@syncular/core';
 import {
   createElectronSqliteBridgeFromDialect,
   createElectronSqliteBridgeFromIpc,
@@ -105,14 +106,17 @@ describe('Electron runtime bridge (IPC + main-process dialect)', () => {
       },
     });
 
-    const db = createElectronSqliteDialect<RuntimeDb>(
-      createElectronSqliteBridgeFromIpc({
-        ipcRenderer,
-        openChannel: 'electron:test:open',
-        executeChannel: 'electron:test:execute',
-        closeChannel: 'electron:test:close',
-      })
-    );
+    const db = createDatabase<RuntimeDb>({
+      dialect: createElectronSqliteDialect(
+        createElectronSqliteBridgeFromIpc({
+          ipcRenderer,
+          openChannel: 'electron:test:open',
+          executeChannel: 'electron:test:execute',
+          closeChannel: 'electron:test:close',
+        })
+      ),
+      family: 'sqlite',
+    });
 
     try {
       await db.schema

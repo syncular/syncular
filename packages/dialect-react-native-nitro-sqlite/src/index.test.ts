@@ -101,7 +101,10 @@ describe('nitro sqlite dialect RETURNING behavior', () => {
 
   beforeEach(() => {
     fakeDb = new FakeNitroDatabase();
-    db = createDatabase<TestDb>({ dialect: createNitroSqliteDialect({ database: fakeDb }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createNitroSqliteDialect({ database: fakeDb }),
+      family: 'sqlite',
+    });
   });
 
   afterEach(async () => {

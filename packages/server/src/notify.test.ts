@@ -35,7 +35,10 @@ interface ClientDb {
 const dialect = createSqliteServerDialect();
 
 async function setupDb() {
-  const db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+  const db = createDatabase<TestDb>({
+    dialect: createBunSqliteDialect({ path: ':memory:' }),
+    family: 'sqlite',
+  });
   await ensureSyncSchema(db, dialect);
 
   await db.schema

@@ -31,7 +31,10 @@ describe('executeProxyQuery', () => {
   ]);
 
   beforeEach(async () => {
-    db = createDatabase<ProxyTestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<ProxyTestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureSyncSchema(db, dialect);
 
     await db.schema

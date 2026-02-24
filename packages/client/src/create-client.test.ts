@@ -16,7 +16,10 @@ interface TestDb extends SyncClientDb {
 }
 
 async function createTestDb(): Promise<Kysely<TestDb>> {
-  const db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+  const db = createDatabase<TestDb>({
+    dialect: createBunSqliteDialect({ path: ':memory:' }),
+    family: 'sqlite',
+  });
   await db.schema
     .createTable('tasks')
     .addColumn('id', 'text', (col) => col.primaryKey())

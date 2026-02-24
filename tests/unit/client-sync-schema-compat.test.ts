@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
 import { ensureClientSyncSchema, type SyncClientDb } from '@syncular/client';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
@@ -11,7 +11,10 @@ describe('ensureClientSyncSchema compatibility upgrades', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(() => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
   });
 
   it('upgrades legacy internal sync tables without app-level shims', async () => {

@@ -64,7 +64,10 @@ describe('expo sqlite dialect RETURNING behavior', () => {
 
   beforeEach(async () => {
     fakeDb = new FakeExpoDatabase();
-    db = createDatabase<TestDb>({ dialect: createExpoSqliteDialect({ database: fakeDb }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createExpoSqliteDialect({ database: fakeDb }),
+      family: 'sqlite',
+    });
     // Run a no-op query to trigger driver init (PRAGMA statements).
     // Then clear the tracking arrays so tests only see their own SQL.
     await db
@@ -173,7 +176,10 @@ describe('expo sqlite dialect concurrency (real SQLite)', () => {
 
   beforeEach(async () => {
     adapter = new BunSqliteAdapter();
-    db = createDatabase<ConcurrencyDb>({ dialect: createExpoSqliteDialect({ database: adapter }), family: 'sqlite' });
+    db = createDatabase<ConcurrencyDb>({
+      dialect: createExpoSqliteDialect({ database: adapter }),
+      family: 'sqlite',
+    });
     await sql`create table items (id integer primary key, value text)`.execute(
       db
     );

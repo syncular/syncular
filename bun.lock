@@ -154,13 +154,13 @@
       "devDependencies": {
         "@happy-dom/global-registrator": "^20.6.3",
         "@syncular/config": "workspace:*",
+        "@syncular/core": "workspace:*",
         "@syncular/dialect-bun-sqlite": "workspace:*",
         "@syncular/testkit": "workspace:*",
         "@testing-library/react": "^16.3.2",
         "@types/react": "^19.2.14",
         "happy-dom": "^20.6.3",
         "kysely": "*",
-        "kysely-bun-sqlite": "^0.4.0",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
       },
@@ -341,6 +341,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/core": "workspace:*",
         "kysely": "*",
       },
       "peerDependencies": {
@@ -358,11 +359,9 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "kysely": "*",
-        "syncular": "workspace:*",
       },
       "peerDependencies": {
         "kysely": "^0.28.0",
-        "syncular": "workspace:*",
       },
     },
     "packages/migrations": {
@@ -719,6 +718,7 @@
       "devDependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/config": "workspace:*",
+        "@syncular/core": "workspace:*",
         "@syncular/dialect-bun-sqlite": "workspace:*",
         "@syncular/dialect-libsql": "workspace:*",
         "@syncular/dialect-pglite": "workspace:*",

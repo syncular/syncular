@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
 import { gunzipSync } from 'node:zlib';
 import {
   codecs,
+  createDatabase,
   decodeSnapshotRows,
   type SyncPullRequest,
 } from '@syncular/core';
@@ -76,7 +76,10 @@ describe('createServerHandler', () => {
   const dialect = createSqliteServerDialect();
 
   beforeEach(async () => {
-    db = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<ServerDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureSyncSchema(db, dialect);
 
     await db.schema

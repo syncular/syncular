@@ -247,7 +247,10 @@ describe('electron sqlite dialect', () => {
       },
     };
 
-    db = createDatabase<TestDb>({ dialect: createElectronSqliteDialect(bridge), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createElectronSqliteDialect(bridge),
+      family: 'sqlite',
+    });
 
     const updated = await db
       .updateTable('tasks')

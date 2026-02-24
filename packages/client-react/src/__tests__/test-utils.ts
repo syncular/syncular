@@ -99,7 +99,9 @@ export async function createMockDb<
 >(): Promise<Kysely<DB>> {
   // Dynamic import to avoid bundling issues
   const { createDatabase } = await import('@syncular/core');
-  const { createBunSqliteDialect } = await import('@syncular/dialect-bun-sqlite');
+  const { createBunSqliteDialect } = await import(
+    '@syncular/dialect-bun-sqlite'
+  );
 
   const db = createDatabase<DB>({
     dialect: createBunSqliteDialect({ path: ':memory:' }),

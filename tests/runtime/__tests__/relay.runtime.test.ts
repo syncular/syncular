@@ -7,6 +7,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import type { Server as NodeServer } from 'node:http';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   createRelayRoutes,
@@ -81,7 +82,10 @@ describe('Relay runtime', () => {
 
   beforeAll(async () => {
     // ---- Main server ----
-    mainDb = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    mainDb = createDatabase<ServerDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureSyncSchema(mainDb, dialect);
     if (dialect.ensureConsoleSchema) {
       await dialect.ensureConsoleSchema(mainDb);
@@ -110,7 +114,10 @@ describe('Relay runtime', () => {
     mainBaseUrl = `http://localhost:${mainPort}`;
 
     // ---- Relay server ----
-    relayDb = createDatabase<RelayDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    relayDb = createDatabase<RelayDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureSyncSchema(relayDb, dialect);
     if (dialect.ensureConsoleSchema) {
       await dialect.ensureConsoleSchema(relayDb);

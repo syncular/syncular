@@ -20,7 +20,7 @@ import type {
 } from 'kysely';
 import {
   CompiledQuery,
-  Kysely,
+  type Kysely,
   SqliteAdapter,
   SqliteIntrospector,
   SqliteQueryCompiler,

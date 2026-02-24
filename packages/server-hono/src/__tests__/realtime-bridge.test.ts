@@ -15,7 +15,10 @@ import {
 
 describe('realtime broadcaster bridge', () => {
   it('notifies local WebSocket connections when another instance publishes a commit', async () => {
-    const db = createDatabase<SyncCoreDb>({ dialect: createPgliteDialect(), family: 'postgres' });
+    const db = createDatabase<SyncCoreDb>({
+      dialect: createPgliteDialect(),
+      family: 'postgres',
+    });
     const dialect = createPostgresServerDialect();
     await ensureSyncSchema(db, dialect);
 

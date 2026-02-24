@@ -31,7 +31,10 @@ describe('SyncEngine WS inline apply', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureClientSyncSchema(db);
 
     await db.schema
@@ -199,7 +202,10 @@ describe('SyncEngine WS inline apply', () => {
   });
 
   it('ensures sync schema on start without custom migrate callback', async () => {
-    const coldDb = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    const coldDb = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     try {
       await coldDb.schema
         .createTable('tasks')

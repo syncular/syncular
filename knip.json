@@ -11,8 +11,7 @@
   "typescript": true,
   "ignore": [
     "**/generated/**",
-    "types/**",
-    "tests/load/server.ts"
+    "types/**"
   ],
   "ignoreDependencies": [
     "happy-dom",

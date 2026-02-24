@@ -450,7 +450,10 @@ describe('console timeline route filters', () => {
       60 * 60 * 1000;
 
     dialect = createPostgresServerDialect();
-    db = createDatabase<TestDb>({ dialect: createPgliteDialect(), family: 'postgres' });
+    db = createDatabase<TestDb>({
+      dialect: createPgliteDialect(),
+      family: 'postgres',
+    });
     await ensureSyncSchema(db, dialect);
     await dialect.ensureConsoleSchema?.(db);
 

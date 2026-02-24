@@ -10,9 +10,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
 import { createHash } from 'node:crypto';
 import type { BlobStorageAdapter } from '@syncular/core';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { ensureSyncSchema, type SyncCoreDb } from '@syncular/server';
 import { createDbMetadataChunkStorage } from '@syncular/server/snapshot-chunks';
@@ -45,7 +45,10 @@ describe('DbMetadataSnapshotChunkStorage', () => {
   };
 
   beforeEach(async () => {
-    db = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<SyncCoreDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     dialect = createSqliteServerDialect();
     await ensureSyncSchema(db, dialect);
 

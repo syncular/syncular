@@ -33,7 +33,10 @@ describe('createSyncServer console configuration', () => {
   let previousConsoleToken: string | undefined;
 
   beforeEach(async () => {
-    db = createDatabase<ServerDb>({ dialect: createPgliteDialect(), family: 'postgres' });
+    db = createDatabase<ServerDb>({
+      dialect: createPgliteDialect(),
+      family: 'postgres',
+    });
     await ensureSyncSchema(db, createPostgresServerDialect());
     await db.schema
       .createTable('tasks')

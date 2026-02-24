@@ -106,7 +106,10 @@ describe('createSyncRoutes chunkStorage wiring', () => {
   const dialect = createSqliteServerDialect();
 
   beforeEach(async () => {
-    db = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<ServerDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureSyncSchema(db, dialect);
 
     await db.schema

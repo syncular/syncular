@@ -53,7 +53,10 @@ describe('createDbMetadataChunkStorage', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     await ensureSyncSchema(db, createSqliteServerDialect());
   });
 

@@ -50,7 +50,10 @@ describe('SyncProvider Reconfiguration', () => {
 
   beforeEach(async () => {
     server = await createTestServer();
-    db = createDatabase<ClientDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<ClientDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     mockHandlers = createMockClientHandlers();
 
     await ensureClientSyncSchema(db);
@@ -201,7 +204,10 @@ describe('SyncProvider React render tests', () => {
   };
 
   beforeEach(async () => {
-    db = createDatabase<ClientDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+    db = createDatabase<ClientDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
     mockHandlers = [];
     await ensureClientSyncSchema(db);
   });
