@@ -6,7 +6,7 @@ description: Database dialect configuration for the server
 There are two layers of dialect in Syncular:
 
 1. **Server dialect** — generates database-specific SQL for sync operations (`push`, `pull`, pruning, compaction)
-2. **Kysely database dialect** — creates the `Kysely<T>` instance that connects to the actual database
+2. **Kysely runtime dialect** — provides the Kysely `dialect` adapter for your runtime (sqlite/postgres)
 
 You need one of each. The server dialect must match the database engine (Postgres or SQLite).
 
@@ -28,29 +28,29 @@ import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 const dialect = createSqliteServerDialect();
 ```
 
-## Kysely Database Dialects
+## Kysely Runtime Dialects
 
-These packages create the `Kysely<T>` instance that you pass to `ensureSyncSchema` and `createSyncRoutes`. Choose one that matches your runtime and server dialect.
+These packages provide the `dialect` adapter. Use `createDatabase` from `@syncular/core` to construct `Kysely<T>` once, centrally.
 
 ### SQLite-compatible (use with `server-dialect-sqlite`)
 
 | Package | Runtime | Example |
 |---------|---------|---------|
-| `@syncular/dialect-better-sqlite3` | Node.js | `createBetterSqlite3Db({ path: './data.db' })` |
-| `@syncular/dialect-electron-sqlite` | Electron (Renderer) | `createElectronSqliteDbFromWindow({ bridgeKey: 'app' })` |
-| `@syncular/dialect-sqlite3` | Node.js | `createSqlite3Db({ path: './data.db' })` |
-| `@syncular/dialect-bun-sqlite` | Bun | `createBunSqliteDb({ path: './data.db' })` |
-| `@syncular/dialect-libsql` | Node.js / Edge | `createLibsqlDb({ url: 'libsql://...', authToken: '...' })` |
-| `@syncular/dialect-d1` | Cloudflare Workers | `createD1Db(env.DB)` |
-| `@syncular/dialect-wa-sqlite` | Browser | `createWaSqliteDb({ fileName: 'app.db' })` |
+| `@syncular/dialect-better-sqlite3` | Node.js | `createDatabase({ dialect: createBetterSqlite3Dialect({ path: './data.db' }), family: 'sqlite' })` |
+| `@syncular/dialect-electron-sqlite` | Electron (Renderer) | `createDatabase({ dialect: createElectronSqliteDialectFromWindow({ bridgeKey: 'app' }), family: 'sqlite' })` |
+| `@syncular/dialect-sqlite3` | Node.js | `createDatabase({ dialect: createSqlite3Dialect({ path: './data.db' }), family: 'sqlite' })` |
+| `@syncular/dialect-bun-sqlite` | Bun | `createDatabase({ dialect: createBunSqliteDialect({ path: './data.db' }), family: 'sqlite' })` |
+| `@syncular/dialect-libsql` | Node.js / Edge | `createDatabase({ dialect: createLibsqlDialect({ url: 'libsql://...', authToken: '...' }), family: 'sqlite' })` |
+| `@syncular/dialect-d1` | Cloudflare Workers | `createDatabase({ dialect: createD1Dialect(env.DB), family: 'sqlite' })` |
+| `@syncular/dialect-wa-sqlite` | Browser | `createDatabase({ dialect: createWaSqliteDialect({ fileName: 'app.db' }), family: 'sqlite' })` |
 
 ### Postgres-compatible (use with `server-dialect-postgres`)
 
 | Package | Runtime | Example |
 |---------|---------|---------|
 | `kysely` + `pg` | Node.js | `new Kysely({ dialect: new PostgresDialect({ pool }) })` |
-| `@syncular/dialect-neon` | Serverless / Edge | `createNeonDb({ connectionString: '...' })` |
-| `@syncular/dialect-pglite` | Browser | `createPgliteDbAsync({ dataDir: 'idb://app' })` |
+| `@syncular/dialect-neon` | Serverless / Edge | `createDatabase({ dialect: createNeonDialect({ connectionString: '...' }), family: 'postgres' })` |
+| `@syncular/dialect-pglite` | Browser | `createDatabase({ dialect: createPgliteDialect({ dataDir: 'idb://app' }), family: 'postgres' })` |
 
 ## Migrations
 

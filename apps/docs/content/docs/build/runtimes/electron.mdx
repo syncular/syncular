@@ -21,10 +21,14 @@ The IPC approach is usually the cleanest because it keeps direct DB access out o
 In the renderer:
 
 ```ts
-import { createElectronSqliteDbFromWindow } from '@syncular/dialect-electron-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createElectronSqliteDialectFromWindow } from '@syncular/dialect-electron-sqlite';
 
 // Uses window.electronAPI.sqlite by default (bridgeKey: "sqlite")
-const db = createElectronSqliteDbFromWindow();
+const db = createDatabase({
+  dialect: createElectronSqliteDialectFromWindow(),
+  family: 'sqlite',
+});
 ```
 
 You’ll also need to implement the preload/main bridge that actually executes SQL and stores the DB on disk. The exact bridge is app-specific, but the mental model stays simple: renderer calls Kysely, main executes queries.
@@ -33,4 +37,3 @@ You’ll also need to implement the preload/main bridge that actually executes S
 
 - [Client Setup](/docs/build/client-setup)
 - [Installation](/docs/introduction/installation) (package selection)
-

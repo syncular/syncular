@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { SyncChange, SyncTransport } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
-import { createBunSqliteDb } from '../../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import type { ClientHandlerCollection } from '../handlers/collection';
 import { ensureClientSyncSchema } from '../migrate';
 import type { SyncClientDb } from '../schema';
@@ -31,7 +31,7 @@ describe('SyncEngine WS inline apply', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureClientSyncSchema(db);
 
     await db.schema
@@ -199,7 +199,7 @@ describe('SyncEngine WS inline apply', () => {
   });
 
   it('ensures sync schema on start without custom migrate callback', async () => {
-    const coldDb = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    const coldDb = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     try {
       await coldDb.schema
         .createTable('tasks')

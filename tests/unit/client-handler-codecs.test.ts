@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { createClientHandler, type SyncClientDb } from '@syncular/client';
 import { codecs, type SyncChange, type SyncSnapshot } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 
 interface TasksTable {
   id: string;
@@ -17,7 +18,7 @@ interface ClientDb extends SyncClientDb {
 
 describe('createClientHandler column codecs', () => {
   it('applies codecs when writing snapshot and change rows', async () => {
-    const db = createBunSqliteDb<ClientDb>({ path: ':memory:' });
+    const db = createDatabase<ClientDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
 
     try {
       await db.schema

@@ -11,7 +11,7 @@ import {
   type SyncClientDb,
   SyncEngine,
 } from '@syncular/client';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { cleanup, render } from '@testing-library/react';
 import type { Kysely } from 'kysely';
 import { createElement } from 'react';
@@ -50,7 +50,7 @@ describe('SyncProvider Reconfiguration', () => {
 
   beforeEach(async () => {
     server = await createTestServer();
-    db = createBunSqliteDb<ClientDb>({ path: ':memory:' });
+    db = createDatabase<ClientDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     mockHandlers = createMockClientHandlers();
 
     await ensureClientSyncSchema(db);
@@ -201,7 +201,7 @@ describe('SyncProvider React render tests', () => {
   };
 
   beforeEach(async () => {
-    db = createBunSqliteDb<ClientDb>({ path: ':memory:' });
+    db = createDatabase<ClientDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     mockHandlers = [];
     await ensureClientSyncSchema(db);
   });

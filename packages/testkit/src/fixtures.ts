@@ -25,10 +25,10 @@ import {
   type SyncSubscriptionRequest,
   type SyncTransport,
 } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
-import { createLibsqlDb } from '@syncular/dialect-libsql';
-import { createPgliteDb } from '@syncular/dialect-pglite';
-import { createSqlite3Db } from '@syncular/dialect-sqlite3';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
+import { createLibsqlDialect } from '@syncular/dialect-libsql';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
+import { createSqlite3Dialect } from '@syncular/dialect-sqlite3';
 import {
   type ApplyOperationResult,
   createServerHandlerCollection,
@@ -161,14 +161,14 @@ function createTestSqliteDb<T>(
   options: { path?: string; url?: string } = {}
 ): Kysely<T> {
   if (dialect === 'bun-sqlite') {
-    return createBunSqliteDb<T>({ path: options.path ?? ':memory:' });
+    return createDatabase<T>({ dialect: createBunSqliteDialect({ path: options.path ?? ':memory:' }), family: 'sqlite' });
   }
 
   if (dialect === 'sqlite3') {
-    return createSqlite3Db<T>({ path: options.path ?? ':memory:' });
+    return createDatabase<T>({ dialect: createSqlite3Dialect({ path: options.path ?? ':memory:' }), family: 'sqlite' });
   }
 
-  return createLibsqlDb<T>({ url: options.url ?? ':memory:' });
+  return createDatabase<T>({ dialect: createLibsqlDialect({ url: options.url ?? ':memory:' }), family: 'sqlite' });
 }
 
 function parseTaskPayload(payload: SyncOperation['payload']): {
@@ -643,7 +643,7 @@ export async function createTestServer(
 ): Promise<TestServer> {
   if (serverDialect === 'pglite') {
     return setupTestServer(
-      createPgliteDb<TasksServerDb>(),
+      createDatabase<TasksServerDb>({ dialect: createPgliteDialect(), family: 'postgres' }),
       createPostgresServerDialect()
     );
   }
@@ -670,7 +670,7 @@ export async function createTestClient(
 ): Promise<TestClient> {
   const db =
     clientDialect === 'pglite'
-      ? createPgliteDb<TasksClientDb>()
+      ? createDatabase<TasksClientDb>({ dialect: createPgliteDialect(), family: 'postgres' })
       : createTestSqliteDb<TasksClientDb>(clientDialect);
 
   await ensureClientSyncSchema(db);

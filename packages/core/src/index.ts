@@ -16,6 +16,10 @@ export * from './blobs';
 export * from './column-codecs';
 // Conflict detection utilities
 export * from './conflict';
+// Database utilities
+export * from './database';
+// Database dialect descriptors
+export * from './dialect';
 // Kysely plugin for applying column codecs in generic queries
 export * from './kysely-column-codecs';
 // Logging utilities

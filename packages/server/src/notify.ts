@@ -24,7 +24,7 @@ function toDialectJsonValue(
   value: unknown
 ): unknown {
   if (value === null || value === undefined) return null;
-  if (dialect.name === 'sqlite') return JSON.stringify(value);
+  if (dialect.family === 'sqlite') return JSON.stringify(value);
   return value;
 }
 

@@ -5,7 +5,7 @@
  * database-specific sync dialect implementations.
  */
 
-import type { ScopeValues, StoredScopes } from '@syncular/core';
+import type { ScopeValues, SqlFamily, StoredScopes } from '@syncular/core';
 import type { Kysely, RawBuilder, Transaction } from 'kysely';
 import { sql } from 'kysely';
 import type { SyncChangeRow, SyncCommitRow, SyncCoreDb } from '../schema';
@@ -28,8 +28,10 @@ import type {
  * Genuinely different methods (DDL, transaction control, scope filtering,
  * compaction) remain abstract for each dialect to implement.
  */
-export abstract class BaseServerSyncDialect implements ServerSyncDialect {
-  abstract readonly name: string;
+export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
+  implements ServerSyncDialect<F>
+{
+  abstract readonly family: F;
   abstract readonly supportsForUpdate: boolean;
   abstract readonly supportsSavepoints: boolean;
 

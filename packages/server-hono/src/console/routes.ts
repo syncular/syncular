@@ -16,7 +16,7 @@
  */
 
 import { logSyncEvent } from '@syncular/core';
-import type { SyncCoreDb, SyncServerAuth } from '@syncular/server';
+import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   compactChanges,
   computePruneWatermarkCommitSeq,
@@ -394,7 +394,8 @@ const handlersResponseSchema = z.object({
 export function createConsoleRoutes<
   DB extends SyncCoreDb,
   Auth extends SyncServerAuth,
->(options: CreateConsoleRoutesOptions<DB, Auth>): Hono {
+  F extends SqlFamily = SqlFamily,
+>(options: CreateConsoleRoutesOptions<DB, Auth, F>): Hono {
   const routes = new Hono();
 
   routes.onError((error, context) => {
@@ -803,7 +804,7 @@ export function createConsoleRoutes<
           ? sql`and partition_id = ${partitionId}`
           : sql``;
 
-        if (options.dialect.name === 'sqlite') {
+        if (options.dialect.family === 'sqlite') {
           const bucketFormat = intervalToSqliteBucketFormat(interval);
           const rowsResult = await sql<{
             bucket: unknown;
@@ -947,7 +948,7 @@ export function createConsoleRoutes<
       const startIso = startTime.toISOString();
       const useRawMetrics = await shouldUseRawMetrics(startIso, partitionId);
 
-      if (!useRawMetrics && options.dialect.name !== 'sqlite') {
+      if (!useRawMetrics && options.dialect.family !== 'sqlite') {
         const partitionFilter = partitionId
           ? sql`and partition_id = ${partitionId}`
           : sql``;

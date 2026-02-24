@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { createClientHandler, type SyncClientDb } from '@syncular/client';
 import type { SyncSnapshot } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 
 interface CatalogItemsTable {
   id: string;
@@ -18,7 +19,7 @@ interface ClientDb extends SyncClientDb {
 
 describe('createClientHandler snapshot batching', () => {
   it('applies large snapshots without exceeding SQLite variable limits', async () => {
-    const db = createBunSqliteDb<ClientDb>({ path: ':memory:' });
+    const db = createDatabase<ClientDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
 
     try {
       await db.schema

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
@@ -35,7 +35,7 @@ interface ClientDb {
 const dialect = createSqliteServerDialect();
 
 async function setupDb() {
-  const db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+  const db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
   await ensureSyncSchema(db, dialect);
 
   await db.schema
@@ -59,7 +59,7 @@ async function setupDb() {
 }
 
 describe('notifyExternalDataChange', () => {
-  let db: ReturnType<typeof createBunSqliteDb<TestDb>>;
+  let db: ReturnType<typeof createBunSqliteDialect<TestDb>>;
 
   beforeEach(async () => {
     db = await setupDb();
@@ -197,7 +197,7 @@ describe('notifyExternalDataChange', () => {
 });
 
 describe('pull re-bootstrap after external data change', () => {
-  let db: ReturnType<typeof createBunSqliteDb<TestDb>>;
+  let db: ReturnType<typeof createBunSqliteDialect<TestDb>>;
 
   beforeEach(async () => {
     db = await setupDb();

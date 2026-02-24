@@ -19,10 +19,14 @@ Pick one of these:
 ## Minimal setup (wa-sqlite)
 
 ```ts
-import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createWaSqliteDialect } from '@syncular/dialect-wa-sqlite';
 import { ensureClientSyncSchema } from '@syncular/client';
 
-const db = createWaSqliteDb({ fileName: 'app.db' });
+const db = createDatabase({
+  dialect: createWaSqliteDialect({ fileName: 'app.db' }),
+  family: 'sqlite',
+});
 await ensureClientSyncSchema(db);
 ```
 

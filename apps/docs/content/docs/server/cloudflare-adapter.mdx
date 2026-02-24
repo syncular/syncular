@@ -31,7 +31,8 @@ Use `createSyncWorker` for stateless polling-only deployments. No WebSocket supp
 ```typescript
 // src/index.ts
 import { createSyncWorker } from '@syncular/server-cloudflare/worker';
-import { createD1Db } from '@syncular/dialect-d1';
+import { createDatabase } from '@syncular/core';
+import { createD1Dialect } from '@syncular/dialect-d1';
 import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server-dialect-sqlite';
 import { createSyncServer } from '@syncular/server-hono';
 import { tasksHandler } from './handlers/tasks';
@@ -39,7 +40,10 @@ import { tasksHandler } from './handlers/tasks';
 type Env = { DB: D1Database };
 
 export default createSyncWorker<Env>(async (app, env) => {
-  const db = createD1Db(env.DB);
+  const db = createDatabase({
+    dialect: createD1Dialect(env.DB),
+    family: 'sqlite',
+  });
   const dialect = createSqliteServerDialect();
   await ensureSyncSchema(db, dialect);
 
@@ -82,7 +86,8 @@ import {
   SyncDurableObject,
   createSyncWorkerWithDO,
 } from '@syncular/server-cloudflare/durable-object';
-import { createD1Db } from '@syncular/dialect-d1';
+import { createDatabase } from '@syncular/core';
+import { createD1Dialect } from '@syncular/dialect-d1';
 import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server-dialect-sqlite';
 import { createSyncServer } from '@syncular/server-hono';
 import { tasksHandler } from './handlers/tasks';
@@ -95,7 +100,10 @@ type Env = {
 // Durable Object class — holds WebSocket connections
 export class SyncDO extends SyncDurableObject<Env> {
   async setup(app, env, upgradeWebSocket) {
-    const db = createD1Db(env.DB);
+    const db = createDatabase({
+      dialect: createD1Dialect(env.DB),
+      family: 'sqlite',
+    });
     const dialect = createSqliteServerDialect();
     await ensureSyncSchema(db, dialect);
 
@@ -159,11 +167,15 @@ export default createSyncWorkerWithDO<Env>('SYNC_DO', {
 Replace D1 with Neon for Postgres:
 
 ```typescript
-import { createNeonDb } from '@syncular/dialect-neon';
+import { createDatabase } from '@syncular/core';
+import { createNeonDialect } from '@syncular/dialect-neon';
 import { createPostgresServerDialect, ensureSyncSchema } from '@syncular/server-dialect-postgres';
 
 export default createSyncWorker<Env>(async (app, env) => {
-  const db = createNeonDb(env.DATABASE_URL);
+  const db = createDatabase({
+    dialect: createNeonDialect({ connectionString: env.DATABASE_URL }),
+    family: 'postgres',
+  });
   const dialect = createPostgresServerDialect();
   await ensureSyncSchema(db, dialect);
 
@@ -186,6 +198,8 @@ DATABASE_URL = "postgres://..."
 For blob storage (images, files, etc.), use the R2 adapter with native R2Bucket binding. No AWS SDK required.
 
 ```typescript
+import { createDatabase } from '@syncular/core';
+import { createD1Dialect } from '@syncular/dialect-d1';
 import { createR2BlobStorageAdapter, createHmacTokenSigner } from '@syncular/server-cloudflare/r2';
 
 type Env = {
@@ -195,7 +209,10 @@ type Env = {
 };
 
 export default createSyncWorker<Env>(async (app, env) => {
-  const db = createD1Db(env.DB);
+  const db = createDatabase({
+    dialect: createD1Dialect(env.DB),
+    family: 'sqlite',
+  });
   const dialect = createSqliteServerDialect();
   await ensureSyncSchema(db, dialect);
 

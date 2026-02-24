@@ -1,6 +1,7 @@
 import type {
   ServerSyncDialect,
   ServerTableHandler,
+  SqlFamily,
   SyncCoreDb,
   SyncServerAuth,
 } from '@syncular/server';
@@ -94,9 +95,10 @@ export interface ConsoleSharedOptions {
 export interface CreateConsoleRoutesOptions<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncServerAuth = SyncServerAuth,
+  F extends SqlFamily = SqlFamily,
 > extends ConsoleSharedOptions {
   db: Kysely<DB>;
-  dialect: ServerSyncDialect;
+  dialect: ServerSyncDialect<F>;
   handlers: ServerTableHandler<DB, Auth>[];
   /**
    * Authentication function for console requests.

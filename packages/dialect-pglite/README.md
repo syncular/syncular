@@ -11,9 +11,13 @@ npm install @syncular/dialect-pglite
 ## Usage
 
 ```ts
-import { createPgliteDbAsync } from '@syncular/dialect-pglite';
+import { createDatabase } from '@syncular/core';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
 
-const db = await createPgliteDbAsync<MyDb>({ dataDir: 'idb://app' });
+const db = createDatabase<MyDb>({
+  dialect: createPgliteDialect({ dataDir: 'idb://app' }),
+  family: 'postgres',
+});
 ```
 
 ## Documentation

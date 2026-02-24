@@ -36,8 +36,8 @@ function createSavepointName(): string {
   return `syncular_sp_${Date.now().toString(36)}_${randomPart}`;
 }
 
-export class PostgresServerSyncDialect extends BaseServerSyncDialect {
-  readonly name = 'postgres' as const;
+export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'> {
+  readonly family = 'postgres' as const;
   readonly supportsForUpdate = true;
   readonly supportsSavepoints = true;
 

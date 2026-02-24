@@ -35,8 +35,13 @@ This guide shows the recommended setup for React + `@syncular/client-react`. For
 ```typescript
 import type { DB } from './db-types';
 
-import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
-const db = createWaSqliteDb<DB>({ fileName: 'app.sqlite' });
+import { createDatabase } from '@syncular/core';
+import { createWaSqliteDialect } from '@syncular/dialect-wa-sqlite';
+
+const db = createDatabase<DB>({
+  dialect: createWaSqliteDialect({ fileName: 'app.sqlite' }),
+  family: 'sqlite',
+});
 ```
 
 > Need a different runtime/dialect (Electron, Expo/RN, Bun/Node, Cloudflare, PGlite)? See [Runtimes](/docs/build/runtimes).
@@ -195,6 +200,8 @@ import {
   createAsyncInitRegistry,
   useCachedAsyncValue,
 } from '@syncular/client-react';
+import { createDatabase } from '@syncular/core';
+import { createWaSqliteDialect } from '@syncular/dialect-wa-sqlite';
 
 const dbInitRegistry = createAsyncInitRegistry<string, AppDb>();
 
@@ -202,7 +209,10 @@ function AppRoot() {
   const [db, dbError] = useCachedAsyncValue(
     () =>
       dbInitRegistry.run('primary-db', async () => {
-        const database = createWaSqliteDb<AppDb>({ fileName: 'app.sqlite' });
+        const database = createDatabase<AppDb>({
+          dialect: createWaSqliteDialect({ fileName: 'app.sqlite' }),
+          family: 'sqlite',
+        });
         await ensureClientSyncSchema(database);
         return database;
       }),

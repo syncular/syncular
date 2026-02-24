@@ -1,6 +1,7 @@
-import { createWaSqliteMainThreadDb } from '@syncular/dialect-wa-sqlite';
+import { createWaSqliteMainThreadDialect } from '@syncular/dialect-wa-sqlite';
 import { runMigrations } from '@syncular/migrations';
 import {
+  createDatabase,
   createDatabaseBlobStorageAdapter,
   createHmacTokenSigner,
   ensureBlobStorageSchemaSqlite,
@@ -46,12 +47,15 @@ async function createServiceWorkerDb(): Promise<{
   dialect: ReturnType<typeof createSqliteServerDialect>;
 }> {
   const origin = getWorkerOrigin();
-  const db = createWaSqliteMainThreadDb<ServerDb>({
-    fileName: DB_FILE,
-    // ServiceWorker scope cannot rely on nested Worker support.
-    // Keep SQLite persistence via IndexedDB-backed wa-sqlite.
-    useOPFS: false,
-    url: `${origin}/__demo/wasqlite/wa-sqlite-async.wasm`,
+  const db = createDatabase<ServerDb>({
+    dialect: createWaSqliteMainThreadDialect({
+      fileName: DB_FILE,
+      // ServiceWorker scope cannot rely on nested Worker support.
+      // Keep SQLite persistence via IndexedDB-backed wa-sqlite.
+      useOPFS: false,
+      url: `${origin}/__demo/wasqlite/wa-sqlite-async.wasm`,
+    }),
+    family: 'sqlite',
   });
 
   const dialect = createSqliteServerDialect();

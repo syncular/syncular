@@ -18,8 +18,8 @@
  */
 
 import type { SyncOperation } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
-import { createPgliteDb } from '@syncular/dialect-pglite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   type ApplyOperationResult,
   type EmittedChange,
@@ -339,8 +339,8 @@ async function main() {
   console.log('Initializing database...');
   const db =
     dbDialect === 'pglite'
-      ? createPgliteDb<ServerDb>()
-      : createBunSqliteDb<ServerDb>({ path: sqlitePath });
+      ? createDatabase<ServerDb>({ dialect: createPgliteDialect(), family: 'postgres' })
+      : createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: sqlitePath }), family: 'sqlite' });
   const dialect: ServerSyncDialect =
     dbDialect === 'pglite'
       ? createPostgresServerDialect()

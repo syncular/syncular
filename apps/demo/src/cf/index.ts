@@ -8,7 +8,7 @@
  * - Static Assets for the frontend SPA
  */
 
-import { createD1Db } from '@syncular/dialect-d1';
+import { createD1Dialect } from '@syncular/dialect-d1';
 import { runMigrations } from '@syncular/migrations';
 import {
   attachCloudflareSentryTraceHeaders,
@@ -215,7 +215,7 @@ class SyncDOBase extends SyncDurableObject<Env> {
     env: Env,
     upgradeWebSocket: UpgradeWebSocket<WebSocket>
   ) {
-    const db = createD1Db<ServerDb>(env.DB);
+    const db = createDatabase<ServerDb>({ dialect: createD1Dialect(env.DB), family: 'sqlite' });
     const dialect = createSqliteServerDialect({ supportsTransactions: false });
 
     // Ensure runtime schema/migrations once per isolate and only when needed.

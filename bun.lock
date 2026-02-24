@@ -358,9 +358,11 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "kysely": "*",
+        "syncular": "workspace:*",
       },
       "peerDependencies": {
         "kysely": "^0.28.0",
+        "syncular": "workspace:*",
       },
     },
     "packages/migrations": {

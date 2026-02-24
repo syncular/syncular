@@ -5,7 +5,12 @@
  * Supports the new JSONB scopes model.
  */
 
-import type { ScopeValues, StoredScopes, SyncOp } from '@syncular/core';
+import type {
+  ScopeValues,
+  SqlFamily,
+  StoredScopes,
+  SyncOp,
+} from '@syncular/core';
 import type { Kysely, Transaction } from 'kysely';
 import type { SyncChangeRow, SyncCommitRow, SyncCoreDb } from '../schema';
 
@@ -16,11 +21,6 @@ import type { SyncChangeRow, SyncCommitRow, SyncCoreDb } from '../schema';
 export type DbExecutor<DB extends SyncCoreDb = SyncCoreDb> =
   | Kysely<DB>
   | Transaction<DB>;
-
-/**
- * Supported dialect names.
- */
-export type ServerSyncDialectName = string;
 
 export interface IncrementalPullRowsArgs {
   table: string;
@@ -44,8 +44,11 @@ export interface IncrementalPullRow {
   scopes: StoredScopes;
 }
 
-export interface ServerSyncDialect {
-  readonly name: ServerSyncDialectName;
+export type ServerSqliteDialect = ServerSyncDialect<'sqlite'>;
+export type ServerPostgresDialect = ServerSyncDialect<'postgres'>;
+
+export interface ServerSyncDialect<F extends SqlFamily = SqlFamily> {
+  readonly family: F;
 
   /** Create sync tables + indexes (idempotent) */
   ensureSyncSchema<DB extends SyncCoreDb>(db: Kysely<DB>): Promise<void>;

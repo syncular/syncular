@@ -24,7 +24,7 @@ export async function ensureRelaySchema<
   await dialect.ensureSyncSchema(db);
 
   // Create relay-specific tables
-  const isSqlite = dialect.name === 'sqlite';
+  const isSqlite = dialect.family === 'sqlite';
 
   // Forward outbox table
   await sql

@@ -166,8 +166,8 @@ async function ensureConsoleEventColumns<DB extends SyncCoreDb>(
   }
 }
 
-export class SqliteServerSyncDialect extends BaseServerSyncDialect {
-  readonly name = 'sqlite' as const;
+export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
+  readonly family = 'sqlite' as const;
   readonly supportsForUpdate = false;
   readonly supportsSavepoints: boolean;
   private readonly _supportsTransactions: boolean;

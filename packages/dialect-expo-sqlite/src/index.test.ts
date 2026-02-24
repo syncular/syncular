@@ -7,7 +7,7 @@ import type {
   ExpoSqliteDatabaseLike,
   ExpoSqliteRunResult,
 } from './index';
-import { createExpoSqliteDb } from './index';
+import { createExpoSqliteDialect } from './index';
 
 interface TestDb {
   tasks: {
@@ -64,7 +64,7 @@ describe('expo sqlite dialect RETURNING behavior', () => {
 
   beforeEach(async () => {
     fakeDb = new FakeExpoDatabase();
-    db = createExpoSqliteDb<TestDb>({ database: fakeDb });
+    db = createDatabase<TestDb>({ dialect: createExpoSqliteDialect({ database: fakeDb }), family: 'sqlite' });
     // Run a no-op query to trigger driver init (PRAGMA statements).
     // Then clear the tracking arrays so tests only see their own SQL.
     await db
@@ -173,7 +173,7 @@ describe('expo sqlite dialect concurrency (real SQLite)', () => {
 
   beforeEach(async () => {
     adapter = new BunSqliteAdapter();
-    db = createExpoSqliteDb<ConcurrencyDb>({ database: adapter });
+    db = createDatabase<ConcurrencyDb>({ dialect: createExpoSqliteDialect({ database: adapter }), family: 'sqlite' });
     await sql`create table items (id integer primary key, value text)`.execute(
       db
     );

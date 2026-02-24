@@ -5,7 +5,7 @@
  */
 
 import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
-import { createD1Db } from '@syncular/dialect-d1';
+import { createD1Dialect } from '@syncular/dialect-d1';
 import {
   createBlobManager,
   ensureBlobStorageSchemaSqlite,
@@ -45,7 +45,7 @@ export class SyncDO extends SyncDurableObject<Env> {
     env: Env,
     upgradeWebSocket: UpgradeWebSocket<WebSocket>
   ) {
-    const db = createD1Db<ServerDb>(env.DB);
+    const db = createDatabase<ServerDb>({ dialect: createD1Dialect(env.DB), family: 'sqlite' });
     const dialect = createSqliteServerDialect({ supportsTransactions: false });
 
     await ensureSyncSchema(db, dialect);

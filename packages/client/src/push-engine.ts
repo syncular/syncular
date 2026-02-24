@@ -7,6 +7,7 @@ import type {
   SyncPushResponse,
   SyncTransport,
 } from '@syncular/core';
+import { countSyncMetric } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { upsertConflictsForRejectedCommit } from './conflicts';
 import {
@@ -85,6 +86,7 @@ export async function syncPushOnce<DB extends SyncClientDb>(
   }
 
   let res: SyncPushResponse;
+  let usedWsPush = false;
   try {
     // Try WS push first if the transport supports it
     let wsResponse: SyncPushResponse | null = null;
@@ -94,6 +96,7 @@ export async function syncPushOnce<DB extends SyncClientDb>(
 
     if (wsResponse) {
       res = wsResponse;
+      usedWsPush = true;
     } else {
       // Fall back to HTTP
       const combined = await transport.sync({
@@ -156,6 +159,18 @@ export async function syncPushOnce<DB extends SyncClientDb>(
   }
 
   const responseJson = JSON.stringify(responseToUse);
+  const detectedConflicts = responseToUse.results.reduce(
+    (count, result) => count + (result.status === 'conflict' ? 1 : 0),
+    0
+  );
+  if (detectedConflicts > 0 && !usedWsPush) {
+    countSyncMetric('sync.conflicts.detected', detectedConflicts, {
+      attributes: {
+        source: 'client',
+        transport: 'http',
+      },
+    });
+  }
 
   if (responseToUse.status === 'applied' || responseToUse.status === 'cached') {
     await markOutboxCommitAcked(db, {

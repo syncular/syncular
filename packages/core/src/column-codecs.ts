@@ -1,4 +1,6 @@
-export type ColumnCodecDialect = 'sqlite' | 'postgres';
+import type { SqlFamily } from './dialect';
+
+export type ColumnCodecDialect = SqlFamily;
 
 export interface ColumnCodecTypeImport {
   name: string;

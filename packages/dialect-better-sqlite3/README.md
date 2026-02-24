@@ -11,9 +11,13 @@ npm install @syncular/dialect-better-sqlite3
 ## Usage
 
 ```ts
-import { createBetterSqlite3Db } from '@syncular/dialect-better-sqlite3';
+import { createDatabase } from '@syncular/core';
+import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
 
-const db = createBetterSqlite3Db<MyDb>({ path: './app.sqlite' });
+const db = createDatabase<MyDb>({
+  dialect: createBetterSqlite3Dialect({ path: './app.sqlite' }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

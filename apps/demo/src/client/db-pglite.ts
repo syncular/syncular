@@ -4,7 +4,7 @@
  * Uses PGlite with IndexedDB persistence for browser Postgres.
  */
 
-import { createPgliteDbAsync } from '@syncular/dialect-pglite';
+import { createPgliteDialectWithLive } from '@syncular/dialect-pglite';
 import type { Kysely } from 'kysely';
 import type { ClientDb } from './types.generated';
 
@@ -158,7 +158,7 @@ export async function createPgliteClient(
   const { baseDataDir, activeDataDir } = getPgliteDataDirState(dataDir);
   const { fsBundle, wasmModule } = await loadPgliteAssets();
   try {
-    const db = await createPgliteDbAsync<ClientDb>({
+    const db = await createPgliteDialectWithLive<ClientDb>({
       dataDir: activeDataDir,
       fsBundle,
       wasmModule,

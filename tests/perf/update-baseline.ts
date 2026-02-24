@@ -14,10 +14,11 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
-import { createLibsqlDb } from '@syncular/dialect-libsql';
+import { createLibsqlDialect } from '@syncular/dialect-libsql';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
-import { createSqlite3Db } from '@syncular/dialect-sqlite3';
+import { createSqlite3Dialect } from '@syncular/dialect-sqlite3';
 import {
   createTestClient,
   createTestServer,
@@ -82,8 +83,11 @@ const PERF_DIALECTS: PerfDialect[] = [
     name: 'sqlite3',
     kind: 'sqlite',
     async createDb() {
-      return createSqlite3Db<DialectConformanceDb>({
-        path: ':memory:',
+      return createDatabase<DialectConformanceDb>({
+        dialect: createSqlite3Dialect({
+          path: ':memory:',
+        }),
+        family: 'sqlite',
       }).withPlugin(createConformanceColumnCodecsPlugin('sqlite'));
     },
   },
@@ -101,8 +105,11 @@ const PERF_DIALECTS: PerfDialect[] = [
     name: 'libsql',
     kind: 'sqlite',
     async createDb() {
-      return createLibsqlDb<DialectConformanceDb>({
-        url: ':memory:',
+      return createDatabase<DialectConformanceDb>({
+        dialect: createLibsqlDialect({
+          url: ':memory:',
+        }),
+        family: 'sqlite',
       }).withPlugin(createConformanceColumnCodecsPlugin('sqlite'));
     },
   },

@@ -14,13 +14,13 @@ import type {
   Dialect,
   DialectAdapter,
   Driver,
+  Kysely,
   QueryCompiler,
   QueryResult,
   TransactionSettings,
 } from 'kysely';
 import {
   CompiledQuery,
-  Kysely,
   SqliteAdapter,
   SqliteIntrospector,
   SqliteQueryCompiler,
@@ -53,27 +53,6 @@ interface NitroSqliteInstanceOptions {
 export type NitroSqliteOptions =
   | NitroSqliteNameOptions
   | NitroSqliteInstanceOptions;
-
-/**
- * Create a Kysely instance with React Native Nitro SQLite dialect.
- *
- * @example
- * import { open } from 'react-native-nitro-sqlite';
- *
- * const db = createNitroSqliteDb<MyDb>({
- *   name: 'myapp.db',
- *   open,
- * });
- *
- * // Or with an existing database instance:
- * const database = open({ name: 'myapp.db' });
- * const db = createNitroSqliteDb<MyDb>({ database });
- */
-export function createNitroSqliteDb<T>(options: NitroSqliteOptions): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createNitroSqliteDialect(options),
-  });
-}
 
 /**
  * Create the Nitro SQLite dialect directly.

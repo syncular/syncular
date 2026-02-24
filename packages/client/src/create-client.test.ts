@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createClient } from './create-client';
 import type { SyncClientDb } from './schema';
 
@@ -16,7 +16,7 @@ interface TestDb extends SyncClientDb {
 }
 
 async function createTestDb(): Promise<Kysely<TestDb>> {
-  const db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+  const db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
   await db.schema
     .createTable('tasks')
     .addColumn('id', 'text', (col) => col.primaryKey())

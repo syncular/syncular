@@ -11,9 +11,13 @@ npm install @syncular/dialect-bun-sqlite
 ## Usage
 
 ```ts
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 
-const db = createBunSqliteDb<MyDb>({ path: './app.sqlite' });
+const db = createDatabase<MyDb>({
+  dialect: createBunSqliteDialect({ path: './app.sqlite' }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

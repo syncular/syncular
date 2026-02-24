@@ -13,9 +13,13 @@ npm install @syncular/dialect-d1
 ## Usage
 
 ```ts
-import { createD1Db } from '@syncular/dialect-d1';
+import { createDatabase } from '@syncular/core';
+import { createD1Dialect } from '@syncular/dialect-d1';
 
-const db = createD1Db<MyDb>(env.DB);
+const db = createDatabase<MyDb>({
+  dialect: createD1Dialect(env.DB),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

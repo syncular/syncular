@@ -11,9 +11,13 @@ npm install @syncular/dialect-sqlite3
 ## Usage
 
 ```ts
-import { createSqlite3Db } from '@syncular/dialect-sqlite3';
+import { createDatabase } from '@syncular/core';
+import { createSqlite3Dialect } from '@syncular/dialect-sqlite3';
 
-const db = createSqlite3Db<MyDb>({ path: './app.sqlite' });
+const db = createDatabase<MyDb>({
+  dialect: createSqlite3Dialect({ path: './app.sqlite' }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

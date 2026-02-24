@@ -1,7 +1,7 @@
-import { createExpoSqliteDb } from '@syncular/dialect-expo-sqlite';
+import { createExpoSqliteDialect } from '@syncular/dialect-expo-sqlite';
 import { openDatabaseSync } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
-import type { ColumnType } from 'kysely';
+import { Kysely, type ColumnType } from 'kysely';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -31,9 +31,11 @@ export default function App() {
   const runDbSmoke = useCallback(async () => {
     setPhase('running');
     setDetails('');
-    const db = createExpoSqliteDb<Db>({
-      name: 'syncular-tests.db',
-      openDatabaseSync,
+    const db = new Kysely<Db>({
+      dialect: createExpoSqliteDialect({
+        name: 'syncular-tests.db',
+        openDatabaseSync,
+      }),
     });
 
     try {

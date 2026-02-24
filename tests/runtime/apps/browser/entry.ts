@@ -12,11 +12,8 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '../../../../packages/client/src/index';
-import {
-  codecs,
-  createColumnCodecsPlugin,
-} from '../../../../packages/core/src/index';
-import { createWaSqliteDb } from '../../../../packages/dialect-wa-sqlite/src/index';
+import { codecs, createDatabase } from '../../../../packages/core/src/index';
+import { createWaSqliteDialect } from '../../../../packages/dialect-wa-sqlite/src/index';
 import { createHttpTransport } from '../../../../packages/transport-http/src/index';
 import type {
   ConformanceDb,
@@ -28,38 +25,37 @@ import { assert, bytesToArray, jsonEqual } from '../../shared/test-helpers';
 // --- Helpers ---
 
 function createDb<T>(fileName: string) {
-  return createWaSqliteDb<T>({
-    fileName,
-    preferOPFS: false,
-    url: (useAsyncWasm) =>
-      `/wasqlite/${useAsyncWasm ? 'wa-sqlite-async.wasm' : 'wa-sqlite.wasm'}`,
-    worker: () =>
-      new Worker('/wasqlite/worker.js', {
-        type: 'module',
-        credentials: 'same-origin',
-      }),
-  }).withPlugin(
-    createColumnCodecsPlugin({
-      dialect: 'sqlite',
-      codecs: (col) => {
-        if (col.table !== 'dialect_conformance') return undefined;
-        if (col.column === 'b_bool' || col.column === 'nullable_bool') {
-          return codecs.numberBoolean();
-        }
-        if (
-          col.column === 'j_json' ||
-          col.column === 'j_large' ||
-          col.column === 'nullable_json'
-        ) {
-          return codecs.stringJson();
-        }
-        if (col.column === 'd_date' || col.column === 'nullable_date') {
-          return codecs.timestampDate();
-        }
-        return undefined;
-      },
-    })
-  );
+  return createDatabase<T>({
+    dialect: createWaSqliteDialect({
+      fileName,
+      preferOPFS: false,
+      url: (useAsyncWasm: boolean) =>
+        `/wasqlite/${useAsyncWasm ? 'wa-sqlite-async.wasm' : 'wa-sqlite.wasm'}`,
+      worker: () =>
+        new Worker('/wasqlite/worker.js', {
+          type: 'module',
+          credentials: 'same-origin',
+        }),
+    }),
+    family: 'sqlite',
+    codecs: (col) => {
+      if (col.table !== 'dialect_conformance') return undefined;
+      if (col.column === 'b_bool' || col.column === 'nullable_bool') {
+        return codecs.numberBoolean();
+      }
+      if (
+        col.column === 'j_json' ||
+        col.column === 'j_large' ||
+        col.column === 'nullable_json'
+      ) {
+        return codecs.stringJson();
+      }
+      if (col.column === 'd_date' || col.column === 'nullable_date') {
+        return codecs.timestampDate();
+      }
+      return undefined;
+    },
+  });
 }
 
 // --- Conformance scenario ---

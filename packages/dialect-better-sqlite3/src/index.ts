@@ -7,7 +7,7 @@
 
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import Database from 'better-sqlite3';
-import { Kysely, SqliteDialect } from 'kysely';
+import { SqliteDialect } from 'kysely';
 
 export interface BetterSqlite3PathOptions {
   /** Path to SQLite database file, or ':memory:' for in-memory */
@@ -22,25 +22,6 @@ export interface BetterSqlite3InstanceOptions {
 export type BetterSqlite3Options =
   | BetterSqlite3PathOptions
   | BetterSqlite3InstanceOptions;
-
-/**
- * Create a Kysely instance with better-sqlite3 dialect.
- *
- * @example
- * const db = createBetterSqlite3Db<MyDb>({ path: './data.db' });
- * const db = createBetterSqlite3Db<MyDb>({ path: ':memory:' });
- *
- * // Existing instance
- * import Database from 'better-sqlite3';
- * const db = createBetterSqlite3Db<MyDb>({ database: new Database(':memory:') });
- */
-export function createBetterSqlite3Db<T>(
-  options: BetterSqlite3Options
-): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createBetterSqlite3Dialect(options),
-  });
-}
 
 /**
  * Create the better-sqlite3 dialect directly.

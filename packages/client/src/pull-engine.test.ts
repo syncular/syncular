@@ -6,7 +6,7 @@ import {
   type SyncTransport,
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
-import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import type { ClientHandlerCollection } from './handlers/collection';
 import { createClientHandler } from './handlers/create-handler';
 import { ensureClientSyncSchema } from './migrate';
@@ -40,7 +40,7 @@ describe('applyPullResponse chunk streaming', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureClientSyncSchema(db);
     await db.schema
       .createTable('items')

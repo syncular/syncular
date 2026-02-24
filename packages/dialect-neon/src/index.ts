@@ -11,28 +11,11 @@
  */
 
 import { neon } from '@neondatabase/serverless';
-import { Kysely } from 'kysely';
 import { NeonDialect } from 'kysely-neon';
 
 export interface NeonOptions {
   /** Neon Postgres connection string */
   connectionString: string;
-}
-
-/**
- * Create a Kysely instance with Neon serverless Postgres dialect.
- *
- * @example
- * const db = createNeonDb<MyDb>({
- *   connectionString: process.env.DATABASE_URL!,
- * });
- * const dialect = createPostgresServerDialect();
- * await ensureSyncSchema(db, dialect);
- */
-export function createNeonDb<T>(options: NeonOptions): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createNeonDialect(options),
-  });
 }
 
 /**

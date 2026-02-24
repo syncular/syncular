@@ -129,41 +129,12 @@ const DEFAULT_ELECTRON_SQLITE_CHANNELS: ElectronSqliteIpcChannels = {
 const INTEGER_PATTERN = /^-?\d+$/;
 
 /**
- * Create a Kysely instance with Electron IPC SQLite dialect.
- *
- * @example
- * const db = createElectronSqliteDb<MyDb>({
- *   open: () => window.electronAPI.sqlite.open(),
- *   execute: (request) => window.electronAPI.sqlite.execute(request),
- *   close: () => window.electronAPI.sqlite.close(),
- * });
- */
-export function createElectronSqliteDb<T>(
-  options: ElectronSqliteOptions
-): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createElectronSqliteDialect(options),
-  });
-}
-
-/**
  * Create the Electron IPC SQLite dialect directly.
  */
 export function createElectronSqliteDialect(
   options: ElectronSqliteOptions
 ): ElectronSqliteDialect {
   return new ElectronSqliteDialect(options);
-}
-
-/**
- * Create a Kysely instance using `window.electronAPI[bridgeKey]`.
- *
- * `bridgeKey` defaults to `sqlite`.
- */
-export function createElectronSqliteDbFromWindow<T>(
-  options: ElectronSqliteWindowOptions = {}
-): Kysely<T> {
-  return createElectronSqliteDb<T>(resolveWindowBridge(options));
 }
 
 /**

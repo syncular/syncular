@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createPgliteDb } from '@syncular/dialect-pglite';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   createServerHandler,
   ensureSyncSchema,
@@ -33,7 +33,7 @@ describe('createSyncServer console configuration', () => {
   let previousConsoleToken: string | undefined;
 
   beforeEach(async () => {
-    db = createPgliteDb<ServerDb>();
+    db = createDatabase<ServerDb>({ dialect: createPgliteDialect(), family: 'postgres' });
     await ensureSyncSchema(db, createPostgresServerDialect());
     await db.schema
       .createTable('tasks')

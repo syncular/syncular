@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createPgliteDb } from '@syncular/dialect-pglite';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
 import { ensureSyncSchema, type SyncCoreDb } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { Hono } from 'hono';
@@ -450,7 +450,7 @@ describe('console timeline route filters', () => {
       60 * 60 * 1000;
 
     dialect = createPostgresServerDialect();
-    db = createPgliteDb<TestDb>();
+    db = createDatabase<TestDb>({ dialect: createPgliteDialect(), family: 'postgres' });
     await ensureSyncSchema(db, dialect);
     await dialect.ensureConsoleSchema?.(db);
 

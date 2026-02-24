@@ -10,6 +10,7 @@ import type {
   ServerSyncConfig,
   ServerSyncDialect,
   SnapshotChunkStorage,
+  SqlFamily,
   SyncCoreDb,
 } from '@syncular/server';
 import type { UpgradeWebSocket } from 'hono/ws';
@@ -33,12 +34,13 @@ import {
 export interface SyncServerOptions<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
+  F extends SqlFamily = SqlFamily,
 > {
   /** Kysely database instance */
   db: Kysely<DB>;
 
   /** Server sync dialect */
-  dialect: ServerSyncDialect;
+  dialect: ServerSyncDialect<F>;
 
   /** Sync contract with auth + table handlers */
   sync: ServerSyncConfig<DB, Auth>;
@@ -97,7 +99,8 @@ export interface SyncServerResult {
 export function createSyncServer<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
->(options: SyncServerOptions<DB, Auth>): SyncServerResult {
+  F extends SqlFamily = SqlFamily,
+>(options: SyncServerOptions<DB, Auth, F>): SyncServerResult {
   const {
     db,
     dialect,

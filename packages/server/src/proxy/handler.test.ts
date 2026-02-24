@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDb } from '../../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { ensureSyncSchema } from '../migrate';
 import type { SyncCoreDb } from '../schema';
@@ -31,7 +31,7 @@ describe('executeProxyQuery', () => {
   ]);
 
   beforeEach(async () => {
-    db = createBunSqliteDb<ProxyTestDb>({ path: ':memory:' });
+    db = createDatabase<ProxyTestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureSyncSchema(db, dialect);
 
     await db.schema

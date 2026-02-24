@@ -14,13 +14,13 @@ import type {
   Dialect,
   DialectAdapter,
   Driver,
+  Kysely,
   QueryCompiler,
   QueryResult,
   TransactionSettings,
 } from 'kysely';
 import {
   CompiledQuery,
-  Kysely,
   SqliteAdapter,
   SqliteIntrospector,
   SqliteQueryCompiler,
@@ -38,19 +38,6 @@ export interface Sqlite3InstanceOptions {
 }
 
 export type Sqlite3Options = Sqlite3PathOptions | Sqlite3InstanceOptions;
-
-/**
- * Create a Kysely instance with node-sqlite3 dialect.
- *
- * @example
- * const db = createSqlite3Db<MyDb>({ path: './data.db' });
- * const db = createSqlite3Db<MyDb>({ path: ':memory:' });
- */
-export function createSqlite3Db<T>(options: Sqlite3Options): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createSqlite3Dialect(options),
-  });
-}
 
 /**
  * Create the sqlite3 dialect directly.

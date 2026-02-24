@@ -9,7 +9,7 @@ import type {
   SQLiteValue,
   Transaction,
 } from 'react-native-nitro-sqlite';
-import { createNitroSqliteDb } from './index';
+import { createNitroSqliteDialect } from './index';
 
 interface TestDb {
   tasks: {
@@ -101,7 +101,7 @@ describe('nitro sqlite dialect RETURNING behavior', () => {
 
   beforeEach(() => {
     fakeDb = new FakeNitroDatabase();
-    db = createNitroSqliteDb<TestDb>({ database: fakeDb });
+    db = createDatabase<TestDb>({ dialect: createNitroSqliteDialect({ database: fakeDb }), family: 'sqlite' });
   });
 
   afterEach(async () => {

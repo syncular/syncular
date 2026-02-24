@@ -2,7 +2,7 @@
  * Electron runtime bridge test (simulated IPC).
  *
  * Proves renderer/main-process IPC flow using:
- * - renderer: createElectronSqliteDb + createElectronSqliteBridgeFromIpc
+ * - renderer: createElectronSqliteDialect + createElectronSqliteBridgeFromIpc
  * - main: registerElectronSqliteIpc + createElectronSqliteBridgeFromDialect
  * - backend dialect: sqlite3
  */
@@ -14,7 +14,7 @@ import path from 'node:path';
 import {
   createElectronSqliteBridgeFromDialect,
   createElectronSqliteBridgeFromIpc,
-  createElectronSqliteDb,
+  createElectronSqliteDialect,
   type ElectronIpcMainEventLike,
   type ElectronIpcMainLike,
   type ElectronIpcRendererLike,
@@ -105,7 +105,7 @@ describe('Electron runtime bridge (IPC + main-process dialect)', () => {
       },
     });
 
-    const db = createElectronSqliteDb<RuntimeDb>(
+    const db = createElectronSqliteDialect<RuntimeDb>(
       createElectronSqliteBridgeFromIpc({
         ipcRenderer,
         openChannel: 'electron:test:open',

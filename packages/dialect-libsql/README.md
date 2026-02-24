@@ -11,9 +11,13 @@ npm install @syncular/dialect-libsql
 ## Usage
 
 ```ts
-import { createLibsqlDb } from '@syncular/dialect-libsql';
+import { createDatabase } from '@syncular/core';
+import { createLibsqlDialect } from '@syncular/dialect-libsql';
 
-const db = createLibsqlDb<MyDb>({ url: './app.sqlite' });
+const db = createDatabase<MyDb>({
+  dialect: createLibsqlDialect({ url: './app.sqlite' }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

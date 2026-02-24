@@ -8,8 +8,9 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import type { SyncOperation } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   createServerHandlerCollection,
   ensureSyncSchema,
@@ -213,7 +214,7 @@ describe('schema migration (partition_id)', () => {
   const dialect = createSqliteServerDialect();
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
   });
 
   it('push succeeds after migrating old schema without partition_id', async () => {

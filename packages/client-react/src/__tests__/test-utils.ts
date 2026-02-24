@@ -98,14 +98,12 @@ export async function createMockDb<
   DB extends SyncClientDb = SyncClientDb,
 >(): Promise<Kysely<DB>> {
   // Dynamic import to avoid bundling issues
-  const { Kysely } = await import('kysely');
-  const { BunSqliteDialect } = await import('kysely-bun-sqlite');
-  const { Database } = await import('bun:sqlite');
+  const { createDatabase } = await import('@syncular/core');
+  const { createBunSqliteDialect } = await import('@syncular/dialect-bun-sqlite');
 
-  const db = new Kysely<DB>({
-    dialect: new BunSqliteDialect({
-      database: new Database(':memory:'),
-    }),
+  const db = createDatabase<DB>({
+    dialect: createBunSqliteDialect({ path: ':memory:' }),
+    family: 'sqlite',
   });
 
   // Create sync tables

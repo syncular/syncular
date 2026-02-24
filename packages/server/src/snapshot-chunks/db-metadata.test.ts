@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { BlobStorageAdapter } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
-import { createBunSqliteDb } from '../../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { ensureSyncSchema } from '../migrate';
 import type { SyncCoreDb } from '../schema';
@@ -53,7 +53,7 @@ describe('createDbMetadataChunkStorage', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureSyncSchema(db, createSqliteServerDialect());
   });
 

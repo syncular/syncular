@@ -5,7 +5,7 @@
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.
  */
 
-import { Kysely, SqliteDialect } from 'kysely';
+import { SqliteDialect } from 'kysely';
 import Database from 'libsql';
 
 type LibsqlNativeOptions = NonNullable<
@@ -28,26 +28,6 @@ export interface LibsqlOptions {
 
   /** Pass-through options to libsql-js. */
   nativeOptions?: LibsqlNativeOptions;
-}
-
-/**
- * Create a Kysely instance with LibSQL dialect.
- *
- * @example
- * // Turso cloud
- * const db = createLibsqlDb<MyDb>({
- *   url: 'libsql://my-db-org.turso.io',
- *   authToken: 'your-token',
- * });
- *
- * // Local file / memory
- * const db = createLibsqlDb<MyDb>({ url: ':memory:' });
- * const db = createLibsqlDb<MyDb>({ url: './data.db' });
- */
-export function createLibsqlDb<T>(options: LibsqlOptions): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createLibsqlDialect(options),
-  });
 }
 
 /**

@@ -16,13 +16,13 @@ import type {
   Dialect,
   DialectAdapter,
   Driver,
+  Kysely,
   QueryCompiler,
   QueryResult,
   TransactionSettings,
 } from 'kysely';
 import {
   CompiledQuery,
-  Kysely,
   SqliteAdapter,
   SqliteIntrospector,
   SqliteQueryCompiler,
@@ -66,27 +66,6 @@ interface ExpoSqliteInstanceOptions {
 export type ExpoSqliteOptions =
   | ExpoSqliteNameOptions
   | ExpoSqliteInstanceOptions;
-
-/**
- * Create a Kysely instance with Expo SQLite dialect.
- *
- * @example
- * import { openDatabaseSync } from 'expo-sqlite';
- *
- * const db = createExpoSqliteDb<MyDb>({
- *   name: 'myapp.db',
- *   openDatabaseSync,
- * });
- *
- * // Or with an existing database instance:
- * const database = openDatabaseSync('myapp.db');
- * const db = createExpoSqliteDb<MyDb>({ database });
- */
-export function createExpoSqliteDb<T>(options: ExpoSqliteOptions): Kysely<T> {
-  return new Kysely<T>({
-    dialect: createExpoSqliteDialect(options),
-  });
-}
 
 /**
  * Create the Expo SQLite dialect directly.

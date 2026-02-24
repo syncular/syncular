@@ -12,9 +12,13 @@ npm install @syncular/dialect-expo-sqlite
 
 ```ts
 import { openDatabaseSync } from 'expo-sqlite';
-import { createExpoSqliteDb } from '@syncular/dialect-expo-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createExpoSqliteDialect } from '@syncular/dialect-expo-sqlite';
 
-const db = createExpoSqliteDb<MyDb>({ name: 'app.db', openDatabaseSync });
+const db = createDatabase<MyDb>({
+  dialect: createExpoSqliteDialect({ name: 'app.db', openDatabaseSync }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

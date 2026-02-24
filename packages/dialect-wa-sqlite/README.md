@@ -1,6 +1,6 @@
 # @syncular/dialect-wa-sqlite
 
-wa-sqlite (WASM) Kysely dialect for browser SQLite, with helpers for creating a `Kysely` instance.
+wa-sqlite (WASM) Kysely dialect for browser SQLite.
 
 ## Install
 
@@ -11,9 +11,13 @@ npm install @syncular/dialect-wa-sqlite
 ## Usage
 
 ```ts
-import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createWaSqliteDialect } from '@syncular/dialect-wa-sqlite';
 
-const db = createWaSqliteDb<MyDb>({ fileName: 'app.sqlite' });
+const db = createDatabase<MyDb>({
+  dialect: createWaSqliteDialect({ fileName: 'app.sqlite' }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

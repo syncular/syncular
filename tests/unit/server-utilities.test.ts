@@ -7,7 +7,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   compactChanges,
   ensureSyncSchema,
@@ -24,7 +25,7 @@ describe('server utilities', () => {
   let dialect: ReturnType<typeof createSqliteServerDialect>;
 
   beforeEach(async () => {
-    db = createBunSqliteDb<SyncCoreDb>({ path: ':memory:' });
+    db = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     dialect = createSqliteServerDialect();
     await ensureSyncSchema(db, dialect);
   });
@@ -313,8 +314,8 @@ describe('server utilities', () => {
 
   describe('maintenance debounce isolation', () => {
     it('does not share prune debounce state across databases', async () => {
-      const db1 = createBunSqliteDb<SyncCoreDb>({ path: ':memory:' });
-      const db2 = createBunSqliteDb<SyncCoreDb>({ path: ':memory:' });
+      const db1 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+      const db2 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
       const localDialect = createSqliteServerDialect();
       await ensureSyncSchema(db1, localDialect);
       await ensureSyncSchema(db2, localDialect);
@@ -392,8 +393,8 @@ describe('server utilities', () => {
     });
 
     it('does not share compaction debounce state across databases', async () => {
-      const db1 = createBunSqliteDb<SyncCoreDb>({ path: ':memory:' });
-      const db2 = createBunSqliteDb<SyncCoreDb>({ path: ':memory:' });
+      const db1 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
+      const db2 = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
       const localDialect = createSqliteServerDialect();
       await ensureSyncSchema(db1, localDialect);
       await ensureSyncSchema(db2, localDialect);

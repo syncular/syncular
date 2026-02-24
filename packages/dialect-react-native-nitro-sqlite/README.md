@@ -12,9 +12,13 @@ npm install @syncular/dialect-react-native-nitro-sqlite
 
 ```ts
 import { open } from 'react-native-nitro-sqlite';
-import { createNitroSqliteDb } from '@syncular/dialect-react-native-nitro-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createNitroSqliteDialect } from '@syncular/dialect-react-native-nitro-sqlite';
 
-const db = createNitroSqliteDb<MyDb>({ name: 'app.db', open });
+const db = createDatabase<MyDb>({
+  dialect: createNitroSqliteDialect({ name: 'app.db', open }),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

@@ -5,28 +5,11 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { Kysely } from 'kysely';
 import { BunSqliteDialect } from 'kysely-bun-sqlite';
 
 export interface BunSqliteOptions {
   /** Path to SQLite database file, or ':memory:' for in-memory */
   path: string;
-}
-
-/**
- * Create a Kysely instance with Bun SQLite dialect.
- *
- * @example
- * const db = createBunSqliteDb<MyDb>({ path: ':memory:' });
- * // or
- * const db = createBunSqliteDb<MyDb>({ path: './data.db' });
- */
-export function createBunSqliteDb<T>(options: BunSqliteOptions): Kysely<T> {
-  const database = new Database(options.path);
-
-  return new Kysely<T>({
-    dialect: new BunSqliteDialect({ database }),
-  });
 }
 
 /**

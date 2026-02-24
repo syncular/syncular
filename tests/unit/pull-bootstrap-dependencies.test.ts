@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { decodeSnapshotRows, type SyncPullRequest } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   createServerHandler,
   createServerHandlerCollection,
@@ -64,7 +65,7 @@ function expectUint8ArrayBody(
 
 describe('pull bootstrap behavior', () => {
   it('bootstraps dependency tables before the requested table', async () => {
-    const db = createBunSqliteDb<ServerDb>({ path: ':memory:' });
+    const db = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     const dialect = createSqliteServerDialect();
     try {
       await ensureSyncSchema(db, dialect);
@@ -196,7 +197,7 @@ describe('pull bootstrap behavior', () => {
   });
 
   it('does not mutate caller-provided scope arrays while generating snapshot cache keys', async () => {
-    const db = createBunSqliteDb<ServerDb>({ path: ':memory:' });
+    const db = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     const dialect = createSqliteServerDialect();
     try {
       await ensureSyncSchema(db, dialect);
@@ -264,7 +265,7 @@ describe('pull bootstrap behavior', () => {
   });
 
   it('stores bundled bootstrap pages as a single gzip stream', async () => {
-    const db = createBunSqliteDb<ServerDb>({ path: ':memory:' });
+    const db = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     const dialect = createSqliteServerDialect();
     try {
       await ensureSyncSchema(db, dialect);

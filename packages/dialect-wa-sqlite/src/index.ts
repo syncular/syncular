@@ -5,7 +5,6 @@
  * Uses kysely-wasqlite-worker for running SQL in a web worker with OPFS or IndexedDB storage.
  */
 
-import { Kysely } from 'kysely';
 import { GenericSqliteDialect } from 'kysely-generic-sqlite';
 import {
   createSqliteExecutor,
@@ -40,29 +39,9 @@ function toDialectConfig(
 }
 
 /**
- * Create a Kysely instance with wa-sqlite dialect.
- *
- * @example
- * // In-memory database
- * const db = createWaSqliteDb<MyDb>();
- *
- * // OPFS-persisted database
- * const db = createWaSqliteDb<MyDb>({
- *   fileName: 'mydb.sqlite',
- * });
- */
-export function createWaSqliteDb<T>(options?: WaSqliteOptions): Kysely<T> {
-  return new Kysely<T>({
-    dialect: new WaSqliteWorkerDialect(toDialectConfig(options)),
-  });
-}
-
-/**
  * Create the wa-sqlite dialect directly.
  */
-export function createWaSqliteDialect(
-  options?: WaSqliteOptions
-): WaSqliteWorkerDialect {
+export function createWaSqliteDialect(options?: WaSqliteOptions) {
   return new WaSqliteWorkerDialect(toDialectConfig(options));
 }
 
@@ -75,28 +54,11 @@ function toMainThreadInitData(options?: WaSqliteMainThreadOptions): InitData {
 }
 
 /**
- * Create a Kysely instance with wa-sqlite running in the current thread.
- *
- * Useful when nested Worker support is unavailable (for example, in
- * ServiceWorker runtimes).
- */
-export function createWaSqliteMainThreadDb<T>(
-  options?: WaSqliteMainThreadOptions
-): Kysely<T> {
-  const initData = toMainThreadInitData(options);
-  return new Kysely<T>({
-    dialect: new GenericSqliteDialect(async () =>
-      createSqliteExecutor(await defaultCreateDatabaseFn(initData))
-    ),
-  });
-}
-
-/**
  * Create the wa-sqlite main-thread dialect directly.
  */
 export function createWaSqliteMainThreadDialect(
   options?: WaSqliteMainThreadOptions
-): GenericSqliteDialect {
+) {
   const initData = toMainThreadInitData(options);
   return new GenericSqliteDialect(async () =>
     createSqliteExecutor(await defaultCreateDatabaseFn(initData))

@@ -5,7 +5,7 @@
  */
 
 import type { BlobStorageAdapter } from '@syncular/core';
-import { createPgliteDb } from '@syncular/dialect-pglite';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
 import type {
   ServerSyncDialect,
   ServerTableHandler,
@@ -23,7 +23,7 @@ import { createSyncRoutes, type SyncAuthResult } from '../src/routes';
 // Create a minimal app with routes for spec generation
 const app = new Hono();
 
-const db = createPgliteDb<SyncCoreDb>();
+const db = createDatabase<SyncCoreDb>({ dialect: createPgliteDialect(), family: 'postgres' });
 const dialect: ServerSyncDialect = createPostgresServerDialect();
 await ensureSyncSchema(db, dialect);
 const handlers: ServerTableHandler<SyncCoreDb>[] = [];
@@ -63,7 +63,7 @@ const blobAdapter: BlobStorageAdapter = {
   async delete() {},
 };
 
-const blobDb = createPgliteDb<SyncBlobUploadsDb>();
+const blobDb = createDatabase<SyncBlobUploadsDb>({ dialect: createPgliteDialect(), family: 'postgres' });
 const blobManager = createBlobManager({ db: blobDb, adapter: blobAdapter });
 
 const blobRoutes = createBlobRoutes({

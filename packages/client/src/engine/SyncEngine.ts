@@ -1858,6 +1858,13 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
 
     const delay = calculateRetryDelay(this.state.retryCount);
+    if (this.state.pendingCount > 0) {
+      countSyncMetric('sync.outbox.retry_count', 1, {
+        attributes: {
+          retryCount: this.state.retryCount,
+        },
+      });
+    }
     this.updateState({ isRetrying: true });
 
     this.retryTimeoutId = setTimeout(() => {
@@ -1981,6 +1988,13 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
           case 'connected': {
             const wasConnectedBefore = this.hasRealtimeConnectedOnce;
             this.hasRealtimeConnectedOnce = true;
+            if (wasConnectedBefore) {
+              countSyncMetric('sync.transport.reconnects', 1, {
+                attributes: {
+                  source: 'client',
+                },
+              });
+            }
             this.setConnectionState('connected');
             this.updateTransportHealth({
               mode: 'realtime',

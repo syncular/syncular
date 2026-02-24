@@ -18,7 +18,7 @@ import {
 } from '@syncular/server';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDb } from '../../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { createSyncRoutes } from '../routes';
 
@@ -106,7 +106,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
   const dialect = createSqliteServerDialect();
 
   beforeEach(async () => {
-    db = createBunSqliteDb<ServerDb>({ path: ':memory:' });
+    db = createDatabase<ServerDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureSyncSchema(db, dialect);
 
     await db.schema

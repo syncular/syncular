@@ -9,7 +9,9 @@
 
 import {
   captureSyncException,
+  countSyncMetric,
   createSyncTimer,
+  distributionSyncMetric,
   ErrorResponseSchema,
   logSyncEvent,
   SyncCombinedRequestSchema,
@@ -20,6 +22,7 @@ import type {
   ServerSyncDialect,
   ServerTableHandler,
   SnapshotChunkStorage,
+  SqlFamily,
   SyncCoreDb,
   SyncRealtimeBroadcaster,
   SyncRealtimeEvent,
@@ -163,9 +166,10 @@ export interface SyncRoutesConfigWithRateLimit {
 export interface CreateSyncRoutesOptions<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
+  F extends SqlFamily = SqlFamily,
 > {
   db: Kysely<DB>;
-  dialect: ServerSyncDialect;
+  dialect: ServerSyncDialect<F>;
   handlers: ServerTableHandler<DB, Auth>[];
   authenticate: (c: Context) => Promise<Auth | null>;
   sync?: SyncRoutesConfigWithRateLimit;
@@ -434,7 +438,8 @@ function emitConsoleLiveEvent(
 export function createSyncRoutes<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
->(options: CreateSyncRoutesOptions<DB, Auth>): Hono {
+  F extends SqlFamily = SqlFamily,
+>(options: CreateSyncRoutesOptions<DB, Auth, F>): Hono {
   const routes = new Hono();
   routes.onError((error, c) => {
     captureSyncException(error, {
@@ -1315,6 +1320,32 @@ export function createSyncRoutes<
 
       let unregister: (() => void) | null = null;
       let connRef: ReturnType<typeof createWebSocketConnection> | null = null;
+      const connectionCountBeforeUpgrade =
+        wsConnectionManager.getConnectionCount(clientId);
+      let sessionStartedAtMs: number | null = null;
+      let sessionEnded = false;
+
+      const finishRealtimeSession = (reason: 'closed' | 'error') => {
+        if (sessionEnded) return;
+        sessionEnded = true;
+        if (sessionStartedAtMs === null) {
+          return;
+        }
+        const durationMs = Math.max(0, Date.now() - sessionStartedAtMs);
+        countSyncMetric('sync.sessions.ended', 1, {
+          attributes: {
+            transportPath: realtimeTransportPath,
+            reason,
+          },
+        });
+        distributionSyncMetric('sync.sessions.duration_ms', durationMs, {
+          unit: 'millisecond',
+          attributes: {
+            transportPath: realtimeTransportPath,
+            reason,
+          },
+        });
+      };
 
       const upgradeWebSocket = websocketConfig.upgradeWebSocket;
       if (!upgradeWebSocket) {
@@ -1329,6 +1360,20 @@ export function createSyncRoutes<
             transportPath: realtimeTransportPath,
           });
           connRef = conn;
+          sessionStartedAtMs = Date.now();
+          countSyncMetric('sync.sessions.started', 1, {
+            attributes: {
+              transportPath: realtimeTransportPath,
+            },
+          });
+          if (connectionCountBeforeUpgrade > 0) {
+            countSyncMetric('sync.transport.reconnects', 1, {
+              attributes: {
+                transportPath: realtimeTransportPath,
+                source: 'server',
+              },
+            });
+          }
 
           unregister = wsConnectionManager.register(conn, initialScopeKeys);
           conn.sendHeartbeat();
@@ -1345,6 +1390,7 @@ export function createSyncRoutes<
           unregister?.();
           unregister = null;
           connRef = null;
+          finishRealtimeSession('closed');
           logSyncEvent({
             event: 'sync.realtime.disconnect',
             userId: auth.actorId,
@@ -1360,6 +1406,7 @@ export function createSyncRoutes<
           unregister?.();
           unregister = null;
           connRef = null;
+          finishRealtimeSession('error');
           logSyncEvent({
             event: 'sync.realtime.disconnect',
             userId: auth.actorId,
@@ -1671,6 +1718,19 @@ export function createSyncRoutes<
         operationCount: pushOps.length,
         tables: pushed.affectedTables,
       }));
+
+      const detectedConflicts = pushed.response.results.reduce(
+        (count, result) => count + (result.status === 'conflict' ? 1 : 0),
+        0
+      );
+      if (detectedConflicts > 0) {
+        countSyncMetric('sync.conflicts.detected', detectedConflicts, {
+          attributes: {
+            syncPath: 'ws-push',
+            transportPath: conn.transportPath,
+          },
+        });
+      }
 
       // WS notifications to other clients
       if (

@@ -512,7 +512,7 @@ function SyncClientPanel({
 
 const createSqliteDb = () =>
   createSqliteClient(DEMO_CLIENT_STORES.splitSqlite.location);
-const createPgliteDb = () =>
+const createPgliteDialect = () =>
   createPgliteClient(DEMO_CLIENT_STORES.splitPglite.location);
 
 // ---------------------------------------------------------------------------
@@ -590,7 +590,7 @@ export function SplitScreenTab() {
         />
         <SyncClientPanel
           actorId={actorId}
-          createDb={createPgliteDb}
+          createDb={createPgliteDialect}
           clientId={pgliteClientId}
           clientStoreKey={DEMO_CLIENT_STORES.splitPglite.key}
           color="relay"

@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from 'bun:test';
-import { createPgliteDb } from '@syncular/dialect-pglite';
+import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   ensureSyncSchema,
   InMemorySyncRealtimeBroadcaster,
@@ -15,7 +15,7 @@ import {
 
 describe('realtime broadcaster bridge', () => {
   it('notifies local WebSocket connections when another instance publishes a commit', async () => {
-    const db = createPgliteDb<SyncCoreDb>();
+    const db = createDatabase<SyncCoreDb>({ dialect: createPgliteDialect(), family: 'postgres' });
     const dialect = createPostgresServerDialect();
     await ensureSyncSchema(db, dialect);
 

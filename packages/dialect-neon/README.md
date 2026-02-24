@@ -13,9 +13,13 @@ npm install @syncular/dialect-neon
 ## Usage
 
 ```ts
-import { createNeonDb } from '@syncular/dialect-neon';
+import { createDatabase } from '@syncular/core';
+import { createNeonDialect } from '@syncular/dialect-neon';
 
-const db = createNeonDb<MyDb>({ connectionString: process.env.DATABASE_URL! });
+const db = createDatabase<MyDb>({
+  dialect: createNeonDialect({ connectionString: process.env.DATABASE_URL! }),
+  family: 'postgres',
+});
 ```
 
 ## Documentation

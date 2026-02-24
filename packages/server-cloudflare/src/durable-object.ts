@@ -8,7 +8,7 @@
  * @example
  * ```typescript
  * import { SyncDurableObject, createSyncWorkerWithDO } from '@syncular/server-cloudflare/durable-object';
- * import { createD1Db } from '@syncular/dialect-d1';
+ * import { createD1Dialect } from '@syncular/dialect-d1';
  * import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
  * import { ensureSyncSchema } from '@syncular/server';
  * import { createSyncServer } from '@syncular/server-hono';
@@ -17,7 +17,7 @@
  *
  * export class SyncDO extends SyncDurableObject<Env> {
  *   setup(app, env, upgradeWebSocket) {
- *     const db = createD1Db(env.DB);
+ *     const db = createD1Dialect(env.DB);
  *     const dialect = createSqliteServerDialect();
  *     const { syncRoutes, consoleRoutes } = createSyncServer({
  *       db, dialect,

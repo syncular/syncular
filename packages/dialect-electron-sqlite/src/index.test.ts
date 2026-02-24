@@ -26,8 +26,8 @@ import type {
 import {
   createElectronSqliteBridgeFromDialect,
   createElectronSqliteBridgeFromIpc,
-  createElectronSqliteDb,
-  createElectronSqliteDbFromWindow,
+  createElectronSqliteDialect,
+  createElectronSqliteDialectFromWindow,
   registerElectronSqliteIpc,
 } from './index';
 
@@ -247,7 +247,7 @@ describe('electron sqlite dialect', () => {
       },
     };
 
-    db = createElectronSqliteDb<TestDb>(bridge);
+    db = createDatabase<TestDb>({ dialect: createElectronSqliteDialect(bridge), family: 'sqlite' });
 
     const updated = await db
       .updateTable('tasks')
@@ -277,7 +277,7 @@ describe('electron sqlite dialect', () => {
       electronAPI: { app: bridge },
     };
 
-    db = createElectronSqliteDbFromWindow<TestDb>({
+    db = createElectronSqliteDialectFromWindow<TestDb>({
       bridgeKey: 'app',
       window: windowLike,
     });

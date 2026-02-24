@@ -16,10 +16,14 @@ For desktop apps, CLIs, scripts, and tests, you can run Syncular against native 
 ## Minimal setup (Node + better-sqlite3)
 
 ```ts
-import { createBetterSqlite3Db } from '@syncular/dialect-better-sqlite3';
+import { createDatabase } from '@syncular/core';
+import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
 import { ensureClientSyncSchema } from '@syncular/client';
 
-const db = createBetterSqlite3Db({ path: './app.sqlite' });
+const db = createDatabase({
+  dialect: createBetterSqlite3Dialect({ path: './app.sqlite' }),
+  family: 'sqlite',
+});
 await ensureClientSyncSchema(db);
 ```
 
@@ -27,4 +31,3 @@ await ensureClientSyncSchema(db);
 
 - [Client Setup](/docs/build/client-setup)
 - [Testing](/docs/build/testing)
-

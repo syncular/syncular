@@ -7,7 +7,7 @@
  * @example
  * ```typescript
  * import { createSyncWorker } from '@syncular/server-cloudflare/worker';
- * import { createD1Db } from '@syncular/dialect-d1';
+ * import { createD1Dialect } from '@syncular/dialect-d1';
  * import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
  * import { ensureSyncSchema } from '@syncular/server';
  * import { createSyncServer } from '@syncular/server-hono';
@@ -15,7 +15,7 @@
  * type Env = { DB: D1Database };
  *
  * export default createSyncWorker<Env>((app, env) => {
- *   const db = createD1Db(env.DB);
+ *   const db = createD1Dialect(env.DB);
  *   const dialect = createSqliteServerDialect();
  *   const { syncRoutes, consoleRoutes } = createSyncServer({
  *     db, dialect,

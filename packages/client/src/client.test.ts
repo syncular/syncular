@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { SyncTransport } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
-import { createBunSqliteDb } from '../../dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { ensureClientBlobSchema } from './blobs/migrate';
 import { Client, type ClientBlobStorage } from './client';
 import { SyncEngine } from './engine/SyncEngine';
@@ -151,7 +151,7 @@ describe('Client conflict events', () => {
   }
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureClientSyncSchema(db);
     await db.schema
       .createTable('tasks')
@@ -270,7 +270,7 @@ describe('Client blob upload queue recovery', () => {
   }
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureClientSyncSchema(db);
     await ensureClientBlobSchema(db);
     initiateCalls = 0;
@@ -373,7 +373,7 @@ describe('Client inspector snapshot', () => {
   let client: Client<TestDb>;
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     await ensureClientSyncSchema(db);
 
     const handlers: ClientHandlerCollection<TestDb> = [];

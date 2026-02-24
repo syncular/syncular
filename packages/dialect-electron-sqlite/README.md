@@ -13,10 +13,14 @@ npm install @syncular/dialect-electron-sqlite
 ## Usage
 
 ```ts
-import { createElectronSqliteDbFromWindow } from '@syncular/dialect-electron-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createElectronSqliteDialectFromWindow } from '@syncular/dialect-electron-sqlite';
 
 // Uses window.electronAPI.sqlite by default (bridgeKey: "sqlite")
-const db = createElectronSqliteDbFromWindow<MyDb>();
+const db = createDatabase<MyDb>({
+  dialect: createElectronSqliteDialectFromWindow(),
+  family: 'sqlite',
+});
 ```
 
 ## Documentation

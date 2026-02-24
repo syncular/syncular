@@ -468,10 +468,13 @@ PostgreSQL note: `numeric`/`decimal` columns are generated as `string` by defaul
 For regular Kysely queries outside Syncular handlers/mutations, attach the codec plugin so `selectFrom`/`insertInto` also use the same conversions:
 
 ```typescript
-import { createColumnCodecsPlugin } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createColumnCodecsPlugin, createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 
-const baseDb = createBunSqliteDb<DB>({ path: ':memory:' });
+const baseDb = createDatabase<DB>({
+  dialect: createBunSqliteDialect({ path: ':memory:' }),
+  family: 'sqlite',
+});
 const db = baseDb.withPlugin(
   createColumnCodecsPlugin({
     dialect: 'sqlite',

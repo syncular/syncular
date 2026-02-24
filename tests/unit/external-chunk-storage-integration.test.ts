@@ -8,8 +8,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import type { BlobStorageAdapter } from '@syncular/core';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   ensureSyncSchema,
   insertSnapshotChunk,
@@ -59,7 +60,7 @@ describe('External chunk storage integration', () => {
   };
 
   beforeEach(async () => {
-    db = createBunSqliteDb<SyncCoreDb>({ path: ':memory:' });
+    db = createDatabase<SyncCoreDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
     dialect = createSqliteServerDialect();
     await ensureSyncSchema(db, dialect);
 

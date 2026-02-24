@@ -6,7 +6,7 @@
  */
 
 import { Hono } from 'hono';
-import { createBetterSqlite3Db } from '../../../../packages/dialect-better-sqlite3/src/index';
+import { createBetterSqlite3Dialect } from '../../../../packages/dialect-better-sqlite3/src/index';
 import type { SyncCoreDb } from '../../../../packages/server/src/index';
 import { ensureSyncSchema } from '../../../../packages/server/src/index';
 import { createSqliteServerDialect } from '../../../../packages/server-dialect-sqlite/src/index';
@@ -24,7 +24,7 @@ interface ServerDb extends SyncCoreDb {
 
 async function main() {
   const dialect = createSqliteServerDialect();
-  const db = createBetterSqlite3Db<ServerDb>({ path: ':memory:' });
+  const db = createDatabase<ServerDb>({ dialect: createBetterSqlite3Dialect({ path: ':memory:' }), family: 'sqlite' });
 
   await ensureSyncSchema(db, dialect);
   if (dialect.ensureConsoleSchema) {

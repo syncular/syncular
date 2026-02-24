@@ -1,8 +1,9 @@
-import { createBetterSqlite3Db } from '@syncular/dialect-better-sqlite3';
+import { createDatabase } from '@syncular/core';
+import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
-import { createLibsqlDb } from '@syncular/dialect-libsql';
+import { createLibsqlDialect } from '@syncular/dialect-libsql';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
-import { createSqlite3Db } from '@syncular/dialect-sqlite3';
+import { createSqlite3Dialect } from '@syncular/dialect-sqlite3';
 import { Kysely } from 'kysely';
 import { createConformanceColumnCodecsPlugin } from './column-codecs';
 import type { DialectConformanceDb } from './conformance-db';
@@ -41,8 +42,11 @@ export const DIALECT_HARNESSES: DialectHarness[] = [
           kind: 'sqlite',
           supportsStreaming: false,
           async createDb() {
-            return createBetterSqlite3Db<DialectConformanceDb>({
-              path: ':memory:',
+            return createDatabase<DialectConformanceDb>({
+              dialect: createBetterSqlite3Dialect({
+                path: ':memory:',
+              }),
+              family: 'sqlite',
             }).withPlugin(createConformanceColumnCodecsPlugin('sqlite'));
           },
         },
@@ -53,8 +57,11 @@ export const DIALECT_HARNESSES: DialectHarness[] = [
     kind: 'sqlite',
     supportsStreaming: false,
     async createDb() {
-      return createSqlite3Db<DialectConformanceDb>({
-        path: ':memory:',
+      return createDatabase<DialectConformanceDb>({
+        dialect: createSqlite3Dialect({
+          path: ':memory:',
+        }),
+        family: 'sqlite',
       }).withPlugin(createConformanceColumnCodecsPlugin('sqlite'));
     },
   },
@@ -63,8 +70,11 @@ export const DIALECT_HARNESSES: DialectHarness[] = [
     kind: 'sqlite',
     supportsStreaming: true,
     async createDb() {
-      return createLibsqlDb<DialectConformanceDb>({
-        url: ':memory:',
+      return createDatabase<DialectConformanceDb>({
+        dialect: createLibsqlDialect({
+          url: ':memory:',
+        }),
+        family: 'sqlite',
       }).withPlugin(createConformanceColumnCodecsPlugin('sqlite'));
     },
   },

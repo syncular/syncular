@@ -15,6 +15,7 @@ import type {
   ColumnCodecSource,
   SyncTransport,
 } from '@syncular/core';
+import { countSyncMetric } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import { ensureClientBlobSchema } from './blobs/migrate';
@@ -713,6 +714,12 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
         : resolution.strategy;
 
     await resolveConflict(this.options.db, { id, resolution: resolutionStr });
+
+    countSyncMetric('sync.conflicts.resolved', 1, {
+      attributes: {
+        strategy: resolution.strategy,
+      },
+    });
 
     this.emittedConflictIds.delete(id);
     if (resolvedConflict) {

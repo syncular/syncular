@@ -16,10 +16,14 @@ Mobile users expect apps to work offline. Syncular’s “local SQLite is the pr
 
 ```ts
 import { openDatabaseSync } from 'expo-sqlite';
-import { createExpoSqliteDb } from '@syncular/dialect-expo-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createExpoSqliteDialect } from '@syncular/dialect-expo-sqlite';
 import { ensureClientSyncSchema } from '@syncular/client';
 
-const db = createExpoSqliteDb({ name: 'app.db', openDatabaseSync });
+const db = createDatabase({
+  dialect: createExpoSqliteDialect({ name: 'app.db', openDatabaseSync }),
+  family: 'sqlite',
+});
 await ensureClientSyncSchema(db);
 ```
 
@@ -27,4 +31,3 @@ await ensureClientSyncSchema(db);
 
 - [Client Setup](/docs/build/client-setup)
 - [Performance](/docs/build/performance) (bootstrap strategy for large datasets)
-

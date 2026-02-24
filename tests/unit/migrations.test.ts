@@ -13,8 +13,9 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
 import { rm } from 'node:fs/promises';
-import { createBunSqliteDb } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   clearAppliedMigrations,
   defineMigrations,
@@ -33,7 +34,7 @@ describe('migrations', () => {
   let db: Kysely<TestDb>;
 
   beforeEach(async () => {
-    db = createBunSqliteDb<TestDb>({ path: ':memory:' });
+    db = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: ':memory:' }), family: 'sqlite' });
   });
 
   describe('whitespace-resilient checksums', () => {
@@ -229,8 +230,8 @@ describe('migrations', () => {
 
     it('serializes concurrent runs for the same tracking table', async () => {
       const dbPath = `/tmp/syncular-migrations-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`;
-      const dbA = createBunSqliteDb<TestDb>({ path: dbPath });
-      const dbB = createBunSqliteDb<TestDb>({ path: dbPath });
+      const dbA = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: dbPath }), family: 'sqlite' });
+      const dbB = createDatabase<TestDb>({ dialect: createBunSqliteDialect({ path: dbPath }), family: 'sqlite' });
 
       const migrations = defineMigrations<TestDb>({
         v1: async (db) => {

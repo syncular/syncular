@@ -4,7 +4,8 @@
  * Uses wa-sqlite with OPFS persistence for browser SQLite.
  */
 
-import { createWaSqliteDb } from '@syncular/dialect-wa-sqlite';
+import { createDatabase } from '@syncular/core';
+import { createWaSqliteDialect } from '@syncular/dialect-wa-sqlite';
 import type { Kysely } from 'kysely';
 import type { ClientDb } from './types.generated';
 
@@ -80,15 +81,18 @@ function assertWaSqliteRuntimeSupport(): void {
  */
 export function createSqliteClient(fileName: string): Kysely<ClientDb> {
   assertWaSqliteRuntimeSupport();
-  return createWaSqliteDb<ClientDb>({
-    fileName,
-    preferOPFS: true,
-    url: (useAsyncWasm) =>
-      `${window.location.origin}/__demo/wasqlite/${useAsyncWasm ? 'wa-sqlite-async.wasm' : 'wa-sqlite.wasm'}`,
-    worker: () =>
-      new Worker(`${window.location.origin}/__demo/wasqlite/worker.js`, {
-        type: 'module',
-        credentials: 'same-origin',
-      }),
+  return createDatabase<ClientDb>({
+    dialect: createWaSqliteDialect({
+      fileName,
+      preferOPFS: true,
+      url: (useAsyncWasm) =>
+        `${window.location.origin}/__demo/wasqlite/${useAsyncWasm ? 'wa-sqlite-async.wasm' : 'wa-sqlite.wasm'}`,
+      worker: () =>
+        new Worker(`${window.location.origin}/__demo/wasqlite/worker.js`, {
+          type: 'module',
+          credentials: 'same-origin',
+        }),
+    }),
+    family: 'sqlite',
   });
 }
