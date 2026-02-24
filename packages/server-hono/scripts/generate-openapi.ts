@@ -4,7 +4,7 @@
  * Usage: bun scripts/generate-openapi.ts
  */
 
-import { createDatabase, type BlobStorageAdapter } from '@syncular/core';
+import { type BlobStorageAdapter, createDatabase } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import type {
   ServerSyncDialect,
