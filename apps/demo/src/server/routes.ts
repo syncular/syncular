@@ -14,6 +14,7 @@ import {
 } from '@syncular/server';
 import { createBlobRoutes } from '@syncular/server-hono/blobs';
 import { createSyncServer } from '@syncular/server-hono/create-server';
+import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';
 import type { ServerDb } from './db';
@@ -39,8 +40,8 @@ export function createDemoRoutes(
 ) {
   const upgradeWebSocket = args?.upgradeWebSocket;
 
-  // Simple auth - extract user ID from header
-  const authenticate = async (request: Request) => {
+  // Simple auth - extract user ID from header/query.
+  const authenticateRequest = async (request: Request) => {
     const url = new URL(request.url);
     const userId =
       request.headers.get('x-user-id') ?? url.searchParams.get('userId');
@@ -52,6 +53,8 @@ export function createDemoRoutes(
     );
     return { actorId: userId, partitionId };
   };
+  const authenticateBlobContext = async (context: Context) =>
+    authenticateRequest(context.req.raw);
 
   const { syncRoutes, consoleRoutes, consoleEventEmitter } = createSyncServer({
     db,
@@ -63,7 +66,7 @@ export function createDemoRoutes(
         catalogItemsServerHandler,
         patientNotesServerHandler,
       ],
-      authenticate,
+      authenticate: authenticateRequest,
     },
     chunkStorage: args?.chunkStorage,
     routes: {
@@ -89,7 +92,7 @@ export function createDemoRoutes(
     });
     const blobRoutes = createBlobRoutes({
       blobManager,
-      authenticate,
+      authenticate: authenticateBlobContext,
       tokenSigner,
       db,
     });

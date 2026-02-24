@@ -98,4 +98,38 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     const finalCount = await page.getByText(title, { exact: true }).count();
     expect(finalCount).toBeGreaterThanOrEqual(2);
   }, 300_000);
+
+  it('initializes media blob upload endpoint', async () => {
+    await page.goto(`${demoBaseUrl}/media`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () => document.querySelector('input[type="file"]') !== null,
+      undefined,
+      { timeout: 120_000 }
+    );
+
+    const blobHash = `sha256:${'a'.repeat(64)}`;
+    const response = await page.evaluate(
+      async ({ hash }) => {
+        const res = await fetch('/api/sync/blobs/upload', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-user-id': 'demo-media-user',
+          },
+          body: JSON.stringify({
+            hash,
+            size: 3,
+            mimeType: 'image/png',
+          }),
+        });
+        return {
+          status: res.status,
+          body: (await res.text()).slice(0, 200),
+        };
+      },
+      { hash: blobHash }
+    );
+
+    expect(response.status).toBe(200);
+  }, 300_000);
 });
