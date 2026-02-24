@@ -182,7 +182,7 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
 
     workerUrl = `http://127.0.0.1:${workerPort}`;
     await waitForHealthy(workerUrl, 90_000);
-  }, 60_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (wranglerProc) await shutdown(wranglerProc);
