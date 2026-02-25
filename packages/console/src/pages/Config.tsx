@@ -80,15 +80,24 @@ function ConnectionTab() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const urlToken = params.get('token');
     const urlServer = params.get('server');
+    let shouldReplaceUrl = false;
 
-    if (urlToken) {
-      setToken(urlToken);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
     if (urlServer) {
       setServerUrl(urlServer);
+      params.delete('server');
+      shouldReplaceUrl = true;
+    }
+    if (params.has('token')) {
+      params.delete('token');
+      shouldReplaceUrl = true;
+    }
+    if (shouldReplaceUrl) {
+      const nextQuery = params.toString();
+      const nextUrl = nextQuery
+        ? `${window.location.pathname}?${nextQuery}`
+        : window.location.pathname;
+      window.history.replaceState({}, '', nextUrl);
     }
   }, []);
 

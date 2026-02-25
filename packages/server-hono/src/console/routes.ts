@@ -2217,16 +2217,40 @@ export function createConsoleRoutes<
     const wsState = new WeakMap<
       WebSocketLike,
       {
-        listener: ConsoleEventListener;
-        heartbeatInterval: ReturnType<typeof setInterval>;
+        listener: ConsoleEventListener | null;
+        heartbeatInterval: ReturnType<typeof setInterval> | null;
+        authTimeout: ReturnType<typeof setTimeout> | null;
+        isAuthenticated: boolean;
       }
     >();
+
+    const closeUnauthenticated = (ws: WebSocketLike) => {
+      try {
+        ws.send(JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' }));
+      } catch {
+        // ignore send errors
+      }
+      ws.close(4001, 'Unauthenticated');
+    };
+
+    const cleanup = (ws: WebSocketLike) => {
+      const state = wsState.get(ws);
+      if (!state) return;
+      if (state.listener) {
+        emitter.removeListener(state.listener);
+      }
+      if (state.heartbeatInterval) {
+        clearInterval(state.heartbeatInterval);
+      }
+      if (state.authTimeout) {
+        clearTimeout(state.authTimeout);
+      }
+      wsState.delete(ws);
+    };
 
     routes.get(
       '/events/live',
       upgradeWebSocket(async (c) => {
-        // Auth check via query param (WebSocket doesn't support headers easily)
-        const token = c.req.query('token');
         const authHeader = c.req.header('Authorization');
         const partitionId = c.req.query('partitionId')?.trim() || undefined;
         const replaySince = c.req.query('since');
@@ -2241,25 +2265,173 @@ export function createConsoleRoutes<
           req: {
             header: (name: string) =>
               name === 'Authorization' ? authHeader : undefined,
-            query: (name: string) => (name === 'token' ? token : undefined),
+            query: () => undefined,
           },
-        } as Context;
+        } as unknown as Context;
 
-        const auth = await options.authenticate(mockContext);
+        const initialAuth = await options.authenticate(mockContext);
+
+        const authenticateWithBearer = async (token: string) => {
+          const trimmedToken = token.trim();
+          if (!trimmedToken) return null;
+          const authContext = {
+            req: {
+              header: (name: string) =>
+                name === 'Authorization' ? `Bearer ${trimmedToken}` : undefined,
+              query: () => undefined,
+            },
+          } as unknown as Context;
+          return options.authenticate(authContext);
+        };
 
         return {
           onOpen(_event, ws) {
-            if (!auth) {
+            const state = {
+              listener: null,
+              heartbeatInterval: null,
+              authTimeout: null,
+              isAuthenticated: false,
+            } as {
+              listener: ConsoleEventListener | null;
+              heartbeatInterval: ReturnType<typeof setInterval> | null;
+              authTimeout: ReturnType<typeof setTimeout> | null;
+              isAuthenticated: boolean;
+            };
+            wsState.set(ws, state);
+
+            const startAuthenticatedSession = () => {
+              if (state.isAuthenticated) return;
+              state.isAuthenticated = true;
+              if (state.authTimeout) {
+                clearTimeout(state.authTimeout);
+                state.authTimeout = null;
+              }
+
+              const listener: ConsoleEventListener = (event) => {
+                if (partitionId) {
+                  const eventPartitionId = event.data.partitionId;
+                  if (
+                    typeof eventPartitionId !== 'string' ||
+                    eventPartitionId !== partitionId
+                  ) {
+                    return;
+                  }
+                }
+                try {
+                  ws.send(JSON.stringify(event));
+                } catch {
+                  // Connection closed
+                }
+              };
+
+              emitter.addListener(listener);
+              state.listener = listener;
+
               ws.send(
-                JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' })
+                JSON.stringify({
+                  type: 'connected',
+                  timestamp: new Date().toISOString(),
+                })
               );
-              ws.close(4001, 'Unauthenticated');
+
+              const replayEvents = emitter.replay({
+                since: replaySince,
+                limit: replayLimit,
+                partitionId,
+              });
+              for (const replayEvent of replayEvents) {
+                try {
+                  ws.send(JSON.stringify(replayEvent));
+                } catch {
+                  // Connection closed
+                  break;
+                }
+              }
+
+              const heartbeatInterval = setInterval(() => {
+                try {
+                  ws.send(
+                    JSON.stringify({
+                      type: 'heartbeat',
+                      timestamp: new Date().toISOString(),
+                    })
+                  );
+                } catch {
+                  clearInterval(heartbeatInterval);
+                }
+              }, heartbeatIntervalMs);
+              state.heartbeatInterval = heartbeatInterval;
+            };
+
+            if (initialAuth) {
+              startAuthenticatedSession();
               return;
             }
 
-            const listener: ConsoleEventListener = (event) => {
+            state.authTimeout = setTimeout(() => {
+              const current = wsState.get(ws);
+              if (!current || current.isAuthenticated) {
+                return;
+              }
+              closeUnauthenticated(ws);
+              cleanup(ws);
+            }, 5_000);
+          },
+          async onMessage(event, ws) {
+            const state = wsState.get(ws);
+            if (!state || state.isAuthenticated) {
+              return;
+            }
+
+            if (typeof event.data !== 'string') {
+              closeUnauthenticated(ws);
+              cleanup(ws);
+              return;
+            }
+
+            let token = '';
+            try {
+              const parsed = JSON.parse(event.data) as {
+                type?: unknown;
+                token?: unknown;
+              };
+              if (
+                parsed.type === 'auth' &&
+                typeof parsed.token === 'string' &&
+                parsed.token.trim().length > 0
+              ) {
+                token = parsed.token;
+              }
+            } catch {
+              // Ignore parse errors and close as unauthenticated below.
+            }
+
+            if (!token) {
+              closeUnauthenticated(ws);
+              cleanup(ws);
+              return;
+            }
+
+            const auth = await authenticateWithBearer(token);
+            const currentState = wsState.get(ws);
+            if (!currentState || currentState.isAuthenticated) {
+              return;
+            }
+            if (!auth) {
+              closeUnauthenticated(ws);
+              cleanup(ws);
+              return;
+            }
+
+            currentState.isAuthenticated = true;
+            if (currentState.authTimeout) {
+              clearTimeout(currentState.authTimeout);
+              currentState.authTimeout = null;
+            }
+
+            const listener: ConsoleEventListener = (liveEvent) => {
               if (partitionId) {
-                const eventPartitionId = event.data.partitionId;
+                const eventPartitionId = liveEvent.data.partitionId;
                 if (
                   typeof eventPartitionId !== 'string' ||
                   eventPartitionId !== partitionId
@@ -2268,15 +2440,15 @@ export function createConsoleRoutes<
                 }
               }
               try {
-                ws.send(JSON.stringify(event));
+                ws.send(JSON.stringify(liveEvent));
               } catch {
                 // Connection closed
               }
             };
 
             emitter.addListener(listener);
+            currentState.listener = listener;
 
-            // Send connected message
             ws.send(
               JSON.stringify({
                 type: 'connected',
@@ -2298,7 +2470,6 @@ export function createConsoleRoutes<
               }
             }
 
-            // Start heartbeat
             const heartbeatInterval = setInterval(() => {
               try {
                 ws.send(
@@ -2311,22 +2482,13 @@ export function createConsoleRoutes<
                 clearInterval(heartbeatInterval);
               }
             }, heartbeatIntervalMs);
-
-            wsState.set(ws, { listener, heartbeatInterval });
+            currentState.heartbeatInterval = heartbeatInterval;
           },
           onClose(_event, ws) {
-            const state = wsState.get(ws);
-            if (!state) return;
-            emitter.removeListener(state.listener);
-            clearInterval(state.heartbeatInterval);
-            wsState.delete(ws);
+            cleanup(ws);
           },
           onError(_event, ws) {
-            const state = wsState.get(ws);
-            if (!state) return;
-            emitter.removeListener(state.listener);
-            clearInterval(state.heartbeatInterval);
-            wsState.delete(ws);
+            cleanup(ws);
           },
         };
       })
@@ -3524,27 +3686,17 @@ async function hashApiKey(secretKey: string): Promise<string> {
 export function createTokenAuthenticator(
   token?: string
 ): (c: Context) => Promise<ConsoleAuthResult | null> {
-  const expectedToken = token ?? process.env.SYNC_CONSOLE_TOKEN;
+  const expectedToken = (token ?? process.env.SYNC_CONSOLE_TOKEN)?.trim() ?? '';
 
   return async (c: Context) => {
-    if (!expectedToken) {
-      // No token configured, allow all requests (not recommended for production)
-      return { consoleUserId: 'anonymous' };
-    }
+    if (!expectedToken) return null;
 
-    // Check Authorization header
-    const authHeader = c.req.header('Authorization');
+    const authHeader = c.req.header('Authorization')?.trim();
     if (authHeader?.startsWith('Bearer ')) {
-      const bearerToken = authHeader.slice(7);
+      const bearerToken = authHeader.slice(7).trim();
       if (bearerToken === expectedToken) {
         return { consoleUserId: 'token' };
       }
-    }
-
-    // Check query parameter
-    const queryToken = c.req.query('token');
-    if (queryToken === expectedToken) {
-      return { consoleUserId: 'token' };
     }
 
     return null;

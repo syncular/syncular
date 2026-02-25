@@ -71,9 +71,11 @@ export interface ConsoleGatewayInstance {
 }
 
 interface ConsoleGatewayDownstreamSocket {
+  onopen?: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
   onerror: ((event: Event) => void) | null;
   close: () => void;
+  send?: (data: string) => void;
 }
 
 export interface CreateConsoleGatewayRoutesOptions {
@@ -723,35 +725,18 @@ function resolveForwardAuthorization(args: {
   if (header) {
     return header;
   }
-  const queryToken = args.c.req.query('token')?.trim();
-  if (queryToken) {
-    return `Bearer ${queryToken}`;
-  }
   return null;
 }
 
-function resolveForwardBearerToken(args: {
-  c: Context;
-  instance: ConsoleGatewayInstance;
-}): string | null {
-  if (args.instance.token) {
-    return args.instance.token;
+function parseBearerToken(
+  authHeader: string | null | undefined
+): string | null {
+  const value = authHeader?.trim();
+  if (!value?.startsWith('Bearer ')) {
+    return null;
   }
-
-  const authHeader = args.c.req.header('Authorization')?.trim();
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7).trim();
-    if (token.length > 0) {
-      return token;
-    }
-  }
-
-  const queryToken = args.c.req.query('token')?.trim();
-  if (queryToken) {
-    return queryToken;
-  }
-
-  return null;
+  const token = value.slice(7).trim();
+  return token.length > 0 ? token : null;
 }
 
 async function fetchDownstreamJson<T>(args: {
@@ -3036,14 +3021,16 @@ export function createConsoleGatewayRoutes(
       WebSocketLike,
       {
         downstreamSockets: ConsoleGatewayDownstreamSocket[];
-        heartbeatInterval: ReturnType<typeof setInterval>;
+        heartbeatInterval: ReturnType<typeof setInterval> | null;
+        authTimeout: ReturnType<typeof setTimeout> | null;
+        isAuthenticated: boolean;
       }
     >();
 
     routes.get(
       '/events/live',
       upgradeWebSocket(async (c) => {
-        const auth = await options.authenticate(c);
+        const initialAuth = await options.authenticate(c);
         const partitionId = c.req.query('partitionId')?.trim() || undefined;
         const replaySince = c.req.query('since')?.trim() || undefined;
         const replayLimitRaw = c.req.query('replayLimit');
@@ -3062,10 +3049,43 @@ export function createConsoleGatewayRoutes(
           },
         });
 
+        const authenticateWithBearer = async (
+          token: string
+        ): Promise<ConsoleAuthResult | null> => {
+          const trimmedToken = token.trim();
+          if (!trimmedToken) {
+            return null;
+          }
+          const authContext = {
+            req: {
+              header: (name: string) =>
+                name === 'Authorization' ? `Bearer ${trimmedToken}` : undefined,
+              query: () => undefined,
+            },
+          } as unknown as Context;
+          return options.authenticate(authContext);
+        };
+
+        const closeUnauthenticated = (ws: WebSocketLike) => {
+          try {
+            ws.send(
+              JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' })
+            );
+          } catch {
+            // no-op
+          }
+          ws.close(4001, 'Unauthenticated');
+        };
+
         const cleanup = (ws: WebSocketLike) => {
           const state = liveState.get(ws);
           if (!state) return;
-          clearInterval(state.heartbeatInterval);
+          if (state.heartbeatInterval) {
+            clearInterval(state.heartbeatInterval);
+          }
+          if (state.authTimeout) {
+            clearTimeout(state.authTimeout);
+          }
           for (const downstream of state.downstreamSockets) {
             try {
               downstream.close();
@@ -3078,14 +3098,6 @@ export function createConsoleGatewayRoutes(
 
         return {
           onOpen(_event, ws) {
-            if (!auth) {
-              ws.send(
-                JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' })
-              );
-              ws.close(4001, 'Unauthenticated');
-              return;
-            }
-
             if (selectedInstances.length === 0) {
               ws.send(
                 JSON.stringify({
@@ -3098,17 +3110,215 @@ export function createConsoleGatewayRoutes(
               return;
             }
 
-            const downstreamSockets: ConsoleGatewayDownstreamSocket[] = [];
+            const state: {
+              downstreamSockets: ConsoleGatewayDownstreamSocket[];
+              heartbeatInterval: ReturnType<typeof setInterval> | null;
+              authTimeout: ReturnType<typeof setTimeout> | null;
+              isAuthenticated: boolean;
+            } = {
+              downstreamSockets: [],
+              heartbeatInterval: null,
+              authTimeout: null,
+              isAuthenticated: false,
+            };
+            liveState.set(ws, state);
+
+            const startAuthenticatedSession = (
+              upstreamBearerToken: string | null
+            ) => {
+              if (state.isAuthenticated) {
+                return;
+              }
+              state.isAuthenticated = true;
+              if (state.authTimeout) {
+                clearTimeout(state.authTimeout);
+                state.authTimeout = null;
+              }
+
+              for (const instance of selectedInstances) {
+                const downstreamQuery = new URLSearchParams();
+                if (partitionId) {
+                  downstreamQuery.set('partitionId', partitionId);
+                }
+                if (replaySince) {
+                  downstreamQuery.set('since', replaySince);
+                }
+                downstreamQuery.set('replayLimit', String(replayLimit));
+
+                const downstreamUrl = buildConsoleEndpointUrl({
+                  instance,
+                  requestUrl: c.req.url,
+                  path: '/events/live',
+                  query: downstreamQuery,
+                });
+
+                const downstreamSocket = createDownstreamSocket(downstreamUrl);
+                const downstreamToken =
+                  instance.token?.trim() ?? upstreamBearerToken?.trim() ?? null;
+                if (downstreamToken && downstreamSocket.send) {
+                  downstreamSocket.onopen = () => {
+                    try {
+                      downstreamSocket.send?.(
+                        JSON.stringify({
+                          type: 'auth',
+                          token: downstreamToken,
+                        })
+                      );
+                    } catch {
+                      // no-op
+                    }
+                  };
+                }
+
+                downstreamSocket.onmessage = (message: MessageEvent) => {
+                  if (typeof message.data !== 'string') {
+                    return;
+                  }
+                  try {
+                    const payload = JSON.parse(message.data) as Record<
+                      string,
+                      unknown
+                    >;
+                    if (
+                      typeof payload.type === 'string' &&
+                      (payload.type === 'connected' ||
+                        payload.type === 'heartbeat')
+                    ) {
+                      return;
+                    }
+
+                    const payloadData =
+                      payload.data &&
+                      typeof payload.data === 'object' &&
+                      !Array.isArray(payload.data)
+                        ? { ...payload.data, instanceId: instance.instanceId }
+                        : { instanceId: instance.instanceId };
+
+                    const event = {
+                      ...payload,
+                      data: payloadData,
+                      instanceId: instance.instanceId,
+                      timestamp:
+                        typeof payload.timestamp === 'string'
+                          ? payload.timestamp
+                          : new Date().toISOString(),
+                    };
+                    ws.send(JSON.stringify(event));
+                  } catch {
+                    // Ignore malformed downstream events
+                  }
+                };
+
+                downstreamSocket.onerror = () => {
+                  try {
+                    ws.send(
+                      JSON.stringify({
+                        type: 'instance_error',
+                        instanceId: instance.instanceId,
+                        timestamp: new Date().toISOString(),
+                      })
+                    );
+                  } catch {
+                    // ignore send errors
+                  }
+                };
+
+                state.downstreamSockets.push(downstreamSocket);
+              }
+
+              ws.send(
+                JSON.stringify({
+                  type: 'connected',
+                  timestamp: new Date().toISOString(),
+                  instanceCount: selectedInstances.length,
+                })
+              );
+
+              const heartbeatInterval = setInterval(() => {
+                try {
+                  ws.send(
+                    JSON.stringify({
+                      type: 'heartbeat',
+                      timestamp: new Date().toISOString(),
+                    })
+                  );
+                } catch {
+                  clearInterval(heartbeatInterval);
+                }
+              }, heartbeatIntervalMs);
+              state.heartbeatInterval = heartbeatInterval;
+            };
+
+            if (initialAuth) {
+              startAuthenticatedSession(
+                parseBearerToken(c.req.header('Authorization'))
+              );
+              return;
+            }
+
+            state.authTimeout = setTimeout(() => {
+              const current = liveState.get(ws);
+              if (!current || current.isAuthenticated) {
+                return;
+              }
+              closeUnauthenticated(ws);
+              cleanup(ws);
+            }, 5_000);
+          },
+          async onMessage(event, ws) {
+            const state = liveState.get(ws);
+            if (!state || state.isAuthenticated) {
+              return;
+            }
+
+            if (typeof event.data !== 'string') {
+              closeUnauthenticated(ws);
+              cleanup(ws);
+              return;
+            }
+
+            let token = '';
+            try {
+              const parsed = JSON.parse(event.data) as {
+                type?: unknown;
+                token?: unknown;
+              };
+              if (
+                parsed.type === 'auth' &&
+                typeof parsed.token === 'string' &&
+                parsed.token.trim().length > 0
+              ) {
+                token = parsed.token;
+              }
+            } catch {
+              // Invalid auth message will be handled below.
+            }
+
+            if (!token) {
+              closeUnauthenticated(ws);
+              cleanup(ws);
+              return;
+            }
+
+            const auth = await authenticateWithBearer(token);
+            const current = liveState.get(ws);
+            if (!current || current.isAuthenticated) {
+              return;
+            }
+            if (!auth) {
+              closeUnauthenticated(ws);
+              cleanup(ws);
+              return;
+            }
+
+            current.isAuthenticated = true;
+            if (current.authTimeout) {
+              clearTimeout(current.authTimeout);
+              current.authTimeout = null;
+            }
 
             for (const instance of selectedInstances) {
               const downstreamQuery = new URLSearchParams();
-              const downstreamToken = resolveForwardBearerToken({
-                c,
-                instance,
-              });
-              if (downstreamToken) {
-                downstreamQuery.set('token', downstreamToken);
-              }
               if (partitionId) {
                 downstreamQuery.set('partitionId', partitionId);
               }
@@ -3125,6 +3335,24 @@ export function createConsoleGatewayRoutes(
               });
 
               const downstreamSocket = createDownstreamSocket(downstreamUrl);
+              const upstreamToken = token.trim();
+              const downstreamToken =
+                instance.token?.trim() ||
+                (upstreamToken.length > 0 ? upstreamToken : null);
+              if (downstreamToken && downstreamSocket.send) {
+                downstreamSocket.onopen = () => {
+                  try {
+                    downstreamSocket.send?.(
+                      JSON.stringify({
+                        type: 'auth',
+                        token: downstreamToken,
+                      })
+                    );
+                  } catch {
+                    // no-op
+                  }
+                };
+              }
 
               downstreamSocket.onmessage = (message: MessageEvent) => {
                 if (typeof message.data !== 'string') {
@@ -3150,7 +3378,7 @@ export function createConsoleGatewayRoutes(
                       ? { ...payload.data, instanceId: instance.instanceId }
                       : { instanceId: instance.instanceId };
 
-                  const event = {
+                  const liveEvent = {
                     ...payload,
                     data: payloadData,
                     instanceId: instance.instanceId,
@@ -3159,7 +3387,7 @@ export function createConsoleGatewayRoutes(
                         ? payload.timestamp
                         : new Date().toISOString(),
                   };
-                  ws.send(JSON.stringify(event));
+                  ws.send(JSON.stringify(liveEvent));
                 } catch {
                   // Ignore malformed downstream events
                 }
@@ -3179,7 +3407,7 @@ export function createConsoleGatewayRoutes(
                 }
               };
 
-              downstreamSockets.push(downstreamSocket);
+              current.downstreamSockets.push(downstreamSocket);
             }
 
             ws.send(
@@ -3202,11 +3430,7 @@ export function createConsoleGatewayRoutes(
                 clearInterval(heartbeatInterval);
               }
             }, heartbeatIntervalMs);
-
-            liveState.set(ws, {
-              downstreamSockets,
-              heartbeatInterval,
-            });
+            current.heartbeatInterval = heartbeatInterval;
           },
           onClose(_event, ws) {
             cleanup(ws);

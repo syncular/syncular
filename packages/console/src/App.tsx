@@ -1,7 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRouter, RouterProvider } from '@tanstack/react-router';
 import { useMemo, useState } from 'react';
-import { ConnectionProvider } from './hooks/ConnectionContext';
+import {
+  ConnectionProvider,
+  type ConnectionStorageMode,
+} from './hooks/ConnectionContext';
 import type { ConnectionConfig } from './lib/api';
 import { routeTree } from './routeTree';
 import {
@@ -15,6 +18,7 @@ export interface SyncularConsoleProps {
   basePath?: string;
   defaultConfig?: ConnectionConfig | null;
   autoConnect?: boolean;
+  storageMode?: ConnectionStorageMode;
 }
 
 function createDefaultQueryClient(): QueryClient {
@@ -51,6 +55,7 @@ function SyncularConsole(props: SyncularConsoleProps) {
       <ConnectionProvider
         defaultConfig={defaultConfig}
         autoConnect={autoConnect}
+        storageMode={props.storageMode}
       >
         <RouterProvider router={router} />
       </ConnectionProvider>

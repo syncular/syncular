@@ -18,7 +18,58 @@ import {
   createConsoleClient,
   testConnection,
 } from '../lib/api';
-import { useLocalStorage } from './useLocalStorage';
+
+export type ConnectionStorageMode = 'memory' | 'session' | 'local';
+
+const CONNECTION_STORAGE_KEY = 'sync-console-connection';
+
+function normalizeConfig(
+  config: ConnectionConfig | null | undefined
+): ConnectionConfig | null {
+  if (!config) return null;
+  const serverUrl = config.serverUrl?.trim() ?? '';
+  const token = config.token?.trim() ?? '';
+  if (!serverUrl || !token) return null;
+  return { serverUrl, token };
+}
+
+function getStorageForMode(mode: ConnectionStorageMode): Storage | null {
+  if (typeof window === 'undefined') return null;
+  if (mode === 'local') return window.localStorage;
+  if (mode === 'session') return window.sessionStorage;
+  return null;
+}
+
+function readStoredConfig(
+  mode: ConnectionStorageMode
+): ConnectionConfig | null {
+  const storage = getStorageForMode(mode);
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(CONNECTION_STORAGE_KEY);
+    if (!raw) return null;
+    return normalizeConfig(JSON.parse(raw) as ConnectionConfig);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredConfig(
+  mode: ConnectionStorageMode,
+  config: ConnectionConfig | null
+): void {
+  const storage = getStorageForMode(mode);
+  if (!storage) return;
+  try {
+    if (!config) {
+      storage.removeItem(CONNECTION_STORAGE_KEY);
+      return;
+    }
+    storage.setItem(CONNECTION_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // Ignore storage write errors.
+  }
+}
 
 interface ConnectionState {
   isConnected: boolean;
@@ -46,6 +97,7 @@ interface ConnectionProviderProps {
   children: ReactNode;
   defaultConfig?: ConnectionConfig | null;
   autoConnect?: boolean;
+  storageMode?: ConnectionStorageMode;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -54,10 +106,34 @@ export function ConnectionProvider({
   children,
   defaultConfig = null,
   autoConnect = false,
+  storageMode = 'session',
 }: ConnectionProviderProps) {
-  const [config, setConfigStorage] = useLocalStorage<ConnectionConfig | null>(
-    'sync-console-connection',
-    null
+  const [config, setConfigState] = useState<ConnectionConfig | null>(() =>
+    readStoredConfig(storageMode)
+  );
+
+  useEffect(() => {
+    const storedConfig = readStoredConfig(storageMode);
+    setConfigState(storedConfig);
+  }, [storageMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (storageMode !== 'local') {
+      window.localStorage.removeItem(CONNECTION_STORAGE_KEY);
+    }
+    if (storageMode === 'memory') {
+      window.sessionStorage.removeItem(CONNECTION_STORAGE_KEY);
+    }
+  }, [storageMode]);
+
+  const setConfigStorage = useCallback(
+    (nextConfig: ConnectionConfig | null) => {
+      const normalized = normalizeConfig(nextConfig);
+      setConfigState(normalized);
+      writeStoredConfig(storageMode, normalized);
+    },
+    [storageMode]
   );
 
   const [state, setState] = useState<ConnectionState>({
@@ -94,18 +170,16 @@ export function ConnectionProvider({
         return false;
       }
 
-      const normalizedConfig: ConnectionConfig = {
-        serverUrl: effectiveConfig.serverUrl?.trim() ?? '',
-        token: effectiveConfig.token?.trim() ?? '',
-      };
+      const normalizedConfig = normalizeConfig(effectiveConfig);
 
       // Validate config has required fields
-      if (!normalizedConfig.serverUrl) {
-        setState((s) => ({ ...s, error: 'Server URL is required' }));
-        return false;
-      }
-      if (!normalizedConfig.token) {
-        setState((s) => ({ ...s, error: 'Token is required' }));
+      if (!normalizedConfig) {
+        const hasServerUrl =
+          (effectiveConfig.serverUrl?.trim() ?? '').length > 0;
+        setState((s) => ({
+          ...s,
+          error: hasServerUrl ? 'Token is required' : 'Server URL is required',
+        }));
         return false;
       }
 

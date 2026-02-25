@@ -11,12 +11,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 class MockDownstreamSocket {
   url: string;
+  onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   closeCalls = 0;
+  sent: string[] = [];
 
   constructor(url: string) {
     this.url = url;
+  }
+
+  emitOpen() {
+    this.onopen?.(new Event('open'));
   }
 
   emitJson(payload: Record<string, unknown>) {
@@ -31,6 +37,10 @@ class MockDownstreamSocket {
 
   close() {
     this.closeCalls += 1;
+  }
+
+  send(data: string) {
+    this.sent.push(data);
   }
 }
 
@@ -151,9 +161,18 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
 
     const alphaUrl = new URL(alphaSocket.url);
     expect(alphaUrl.pathname).toBe('/api/alpha/console/events/live');
-    expect(alphaUrl.searchParams.get('token')).toBe(CONSOLE_TOKEN);
+    expect(alphaUrl.searchParams.get('token')).toBeNull();
     expect(alphaUrl.searchParams.get('partitionId')).toBe('tenant-a');
     expect(alphaUrl.searchParams.get('replayLimit')).toBe('42');
+
+    alphaSocket.emitOpen();
+    betaSocket.emitOpen();
+    expect(alphaSocket.sent[0]).toBe(
+      JSON.stringify({ type: 'auth', token: CONSOLE_TOKEN })
+    );
+    expect(betaSocket.sent[0]).toBe(
+      JSON.stringify({ type: 'auth', token: CONSOLE_TOKEN })
+    );
 
     const connectedEvent = upstream.messages.find(
       (message) => message.type === 'connected'
@@ -191,19 +210,51 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
     );
   });
 
-  it('closes the upstream socket when auth is missing', async () => {
+  it('accepts auth over first websocket message when headers are missing', async () => {
     const { app, downstreamSockets, getEvents } = createGatewayLiveHarness();
 
     const response = await app.request('http://localhost/console/events/live');
     expect(response.status).toBe(200);
 
     const events = getEvents();
-    if (!events?.onOpen) {
+    if (!events?.onOpen || !events.onMessage) {
       throw new Error('Expected websocket onOpen handler to be captured.');
     }
 
     const upstream = createUpstreamSocketHarness();
     events.onOpen(new Event('open'), upstream.ws);
+    expect(downstreamSockets).toHaveLength(0);
+
+    await events.onMessage(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'auth', token: CONSOLE_TOKEN }),
+      }),
+      upstream.ws
+    );
+
+    expect(upstream.messages[0]?.type).toBe('connected');
+    expect(downstreamSockets).toHaveLength(2);
+  });
+
+  it('closes the upstream socket when websocket auth token is invalid', async () => {
+    const { app, downstreamSockets, getEvents } = createGatewayLiveHarness();
+
+    const response = await app.request('http://localhost/console/events/live');
+    expect(response.status).toBe(200);
+
+    const events = getEvents();
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+    await events.onMessage(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'auth', token: 'bad-token' }),
+      }),
+      upstream.ws
+    );
 
     const errorEvent = upstream.messages[0];
     expect(errorEvent?.type).toBe('error');

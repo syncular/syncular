@@ -243,7 +243,6 @@ export function useLiveEvents(
           : baseUrl.pathname;
         baseUrl.pathname = `${normalizedPath}/console/events/live`;
         baseUrl.search = '';
-        baseUrl.searchParams.set('token', config.token);
         if (lastEventTimestampRef.current) {
           baseUrl.searchParams.set('since', lastEventTimestampRef.current);
         }
@@ -266,8 +265,21 @@ export function useLiveEvents(
           return;
         }
         reconnectAttemptsRef.current = 0;
-        markActivity();
         setError(null);
+        setConnectionState('connecting');
+        setIsConnected(false);
+
+        try {
+          ws.send(
+            JSON.stringify({
+              type: 'auth',
+              token: config.token,
+            })
+          );
+        } catch {
+          ws.close();
+          return;
+        }
 
         clearStaleInterval();
         staleCheckIntervalRef.current = setInterval(() => {
@@ -304,7 +316,19 @@ export function useLiveEvents(
           markActivity();
 
           // Skip control events
-          if (eventType === 'connected' || eventType === 'heartbeat') {
+          if (
+            eventType === 'connected' ||
+            eventType === 'heartbeat' ||
+            eventType === 'auth_required'
+          ) {
+            return;
+          }
+          if (eventType === 'error') {
+            const message =
+              typeof data.message === 'string'
+                ? data.message
+                : 'Live events authentication failed';
+            setError(new Error(message));
             return;
           }
 
