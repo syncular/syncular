@@ -1,14 +1,13 @@
 ---
 title: CLI
-description: Scaffold projects, run migrations, and inspect local setup with the Syncular CLI.
+description: Scaffold projects, run local dev flows, and deploy managed Spaces apps with the Syncular CLI.
 ---
 
 # CLI
 
-The Syncular CLI provides two core workflows:
+The Syncular CLI supports local development workflows and managed Spaces deployment workflows.
 
-- scaffold projects (`create --template ...`)
-- run migration adapter operations (`migrate-status`, `migrate-up`)
+In TTY sessions, it opens interactive mode by default. Use `--no-interactive` for script mode.
 
 ## Run the CLI
 
@@ -25,19 +24,41 @@ npx @syncular/cli --help
 bunx @syncular/cli --help
 ```
 
+The help output is the source of truth for currently available commands and flags.
+
 ## Command reference
 
-| Command | What it does |
+| Local command | What it does |
 |---|---|
+| `syncular doctor` | Run local checks (runtime + workspace + git) |
+| `syncular console` | Serve a local Syncular Console instance |
 | `syncular create --template syncular-libraries` | Scaffold integration libraries (default template) |
 | `syncular create --template syncular-demo` | Scaffold a runnable full demo (Hono + Vite React + WA-SQLite) |
 | `syncular create --template spaces-app` | Scaffold a managed Spaces app |
 | `syncular create --template spaces-demo` | Scaffold the managed Spaces demo project |
+| `syncular dev` | Run local managed app dev server |
+| `syncular typegen` | Generate app database TypeScript types |
 | `syncular migrate-status` | Show current/target/pending migration versions via adapter |
 | `syncular migrate-up` | Apply migrations via adapter |
-| `syncular doctor` | Run local checks (runtime + workspace + git) |
-| `syncular console` | Serve a local Syncular Console instance (use `--server-url`/`--token-env` to preconfigure) |
-| `syncular interactive` | Open the full TUI menu |
+
+| Managed Spaces command | What it does |
+|---|---|
+| `syncular login`, `logout`, `whoami` | Authenticate against the control plane |
+| `syncular create-space --name <name>` | Create a managed space |
+| `syncular target --set spaces` | Set default target profile |
+| `syncular build` | Build deployment artifact |
+| `syncular eject` | Generate a deployable worker project |
+| `syncular deploy --space <spaceId>` | Deploy to a managed space |
+| `syncular verify --space <spaceId>` | Verify deployed runtime |
+| `syncular deployments --space <spaceId>` | List deployment history |
+| `syncular rollback --space <spaceId> --to <deploymentId>` | Roll back deployment |
+
+## Common flags
+
+- `--interactive`: force interactive TUI mode
+- `--no-interactive`: disable interactive mode
+- `--help`: print command help
+- `--version`: print CLI version
 
 ## Guides
 

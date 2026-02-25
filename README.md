@@ -122,7 +122,7 @@ All packages are published under the `@syncular` scope on npm.
 bun install
 bun --cwd apps/demo dev     # demo (single app + console shell, default http://localhost:9811)
 bun --cwd apps/docs dev     # docs at http://localhost:3000
-bun --cwd apps/console dev  # console at http://localhost:5174
+bun --cwd apps/console dev  # console at http://localhost:3000
 ```
 
 ## License
