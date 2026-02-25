@@ -11,6 +11,7 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    "allowArbitraryExtensions": true,
     "customConditions": ["bun"],
     "resolveJsonModule": true,
     "isolatedModules": true,

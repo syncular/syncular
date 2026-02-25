@@ -43,7 +43,8 @@
       "includeEntryExports": false
     },
     "packages/console": {
-      "includeEntryExports": false
+      "includeEntryExports": false,
+      "entry": ["build-static.ts"]
     },
     "packages/server": {
       "includeEntryExports": false
@@ -133,13 +134,19 @@
     "apps/demo": {
       "includeEntryExports": false,
       "entry": [
+        "build.ts",
         "src/main.tsx!",
         "src/cf/index.ts!",
+        "src/server/index.ts!",
+        "src/sw/server.ts!",
         "scripts/*.ts"
       ]
     },
     "apps/console": {
-      "entry": ["src/main.tsx!"]
+      "entry": [
+        "build.ts",
+        "src/main.tsx!"
+      ]
     },
     "apps/docs": {
       "includeEntryExports": false,
@@ -161,7 +168,12 @@
     },
     "tests/load": {
       "includeEntryExports": false,
-      "entry": ["lib/*.js", "scripts/*.js", "seeding.ts"],
+      "entry": [
+        "lib/*.js",
+        "scripts/*.js",
+        "seeding.ts",
+        "server.ts"
+      ],
       "ignoreDependencies": ["k6"]
     },
     "tests/integration": {
