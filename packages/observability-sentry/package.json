@@ -62,8 +62,8 @@
     "release": "bunx syncular-publish"
   },
   "dependencies": {
-    "@sentry/cloudflare": "^10.39.0",
-    "@sentry/react": "^10.39.0",
+    "@sentry/cloudflare": "^10.40.0",
+    "@sentry/react": "^10.40.0",
     "@syncular/core": "workspace:*"
   },
   "devDependencies": {

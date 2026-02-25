@@ -51,14 +51,14 @@
     "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.6.3",
+    "@happy-dom/global-registrator": "^20.7.0",
     "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
     "@syncular/testkit": "workspace:*",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
-    "happy-dom": "^20.6.3",
+    "happy-dom": "^20.7.0",
     "kysely": "*",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"

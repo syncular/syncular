@@ -23,7 +23,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "bun-plugin-tailwind": "^0.1.2",
-    "tailwindcss": "^4.2.0",
+    "tailwindcss": "^4.2.1",
     "wrangler": "*"
   }
 }

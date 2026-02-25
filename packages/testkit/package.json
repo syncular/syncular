@@ -52,7 +52,7 @@
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/transport-http": "workspace:*",
-    "hono": "^4.12.0"
+    "hono": "^4.12.2"
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",

@@ -72,7 +72,7 @@
     "@syncular/transport-http": "workspace:*",
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.21",
-    "@tanstack/react-router": "^1.161.3",
+    "@tanstack/react-router": "^1.162.9",
     "lucide-react": "^0.575.0"
   },
   "peerDependencies": {
@@ -81,13 +81,13 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
-    "@tailwindcss/vite": "^4.2.0",
+    "@tailwindcss/vite": "^4.2.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5.1.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "tailwindcss": "^4.2.0",
+    "tailwindcss": "^4.2.1",
     "vite": "^7.3.1"
   },
   "files": [
