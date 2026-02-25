@@ -48,7 +48,7 @@ syncular console \
 
 ## What the command does
 
-- resolves static distributable files from `@syncular/console/static/*`
+- serves Console distributables through `createConsoleStaticResponder` from `syncular/console-server`
 - serves them over a local HTTP server
 - serves Vite-built JS/CSS assets (same distributables shipped in `@syncular/console`)
 - injects runtime meta config into `index.html`:
@@ -56,6 +56,7 @@ syncular console \
   - `syncular-console-token`
   - `syncular-console-basepath`
 - keeps running until `Ctrl+C`
+- avoids direct `@syncular/console/static/index.html` resolution hacks in app code
 
 ## Notes
 

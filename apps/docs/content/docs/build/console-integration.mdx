@@ -36,6 +36,9 @@ This is the fastest path when your app server is already running and you want a 
 
 See full command details in [CLI Console Command](/docs/cli/console).
 
+For programmatic serving, the supported API is `createConsoleStaticResponder` from `syncular/console-server`.
+Do not resolve `@syncular/console/static/index.html` directly in application code.
+
 ## 2) Backend helper (`@syncular/server-hono`)
 
 If you already run Hono, use `mountConsoleUi` to serve the Console app and prefill runtime config.
@@ -59,12 +62,12 @@ This automatically serves `@syncular/console/static/*` and injects:
 - `syncular-console-server-url`
 - `syncular-console-token`
 
-## 3) Generic backend helper (`@syncular/console/server`)
+## 3) Generic backend helper (`syncular/console-server`, recommended)
 
 Use this when your backend is not Hono.
 
 ```ts
-import { createConsoleStaticResponder } from '@syncular/console/server';
+import { createConsoleStaticResponder } from 'syncular/console-server';
 
 const serveConsole = createConsoleStaticResponder({ mountPath: '/console' });
 
