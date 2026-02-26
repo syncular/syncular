@@ -1,7 +1,7 @@
 /**
- * Integration load tests - Extreme load scenarios (gated)
+ * Integration load tests - Extreme load scenarios.
  *
- * Run with: INTEGRATION_LOAD=true bun --cwd tests/integration test __tests__/load.test.ts
+ * Run with: bun --cwd tests/integration test __tests__/load.test.ts
  */
 
 import { afterEach, beforeEach, describe, it } from 'bun:test';
@@ -18,9 +18,7 @@ import {
   runParallelPushScenario,
 } from '../scenarios/extreme-load.scenario';
 
-const isLoadTest = process.env.INTEGRATION_LOAD === 'true';
-
-describe.skipIf(!isLoadTest)('integration: load', () => {
+describe('integration: load', () => {
   let server: IntegrationServer;
   let clients: IntegrationClient[];
   const userId = 'test-user';

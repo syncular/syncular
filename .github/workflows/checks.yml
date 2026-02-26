@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main, release]
   workflow_dispatch:
+  schedule:
+    - cron: '30 3 * * *'
 
 concurrency:
   group: checks-${{ github.event.pull_request.number || github.ref }}
@@ -73,6 +75,27 @@ jobs:
         with:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  integration-load:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run integration load scenarios
+        run: bun run test:load
+
+  integration-full:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run full integration matrix
+        run: bun run test:integration:full
 
   perf:
     if: github.event_name == 'pull_request'

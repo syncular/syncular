@@ -1,5 +1,5 @@
 /**
- * Extreme load scenario - Tests with 10K+ rows (gated: INTEGRATION_LOAD=true)
+ * Extreme load scenario - Tests with 10K+ rows.
  */
 
 import { expect } from 'bun:test';
