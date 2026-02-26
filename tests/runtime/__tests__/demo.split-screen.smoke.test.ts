@@ -1,7 +1,20 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'bun:test';
+import { Buffer } from 'node:buffer';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { type Browser, chromium, type Page } from '@playwright/test';
+import {
+  type BrowserErrorCollector,
+  collectBrowserErrors,
+} from '../shared/browser-errors';
 import { pickFreePort, shutdown, waitForHealthy } from '../shared/utils';
 
 function hasPlaywrightChromiumInstalled(): boolean {
@@ -20,6 +33,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
   let demoBaseUrl = '';
   let browser: Browser;
   let page: Page;
+  let browserErrors: BrowserErrorCollector | null = null;
 
   beforeAll(async () => {
     const port = await pickFreePort();
@@ -43,9 +57,23 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
     page = await context.newPage();
+    browserErrors = collectBrowserErrors(page);
   }, 120_000);
 
+  beforeEach(() => {
+    if (!browserErrors)
+      throw new Error('browser error collector not initialized');
+    browserErrors.clear();
+  });
+
+  afterEach(() => {
+    if (!browserErrors)
+      throw new Error('browser error collector not initialized');
+    browserErrors.assertNone('demo smoke test');
+  });
+
   afterAll(async () => {
+    browserErrors?.detach();
     await Promise.all([
       browser?.close().catch(() => {}),
       shutdown(demoProc).catch(() => {}),
@@ -99,7 +127,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     expect(finalCount).toBeGreaterThanOrEqual(2);
   }, 300_000);
 
-  it('initializes media blob upload endpoint', async () => {
+  it('uploads media and syncs thumbnails across both clients', async () => {
     await page.goto(`${demoBaseUrl}/media`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(
       () => document.querySelector('input[type="file"]') !== null,
@@ -107,29 +135,33 @@ describeDemoSmoke('Demo split-screen smoke', () => {
       { timeout: 120_000 }
     );
 
-    const blobHash = `sha256:${'a'.repeat(64)}`;
-    const response = await page.evaluate(
-      async ({ hash }) => {
-        const res = await fetch('/api/sync/blobs/upload', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-user-id': 'demo-media-user',
-          },
-          body: JSON.stringify({
-            hash,
-            size: 3,
-            mimeType: 'image/png',
-          }),
-        });
-        return {
-          status: res.status,
-          body: (await res.text()).slice(0, 200),
-        };
-      },
-      { hash: blobHash }
+    expect(
+      await page.getByText('Database initialization failed:').count()
+    ).toBe(0);
+
+    const initialImageCount = await page.locator('main img').count();
+    const fileName = `smoke-media-${Date.now()}.png`;
+    const png1x1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8LhB4AAAAASUVORK5CYII=',
+      'base64'
     );
 
-    expect(response.status).toBe(200);
+    await page.locator('input[type="file"]').first().setInputFiles({
+      name: fileName,
+      mimeType: 'image/png',
+      buffer: png1x1,
+    });
+
+    await page.waitForFunction(
+      (name) => document.body.innerText.includes(name),
+      fileName,
+      { timeout: 120_000 }
+    );
+
+    await page.waitForFunction(
+      (minImages) => document.querySelectorAll('main img').length >= minImages,
+      initialImageCount + 2,
+      { timeout: 240_000 }
+    );
   }, 300_000);
 });

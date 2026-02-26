@@ -5,12 +5,24 @@
  * and runs conformance + sync scenarios via page.evaluate().
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'bun:test';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { type Browser, chromium, type Page } from '@playwright/test';
 import { createIntegrationServer } from '../../integration/harness/create-server';
 import type { IntegrationServer } from '../../integration/harness/types';
+import {
+  type BrowserErrorCollector,
+  collectBrowserErrors,
+} from '../shared/browser-errors';
 import { pickFreePort, waitForHealthy } from '../shared/utils';
 
 /** Window augmentation for runtime API exposed by entry.ts */
@@ -57,6 +69,7 @@ describeBrowserRuntime('Browser runtime (wa-sqlite)', () => {
   let browser: Browser;
   let page: Page;
   let server: IntegrationServer;
+  let browserErrors: BrowserErrorCollector | null = null;
 
   beforeAll(async () => {
     // Start integration server for sync tests (with CORS)
@@ -87,9 +100,23 @@ describeBrowserRuntime('Browser runtime (wa-sqlite)', () => {
     await page.waitForFunction(() => window.__runtimeReady === true, {
       timeout: 30_000,
     });
+    browserErrors = collectBrowserErrors(page);
+  });
+
+  beforeEach(() => {
+    if (!browserErrors)
+      throw new Error('browser error collector not initialized');
+    browserErrors.clear();
+  });
+
+  afterEach(() => {
+    if (!browserErrors)
+      throw new Error('browser error collector not initialized');
+    browserErrors.assertNone('browser runtime test');
   });
 
   afterAll(async () => {
+    browserErrors?.detach();
     // Force-kill the asset server immediately (no graceful shutdown needed in tests)
     try {
       assetProc?.kill('SIGKILL');
