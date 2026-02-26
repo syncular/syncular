@@ -182,6 +182,13 @@ async function ensureClientSyncSchemaCompat<DB extends SyncClientDb>(
       .addColumn('resolution', 'text')
       .execute();
   });
+
+  await db.schema
+    .createIndex('idx_sync_outbox_commits_status_updated_at')
+    .ifNotExists()
+    .on('sync_outbox_commits')
+    .columns(['status', 'updated_at', 'created_at'])
+    .execute();
 }
 
 /**
@@ -273,6 +280,13 @@ export async function ensureClientSyncSchema<DB extends SyncClientDb>(
     .ifNotExists()
     .on('sync_outbox_commits')
     .columns(['status', 'created_at'])
+    .execute();
+
+  await db.schema
+    .createIndex('idx_sync_outbox_commits_status_updated_at')
+    .ifNotExists()
+    .on('sync_outbox_commits')
+    .columns(['status', 'updated_at', 'created_at'])
     .execute();
 
   await db.schema

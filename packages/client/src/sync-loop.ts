@@ -25,7 +25,9 @@ import type { SyncClientPluginContext } from './plugins/types';
 import {
   applyPullResponse,
   buildPullRequest,
+  createFollowupPullState,
   type SyncPullOnceOptions,
+  type SyncPullRequestState,
   syncPullOnce,
 } from './pull-engine';
 import { type SyncPushOnceOptions, syncPushOnce } from './push-engine';
@@ -64,6 +66,8 @@ async function syncPushUntilSettled<DB extends SyncClientDb>(
 interface SyncPullUntilSettledOptions extends SyncPullOnceOptions {
   /** Max pull rounds per call. Default: 20 */
   maxRounds?: number;
+  /** Optional prebuilt state from a prior pull round in the same sync cycle. */
+  initialPullState?: SyncPullRequestState;
 }
 
 interface SyncPullUntilSettledResult {
@@ -125,14 +129,17 @@ async function syncPullUntilSettled<DB extends SyncClientDb>(
   const maxRounds = Math.max(1, Math.min(1000, options.maxRounds ?? 20));
 
   const aggregatedBySubId = new Map<string, SyncPullSubscriptionResponse>();
+  let pullState =
+    options.initialPullState ?? (await buildPullRequest(db, options));
   let rounds = 0;
 
   for (let i = 0; i < maxRounds; i++) {
     rounds += 1;
-    const res = await syncPullOnce(db, transport, handlers, options);
+    const res = await syncPullOnce(db, transport, handlers, options, pullState);
     mergePullResponse(aggregatedBySubId, res);
 
     if (!needsAnotherPull(res)) break;
+    pullState = createFollowupPullState(pullState, res);
   }
 
   return {
@@ -348,6 +355,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
       const more = await syncPullUntilSettled(db, transport, handlers, {
         ...pullOpts,
         maxRounds: (options.maxPullRounds ?? 20) - 1,
+        initialPullState: createFollowupPullState(pullState, pullResponse),
       });
       pullRounds += more.rounds;
       mergePullResponse(aggregatedBySubId, more.response);

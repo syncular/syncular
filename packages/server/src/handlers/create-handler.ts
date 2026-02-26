@@ -31,6 +31,7 @@ import type {
   UpdateQueryBuilder,
   UpdateResult,
 } from 'kysely';
+import { sql } from 'kysely';
 import type { SyncCoreDb } from '../schema';
 import type {
   ApplyOperationResult,
@@ -64,6 +65,14 @@ function isConstraintViolationError(message: string): boolean {
     normalized.includes('not null') ||
     normalized.includes('foreign key') ||
     normalized.includes('unique')
+  );
+}
+
+function isMissingColumnReferenceError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('no such column') ||
+    (normalized.includes('column') && normalized.includes('does not exist'))
   );
 }
 
@@ -505,93 +514,79 @@ export function createServerHandler<
         : {};
     const payload = applyInboundTransform(payloadRecord, ctx.schemaVersion);
 
-    // Check whether the row exists and fetch only version metadata for hot path.
-    const existingRow = await (
-      trx.selectFrom(table) as SelectQueryBuilder<
-        ServerDB,
-        keyof ServerDB & string,
-        Record<string, unknown>
-      >
-    )
-      .select(ref<string>(versionColumn))
-      .where(ref<string>(primaryKey), '=', op.row_id)
-      .executeTakeFirst();
-
-    const hasExistingRow = existingRow !== undefined;
-    const existingVersion =
-      (existingRow?.[versionColumn] as number | undefined) ?? 0;
-
-    // Check version conflict
-    if (
-      hasExistingRow &&
-      op.base_version != null &&
-      existingVersion !== op.base_version
-    ) {
-      const conflictRow = await (
-        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
-          ServerDB,
-          keyof ServerDB & string,
-          Record<string, unknown>
-        >
-      )
-        .where(ref<string>(primaryKey), '=', op.row_id)
-        .executeTakeFirst();
-
-      if (!conflictRow) {
-        return {
-          result: {
-            opIndex,
-            status: 'error',
-            error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-            code: 'ROW_MISSING',
-            retriable: false,
-          },
-          emittedChanges: [],
-        };
-      }
-
-      return {
-        result: {
-          opIndex,
-          status: 'conflict',
-          message: `Version conflict: server=${existingVersion}, base=${op.base_version}`,
-          server_version: existingVersion,
-          server_row: applyOutboundTransform(
-            conflictRow as Selectable<ServerDB[TableName]>
-          ),
-        },
-        emittedChanges: [],
-      };
-    }
-
-    // If the client provided a base version, they expected this row to exist.
-    // A missing row usually indicates stale local state after a server reset.
-    if (!hasExistingRow && op.base_version != null) {
-      return {
-        result: {
-          opIndex,
-          status: 'error',
-          error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-          code: 'ROW_MISSING',
-          retriable: false,
-        },
-        emittedChanges: [],
-      };
-    }
-
-    const nextVersion = existingVersion + 1;
-
     let updated: Record<string, unknown> | undefined;
     let constraintError: { message: string; code: string } | null = null;
 
     try {
-      if (hasExistingRow) {
-        // Update - merge payload with existing
+      if (op.base_version != null) {
+        const expectedVersion = op.base_version;
+        const conditionalUpdateSet: Record<string, unknown> = {
+          ...payload,
+          [versionColumn]: expectedVersion + 1,
+        };
+        delete conditionalUpdateSet[primaryKey];
+        for (const col of Object.values(scopeColumns)) {
+          delete conditionalUpdateSet[col];
+        }
+
+        updated = (await (
+          trx.updateTable(table) as UpdateQueryBuilder<
+            ServerDB,
+            TableName,
+            TableName,
+            UpdateResult
+          >
+        )
+          .set(conditionalUpdateSet as UpdateSetObject)
+          .where(ref<string>(primaryKey), '=', op.row_id)
+          .where(ref<string>(versionColumn), '=', expectedVersion)
+          .returningAll()
+          .executeTakeFirst()) as Record<string, unknown> | undefined;
+
+        if (!updated) {
+          const conflictRow = await (
+            trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+              ServerDB,
+              keyof ServerDB & string,
+              Record<string, unknown>
+            >
+          )
+            .where(ref<string>(primaryKey), '=', op.row_id)
+            .executeTakeFirst();
+
+          if (!conflictRow) {
+            return {
+              result: {
+                opIndex,
+                status: 'error',
+                error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
+                code: 'ROW_MISSING',
+                retriable: false,
+              },
+              emittedChanges: [],
+            };
+          }
+
+          const existingVersion =
+            (conflictRow[versionColumn] as number | undefined) ?? 0;
+          return {
+            result: {
+              opIndex,
+              status: 'conflict',
+              message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
+              server_version: existingVersion,
+              server_row: applyOutboundTransform(
+                conflictRow as Selectable<ServerDB[TableName]>
+              ),
+            },
+            emittedChanges: [],
+          };
+        }
+      } else {
         const updateSet: Record<string, unknown> = {
           ...payload,
-          [versionColumn]: nextVersion,
+          [versionColumn]: sql`${sql.ref(versionColumn)} + 1`,
         };
-        // Don't update primary key or scope columns
         delete updateSet[primaryKey];
         for (const col of Object.values(scopeColumns)) {
           delete updateSet[col];
@@ -609,27 +604,77 @@ export function createServerHandler<
           .where(ref<string>(primaryKey), '=', op.row_id)
           .returningAll()
           .executeTakeFirst()) as Record<string, unknown> | undefined;
-      } else {
-        // Insert
-        const insertValues: Record<string, unknown> = {
-          ...payload,
-          [primaryKey]: op.row_id,
-          [versionColumn]: 1,
-        };
 
-        updated = (await (
-          trx.insertInto(table) as InsertQueryBuilder<
-            ServerDB,
-            TableName,
-            InsertResult
-          >
-        )
-          .values(insertValues as Insertable<ServerDB[TableName]>)
-          .returningAll()
-          .executeTakeFirst()) as Record<string, unknown> | undefined;
+        if (!updated) {
+          const insertValues: Record<string, unknown> = {
+            ...payload,
+            [primaryKey]: op.row_id,
+            [versionColumn]: 1,
+          };
+
+          try {
+            updated = (await (
+              trx.insertInto(table) as InsertQueryBuilder<
+                ServerDB,
+                TableName,
+                InsertResult
+              >
+            )
+              .values(insertValues as Insertable<ServerDB[TableName]>)
+              .returningAll()
+              .executeTakeFirst()) as Record<string, unknown> | undefined;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!isConstraintViolationError(message)) {
+              throw err;
+            }
+            updated = (await (
+              trx.updateTable(table) as UpdateQueryBuilder<
+                ServerDB,
+                TableName,
+                TableName,
+                UpdateResult
+              >
+            )
+              .set(updateSet as UpdateSetObject)
+              .where(ref<string>(primaryKey), '=', op.row_id)
+              .returningAll()
+              .executeTakeFirst()) as Record<string, unknown> | undefined;
+            if (!updated) {
+              constraintError = {
+                message,
+                code: classifyConstraintViolationCode(message),
+              };
+            }
+          }
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      if (op.base_version != null && isMissingColumnReferenceError(message)) {
+        const row = await (
+          trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+            ServerDB,
+            keyof ServerDB & string,
+            Record<string, unknown>
+          >
+        )
+          .where(ref<string>(primaryKey), '=', op.row_id)
+          .executeTakeFirst();
+        if (!row) {
+          return {
+            result: {
+              opIndex,
+              status: 'error',
+              error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
+              code: 'ROW_MISSING',
+              retriable: false,
+            },
+            emittedChanges: [],
+          };
+        }
+      }
+
       if (!isConstraintViolationError(message)) {
         throw err;
       }

@@ -6,6 +6,7 @@ import type {
   SyncBootstrapState,
   SyncPullRequest,
   SyncPullResponse,
+  SyncPullSubscriptionResponse,
   SyncSnapshot,
   SyncSubscriptionRequest,
   SyncTransport,
@@ -516,6 +517,13 @@ export interface SyncPullOnceOptions {
   sha256?: (bytes: Uint8Array) => Promise<string>;
 }
 
+export interface SyncPullRequestState {
+  request: SyncPullRequest;
+  existing: SyncSubscriptionStateTable[];
+  existingById: Map<string, SyncSubscriptionStateTable>;
+  stateId: string;
+}
+
 /**
  * Build a pull request from subscription state. Exported for use
  * by the combined sync path in sync-loop.ts.
@@ -523,12 +531,7 @@ export interface SyncPullOnceOptions {
 export async function buildPullRequest<DB extends SyncClientDb>(
   db: Kysely<DB>,
   options: SyncPullOnceOptions
-): Promise<{
-  request: SyncPullRequest;
-  existing: SyncSubscriptionStateTable[];
-  existingById: Map<string, SyncSubscriptionStateTable>;
-  stateId: string;
-}> {
+): Promise<SyncPullRequestState> {
   const stateId = options.stateId ?? 'default';
 
   const existingResult = await sql<SyncSubscriptionStateTable>`
@@ -569,6 +572,70 @@ export async function buildPullRequest<DB extends SyncClientDb>(
   return { request, existing, existingById, stateId };
 }
 
+export function createFollowupPullState(
+  pullState: SyncPullRequestState,
+  response: SyncPullResponse
+): SyncPullRequestState {
+  const responseById = new Map<string, SyncPullSubscriptionResponse>();
+  for (const sub of response.subscriptions ?? []) {
+    responseById.set(sub.id, sub);
+  }
+
+  const now = Date.now();
+  const nextExisting: SyncSubscriptionStateTable[] = [];
+  const nextExistingById = new Map<string, SyncSubscriptionStateTable>();
+
+  for (const sub of pullState.request.subscriptions ?? []) {
+    const res = responseById.get(sub.id);
+    if (res?.status === 'revoked') {
+      continue;
+    }
+
+    const nextCursor = res ? Math.max(-1, res.nextCursor) : (sub.cursor ?? -1);
+    const nextBootstrapState = res
+      ? res.bootstrap
+        ? (res.bootstrapState ?? null)
+        : null
+      : (sub.bootstrapState ?? null);
+    const prev = pullState.existingById.get(sub.id);
+    const nextRow: SyncSubscriptionStateTable = {
+      state_id: pullState.stateId,
+      subscription_id: sub.id,
+      table: sub.table,
+      scopes_json: serializeJsonCached(sub.scopes ?? {}),
+      params_json: serializeJsonCached(sub.params ?? {}),
+      cursor: nextCursor,
+      bootstrap_state_json: nextBootstrapState
+        ? serializeJsonCached(nextBootstrapState)
+        : null,
+      status: 'active',
+      created_at: prev?.created_at ?? now,
+      updated_at: now,
+    };
+    nextExisting.push(nextRow);
+    nextExistingById.set(nextRow.subscription_id, nextRow);
+  }
+
+  const nextRequest: SyncPullRequest = {
+    ...pullState.request,
+    subscriptions: (pullState.request.subscriptions ?? []).map((sub) => {
+      const row = nextExistingById.get(sub.id);
+      return {
+        ...sub,
+        cursor: Math.max(-1, row?.cursor ?? -1),
+        bootstrapState: parseBootstrapState(row?.bootstrap_state_json),
+      };
+    }),
+  };
+
+  return {
+    request: nextRequest,
+    existing: nextExisting,
+    existingById: nextExistingById,
+    stateId: pullState.stateId,
+  };
+}
+
 /**
  * Apply a pull response (run plugins + write to local DB).
  * Exported for use by the combined sync path in sync-loop.ts.
@@ -578,12 +645,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
   transport: SyncTransport,
   handlers: ClientHandlerCollection<DB>,
   options: SyncPullOnceOptions,
-  pullState: {
-    request: SyncPullRequest;
-    existing: SyncSubscriptionStateTable[];
-    existingById: Map<string, SyncSubscriptionStateTable>;
-    stateId: string;
-  },
+  pullState: SyncPullRequestState,
   rawResponse: SyncPullResponse
 ): Promise<SyncPullResponse> {
   const { request, existing, existingById, stateId } = pullState;
@@ -773,9 +835,10 @@ export async function syncPullOnce<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
   handlers: ClientHandlerCollection<DB>,
-  options: SyncPullOnceOptions
+  options: SyncPullOnceOptions,
+  pullStateOverride?: SyncPullRequestState
 ): Promise<SyncPullResponse> {
-  const pullState = await buildPullRequest(db, options);
+  const pullState = pullStateOverride ?? (await buildPullRequest(db, options));
   const { clientId, ...pullBody } = pullState.request;
   const combined = await transport.sync({ clientId, pull: pullBody });
   if (!combined.pull) {

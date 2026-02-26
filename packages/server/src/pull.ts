@@ -73,6 +73,20 @@ export interface PullResult {
   clientCursor: number;
 }
 
+interface PendingExternalChunkWrite {
+  snapshot: SyncSnapshot;
+  cacheLookup: {
+    partitionId: string;
+    scopeKey: string;
+    scope: string;
+    asOfCommitSeq: number;
+    rowCursor: string | null;
+    rowLimit: number;
+  };
+  rowFramePayload: Uint8Array;
+  expiresAt: string;
+}
+
 /**
  * Generate a stable cache key for snapshot chunks.
  */
@@ -308,6 +322,7 @@ export async function pull<
           50
         );
         const dedupeRows = request.dedupeRows === true;
+        const pendingExternalChunkWrites: PendingExternalChunkWrite[] = [];
 
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
@@ -483,63 +498,51 @@ export async function pull<
                   const rowFramePayload = concatByteChunks(
                     bundle.rowFrameParts
                   );
-                  const sha256 = await sha256Hex(rowFramePayload);
                   const expiresAt = new Date(
                     Date.now() + Math.max(1000, bundle.ttlMs)
                   ).toISOString();
 
                   if (args.chunkStorage) {
-                    if (args.chunkStorage.storeChunkStream) {
-                      const { stream: bodyStream, byteLength } =
-                        await gzipBytesToStream(rowFramePayload);
-                      chunkRef = await args.chunkStorage.storeChunkStream({
+                    const snapshot: SyncSnapshot = {
+                      table: bundle.table,
+                      rows: [],
+                      chunks: [],
+                      isFirstPage: bundle.isFirstPage,
+                      isLastPage: bundle.isLastPage,
+                    };
+                    snapshots.push(snapshot);
+                    pendingExternalChunkWrites.push({
+                      snapshot,
+                      cacheLookup: {
                         partitionId,
                         scopeKey: cacheKey,
                         scope: bundle.table,
                         asOfCommitSeq: effectiveState.asOfCommitSeq,
                         rowCursor: bundle.startCursor,
                         rowLimit: bundleRowLimit,
-                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                        sha256,
-                        byteLength,
-                        bodyStream,
-                        expiresAt,
-                      });
-                    } else {
-                      const compressedBody = await gzipBytes(rowFramePayload);
-                      chunkRef = await args.chunkStorage.storeChunk({
-                        partitionId,
-                        scopeKey: cacheKey,
-                        scope: bundle.table,
-                        asOfCommitSeq: effectiveState.asOfCommitSeq,
-                        rowCursor: bundle.startCursor,
-                        rowLimit: bundleRowLimit,
-                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                        sha256,
-                        body: compressedBody,
-                        expiresAt,
-                      });
-                    }
-                  } else {
-                    const compressedBody = await gzipBytes(rowFramePayload);
-                    const chunkId = randomId();
-                    chunkRef = await insertSnapshotChunk(trx, {
-                      chunkId,
-                      partitionId,
-                      scopeKey: cacheKey,
-                      scope: bundle.table,
-                      asOfCommitSeq: effectiveState.asOfCommitSeq,
-                      rowCursor: bundle.startCursor,
-                      rowLimit: bundleRowLimit,
-                      encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                      sha256,
-                      body: compressedBody,
+                      },
+                      rowFramePayload,
                       expiresAt,
                     });
+                    return;
                   }
+                  const sha256 = await sha256Hex(rowFramePayload);
+                  const compressedBody = await gzipBytes(rowFramePayload);
+                  const chunkId = randomId();
+                  chunkRef = await insertSnapshotChunk(trx, {
+                    chunkId,
+                    partitionId,
+                    scopeKey: cacheKey,
+                    scope: bundle.table,
+                    asOfCommitSeq: effectiveState.asOfCommitSeq,
+                    rowCursor: bundle.startCursor,
+                    rowLimit: bundleRowLimit,
+                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                    sha256,
+                    body: compressedBody,
+                    expiresAt,
+                  });
                 }
 
                 snapshots.push({
@@ -684,7 +687,6 @@ export async function pull<
                   commitSeq: number;
                   createdAt: string;
                   actorId: string;
-                  changeId: number;
                   change: SyncChange;
                 }
               >();
@@ -707,11 +709,15 @@ export async function pull<
                   scopes: r.scopes,
                 };
 
+                // Move row keys to insertion tail so Map iteration yields
+                // "latest change wins" order without a full array sort.
+                if (latestByRowKey.has(rowKey)) {
+                  latestByRowKey.delete(rowKey);
+                }
                 latestByRowKey.set(rowKey, {
                   commitSeq: r.commit_seq,
                   createdAt: r.created_at,
                   actorId: r.actor_id,
-                  changeId: r.change_id,
                   change,
                 });
               }
@@ -731,12 +737,8 @@ export async function pull<
                 continue;
               }
 
-              const latest = Array.from(latestByRowKey.values()).sort(
-                (a, b) => a.commitSeq - b.commitSeq || a.changeId - b.changeId
-              );
-
               const commits: SyncCommit[] = [];
-              for (const item of latest) {
+              for (const item of latestByRowKey.values()) {
                 const lastCommit = commits[commits.length - 1];
                 if (!lastCommit || lastCommit.commitSeq !== item.commitSeq) {
                   commits.push({
@@ -841,6 +843,61 @@ export async function pull<
             clientCursor,
           };
         });
+
+        const chunkStorage = args.chunkStorage;
+        if (chunkStorage && pendingExternalChunkWrites.length > 0) {
+          for (const pending of pendingExternalChunkWrites) {
+            let chunkRef = await readSnapshotChunkRefByPageKey(db, {
+              partitionId: pending.cacheLookup.partitionId,
+              scopeKey: pending.cacheLookup.scopeKey,
+              scope: pending.cacheLookup.scope,
+              asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+              rowCursor: pending.cacheLookup.rowCursor,
+              rowLimit: pending.cacheLookup.rowLimit,
+              encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+              compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+            });
+
+            if (!chunkRef) {
+              const sha256 = await sha256Hex(pending.rowFramePayload);
+              if (chunkStorage.storeChunkStream) {
+                const { stream: bodyStream, byteLength } =
+                  await gzipBytesToStream(pending.rowFramePayload);
+                chunkRef = await chunkStorage.storeChunkStream({
+                  partitionId: pending.cacheLookup.partitionId,
+                  scopeKey: pending.cacheLookup.scopeKey,
+                  scope: pending.cacheLookup.scope,
+                  asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                  rowCursor: pending.cacheLookup.rowCursor,
+                  rowLimit: pending.cacheLookup.rowLimit,
+                  encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                  compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                  sha256,
+                  byteLength,
+                  bodyStream,
+                  expiresAt: pending.expiresAt,
+                });
+              } else {
+                const compressedBody = await gzipBytes(pending.rowFramePayload);
+                chunkRef = await chunkStorage.storeChunk({
+                  partitionId: pending.cacheLookup.partitionId,
+                  scopeKey: pending.cacheLookup.scopeKey,
+                  scope: pending.cacheLookup.scope,
+                  asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                  rowCursor: pending.cacheLookup.rowCursor,
+                  rowLimit: pending.cacheLookup.rowLimit,
+                  encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                  compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                  sha256,
+                  body: compressedBody,
+                  expiresAt: pending.expiresAt,
+                });
+              }
+            }
+
+            pending.snapshot.chunks = [chunkRef];
+          }
+        }
 
         const durationMs = Math.max(0, Date.now() - startedAtMs);
         const stats = summarizePullResponse(result.response);
