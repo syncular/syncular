@@ -72,7 +72,7 @@
     "@syncular/transport-http": "workspace:*",
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.21",
-    "@tanstack/react-router": "^1.162.9",
+    "@tanstack/react-router": "^1.163.2",
     "lucide-react": "^0.575.0"
   },
   "peerDependencies": {
