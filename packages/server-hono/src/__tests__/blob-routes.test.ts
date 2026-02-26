@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
 import {
+  type BlobTokenSigner,
   createBlobManager,
   createDatabaseBlobStorageAdapter,
   createHmacTokenSigner,
   ensureBlobStorageSchemaSqlite,
-  type BlobTokenSigner,
   type SyncBlobDb,
 } from '@syncular/server';
 import { Hono } from 'hono';
@@ -89,7 +89,9 @@ function buildApp(args: {
   db: Kysely<SyncBlobDb>;
   tokenSigner: BlobTokenSigner;
   adapter: BlobStorageAdapter;
-  authenticate?: (c: Parameters<typeof createBlobRoutes>[0]['authenticate']) => ReturnType<Parameters<typeof createBlobRoutes>[0]['authenticate']>;
+  authenticate?: (
+    c: Parameters<typeof createBlobRoutes>[0]['authenticate']
+  ) => ReturnType<Parameters<typeof createBlobRoutes>[0]['authenticate']>;
   canAccessBlob?: Parameters<typeof createBlobRoutes>[0]['canAccessBlob'];
 }): Hono {
   const blobManager = createBlobManager({
@@ -123,18 +125,21 @@ async function initiateUpload(args: {
   size: number;
   mimeType?: string;
 }): Promise<UploadInitResponse> {
-  const response = await args.app.request('http://localhost/sync/blobs/upload', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      [ACTOR_HEADER]: ACTOR_ID,
-    },
-    body: JSON.stringify({
-      hash: args.hash,
-      size: args.size,
-      mimeType: args.mimeType ?? 'application/octet-stream',
-    }),
-  });
+  const response = await args.app.request(
+    'http://localhost/sync/blobs/upload',
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [ACTOR_HEADER]: ACTOR_ID,
+      },
+      body: JSON.stringify({
+        hash: args.hash,
+        size: args.size,
+        mimeType: args.mimeType ?? 'application/octet-stream',
+      }),
+    }
+  );
 
   expect(response.status).toBe(200);
   return (await response.json()) as UploadInitResponse;
