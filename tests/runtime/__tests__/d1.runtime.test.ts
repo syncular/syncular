@@ -6,6 +6,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { createIntegrationServer } from '../../integration/harness/create-server';
 import type { IntegrationServer } from '../../integration/harness/types';
@@ -26,6 +28,7 @@ describe('D1 runtime (Cloudflare Workers)', () => {
   let wranglerProc: ReturnType<typeof Bun.spawn>;
   let workerUrl: string;
   let server: IntegrationServer;
+  let persistDir: string | null = null;
 
   beforeAll(async () => {
     if (!isEnabled()) return;
@@ -45,12 +48,15 @@ describe('D1 runtime (Cloudflare Workers)', () => {
       import.meta.dir,
       '../apps/d1/wrangler.toml'
     );
+    persistDir = await mkdtemp(path.join(os.tmpdir(), 'syncular-d1-runtime-'));
 
     wranglerProc = Bun.spawn(
       [
         wranglerBin,
         'dev',
         '--local',
+        '--persist-to',
+        persistDir,
         '--ip',
         '127.0.0.1',
         '--port',
@@ -69,12 +75,15 @@ describe('D1 runtime (Cloudflare Workers)', () => {
 
     workerUrl = `http://127.0.0.1:${workerPort}`;
     await waitForHealthy(workerUrl, 30_000);
-  });
+  }, 120_000);
 
   afterAll(async () => {
     if (wranglerProc) await shutdown(wranglerProc);
     if (server) await server.destroy();
-  });
+    if (persistDir) {
+      await rm(persistDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it.skipIf(!isEnabled())(
     'passes conformance (types, nulls, unique)',
