@@ -10,6 +10,7 @@ import {
 } from '../handlers/collection';
 import type { SyncServerAuth } from '../handlers/types';
 import type { SyncCoreDb } from '../schema';
+import { createDefaultScopeCacheKey, type ScopeCacheBackend } from './cache';
 
 export class InvalidSubscriptionScopeError extends Error {
   constructor(message: string) {
@@ -142,9 +143,11 @@ export async function resolveEffectiveScopesForSubscriptions<
   auth: Auth;
   subscriptions: SyncSubscriptionRequest[];
   handlers: ServerHandlerCollection<DB, Auth>;
+  scopeCache?: ScopeCacheBackend;
 }): Promise<ResolvedSubscription[]> {
   const out: ResolvedSubscription[] = [];
   const seenIds = new Set<string>();
+  const requestScopeCache = new Map<string, ScopeValues | null>();
 
   for (const sub of args.subscriptions) {
     if (!sub.id || typeof sub.id !== 'string') {
@@ -180,21 +183,88 @@ export async function resolveEffectiveScopesForSubscriptions<
       table: sub.table,
     });
 
-    // Get allowed scopes from the handler
-    let allowed: ScopeValues;
-    try {
-      allowed = await handler.resolveScopes({
-        db: args.db,
-        actorId: args.auth.actorId,
-        auth: args.auth,
-      });
-    } catch (resolveErr) {
-      // Scope resolution failed - mark subscription as revoked
-      // rather than failing the entire pull
-      console.error(
-        `[resolveScopes] Failed for table ${sub.table}, subscription ${sub.id}:`,
-        resolveErr
-      );
+    // Resolve allowed scopes with request-local memoization first, then
+    // optional shared cache backend, then table handler.
+    const scopeCacheKey = createDefaultScopeCacheKey({
+      auth: args.auth,
+      table: sub.table,
+    });
+    let allowed: ScopeValues | null;
+    if (requestScopeCache.has(scopeCacheKey)) {
+      allowed = requestScopeCache.get(scopeCacheKey) ?? null;
+    } else {
+      allowed = null;
+      let sharedCacheHit = false;
+
+      if (args.scopeCache) {
+        try {
+          const cachedAllowed = await args.scopeCache.get({
+            db: args.db,
+            auth: args.auth,
+            table: sub.table,
+            cacheKey: scopeCacheKey,
+          });
+          if (cachedAllowed !== null) {
+            allowed = cachedAllowed;
+            sharedCacheHit = true;
+          }
+        } catch (cacheErr) {
+          console.error(
+            `[scopeCache.get] Failed for table ${sub.table}, subscription ${sub.id}:`,
+            cacheErr
+          );
+        }
+      }
+
+      if (!sharedCacheHit) {
+        try {
+          allowed = await handler.resolveScopes({
+            db: args.db,
+            actorId: args.auth.actorId,
+            auth: args.auth,
+          });
+        } catch (resolveErr) {
+          // Scope resolution failed - mark subscription as revoked
+          // rather than failing the entire pull
+          console.error(
+            `[resolveScopes] Failed for table ${sub.table}, subscription ${sub.id}:`,
+            resolveErr
+          );
+          requestScopeCache.set(scopeCacheKey, null);
+          out.push({
+            id: sub.id,
+            table: sub.table,
+            scopes: {},
+            params: sub.params,
+            cursor: sub.cursor,
+            bootstrapState: sub.bootstrapState ?? null,
+            status: 'revoked',
+          });
+          continue;
+        }
+
+        if (args.scopeCache && allowed !== null) {
+          try {
+            await args.scopeCache.set({
+              db: args.db,
+              auth: args.auth,
+              table: sub.table,
+              cacheKey: scopeCacheKey,
+              scopes: allowed,
+            });
+          } catch (cacheErr) {
+            console.error(
+              `[scopeCache.set] Failed for table ${sub.table}, subscription ${sub.id}:`,
+              cacheErr
+            );
+          }
+        }
+      }
+
+      requestScopeCache.set(scopeCacheKey, allowed);
+    }
+
+    if (!allowed) {
       out.push({
         id: sub.id,
         table: sub.table,

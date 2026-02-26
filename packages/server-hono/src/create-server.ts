@@ -7,6 +7,7 @@
  */
 
 import type {
+  ScopeCacheBackend,
   ServerSyncConfig,
   ServerSyncDialect,
   SnapshotChunkStorage,
@@ -47,6 +48,9 @@ export interface SyncServerOptions<
 
   /** Snapshot chunk storage (external body storage, e.g. R2/S3) */
   chunkStorage?: SnapshotChunkStorage;
+
+  /** Scope cache backend for resolveScopes() results */
+  scopeCache?: ScopeCacheBackend;
 
   /** Sync route configuration */
   routes?: SyncRoutesConfigWithRateLimit;
@@ -106,6 +110,7 @@ export function createSyncServer<
     dialect,
     sync,
     chunkStorage,
+    scopeCache,
     routes,
     upgradeWebSocket,
     console: consoleConfig,
@@ -142,6 +147,7 @@ export function createSyncServer<
     authenticate: async (context): Promise<Auth | null> =>
       sync.authenticate(context.req.raw),
     chunkStorage,
+    scopeCache,
     consoleLiveEmitter: consoleEventEmitter,
     sync: {
       ...routes,

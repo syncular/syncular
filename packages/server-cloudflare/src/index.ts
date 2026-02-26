@@ -8,6 +8,9 @@
  * Blob storage:
  * - R2 native: `@syncular/server-cloudflare/r2`
  *
+ * Scope cache:
+ * - Durable Object cache backend: `@syncular/server-cloudflare/scope-cache`
+ *
  * Dialect is user-provided:
  * - D1 + SQLite: `@syncular/dialect-d1` + `@syncular/server-dialect-sqlite`
  * - Neon + Postgres: `@syncular/dialect-neon` + `@syncular/server-dialect-postgres`
@@ -15,4 +18,5 @@
 
 export * from './durable-object';
 export * from './r2';
+export * from './scope-cache';
 export * from './worker';

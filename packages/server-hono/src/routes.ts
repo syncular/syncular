@@ -19,6 +19,7 @@ import {
   SyncPushRequestSchema,
 } from '@syncular/core';
 import type {
+  ScopeCacheBackend,
   ServerSyncDialect,
   ServerTableHandler,
   SnapshotChunkStorage,
@@ -180,6 +181,11 @@ export interface CreateSyncRoutesOptions<
    * (S3, R2, etc.) instead of inline in the database.
    */
   chunkStorage?: SnapshotChunkStorage;
+  /**
+   * Optional scope cache backend for resolveScopes() results.
+   * Request-local memoization is always applied for every pull.
+   */
+  scopeCache?: ScopeCacheBackend;
   /**
    * Optional live emitter for console websocket activity feed.
    * When provided, sync lifecycle events are published to `/console/events/live`.
@@ -985,6 +991,7 @@ export function createSyncRoutes<
             auth,
             request,
             chunkStorage: options.chunkStorage,
+            scopeCache: options.scopeCache,
           });
         } catch (err) {
           if (err instanceof InvalidSubscriptionScopeError) {

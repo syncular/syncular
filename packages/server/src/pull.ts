@@ -35,7 +35,13 @@ import {
   readSnapshotChunkRefByPageKey,
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
+import {
+  createMemoryScopeCache,
+  type ScopeCacheBackend,
+} from './subscriptions/cache';
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve';
+
+const defaultScopeCache = createMemoryScopeCache();
 
 function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
@@ -261,6 +267,12 @@ export async function pull<
    * instead of inline in the database.
    */
   chunkStorage?: SnapshotChunkStorage;
+  /**
+   * Optional shared scope cache backend.
+   * Request-local memoization is always applied, even with custom backends.
+   * Defaults to process-local memory cache.
+   */
+  scopeCache?: ScopeCacheBackend;
 }): Promise<PullResult> {
   const { request, dialect } = args;
   const db = args.db;
@@ -303,6 +315,7 @@ export async function pull<
           auth: args.auth,
           subscriptions: request.subscriptions ?? [],
           handlers: args.handlers,
+          scopeCache: args.scopeCache ?? defaultScopeCache,
         });
 
         const result = await dialect.executeInTransaction(db, async (trx) => {

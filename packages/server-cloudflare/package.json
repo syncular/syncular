@@ -56,6 +56,13 @@
         "types": "./dist/r2.d.ts",
         "default": "./dist/r2.js"
       }
+    },
+    "./scope-cache": {
+      "bun": "./src/scope-cache.ts",
+      "import": {
+        "types": "./dist/scope-cache.d.ts",
+        "default": "./dist/scope-cache.js"
+      }
     }
   },
   "scripts": {
