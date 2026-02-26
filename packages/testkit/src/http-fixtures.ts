@@ -93,30 +93,92 @@ export interface CreateHttpClientFixtureOptions<DB extends SyncClientDb> {
   getHeaders?: () => Record<string, string>;
 }
 
+const PGLITE_INIT_ATTEMPTS = 3;
+
+function isTransientPgliteInitError(error: Error): boolean {
+  return (
+    error.message.includes('access to a null reference') ||
+    error.message.includes('_pgl_initdb')
+  );
+}
+
+function isServerNotRunningError(error: Error | null): boolean {
+  return (
+    error !== null && 'code' in error && error.code === 'ERR_SERVER_NOT_RUNNING'
+  );
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function withPgliteInitRetry<T>(
+  useRetries: boolean,
+  create: () => Promise<T>
+): Promise<T> {
+  const maxAttempts = useRetries ? PGLITE_INIT_ATTEMPTS : 1;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await create();
+    } catch (error) {
+      const candidate =
+        error instanceof Error ? error : new Error(String(error));
+      lastError = candidate;
+
+      const isRetryable =
+        useRetries &&
+        attempt < maxAttempts &&
+        isTransientPgliteInitError(candidate);
+      if (!isRetryable) {
+        throw candidate;
+      }
+
+      await delay(25 * attempt);
+    }
+  }
+
+  throw lastError ?? new Error('PGLite initialization failed');
+}
+
 export async function createHttpServerFixture<DB extends SyncCoreDb>(
   options: CreateHttpServerFixtureOptions<DB>
 ): Promise<HttpServerFixture<DB>> {
-  const db =
-    options.serverDialect === 'pglite'
-      ? createDatabase<DB>({
-          dialect: createPgliteDialect(),
-          family: 'postgres',
-        })
-      : createDatabase<DB>({
-          dialect: createBunSqliteDialect({ path: ':memory:' }),
-          family: 'sqlite',
-        });
-
   const dialect =
     options.serverDialect === 'pglite'
       ? createPostgresServerDialect()
       : createSqliteServerDialect();
 
-  await ensureSyncSchema(db, dialect);
-  if (dialect.ensureConsoleSchema) {
-    await dialect.ensureConsoleSchema(db);
-  }
-  await options.createTables(db);
+  const db = await withPgliteInitRetry(
+    options.serverDialect === 'pglite',
+    async () => {
+      const candidateDb =
+        options.serverDialect === 'pglite'
+          ? createDatabase<DB>({
+              dialect: createPgliteDialect(),
+              family: 'postgres',
+            })
+          : createDatabase<DB>({
+              dialect: createBunSqliteDialect({ path: ':memory:' }),
+              family: 'sqlite',
+            });
+
+      try {
+        await ensureSyncSchema(candidateDb, dialect);
+        if (dialect.ensureConsoleSchema) {
+          await dialect.ensureConsoleSchema(candidateDb);
+        }
+        await options.createTables(candidateDb);
+        return candidateDb;
+      } catch (error) {
+        await candidateDb.destroy();
+        throw error;
+      }
+    }
+  );
 
   const app = new Hono();
   const routePath = options.routePath ?? '/sync';
@@ -145,6 +207,8 @@ export async function createHttpServerFixture<DB extends SyncCoreDb>(
   const address = httpServer.address();
   const port = typeof address === 'object' && address ? address.port : 0;
 
+  let destroyed = false;
+
   return {
     db,
     dialect,
@@ -152,9 +216,14 @@ export async function createHttpServerFixture<DB extends SyncCoreDb>(
     httpServer,
     baseUrl: `http://localhost:${port}`,
     destroy: async () => {
+      if (destroyed) {
+        return;
+      }
+      destroyed = true;
+
       await new Promise<void>((resolve, reject) => {
         httpServer.close((err) => {
-          if (err) {
+          if (err && !isServerNotRunningError(err)) {
             reject(err);
             return;
           }
@@ -169,19 +238,30 @@ export async function createHttpServerFixture<DB extends SyncCoreDb>(
 export async function createHttpClientFixture<DB extends SyncClientDb>(
   options: CreateHttpClientFixtureOptions<DB>
 ): Promise<HttpClientFixture<DB>> {
-  const db =
-    options.clientDialect === 'pglite'
-      ? createDatabase<DB>({
-          dialect: createPgliteDialect(),
-          family: 'postgres',
-        })
-      : createDatabase<DB>({
-          dialect: createBunSqliteDialect({ path: ':memory:' }),
-          family: 'sqlite',
-        });
+  const db = await withPgliteInitRetry(
+    options.clientDialect === 'pglite',
+    async () => {
+      const candidateDb =
+        options.clientDialect === 'pglite'
+          ? createDatabase<DB>({
+              dialect: createPgliteDialect(),
+              family: 'postgres',
+            })
+          : createDatabase<DB>({
+              dialect: createBunSqliteDialect({ path: ':memory:' }),
+              family: 'sqlite',
+            });
 
-  await ensureClientSyncSchema(db);
-  await options.createTables(db);
+      try {
+        await ensureClientSyncSchema(candidateDb);
+        await options.createTables(candidateDb);
+        return candidateDb;
+      } catch (error) {
+        await candidateDb.destroy();
+        throw error;
+      }
+    }
+  );
 
   const handlers: ClientHandlerCollection<DB> = [];
   options.registerHandlers(handlers);
