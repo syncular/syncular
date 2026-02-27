@@ -132,13 +132,16 @@ jobs:
   perf:
     if: github.event_name == 'pull_request'
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment
 
-      - name: Run performance tests
+      - name: Run stable performance tests (5 runs)
         id: perf
-        run: bun test tests/perf 2>&1 | tee perf-results.txt
+        env:
+          PERF_STABLE_RUNS: 5
+        run: bun --cwd tests/perf stable-ci 2>&1 | tee perf-results.txt
 
       - name: Extract regression report
         id: report

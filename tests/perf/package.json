@@ -6,7 +6,8 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "test": "bun test .",
-    "update-baseline": "bun run update-baseline.ts"
+    "update-baseline": "bun run update-baseline.ts",
+    "stable-ci": "bun run stable-ci.ts"
   },
   "devDependencies": {
     "@syncular/client": "workspace:*",
