@@ -25,12 +25,13 @@
 - Snapshot chunk fault matrix: missing, 500, truncated, checksum mismatch, expired, unauthorized.
 - Outbox restart durability for pending and stale in-flight (`sending`) commits.
 - Outbox failed-commit remediation path across restart with exact-once replay after ACK loss.
+- Outbox mixed-state crash recovery for pending/sending/failed replay semantics.
 - E2EE offline writes + key rotation + reconnect across authorized and unauthorized keysets.
 - Retry/backoff correctness for 429/503 across pull/push/chunk fetch paths.
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 
 ## High-Value Functional Tests (Remaining + Expanded)
-- `P2` Process crash simulation around outbox state transitions beyond stale-send recovery (for example: failed commit recovery workflow).
+- No open `P0`/`P1`/`P2` functional gaps from this plan.
 
 ## Where Tests Live
 - Feature scenarios: `tests/integration/scenarios/*`.

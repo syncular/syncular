@@ -38,6 +38,7 @@ import {
   runOfflineWritesSyncOnReconnect,
   runOutboxDurabilityAcrossRestart,
   runOutboxFailedRemediationAcrossRestart,
+  runOutboxMixedStateCrashRecovery,
   runOutboxRetryAfterFailure,
   runOutboxSendingRecoveryAcrossRestart,
 } from '../scenarios/offline-resilience.scenario';
@@ -234,6 +235,10 @@ describe('integration: features', () => {
 
     it('persists failed commits across restart and remediates with exactly-once replay', async () => {
       await runOutboxFailedRemediationAcrossRestart(getCtx());
+    });
+
+    it('recovers mixed pending/sending/failed outbox states after crash and restart', async () => {
+      await runOutboxMixedStateCrashRecovery(getCtx());
     });
   });
 
