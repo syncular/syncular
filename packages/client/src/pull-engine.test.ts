@@ -379,4 +379,98 @@ describe('applyPullResponse chunk streaming', () => {
       .executeTakeFirst();
     expect(Number(stateAfterFailure?.total ?? 0)).toBe(0);
   });
+
+  it('uses custom sha256 override for streamed chunk integrity checks', async () => {
+    const rows = Array.from({ length: 256 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const chunk = new Uint8Array(gzipSync(encodeSnapshotRows(rows)));
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream() {
+        return createStreamFromBytes(chunk, 137);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    let sha256CallCount = 0;
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      sha256: async () => {
+        sha256CallCount += 1;
+        return 'expected-hash';
+      },
+    };
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 8,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: chunk.length,
+                  sha256: 'expected-hash',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      pullState,
+      response
+    );
+
+    expect(sha256CallCount).toBe(1);
+
+    const countResult = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countResult.rows[0]?.count ?? 0)).toBe(rows.length);
+  });
 });
