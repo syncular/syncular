@@ -547,6 +547,110 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
     results.push(result);
   }
 
+  // Reconnect storm
+  console.log('  Running: reconnect_storm');
+  {
+    const testServer = await createTestServer('sqlite');
+    const reconnectClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'storm-client',
+    });
+    const writerClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'storm-writer',
+    });
+
+    const subscription = {
+      id: 'my-tasks',
+      table: 'tasks',
+      scopes: { user_id: userId },
+    } as const;
+
+    await syncPullOnce(
+      reconnectClient.db,
+      reconnectClient.transport,
+      reconnectClient.handlers,
+      {
+        clientId: reconnectClient.clientId,
+        subscriptions: [subscription],
+      }
+    );
+
+    let burstIndex = 0;
+    const result = await benchmark(
+      'reconnect_storm',
+      async () => {
+        for (let burst = 0; burst < 6; burst += 1) {
+          burstIndex += 1;
+          for (let i = 0; i < 20; i += 1) {
+            const combined = await writerClient.transport.sync({
+              clientId: writerClient.clientId,
+              push: {
+                clientCommitId: `storm-${burstIndex}-${i}`,
+                schemaVersion: 1,
+                operations: [
+                  {
+                    table: 'tasks',
+                    row_id: `storm-task-${burstIndex}-${i}`,
+                    op: 'upsert',
+                    payload: {
+                      title: `Storm Task ${burstIndex}-${i}`,
+                      completed: (burst + i) % 2,
+                    },
+                    base_version: null,
+                  },
+                ],
+              },
+            });
+            if (combined.push?.status !== 'applied') {
+              throw new Error(
+                `Unexpected reconnect storm push status: ${combined.push?.status ?? 'missing'}`
+              );
+            }
+          }
+
+          for (let pullAttempt = 0; pullAttempt < 3; pullAttempt += 1) {
+            await syncPullOnce(
+              reconnectClient.db,
+              reconnectClient.transport,
+              reconnectClient.handlers,
+              {
+                clientId: reconnectClient.clientId,
+                subscriptions: [subscription],
+                limitCommits: 40,
+              }
+            );
+          }
+        }
+
+        const finalPull = await syncPullOnce(
+          reconnectClient.db,
+          reconnectClient.transport,
+          reconnectClient.handlers,
+          {
+            clientId: reconnectClient.clientId,
+            subscriptions: [subscription],
+            limitCommits: 500,
+          }
+        );
+        const sub = finalPull.subscriptions.find(
+          (entry) => entry.id === subscription.id
+        );
+        if (sub?.status !== 'active') {
+          throw new Error(
+            'Expected reconnect storm subscription to stay active'
+          );
+        }
+      },
+      { iterations: 4, warmup: 1 }
+    );
+
+    await writerClient.destroy();
+    await reconnectClient.destroy();
+    await testServer.destroy();
+    results.push(result);
+  }
+
   // Dialect perf
   console.log('  Running: dialect benchmarks');
   for (const dialect of PERF_DIALECTS) {

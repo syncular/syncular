@@ -366,6 +366,133 @@ export async function runSubscriptionReshapeScenario(
   ]);
 }
 
+export async function runSubscriptionReshapeStressScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const client = ctx.clients[0]!;
+  const writer = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'reshape-stress-writer',
+  });
+
+  const subP1 = {
+    id: 'p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  };
+  const subP2 = {
+    id: 'p2',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p2' },
+  };
+  const subP3 = {
+    id: 'p3',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p3' },
+  };
+
+  const phases = [
+    [subP1, subP2],
+    [subP2],
+    [subP2, subP3],
+    [subP3],
+    [subP1, subP3],
+    [subP1],
+  ];
+
+  for (let i = 0; i < phases.length; i += 1) {
+    const phaseSubscriptions = phases[i]!;
+    const phaseIndex = i + 1;
+
+    const pushResult = await writer.transport.sync({
+      clientId: writer.clientId,
+      push: {
+        clientCommitId: `reshape-stress-c${phaseIndex}`,
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: `reshape-stress-p1-${phaseIndex}`,
+            op: 'upsert',
+            payload: {
+              title: `Reshape Stress P1 ${phaseIndex}`,
+              completed: 0,
+              project_id: 'p1',
+            },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: `reshape-stress-p2-${phaseIndex}`,
+            op: 'upsert',
+            payload: {
+              title: `Reshape Stress P2 ${phaseIndex}`,
+              completed: 0,
+              project_id: 'p2',
+            },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: `reshape-stress-p3-${phaseIndex}`,
+            op: 'upsert',
+            payload: {
+              title: `Reshape Stress P3 ${phaseIndex}`,
+              completed: 0,
+              project_id: 'p3',
+            },
+            base_version: null,
+          },
+        ],
+      },
+    });
+    expect(pushResult.push?.status).toBe('applied');
+
+    const pullResult = await syncPullOnce(
+      client.db,
+      client.transport,
+      client.handlers,
+      {
+        clientId: client.clientId,
+        subscriptions: phaseSubscriptions,
+        limitCommits: 200,
+      }
+    );
+
+    for (const subscription of phaseSubscriptions) {
+      expect(
+        pullResult.subscriptions.find((entry) => entry.id === subscription.id)
+          ?.status
+      ).toBe('active');
+    }
+
+    const allowedProjects = new Set(
+      phaseSubscriptions.map((subscription) => subscription.scopes.project_id)
+    );
+    const disallowedProjects = ['p1', 'p2', 'p3'].filter(
+      (projectId) => !allowedProjects.has(projectId)
+    );
+
+    const localRows = await client.db
+      .selectFrom('tasks')
+      .select(['id', 'project_id'])
+      .where('id', 'like', 'reshape-stress-%')
+      .orderBy('id', 'asc')
+      .execute();
+
+    for (const row of localRows) {
+      expect(allowedProjects.has(row.project_id)).toBe(true);
+    }
+
+    for (const projectId of Array.from(allowedProjects)) {
+      expect(localRows.some((row) => row.project_id === projectId)).toBe(true);
+    }
+    for (const projectId of disallowedProjects) {
+      expect(localRows.some((row) => row.project_id === projectId)).toBe(false);
+    }
+  }
+}
+
 export async function runDedupeScenario(ctx: ScenarioContext): Promise<void> {
   const client = ctx.clients[0]!;
 
