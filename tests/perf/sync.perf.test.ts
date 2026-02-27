@@ -13,8 +13,11 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
-import type { SyncCoreDb } from '@syncular/core';
-import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
+import {
+  computePruneWatermarkCommitSeq,
+  pruneSync,
+  type SyncCoreDb,
+} from '@syncular/server';
 import {
   createHttpClientFixture,
   createHttpServerFixture,
