@@ -730,6 +730,8 @@
         "@syncular/server": "workspace:*",
         "@syncular/testkit": "workspace:*",
         "@syncular/tests-dialects": "workspace:*",
+        "@syncular/transport-http": "workspace:*",
+        "@syncular/transport-ws": "workspace:*",
         "kysely": "*",
       },
     },
