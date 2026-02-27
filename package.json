@@ -69,6 +69,7 @@
     "test:load:mixed": "bun run --cwd tests/load k6:mixed",
     "test:load:dashboard": "bun run --cwd tests/load k6:dashboard",
     "test:perf": "bun --cwd tests/perf test",
+    "test:perf:stable": "bun --cwd tests/perf stable-ci",
     "test:perf:update-baseline": "bun --cwd tests/perf update-baseline",
     "test:runtime": "bun --cwd tests/runtime test",
     "test:runtime:browser": "bun --cwd tests/runtime test:browser",
