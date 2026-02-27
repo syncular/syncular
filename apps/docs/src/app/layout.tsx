@@ -23,6 +23,7 @@ const jetBrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://docs.syncular.dev'),
   icons: {
     icon: [
       { url: '/assets/favicon-96x96.png', sizes: '96x96', type: 'image/png' },

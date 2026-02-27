@@ -138,6 +138,10 @@ export function createSyncServer<
   const consoleEventEmitter = isConsoleEnabled
     ? createConsoleEventEmitter()
     : undefined;
+  const consoleSchemaReady =
+    isConsoleEnabled && dialect.ensureConsoleSchema
+      ? dialect.ensureConsoleSchema(db)
+      : undefined;
 
   // Create sync routes
   const syncRoutes = createSyncRoutes({
@@ -149,6 +153,7 @@ export function createSyncServer<
     chunkStorage,
     scopeCache,
     consoleLiveEmitter: consoleEventEmitter,
+    consoleSchemaReady,
     sync: {
       ...routes,
       websocket: upgradeWebSocket
@@ -179,8 +184,9 @@ export function createSyncServer<
     dialect,
     handlers: sync.handlers,
     authenticate: createTokenAuthenticator(consoleToken),
-    corsOrigins: resolvedConsoleConfig.corsOrigins ?? '*',
+    corsOrigins: resolvedConsoleConfig.corsOrigins,
     eventEmitter: consoleEventEmitter,
+    consoleSchemaReady,
     wsConnectionManager: getSyncWebSocketConnectionManager(syncRoutes),
     metrics: resolvedConsoleConfig.metrics,
     blobBucket: resolvedConsoleConfig.blobBucket,

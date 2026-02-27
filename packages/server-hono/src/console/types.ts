@@ -143,4 +143,9 @@ export interface CreateConsoleRoutesOptions<
      */
     heartbeatIntervalMs?: number;
   };
+  /**
+   * Optional console schema readiness promise.
+   * When provided, routes wait for this promise before querying console tables.
+   */
+  consoleSchemaReady?: Promise<void>;
 }

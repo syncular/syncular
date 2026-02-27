@@ -197,6 +197,11 @@ export interface CreateSyncRoutesOptions<
       data: Record<string, unknown>;
     }): void;
   };
+  /**
+   * Optional console schema readiness promise.
+   * When provided, request-event recording waits for this promise before writing.
+   */
+  consoleSchemaReady?: Promise<void>;
 }
 
 // ============================================================================
@@ -465,6 +470,18 @@ export function createSyncRoutes<
   const consoleLiveEmitter = options.consoleLiveEmitter;
   const shouldEmitConsoleLiveEvents = consoleLiveEmitter !== undefined;
   const shouldRecordRequestEvents = shouldEmitConsoleLiveEvents;
+  const consoleSchemaReadyBase = shouldRecordRequestEvents
+    ? (options.consoleSchemaReady ??
+      options.dialect.ensureConsoleSchema?.(options.db) ??
+      Promise.resolve())
+    : Promise.resolve();
+  const consoleSchemaReady = consoleSchemaReadyBase.catch((error) => {
+    logSyncEvent({
+      event: 'sync.console_schema_ready_failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  });
 
   // -------------------------------------------------------------------------
   // Optional WebSocket manager (scope-key based wake-ups)
@@ -630,15 +647,17 @@ export function createSyncRoutes<
 
     const resolvedEvent = typeof event === 'function' ? event() : event;
 
-    void recordRequestEvent(resolvedEvent).catch((error) => {
-      logAsyncFailureOnce('sync.request_event_record_failed', {
-        event: 'sync.request_event_record_failed',
-        userId: resolvedEvent.actorId,
-        clientId: resolvedEvent.clientId,
-        requestEventType: resolvedEvent.eventType,
-        error: error instanceof Error ? error.message : String(error),
+    void consoleSchemaReady
+      .then(() => recordRequestEvent(resolvedEvent))
+      .catch((error) => {
+        logAsyncFailureOnce('sync.request_event_record_failed', {
+          event: 'sync.request_event_record_failed',
+          userId: resolvedEvent.actorId,
+          clientId: resolvedEvent.clientId,
+          requestEventType: resolvedEvent.eventType,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
   };
 
   const authCache = new WeakMap<Context, Promise<Auth | null>>();

@@ -283,6 +283,20 @@ describe('console timeline route filters', () => {
     });
   }
 
+  async function requestClearEvents(): Promise<Response> {
+    return app.request('http://localhost/console/events', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+    });
+  }
+
+  async function requestPruneEvents(): Promise<Response> {
+    return app.request('http://localhost/console/events/prune', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+    });
+  }
+
   async function requestApiKeys(
     query: Record<string, string | number | undefined> = {}
   ): Promise<Response> {
@@ -1472,5 +1486,58 @@ describe('console timeline route filters', () => {
     expect(payload.partitionId).toBe('default');
     expect(payload.requestPayload.clientCommitId).toBe('commit-a');
     expect(payload.responsePayload.status).toBe('applied');
+  });
+
+  it('deletes payload snapshots when clearing events', async () => {
+    const response = await requestClearEvents();
+    expect(response.status).toBe(200);
+
+    const eventCountRow = await db
+      .selectFrom('sync_request_events')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(eventCountRow?.total ?? 0)).toBe(0);
+
+    const payloadCountRow = await db
+      .selectFrom('sync_request_payloads')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(payloadCountRow?.total ?? 0)).toBe(0);
+  });
+
+  it('prunes orphaned payload snapshots during event pruning', async () => {
+    await db
+      .insertInto('sync_request_payloads')
+      .values({
+        payload_ref: 'payload-orphan',
+        partition_id: 'default',
+        request_payload: JSON.stringify({ orphan: true }),
+        response_payload: JSON.stringify({ ok: true }),
+        created_at: atIso(33),
+      })
+      .execute();
+
+    const response = await requestPruneEvents();
+    expect(response.status).toBe(200);
+
+    const orphan = await db
+      .selectFrom('sync_request_payloads')
+      .select(['payload_ref'])
+      .where('payload_ref', '=', 'payload-orphan')
+      .executeTakeFirst();
+    expect(orphan).toBeUndefined();
+  });
+
+  it('disables credentialed CORS headers when wildcard origin is configured', async () => {
+    const response = await app.request('http://localhost/console/events', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://example.com',
+        'Access-Control-Request-Method': 'GET',
+      },
+    });
+
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Credentials')).toBeNull();
   });
 });

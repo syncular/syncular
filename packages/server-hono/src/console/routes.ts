@@ -490,10 +490,14 @@ export function createConsoleRoutes<
     options.metrics?.rawFallbackMaxEvents ?? 5000
   );
 
-  // Ensure console schema exists (creates sync_request_events table if needed)
-  // Run asynchronously - will be ready before first request typically
-  options.dialect.ensureConsoleSchema?.(options.db).catch((err) => {
+  // Ensure console schema exists before handlers query console tables.
+  const consoleSchemaReadyPromise = (
+    options.consoleSchemaReady ??
+    options.dialect.ensureConsoleSchema?.(options.db) ??
+    Promise.resolve()
+  ).catch((err) => {
     console.error('[console] Failed to ensure console schema:', err);
+    throw err;
   });
 
   // CORS configuration
@@ -501,11 +505,12 @@ export function createConsoleRoutes<
     'http://localhost:5173',
     'https://console.sync.dev',
   ];
+  const allowWildcardCors = corsOrigins === '*';
 
   routes.use(
     '*',
     cors({
-      origin: corsOrigins === '*' ? '*' : corsOrigins,
+      origin: allowWildcardCors ? '*' : corsOrigins,
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
       allowHeaders: [
         'Content-Type',
@@ -517,9 +522,28 @@ export function createConsoleRoutes<
         'Tracestate',
       ],
       exposeHeaders: ['X-Total-Count'],
-      credentials: true,
+      credentials: !allowWildcardCors,
     })
   );
+
+  const ensureConsoleSchemaReady = async (
+    c: Context
+  ): Promise<Response | null> => {
+    try {
+      await consoleSchemaReadyPromise;
+      return null;
+    } catch {
+      return c.json({ error: 'CONSOLE_SCHEMA_UNAVAILABLE' }, 503);
+    }
+  };
+
+  routes.use('*', async (c, next) => {
+    const readyError = await ensureConsoleSchemaReady(c);
+    if (readyError) {
+      return readyError;
+    }
+    await next();
+  });
 
   // Auth middleware
   const requireAuth = async (c: Context): Promise<ConsoleAuthResult | null> => {
@@ -615,6 +639,21 @@ export function createConsoleRoutes<
     resultPayload: parseJsonValue(row.result_payload),
     createdAt: row.created_at ?? '',
   });
+
+  const deleteUnreferencedPayloadSnapshots = async (): Promise<number> => {
+    const result = await db
+      .deleteFrom('sync_request_payloads')
+      .where(
+        'payload_ref',
+        'not in',
+        db
+          .selectFrom('sync_request_events')
+          .select('payload_ref')
+          .where('payload_ref', 'is not', null)
+      )
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
 
   const recordOperationEvent = async (event: {
     operationType: ConsoleOperationType;
@@ -2696,11 +2735,13 @@ export function createConsoleRoutes<
       const res = await db.deleteFrom('sync_request_events').executeTakeFirst();
 
       const deletedCount = Number(res?.numDeletedRows ?? 0);
+      const payloadDeletedCount = await deleteUnreferencedPayloadSnapshots();
 
       logSyncEvent({
         event: 'console.clear_events',
         consoleUserId: auth.consoleUserId,
         deletedCount,
+        payloadDeletedCount,
       });
 
       const result: ConsoleClearEventsResult = { deletedCount };
@@ -2781,10 +2822,13 @@ export function createConsoleRoutes<
         }
       }
 
+      const payloadDeletedCount = await deleteUnreferencedPayloadSnapshots();
+
       logSyncEvent({
         event: 'console.prune_events',
         consoleUserId: auth.consoleUserId,
         deletedCount,
+        payloadDeletedCount,
       });
 
       const result: ConsolePruneEventsResult = { deletedCount };
