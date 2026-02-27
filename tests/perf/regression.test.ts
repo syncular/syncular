@@ -62,4 +62,30 @@ describe('detectRegressions', () => {
     expect(report.includes('Missing Performance Baseline')).toBe(true);
     expect(report.includes('N/A')).toBe(true);
   });
+
+  it('uses per-metric thresholds for noisy benchmarks', () => {
+    const results = [
+      makeResult('transport_direct_catchup', 130),
+      makeResult('regular_metric', 130),
+    ];
+    const baseline = {
+      transport_direct_catchup: {
+        median: 100,
+        p95: 100,
+        p99: 100,
+        timestamp: '2025-01-01',
+      },
+      regular_metric: {
+        median: 100,
+        p95: 100,
+        p99: 100,
+        timestamp: '2025-01-01',
+      },
+    };
+
+    const regressions = detectRegressions(results, baseline);
+
+    expect(regressions[0]?.regression).toBe(false);
+    expect(regressions[1]?.regression).toBe(true);
+  });
 });

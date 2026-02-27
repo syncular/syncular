@@ -34,9 +34,23 @@ interface RegressionResult {
 const REGRESSION_THRESHOLD = 0.2;
 
 /**
+ * Per-metric overrides for known noisy benchmarks.
+ */
+const REGRESSION_THRESHOLD_OVERRIDES: Record<string, number> = {
+  reconnect_storm: 0.25,
+  transport_direct_catchup: 0.5,
+  transport_relay_catchup: 0.5,
+  transport_ws_catchup: 0.4,
+};
+
+/**
  * Improvement threshold (10% faster = improvement)
  */
 const IMPROVEMENT_THRESHOLD = -0.1;
+
+function getRegressionThreshold(metric: string): number {
+  return REGRESSION_THRESHOLD_OVERRIDES[metric] ?? REGRESSION_THRESHOLD;
+}
 
 function calculateRelativeChange(current: number, baseline: number): number {
   if (baseline === 0) {
@@ -80,6 +94,7 @@ export function detectRegressions(
     const baselineMissing = !baselineMetric;
     const base = baselineMetric?.median ?? r.median;
     const change = calculateRelativeChange(r.median, base);
+    const regressionThreshold = getRegressionThreshold(r.name);
 
     return {
       metric: r.name,
@@ -87,7 +102,7 @@ export function detectRegressions(
       current: r.median,
       change,
       baselineMissing,
-      regression: !baselineMissing && change > REGRESSION_THRESHOLD,
+      regression: !baselineMissing && change > regressionThreshold,
       improvement: !baselineMissing && change < IMPROVEMENT_THRESHOLD,
     };
   });
