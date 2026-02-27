@@ -254,6 +254,31 @@ export async function runMaintenanceChurnScenario(
 
   const totalCommits = 36;
   let prunedAtLeastOnce = false;
+  const runMaintenancePass = async () => {
+    await ctx.server.db
+      .updateTable('sync_commits')
+      .set({ created_at: '2000-01-01T00:00:00.000Z' })
+      .execute();
+
+    await ctx.server.dialect.compactChanges(ctx.server.db, {
+      fullHistoryHours: 1,
+    });
+
+    const watermark = await computePruneWatermarkCommitSeq(ctx.server.db, {
+      activeWindowMs: 60 * 1000,
+      fallbackMaxAgeMs: 60 * 1000,
+      keepNewestCommits: 6,
+    });
+
+    if (watermark <= 0) return;
+    const deleted = await pruneSync(ctx.server.db, {
+      watermarkCommitSeq: watermark,
+      keepNewestCommits: 6,
+    });
+    if (deleted > 0) {
+      prunedAtLeastOnce = true;
+    }
+  };
 
   const pushLoop = async () => {
     for (let i = 1; i <= totalCommits; i++) {
@@ -292,35 +317,13 @@ export async function runMaintenanceChurnScenario(
   const maintenanceLoop = async () => {
     for (let i = 0; i < 8; i++) {
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
-
-      await ctx.server.db
-        .updateTable('sync_commits')
-        .set({ created_at: '2000-01-01T00:00:00.000Z' })
-        .execute();
-
-      await ctx.server.dialect.compactChanges(ctx.server.db, {
-        fullHistoryHours: 1,
-      });
-
-      const watermark = await computePruneWatermarkCommitSeq(ctx.server.db, {
-        activeWindowMs: 60 * 1000,
-        fallbackMaxAgeMs: 60 * 1000,
-        keepNewestCommits: 6,
-      });
-
-      if (watermark > 0) {
-        const deleted = await pruneSync(ctx.server.db, {
-          watermarkCommitSeq: watermark,
-          keepNewestCommits: 6,
-        });
-        if (deleted > 0) {
-          prunedAtLeastOnce = true;
-        }
-      }
+      await runMaintenancePass();
     }
   };
 
   await Promise.all([pushLoop(), maintenanceLoop()]);
+  // Guarantee at least one prune attempt after churn has fully materialized.
+  await runMaintenancePass();
   expect(prunedAtLeastOnce).toBe(true);
 
   const laggingCatchup = await syncPullOnce(
