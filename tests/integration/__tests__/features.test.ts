@@ -228,7 +228,7 @@ describe('integration: features', () => {
 
   // Transport parity
   describe('transport parity', () => {
-    it('keeps direct and relay transport paths semantically equivalent', async () => {
+    it('keeps direct, relay, and ws transport paths semantically equivalent', async () => {
       await runTransportPathParityScenario(getCtx());
     });
 
