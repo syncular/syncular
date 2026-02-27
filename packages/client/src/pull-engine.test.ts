@@ -148,4 +148,145 @@ describe('applyPullResponse chunk streaming', () => {
     expect(Number(countResult.rows[0]?.count ?? 0)).toBe(rows.length);
     expect(streamFetchCount).toBe(1);
   });
+
+  it('rolls back partial chunked bootstrap when a later chunk fails', async () => {
+    const firstRows = Array.from({ length: 1500 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const secondRows = Array.from({ length: 1500 }, (_, index) => ({
+      id: `${index + 1501}`,
+      name: `Item ${index + 1501}`,
+    }));
+
+    const firstChunk = new Uint8Array(gzipSync(encodeSnapshotRows(firstRows)));
+    const secondChunk = new Uint8Array(
+      gzipSync(encodeSnapshotRows(secondRows))
+    );
+
+    let failSecondChunk = true;
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream({ chunkId }) {
+        if (chunkId === 'chunk-2' && failSecondChunk) {
+          throw new Error('chunk-2 missing');
+        }
+        if (chunkId === 'chunk-1') {
+          return createStreamFromBytes(firstChunk, 317);
+        }
+        if (chunkId === 'chunk-2') {
+          return createStreamFromBytes(secondChunk, 503);
+        }
+        throw new Error(`Unexpected chunk id: ${chunkId}`);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 12,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: firstChunk.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+                {
+                  id: 'chunk-2',
+                  byteLength: secondChunk.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const firstPullState = await buildPullRequest(db, options);
+    await expect(
+      applyPullResponse(
+        db,
+        transport,
+        handlers,
+        options,
+        firstPullState,
+        response
+      )
+    ).rejects.toThrow('chunk-2 missing');
+
+    const countAfterFailure = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countAfterFailure.rows[0]?.count ?? 0)).toBe(0);
+
+    const stateAfterFailure = await db
+      .selectFrom('sync_subscription_state')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('state_id', '=', 'default')
+      .where('subscription_id', '=', 'items-sub')
+      .executeTakeFirst();
+    expect(Number(stateAfterFailure?.total ?? 0)).toBe(0);
+
+    failSecondChunk = false;
+    const retryPullState = await buildPullRequest(db, options);
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      retryPullState,
+      response
+    );
+
+    const countAfterRetry = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countAfterRetry.rows[0]?.count ?? 0)).toBe(
+      firstRows.length + secondRows.length
+    );
+  });
 });

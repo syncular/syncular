@@ -19,6 +19,7 @@ import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { createLibsqlDialect } from '@syncular/dialect-libsql';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import { createSqlite3Dialect } from '@syncular/dialect-sqlite3';
+import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import {
   createTestClient,
   createTestServer,
@@ -207,6 +208,139 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
     { iterations: 3, warmup: 1 }
   );
   results.push(bootstrap10k);
+
+  // Forced rebootstrap after prune
+  console.log('  Running: rebootstrap_after_prune');
+  {
+    const testServer = await createTestServer('sqlite');
+    const writerClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'rebootstrap-writer',
+    });
+    const fastClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'rebootstrap-fast',
+    });
+    const laggingClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'rebootstrap-lagging',
+    });
+
+    const subscription = {
+      id: 'my-tasks',
+      table: 'tasks',
+      scopes: { user_id: userId },
+    } as const;
+
+    const totalCommits = 2_000;
+    for (let i = 1; i <= totalCommits; i++) {
+      const combined = await writerClient.transport.sync({
+        clientId: writerClient.clientId,
+        push: {
+          clientCommitId: `rebootstrap-seed-${i}`,
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: `rebootstrap-task-${i}`,
+              op: 'upsert',
+              payload: {
+                title: `Rebootstrap Task ${i}`,
+                completed: i % 2,
+              },
+              base_version: null,
+            },
+          ],
+        },
+      });
+      if (combined.push?.status !== 'applied') {
+        throw new Error(
+          `Unexpected seed push status: ${combined.push?.status ?? 'missing'}`
+        );
+      }
+    }
+
+    await syncPullOnce(
+      fastClient.db,
+      fastClient.transport,
+      fastClient.handlers,
+      {
+        clientId: fastClient.clientId,
+        subscriptions: [subscription],
+        limitCommits: 500,
+      }
+    );
+
+    const watermark = await computePruneWatermarkCommitSeq(testServer.db, {
+      activeWindowMs: 24 * 60 * 60 * 1000,
+      keepNewestCommits: 40,
+    });
+    if (watermark <= 0) {
+      throw new Error(`Expected prune watermark > 0, received ${watermark}`);
+    }
+
+    const pruned = await pruneSync(testServer.db, {
+      watermarkCommitSeq: watermark,
+      keepNewestCommits: 40,
+    });
+    if (pruned <= 0) {
+      throw new Error('Expected pruneSync to delete at least one commit');
+    }
+
+    const rebuildState = async () => {
+      await laggingClient.db.deleteFrom('tasks').execute();
+      await laggingClient.db
+        .deleteFrom('sync_subscription_state')
+        .where('state_id', '=', 'default')
+        .where('subscription_id', '=', subscription.id)
+        .execute();
+      await laggingClient.db
+        .insertInto('sync_subscription_state')
+        .values({
+          state_id: 'default',
+          subscription_id: subscription.id,
+          table: subscription.table,
+          scopes_json: JSON.stringify(subscription.scopes),
+          params_json: JSON.stringify({}),
+          cursor: 0,
+          bootstrap_state_json: null,
+          status: 'active',
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        })
+        .execute();
+    };
+
+    const result = await benchmark(
+      'rebootstrap_after_prune',
+      async () => {
+        await rebuildState();
+        const pull = await syncPullOnce(
+          laggingClient.db,
+          laggingClient.transport,
+          laggingClient.handlers,
+          {
+            clientId: laggingClient.clientId,
+            subscriptions: [subscription],
+            limitCommits: 500,
+          }
+        );
+        const sub = pull.subscriptions.find(
+          (entry) => entry.id === subscription.id
+        );
+        if (!sub?.bootstrap) {
+          throw new Error('Expected forced bootstrap for lagging cursor');
+        }
+      },
+      { iterations: 5, warmup: 1 }
+    );
+
+    await laggingClient.destroy();
+    await fastClient.destroy();
+    await writerClient.destroy();
+    await testServer.destroy();
+    results.push(result);
+  }
 
   // Push single row
   console.log('  Running: push_single_row');

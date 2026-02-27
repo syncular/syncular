@@ -3,6 +3,7 @@ import {
   createDatabase,
   type SyncChange,
   type SyncTransport,
+  SyncTransportError,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
@@ -250,5 +251,155 @@ describe('SyncEngine WS inline apply', () => {
     } finally {
       await coldDb.destroy();
     }
+  });
+
+  it('classifies missing snapshot chunk pull failures as non-retryable', async () => {
+    const missingChunkTransport: SyncTransport = {
+      async sync() {
+        throw new SyncTransportError('snapshot chunk not found', 404);
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: missingChunkTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-missing-chunk',
+      subscriptions: [
+        {
+          id: 'sub-1',
+          table: 'tasks',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      pollIntervalMs: 60_000,
+      maxRetries: 3,
+    });
+
+    await engine.start();
+    engine.stop();
+
+    const state = engine.getState();
+    expect(state.error?.code).toBe('SNAPSHOT_CHUNK_NOT_FOUND');
+    expect(state.error?.retryable).toBe(false);
+    expect(state.retryCount).toBe(1);
+    expect(state.isRetrying).toBe(false);
+  });
+
+  it('repairs rebootstrap-missing-chunks by clearing synced state and data', async () => {
+    const outboxId = 'outbox-1';
+    const now = Date.now();
+
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't2',
+        title: 'to-clear',
+        server_version: 2,
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_outbox_commits')
+      .values({
+        id: outboxId,
+        client_commit_id: 'client-commit-1',
+        status: 'pending',
+        operations_json: '[]',
+        last_response_json: null,
+        error: null,
+        created_at: now,
+        updated_at: now,
+        acked_commit_seq: null,
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_conflicts')
+      .values({
+        id: 'conflict-1',
+        outbox_commit_id: outboxId,
+        client_commit_id: 'client-commit-1',
+        op_index: 0,
+        result_status: 'conflict',
+        message: 'forced conflict',
+        code: 'TEST_CONFLICT',
+        server_version: 1,
+        server_row_json: '{}',
+        created_at: now,
+        resolved_at: null,
+        resolution: null,
+      })
+      .execute();
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll(ctx) {
+          await sql`delete from ${sql.table('tasks')}`.execute(ctx.trx);
+        },
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-repair',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    const result = await engine.repair({
+      mode: 'rebootstrap-missing-chunks',
+      clearOutbox: true,
+      clearConflicts: true,
+    });
+
+    expect(result.deletedSubscriptionStates).toBe(1);
+    expect(result.deletedOutboxCommits).toBe(1);
+    expect(result.deletedConflicts).toBe(1);
+    expect(result.clearedTables).toEqual(['tasks']);
+
+    const tasksCount = await db
+      .selectFrom('tasks')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(tasksCount?.total ?? 0)).toBe(0);
+
+    const subscriptionsCount = await db
+      .selectFrom('sync_subscription_state')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(subscriptionsCount?.total ?? 0)).toBe(0);
+
+    const outboxCount = await db
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(outboxCount?.total ?? 0)).toBe(0);
+
+    const conflictsCount = await db
+      .selectFrom('sync_conflicts')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(conflictsCount?.total ?? 0)).toBe(0);
   });
 });
