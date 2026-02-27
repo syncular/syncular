@@ -473,4 +473,216 @@ describe('applyPullResponse chunk streaming', () => {
     `.execute(db);
     expect(Number(countResult.rows[0]?.count ?? 0)).toBe(rows.length);
   });
+
+  it('rolls back when a later chunk fails custom sha256 verification', async () => {
+    const firstRows = Array.from({ length: 512 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const secondRows = Array.from({ length: 512 }, (_, index) => ({
+      id: `${index + 513}`,
+      name: `Item ${index + 513}`,
+    }));
+
+    const firstChunk = new Uint8Array(gzipSync(encodeSnapshotRows(firstRows)));
+    const secondChunk = new Uint8Array(
+      gzipSync(encodeSnapshotRows(secondRows))
+    );
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream({ chunkId }) {
+        if (chunkId === 'chunk-1') {
+          return createStreamFromBytes(firstChunk, 173);
+        }
+        if (chunkId === 'chunk-2') {
+          return createStreamFromBytes(secondChunk, 173);
+        }
+        throw new Error(`Unexpected chunk id: ${chunkId}`);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    let sha256CallCount = 0;
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      sha256: async () => {
+        sha256CallCount += 1;
+        return sha256CallCount === 1 ? 'hash-1' : 'bad-hash';
+      },
+    };
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 15,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: firstChunk.length,
+                  sha256: 'hash-1',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+                {
+                  id: 'chunk-2',
+                  byteLength: secondChunk.length,
+                  sha256: 'hash-2',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    await expect(
+      applyPullResponse(db, transport, handlers, options, pullState, response)
+    ).rejects.toThrow('Snapshot chunk integrity check failed');
+
+    expect(sha256CallCount).toBe(2);
+
+    const countAfterFailure = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countAfterFailure.rows[0]?.count ?? 0)).toBe(0);
+
+    const stateAfterFailure = await db
+      .selectFrom('sync_subscription_state')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('state_id', '=', 'default')
+      .where('subscription_id', '=', 'items-sub')
+      .executeTakeFirst();
+    expect(Number(stateAfterFailure?.total ?? 0)).toBe(0);
+  });
+
+  it('does not call custom sha256 override for chunks without hash references', async () => {
+    const rows = Array.from({ length: 128 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const chunk = new Uint8Array(gzipSync(encodeSnapshotRows(rows)));
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream() {
+        return createStreamFromBytes(chunk, 89);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    let sha256CallCount = 0;
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      sha256: async () => {
+        sha256CallCount += 1;
+        return 'unused';
+      },
+    };
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 19,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: chunk.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      pullState,
+      response
+    );
+
+    expect(sha256CallCount).toBe(0);
+
+    const countResult = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countResult.rows[0]?.count ?? 0)).toBe(rows.length);
+  });
 });
