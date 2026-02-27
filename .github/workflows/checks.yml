@@ -67,7 +67,23 @@ jobs:
         run: bun check
 
       - name: Unit and integration tests
-        run: bun run test:coverage
+        run: |
+          set +e
+          bun run test:coverage 2>&1 | tee test-results.txt
+          exit_code=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$exit_code" -eq 132 ] || [ "$exit_code" -eq 133 ] || grep -q "RuntimeError: Aborted(). Build with -sASSERTIONS" test-results.txt; then
+            echo "Detected transient Bun/PGlite failure; retrying test suite once..."
+            bun run test:coverage
+            exit $?
+          fi
+
+          exit "$exit_code"
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
