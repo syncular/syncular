@@ -734,3 +734,216 @@ export async function runOutboxFailedRemediationAcrossRestart(
     await rm(tempDir, { recursive: true, force: true });
   }
 }
+
+export async function runOutboxMixedStateCrashRecovery(
+  ctx: ScenarioContext
+): Promise<void> {
+  const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
+    | typeof globalThis.fetch
+    | undefined;
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'syncular-outbox-crash-'));
+  const dbPath = path.join(tempDir, 'client.sqlite');
+  const clientId = 'restart-mixed-state-client';
+  const sub = {
+    id: 'tasks-p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  } as const;
+  const transport = createHttpTransport({
+    baseUrl: ctx.server.baseUrl,
+    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
+    ...(nativeFetch ? { fetch: nativeFetch } : {}),
+  });
+  const handlers = [
+    createClientHandler<RestartClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}', 'project:{project_id}'],
+      versionColumn: 'server_version',
+    }),
+  ];
+
+  const createLocalDb = async () => {
+    const db = createDatabase<RestartClientDb>({
+      dialect: createBunSqliteDialect({ path: dbPath }),
+      family: 'sqlite',
+    });
+    await ensureClientSyncSchema(db);
+    await db.schema
+      .createTable('tasks')
+      .ifNotExists()
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+    return db;
+  };
+
+  let firstDb: RestartDb | null = null;
+  let secondDb: RestartDb | null = null;
+
+  try {
+    firstDb = await createLocalDb();
+    await syncPullOnce(firstDb, transport, handlers, {
+      clientId,
+      subscriptions: [sub],
+    });
+
+    const pendingCommit = await enqueueOutboxCommit(firstDb, {
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'crash-pending-task',
+          op: 'upsert',
+          payload: {
+            title: 'Crash Pending Task',
+            completed: 0,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    });
+    const sendingCommit = await enqueueOutboxCommit(firstDb, {
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'crash-sending-task',
+          op: 'upsert',
+          payload: {
+            title: 'Crash Sending Task',
+            completed: 1,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    });
+    const failedCommit = await enqueueOutboxCommit(firstDb, {
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'crash-failed-task',
+          op: 'upsert',
+          payload: {
+            title: 'Crash Failed Task',
+            completed: 0,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    });
+
+    await firstDb
+      .updateTable('sync_outbox_commits')
+      .set({ status: 'sending', updated_at: 0 })
+      .where('id', '=', sendingCommit.id)
+      .execute();
+    await firstDb
+      .updateTable('sync_outbox_commits')
+      .set({
+        status: 'failed',
+        error: 'SIMULATED_CRASH_FAILED_STATE',
+        updated_at: Date.now(),
+      })
+      .where('id', '=', failedCommit.id)
+      .execute();
+
+    await firstDb.destroy();
+    firstDb = null;
+
+    secondDb = await createLocalDb();
+
+    const pendingAfterRestart = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+    const sendingAfterRestart = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('status', '=', 'sending')
+      .executeTakeFirst();
+    const failedAfterRestart = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('status', '=', 'failed')
+      .executeTakeFirst();
+    expect(Number(pendingAfterRestart?.total ?? 0)).toBe(1);
+    expect(Number(sendingAfterRestart?.total ?? 0)).toBe(1);
+    expect(Number(failedAfterRestart?.total ?? 0)).toBe(1);
+
+    const firstPush = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(firstPush.response?.status).toBe('applied');
+
+    const secondPush = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(secondPush.response?.status).toBe('applied');
+
+    const thirdPush = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(thirdPush.pushed).toBe(false);
+
+    const serverRows = await ctx.server.db
+      .selectFrom('tasks')
+      .select(['id'])
+      .where('id', 'in', [
+        'crash-pending-task',
+        'crash-sending-task',
+        'crash-failed-task',
+      ])
+      .orderBy('id', 'asc')
+      .execute();
+    expect(serverRows.map((row) => row.id)).toEqual([
+      'crash-pending-task',
+      'crash-sending-task',
+    ]);
+
+    const pendingCommitCount = await ctx.server.db
+      .selectFrom('sync_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', pendingCommit.clientCommitId)
+      .executeTakeFirst();
+    const sendingCommitCount = await ctx.server.db
+      .selectFrom('sync_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', sendingCommit.clientCommitId)
+      .executeTakeFirst();
+    const failedCommitCountOnServer = await ctx.server.db
+      .selectFrom('sync_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', failedCommit.clientCommitId)
+      .executeTakeFirst();
+    expect(Number(pendingCommitCount?.total ?? 0)).toBe(1);
+    expect(Number(sendingCommitCount?.total ?? 0)).toBe(1);
+    expect(Number(failedCommitCountOnServer?.total ?? 0)).toBe(0);
+
+    const failedStillPresent = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('id', '=', failedCommit.id)
+      .where('status', '=', 'failed')
+      .executeTakeFirst();
+    expect(Number(failedStillPresent?.total ?? 0)).toBe(1);
+  } finally {
+    if (secondDb) {
+      await secondDb.destroy();
+    }
+    if (firstDb) {
+      await firstDb.destroy();
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
