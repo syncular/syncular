@@ -7,12 +7,18 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import {
+  createClientHandler,
   enqueueOutboxCommit,
+  type SyncClientDb,
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
+import type { SyncCoreDb } from '@syncular/core';
 import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import {
+  createHttpClientFixture,
+  createHttpServerFixture,
+  createProjectScopedTasksHandler,
   createTestClient,
   createTestServer,
   seedServerData,
@@ -20,6 +26,8 @@ import {
   withTestClient,
   withTestServer,
 } from '@syncular/testkit';
+import { createHttpTransport } from '@syncular/transport-http';
+import { createWebSocketTransport } from '@syncular/transport-ws';
 import {
   type BenchmarkResult,
   benchmark,
@@ -35,6 +43,61 @@ import {
 } from './regression';
 
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
+
+interface TransportLaneServerDb extends SyncCoreDb {
+  tasks: {
+    id: string;
+    title: string;
+    completed: number;
+    user_id: string;
+    project_id: string;
+    server_version: number;
+  };
+}
+
+interface TransportLaneClientDb extends SyncClientDb {
+  tasks: {
+    id: string;
+    title: string;
+    completed: number;
+    user_id: string;
+    project_id: string;
+    server_version: number;
+  };
+}
+
+type TransportLane = 'direct' | 'relay' | 'ws';
+
+function createTransportLaneSubscription(userId: string) {
+  return {
+    id: 'transport-lane-sub',
+    table: 'tasks',
+    scopes: { user_id: userId, project_id: 'p1' },
+  } as const;
+}
+
+function createTransportLaneTransport(
+  baseUrl: string,
+  userId: string,
+  lane: TransportLane,
+  fetchImpl?: typeof globalThis.fetch
+) {
+  if (lane === 'ws') {
+    return createWebSocketTransport({
+      baseUrl,
+      getHeaders: () => ({ 'x-actor-id': userId }),
+      transportPath: 'direct',
+      ...(fetchImpl ? { fetch: fetchImpl } : {}),
+    });
+  }
+
+  return createHttpTransport({
+    baseUrl,
+    getHeaders: () => ({ 'x-actor-id': userId }),
+    transportPath: lane,
+    ...(fetchImpl ? { fetch: fetchImpl } : {}),
+  });
+}
 
 describe('sync performance', () => {
   let server: TestServer;
@@ -692,6 +755,311 @@ describe('sync performance', () => {
 
     results.push(result);
     expect(result.p99).toBeLessThan(defaultThresholds.reconnect_storm_p99);
+  });
+
+  it('transport lane catchup latency (direct/relay/ws)', async () => {
+    const nativeFetch = (
+      globalThis as { __nativeFetch?: typeof globalThis.fetch }
+    ).__nativeFetch;
+    const subscription = createTransportLaneSubscription(userId);
+
+    const transportServer =
+      await createHttpServerFixture<TransportLaneServerDb>({
+        serverDialect: 'sqlite',
+        createTables: async (db) => {
+          await db.schema
+            .createTable('tasks')
+            .ifNotExists()
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .addColumn('title', 'text', (col) => col.notNull())
+            .addColumn('completed', 'integer', (col) =>
+              col.notNull().defaultTo(0)
+            )
+            .addColumn('user_id', 'text', (col) => col.notNull())
+            .addColumn('project_id', 'text', (col) => col.notNull())
+            .addColumn('server_version', 'integer', (col) =>
+              col.notNull().defaultTo(1)
+            )
+            .execute();
+        },
+        handlers: [createProjectScopedTasksHandler<TransportLaneServerDb>()],
+        authenticate: async (c) => {
+          const actorId = c.req.header('x-actor-id');
+          return actorId ? { actorId } : null;
+        },
+        sync: {
+          rateLimit: false,
+        },
+      });
+
+    const createLaneClient = async (clientId: string) =>
+      createHttpClientFixture<TransportLaneClientDb>({
+        clientDialect: 'bun-sqlite',
+        baseUrl: transportServer.baseUrl,
+        actorId: userId,
+        clientId,
+        createTables: async (db) => {
+          await db.schema
+            .createTable('tasks')
+            .ifNotExists()
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .addColumn('title', 'text', (col) => col.notNull())
+            .addColumn('completed', 'integer', (col) =>
+              col.notNull().defaultTo(0)
+            )
+            .addColumn('user_id', 'text', (col) => col.notNull())
+            .addColumn('project_id', 'text', (col) => col.notNull())
+            .addColumn('server_version', 'integer', (col) =>
+              col.notNull().defaultTo(0)
+            )
+            .execute();
+        },
+        registerHandlers: (handlers) => {
+          handlers.push(
+            createClientHandler<TransportLaneClientDb, 'tasks'>({
+              table: 'tasks',
+              scopes: ['user:{user_id}', 'project:{project_id}'],
+              versionColumn: 'server_version',
+            })
+          );
+        },
+        ...(nativeFetch ? { fetch: nativeFetch } : {}),
+      });
+
+    const writer = await createLaneClient('transport-lane-writer');
+    const directClient = await createLaneClient('transport-lane-direct');
+    const relayClient = await createLaneClient('transport-lane-relay');
+    const wsClient = await createLaneClient('transport-lane-ws');
+
+    const writerTransport = createHttpTransport({
+      baseUrl: transportServer.baseUrl,
+      getHeaders: () => ({ 'x-actor-id': userId }),
+      transportPath: 'direct',
+      ...(nativeFetch ? { fetch: nativeFetch } : {}),
+    });
+    const directTransport = createTransportLaneTransport(
+      transportServer.baseUrl,
+      userId,
+      'direct',
+      nativeFetch
+    );
+    const relayTransport = createTransportLaneTransport(
+      transportServer.baseUrl,
+      userId,
+      'relay',
+      nativeFetch
+    );
+    const wsTransport = createTransportLaneTransport(
+      transportServer.baseUrl,
+      userId,
+      'ws',
+      nativeFetch
+    );
+
+    const runLaneBenchmark = async (
+      metricName:
+        | 'transport_direct_catchup'
+        | 'transport_relay_catchup'
+        | 'transport_ws_catchup',
+      laneClient: Awaited<ReturnType<typeof createLaneClient>>,
+      laneTransport:
+        | ReturnType<typeof createHttpTransport>
+        | ReturnType<typeof createWebSocketTransport>,
+      threshold: number
+    ) => {
+      let batchIndex = 0;
+      const result = await benchmark(
+        metricName,
+        async () => {
+          batchIndex += 1;
+          for (let i = 0; i < 80; i += 1) {
+            const combined = await writerTransport.sync({
+              clientId: writer.clientId,
+              push: {
+                clientCommitId: `${metricName}-${batchIndex}-${i}`,
+                schemaVersion: 1,
+                operations: [
+                  {
+                    table: 'tasks',
+                    row_id: `${metricName}-task-${batchIndex}-${i}`,
+                    op: 'upsert',
+                    payload: {
+                      title: `Transport ${metricName} ${batchIndex}-${i}`,
+                      completed: (batchIndex + i) % 2,
+                      project_id: 'p1',
+                    },
+                    base_version: null,
+                  },
+                ],
+              },
+            });
+            if (combined.push?.status !== 'applied') {
+              throw new Error(
+                `Unexpected transport push status: ${combined.push?.status ?? 'missing'}`
+              );
+            }
+          }
+
+          const pull = await syncPullOnce(
+            laneClient.db,
+            laneTransport,
+            laneClient.handlers,
+            {
+              clientId: laneClient.clientId,
+              subscriptions: [subscription],
+              limitCommits: 500,
+            }
+          );
+          const sub = pull.subscriptions.find(
+            (entry) => entry.id === subscription.id
+          );
+          if (sub?.status !== 'active') {
+            throw new Error(
+              `Expected active subscription for ${metricName}, received ${sub?.status ?? 'missing'}`
+            );
+          }
+        },
+        { iterations: 4, warmup: 1 }
+      );
+
+      results.push(result);
+      expect(result.p99).toBeLessThan(threshold);
+    };
+
+    const drainLaneCatchup = async (
+      metricName: string,
+      laneClient: Awaited<ReturnType<typeof createLaneClient>>,
+      laneTransport:
+        | ReturnType<typeof createHttpTransport>
+        | ReturnType<typeof createWebSocketTransport>
+    ) => {
+      const maxAttempts = 40;
+      let stableCursorPulls = 0;
+      let previousCursor: number | null = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const pull = await syncPullOnce(
+          laneClient.db,
+          laneTransport,
+          laneClient.handlers,
+          {
+            clientId: laneClient.clientId,
+            subscriptions: [subscription],
+            limitCommits: 500,
+          }
+        );
+        const sub = pull.subscriptions.find(
+          (entry) => entry.id === subscription.id
+        );
+        if (sub?.status !== 'active') {
+          throw new Error(
+            `Expected active subscription while draining ${metricName}, received ${sub?.status ?? 'missing'}`
+          );
+        }
+
+        const hasPendingCommits = sub.commits.length > 0;
+        const hasPendingSnapshots = (sub.snapshots?.length ?? 0) > 0;
+        if (!hasPendingCommits && !hasPendingSnapshots) {
+          stableCursorPulls =
+            sub.nextCursor === previousCursor ? stableCursorPulls + 1 : 1;
+          previousCursor = sub.nextCursor;
+          if (stableCursorPulls >= 2) {
+            return;
+          }
+          continue;
+        }
+
+        stableCursorPulls = 0;
+        previousCursor = sub.nextCursor;
+      }
+
+      throw new Error(
+        `Failed to drain ${metricName} within ${maxAttempts} pull attempts`
+      );
+    };
+
+    try {
+      await syncPullOnce(
+        directClient.db,
+        directTransport,
+        directClient.handlers,
+        {
+          clientId: directClient.clientId,
+          subscriptions: [subscription],
+        }
+      );
+      await syncPullOnce(relayClient.db, relayTransport, relayClient.handlers, {
+        clientId: relayClient.clientId,
+        subscriptions: [subscription],
+      });
+      await syncPullOnce(wsClient.db, wsTransport, wsClient.handlers, {
+        clientId: wsClient.clientId,
+        subscriptions: [subscription],
+      });
+
+      await runLaneBenchmark(
+        'transport_direct_catchup',
+        directClient,
+        directTransport,
+        defaultThresholds.transport_direct_catchup_p99
+      );
+      await runLaneBenchmark(
+        'transport_relay_catchup',
+        relayClient,
+        relayTransport,
+        defaultThresholds.transport_relay_catchup_p99
+      );
+      await runLaneBenchmark(
+        'transport_ws_catchup',
+        wsClient,
+        wsTransport,
+        defaultThresholds.transport_ws_catchup_p99
+      );
+
+      await drainLaneCatchup(
+        'transport_direct_catchup',
+        directClient,
+        directTransport
+      );
+      await drainLaneCatchup(
+        'transport_relay_catchup',
+        relayClient,
+        relayTransport
+      );
+      await drainLaneCatchup('transport_ws_catchup', wsClient, wsTransport);
+
+      const serverCount = await transportServer.db
+        .selectFrom('tasks')
+        .select(({ fn }) => fn.countAll().as('total'))
+        .where('id', 'like', 'transport_%')
+        .executeTakeFirst();
+      const directCount = await directClient.db
+        .selectFrom('tasks')
+        .select(({ fn }) => fn.countAll().as('total'))
+        .where('id', 'like', 'transport_%')
+        .executeTakeFirst();
+      const relayCount = await relayClient.db
+        .selectFrom('tasks')
+        .select(({ fn }) => fn.countAll().as('total'))
+        .where('id', 'like', 'transport_%')
+        .executeTakeFirst();
+      const wsCount = await wsClient.db
+        .selectFrom('tasks')
+        .select(({ fn }) => fn.countAll().as('total'))
+        .where('id', 'like', 'transport_%')
+        .executeTakeFirst();
+
+      const expectedTotal = Number(serverCount?.total ?? 0);
+      expect(Number(directCount?.total ?? 0)).toBe(expectedTotal);
+      expect(Number(relayCount?.total ?? 0)).toBe(expectedTotal);
+      expect(Number(wsCount?.total ?? 0)).toBe(expectedTotal);
+    } finally {
+      await wsClient.destroy();
+      await relayClient.destroy();
+      await directClient.destroy();
+      await writer.destroy();
+      await transportServer.destroy();
+    }
   });
 
   it('generates regression report', async () => {
