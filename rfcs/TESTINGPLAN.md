@@ -16,7 +16,7 @@
 - Reconnect storm with repeated auth identity/scope changes and revocation checks.
 - Rebootstrap after prune + compaction in one window.
 - Cursor monotonicity under reconnect storms.
-- Direct vs relay transport parity.
+- WS/direct/relay transport parity for push/pull conflict outcomes and final state.
 - Subscription reshape stress loop (add/remove/narrow/expand) under active writes.
 - Partition isolation under high churn + reconnect + maintenance.
 - Maintenance churn while prune/compact run concurrently.
@@ -26,7 +26,6 @@
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 
 ## High-Value Functional Tests (Remaining + Expanded)
-- `P0` WS/direct/relay equivalence end-to-end: same scenario across transports, same final DB state and conflict outcomes.
 - `P0` Relay duplicate/out-of-order notification delivery invariance with concurrent pull calls and stale response arrival.
 - `P0` Outbox durability across restart for failed-commit remediation path (failed -> user fix -> pending -> acked), exactly-once semantics.
 - `P1` Maintenance race matrix: prune/compact while high-volume push/pull runs; assert no deadlocks and deterministic fallback.

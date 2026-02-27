@@ -15,6 +15,7 @@
     "@syncular/server": "workspace:*",
     "@syncular/testkit": "workspace:*",
     "@syncular/transport-http": "workspace:*",
+    "@syncular/transport-ws": "workspace:*",
     "hono": "*",
     "kysely": "*"
   }

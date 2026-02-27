@@ -100,7 +100,7 @@ describe('integration: matrix', () => {
         await runLargeDatasetScenario({ ...getCtx(), rowCount: 1000 });
       });
 
-      it('keeps direct and relay transports equivalent', async () => {
+      it('keeps direct, relay, and ws transports equivalent', async () => {
         await runTransportPathParityScenario(getCtx());
       });
     });

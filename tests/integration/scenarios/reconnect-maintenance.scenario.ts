@@ -12,6 +12,7 @@ import {
 } from '@syncular/client';
 import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import { createHttpTransport } from '@syncular/transport-http';
+import { createWebSocketTransport } from '@syncular/transport-ws';
 import type { ScenarioContext } from '../harness/types';
 
 const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
@@ -24,6 +25,25 @@ function createTasksSubscription(userId: string) {
     table: 'tasks',
     scopes: { user_id: userId, project_id: 'p1' },
   } as const;
+}
+
+class NoopWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
+  readyState = NoopWebSocket.CLOSED;
+  onopen: ((event: Event) => unknown) | null = null;
+  onmessage: ((event: MessageEvent<string>) => unknown) | null = null;
+  onerror: ((event: Event) => unknown) | null = null;
+  onclose: ((event: Event) => unknown) | null = null;
+
+  constructor(_url: string, _protocols?: string | string[]) {}
+
+  send(_data: string): void {}
+
+  close(): void {}
 }
 
 function createTransport(
@@ -171,6 +191,10 @@ export async function runTransportPathParityScenario(
     actorId: ctx.userId,
     clientId: 'relay-path-client',
   });
+  const wsClient = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'ws-path-client',
+  });
   const sub = createTasksSubscription(ctx.userId);
 
   const directTransport = createHttpTransport({
@@ -183,6 +207,12 @@ export async function runTransportPathParityScenario(
     getHeaders: () => ({ 'x-actor-id': ctx.userId }),
     transportPath: 'relay',
   });
+  const wsTransport = createWebSocketTransport({
+    baseUrl: ctx.server.baseUrl,
+    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
+    transportPath: 'direct',
+    WebSocketImpl: NoopWebSocket as unknown as typeof WebSocket,
+  });
 
   await syncPullOnce(directClient.db, directTransport, directClient.handlers, {
     clientId: directClient.clientId,
@@ -190,6 +220,10 @@ export async function runTransportPathParityScenario(
   });
   await syncPullOnce(relayClient.db, relayTransport, relayClient.handlers, {
     clientId: relayClient.clientId,
+    subscriptions: [sub],
+  });
+  await syncPullOnce(wsClient.db, wsTransport, wsClient.handlers, {
+    clientId: wsClient.clientId,
     subscriptions: [sub],
   });
 
@@ -237,6 +271,28 @@ export async function runTransportPathParityScenario(
   });
   expect(relayPush.push?.status).toBe('applied');
 
+  const wsPush = await wsTransport.sync({
+    clientId: wsClient.clientId,
+    push: {
+      clientCommitId: 'ws-path-commit',
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'path-ws-task',
+          op: 'upsert',
+          payload: {
+            title: 'WS path task',
+            completed: 0,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    },
+  });
+  expect(wsPush.push?.status).toBe('applied');
+
   await syncPullOnce(directClient.db, directTransport, directClient.handlers, {
     clientId: directClient.clientId,
     subscriptions: [sub],
@@ -244,6 +300,11 @@ export async function runTransportPathParityScenario(
   });
   await syncPullOnce(relayClient.db, relayTransport, relayClient.handlers, {
     clientId: relayClient.clientId,
+    subscriptions: [sub],
+    limitCommits: 100,
+  });
+  await syncPullOnce(wsClient.db, wsTransport, wsClient.handlers, {
+    clientId: wsClient.clientId,
     subscriptions: [sub],
     limitCommits: 100,
   });
@@ -258,15 +319,21 @@ export async function runTransportPathParityScenario(
     .select(['id'])
     .orderBy('id', 'asc')
     .execute();
+  const wsRows = await wsClient.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .orderBy('id', 'asc')
+    .execute();
   const serverRows = await ctx.server.db
     .selectFrom('tasks')
     .select(['id'])
     .orderBy('id', 'asc')
     .execute();
 
-  const expectedIds = ['path-direct-task', 'path-relay-task'];
+  const expectedIds = ['path-direct-task', 'path-relay-task', 'path-ws-task'];
   expect(directRows.map((row) => row.id)).toEqual(expectedIds);
   expect(relayRows.map((row) => row.id)).toEqual(expectedIds);
+  expect(wsRows.map((row) => row.id)).toEqual(expectedIds);
   expect(serverRows.map((row) => row.id)).toEqual(expectedIds);
 }
 
