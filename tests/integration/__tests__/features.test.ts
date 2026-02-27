@@ -32,6 +32,11 @@ import {
 } from '../scenarios/offline-resilience.scenario';
 import { runProxyScenario } from '../scenarios/proxy.scenario';
 import {
+  runMaintenanceChurnScenario,
+  runReconnectAckLossScenario,
+  runTransportPathParityScenario,
+} from '../scenarios/reconnect-maintenance.scenario';
+import {
   runCascadeConstraintScenario,
   runRelationsScenario,
 } from '../scenarios/relations.scenario';
@@ -170,6 +175,24 @@ describe('integration: features', () => {
 
     it('outbox retries after failure', async () => {
       await runOutboxRetryAfterFailure(getCtx());
+    });
+
+    it('retries cleanly after push ack loss on reconnect', async () => {
+      await runReconnectAckLossScenario(getCtx());
+    });
+  });
+
+  // Transport parity
+  describe('transport parity', () => {
+    it('keeps direct and relay transport paths semantically equivalent', async () => {
+      await runTransportPathParityScenario(getCtx());
+    });
+  });
+
+  // Maintenance under churn
+  describe('maintenance churn', () => {
+    it('preserves convergence while prune/compact run during active writes', async () => {
+      await runMaintenanceChurnScenario(getCtx());
     });
   });
 

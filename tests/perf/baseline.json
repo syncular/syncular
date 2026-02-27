@@ -34,6 +34,13 @@
     "timestamp": "2026-02-23T17:42:48.558Z",
     "commit": "local"
   },
+  "reconnect_catchup": {
+    "median": 18.9,
+    "p95": 20.9,
+    "p99": 20.9,
+    "timestamp": "2026-02-27T19:52:24.000Z",
+    "commit": "local"
+  },
   "dialect_bun-sqlite_insert_10k": {
     "median": 74.91595899999999,
     "p95": 74.91595899999999,

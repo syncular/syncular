@@ -334,6 +334,85 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
     results.push(result);
   }
 
+  // Reconnect catchup
+  console.log('  Running: reconnect_catchup');
+  {
+    const testServer = await createTestServer('sqlite');
+    const reconnectClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'reconnect-client',
+    });
+    const writerClient = await createTestClient('bun-sqlite', testServer, {
+      actorId: userId,
+      clientId: 'reconnect-writer',
+    });
+
+    await syncPullOnce(
+      reconnectClient.db,
+      reconnectClient.transport,
+      reconnectClient.handlers,
+      {
+        clientId: reconnectClient.clientId,
+        subscriptions: [
+          { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
+        ],
+      }
+    );
+
+    let batchIndex = 0;
+
+    const result = await benchmark(
+      'reconnect_catchup',
+      async () => {
+        batchIndex += 1;
+
+        for (let i = 0; i < 100; i++) {
+          const commitId = `reconnect-${batchIndex}-${i}`;
+          const rowId = `reconnect-task-${batchIndex}-${i}`;
+
+          await writerClient.transport.sync({
+            clientId: writerClient.clientId,
+            push: {
+              clientCommitId: commitId,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: rowId,
+                  op: 'upsert',
+                  payload: {
+                    title: `Reconnect Task ${batchIndex}-${i}`,
+                    completed: 0,
+                  },
+                  base_version: null,
+                },
+              ],
+            },
+          });
+        }
+
+        await syncPullOnce(
+          reconnectClient.db,
+          reconnectClient.transport,
+          reconnectClient.handlers,
+          {
+            clientId: reconnectClient.clientId,
+            subscriptions: [
+              { id: 'my-tasks', table: 'tasks', scopes: { user_id: userId } },
+            ],
+            limitCommits: 500,
+          }
+        );
+      },
+      { iterations: 5, warmup: 1 }
+    );
+
+    await writerClient.destroy();
+    await reconnectClient.destroy();
+    await testServer.destroy();
+    results.push(result);
+  }
+
   // Dialect perf
   console.log('  Running: dialect benchmarks');
   for (const dialect of PERF_DIALECTS) {

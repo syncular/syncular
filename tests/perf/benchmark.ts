@@ -105,6 +105,7 @@ interface PerformanceThresholds {
   bootstrap_1k: number; // ms
   bootstrap_10k: number; // ms
   incremental_pull_p99: number; // ms
+  reconnect_catchup_p99: number; // ms
   push_single_row: number; // ms
   push_batch_100: number; // ms
   conflict_resolution: number; // ms
@@ -117,6 +118,7 @@ export const defaultThresholds: PerformanceThresholds = {
   bootstrap_1k: 500,
   bootstrap_10k: 3000,
   incremental_pull_p99: 50,
+  reconnect_catchup_p99: 1500,
   push_single_row: 100,
   push_batch_100: 500,
   conflict_resolution: 200,

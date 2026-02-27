@@ -182,6 +182,12 @@ jobs:
           echo "Sync performance regression detected. See perf-results.txt for details."
           exit 1
 
+      - name: Fail on missing performance baseline
+        if: steps.report.outputs.has_missing_baseline == 'true'
+        run: |
+          echo "Performance baseline missing for one or more metrics. Run bun test:perf:update-baseline and commit tests/perf/baseline.json."
+          exit 1
+
   runtime-browser:
     needs: changes
     if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'

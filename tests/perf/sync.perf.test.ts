@@ -12,6 +12,7 @@ import {
   syncPushOnce,
 } from '@syncular/client';
 import {
+  createTestClient,
   createTestServer,
   seedServerData,
   type TestServer,
@@ -267,6 +268,95 @@ describe('sync performance', () => {
 
     results.push(result);
     expect(result.p99).toBeLessThan(defaultThresholds.incremental_pull_p99);
+  });
+
+  it('reconnect catchup after queued commit backlog', async () => {
+    const result = await withTestServer('sqlite', async (testServer) => {
+      const reconnectClient = await createTestClient('bun-sqlite', testServer, {
+        actorId: userId,
+        clientId: 'reconnect-client',
+      });
+      const writerClient = await createTestClient('bun-sqlite', testServer, {
+        actorId: userId,
+        clientId: 'reconnect-writer',
+      });
+
+      const subscription = {
+        id: 'my-tasks',
+        table: 'tasks',
+        scopes: { user_id: userId },
+      } as const;
+
+      try {
+        await syncPullOnce(
+          reconnectClient.db,
+          reconnectClient.transport,
+          reconnectClient.handlers,
+          {
+            clientId: reconnectClient.clientId,
+            subscriptions: [subscription],
+          }
+        );
+
+        let batchIndex = 0;
+
+        const reconnectBenchmark = await benchmark(
+          'reconnect_catchup',
+          async () => {
+            batchIndex += 1;
+
+            for (let i = 0; i < 100; i++) {
+              const commitId = `reconnect-${batchIndex}-${i}`;
+              const rowId = `reconnect-task-${batchIndex}-${i}`;
+              const combined = await writerClient.transport.sync({
+                clientId: writerClient.clientId,
+                push: {
+                  clientCommitId: commitId,
+                  schemaVersion: 1,
+                  operations: [
+                    {
+                      table: 'tasks',
+                      row_id: rowId,
+                      op: 'upsert',
+                      payload: {
+                        title: `Reconnect Task ${batchIndex}-${i}`,
+                        completed: 0,
+                      },
+                      base_version: null,
+                    },
+                  ],
+                },
+              });
+
+              if (combined.push?.status !== 'applied') {
+                throw new Error(
+                  `Unexpected reconnect benchmark push status: ${combined.push?.status ?? 'missing'}`
+                );
+              }
+            }
+
+            await syncPullOnce(
+              reconnectClient.db,
+              reconnectClient.transport,
+              reconnectClient.handlers,
+              {
+                clientId: reconnectClient.clientId,
+                subscriptions: [subscription],
+                limitCommits: 500,
+              }
+            );
+          },
+          { iterations: 5, warmup: 1 }
+        );
+        return reconnectBenchmark;
+      } finally {
+        await writerClient.destroy();
+        await reconnectClient.destroy();
+      }
+    });
+
+    results.push(result);
+    expect(result.p99).toBeLessThan(defaultThresholds.reconnect_catchup_p99);
   });
 
   it('generates regression report', async () => {
