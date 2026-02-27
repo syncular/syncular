@@ -84,7 +84,23 @@ jobs:
       - uses: ./.github/actions/setup-environment
 
       - name: Run integration load scenarios
-        run: bun run test:load
+        run: |
+          set +e
+          bun run test:load
+          exit_code=$?
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$exit_code" -eq 132 ] || [ "$exit_code" -eq 133 ]; then
+            echo "Bun crashed with exit code $exit_code; retrying once..."
+            bun run test:load
+            exit $?
+          fi
+
+          exit "$exit_code"
 
   integration-full:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
