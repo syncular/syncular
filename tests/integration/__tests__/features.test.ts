@@ -30,6 +30,7 @@ import { runE2eeScenario } from '../scenarios/e2ee.scenario';
 import {
   runOfflineWithConcurrentChanges,
   runOfflineWritesSyncOnReconnect,
+  runOutboxDurabilityAcrossRestart,
   runOutboxRetryAfterFailure,
 } from '../scenarios/offline-resilience.scenario';
 import { runProxyScenario } from '../scenarios/proxy.scenario';
@@ -37,18 +38,23 @@ import {
   runMaintenanceChurnScenario,
   runReconnectAckLossScenario,
   runReconnectStormCursorScenario,
+  runRelayDuplicateOutOfOrderScenario,
   runTransportPathParityScenario,
 } from '../scenarios/reconnect-maintenance.scenario';
 import {
   runCascadeConstraintScenario,
   runRelationsScenario,
 } from '../scenarios/relations.scenario';
-import { runSnapshotChunksScenario } from '../scenarios/snapshot-chunks.scenario';
+import {
+  runSnapshotChunkFaultInjectionScenario,
+  runSnapshotChunksScenario,
+} from '../scenarios/snapshot-chunks.scenario';
 import {
   runAddSubscriptionScenario,
   runCursorAheadScenario,
   runDedupeScenario,
   runForcedBootstrapAfterPruneScenario,
+  runSubscriptionReshapeScenario,
   runSubscriptionScenario,
 } from '../scenarios/subscription.scenario';
 
@@ -106,6 +112,10 @@ describe('integration: features', () => {
       await runAddSubscriptionScenario(getCtx());
     });
 
+    it('reshapes subscriptions without leaking removed scopes', async () => {
+      await runSubscriptionReshapeScenario(getCtx());
+    });
+
     it('dedupes hot rows in incremental pulls', async () => {
       await runDedupeScenario(getCtx());
     });
@@ -142,6 +152,10 @@ describe('integration: features', () => {
   describe('snapshot chunks', () => {
     it('bootstraps via snapshot chunks over HTTP', async () => {
       await runSnapshotChunksScenario(getCtx());
+    });
+
+    it('recovers cleanly from missing/failed/truncated chunk downloads', async () => {
+      await runSnapshotChunkFaultInjectionScenario(getCtx());
     });
   });
 
@@ -187,12 +201,20 @@ describe('integration: features', () => {
     it('retries cleanly after push ack loss on reconnect', async () => {
       await runReconnectAckLossScenario(getCtx());
     });
+
+    it('replays pending outbox commits exactly once after process restart', async () => {
+      await runOutboxDurabilityAcrossRestart(getCtx());
+    });
   });
 
   // Transport parity
   describe('transport parity', () => {
     it('keeps direct and relay transport paths semantically equivalent', async () => {
       await runTransportPathParityScenario(getCtx());
+    });
+
+    it('keeps relay pull state correct under duplicate and out-of-order responses', async () => {
+      await runRelayDuplicateOutOfOrderScenario(getCtx());
     });
   });
 

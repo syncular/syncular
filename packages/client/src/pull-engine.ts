@@ -781,6 +781,46 @@ export async function applyPullResponse<DB extends SyncClientDb>(
     for (const sub of responseToApply.subscriptions) {
       const def = subsById.get(sub.id);
       const prev = existingById.get(sub.id);
+      const prevCursorRaw = prev?.cursor;
+      const prevCursor =
+        typeof prevCursorRaw === 'number'
+          ? prevCursorRaw
+          : prevCursorRaw === null || prevCursorRaw === undefined
+            ? null
+            : Number(prevCursorRaw);
+      const latestStateResult = await sql<{ cursor: number | string | null }>`
+        select ${sql.ref('cursor')} as cursor
+        from ${sql.table('sync_subscription_state')}
+        where ${sql.ref('state_id')} = ${sql.val(stateId)}
+          and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
+      `.execute(trx);
+      const latestCursorRaw = latestStateResult.rows[0]?.cursor;
+      const latestCursor =
+        typeof latestCursorRaw === 'number'
+          ? latestCursorRaw
+          : latestCursorRaw === null || latestCursorRaw === undefined
+            ? null
+            : Number(latestCursorRaw);
+      const effectiveCursor =
+        prevCursor !== null &&
+        Number.isFinite(prevCursor) &&
+        latestCursor !== null &&
+        Number.isFinite(latestCursor)
+          ? Math.max(prevCursor, latestCursor)
+          : prevCursor !== null && Number.isFinite(prevCursor)
+            ? prevCursor
+            : latestCursor !== null && Number.isFinite(latestCursor)
+              ? latestCursor
+              : null;
+      const staleIncrementalResponse =
+        !sub.bootstrap &&
+        effectiveCursor !== null &&
+        sub.nextCursor < effectiveCursor;
+
+      // Guard against out-of-order duplicate pull responses from older requests.
+      if (staleIncrementalResponse) {
+        continue;
+      }
 
       // Revoked: clear data and drop the subscription row.
       if (sub.status === 'revoked') {

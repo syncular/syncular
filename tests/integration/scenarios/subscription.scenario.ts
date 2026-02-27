@@ -215,6 +215,157 @@ export async function runAddSubscriptionScenario(
   expect(rows2.map((t) => t.id)).toEqual(['p1-seed', 'p2-seed']);
 }
 
+export async function runSubscriptionReshapeScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const { server } = ctx;
+  const client = ctx.clients[0]!;
+
+  const subP1 = {
+    id: 'p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  };
+  const subP2 = {
+    id: 'p2',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p2' },
+  };
+  const subP3 = {
+    id: 'p3',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p3' },
+  };
+
+  await server.db
+    .insertInto('tasks')
+    .values([
+      {
+        id: 'reshape-p1-seed',
+        title: 'P1 Seed',
+        completed: 0,
+        user_id: ctx.userId,
+        project_id: 'p1',
+        server_version: 1,
+      },
+      {
+        id: 'reshape-p2-seed',
+        title: 'P2 Seed',
+        completed: 0,
+        user_id: ctx.userId,
+        project_id: 'p2',
+        server_version: 1,
+      },
+      {
+        id: 'reshape-p3-seed',
+        title: 'P3 Seed',
+        completed: 0,
+        user_id: ctx.userId,
+        project_id: 'p3',
+        server_version: 1,
+      },
+    ])
+    .execute();
+
+  const initial = await syncPullOnce(
+    client.db,
+    client.transport,
+    client.handlers,
+    {
+      clientId: client.clientId,
+      subscriptions: [subP1, subP2],
+    }
+  );
+  expect(
+    initial.subscriptions.find((entry) => entry.id === subP1.id)?.bootstrap
+  ).toBe(true);
+  expect(
+    initial.subscriptions.find((entry) => entry.id === subP2.id)?.bootstrap
+  ).toBe(true);
+
+  const firstRows = await client.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(firstRows.map((row) => row.id)).toEqual([
+    'reshape-p1-seed',
+    'reshape-p2-seed',
+  ]);
+
+  const narrow = await syncPullOnce(
+    client.db,
+    client.transport,
+    client.handlers,
+    {
+      clientId: client.clientId,
+      subscriptions: [subP2],
+    }
+  );
+  expect(
+    narrow.subscriptions.find((entry) => entry.id === subP2.id)?.bootstrap
+  ).toBe(false);
+
+  const narrowedRows = await client.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(narrowedRows.map((row) => row.id)).toEqual(['reshape-p2-seed']);
+
+  const widen = await syncPullOnce(
+    client.db,
+    client.transport,
+    client.handlers,
+    {
+      clientId: client.clientId,
+      subscriptions: [subP2, subP3],
+    }
+  );
+  expect(
+    widen.subscriptions.find((entry) => entry.id === subP2.id)?.bootstrap
+  ).toBe(false);
+  expect(
+    widen.subscriptions.find((entry) => entry.id === subP3.id)?.bootstrap
+  ).toBe(true);
+
+  await client.transport.sync({
+    clientId: client.clientId,
+    push: {
+      clientCommitId: 'reshape-p3-write',
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'reshape-p3-new',
+          op: 'upsert',
+          payload: {
+            title: 'P3 New',
+            completed: 0,
+            project_id: 'p3',
+          },
+          base_version: null,
+        },
+      ],
+    },
+  });
+
+  await syncPullOnce(client.db, client.transport, client.handlers, {
+    clientId: client.clientId,
+    subscriptions: [subP3],
+  });
+
+  const finalRows = await client.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(finalRows.map((row) => row.id)).toEqual([
+    'reshape-p3-new',
+    'reshape-p3-seed',
+  ]);
+}
+
 export async function runDedupeScenario(ctx: ScenarioContext): Promise<void> {
   const client = ctx.clients[0]!;
 
