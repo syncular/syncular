@@ -8,6 +8,7 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
+import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { ScenarioContext } from '../harness/types';
 
@@ -467,4 +468,183 @@ export async function runReconnectStaleScopeRevocation(
       ? stateRow.scopes_json
       : JSON.stringify(stateRow?.scopes_json ?? {});
   expect(scopesText).toContain('other-user');
+}
+
+/**
+ * Multi-tenant isolation under high churn with reconnect + maintenance activity.
+ * Verifies no cross-user leakage while compaction/prune run during concurrent writes.
+ */
+export async function runPartitionIsolationHighChurnScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const writerA = ctx.clients[0]!;
+  const writerB = await ctx.createClient({
+    actorId: 'tenant-b',
+    clientId: 'tenant-b-writer',
+  });
+  const laggingA = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'tenant-a-lagging',
+  });
+  const laggingB = await ctx.createClient({
+    actorId: 'tenant-b',
+    clientId: 'tenant-b-lagging',
+  });
+
+  const subA = {
+    id: 'tasks-a',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  };
+  const subB = {
+    id: 'tasks-b',
+    table: 'tasks',
+    scopes: { user_id: 'tenant-b', project_id: 'p1' },
+  };
+
+  await syncPullOnce(writerA.db, writerA.transport, writerA.handlers, {
+    clientId: writerA.clientId,
+    subscriptions: [subA],
+  });
+  await syncPullOnce(writerB.db, writerB.transport, writerB.handlers, {
+    clientId: writerB.clientId,
+    subscriptions: [subB],
+  });
+  await syncPullOnce(laggingA.db, laggingA.transport, laggingA.handlers, {
+    clientId: laggingA.clientId,
+    subscriptions: [subA],
+  });
+  await syncPullOnce(laggingB.db, laggingB.transport, laggingB.handlers, {
+    clientId: laggingB.clientId,
+    subscriptions: [subB],
+  });
+
+  const commitsPerTenant = 24;
+
+  const pushTenantLoop = async (
+    writer: typeof writerA,
+    prefix: 'a' | 'b',
+    userId: string
+  ) => {
+    for (let i = 1; i <= commitsPerTenant; i += 1) {
+      const pushResult = await writer.transport.sync({
+        clientId: writer.clientId,
+        push: {
+          clientCommitId: `${prefix}-tenant-c${i}`,
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: `${prefix}-tenant-task-${i}`,
+              op: 'upsert',
+              payload: {
+                title: `Tenant ${prefix.toUpperCase()} Task ${i}`,
+                completed: i % 2,
+                project_id: 'p1',
+              },
+              base_version: null,
+            },
+          ],
+        },
+      });
+      expect(pushResult.push?.status).toBe('applied');
+
+      if (i % 4 === 0) {
+        await syncPullOnce(writer.db, writer.transport, writer.handlers, {
+          clientId: writer.clientId,
+          subscriptions: [
+            {
+              id: `tasks-${prefix}`,
+              table: 'tasks',
+              scopes: { user_id: userId, project_id: 'p1' },
+            },
+          ],
+          limitCommits: 30,
+        });
+      }
+    }
+  };
+
+  const maintenanceLoop = async () => {
+    for (let i = 0; i < 6; i += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+      await ctx.server.db
+        .updateTable('sync_commits')
+        .set({ created_at: '2000-01-01T00:00:00.000Z' })
+        .execute();
+
+      await ctx.server.dialect.compactChanges(ctx.server.db, {
+        fullHistoryHours: 1,
+      });
+
+      const watermark = await computePruneWatermarkCommitSeq(ctx.server.db, {
+        activeWindowMs: 60 * 1000,
+        fallbackMaxAgeMs: 60 * 1000,
+        keepNewestCommits: 16,
+      });
+      if (watermark <= 0) continue;
+
+      await pruneSync(ctx.server.db, {
+        watermarkCommitSeq: watermark,
+        keepNewestCommits: 16,
+      });
+    }
+  };
+
+  await Promise.all([
+    pushTenantLoop(writerA, 'a', ctx.userId),
+    pushTenantLoop(writerB, 'b', 'tenant-b'),
+    maintenanceLoop(),
+  ]);
+
+  const catchupA = await syncPullOnce(
+    laggingA.db,
+    laggingA.transport,
+    laggingA.handlers,
+    {
+      clientId: laggingA.clientId,
+      subscriptions: [subA],
+      limitCommits: 50,
+    }
+  );
+  const catchupB = await syncPullOnce(
+    laggingB.db,
+    laggingB.transport,
+    laggingB.handlers,
+    {
+      clientId: laggingB.clientId,
+      subscriptions: [subB],
+      limitCommits: 50,
+    }
+  );
+
+  expect(
+    catchupA.subscriptions.find((entry) => entry.id === subA.id)?.status
+  ).toBe('active');
+  expect(
+    catchupB.subscriptions.find((entry) => entry.id === subB.id)?.status
+  ).toBe('active');
+
+  const tenantARows = await laggingA.db
+    .selectFrom('tasks')
+    .select(['id', 'user_id'])
+    .orderBy('id', 'asc')
+    .execute();
+  const tenantBRows = await laggingB.db
+    .selectFrom('tasks')
+    .select(['id', 'user_id'])
+    .orderBy('id', 'asc')
+    .execute();
+
+  expect(tenantARows.length).toBe(commitsPerTenant);
+  expect(tenantBRows.length).toBe(commitsPerTenant);
+  expect(tenantARows.every((row) => row.user_id === ctx.userId)).toBe(true);
+  expect(tenantBRows.every((row) => row.user_id === 'tenant-b')).toBe(true);
+  expect(tenantARows.some((row) => row.id.startsWith('b-tenant-task-'))).toBe(
+    false
+  );
+  expect(tenantBRows.some((row) => row.id.startsWith('a-tenant-task-'))).toBe(
+    false
+  );
 }

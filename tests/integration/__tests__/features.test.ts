@@ -17,6 +17,7 @@ import {
   runActorIsolation,
   runCrossScopePullRejected,
   runNarrowedScopes,
+  runPartitionIsolationHighChurnScenario,
   runPushToUnauthorizedScope,
   runReconnectStaleScopeRevocation,
 } from '../scenarios/auth-enforcement.scenario';
@@ -26,7 +27,10 @@ import {
   runCompactionScenario,
   runPruneByAgeScenario,
 } from '../scenarios/compaction.scenario';
-import { runE2eeScenario } from '../scenarios/e2ee.scenario';
+import {
+  runE2eeReconnectKeyRotationScenario,
+  runE2eeScenario,
+} from '../scenarios/e2ee.scenario';
 import {
   runOfflineWithConcurrentChanges,
   runOfflineWritesSyncOnReconnect,
@@ -175,6 +179,10 @@ describe('integration: features', () => {
     it('encrypts on push and decrypts on pull', async () => {
       await runE2eeScenario(getCtx());
     });
+
+    it('handles reconnect with key rotation and rejects missing keysets', async () => {
+      await runE2eeReconnectKeyRotationScenario(getCtx());
+    });
   });
 
   // Proxy
@@ -249,6 +257,10 @@ describe('integration: features', () => {
 
     it('revokes stale scopes on reconnect without leaking data', async () => {
       await runReconnectStaleScopeRevocation(getCtx());
+    });
+
+    it('maintains strict tenant isolation under churn, reconnect, and maintenance', async () => {
+      await runPartitionIsolationHighChurnScenario(getCtx());
     });
   });
 });
