@@ -36,6 +36,7 @@ import {
   runOfflineWithConcurrentChanges,
   runOfflineWritesSyncOnReconnect,
   runOutboxDurabilityAcrossRestart,
+  runOutboxFailedRemediationAcrossRestart,
   runOutboxRetryAfterFailure,
   runOutboxSendingRecoveryAcrossRestart,
 } from '../scenarios/offline-resilience.scenario';
@@ -223,6 +224,10 @@ describe('integration: features', () => {
 
     it('replays stale in-flight sending commits exactly once after process restart', async () => {
       await runOutboxSendingRecoveryAcrossRestart(getCtx());
+    });
+
+    it('persists failed commits across restart and remediates with exactly-once replay', async () => {
+      await runOutboxFailedRemediationAcrossRestart(getCtx());
     });
   });
 

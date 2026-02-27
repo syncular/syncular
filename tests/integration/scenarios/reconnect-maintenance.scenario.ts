@@ -39,8 +39,6 @@ class NoopWebSocket {
   onerror: ((event: Event) => unknown) | null = null;
   onclose: ((event: Event) => unknown) | null = null;
 
-  constructor(_url: string, _protocols?: string | string[]) {}
-
   send(_data: string): void {}
 
   close(): void {}
@@ -543,22 +541,31 @@ export async function runRelayDuplicateOutOfOrderScenario(
   });
   const { clientId: pullClientId, ...basePull } = stalePullState.request;
 
-  const staleCombined = await relayTransport.sync({
-    clientId: pullClientId,
-    pull: {
-      ...basePull,
-      limitCommits: 1,
-    },
-  });
-  const freshCombined = await relayTransport.sync({
-    clientId: pullClientId,
-    pull: {
-      ...basePull,
-      limitCommits: 20,
-    },
-  });
+  const [staleCombinedA, freshCombined, staleCombinedB] = await Promise.all([
+    relayTransport.sync({
+      clientId: pullClientId,
+      pull: {
+        ...basePull,
+        limitCommits: 1,
+      },
+    }),
+    relayTransport.sync({
+      clientId: pullClientId,
+      pull: {
+        ...basePull,
+        limitCommits: 20,
+      },
+    }),
+    relayTransport.sync({
+      clientId: pullClientId,
+      pull: {
+        ...basePull,
+        limitCommits: 1,
+      },
+    }),
+  ]);
 
-  if (!freshCombined.pull || !staleCombined.pull) {
+  if (!freshCombined.pull || !staleCombinedA.pull || !staleCombinedB.pull) {
     throw new Error('Expected relay pulls to include payloads');
   }
 
@@ -584,7 +591,7 @@ export async function runRelayDuplicateOutOfOrderScenario(
       limitCommits: 20,
     },
     stalePullState,
-    staleCombined.pull
+    staleCombinedA.pull
   );
   await applyPullResponse(
     reader.db,
@@ -596,7 +603,19 @@ export async function runRelayDuplicateOutOfOrderScenario(
       limitCommits: 20,
     },
     stalePullState,
-    staleCombined.pull
+    staleCombinedA.pull
+  );
+  await applyPullResponse(
+    reader.db,
+    relayTransport,
+    reader.handlers,
+    {
+      clientId: reader.clientId,
+      subscriptions: [sub],
+      limitCommits: 20,
+    },
+    stalePullState,
+    staleCombinedB.pull
   );
 
   const localRow = await reader.db

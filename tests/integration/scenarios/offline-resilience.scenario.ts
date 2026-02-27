@@ -540,3 +540,197 @@ export async function runOutboxSendingRecoveryAcrossRestart(
     await rm(tempDir, { recursive: true, force: true });
   }
 }
+
+export async function runOutboxFailedRemediationAcrossRestart(
+  ctx: ScenarioContext
+): Promise<void> {
+  const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
+    | typeof globalThis.fetch
+    | undefined;
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'syncular-outbox-failed-'));
+  const dbPath = path.join(tempDir, 'client.sqlite');
+  const clientId = 'restart-failed-client';
+  const sub = {
+    id: 'tasks-p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  } as const;
+  const transport = createHttpTransport({
+    baseUrl: ctx.server.baseUrl,
+    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
+    ...(nativeFetch ? { fetch: nativeFetch } : {}),
+  });
+  let dropFirstAck = true;
+  const flakyFetchBase = async (
+    ...args: Parameters<typeof globalThis.fetch>
+  ): Promise<Response> => {
+    const response = await (nativeFetch ?? globalThis.fetch)(...args);
+    if (dropFirstAck && response.ok) {
+      dropFirstAck = false;
+      await response.arrayBuffer();
+      throw new Error('SIMULATED_FAILED_REMEDIATION_ACK_LOSS');
+    }
+    return response;
+  };
+  const flakyFetch = Object.assign(flakyFetchBase, {
+    preconnect: (nativeFetch ?? globalThis.fetch).preconnect,
+  });
+  const flakyTransport = createHttpTransport({
+    baseUrl: ctx.server.baseUrl,
+    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
+    fetch: flakyFetch,
+  });
+  const handlers = [
+    createClientHandler<RestartClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}', 'project:{project_id}'],
+      versionColumn: 'server_version',
+    }),
+  ];
+
+  const createLocalDb = async () => {
+    const db = createDatabase<RestartClientDb>({
+      dialect: createBunSqliteDialect({ path: dbPath }),
+      family: 'sqlite',
+    });
+    await ensureClientSyncSchema(db);
+    await db.schema
+      .createTable('tasks')
+      .ifNotExists()
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+    return db;
+  };
+
+  let firstDb: RestartDb | null = null;
+  let secondDb: RestartDb | null = null;
+
+  try {
+    firstDb = await createLocalDb();
+    await syncPullOnce(firstDb, transport, handlers, {
+      clientId,
+      subscriptions: [sub],
+    });
+
+    const failedCommit = await enqueueOutboxCommit(firstDb, {
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'restart-failed-task-bad',
+          op: 'upsert',
+          payload: { title: 'Restart Failed Task' },
+          base_version: null,
+        },
+      ],
+    });
+
+    const failedPush = await syncPushOnce(firstDb, transport, {
+      clientId,
+    });
+    expect(failedPush.response?.status).toBe('rejected');
+
+    const failedBeforeRestart = await firstDb
+      .selectFrom('sync_outbox_commits')
+      .select(['client_commit_id', 'status'])
+      .where('client_commit_id', '=', failedCommit.clientCommitId)
+      .executeTakeFirst();
+    expect(failedBeforeRestart?.status).toBe('failed');
+
+    await firstDb.destroy();
+    firstDb = null;
+
+    secondDb = await createLocalDb();
+    const failedAfterRestart = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(['client_commit_id', 'status'])
+      .where('client_commit_id', '=', failedCommit.clientCommitId)
+      .executeTakeFirst();
+    expect(failedAfterRestart?.status).toBe('failed');
+
+    const pendingBeforeFix = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+    expect(Number(pendingBeforeFix?.total ?? 0)).toBe(0);
+
+    const fixedCommit = await enqueueOutboxCommit(secondDb, {
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'restart-failed-task-fixed',
+          op: 'upsert',
+          payload: {
+            title: 'Restart Failed Task Fixed',
+            completed: 0,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    });
+
+    await expect(
+      syncPushOnce(secondDb, flakyTransport, {
+        clientId,
+      })
+    ).rejects.toThrow('SIMULATED_FAILED_REMEDIATION_ACK_LOSS');
+
+    const pendingAfterAckLoss = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', fixedCommit.clientCommitId)
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+    expect(Number(pendingAfterAckLoss?.total ?? 0)).toBe(1);
+
+    const retryPush = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(retryPush.response?.status).toBe('cached');
+
+    const secondPush = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(secondPush.pushed).toBe(false);
+
+    const serverTask = await ctx.server.db
+      .selectFrom('tasks')
+      .select(['id'])
+      .where('id', '=', 'restart-failed-task-fixed')
+      .executeTakeFirst();
+    expect(serverTask?.id).toBe('restart-failed-task-fixed');
+
+    const fixedCommitCount = await ctx.server.db
+      .selectFrom('sync_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', fixedCommit.clientCommitId)
+      .executeTakeFirst();
+    expect(Number(fixedCommitCount?.total ?? 0)).toBe(1);
+
+    const failedCommitCount = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', failedCommit.clientCommitId)
+      .where('status', '=', 'failed')
+      .executeTakeFirst();
+    expect(Number(failedCommitCount?.total ?? 0)).toBe(1);
+  } finally {
+    if (secondDb) {
+      await secondDb.destroy();
+    }
+    if (firstDb) {
+      await firstDb.destroy();
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}

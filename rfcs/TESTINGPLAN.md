@@ -17,17 +17,17 @@
 - Rebootstrap after prune + compaction in one window.
 - Cursor monotonicity under reconnect storms.
 - WS/direct/relay transport parity for push/pull conflict outcomes and final state.
+- Relay duplicate/out-of-order delivery handling with concurrent stale/fresh pull responses.
 - Subscription reshape stress loop (add/remove/narrow/expand) under active writes.
 - Partition isolation under high churn + reconnect + maintenance.
 - Maintenance churn while prune/compact run concurrently.
 - Snapshot chunk fault matrix: missing, 500, truncated, checksum mismatch, expired, unauthorized.
 - Outbox restart durability for pending and stale in-flight (`sending`) commits.
+- Outbox failed-commit remediation path across restart with exact-once replay after ACK loss.
 - Retry/backoff correctness for 429/503 across pull/push/chunk fetch paths.
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 
 ## High-Value Functional Tests (Remaining + Expanded)
-- `P0` Relay duplicate/out-of-order notification delivery invariance with concurrent pull calls and stale response arrival.
-- `P0` Outbox durability across restart for failed-commit remediation path (failed -> user fix -> pending -> acked), exactly-once semantics.
 - `P1` Maintenance race matrix: prune/compact while high-volume push/pull runs; assert no deadlocks and deterministic fallback.
 - `P1` E2EE offline writes + key rotation + reconnect for authorized and unauthorized key sets.
 - `P2` Process crash simulation around outbox state transitions beyond stale-send recovery (for example: failed commit recovery workflow).
