@@ -316,6 +316,42 @@ async function fetchSnapshotChunkStream(
   return bytesToReadableStream(bytes);
 }
 
+async function readAllBytesFromStream(
+  stream: ReadableStream<Uint8Array>
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  try {
+    while (true) {
+      // eslint-disable-next-line no-await-in-loop
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      chunks.push(value);
+      totalLength += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (chunks.length === 0) {
+    return new Uint8Array();
+  }
+  if (chunks.length === 1) {
+    return chunks[0]!;
+  }
+
+  const bytes = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function mapWithConcurrency<T, U>(
   items: readonly T[],
   concurrency: number,
@@ -414,7 +450,8 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
   transport: SyncTransport,
   handler: Pick<ClientTableHandler<DB>, 'applySnapshot'>,
   trx: Transaction<DB>,
-  snapshot: SyncSnapshot
+  snapshot: SyncSnapshot,
+  sha256Override?: (bytes: Uint8Array) => Promise<string>
 ): Promise<void> {
   const chunks = snapshot.chunks ?? [];
   if (chunks.length === 0) {
@@ -430,15 +467,47 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
 
     const rawStream = await fetchSnapshotChunkStream(transport, chunk.id);
     const decodedStream = await maybeGunzipStream(rawStream);
+    let applyStream = decodedStream;
+    let chunkHashPromise: Promise<string> | null = null;
+
+    if (chunk.sha256) {
+      const [hashStream, streamForApply] = decodedStream.tee();
+      applyStream = streamForApply;
+      chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
+        computeSha256Hex(bytes, sha256Override)
+      );
+    }
+
     const rowBatchIterator = decodeSnapshotRowStreamBatches(
-      decodedStream,
+      applyStream,
       SNAPSHOT_APPLY_BATCH_ROWS
     );
 
     let pendingBatch: unknown[] | null = null;
-    // eslint-disable-next-line no-await-in-loop
-    for await (const batch of rowBatchIterator) {
+    let applyError: unknown = null;
+
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      for await (const batch of rowBatchIterator) {
+        if (pendingBatch) {
+          // eslint-disable-next-line no-await-in-loop
+          await handler.applySnapshot(
+            { trx },
+            {
+              ...snapshot,
+              rows: pendingBatch,
+              chunks: undefined,
+              isFirstPage: nextIsFirstPage,
+              isLastPage: false,
+            }
+          );
+          nextIsFirstPage = false;
+        }
+        pendingBatch = batch;
+      }
+
       if (pendingBatch) {
+        const isLastChunk = chunkIndex === chunks.length - 1;
         // eslint-disable-next-line no-await-in-loop
         await handler.applySnapshot(
           { trx },
@@ -447,28 +516,33 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
             rows: pendingBatch,
             chunks: undefined,
             isFirstPage: nextIsFirstPage,
-            isLastPage: false,
+            isLastPage: isLastChunk ? snapshot.isLastPage : false,
           }
         );
         nextIsFirstPage = false;
       }
-      pendingBatch = batch;
+    } catch (error) {
+      applyError = error;
     }
 
-    if (pendingBatch) {
-      const isLastChunk = chunkIndex === chunks.length - 1;
-      // eslint-disable-next-line no-await-in-loop
-      await handler.applySnapshot(
-        { trx },
-        {
-          ...snapshot,
-          rows: pendingBatch,
-          chunks: undefined,
-          isFirstPage: nextIsFirstPage,
-          isLastPage: isLastChunk ? snapshot.isLastPage : false,
+    if (chunkHashPromise) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const actualHash = await chunkHashPromise;
+        if (!applyError && actualHash !== chunk.sha256) {
+          applyError = new Error(
+            `Snapshot chunk integrity check failed: expected sha256 ${chunk.sha256}, got ${actualHash}`
+          );
         }
-      );
-      nextIsFirstPage = false;
+      } catch (hashError) {
+        if (!applyError) {
+          applyError = hashError;
+        }
+      }
+    }
+
+    if (applyError) {
+      throw applyError;
     }
   }
 }
@@ -751,7 +825,13 @@ export async function applyPullResponse<DB extends SyncClientDb>(
           }
 
           if (hasChunkRefs) {
-            await applyChunkedSnapshot(transport, handler, trx, snapshot);
+            await applyChunkedSnapshot(
+              transport,
+              handler,
+              trx,
+              snapshot,
+              options.sha256
+            );
           } else {
             await handler.applySnapshot({ trx }, snapshot);
           }

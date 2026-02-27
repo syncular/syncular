@@ -289,4 +289,94 @@ describe('applyPullResponse chunk streaming', () => {
       firstRows.length + secondRows.length
     );
   });
+
+  it('verifies sha256 integrity for streamed chunk snapshots', async () => {
+    const rows = Array.from({ length: 1000 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const chunk = new Uint8Array(gzipSync(encodeSnapshotRows(rows)));
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream() {
+        return createStreamFromBytes(chunk, 211);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 5,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: chunk.length,
+                  sha256: 'deadbeef',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    await expect(
+      applyPullResponse(db, transport, handlers, options, pullState, response)
+    ).rejects.toThrow('Snapshot chunk integrity check failed');
+
+    const countAfterFailure = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countAfterFailure.rows[0]?.count ?? 0)).toBe(0);
+
+    const stateAfterFailure = await db
+      .selectFrom('sync_subscription_state')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('state_id', '=', 'default')
+      .where('subscription_id', '=', 'items-sub')
+      .executeTakeFirst();
+    expect(Number(stateAfterFailure?.total ?? 0)).toBe(0);
+  });
 });
