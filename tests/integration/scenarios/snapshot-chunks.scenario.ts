@@ -119,7 +119,15 @@ export async function runSnapshotChunkFaultInjectionScenario(
     return input.url.includes('/snapshot-chunks/');
   };
 
-  const runFaultCase = async (mode: 'missing' | 'server-error' | 'partial') => {
+  const runFaultCase = async (
+    mode:
+      | 'missing'
+      | 'server-error'
+      | 'partial'
+      | 'checksum-mismatch'
+      | 'expired'
+      | 'unauthorized'
+  ) => {
     const client = await ctx.createClient({
       actorId: ctx.userId,
       clientId: `chunk-fault-${mode}`,
@@ -136,12 +144,29 @@ export async function runSnapshotChunkFaultInjectionScenario(
         if (mode === 'server-error') {
           return new Response('chunk-error', { status: 500 });
         }
+        if (mode === 'expired') {
+          return new Response('chunk-expired', { status: 410 });
+        }
+        if (mode === 'unauthorized') {
+          return new Response('chunk-forbidden', { status: 403 });
+        }
 
         const response = await realFetch(...args);
         if (!response.ok) {
           return response;
         }
         const bytes = new Uint8Array(await response.arrayBuffer());
+        if (mode === 'checksum-mismatch') {
+          const corrupted = new Uint8Array(bytes);
+          if (corrupted.length > 0) {
+            corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
+          }
+          return new Response(corrupted, {
+            status: 200,
+            headers: response.headers,
+          });
+        }
+
         const truncated = bytes.subarray(
           0,
           Math.max(1, Math.floor(bytes.length / 4))
@@ -195,4 +220,7 @@ export async function runSnapshotChunkFaultInjectionScenario(
   await runFaultCase('missing');
   await runFaultCase('server-error');
   await runFaultCase('partial');
+  await runFaultCase('checksum-mismatch');
+  await runFaultCase('expired');
+  await runFaultCase('unauthorized');
 }
