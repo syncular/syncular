@@ -37,6 +37,7 @@ import {
   runOfflineWritesSyncOnReconnect,
   runOutboxDurabilityAcrossRestart,
   runOutboxRetryAfterFailure,
+  runOutboxSendingRecoveryAcrossRestart,
 } from '../scenarios/offline-resilience.scenario';
 import { runProxyScenario } from '../scenarios/proxy.scenario';
 import {
@@ -164,7 +165,7 @@ describe('integration: features', () => {
       await runSnapshotChunksScenario(getCtx());
     });
 
-    it('recovers cleanly from missing/failed/truncated chunk downloads', async () => {
+    it('recovers cleanly from chunk fault matrix (missing/error/truncated/checksum/expiry/auth)', async () => {
       await runSnapshotChunkFaultInjectionScenario(getCtx());
     });
   });
@@ -218,6 +219,10 @@ describe('integration: features', () => {
 
     it('replays pending outbox commits exactly once after process restart', async () => {
       await runOutboxDurabilityAcrossRestart(getCtx());
+    });
+
+    it('replays stale in-flight sending commits exactly once after process restart', async () => {
+      await runOutboxSendingRecoveryAcrossRestart(getCtx());
     });
   });
 

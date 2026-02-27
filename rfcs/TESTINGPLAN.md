@@ -18,23 +18,20 @@
 - Cursor monotonicity under reconnect storms.
 - Direct vs relay transport parity.
 - Subscription reshape stress loop (add/remove/narrow/expand) under active writes.
+- Partition isolation under high churn + reconnect + maintenance.
 - Maintenance churn while prune/compact run concurrently.
-- Snapshot chunk rollback on chunk failures (core pull-engine tests).
+- Snapshot chunk fault matrix: missing, 500, truncated, checksum mismatch, expired, unauthorized.
+- Outbox restart durability for pending and stale in-flight (`sending`) commits.
+- Retry/backoff correctness for 429/503 across pull/push/chunk fetch paths.
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 
 ## High-Value Functional Tests (Remaining + Expanded)
 - `P0` WS/direct/relay equivalence end-to-end: same scenario across transports, same final DB state and conflict outcomes.
 - `P0` Relay duplicate/out-of-order notification delivery invariance with concurrent pull calls and stale response arrival.
-- `P0` Subscription reshape stress loop: add/remove/narrow/expand scopes repeatedly, assert exact retained rows.
-- `P0` Partition isolation under high churn + reconnect + maintenance; assert zero cross-partition leakage.
-- `P0` Snapshot chunk fault matrix: missing chunk, 500, truncated body, checksum mismatch, expired chunk, unauthorized chunk.
-- `P0` Outbox durability across restart (pending + failed + retrying states), exactly-once replay after restart.
-- `P1` Reconnect storm with auth scope changes mid-flight; verify revoked scopes never resurface.
+- `P0` Outbox durability across restart for failed-commit remediation path (failed -> user fix -> pending -> acked), exactly-once semantics.
 - `P1` Maintenance race matrix: prune/compact while high-volume push/pull runs; assert no deadlocks and deterministic fallback.
 - `P1` E2EE offline writes + key rotation + reconnect for authorized and unauthorized key sets.
-- `P1` Large multi-subscription reshape without full reset under active writes.
-- `P2` Fault-injected network behavior: repeated 429/503 and backoff correctness for pull/push/chunk fetch.
-- `P2` Process crash simulation around outbox state transitions (pending -> retrying -> acked).
+- `P2` Process crash simulation around outbox state transitions beyond stale-send recovery (for example: failed commit recovery workflow).
 
 ## Where Tests Live
 - Feature scenarios: `tests/integration/scenarios/*`.
