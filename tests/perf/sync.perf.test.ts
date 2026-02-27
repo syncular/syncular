@@ -368,6 +368,91 @@ describe('sync performance', () => {
     expect(result.median).toBeLessThan(defaultThresholds.push_batch_100);
   });
 
+  it('maintenance prune during active churn', async () => {
+    const result = await withTestServer('sqlite', async (testServer) => {
+      const writer = await createTestClient('bun-sqlite', testServer, {
+        actorId: userId,
+        clientId: 'maintenance-prune-writer',
+      });
+      let nextCommit = 1;
+
+      const pushCommits = async (count: number) => {
+        for (let i = 0; i < count; i += 1) {
+          const commitId = `maintenance-prune-${nextCommit}`;
+          const rowId = `maintenance-task-${nextCommit}`;
+          const combined = await writer.transport.sync({
+            clientId: writer.clientId,
+            push: {
+              clientCommitId: commitId,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: rowId,
+                  op: 'upsert',
+                  payload: {
+                    title: `Maintenance Task ${nextCommit}`,
+                    completed: nextCommit % 2,
+                  },
+                  base_version: null,
+                },
+              ],
+            },
+          });
+          if (combined.push?.status !== 'applied') {
+            throw new Error(
+              `Unexpected maintenance push status: ${combined.push?.status ?? 'missing'}`
+            );
+          }
+          nextCommit += 1;
+        }
+      };
+
+      try {
+        await pushCommits(400);
+        await testServer.db
+          .updateTable('sync_commits')
+          .set({ created_at: '2000-01-01T00:00:00.000Z' })
+          .execute();
+
+        return benchmark(
+          'maintenance_prune',
+          async () => {
+            const watermark = await computePruneWatermarkCommitSeq(
+              testServer.db,
+              {
+                activeWindowMs: 60 * 1000,
+                fallbackMaxAgeMs: 60 * 1000,
+                keepNewestCommits: 20,
+              }
+            );
+            if (watermark <= 0) {
+              throw new Error(
+                `Expected prune watermark > 0, received ${watermark}`
+              );
+            }
+            await pruneSync(testServer.db, {
+              watermarkCommitSeq: watermark,
+              keepNewestCommits: 20,
+            });
+
+            await pushCommits(80);
+            await testServer.db
+              .updateTable('sync_commits')
+              .set({ created_at: '2000-01-01T00:00:00.000Z' })
+              .execute();
+          },
+          { iterations: 4, warmup: 1 }
+        );
+      } finally {
+        await writer.destroy();
+      }
+    });
+
+    results.push(result);
+    expect(result.p99).toBeLessThan(defaultThresholds.maintenance_prune_p99);
+  });
+
   it('incremental pull', async () => {
     const result = await withTestServer('sqlite', async (testServer) =>
       withTestClient(

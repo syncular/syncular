@@ -685,4 +685,137 @@ describe('applyPullResponse chunk streaming', () => {
     `.execute(db);
     expect(Number(countResult.rows[0]?.count ?? 0)).toBe(rows.length);
   });
+
+  it('ignores stale incremental responses that would rewind cursor state', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream() {
+        throw new Error('fetchSnapshotChunkStream should not be used');
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const stalePullState = await buildPullRequest(db, options);
+
+    const freshResponse: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: false,
+          bootstrapState: null,
+          nextCursor: 2,
+          commits: [
+            {
+              commitSeq: 2,
+              changes: [
+                {
+                  table: 'items',
+                  row_id: 'item-1',
+                  op: 'upsert',
+                  row_version: 2,
+                  row_json: {
+                    id: 'item-1',
+                    name: 'latest',
+                  },
+                  scopes: {},
+                },
+              ],
+            },
+          ],
+          snapshots: [],
+        },
+      ],
+    };
+
+    const staleResponse: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: false,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [
+            {
+              commitSeq: 1,
+              changes: [
+                {
+                  table: 'items',
+                  row_id: 'item-1',
+                  op: 'upsert',
+                  row_version: 1,
+                  row_json: {
+                    id: 'item-1',
+                    name: 'stale',
+                  },
+                  scopes: {},
+                },
+              ],
+            },
+          ],
+          snapshots: [],
+        },
+      ],
+    };
+
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      stalePullState,
+      freshResponse
+    );
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      stalePullState,
+      staleResponse
+    );
+
+    const item = await db
+      .selectFrom('items')
+      .select(['id', 'name'])
+      .where('id', '=', 'item-1')
+      .executeTakeFirst();
+    expect(item?.name).toBe('latest');
+
+    const state = await db
+      .selectFrom('sync_subscription_state')
+      .select(['cursor'])
+      .where('state_id', '=', 'default')
+      .where('subscription_id', '=', 'items-sub')
+      .executeTakeFirst();
+    expect(Number(state?.cursor ?? -1)).toBe(2);
+  });
 });

@@ -1,0 +1,99 @@
+# Syncular Testing Plan
+
+## Goals
+- Prevent correctness regressions across reconnect, rebootstrap, and maintenance churn.
+- Catch data-leak and authorization regressions before GA.
+- Detect latency/throughput regressions with deterministic CI gates.
+
+## Scope
+- Functional integration coverage for push/pull, subscriptions, relay/direct parity, realtime wakeups, maintenance races, and E2EE.
+- Performance coverage for bootstrap, incremental pull, reconnect catchup, and maintenance operations.
+- Load/stress coverage for reconnect storms, bootstrap storms, and mixed traffic under maintenance.
+
+## Current Baseline (Implemented)
+- Reconnect with push ACK loss idempotency.
+- Reconnect stale-scope revocation and no-leak guarantees.
+- Rebootstrap after prune + compaction in one window.
+- Cursor monotonicity under reconnect storms.
+- Direct vs relay transport parity.
+- Maintenance churn while prune/compact run concurrently.
+- Snapshot chunk rollback on chunk failures (core pull-engine tests).
+- Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, forced rebootstrap.
+
+## High-Value Functional Tests (Remaining + Expanded)
+- `P0` WS/direct/relay equivalence end-to-end: same scenario across transports, same final DB state and conflict outcomes.
+- `P0` Relay duplicate/out-of-order notification delivery invariance with concurrent pull calls and stale response arrival.
+- `P0` Subscription reshape stress loop: add/remove/narrow/expand scopes repeatedly, assert exact retained rows.
+- `P0` Partition isolation under high churn + reconnect + maintenance; assert zero cross-partition leakage.
+- `P0` Snapshot chunk fault matrix: missing chunk, 500, truncated body, checksum mismatch, expired chunk, unauthorized chunk.
+- `P0` Outbox durability across restart (pending + failed + retrying states), exactly-once replay after restart.
+- `P1` Reconnect storm with auth scope changes mid-flight; verify revoked scopes never resurface.
+- `P1` Maintenance race matrix: prune/compact while high-volume push/pull runs; assert no deadlocks and deterministic fallback.
+- `P1` E2EE offline writes + key rotation + reconnect for authorized and unauthorized key sets.
+- `P1` Large multi-subscription reshape without full reset under active writes.
+- `P2` Fault-injected network behavior: repeated 429/503 and backoff correctness for pull/push/chunk fetch.
+- `P2` Process crash simulation around outbox state transitions (pending -> retrying -> acked).
+
+## Where Tests Live
+- Feature scenarios: `tests/integration/scenarios/*`.
+- Feature runner: `tests/integration/__tests__/features.test.ts`.
+- Matrix runner: `tests/integration/__tests__/matrix.test.ts`.
+- Realtime/server bridge: `packages/server-hono/src/__tests__/realtime-bridge.test.ts`.
+- Client realtime integration: `packages/client-react/src/__tests__/integration/realtime-sync.test.ts`.
+- Core pull/outbox correctness: `packages/client/src/*.test.ts`.
+
+## Performance Regression Plan
+
+### PR-fast Benchmarks (must run on PR)
+- `bootstrap_1k`
+- `push_single_row`
+- `push_batch_100`
+- `incremental_pull`
+- `reconnect_catchup`
+- `maintenance_prune`
+
+### Nightly / Scheduled Benchmarks
+- `bootstrap_10k`
+- forced rebootstrap after prune under larger datasets
+- reconnect storm latency and convergence
+- bootstrap storm (many concurrent bootstrapping clients)
+- mixed push/pull workload with maintenance enabled
+- transport lane comparison (direct vs relay vs realtime-triggered catchup)
+
+### Metrics to Record per Run
+- p50/p95/p99 latency per benchmark
+- throughput ops/sec where applicable
+- error rate
+- memory (RSS + heap delta)
+- DB query count/time (where instrumentation is available)
+
+### Regression Gating
+- Keep strict thresholds on low-noise microbenches.
+- Use softer thresholds for noisy macrobenches.
+- Store JSON artifacts per commit and compare against rolling baseline.
+- Fail strict perf gate on confirmed regressions; soft-fail when baseline is missing.
+- Promote nightly metrics into baseline after verification.
+
+## Load/Stress Plan
+- Extend `tests/load/scripts` with:
+  - reconnect storm scenario
+  - bootstrap storm scenario
+  - mixed maintenance traffic scenario (prune/compact while load runs)
+- Keep smoke profiles for PR sanity checks.
+- Run high-volume profiles nightly and archive raw outputs.
+
+## CI Wiring
+- PR jobs:
+  - core unit + integration features + matrix quick set
+  - PR-fast perf benchmarks with gates
+- Nightly jobs:
+  - full integration matrix
+  - load scenarios
+  - macro perf workloads
+  - artifact upload and trend report generation
+
+## Launch Exit Criteria
+- No `P0` gaps open.
+- All PR-fast benchmarks within thresholds for 7 consecutive days.
+- Nightly macro runs stable (no untriaged regressions) for 5 consecutive days.
+- Documented playbook for perf regression triage and rollback.

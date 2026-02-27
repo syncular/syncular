@@ -3,11 +3,21 @@
  */
 
 import { expect } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
+  createClientHandler,
   enqueueOutboxCommit,
+  ensureClientSyncSchema,
+  type SyncClientDb,
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
+import { createDatabase } from '@syncular/core';
+import { createHttpTransport } from '@syncular/transport-http';
+import type { Kysely } from 'kysely';
+import { createBunSqliteDialect } from '../../../packages/dialect-bun-sqlite/src';
 import type { ScenarioContext } from '../harness/types';
 
 /**
@@ -260,4 +270,144 @@ export async function runOutboxRetryAfterFailure(
     .selectAll()
     .execute();
   expect(serverTasks.some((t) => t.id === 'good-task')).toBe(true);
+}
+
+interface RestartClientDb extends SyncClientDb {
+  tasks: {
+    id: string;
+    title: string;
+    completed: number;
+    user_id: string;
+    project_id: string;
+    server_version: number;
+  };
+}
+
+type RestartDb = Kysely<RestartClientDb>;
+
+export async function runOutboxDurabilityAcrossRestart(
+  ctx: ScenarioContext
+): Promise<void> {
+  const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
+    | typeof globalThis.fetch
+    | undefined;
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'syncular-outbox-'));
+  const dbPath = path.join(tempDir, 'client.sqlite');
+  const clientId = 'restart-client';
+  const sub = {
+    id: 'tasks-p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  } as const;
+  const transport = createHttpTransport({
+    baseUrl: ctx.server.baseUrl,
+    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
+    ...(nativeFetch ? { fetch: nativeFetch } : {}),
+  });
+  const handlers = [
+    createClientHandler<RestartClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}', 'project:{project_id}'],
+      versionColumn: 'server_version',
+    }),
+  ];
+
+  const createLocalDb = async () => {
+    const db = createDatabase<RestartClientDb>({
+      dialect: createBunSqliteDialect({ path: dbPath }),
+      family: 'sqlite',
+    });
+    await ensureClientSyncSchema(db);
+    await db.schema
+      .createTable('tasks')
+      .ifNotExists()
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+    return db;
+  };
+
+  let firstDb: RestartDb | null = null;
+  let secondDb: RestartDb | null = null;
+
+  try {
+    firstDb = await createLocalDb();
+    await syncPullOnce(firstDb, transport, handlers, {
+      clientId,
+      subscriptions: [sub],
+    });
+
+    const enqueued = await enqueueOutboxCommit(firstDb, {
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'restart-outbox-task',
+          op: 'upsert',
+          payload: {
+            title: 'Outbox Restart Task',
+            completed: 0,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    });
+
+    const pendingBeforeRestart = await firstDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+    expect(Number(pendingBeforeRestart?.total ?? 0)).toBe(1);
+
+    await firstDb.destroy();
+    firstDb = null;
+
+    secondDb = await createLocalDb();
+    const pendingAfterRestart = await secondDb
+      .selectFrom('sync_outbox_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+    expect(Number(pendingAfterRestart?.total ?? 0)).toBe(1);
+
+    const pushAfterRestart = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(pushAfterRestart.response?.status).toBe('applied');
+
+    const secondPush = await syncPushOnce(secondDb, transport, {
+      clientId,
+    });
+    expect(secondPush.pushed).toBe(false);
+
+    const serverTask = await ctx.server.db
+      .selectFrom('tasks')
+      .select(['id'])
+      .where('id', '=', 'restart-outbox-task')
+      .executeTakeFirst();
+    expect(serverTask?.id).toBe('restart-outbox-task');
+
+    const commitCount = await ctx.server.db
+      .selectFrom('sync_commits')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_commit_id', '=', enqueued.clientCommitId)
+      .executeTakeFirst();
+    expect(Number(commitCount?.total ?? 0)).toBe(1);
+  } finally {
+    if (secondDb) {
+      await secondDb.destroy();
+    }
+    if (firstDb) {
+      await firstDb.destroy();
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }

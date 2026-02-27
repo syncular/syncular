@@ -4,6 +4,8 @@
 
 import { expect } from 'bun:test';
 import {
+  applyPullResponse,
+  buildPullRequest,
   enqueueOutboxCommit,
   syncPullOnce,
   syncPushOnce,
@@ -421,6 +423,128 @@ export async function runReconnectStormCursorScenario(
     .where('subscription_id', '=', sub.id)
     .executeTakeFirst();
   expect(Number(localState?.cursor ?? -1)).toBe(totalCommits);
+}
+
+export async function runRelayDuplicateOutOfOrderScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const reader = ctx.clients[0]!;
+  const writer = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'relay-ordering-writer',
+  });
+  const sub = createTasksSubscription(ctx.userId);
+  const relayTransport = createTransport(
+    ctx.server.baseUrl,
+    ctx.userId,
+    'relay'
+  );
+
+  await syncPullOnce(reader.db, relayTransport, reader.handlers, {
+    clientId: reader.clientId,
+    subscriptions: [sub],
+  });
+
+  for (let version = 1; version <= 3; version += 1) {
+    const write = await writer.transport.sync({
+      clientId: writer.clientId,
+      push: {
+        clientCommitId: `relay-ooo-c${version}`,
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'relay-ooo-row',
+            op: 'upsert',
+            payload: {
+              title: `Relay Version ${version}`,
+              completed: version % 2,
+              project_id: 'p1',
+            },
+            base_version: version === 1 ? null : version - 1,
+          },
+        ],
+      },
+    });
+    expect(write.push?.status).toBe('applied');
+  }
+
+  const stalePullState = await buildPullRequest(reader.db, {
+    clientId: reader.clientId,
+    subscriptions: [sub],
+    limitCommits: 20,
+  });
+  const { clientId: pullClientId, ...basePull } = stalePullState.request;
+
+  const staleCombined = await relayTransport.sync({
+    clientId: pullClientId,
+    pull: {
+      ...basePull,
+      limitCommits: 1,
+    },
+  });
+  const freshCombined = await relayTransport.sync({
+    clientId: pullClientId,
+    pull: {
+      ...basePull,
+      limitCommits: 20,
+    },
+  });
+
+  if (!freshCombined.pull || !staleCombined.pull) {
+    throw new Error('Expected relay pulls to include payloads');
+  }
+
+  await applyPullResponse(
+    reader.db,
+    relayTransport,
+    reader.handlers,
+    {
+      clientId: reader.clientId,
+      subscriptions: [sub],
+      limitCommits: 20,
+    },
+    stalePullState,
+    freshCombined.pull
+  );
+  await applyPullResponse(
+    reader.db,
+    relayTransport,
+    reader.handlers,
+    {
+      clientId: reader.clientId,
+      subscriptions: [sub],
+      limitCommits: 20,
+    },
+    stalePullState,
+    staleCombined.pull
+  );
+  await applyPullResponse(
+    reader.db,
+    relayTransport,
+    reader.handlers,
+    {
+      clientId: reader.clientId,
+      subscriptions: [sub],
+      limitCommits: 20,
+    },
+    stalePullState,
+    staleCombined.pull
+  );
+
+  const localRow = await reader.db
+    .selectFrom('tasks')
+    .select(['id', 'title'])
+    .where('id', '=', 'relay-ooo-row')
+    .executeTakeFirst();
+  expect(localRow?.title).toBe('Relay Version 3');
+
+  const state = await reader.db
+    .selectFrom('sync_subscription_state')
+    .select(['cursor'])
+    .where('subscription_id', '=', sub.id)
+    .executeTakeFirst();
+  expect(Number(state?.cursor ?? -1)).toBe(3);
 }
 
 export async function runMaintenanceChurnScenario(
