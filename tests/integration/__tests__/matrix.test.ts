@@ -19,6 +19,7 @@ import { runBootstrapScenario } from '../scenarios/bootstrap.scenario';
 import { runConflictScenario } from '../scenarios/conflict.scenario';
 import { runLargeDatasetScenario } from '../scenarios/large-dataset.scenario';
 import { runPushPullScenario } from '../scenarios/push-pull.scenario';
+import { runTransportPathParityScenario } from '../scenarios/reconnect-maintenance.scenario';
 
 const combinations =
   process.env.MATRIX_FULL === 'true'
@@ -97,6 +98,10 @@ describe('integration: matrix', () => {
 
       it('handles large datasets (1K rows) over HTTP', async () => {
         await runLargeDatasetScenario({ ...getCtx(), rowCount: 1000 });
+      });
+
+      it('keeps direct and relay transports equivalent', async () => {
+        await runTransportPathParityScenario(getCtx());
       });
     });
   }

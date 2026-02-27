@@ -177,4 +177,33 @@ describe('resolveEffectiveScopesForSubscriptions cache behavior', () => {
     const cachedScopes = await scopeCache.get(context);
     expect(cachedScopes).toBeNull();
   });
+
+  it('revokes when any requested scope key has no intersection', async () => {
+    const handler = createServerHandler<TestDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}', 'project:{project_id}'],
+      resolveScopes: async () => ({
+        user_id: ['other-user'],
+        project_id: ['p1', 'p2'],
+      }),
+    });
+    const handlers = createServerHandlerCollection<TestDb>([handler]);
+
+    const [resolved] = await resolveEffectiveScopesForSubscriptions({
+      db,
+      auth: { actorId: 'other-user' },
+      handlers,
+      subscriptions: [
+        {
+          id: 'sub-1',
+          table: 'tasks',
+          scopes: { user_id: 'test-user', project_id: 'p1' },
+          cursor: -1,
+        },
+      ],
+    });
+
+    expect(resolved?.status).toBe('revoked');
+    expect(resolved?.scopes).toEqual({});
+  });
 });

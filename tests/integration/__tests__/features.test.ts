@@ -18,8 +18,10 @@ import {
   runCrossScopePullRejected,
   runNarrowedScopes,
   runPushToUnauthorizedScope,
+  runReconnectStaleScopeRevocation,
 } from '../scenarios/auth-enforcement.scenario';
 import {
+  runCompactionPruneRebootstrapWindowScenario,
   runCompactionPullScenario,
   runCompactionScenario,
   runPruneByAgeScenario,
@@ -34,6 +36,7 @@ import { runProxyScenario } from '../scenarios/proxy.scenario';
 import {
   runMaintenanceChurnScenario,
   runReconnectAckLossScenario,
+  runReconnectStormCursorScenario,
   runTransportPathParityScenario,
 } from '../scenarios/reconnect-maintenance.scenario';
 import {
@@ -129,6 +132,10 @@ describe('integration: features', () => {
     it('prunes by age even if watermark is stuck', async () => {
       await runPruneByAgeScenario(getCtx());
     });
+
+    it('forces clean rebootstrap after compaction and prune in one window', async () => {
+      await runCompactionPruneRebootstrapWindowScenario(getCtx());
+    });
   });
 
   // Snapshot chunks
@@ -194,6 +201,10 @@ describe('integration: features', () => {
     it('preserves convergence while prune/compact run during active writes', async () => {
       await runMaintenanceChurnScenario(getCtx());
     });
+
+    it('maintains monotonic cursor progression through reconnect storms', async () => {
+      await runReconnectStormCursorScenario(getCtx());
+    });
   });
 
   // Auth enforcement
@@ -212,6 +223,10 @@ describe('integration: features', () => {
 
     it('different actors have isolated data views', async () => {
       await runActorIsolation(getCtx());
+    });
+
+    it('revokes stale scopes on reconnect without leaking data', async () => {
+      await runReconnectStaleScopeRevocation(getCtx());
     });
   });
 });

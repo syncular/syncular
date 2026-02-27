@@ -288,6 +288,24 @@ export async function resolveEffectiveScopesForSubscriptions<
     // Intersect with requested scopes
     const effective = intersectScopes(requested, allowed);
 
+    // If a requested scope key lost all access after intersection,
+    // treat the subscription as revoked to avoid partially-scoped leaks.
+    const missingRequestedKey = Object.keys(requested).some(
+      (key) => !Object.hasOwn(effective, key)
+    );
+    if (missingRequestedKey) {
+      out.push({
+        id: sub.id,
+        table: sub.table,
+        scopes: {},
+        params: sub.params,
+        cursor: sub.cursor,
+        bootstrapState: sub.bootstrapState ?? null,
+        status: 'revoked',
+      });
+      continue;
+    }
+
     if (scopesEmpty(effective)) {
       out.push({
         id: sub.id,

@@ -676,7 +676,7 @@ export function createFollowupPullState(
       state_id: pullState.stateId,
       subscription_id: sub.id,
       table: sub.table,
-      scopes_json: serializeJsonCached(sub.scopes ?? {}),
+      scopes_json: serializeJsonCached(res?.scopes ?? sub.scopes ?? {}),
       params_json: serializeJsonCached(sub.params ?? {}),
       cursor: nextCursor,
       bootstrap_state_json: nextBootstrapState
@@ -859,7 +859,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
       // Use cached JSON serialization to avoid repeated stringification
       const now = Date.now();
       const paramsJson = serializeJsonCached(def?.params ?? {});
-      const scopesJson = serializeJsonCached(def?.scopes ?? {});
+      const scopesJson = serializeJsonCached(sub.scopes ?? def?.scopes ?? {});
       const bootstrapStateJson = sub.bootstrap
         ? sub.bootstrapState
           ? serializeJsonCached(sub.bootstrapState)

@@ -244,3 +244,130 @@ export async function runPruneByAgeScenario(
   expect(remaining.length).toBe(1);
   expect(Number(remaining[0]?.commit_seq)).toBe(3);
 }
+
+export async function runCompactionPruneRebootstrapWindowScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const { server } = ctx;
+  const writer = ctx.clients[0]!;
+  const lagging = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'compaction-prune-lagging',
+  });
+
+  const subP1 = {
+    id: 'p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  };
+
+  await syncPullOnce(writer.db, writer.transport, writer.handlers, {
+    clientId: writer.clientId,
+    subscriptions: [subP1],
+  });
+  await syncPullOnce(lagging.db, lagging.transport, lagging.handlers, {
+    clientId: lagging.clientId,
+    subscriptions: [subP1],
+  });
+
+  const totalCommits = 24;
+  const hotRowCount = 6;
+  for (let i = 1; i <= totalCommits; i++) {
+    const suffix = String(i).padStart(3, '0');
+    const rowSuffix = String(((i - 1) % hotRowCount) + 1).padStart(3, '0');
+    const combined = await writer.transport.sync({
+      clientId: writer.clientId,
+      push: {
+        clientCommitId: `window-c${suffix}`,
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: `window-task-${rowSuffix}`,
+            op: 'upsert',
+            payload: {
+              title: `Window Task ${suffix}`,
+              completed: i % 2,
+              project_id: 'p1',
+            },
+            base_version: null,
+          },
+        ],
+      },
+    });
+    expect(combined.push?.status).toBe('applied');
+  }
+
+  // Force the written commits outside the full-history window.
+  await server.db
+    .updateTable('sync_commits')
+    .set({ created_at: '2000-01-01T00:00:00.000Z' })
+    .execute();
+
+  const compacted = await server.dialect.compactChanges(server.db, {
+    fullHistoryHours: 1,
+  });
+  expect(compacted).toBeGreaterThan(0);
+
+  const watermark = await computePruneWatermarkCommitSeq(server.db, {
+    activeWindowMs: 60 * 1000,
+    fallbackMaxAgeMs: 60 * 1000,
+    keepNewestCommits: 4,
+  });
+  expect(watermark).toBeGreaterThan(0);
+
+  const pruned = await pruneSync(server.db, {
+    watermarkCommitSeq: watermark,
+    keepNewestCommits: 4,
+  });
+  expect(pruned).toBeGreaterThan(0);
+
+  // Keep lagging client intentionally stale so it must rebootstrap.
+  await lagging.db
+    .updateTable('sync_subscription_state')
+    .set({
+      cursor: 0,
+      bootstrap_state_json: null,
+      status: 'active',
+      updated_at: Date.now(),
+    })
+    .where('subscription_id', '=', subP1.id)
+    .execute();
+
+  const pull = await syncPullOnce(
+    lagging.db,
+    lagging.transport,
+    lagging.handlers,
+    {
+      clientId: lagging.clientId,
+      subscriptions: [subP1],
+      limitCommits: 25,
+    }
+  );
+
+  const subResult = pull.subscriptions.find((entry) => entry.id === subP1.id);
+  expect(subResult?.status).toBe('active');
+  expect(subResult?.bootstrap).toBe(true);
+
+  const serverRows = await server.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'window-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+  const laggingRows = await lagging.db
+    .selectFrom('tasks')
+    .select(['id', 'title', 'completed', 'server_version'])
+    .where('id', 'like', 'window-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+
+  expect(serverRows.length).toBe(hotRowCount);
+  const serverState = await server.db
+    .selectFrom('tasks')
+    .select(['id', 'title', 'completed', 'server_version'])
+    .where('id', 'like', 'window-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+  expect(laggingRows).toEqual(serverState);
+}

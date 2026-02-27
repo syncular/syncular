@@ -12,12 +12,55 @@ import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { ScenarioContext } from '../harness/types';
 
+const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
+  | typeof globalThis.fetch
+  | undefined;
+
 function createTasksSubscription(userId: string) {
   return {
     id: 'tasks-p1',
     table: 'tasks',
     scopes: { user_id: userId, project_id: 'p1' },
   } as const;
+}
+
+function createTransport(
+  baseUrl: string,
+  actorId: string,
+  transportPath: 'direct' | 'relay',
+  options?: { dropFirstResponse?: boolean }
+) {
+  if (options?.dropFirstResponse !== true) {
+    return createHttpTransport({
+      baseUrl,
+      getHeaders: () => ({ 'x-actor-id': actorId }),
+      transportPath,
+      ...(nativeFetch ? { fetch: nativeFetch } : {}),
+    });
+  }
+
+  let dropped = false;
+  const flakyFetchBase = async (
+    ...args: Parameters<typeof globalThis.fetch>
+  ): Promise<Response> => {
+    const response = await (nativeFetch ?? globalThis.fetch)(...args);
+    if (!dropped && response.ok) {
+      dropped = true;
+      await response.arrayBuffer();
+      throw new Error('SIMULATED_RECONNECT_DROP');
+    }
+    return response;
+  };
+  const flakyFetch = Object.assign(flakyFetchBase, {
+    preconnect: (nativeFetch ?? globalThis.fetch).preconnect,
+  });
+
+  return createHttpTransport({
+    baseUrl,
+    getHeaders: () => ({ 'x-actor-id': actorId }),
+    transportPath,
+    fetch: flakyFetch,
+  });
 }
 
 export async function runReconnectAckLossScenario(
@@ -223,6 +266,161 @@ export async function runTransportPathParityScenario(
   expect(directRows.map((row) => row.id)).toEqual(expectedIds);
   expect(relayRows.map((row) => row.id)).toEqual(expectedIds);
   expect(serverRows.map((row) => row.id)).toEqual(expectedIds);
+}
+
+export async function runReconnectStormCursorScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const reader = ctx.clients[0]!;
+  const writer = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'storm-writer',
+  });
+  const sub = createTasksSubscription(ctx.userId);
+
+  await syncPullOnce(reader.db, reader.transport, reader.handlers, {
+    clientId: reader.clientId,
+    subscriptions: [sub],
+  });
+
+  const totalCommits = 30;
+  let writesDone = false;
+  let lastCursor = -1;
+  const observedCursors: number[] = [];
+
+  const pushLoop = async () => {
+    for (let i = 1; i <= totalCommits; i++) {
+      const pushResult = await writer.transport.sync({
+        clientId: writer.clientId,
+        push: {
+          clientCommitId: `storm-c${i}`,
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: `storm-task-${i}`,
+              op: 'upsert',
+              payload: {
+                title: `Storm Task ${i}`,
+                completed: i % 2,
+                project_id: 'p1',
+              },
+              base_version: null,
+            },
+          ],
+        },
+      });
+      expect(pushResult.push?.status).toBe('applied');
+
+      if (i % 3 === 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      }
+    }
+    writesDone = true;
+  };
+
+  const pullLoop = async () => {
+    for (let cycle = 0; cycle < totalCommits + 20; cycle++) {
+      const transportPath: 'direct' | 'relay' =
+        cycle % 2 === 0 ? 'direct' : 'relay';
+      const shouldDrop = cycle % 5 === 4;
+      const reconnectTransport = createTransport(
+        ctx.server.baseUrl,
+        ctx.userId,
+        transportPath,
+        shouldDrop ? { dropFirstResponse: true } : undefined
+      );
+
+      let pullResult: Awaited<ReturnType<typeof syncPullOnce>> | undefined;
+      try {
+        pullResult = await syncPullOnce(
+          reader.db,
+          reconnectTransport,
+          reader.handlers,
+          {
+            clientId: reader.clientId,
+            subscriptions: [sub],
+            limitCommits: 4,
+          }
+        );
+      } catch (error) {
+        if (!shouldDrop) throw error;
+        expect(String(error)).toContain('SIMULATED_RECONNECT_DROP');
+
+        pullResult = await syncPullOnce(
+          reader.db,
+          createTransport(ctx.server.baseUrl, ctx.userId, transportPath),
+          reader.handlers,
+          {
+            clientId: reader.clientId,
+            subscriptions: [sub],
+            limitCommits: 4,
+          }
+        );
+      }
+
+      const subscription = pullResult.subscriptions.find(
+        (entry) => entry.id === sub.id
+      );
+      expect(subscription?.status).toBe('active');
+
+      const nextCursor = subscription?.nextCursor ?? lastCursor;
+      expect(nextCursor).toBeGreaterThanOrEqual(lastCursor);
+      lastCursor = nextCursor;
+      observedCursors.push(nextCursor);
+
+      if (writesDone && nextCursor >= totalCommits) {
+        break;
+      }
+    }
+  };
+
+  await Promise.all([pushLoop(), pullLoop()]);
+
+  const finalPull = await syncPullOnce(
+    reader.db,
+    createTransport(ctx.server.baseUrl, ctx.userId, 'direct'),
+    reader.handlers,
+    {
+      clientId: reader.clientId,
+      subscriptions: [sub],
+      limitCommits: 100,
+    }
+  );
+  const finalSub = finalPull.subscriptions.find((entry) => entry.id === sub.id);
+  expect(finalSub?.status).toBe('active');
+  expect((finalSub?.nextCursor ?? -1) >= lastCursor).toBe(true);
+
+  for (let i = 1; i < observedCursors.length; i++) {
+    expect((observedCursors[i] ?? -1) >= (observedCursors[i - 1] ?? -1)).toBe(
+      true
+    );
+  }
+
+  const serverRows = await ctx.server.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'storm-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+  const clientRows = await reader.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'storm-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+
+  expect(serverRows.length).toBe(totalCommits);
+  expect(clientRows.map((row) => row.id)).toEqual(
+    serverRows.map((row) => row.id)
+  );
+
+  const localState = await reader.db
+    .selectFrom('sync_subscription_state')
+    .select(['cursor'])
+    .where('subscription_id', '=', sub.id)
+    .executeTakeFirst();
+  expect(Number(localState?.cursor ?? -1)).toBe(totalCommits);
 }
 
 export async function runMaintenanceChurnScenario(

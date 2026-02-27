@@ -306,3 +306,165 @@ export async function runActorIsolation(ctx: ScenarioContext): Promise<void> {
   expect(bTasks.length).toBe(1);
   expect(bTasks[0]?.id).toBe('b-only');
 }
+
+/**
+ * Client reconnects with changed auth scope on the same client id.
+ * Unauthorized prior subscription scope must be revoked with no data leak,
+ * while authorized scope continues syncing normally.
+ */
+export async function runReconnectStaleScopeRevocation(
+  ctx: ScenarioContext
+): Promise<void> {
+  const client = ctx.clients[0]!;
+  const staleSub = {
+    id: 'tasks-p1',
+    table: 'tasks',
+    scopes: { user_id: ctx.userId, project_id: 'p1' },
+  };
+  const authorizedSub = {
+    id: 'tasks-p1',
+    table: 'tasks',
+    scopes: { user_id: 'other-user', project_id: 'p1' },
+  };
+
+  await ctx.server.db
+    .insertInto('tasks')
+    .values([
+      {
+        id: 'u1-visible',
+        title: 'U1 Visible',
+        completed: 0,
+        user_id: ctx.userId,
+        project_id: 'p1',
+        server_version: 1,
+      },
+      {
+        id: 'u2-visible',
+        title: 'U2 Visible',
+        completed: 0,
+        user_id: 'other-user',
+        project_id: 'p1',
+        server_version: 1,
+      },
+    ])
+    .execute();
+
+  const firstPull = await syncPullOnce(
+    client.db,
+    client.transport,
+    client.handlers,
+    {
+      clientId: client.clientId,
+      subscriptions: [staleSub],
+    }
+  );
+  expect(
+    firstPull.subscriptions.find((s) => s.id === staleSub.id)?.status
+  ).toBe('active');
+
+  const beforeRows = await client.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(beforeRows.map((row) => row.id)).toEqual(['u1-visible']);
+
+  const reconnectTransport = createHttpTransport({
+    baseUrl: ctx.server.baseUrl,
+    getHeaders: () => ({ 'x-actor-id': 'other-user' }),
+    ...(nativeFetch ? { fetch: nativeFetch } : {}),
+  });
+
+  const reconnectPull = await syncPullOnce(
+    client.db,
+    reconnectTransport,
+    client.handlers,
+    {
+      clientId: client.clientId,
+      subscriptions: [staleSub],
+    }
+  );
+  const reconnectSub = reconnectPull.subscriptions.find(
+    (entry) => entry.id === staleSub.id
+  );
+  expect(reconnectSub?.status).toBe('revoked');
+
+  const afterRevokeRows = await client.db
+    .selectFrom('tasks')
+    .select(['id', 'user_id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(afterRevokeRows.length).toBe(0);
+
+  const authorizedPull = await syncPullOnce(
+    client.db,
+    reconnectTransport,
+    client.handlers,
+    {
+      clientId: client.clientId,
+      subscriptions: [authorizedSub],
+    }
+  );
+  const authorizedSubResult = authorizedPull.subscriptions.find(
+    (entry) => entry.id === authorizedSub.id
+  );
+  expect(authorizedSubResult?.status).toBe('active');
+  expect(authorizedSubResult?.bootstrap).toBe(true);
+
+  const afterRows = await client.db
+    .selectFrom('tasks')
+    .select(['id', 'user_id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(afterRows.map((row) => row.id)).toEqual(['u2-visible']);
+  expect(afterRows[0]?.user_id).toBe('other-user');
+
+  const pushed = await reconnectTransport.sync({
+    clientId: client.clientId,
+    push: {
+      clientCommitId: 'other-user-reconnect-commit',
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'u2-after-reconnect',
+          op: 'upsert',
+          payload: {
+            title: 'U2 After Reconnect',
+            completed: 0,
+            project_id: 'p1',
+          },
+          base_version: null,
+        },
+      ],
+    },
+  });
+  expect(pushed.push?.status).toBe('applied');
+
+  await syncPullOnce(client.db, reconnectTransport, client.handlers, {
+    clientId: client.clientId,
+    subscriptions: [authorizedSub],
+    limitCommits: 50,
+  });
+
+  const continuedRows = await client.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .orderBy('id', 'asc')
+    .execute();
+  expect(continuedRows.map((row) => row.id)).toEqual([
+    'u2-after-reconnect',
+    'u2-visible',
+  ]);
+
+  const stateRow = await client.db
+    .selectFrom('sync_subscription_state')
+    .select(['scopes_json'])
+    .where('subscription_id', '=', authorizedSub.id)
+    .executeTakeFirst();
+  const scopesText =
+    typeof stateRow?.scopes_json === 'string'
+      ? stateRow.scopes_json
+      : JSON.stringify(stateRow?.scopes_json ?? {});
+  expect(scopesText).toContain('other-user');
+}
