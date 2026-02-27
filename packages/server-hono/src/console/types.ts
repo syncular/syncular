@@ -53,6 +53,39 @@ export interface ConsoleMetricsOptions {
   rawFallbackMaxEvents?: number;
 }
 
+export interface ConsoleMaintenanceOptions {
+  /**
+   * Minimum interval between automatic event-prune runs.
+   * Set to 0 to disable automatic pruning.
+   * Default: 5 minutes.
+   */
+  autoPruneIntervalMs?: number;
+  /**
+   * Max age for request events before pruning.
+   * Set to 0 to disable age-based pruning.
+   * Default: 7 days.
+   */
+  requestEventsMaxAgeMs?: number;
+  /**
+   * Max number of request events to retain.
+   * Set to 0 to disable count-based pruning.
+   * Default: 10000.
+   */
+  requestEventsMaxRows?: number;
+  /**
+   * Max age for operation audit events before pruning.
+   * Set to 0 to disable age-based pruning.
+   * Default: 30 days.
+   */
+  operationEventsMaxAgeMs?: number;
+  /**
+   * Max number of operation audit events to retain.
+   * Set to 0 to disable count-based pruning.
+   * Default: 5000.
+   */
+  operationEventsMaxRows?: number;
+}
+
 export interface ConsoleBlobObject {
   key: string;
   size: number;
@@ -89,6 +122,7 @@ export interface ConsoleSharedOptions {
    */
   corsOrigins?: string[] | '*';
   metrics?: ConsoleMetricsOptions;
+  maintenance?: ConsoleMaintenanceOptions;
   blobBucket?: ConsoleBlobBucket;
 }
 

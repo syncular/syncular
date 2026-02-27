@@ -270,17 +270,23 @@ describe('console timeline route filters', () => {
   }
 
   async function requestEvents(
-    query: Record<string, string | number | undefined> = {}
+    args: {
+      query?: Record<string, string | number | undefined>;
+      targetApp?: Hono;
+    } = {}
   ): Promise<Response> {
     const params = new URLSearchParams({ limit: '50', offset: '0' });
-    for (const [key, value] of Object.entries(query)) {
+    for (const [key, value] of Object.entries(args.query ?? {})) {
       if (value === undefined) continue;
       params.set(key, String(value));
     }
 
-    return app.request(`http://localhost/console/events?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
-    });
+    return (args.targetApp ?? app).request(
+      `http://localhost/console/events?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
   }
 
   async function requestClearEvents(): Promise<Response> {
@@ -290,8 +296,8 @@ describe('console timeline route filters', () => {
     });
   }
 
-  async function requestPruneEvents(): Promise<Response> {
-    return app.request('http://localhost/console/events/prune', {
+  async function requestPruneEvents(targetApp: Hono = app): Promise<Response> {
+    return targetApp.request('http://localhost/console/events/prune', {
       method: 'POST',
       headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
     });
@@ -440,7 +446,9 @@ describe('console timeline route filters', () => {
   }
 
   function createTestApp(
-    overrides: Pick<CreateConsoleRoutesOptions<TestDb>, 'metrics'> = {}
+    overrides: Partial<
+      Pick<CreateConsoleRoutesOptions<TestDb>, 'metrics' | 'maintenance'>
+    > = {}
   ): Hono {
     const routes = createConsoleRoutes({
       db,
@@ -456,6 +464,18 @@ describe('console timeline route filters', () => {
     const nextApp = new Hono();
     nextApp.route('/console', routes);
     return nextApp;
+  }
+
+  async function waitForCondition(
+    evaluate: () => Promise<boolean>
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (await evaluate()) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('Condition was not met within timeout.');
   }
 
   beforeEach(async () => {
@@ -958,7 +978,9 @@ describe('console timeline route filters', () => {
     expect(clientsPayload.total).toBe(1);
     expect(clientsPayload.items[0]?.actorId).toBe('actor-z');
 
-    const eventsResponse = await requestEvents({ partitionId: 'tenant-b' });
+    const eventsResponse = await requestEvents({
+      query: { partitionId: 'tenant-b' },
+    });
     expect(eventsResponse.status).toBe(200);
     const eventsPayload = (await eventsResponse.json()) as {
       items: Array<{ partitionId: string }>;
@@ -1526,6 +1548,67 @@ describe('console timeline route filters', () => {
       .where('payload_ref', '=', 'payload-orphan')
       .executeTakeFirst();
     expect(orphan).toBeUndefined();
+  });
+
+  it('prunes operation audit events during /events/prune retention', async () => {
+    await db
+      .insertInto('sync_operation_events')
+      .values({
+        operation_type: 'compact',
+        console_user_id: 'console-old',
+        partition_id: null,
+        target_client_id: null,
+        request_payload: JSON.stringify({ fullHistoryHours: 12 }),
+        result_payload: JSON.stringify({ deletedChanges: 22 }),
+        created_at: '2000-01-01T00:00:00.000Z',
+      })
+      .execute();
+
+    const response = await requestPruneEvents();
+    expect(response.status).toBe(200);
+
+    const oldOperation = await db
+      .selectFrom('sync_operation_events')
+      .select(['operation_id'])
+      .where('console_user_id', '=', 'console-old')
+      .executeTakeFirst();
+    expect(oldOperation).toBeUndefined();
+
+    const operationCountRow = await db
+      .selectFrom('sync_operation_events')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    expect(Number(operationCountRow?.total ?? 0)).toBe(2);
+  });
+
+  it('runs automatic event pruning cadence using maintenance config', async () => {
+    const autoPruneApp = createTestApp({
+      maintenance: {
+        autoPruneIntervalMs: 1,
+        requestEventsMaxAgeMs: 0,
+        requestEventsMaxRows: 2,
+        operationEventsMaxAgeMs: 0,
+        operationEventsMaxRows: 1,
+      },
+    });
+
+    const trigger = await requestEvents({ targetApp: autoPruneApp });
+    expect(trigger.status).toBe(200);
+
+    await waitForCondition(async () => {
+      const requestCountRow = await db
+        .selectFrom('sync_request_events')
+        .select(({ fn }) => fn.countAll().as('total'))
+        .executeTakeFirst();
+      const operationCountRow = await db
+        .selectFrom('sync_operation_events')
+        .select(({ fn }) => fn.countAll().as('total'))
+        .executeTakeFirst();
+
+      const requestCount = Number(requestCountRow?.total ?? 0);
+      const operationCount = Number(operationCountRow?.total ?? 0);
+      return requestCount === 2 && operationCount === 1;
+    });
   });
 
   it('disables credentialed CORS headers when wildcard origin is configured', async () => {

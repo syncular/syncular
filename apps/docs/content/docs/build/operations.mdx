@@ -24,7 +24,7 @@ const consoleRoutes = createConsoleRoutes({
   dialect,
   handlers: [tasksHandler],
   authenticate: createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN),
-  corsOrigins: '*',
+  corsOrigins: ['https://console.example.com'],
   eventEmitter,
   websocket: {
     enabled: true,
@@ -73,7 +73,7 @@ const authenticate = createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN);
 
 const consoleGatewayRoutes = createConsoleGatewayRoutes({
   authenticate,
-  corsOrigins: '*',
+  corsOrigins: ['https://console.example.com'],
   instances: [
     {
       instanceId: 'feature-a',
@@ -337,7 +337,9 @@ interface ConsoleRequestEvent {
 
 **DELETE /events** - Delete all events
 
-**POST /events/prune** - Delete events older than 7 days or keep newest 10,000 (and prune unreferenced payload snapshots)
+**POST /events/prune** - Apply request + operation event retention and prune unreferenced payload snapshots
+
+Automatic pruning cadence is controlled with `maintenance.autoPruneIntervalMs` on `createConsoleRoutes(...)`. Set it to `0` to disable background pruning and rely only on the endpoint.
 
 ## Live Events (WebSocket)
 
@@ -484,6 +486,13 @@ interface CreateConsoleRoutesOptions {
   // Optional
   corsOrigins?: string[] | '*';
   eventEmitter?: ConsoleEventEmitter;
+  maintenance?: {
+    autoPruneIntervalMs?: number;    // Default: 5 minutes
+    requestEventsMaxAgeMs?: number;  // Default: 7 days
+    requestEventsMaxRows?: number;   // Default: 10000
+    operationEventsMaxAgeMs?: number; // Default: 30 days
+    operationEventsMaxRows?: number; // Default: 5000
+  };
 
   websocket?: {
     enabled?: boolean;
@@ -518,7 +527,7 @@ Monitor these metrics:
 Schedule regular operations:
 
 ```bash
-# Daily: Prune old events
+# Daily: Prune old console events immediately (manual trigger)
 curl -X POST https://api.example.com/console/events/prune
 
 # Weekly: Compact changes

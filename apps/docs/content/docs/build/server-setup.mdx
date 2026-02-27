@@ -199,13 +199,15 @@ const { syncRoutes, consoleRoutes } = createSyncServer({
   authenticate,
   console: {
     token: process.env.SYNC_CONSOLE_TOKEN,
-    corsOrigins: '*',
+    corsOrigins: ['https://console.example.com'],
   },
 });
 
 app.route('/api/sync', syncRoutes);
 if (consoleRoutes) app.route('/api/console', consoleRoutes);
 ```
+
+Use an explicit `console.corsOrigins` allowlist in production rather than relying on defaults.
 
 Serve the Console UI with one helper:
 
@@ -240,7 +242,7 @@ createSyncServer({
   upgradeWebSocket,      // Enable WebSocket realtime
   console: {             // Enable admin console
     token: 'secret',     // Console auth token
-    corsOrigins: '*',    // Console CORS origins
+    corsOrigins: ['https://console.example.com'], // Explicit Console CORS origins
   },
 
   // Optional limits
@@ -249,6 +251,10 @@ createSyncServer({
     maxSubscriptionsPerPull: 200,     // Max subscriptions per request (default: 200)
     maxPullLimitSnapshotRows: 5000,   // Max snapshot rows per page (default: 5000)
     maxOperationsPerPush: 200,        // Max operations per push (default: 200)
+    requestPayloadSnapshots: {
+      enabled: false,                 // Disable request/response payload snapshots (privacy)
+      maxBytes: 16384,                // Or keep snapshots with aggressive truncation (16 KiB)
+    },
   },
 });
 ```
@@ -294,7 +300,10 @@ const { syncRoutes, consoleRoutes } = createSyncServer({
     return userId ? { actorId: userId } : null;
   },
   upgradeWebSocket,
-  console: { token: process.env.SYNC_CONSOLE_TOKEN },
+  console: {
+    token: process.env.SYNC_CONSOLE_TOKEN,
+    corsOrigins: ['https://console.example.com'],
+  },
 });
 
 // App

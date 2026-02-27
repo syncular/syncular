@@ -391,6 +391,25 @@ const handlersResponseSchema = z.object({
   items: z.array(ConsoleHandlerSchema),
 });
 
+const DEFAULT_REQUEST_EVENTS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_REQUEST_EVENTS_MAX_ROWS = 10_000;
+const DEFAULT_OPERATION_EVENTS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_OPERATION_EVENTS_MAX_ROWS = 5_000;
+const DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+
+function readNonNegativeInteger(
+  value: number | undefined,
+  fallback: number
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  if (value < 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
 export function createConsoleRoutes<
   DB extends SyncCoreDb,
   Auth extends SyncServerAuth,
@@ -489,6 +508,27 @@ export function createConsoleRoutes<
     1,
     options.metrics?.rawFallbackMaxEvents ?? 5000
   );
+  const requestEventsMaxAgeMs = readNonNegativeInteger(
+    options.maintenance?.requestEventsMaxAgeMs,
+    DEFAULT_REQUEST_EVENTS_MAX_AGE_MS
+  );
+  const requestEventsMaxRows = readNonNegativeInteger(
+    options.maintenance?.requestEventsMaxRows,
+    DEFAULT_REQUEST_EVENTS_MAX_ROWS
+  );
+  const operationEventsMaxAgeMs = readNonNegativeInteger(
+    options.maintenance?.operationEventsMaxAgeMs,
+    DEFAULT_OPERATION_EVENTS_MAX_AGE_MS
+  );
+  const operationEventsMaxRows = readNonNegativeInteger(
+    options.maintenance?.operationEventsMaxRows,
+    DEFAULT_OPERATION_EVENTS_MAX_ROWS
+  );
+  const autoEventsPruneIntervalMs = readNonNegativeInteger(
+    options.maintenance?.autoPruneIntervalMs,
+    DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS
+  );
+  let lastEventsPruneRunAt = 0;
 
   // Ensure console schema exists before handlers query console tables.
   const consoleSchemaReadyPromise = (
@@ -541,6 +581,13 @@ export function createConsoleRoutes<
     const readyError = await ensureConsoleSchemaReady(c);
     if (readyError) {
       return readyError;
+    }
+    await next();
+  });
+
+  routes.use('*', async (c, next) => {
+    if (c.req.method !== 'OPTIONS') {
+      triggerAutomaticEventsPrune();
     }
     await next();
   });
@@ -640,6 +687,13 @@ export function createConsoleRoutes<
     createdAt: row.created_at ?? '',
   });
 
+  type PruneEventsRunResult = {
+    requestEventsDeleted: number;
+    operationEventsDeleted: number;
+    payloadSnapshotsDeleted: number;
+    totalDeleted: number;
+  };
+
   const deleteUnreferencedPayloadSnapshots = async (): Promise<number> => {
     const result = await db
       .deleteFrom('sync_request_payloads')
@@ -653,6 +707,180 @@ export function createConsoleRoutes<
       )
       .executeTakeFirst();
     return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneRequestEventsByAge = async (): Promise<number> => {
+    if (requestEventsMaxAgeMs <= 0) {
+      return 0;
+    }
+
+    const cutoffDate = new Date(Date.now() - requestEventsMaxAgeMs);
+    const result = await db
+      .deleteFrom('sync_request_events')
+      .where('created_at', '<', cutoffDate.toISOString())
+      .executeTakeFirst();
+
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneRequestEventsByCount = async (): Promise<number> => {
+    if (requestEventsMaxRows <= 0) {
+      return 0;
+    }
+
+    const countRow = await db
+      .selectFrom('sync_request_events')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+
+    const total = coerceNumber(countRow?.total) ?? 0;
+    if (total <= requestEventsMaxRows) {
+      return 0;
+    }
+
+    const cutoffRow = await db
+      .selectFrom('sync_request_events')
+      .select(['event_id'])
+      .orderBy('event_id', 'desc')
+      .offset(requestEventsMaxRows)
+      .limit(1)
+      .executeTakeFirst();
+
+    const cutoffEventId = coerceNumber(cutoffRow?.event_id);
+    if (cutoffEventId === null) {
+      return 0;
+    }
+
+    const result = await db
+      .deleteFrom('sync_request_events')
+      .where('event_id', '<=', cutoffEventId)
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneOperationEventsByAge = async (): Promise<number> => {
+    if (operationEventsMaxAgeMs <= 0) {
+      return 0;
+    }
+
+    const cutoffDate = new Date(Date.now() - operationEventsMaxAgeMs);
+    const result = await db
+      .deleteFrom('sync_operation_events')
+      .where('created_at', '<', cutoffDate.toISOString())
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneOperationEventsByCount = async (): Promise<number> => {
+    if (operationEventsMaxRows <= 0) {
+      return 0;
+    }
+
+    const countRow = await db
+      .selectFrom('sync_operation_events')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    const total = coerceNumber(countRow?.total) ?? 0;
+    if (total <= operationEventsMaxRows) {
+      return 0;
+    }
+
+    const cutoffRow = await db
+      .selectFrom('sync_operation_events')
+      .select(['operation_id'])
+      .orderBy('operation_id', 'desc')
+      .offset(operationEventsMaxRows)
+      .limit(1)
+      .executeTakeFirst();
+
+    const cutoffOperationId = coerceNumber(cutoffRow?.operation_id);
+    if (cutoffOperationId === null) {
+      return 0;
+    }
+
+    const result = await db
+      .deleteFrom('sync_operation_events')
+      .where('operation_id', '<=', cutoffOperationId)
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneConsoleEvents = async (): Promise<PruneEventsRunResult> => {
+    const requestEventsDeletedByAge = await pruneRequestEventsByAge();
+    const requestEventsDeletedByCount = await pruneRequestEventsByCount();
+    const requestEventsDeleted =
+      requestEventsDeletedByAge + requestEventsDeletedByCount;
+
+    const operationEventsDeletedByAge = await pruneOperationEventsByAge();
+    const operationEventsDeletedByCount = await pruneOperationEventsByCount();
+    const operationEventsDeleted =
+      operationEventsDeletedByAge + operationEventsDeletedByCount;
+
+    const payloadSnapshotsDeleted = await deleteUnreferencedPayloadSnapshots();
+    const totalDeleted = requestEventsDeleted + operationEventsDeleted;
+
+    return {
+      requestEventsDeleted,
+      operationEventsDeleted,
+      payloadSnapshotsDeleted,
+      totalDeleted,
+    };
+  };
+
+  let eventsPrunePromise: Promise<PruneEventsRunResult> | null = null;
+
+  const runEventsPrune = async (): Promise<PruneEventsRunResult> => {
+    if (eventsPrunePromise) {
+      return eventsPrunePromise;
+    }
+
+    let pending: Promise<PruneEventsRunResult>;
+    pending = pruneConsoleEvents()
+      .then((result) => {
+        lastEventsPruneRunAt = Date.now();
+        return result;
+      })
+      .finally(() => {
+        if (eventsPrunePromise === pending) {
+          eventsPrunePromise = null;
+        }
+      });
+
+    eventsPrunePromise = pending;
+    return pending;
+  };
+
+  const triggerAutomaticEventsPrune = (): void => {
+    if (autoEventsPruneIntervalMs <= 0) {
+      return;
+    }
+    if (eventsPrunePromise) {
+      return;
+    }
+    if (Date.now() - lastEventsPruneRunAt < autoEventsPruneIntervalMs) {
+      return;
+    }
+
+    void runEventsPrune()
+      .then((result) => {
+        if (result.totalDeleted <= 0 && result.payloadSnapshotsDeleted <= 0) {
+          return;
+        }
+
+        logSyncEvent({
+          event: 'console.prune_events_auto',
+          deletedCount: result.totalDeleted,
+          requestEventsDeleted: result.requestEventsDeleted,
+          operationEventsDeleted: result.operationEventsDeleted,
+          payloadDeletedCount: result.payloadSnapshotsDeleted,
+        });
+      })
+      .catch((error) => {
+        logSyncEvent({
+          event: 'console.prune_events_auto_failed',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   };
 
   const recordOperationEvent = async (event: {
@@ -2779,56 +3007,16 @@ export function createConsoleRoutes<
       const auth = await requireAuth(c);
       if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
 
-      // Prune events older than 7 days or keep max 10000 events
-      const cutoffDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-
-      // Delete by date first
-      const resByDate = await db
-        .deleteFrom('sync_request_events')
-        .where('created_at', '<', cutoffDate.toISOString())
-        .executeTakeFirst();
-
-      let deletedCount = Number(resByDate?.numDeletedRows ?? 0);
-
-      // Then delete oldest if we still have more than 10000 events
-      const countRow = await db
-        .selectFrom('sync_request_events')
-        .select(({ fn }) => fn.countAll().as('total'))
-        .executeTakeFirst();
-
-      const total = coerceNumber(countRow?.total) ?? 0;
-      const maxEvents = 10000;
-
-      if (total > maxEvents) {
-        // Find event_id cutoff to keep only newest maxEvents
-        const cutoffRow = await db
-          .selectFrom('sync_request_events')
-          .select(['event_id'])
-          .orderBy('event_id', 'desc')
-          .offset(maxEvents)
-          .limit(1)
-          .executeTakeFirst();
-
-        if (cutoffRow) {
-          const cutoffEventId = coerceNumber(cutoffRow.event_id);
-          if (cutoffEventId !== null) {
-            const resByCount = await db
-              .deleteFrom('sync_request_events')
-              .where('event_id', '<=', cutoffEventId)
-              .executeTakeFirst();
-
-            deletedCount += Number(resByCount?.numDeletedRows ?? 0);
-          }
-        }
-      }
-
-      const payloadDeletedCount = await deleteUnreferencedPayloadSnapshots();
+      const pruneResult = await runEventsPrune();
+      const deletedCount = pruneResult.totalDeleted;
 
       logSyncEvent({
         event: 'console.prune_events',
         consoleUserId: auth.consoleUserId,
         deletedCount,
-        payloadDeletedCount,
+        requestEventsDeleted: pruneResult.requestEventsDeleted,
+        operationEventsDeleted: pruneResult.operationEventsDeleted,
+        payloadDeletedCount: pruneResult.payloadSnapshotsDeleted,
       });
 
       const result: ConsolePruneEventsResult = { deletedCount };

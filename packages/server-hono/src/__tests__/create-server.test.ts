@@ -9,7 +9,7 @@ import {
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { Hono } from 'hono';
 import { defineWebSocketHelper } from 'hono/ws';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { createSyncServer } from '../create-server';
 import { getSyncWebSocketConnectionManager } from '../routes';
 import type { WebSocketConnection } from '../ws';
@@ -100,10 +100,16 @@ describe('createSyncServer console configuration', () => {
     };
   }
 
-  function createPushRequest(): Request {
+  function createPushRequest(args?: {
+    requestId?: string;
+    title?: string;
+  }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(args?.requestId ? { 'x-request-id': args.requestId } : {}),
+      },
       body: JSON.stringify({
         clientId: 'client-1',
         push: {
@@ -117,7 +123,7 @@ describe('createSyncServer console configuration', () => {
               payload: {
                 id: 'task-1',
                 user_id: 'u1',
-                title: 'Task 1',
+                title: args?.title ?? 'Task 1',
                 server_version: 0,
               },
             },
@@ -125,6 +131,62 @@ describe('createSyncServer console configuration', () => {
         },
       }),
     });
+  }
+
+  function parseSnapshotValue(value: unknown): unknown {
+    if (typeof value !== 'string') {
+      return value;
+    }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+
+  async function waitForRequestEventRow(requestId: string): Promise<{
+    payload_ref: string | null;
+  }> {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const result = await sql<{ payload_ref: string | null }>`
+        SELECT payload_ref
+        FROM sync_request_events
+        WHERE request_id = ${requestId}
+        ORDER BY event_id DESC
+        LIMIT 1
+      `.execute(db);
+
+      const row = result.rows[0];
+      if (row) {
+        return row;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    throw new Error(`Timed out waiting for request event: ${requestId}`);
+  }
+
+  async function waitForRequestPayloadSnapshot(
+    payloadRef: string
+  ): Promise<unknown> {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const result = await sql<{ request_payload: unknown | null }>`
+        SELECT request_payload
+        FROM sync_request_payloads
+        WHERE payload_ref = ${payloadRef}
+        LIMIT 1
+      `.execute(db);
+
+      const row = result.rows[0];
+      if (row && row.request_payload !== null) {
+        return parseSnapshotValue(row.request_payload);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    throw new Error(`Timed out waiting for payload snapshot: ${payloadRef}`);
   }
 
   it('keeps console routes disabled when console config is omitted', () => {
@@ -268,6 +330,87 @@ describe('createSyncServer console configuration', () => {
     expect(await response.json()).toEqual({
       error: 'WEBSOCKET_CONNECTION_LIMIT_CLIENT',
     });
+  });
+
+  it('allows disabling request payload snapshots for privacy-sensitive deployments', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+      routes: {
+        requestPayloadSnapshots: {
+          enabled: false,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-no-payload-snapshot';
+    const response = await app.request(createPushRequest({ requestId }));
+    expect(response.status).toBe(200);
+
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(eventRow.payload_ref).toBeNull();
+
+    const payloadCountResult = await sql<{ total: number | string }>`
+      SELECT COUNT(*)::int AS total
+      FROM sync_request_payloads
+    `.execute(db);
+    const payloadCount = Number(payloadCountResult.rows[0]?.total ?? 0);
+    expect(payloadCount).toBe(0);
+  });
+
+  it('supports aggressively reducing stored payload snapshot size', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+      routes: {
+        requestPayloadSnapshots: {
+          maxBytes: 32,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-small-payload-preview';
+    const response = await app.request(
+      createPushRequest({
+        requestId,
+        title: 'x'.repeat(1024),
+      })
+    );
+    expect(response.status).toBe(200);
+
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(typeof eventRow.payload_ref).toBe('string');
+    if (!eventRow.payload_ref) {
+      throw new Error('Expected payload_ref to be present.');
+    }
+
+    const storedPayload = await waitForRequestPayloadSnapshot(
+      eventRow.payload_ref
+    );
+    expect(typeof storedPayload).toBe('object');
+    expect(Array.isArray(storedPayload)).toBe(false);
+    if (!storedPayload || typeof storedPayload !== 'object') {
+      throw new Error('Expected stored payload snapshot to be an object.');
+    }
+
+    const truncated = Reflect.get(storedPayload, 'truncated');
+    const preview = Reflect.get(storedPayload, 'preview');
+
+    expect(truncated).toBe(true);
+    expect(typeof preview).toBe('string');
+    if (typeof preview === 'string') {
+      expect(preview.length).toBeLessThanOrEqual(32);
+    }
   });
 
   it('forwards maxConnectionsTotal from factory to realtime route', async () => {

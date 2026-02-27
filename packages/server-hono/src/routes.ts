@@ -122,6 +122,22 @@ export interface SyncRoutesConfigWithRateLimit {
    */
   maxOperationsPerPush?: number;
   /**
+   * Request/response payload snapshots recorded for console inspection.
+   */
+  requestPayloadSnapshots?: {
+    /**
+     * Enable payload snapshot storage in `sync_request_payloads`.
+     * Default: true when console event recording is enabled.
+     */
+    enabled?: boolean;
+    /**
+     * Max serialized payload size in bytes per request/response snapshot.
+     * Larger payloads are truncated with metadata.
+     * Default: 128 KiB.
+     */
+    maxBytes?: number;
+  };
+  /**
    * Rate limiting configuration.
    * Set to false to disable all rate limiting.
    */
@@ -212,7 +228,7 @@ const snapshotChunkParamsSchema = z.object({
   chunkId: z.string().min(1),
 });
 
-const MAX_REQUEST_PAYLOAD_SNAPSHOT_BYTES = 128 * 1024;
+const DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES = 128 * 1024;
 
 type TraceContext = {
   traceId: string | null;
@@ -257,6 +273,19 @@ function parseSentryTraceHeader(
   const spanId = match[2]?.toLowerCase() ?? null;
   if (!traceId || !spanId) return null;
   return { traceId, spanId };
+}
+
+function readPositiveInteger(
+  value: number | undefined,
+  fallback: number
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  if (value <= 0) {
+    return fallback;
+  }
+  return Math.floor(value);
 }
 
 function readTraceContext(c: Context): TraceContext {
@@ -406,16 +435,16 @@ function countPullRows(response: PullResult['response']): number {
   }, 0);
 }
 
-function encodePayloadSnapshot(value: unknown): string {
+function encodePayloadSnapshot(value: unknown, maxBytes: number): string {
   try {
     const serialized = JSON.stringify(value);
-    if (serialized.length <= MAX_REQUEST_PAYLOAD_SNAPSHOT_BYTES) {
+    if (serialized.length <= maxBytes) {
       return serialized;
     }
     return JSON.stringify({
       truncated: true,
       originalSizeBytes: serialized.length,
-      preview: serialized.slice(0, MAX_REQUEST_PAYLOAD_SNAPSHOT_BYTES),
+      preview: serialized.slice(0, maxBytes),
     });
   } catch {
     return JSON.stringify({
@@ -470,6 +499,13 @@ export function createSyncRoutes<
   const consoleLiveEmitter = options.consoleLiveEmitter;
   const shouldEmitConsoleLiveEvents = consoleLiveEmitter !== undefined;
   const shouldRecordRequestEvents = shouldEmitConsoleLiveEvents;
+  const shouldCaptureRequestPayloadSnapshots =
+    shouldRecordRequestEvents &&
+    config.requestPayloadSnapshots?.enabled !== false;
+  const requestPayloadSnapshotMaxBytes = readPositiveInteger(
+    config.requestPayloadSnapshots?.maxBytes,
+    DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES
+  );
   const consoleSchemaReadyBase = shouldRecordRequestEvents
     ? (options.consoleSchemaReady ??
       options.dialect.ensureConsoleSchema?.(options.db) ??
@@ -592,8 +628,14 @@ export function createSyncRoutes<
             payload_ref, partition_id, request_payload, response_payload, created_at
           ) VALUES (
             ${nextPayloadRef}, ${event.partitionId},
-            ${encodePayloadSnapshot(event.payloadSnapshot.request)},
-            ${encodePayloadSnapshot(event.payloadSnapshot.response)},
+            ${encodePayloadSnapshot(
+              event.payloadSnapshot.request,
+              requestPayloadSnapshotMaxBytes
+            )},
+            ${encodePayloadSnapshot(
+              event.payloadSnapshot.response,
+              requestPayloadSnapshotMaxBytes
+            )},
             ${nowIso}
           )
           ON CONFLICT (payload_ref) DO UPDATE SET
@@ -854,15 +896,17 @@ export function createSyncRoutes<
           commitSeq: pushed.response.commitSeq,
           operationCount: pushOps.length,
           tables: pushed.affectedTables,
-          payloadSnapshot: {
-            request: {
-              clientId,
-              clientCommitId: pushBody.clientCommitId,
-              schemaVersion: pushBody.schemaVersion,
-              operations: pushBody.operations,
-            },
-            response: pushed.response,
-          },
+          payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+            ? {
+                request: {
+                  clientId,
+                  clientCommitId: pushBody.clientCommitId,
+                  schemaVersion: pushBody.schemaVersion,
+                  operations: pushBody.operations,
+                },
+                response: pushed.response,
+              }
+            : null,
         }));
         emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
           partitionId,
@@ -1073,7 +1117,7 @@ export function createSyncRoutes<
           const scopesSummary = shouldRecordRequestEvents
             ? summarizeScopeValues(pullResult.effectiveScopes)
             : null;
-          const payloadSnapshot = shouldRecordRequestEvents
+          const payloadSnapshot = shouldCaptureRequestPayloadSnapshots
             ? {
                 request: {
                   clientId,
@@ -1586,14 +1630,16 @@ export function createSyncRoutes<
           durationMs: invalidDurationMs,
           errorCode: 'INVALID_PUSH_PAYLOAD',
           errorMessage: 'Invalid push payload',
-          payloadSnapshot: {
-            request: msg,
-            response: {
-              ok: false,
-              status: 'rejected',
-              reason: 'invalid_push_payload',
-            },
-          },
+          payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+            ? {
+                request: msg,
+                response: {
+                  ok: false,
+                  status: 'rejected',
+                  reason: 'invalid_push_payload',
+                },
+              }
+            : null,
         }));
         emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
           partitionId,
@@ -1644,19 +1690,21 @@ export function createSyncRoutes<
           errorCode: 'MAX_OPERATIONS_EXCEEDED',
           errorMessage: `Maximum ${maxOperationsPerPush} operations per push`,
           operationCount: pushOps.length,
-          payloadSnapshot: {
-            request: {
-              clientId,
-              clientCommitId: parsed.data.clientCommitId,
-              schemaVersion: parsed.data.schemaVersion,
-              operations: parsed.data.operations,
-            },
-            response: {
-              ok: false,
-              status: 'rejected',
-              reason: 'max_operations_exceeded',
-            },
-          },
+          payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+            ? {
+                request: {
+                  clientId,
+                  clientCommitId: parsed.data.clientCommitId,
+                  schemaVersion: parsed.data.schemaVersion,
+                  operations: parsed.data.operations,
+                },
+                response: {
+                  ok: false,
+                  status: 'rejected',
+                  reason: 'max_operations_exceeded',
+                },
+              }
+            : null,
         }));
         emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
           partitionId,
@@ -1718,15 +1766,17 @@ export function createSyncRoutes<
         commitSeq: pushed.response.commitSeq,
         operationCount: pushOps.length,
         tables: pushed.affectedTables,
-        payloadSnapshot: {
-          request: {
-            clientId,
-            clientCommitId: parsed.data.clientCommitId,
-            schemaVersion: parsed.data.schemaVersion,
-            operations: parsed.data.operations,
-          },
-          response: pushed.response,
-        },
+        payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+          ? {
+              request: {
+                clientId,
+                clientCommitId: parsed.data.clientCommitId,
+                schemaVersion: parsed.data.schemaVersion,
+                operations: parsed.data.operations,
+              },
+              response: pushed.response,
+            }
+          : null,
       }));
       emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
         partitionId,
@@ -1848,15 +1898,17 @@ export function createSyncRoutes<
         durationMs: failedDurationMs,
         errorCode: 'INTERNAL_SERVER_ERROR',
         errorMessage: message,
-        payloadSnapshot: {
-          request: msg,
-          response: {
-            ok: false,
-            status: 'rejected',
-            reason: 'internal_server_error',
-            message,
-          },
-        },
+        payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+          ? {
+              request: msg,
+              response: {
+                ok: false,
+                status: 'rejected',
+                reason: 'internal_server_error',
+                message,
+              },
+            }
+          : null,
       }));
       emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
         partitionId,

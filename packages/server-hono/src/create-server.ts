@@ -189,6 +189,7 @@ export function createSyncServer<
     consoleSchemaReady,
     wsConnectionManager: getSyncWebSocketConnectionManager(syncRoutes),
     metrics: resolvedConsoleConfig.metrics,
+    maintenance: resolvedConsoleConfig.maintenance,
     blobBucket: resolvedConsoleConfig.blobBucket,
     ...(upgradeWebSocket && {
       websocket: {
