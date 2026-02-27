@@ -29,6 +29,7 @@ import {
   runPruneByAgeScenario,
 } from '../scenarios/compaction.scenario';
 import {
+  runE2eeOfflineRotationReconnectScenario,
   runE2eeReconnectKeyRotationScenario,
   runE2eeScenario,
 } from '../scenarios/e2ee.scenario';
@@ -43,6 +44,7 @@ import {
 import { runProxyScenario } from '../scenarios/proxy.scenario';
 import {
   runMaintenanceChurnScenario,
+  runMaintenanceRaceMatrixScenario,
   runReconnectAckLossScenario,
   runReconnectStormCursorScenario,
   runRelayDuplicateOutOfOrderScenario,
@@ -191,6 +193,10 @@ describe('integration: features', () => {
     it('handles reconnect with key rotation and rejects missing keysets', async () => {
       await runE2eeReconnectKeyRotationScenario(getCtx());
     });
+
+    it('handles offline encrypted writes across key rotation and reconnect', async () => {
+      await runE2eeOfflineRotationReconnectScenario(getCtx());
+    });
   });
 
   // Proxy
@@ -246,6 +252,10 @@ describe('integration: features', () => {
   describe('maintenance churn', () => {
     it('preserves convergence while prune/compact run during active writes', async () => {
       await runMaintenanceChurnScenario(getCtx());
+    });
+
+    it('stays convergent across a maintenance race matrix of prune/compact settings', async () => {
+      await runMaintenanceRaceMatrixScenario(getCtx());
     });
 
     it('maintains monotonic cursor progression through reconnect storms', async () => {

@@ -21,15 +21,15 @@
 - Subscription reshape stress loop (add/remove/narrow/expand) under active writes.
 - Partition isolation under high churn + reconnect + maintenance.
 - Maintenance churn while prune/compact run concurrently.
+- Maintenance race matrix across aggressive/moderate prune windows under concurrent push/pull.
 - Snapshot chunk fault matrix: missing, 500, truncated, checksum mismatch, expired, unauthorized.
 - Outbox restart durability for pending and stale in-flight (`sending`) commits.
 - Outbox failed-commit remediation path across restart with exact-once replay after ACK loss.
+- E2EE offline writes + key rotation + reconnect across authorized and unauthorized keysets.
 - Retry/backoff correctness for 429/503 across pull/push/chunk fetch paths.
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 
 ## High-Value Functional Tests (Remaining + Expanded)
-- `P1` Maintenance race matrix: prune/compact while high-volume push/pull runs; assert no deadlocks and deterministic fallback.
-- `P1` E2EE offline writes + key rotation + reconnect for authorized and unauthorized key sets.
 - `P2` Process crash simulation around outbox state transitions beyond stale-send recovery (for example: failed commit recovery workflow).
 
 ## Where Tests Live

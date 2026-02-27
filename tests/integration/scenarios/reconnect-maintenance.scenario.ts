@@ -780,3 +780,245 @@ export async function runMaintenanceChurnScenario(
   expect(readerRows.map((row) => row.id)).toEqual(serverIds);
   expect(laggingRows.map((row) => row.id)).toEqual(serverIds);
 }
+
+interface MaintenanceRaceCase {
+  name: string;
+  writes: number;
+  keepNewestCommits: number;
+  limitCommits: number;
+  maintenanceEvery: number;
+}
+
+export async function runMaintenanceRaceMatrixScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const writer = ctx.clients[0]!;
+  const readerA = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'maintenance-race-reader-a',
+  });
+  const readerB = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'maintenance-race-reader-b',
+  });
+  const lagging = await ctx.createClient({
+    actorId: ctx.userId,
+    clientId: 'maintenance-race-lagging',
+  });
+  const sub = createTasksSubscription(ctx.userId);
+
+  await syncPullOnce(writer.db, writer.transport, writer.handlers, {
+    clientId: writer.clientId,
+    subscriptions: [sub],
+  });
+  await syncPullOnce(readerA.db, readerA.transport, readerA.handlers, {
+    clientId: readerA.clientId,
+    subscriptions: [sub],
+  });
+  await syncPullOnce(readerB.db, readerB.transport, readerB.handlers, {
+    clientId: readerB.clientId,
+    subscriptions: [sub],
+  });
+  await syncPullOnce(lagging.db, lagging.transport, lagging.handlers, {
+    clientId: lagging.clientId,
+    subscriptions: [sub],
+  });
+
+  const cases: MaintenanceRaceCase[] = [
+    {
+      name: 'aggressive-prune-small-window',
+      writes: 18,
+      keepNewestCommits: 6,
+      limitCommits: 4,
+      maintenanceEvery: 2,
+    },
+    {
+      name: 'moderate-prune-larger-window',
+      writes: 20,
+      keepNewestCommits: 8,
+      limitCommits: 6,
+      maintenanceEvery: 3,
+    },
+  ];
+
+  let writeIndex = 1;
+  let prunedAtLeastOnce = false;
+  let sawBootstrapFallback = false;
+
+  const runMaintenancePass = async (keepNewestCommits: number) => {
+    await ctx.server.db
+      .updateTable('sync_commits')
+      .set({ created_at: '2000-01-01T00:00:00.000Z' })
+      .execute();
+
+    await ctx.server.dialect.compactChanges(ctx.server.db, {
+      fullHistoryHours: 1,
+    });
+
+    const watermark = await computePruneWatermarkCommitSeq(ctx.server.db, {
+      activeWindowMs: 60 * 1000,
+      fallbackMaxAgeMs: 60 * 1000,
+      keepNewestCommits,
+    });
+
+    if (watermark <= 0) return;
+    const deleted = await pruneSync(ctx.server.db, {
+      watermarkCommitSeq: watermark,
+      keepNewestCommits,
+    });
+    if (deleted > 0) {
+      prunedAtLeastOnce = true;
+    }
+  };
+
+  for (const raceCase of cases) {
+    let writesDone = false;
+
+    const pushLoop = async () => {
+      for (let i = 1; i <= raceCase.writes; i += 1) {
+        const currentIndex = writeIndex;
+        writeIndex += 1;
+        const pushResult = await writer.transport.sync({
+          clientId: writer.clientId,
+          push: {
+            clientCommitId: `maintenance-race-${raceCase.name}-c${currentIndex}`,
+            schemaVersion: 1,
+            operations: [
+              {
+                table: 'tasks',
+                row_id: `maintenance-race-task-${currentIndex}`,
+                op: 'upsert',
+                payload: {
+                  title: `Maintenance Race Task ${currentIndex}`,
+                  completed: currentIndex % 2,
+                  project_id: 'p1',
+                },
+                base_version: null,
+              },
+            ],
+          },
+        });
+        expect(pushResult.push?.status).toBe('applied');
+
+        if (i % raceCase.maintenanceEvery === 0) {
+          await runMaintenancePass(raceCase.keepNewestCommits);
+        }
+      }
+      writesDone = true;
+    };
+
+    const readerLoop = async (client: typeof readerA, limitCommits: number) => {
+      let lastCursor = -1;
+
+      for (let cycle = 0; cycle < raceCase.writes + 20; cycle += 1) {
+        const pull = await syncPullOnce(
+          client.db,
+          client.transport,
+          client.handlers,
+          {
+            clientId: client.clientId,
+            subscriptions: [sub],
+            limitCommits,
+          }
+        );
+        const subscription = pull.subscriptions.find(
+          (entry) => entry.id === sub.id
+        );
+        expect(subscription?.status).toBe('active');
+
+        if (subscription?.bootstrap === true) {
+          sawBootstrapFallback = true;
+        }
+
+        const nextCursor = subscription?.nextCursor ?? lastCursor;
+        expect(nextCursor).toBeGreaterThanOrEqual(lastCursor);
+        lastCursor = nextCursor;
+
+        if (writesDone && nextCursor >= writeIndex - 1) {
+          break;
+        }
+
+        if (cycle % 4 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        }
+      }
+    };
+
+    await Promise.all([
+      pushLoop(),
+      readerLoop(readerA, raceCase.limitCommits),
+      readerLoop(readerB, Math.max(2, raceCase.limitCommits - 1)),
+    ]);
+
+    await runMaintenancePass(raceCase.keepNewestCommits);
+
+    const laggingPull = await syncPullOnce(
+      lagging.db,
+      lagging.transport,
+      lagging.handlers,
+      {
+        clientId: lagging.clientId,
+        subscriptions: [sub],
+        limitCommits: raceCase.limitCommits,
+      }
+    );
+    const laggingSub = laggingPull.subscriptions.find(
+      (entry) => entry.id === sub.id
+    );
+    expect(laggingSub?.status).toBe('active');
+    if (laggingSub?.bootstrap === true) {
+      sawBootstrapFallback = true;
+    }
+  }
+
+  expect(prunedAtLeastOnce).toBe(true);
+  expect(sawBootstrapFallback).toBe(true);
+
+  await syncPullOnce(readerA.db, readerA.transport, readerA.handlers, {
+    clientId: readerA.clientId,
+    subscriptions: [sub],
+    limitCommits: 300,
+  });
+  await syncPullOnce(readerB.db, readerB.transport, readerB.handlers, {
+    clientId: readerB.clientId,
+    subscriptions: [sub],
+    limitCommits: 300,
+  });
+  await syncPullOnce(lagging.db, lagging.transport, lagging.handlers, {
+    clientId: lagging.clientId,
+    subscriptions: [sub],
+    limitCommits: 300,
+  });
+
+  const serverRows = await ctx.server.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'maintenance-race-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+  const readerRows = await readerA.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'maintenance-race-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+  const readerBRows = await readerB.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'maintenance-race-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+  const laggingRows = await lagging.db
+    .selectFrom('tasks')
+    .select(['id'])
+    .where('id', 'like', 'maintenance-race-task-%')
+    .orderBy('id', 'asc')
+    .execute();
+
+  const expectedCount = writeIndex - 1;
+  const serverIds = serverRows.map((row) => row.id);
+  expect(serverIds.length).toBe(expectedCount);
+  expect(readerRows.map((row) => row.id)).toEqual(serverIds);
+  expect(readerBRows.map((row) => row.id)).toEqual(serverIds);
+  expect(laggingRows.map((row) => row.id)).toEqual(serverIds);
+}
