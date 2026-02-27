@@ -48,6 +48,13 @@
     "timestamp": "2026-02-27T20:28:06.049Z",
     "commit": "local"
   },
+  "reconnect_storm": {
+    "median": 23.7,
+    "p95": 25.6,
+    "p99": 25.6,
+    "timestamp": "2026-02-27T21:49:30.000Z",
+    "commit": "local"
+  },
   "dialect_bun-sqlite_insert_10k": {
     "median": 76.48483299999998,
     "p95": 76.48483299999998,

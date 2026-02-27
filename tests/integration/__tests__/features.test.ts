@@ -19,6 +19,7 @@ import {
   runNarrowedScopes,
   runPartitionIsolationHighChurnScenario,
   runPushToUnauthorizedScope,
+  runReconnectScopeChangeStormScenario,
   runReconnectStaleScopeRevocation,
 } from '../scenarios/auth-enforcement.scenario';
 import {
@@ -59,6 +60,7 @@ import {
   runDedupeScenario,
   runForcedBootstrapAfterPruneScenario,
   runSubscriptionReshapeScenario,
+  runSubscriptionReshapeStressScenario,
   runSubscriptionScenario,
 } from '../scenarios/subscription.scenario';
 
@@ -118,6 +120,10 @@ describe('integration: features', () => {
 
     it('reshapes subscriptions without leaking removed scopes', async () => {
       await runSubscriptionReshapeScenario(getCtx());
+    });
+
+    it('handles repeated subscription add/remove/narrow/expand cycles', async () => {
+      await runSubscriptionReshapeStressScenario(getCtx());
     });
 
     it('dedupes hot rows in incremental pulls', async () => {
@@ -257,6 +263,10 @@ describe('integration: features', () => {
 
     it('revokes stale scopes on reconnect without leaking data', async () => {
       await runReconnectStaleScopeRevocation(getCtx());
+    });
+
+    it('keeps scopes isolated through reconnect storms with auth identity changes', async () => {
+      await runReconnectScopeChangeStormScenario(getCtx());
     });
 
     it('maintains strict tenant isolation under churn, reconnect, and maintenance', async () => {

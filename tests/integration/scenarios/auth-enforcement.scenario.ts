@@ -470,6 +470,118 @@ export async function runReconnectStaleScopeRevocation(
   expect(scopesText).toContain('other-user');
 }
 
+export async function runReconnectScopeChangeStormScenario(
+  ctx: ScenarioContext
+): Promise<void> {
+  const client = ctx.clients[0]!;
+
+  await ctx.server.db
+    .insertInto('tasks')
+    .values([
+      {
+        id: 'storm-seed-u1',
+        title: 'Storm Seed U1',
+        completed: 0,
+        user_id: ctx.userId,
+        project_id: 'p1',
+        server_version: 1,
+      },
+      {
+        id: 'storm-seed-u2',
+        title: 'Storm Seed U2',
+        completed: 0,
+        user_id: 'other-user',
+        project_id: 'p1',
+        server_version: 1,
+      },
+    ])
+    .execute();
+
+  const transportFor = (actorId: string) =>
+    createHttpTransport({
+      baseUrl: ctx.server.baseUrl,
+      getHeaders: () => ({ 'x-actor-id': actorId }),
+      ...(nativeFetch ? { fetch: nativeFetch } : {}),
+    });
+
+  const subFor = (userId: string) => ({
+    id: 'tasks-p1',
+    table: 'tasks',
+    scopes: { user_id: userId, project_id: 'p1' },
+  });
+
+  const actors = [ctx.userId, 'other-user', ctx.userId, 'other-user'];
+  for (let i = 0; i < actors.length; i += 1) {
+    const actorId = actors[i]!;
+    const unauthorizedUserId =
+      actorId === ctx.userId ? 'other-user' : ctx.userId;
+    const transport = transportFor(actorId);
+
+    const revoked = await syncPullOnce(client.db, transport, client.handlers, {
+      clientId: client.clientId,
+      subscriptions: [subFor(unauthorizedUserId)],
+    });
+    expect(
+      revoked.subscriptions.find((entry) => entry.id === 'tasks-p1')?.status
+    ).toBe('revoked');
+
+    const authorized = await syncPullOnce(
+      client.db,
+      transport,
+      client.handlers,
+      {
+        clientId: client.clientId,
+        subscriptions: [subFor(actorId)],
+      }
+    );
+    expect(
+      authorized.subscriptions.find((entry) => entry.id === 'tasks-p1')?.status
+    ).toBe('active');
+
+    const pushResult = await transport.sync({
+      clientId: client.clientId,
+      push: {
+        clientCommitId: `scope-storm-c${i + 1}`,
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: `scope-storm-${actorId}-${i + 1}`,
+            op: 'upsert',
+            payload: {
+              title: `Scope Storm ${actorId} ${i + 1}`,
+              completed: i % 2,
+              project_id: 'p1',
+            },
+            base_version: null,
+          },
+        ],
+      },
+    });
+    expect(pushResult.push?.status).toBe('applied');
+
+    await syncPullOnce(client.db, transport, client.handlers, {
+      clientId: client.clientId,
+      subscriptions: [subFor(actorId)],
+      limitCommits: 50,
+    });
+
+    const localRows = await client.db
+      .selectFrom('tasks')
+      .select(['id', 'user_id'])
+      .orderBy('id', 'asc')
+      .execute();
+    expect(localRows.length).toBeGreaterThan(0);
+    expect(localRows.every((row) => row.user_id === actorId)).toBe(true);
+    expect(
+      localRows.some((row) => row.id === `scope-storm-${actorId}-${i + 1}`)
+    ).toBe(true);
+    expect(localRows.some((row) => row.user_id === unauthorizedUserId)).toBe(
+      false
+    );
+  }
+}
+
 /**
  * Multi-tenant isolation under high churn with reconnect + maintenance activity.
  * Verifies no cross-user leakage while compaction/prune run during concurrent writes.

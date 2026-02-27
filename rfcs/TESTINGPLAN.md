@@ -13,12 +13,14 @@
 ## Current Baseline (Implemented)
 - Reconnect with push ACK loss idempotency.
 - Reconnect stale-scope revocation and no-leak guarantees.
+- Reconnect storm with repeated auth identity/scope changes and revocation checks.
 - Rebootstrap after prune + compaction in one window.
 - Cursor monotonicity under reconnect storms.
 - Direct vs relay transport parity.
+- Subscription reshape stress loop (add/remove/narrow/expand) under active writes.
 - Maintenance churn while prune/compact run concurrently.
 - Snapshot chunk rollback on chunk failures (core pull-engine tests).
-- Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, forced rebootstrap.
+- Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 
 ## High-Value Functional Tests (Remaining + Expanded)
 - `P0` WS/direct/relay equivalence end-to-end: same scenario across transports, same final DB state and conflict outcomes.
