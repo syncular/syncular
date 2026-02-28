@@ -255,6 +255,8 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   limitSnapshotRows?: number;
   /** Bootstrap snapshot pages per pull */
   maxSnapshotPages?: number;
+  /** Deduplicate rows in pull responses on the server */
+  dedupeRows?: boolean;
   /** Optional state row id (multi-profile support) */
   stateId?: string;
   /** Poll interval in milliseconds (polling mode) */

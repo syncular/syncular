@@ -35,6 +35,7 @@ export interface TasksTable {
   user_id: string;
   server_version?: number;
   image?: string | null;
+  title_yjs_state?: string | null;
 }
 
 export type ClientDb = SyncClientDb & {

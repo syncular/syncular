@@ -21,6 +21,16 @@ export const DEMO_CLIENT_STORES = {
     driver: 'pglite',
     location: 'idb://sync-demo-pglite-v5',
   },
+  crdtYjsSqlite: {
+    key: 'crdt-yjs-sqlite',
+    driver: 'sqlite',
+    location: 'demo-crdt-yjs-v1.sqlite',
+  },
+  crdtYjsPglite: {
+    key: 'crdt-yjs-pglite',
+    driver: 'pglite',
+    location: 'idb://sync-demo-crdt-yjs-pglite-v1',
+  },
   mediaUploaderSqlite: {
     key: 'media-uploader-sqlite',
     driver: 'sqlite',
@@ -71,6 +81,7 @@ const ALL_DEMO_CLIENT_STORES: readonly DemoClientStore[] =
 
 const DEMO_LOCAL_STORAGE_KEYS = [
   'sync-demo:split-screen:client-seed-v1',
+  'sync-demo:crdt-yjs:client-seed-v1',
   'sync-demo:keyshare:owner-key-v3',
 ] as const;
 

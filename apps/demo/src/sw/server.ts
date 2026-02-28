@@ -151,7 +151,11 @@ const serviceWorkerServer = createServiceWorkerServer({
   },
   onError: (error) => {
     console.error('[demo-sw-server] request failed', error);
-    return new Response('Service worker server failed', {
+    const message =
+      error instanceof Error
+        ? [error.message, error.stack].filter(Boolean).join('\n')
+        : String(error);
+    return new Response(`Service worker server failed\n${message}`, {
       status: 500,
       headers: { 'content-type': 'text/plain; charset=utf-8' },
     });

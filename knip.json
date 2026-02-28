@@ -42,6 +42,12 @@
     "packages/client-plugin-encryption": {
       "includeEntryExports": false
     },
+    "plugins/crdt-yjs/client": {
+      "includeEntryExports": false
+    },
+    "plugins/crdt-yjs/server": {
+      "includeEntryExports": false
+    },
     "packages/console": {
       "includeEntryExports": false,
       "entry": ["build-static.ts"]

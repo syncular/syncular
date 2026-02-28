@@ -11,6 +11,7 @@ import {
   distributionSyncMetric,
   isRecord,
   type SyncChange,
+  type SyncOperation,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
   type SyncSubscriptionRequest,
@@ -20,6 +21,11 @@ import {
 import { type Kysely, sql, type Transaction } from 'kysely';
 import { getClientHandler } from '../handlers/collection';
 import { ensureClientSyncSchema } from '../migrate';
+import type {
+  SyncClientLocalMutationArgs,
+  SyncClientPluginContext,
+  SyncClientWsDeliveryArgs,
+} from '../plugins/types';
 import { syncPushOnce } from '../push-engine';
 import type {
   ConflictResultStatus,
@@ -776,6 +782,13 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    */
   getClientId(): string | null | undefined {
     return this.config.clientId;
+  }
+
+  /**
+   * Get configured client plugins.
+   */
+  getPlugins() {
+    return this.config.plugins ?? [];
   }
 
   private getStateId(): string {
@@ -1776,6 +1789,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               limitCommits: this.config.limitCommits,
               limitSnapshotRows: this.config.limitSnapshotRows,
               maxSnapshotPages: this.config.maxSnapshotPages,
+              dedupeRows: this.config.dedupeRows,
               stateId: this.config.stateId,
               sha256: this.config.sha256,
               trigger,
@@ -1945,6 +1959,24 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     return Array.from(tables);
   }
 
+  private async applyWsDeliveryPluginTransforms(
+    args: SyncClientWsDeliveryArgs
+  ): Promise<SyncClientWsDeliveryArgs> {
+    const plugins = this.config.plugins ?? [];
+    const ctx: SyncClientPluginContext = {
+      actorId: this.config.actorId ?? 'unknown',
+      clientId: this.config.clientId ?? 'unknown',
+    };
+
+    let transformedArgs = args;
+    for (const plugin of plugins) {
+      if (!plugin.beforeApplyWsChanges) continue;
+      transformedArgs = await plugin.beforeApplyWsChanges(ctx, transformedArgs);
+    }
+
+    return transformedArgs;
+  }
+
   /**
    * Apply changes delivered inline over WebSocket for instant UI updates.
    * Returns true if changes were applied and cursor updated successfully,
@@ -2053,12 +2085,15 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       return;
     }
 
-    // If afterPull plugins exist, inline WS changes may require transforms
-    // (e.g. decryption). Fall back to HTTP sync and do not apply inline payload.
-    const hasAfterPullPlugins = this.config.plugins?.some(
-      (p) => typeof p.afterPull === 'function'
+    const plugins = this.config.plugins ?? [];
+    // Plugins that transform pull payloads must either provide an inline WS
+    // transform hook too, or we must fall back to HTTP pull for correctness.
+    const hasAfterPullWithoutWsHook = plugins.some(
+      (plugin) =>
+        typeof plugin.afterPull === 'function' &&
+        typeof plugin.beforeApplyWsChanges !== 'function'
     );
-    if (hasAfterPullPlugins) {
+    if (hasAfterPullWithoutWsHook) {
       countSyncMetric('sync.client.ws.delivery.events', 1, {
         attributes: { path: 'after_pull_plugins' },
       });
@@ -2069,12 +2104,31 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       return;
     }
 
+    let wsDelivery: SyncClientWsDeliveryArgs = { changes, cursor, metadata };
+    const hasWsTransformPlugins = plugins.some(
+      (plugin) => typeof plugin.beforeApplyWsChanges === 'function'
+    );
+    if (hasWsTransformPlugins) {
+      try {
+        wsDelivery = await this.applyWsDeliveryPluginTransforms(wsDelivery);
+      } catch {
+        countSyncMetric('sync.client.ws.delivery.events', 1, {
+          attributes: { path: 'plugin_transform_fallback' },
+        });
+        this.triggerSyncInBackground(
+          { trigger: 'ws' },
+          'ws plugin transform fallback'
+        );
+        return;
+      }
+    }
+
     // Apply changes + update cursor
     const inlineApplyStartedAtMs = Date.now();
     const applied = await this.applyWsDeliveredChanges(
-      changes,
-      cursor,
-      metadata
+      wsDelivery.changes,
+      wsDelivery.cursor,
+      wsDelivery.metadata
     );
     const inlineApplyDurationMs = Math.max(
       0,
@@ -2688,9 +2742,69 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     const handlers = this.config.handlers;
     const affectedTables = new Set<string>();
     const now = Date.now();
+    const plugins = this.config.plugins ?? [];
+    const sortedPlugins = [...plugins].sort(
+      (a, b) => (a.priority ?? 50) - (b.priority ?? 50)
+    );
+    const pluginContext: SyncClientPluginContext = {
+      actorId: this.config.actorId ?? 'unknown',
+      clientId: this.config.clientId ?? 'unknown',
+    };
+    let transformedInputs = inputs;
+
+    if (sortedPlugins.length > 0) {
+      let args: SyncClientLocalMutationArgs = {
+        operations: inputs.map(
+          (input): SyncOperation => ({
+            table: input.table,
+            row_id: input.rowId,
+            op: input.op,
+            payload: input.op === 'delete' ? null : (input.payload ?? {}),
+            base_version: null,
+          })
+        ),
+      };
+      for (const plugin of sortedPlugins) {
+        if (!plugin.beforeApplyLocalMutations) continue;
+        args = await plugin.beforeApplyLocalMutations(pluginContext, args);
+      }
+      if (args.operations.length !== inputs.length) {
+        throw new Error(
+          'beforeApplyLocalMutations must return one operation per local mutation'
+        );
+      }
+      transformedInputs = args.operations.map((operation, index) => {
+        const original = inputs[index];
+        if (!original) {
+          throw new Error(
+            'beforeApplyLocalMutations returned unexpected operation ordering'
+          );
+        }
+        if (
+          operation.table !== original.table ||
+          operation.row_id !== original.rowId ||
+          operation.op !== original.op
+        ) {
+          throw new Error(
+            'beforeApplyLocalMutations cannot change local mutation table, rowId, or op'
+          );
+        }
+        return {
+          table: operation.table,
+          rowId: operation.row_id,
+          op: operation.op,
+          payload:
+            operation.op === 'delete'
+              ? null
+              : isRecord(operation.payload)
+                ? operation.payload
+                : {},
+        };
+      });
+    }
 
     await db.transaction().execute(async (trx) => {
-      for (const input of inputs) {
+      for (const input of transformedInputs) {
         const handler = getClientHandler(handlers, input.table);
         if (!handler) continue;
 
@@ -2713,7 +2827,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     // Track mutation timestamps for fingerprint-based rerender optimization (in-memory only)
     this.recordLocalMutations(
-      inputs
+      transformedInputs
         .filter((i) => affectedTables.has(i.table))
         .map((i) => ({ table: i.table, rowId: i.rowId, op: i.op })),
       now

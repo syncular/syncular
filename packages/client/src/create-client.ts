@@ -141,6 +141,8 @@ interface CreateClientOptions<DB extends SyncClientDb> {
     realtime?: boolean;
     /** Polling interval in ms (default: 10000) */
     pollIntervalMs?: number;
+    /** Deduplicate rows in pull responses on the server */
+    dedupeRows?: boolean;
     /**
      * Debounce window (ms) for coalescing remote/synced `data:change` events.
      * - default: `10`
@@ -333,6 +335,7 @@ export async function createClient<DB extends SyncClientDb>(
     codecDialect,
     realtimeEnabled: sync.realtime ?? true,
     pollIntervalMs: sync.pollIntervalMs,
+    dedupeRows: sync.dedupeRows,
     dataChangeDebounceMs: sync.dataChangeDebounceMs,
     dataChangeDebounceMsWhenSyncing: sync.dataChangeDebounceMsWhenSyncing,
     dataChangeDebounceMsWhenReconnecting:

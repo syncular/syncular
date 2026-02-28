@@ -26,7 +26,7 @@ async function main() {
 
   const { moduleWorkerPath } = getWaSqliteWorkerEntrypointPaths();
   const wasqliteAssets = await buildWasqliteWorkerAssets(moduleWorkerPath);
-  const swServerAsset = await buildServiceWorkerServerAsset(
+  const swServerAssets = await buildServiceWorkerServerAssets(
     new URL('../sw/server.ts', import.meta.url).pathname
   );
 
@@ -68,7 +68,14 @@ async function main() {
           return responseForBuildArtifact(asset);
         },
         '/__demo/sw-server.js': () =>
-          responseForServiceWorkerScript(swServerAsset),
+          responseForServiceWorkerScript(swServerAssets.entry),
+        '/__demo/*': (req) => {
+          const url = new URL(req.url);
+          const name = url.pathname.slice('/__demo/'.length);
+          const asset = swServerAssets.assets.get(name);
+          if (!asset) return new Response('Not found', { status: 404 });
+          return responseForBuildArtifact(asset);
+        },
 
         // Demo React app - catch-all for SPA
         '/*': demoApp,
@@ -228,15 +235,21 @@ async function buildWasqliteWorkerAssets(
   return assets;
 }
 
-async function buildServiceWorkerServerAsset(
+interface ServiceWorkerServerBundle {
+  entry: BuildArtifact;
+  assets: Map<string, BuildArtifact>;
+}
+
+async function buildServiceWorkerServerAssets(
   entrypointPath: string
-): Promise<BuildArtifact> {
+): Promise<ServiceWorkerServerBundle> {
   const result = await Bun.build({
     entrypoints: [entrypointPath],
     target: 'browser',
     format: 'esm',
     splitting: false,
     conditions: ['bun'],
+    publicPath: '/__demo/',
     naming: {
       entry: 'sw-server.js',
       chunk: 'chunk-[hash].js',
@@ -258,7 +271,17 @@ async function buildServiceWorkerServerAsset(
     throw new Error('[demo] Missing service worker server bundle output');
   }
 
-  return swBundle;
+  const assets = new Map<string, BuildArtifact>();
+  for (const output of result.outputs) {
+    const name = output.path.split('/').at(-1);
+    if (!name) continue;
+    assets.set(name, output);
+  }
+
+  return {
+    entry: swBundle,
+    assets,
+  };
 }
 
 function assertSingleWorkerBundle(

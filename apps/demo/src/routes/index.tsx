@@ -19,11 +19,18 @@ import { useCallback, useMemo } from 'react';
 import { DemoResetAllButton } from '../components/demo-reset-all-button';
 import { Route as rootRoute } from './__root';
 
-type DemoRoutePath = '/' | '/media' | '/catalog' | '/keyshare' | '/symmetric';
+type DemoRoutePath =
+  | '/'
+  | '/crdt-yjs'
+  | '/media'
+  | '/catalog'
+  | '/keyshare'
+  | '/symmetric';
 type DemoNavItem = NavItem & { href: DemoRoutePath };
 
 const TABS: DemoNavItem[] = [
   { id: 'split', label: 'Split Screen', href: '/' },
+  { id: 'crdt-yjs', label: 'CRDT / Yjs', href: '/crdt-yjs' },
   { id: 'media', label: 'Media Sync', href: '/media' },
   { id: 'catalog', label: 'Large Catalog', href: '/catalog' },
   { id: 'keyshare', label: 'E2EE Key Share', href: '/keyshare' },

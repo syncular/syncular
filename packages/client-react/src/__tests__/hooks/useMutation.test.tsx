@@ -13,7 +13,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
-import type { SyncClientDb } from '@syncular/client';
+import type { SyncClientDb, SyncClientPlugin } from '@syncular/client';
 import { act, renderHook } from '@testing-library/react';
 import type { Kysely } from 'kysely';
 import type { ReactNode } from 'react';
@@ -58,7 +58,7 @@ describe('useMutation', () => {
       .execute();
   });
 
-  function createWrapper() {
+  function createWrapper(options?: { plugins?: SyncClientPlugin[] }) {
     const transport = createMockTransport();
     const handlers = createMockHandlerRegistry<TestDb>();
     const sync = createMockSync<TestDb>({ handlers });
@@ -72,6 +72,7 @@ describe('useMutation', () => {
         clientId="test-client"
         pollIntervalMs={999999}
         autoStart={false}
+        plugins={options?.plugins}
       >
         {children}
       </SyncProvider>
@@ -222,6 +223,54 @@ describe('useMutation', () => {
       expect(thrownError!.message).toContain(
         'MutationInput.table must match hook table'
       );
+    });
+
+    it('applies beforeApplyLocalMutations plugin for local optimistic writes', async () => {
+      let seenPayload: Record<string, unknown> | null | undefined;
+      const plugin: SyncClientPlugin = {
+        name: 'strip-local-meta',
+        beforeApplyLocalMutations(_ctx, args) {
+          return {
+            ...args,
+            operations: args.operations.map((operation) => {
+              if (
+                operation.op !== 'upsert' ||
+                !operation.payload ||
+                Array.isArray(operation.payload)
+              ) {
+                return operation;
+              }
+              seenPayload = operation.payload;
+              const nextPayload = { ...operation.payload };
+              delete nextPayload.__meta;
+              return { ...operation, payload: nextPayload };
+            }),
+          };
+        },
+      };
+
+      const { result } = renderHook(
+        () => useMutation({ table: 'tasks', syncImmediately: false }),
+        { wrapper: createWrapper({ plugins: [plugin] }) }
+      );
+
+      await act(async () => {
+        await result.current.mutate.upsert('task-plugin', {
+          title: 'Plugin local transform',
+          completed: 0,
+          user_id: 'test-actor',
+          __meta: { source: 'test' },
+        });
+      });
+
+      expect(seenPayload?.__meta).toEqual({ source: 'test' });
+
+      const outbox = await db
+        .selectFrom('sync_outbox_commits')
+        .select(['operations_json'])
+        .executeTakeFirstOrThrow();
+      const ops = JSON.parse(outbox.operations_json);
+      expect(ops[0]?.payload?.__meta).toEqual({ source: 'test' });
     });
   });
 

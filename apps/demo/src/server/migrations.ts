@@ -93,4 +93,12 @@ export const serverMigrations = defineMigrations<ServerMigrationDb>({
     // Add image column to tasks (stores JSON BlobRef)
     await db.schema.alterTable('tasks').addColumn('image', 'text').execute();
   },
+
+  v3: async (db) => {
+    // Add Yjs state column for CRDT-backed task titles
+    await db.schema
+      .alterTable('tasks')
+      .addColumn('title_yjs_state', 'text')
+      .execute();
+  },
 });

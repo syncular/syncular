@@ -1,0 +1,57 @@
+{
+  "name": "@syncular/client-plugin-crdt-yjs",
+  "version": "0.0.0",
+  "description": "Yjs CRDT plugin primitives for Syncular client integration",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "plugins/crdt-yjs/client"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "crdt",
+    "yjs"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "yjs": "^13.6.29"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}
