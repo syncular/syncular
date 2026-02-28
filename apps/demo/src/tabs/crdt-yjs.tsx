@@ -31,8 +31,8 @@ import {
 } from '@syncular/ui/demo';
 import { StatusDot } from '@syncular/ui/navigation';
 import type { JSONContent } from '@tiptap/core';
-import StarterKit from '@tiptap/starter-kit';
 import { EditorContent, useEditor } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
 import type { Kysely } from 'kysely';
 import {
   type ReactNode,
@@ -182,7 +182,9 @@ function YjsTextEditor({ value, onChange }: YjsTextEditorProps) {
 
   useEffect(() => {
     if (!editor) return;
-    const current = normalizeEditorText(editor.getText({ blockSeparator: '\n' }));
+    const current = normalizeEditorText(
+      editor.getText({ blockSeparator: '\n' })
+    );
     const next = normalizeEditorText(value);
     if (current === next) return;
 
@@ -292,7 +294,7 @@ function EditorPanelContent({
 
   useEffect(() => {
     setDraft(documentRow?.title ?? '');
-  }, [documentRow?.id, documentRow?.title]);
+  }, [documentRow?.title]);
 
   const saveDraft = useCallback(async () => {
     if (!documentRow) return;
