@@ -231,6 +231,49 @@ function serializeInspectorRecord(value: unknown): Record<string, unknown> {
   return { value: serialized };
 }
 
+function defaultSelectorEquality<T>(left: T, right: T): boolean {
+  return Object.is(left, right);
+}
+
+function areMetadataRecordsEqual(
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+
+  for (const key of leftKeys) {
+    if (!(key in right)) return false;
+    if (!Object.is(left[key], right[key])) return false;
+  }
+
+  return true;
+}
+
+function arePresenceEntriesEqual(
+  left: PresenceEntry[],
+  right: PresenceEntry[]
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+
+  for (let i = 0; i < left.length; i++) {
+    const l = left[i];
+    const r = right[i];
+    if (!l || !r) return false;
+    if (l.clientId !== r.clientId) return false;
+    if (l.actorId !== r.actorId) return false;
+    if (l.joinedAt !== r.joinedAt) return false;
+    if (!areMetadataRecordsEqual(l.metadata, r.metadata)) return false;
+  }
+
+  return true;
+}
+
 /**
  * Sync engine that orchestrates push/pull cycles with proper lifecycle management.
  *
@@ -257,6 +300,9 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   private syncRequestedWhileRunning = false;
   private retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private realtimeCatchupTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private dataChangeDebounceTimeoutId: ReturnType<typeof setTimeout> | null =
+    null;
+  private pendingDataChangeScopes = new Set<string>();
   private hasRealtimeConnectedOnce = false;
   private transportHealth: TransportHealth = {
     mode: 'disconnected',
@@ -329,6 +375,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    * Emits presence:change event for listeners.
    */
   updatePresence(scopeKey: string, presence: PresenceEntry[]): void {
+    const current = this.presenceByScopeKey.get(scopeKey) ?? [];
+    if (arePresenceEntriesEqual(current, presence)) {
+      return;
+    }
     this.presenceByScopeKey.set(scopeKey, presence);
     this.emit('presence:change', { scopeKey, presence });
   }
@@ -403,26 +453,52 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     let updated: PresenceEntry[];
     switch (event.action) {
-      case 'join':
+      case 'join': {
+        const existing = current.find((e) => e.clientId === event.clientId);
+        if (
+          existing &&
+          existing.actorId === event.actorId &&
+          areMetadataRecordsEqual(existing.metadata, event.metadata)
+        ) {
+          return;
+        }
         // Add new entry (remove existing if present to update)
         updated = [
           ...current.filter((e) => e.clientId !== event.clientId),
           {
             clientId: event.clientId,
             actorId: event.actorId,
-            joinedAt: Date.now(),
+            joinedAt: existing?.joinedAt ?? Date.now(),
             metadata: event.metadata,
           },
         ];
         break;
-      case 'leave':
+      }
+      case 'leave': {
+        const hasEntry = current.some((e) => e.clientId === event.clientId);
+        if (!hasEntry) {
+          return;
+        }
         updated = current.filter((e) => e.clientId !== event.clientId);
         break;
-      case 'update':
+      }
+      case 'update': {
+        const target = current.find((e) => e.clientId === event.clientId);
+        if (!target) {
+          return;
+        }
+        if (areMetadataRecordsEqual(target.metadata, event.metadata)) {
+          return;
+        }
         updated = current.map((e) =>
           e.clientId === event.clientId ? { ...e, metadata: event.metadata } : e
         );
         break;
+      }
+    }
+
+    if (arePresenceEntriesEqual(current, updated)) {
+      return;
     }
 
     this.presenceByScopeKey.set(event.scopeKey, updated);
@@ -706,12 +782,101 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     return `${stateId}:${subscriptionId}`;
   }
 
+  private static areTransportHealthEqual(
+    left: TransportHealth,
+    right: TransportHealth
+  ): boolean {
+    return (
+      left.mode === right.mode &&
+      left.connected === right.connected &&
+      left.lastSuccessfulPollAt === right.lastSuccessfulPollAt &&
+      left.lastRealtimeMessageAt === right.lastRealtimeMessageAt &&
+      left.fallbackReason === right.fallbackReason
+    );
+  }
+
   private updateTransportHealth(partial: Partial<TransportHealth>): void {
-    this.transportHealth = {
+    const next = {
       ...this.transportHealth,
       ...partial,
     };
+
+    if (SyncEngine.areTransportHealthEqual(this.transportHealth, next)) {
+      return;
+    }
+
+    this.transportHealth = next;
     this.emit('state:change', {});
+  }
+
+  private resolveDataChangeDebounceMs(): number {
+    const normalize = (value: number | undefined): number | undefined => {
+      if (value === undefined) return undefined;
+      return Number.isFinite(value) ? Math.max(0, value) : 0;
+    };
+
+    if (this.state.connectionState === 'reconnecting') {
+      const reconnectDebounce = normalize(
+        this.config.dataChangeDebounceMsWhenReconnecting
+      );
+      if (reconnectDebounce !== undefined) {
+        return reconnectDebounce;
+      }
+    }
+
+    if (this.state.isSyncing) {
+      const syncingDebounce = normalize(
+        this.config.dataChangeDebounceMsWhenSyncing
+      );
+      if (syncingDebounce !== undefined) {
+        return syncingDebounce;
+      }
+    }
+
+    return normalize(this.config.dataChangeDebounceMs) ?? 0;
+  }
+
+  private emitDataChange(scopes: Iterable<string>): void {
+    const normalizedScopes = new Set<string>();
+    for (const scope of scopes) {
+      if (scope) {
+        normalizedScopes.add(scope);
+      }
+    }
+
+    if (normalizedScopes.size === 0) return;
+
+    const debounceMs = this.resolveDataChangeDebounceMs();
+    if (debounceMs <= 0) {
+      this.flushDataChange(normalizedScopes);
+      return;
+    }
+
+    for (const scope of normalizedScopes) {
+      this.pendingDataChangeScopes.add(scope);
+    }
+
+    if (this.dataChangeDebounceTimeoutId) return;
+
+    this.dataChangeDebounceTimeoutId = setTimeout(() => {
+      this.dataChangeDebounceTimeoutId = null;
+      this.flushDataChange();
+    }, debounceMs);
+  }
+
+  private flushDataChange(scopes?: Iterable<string>): void {
+    const scopedList = scopes
+      ? Array.from(new Set(scopes))
+      : Array.from(this.pendingDataChangeScopes);
+    this.pendingDataChangeScopes.clear();
+
+    if (scopedList.length === 0) return;
+
+    this.emit('data:change', {
+      scopes: scopedList,
+      timestamp: Date.now(),
+    });
+    this.config.onDataChange?.(scopedList);
   }
 
   private waitForProgressSignal(timeoutMs: number): Promise<void> {
@@ -1164,6 +1329,26 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     return this.on('state:change', callback);
   }
 
+  /**
+   * Subscribe to state changes with selector-based equality filtering.
+   * Callback is only invoked when the selected snapshot actually changes.
+   */
+  subscribeSelector<T>(
+    selector: () => T,
+    callback: () => void,
+    isEqual: (previous: T, next: T) => boolean = defaultSelectorEquality
+  ): () => void {
+    let previous = selector();
+    return this.subscribe(() => {
+      const next = selector();
+      if (isEqual(previous, next)) {
+        return;
+      }
+      previous = next;
+      callback();
+    });
+  }
+
   private emit<T extends SyncEventType>(
     event: T,
     payload: SyncEventPayloads[T]
@@ -1194,7 +1379,20 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   }
 
   private updateState(partial: Partial<SyncEngineState>): void {
-    this.state = { ...this.state, ...partial };
+    const nextState = { ...this.state, ...partial };
+    const unchanged =
+      this.state.enabled === nextState.enabled &&
+      this.state.isSyncing === nextState.isSyncing &&
+      this.state.connectionState === nextState.connectionState &&
+      this.state.transportMode === nextState.transportMode &&
+      this.state.lastSyncAt === nextState.lastSyncAt &&
+      this.state.error === nextState.error &&
+      this.state.pendingCount === nextState.pendingCount &&
+      this.state.retryCount === nextState.retryCount &&
+      this.state.isRetrying === nextState.isRetrying;
+    if (unchanged) return;
+
+    this.state = nextState;
     // Emit state:change to notify useSyncExternalStore subscribers
     this.emit('state:change', {});
   }
@@ -1296,6 +1494,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    * Stop the sync engine (cleanup without destroy)
    */
   stop(): void {
+    if (this.dataChangeDebounceTimeoutId) {
+      clearTimeout(this.dataChangeDebounceTimeoutId);
+      this.dataChangeDebounceTimeoutId = null;
+    }
+    this.flushDataChange();
     this.stopPolling();
     this.stopRealtime();
     this.setConnectionState('disconnected');
@@ -1468,11 +1671,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       // Emit data change for any tables that had changes
       const changedTables = this.extractChangedTables(result.pullResponse);
       if (changedTables.length > 0) {
-        this.emit('data:change', {
-          scopes: changedTables,
-          timestamp: Date.now(),
-        });
-        this.config.onDataChange?.(changedTables);
+        this.emitDataChange(changedTables);
       }
       this.handleBootstrapLifecycle(result.pullResponse);
 
@@ -1634,14 +1833,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         }
       }
 
-      // Emit data change for immediate UI update
+      // Emit (or debounce) data change for UI update
       const changedTables = [...new Set(changes.map((c) => c.table))];
       if (changedTables.length > 0) {
-        this.emit('data:change', {
-          scopes: changedTables,
-          timestamp: Date.now(),
-        });
-        this.config.onDataChange?.(changedTables);
+        this.emitDataChange(changedTables);
       }
 
       return true;
@@ -1816,11 +2011,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
 
     if (affectedTables.size > 0) {
-      this.emit('data:change', {
-        scopes: Array.from(affectedTables),
-        timestamp: Date.now(),
-      });
-      this.config.onDataChange?.(Array.from(affectedTables));
+      this.emitDataChange(affectedTables);
     }
   }
 
@@ -2098,11 +2289,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.tableMutationTimestamps.clear();
 
     if (tables.length > 0) {
-      this.emit('data:change', {
-        scopes: tables,
-        timestamp: Date.now(),
-      });
-      this.config.onDataChange?.(tables);
+      this.emitDataChange(tables);
     }
   }
 

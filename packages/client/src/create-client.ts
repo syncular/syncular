@@ -141,6 +141,23 @@ interface CreateClientOptions<DB extends SyncClientDb> {
     realtime?: boolean;
     /** Polling interval in ms (default: 10000) */
     pollIntervalMs?: number;
+    /**
+     * Debounce window (ms) for coalescing `data:change` events.
+     * - `0` (default): emit immediately
+     * - `>0`: merge scopes and emit once per window
+     */
+    dataChangeDebounceMs?: number;
+    /**
+     * Debounce override while sync is actively running.
+     * Falls back to `dataChangeDebounceMs` when omitted.
+     */
+    dataChangeDebounceMsWhenSyncing?: number;
+    /**
+     * Debounce override while connection is reconnecting.
+     * Falls back to `dataChangeDebounceMsWhenSyncing` (if syncing) and then
+     * `dataChangeDebounceMs` when omitted.
+     */
+    dataChangeDebounceMsWhenReconnecting?: number;
   };
 
   /** Optional: Local blob storage adapter */
@@ -315,6 +332,10 @@ export async function createClient<DB extends SyncClientDb>(
     codecDialect,
     realtimeEnabled: sync.realtime ?? true,
     pollIntervalMs: sync.pollIntervalMs,
+    dataChangeDebounceMs: sync.dataChangeDebounceMs,
+    dataChangeDebounceMsWhenSyncing: sync.dataChangeDebounceMsWhenSyncing,
+    dataChangeDebounceMsWhenReconnecting:
+      sync.dataChangeDebounceMsWhenReconnecting,
   });
 
   // Auto-start

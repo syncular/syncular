@@ -53,13 +53,9 @@ export function useSyncGroup<DB extends SyncClientDb = SyncClientDb>(args: {
 
   const subscribe = useCallback(
     (callback: () => void) => {
-      const unsubs = channels.flatMap((channel) => [
-        channel.engine.subscribe(callback),
-        channel.engine.on('connection:change', callback),
-        channel.engine.on('sync:complete', callback),
-        channel.engine.on('sync:error', callback),
-        channel.engine.on('outbox:change', callback),
-      ]);
+      const unsubs = channels.map((channel) =>
+        channel.engine.subscribe(callback)
+      );
 
       return () => {
         for (const unsubscribe of unsubs) unsubscribe();

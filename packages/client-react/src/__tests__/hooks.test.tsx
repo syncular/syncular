@@ -304,6 +304,74 @@ describe('React Hooks', () => {
         expect(executions).toBeGreaterThanOrEqual(2);
       });
     });
+
+    it('does not refetch twice when sync:complete and data:change occur together', async () => {
+      let executions = 0;
+      const metricSnapshots: Array<{
+        executions: number;
+        coalescedRefreshes: number;
+        skippedDataUpdates: number;
+        lastDurationMs: number | null;
+      }> = [];
+
+      const { result } = renderHook(
+        () => {
+          const engine = useEngine();
+          const query = useSyncQuery(
+            async ({ selectFrom }) => {
+              executions += 1;
+              const row = await selectFrom('sync_outbox_commits')
+                .select((eb) => [eb.fn.count('id').as('total')])
+                .executeTakeFirst();
+              return Number(row?.total ?? 0);
+            },
+            {
+              watchTables: ['tasks'],
+              onMetrics(metrics) {
+                metricSnapshots.push(metrics);
+              },
+            }
+          );
+
+          return { engine, query };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => {
+        expect(result.current.query.isLoading).toBe(false);
+      });
+
+      const initialExecutions = executions;
+      const emit = Reflect.get(result.current.engine, 'emit');
+      if (typeof emit !== 'function') {
+        throw new Error('Expected engine.emit to be callable');
+      }
+
+      await act(async () => {
+        emit.call(result.current.engine, 'sync:complete', {
+          timestamp: Date.now(),
+          pushedCommits: 0,
+          pullRounds: 0,
+          pullResponse: { ok: true, subscriptions: [] },
+        });
+        emit.call(result.current.engine, 'data:change', {
+          scopes: ['tasks'],
+          timestamp: Date.now(),
+        });
+      });
+
+      await waitFor(() => {
+        expect(executions).toBe(initialExecutions + 1);
+      });
+
+      await waitFor(() => {
+        const last = metricSnapshots[metricSnapshots.length - 1];
+        expect(last?.executions ?? 0).toBeGreaterThanOrEqual(
+          initialExecutions + 1
+        );
+      });
+    });
   });
 
   describe('usePresenceWithJoin', () => {
@@ -430,6 +498,68 @@ describe('React Hooks', () => {
 
       expect(result.current.pending).toEqual([]);
       expect(result.current.failed).toEqual([]);
+    });
+
+    it('refreshes once when outbox:change and sync:complete are both emitted', async () => {
+      const metricSnapshots: Array<{
+        refreshes: number;
+        coalescedRefreshes: number;
+        lastDurationMs: number | null;
+      }> = [];
+
+      const { result } = renderHook(
+        () => {
+          const engine = useEngine();
+          const outbox = useOutbox({
+            onMetrics(metrics) {
+              metricSnapshots.push(metrics);
+            },
+          });
+          return { engine, outbox };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => {
+        expect(result.current.outbox.isLoading).toBe(false);
+      });
+
+      let refreshStatsCalls = 0;
+      const originalRefreshOutboxStats =
+        result.current.engine.refreshOutboxStats.bind(result.current.engine);
+      result.current.engine.refreshOutboxStats = async (options) => {
+        refreshStatsCalls += 1;
+        return originalRefreshOutboxStats(options);
+      };
+
+      const emit = Reflect.get(result.current.engine, 'emit');
+      if (typeof emit !== 'function') {
+        throw new Error('Expected engine.emit to be callable');
+      }
+
+      await act(async () => {
+        emit.call(result.current.engine, 'outbox:change', {
+          pendingCount: 0,
+          sendingCount: 0,
+          failedCount: 0,
+          ackedCount: 0,
+        });
+        emit.call(result.current.engine, 'sync:complete', {
+          timestamp: Date.now(),
+          pushedCommits: 0,
+          pullRounds: 0,
+          pullResponse: { ok: true, subscriptions: [] },
+        });
+      });
+
+      await waitFor(() => {
+        expect(refreshStatsCalls).toBe(1);
+      });
+
+      await waitFor(() => {
+        const last = metricSnapshots[metricSnapshots.length - 1];
+        expect(last?.refreshes ?? 0).toBeGreaterThanOrEqual(1);
+      });
     });
   });
 

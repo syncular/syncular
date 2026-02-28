@@ -224,6 +224,263 @@ describe('SyncEngine WS inline apply', () => {
     expect(snapshot.diagnostics).toBeDefined();
   });
 
+  it('coalesces rapid data:change emissions when debounce is configured', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const onDataChangeCalls: string[][] = [];
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-debounce',
+      subscriptions: [],
+      stateId: 'default',
+      dataChangeDebounceMs: 25,
+      onDataChange(scopes) {
+        onDataChangeCalls.push(scopes);
+      },
+    });
+
+    const eventScopes: string[][] = [];
+    engine.on('data:change', (payload) => {
+      eventScopes.push(payload.scopes);
+    });
+
+    engine.recordLocalMutations([
+      { table: 'tasks', rowId: 't1', op: 'upsert' },
+    ]);
+    engine.recordLocalMutations([
+      { table: 'tasks', rowId: 't2', op: 'upsert' },
+    ]);
+    engine.recordLocalMutations([
+      { table: 'tasks', rowId: 't3', op: 'delete' },
+    ]);
+
+    expect(eventScopes).toEqual([]);
+    expect(onDataChangeCalls).toEqual([]);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+
+    expect(eventScopes).toEqual([['tasks']]);
+    expect(onDataChangeCalls).toEqual([['tasks']]);
+  });
+
+  it('supports adaptive debounce overrides while syncing and reconnecting', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-adaptive-debounce',
+      subscriptions: [],
+      stateId: 'default',
+      dataChangeDebounceMs: 0,
+      dataChangeDebounceMsWhenSyncing: 15,
+      dataChangeDebounceMsWhenReconnecting: 35,
+    });
+
+    const eventScopes: string[][] = [];
+    engine.on('data:change', (payload) => {
+      eventScopes.push(payload.scopes);
+    });
+
+    const updateState = Reflect.get(engine, 'updateState');
+    if (typeof updateState !== 'function') {
+      throw new Error('Expected updateState to be callable');
+    }
+
+    updateState.call(engine, {
+      isSyncing: true,
+      connectionState: 'connected',
+    });
+
+    engine.recordLocalMutations([
+      { table: 'tasks', rowId: 'syncing-1', op: 'upsert' },
+    ]);
+    expect(eventScopes).toEqual([]);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    expect(eventScopes).toEqual([['tasks']]);
+
+    updateState.call(engine, {
+      isSyncing: true,
+      connectionState: 'reconnecting',
+    });
+
+    engine.recordLocalMutations([
+      { table: 'tasks', rowId: 'reconnecting-1', op: 'upsert' },
+    ]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(eventScopes).toEqual([['tasks']]);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    expect(eventScopes).toEqual([['tasks'], ['tasks']]);
+  });
+
+  it('does not emit state:change for no-op state updates', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-noop-state',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    let stateChangeCount = 0;
+    engine.subscribe(() => {
+      stateChangeCount += 1;
+    });
+
+    const updateState = Reflect.get(engine, 'updateState');
+    if (typeof updateState !== 'function') {
+      throw new Error('Expected updateState to be callable');
+    }
+
+    const initialState = engine.getState();
+    updateState.call(engine, { enabled: initialState.enabled });
+    updateState.call(engine, { error: initialState.error });
+    expect(stateChangeCount).toBe(0);
+
+    updateState.call(engine, { enabled: !initialState.enabled });
+    expect(stateChangeCount).toBe(1);
+  });
+
+  it('supports selector subscriptions without notifying on unrelated state changes', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-selector',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    let calls = 0;
+    const unsubscribe = engine.subscribeSelector(
+      () => engine.getState().lastSyncAt,
+      () => {
+        calls += 1;
+      }
+    );
+
+    const updateState = Reflect.get(engine, 'updateState');
+    if (typeof updateState !== 'function') {
+      throw new Error('Expected updateState to be callable');
+    }
+
+    updateState.call(engine, { retryCount: 1 });
+    expect(calls).toBe(0);
+
+    updateState.call(engine, { lastSyncAt: Date.now() });
+    expect(calls).toBe(1);
+
+    unsubscribe();
+  });
+
+  it('skips presence:change emissions for no-op presence updates', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-presence',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    let eventCount = 0;
+    engine.on('presence:change', () => {
+      eventCount += 1;
+    });
+
+    const basePresence = [
+      {
+        clientId: 'c1',
+        actorId: 'u1',
+        joinedAt: 1000,
+        metadata: { name: 'Alice' },
+      },
+    ];
+
+    engine.updatePresence('room:1', basePresence);
+    expect(eventCount).toBe(1);
+
+    engine.updatePresence('room:1', [
+      {
+        clientId: 'c1',
+        actorId: 'u1',
+        joinedAt: 1000,
+        metadata: { name: 'Alice' },
+      },
+    ]);
+    expect(eventCount).toBe(1);
+
+    engine.handlePresenceEvent({
+      action: 'update',
+      scopeKey: 'room:1',
+      clientId: 'c1',
+      actorId: 'u1',
+      metadata: { name: 'Alice' },
+    });
+    expect(eventCount).toBe(1);
+
+    engine.handlePresenceEvent({
+      action: 'join',
+      scopeKey: 'room:1',
+      clientId: 'c1',
+      actorId: 'u1',
+      metadata: { name: 'Alice' },
+    });
+    expect(eventCount).toBe(1);
+  });
+
   it('ensures sync schema on start without custom migrate callback', async () => {
     const coldDb = createDatabase<TestDb>({
       dialect: createBunSqliteDialect({ path: ':memory:' }),

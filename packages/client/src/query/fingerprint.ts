@@ -9,6 +9,32 @@ export interface MutationTimestampSource {
   getMutationTimestamp(table: string, rowId: string): number;
 }
 
+const FNV_OFFSET_BASIS = 0x811c9dc5;
+const FNV_PRIME = 0x01000193;
+
+function hashMix(hash: number, value: number): number {
+  return Math.imul(hash ^ value, FNV_PRIME) >>> 0;
+}
+
+function hashString(hash: number, value: string): number {
+  let next = hash;
+  for (let i = 0; i < value.length; i++) {
+    next = hashMix(next, value.charCodeAt(i));
+  }
+  return next;
+}
+
+function hashTimestamp(hash: number, value: number): number {
+  if (!Number.isFinite(value)) {
+    return hashMix(hash, 0);
+  }
+  // Keep three decimal places to preserve sub-millisecond precision.
+  const scaled = Math.round(value * 1000);
+  const lowBits = scaled >>> 0;
+  const highBits = Math.floor(scaled / 0x1_0000_0000) >>> 0;
+  return hashMix(hashMix(hash, lowBits), highBits);
+}
+
 /**
  * Compute a fingerprint for query results based on length + ids + mutation timestamps.
  * Much faster than deep equality for large datasets.
@@ -69,7 +95,7 @@ export function canFingerprint<T>(rows: T[], keyField = 'id'): boolean {
 
 /**
  * Compute row-level fingerprint from query results.
- * Format: `table:count:id1@ts1,id2@ts2,...`
+ * Format: `table:count:hash`
  */
 export function computeRowFingerprint(
   rows: unknown[],
@@ -77,17 +103,18 @@ export function computeRowFingerprint(
   engine: MutationTimestampSource,
   keyField: string
 ): string {
-  if (rows.length === 0) return `${table}:0:`;
-
-  const parts: string[] = [];
+  let hash = hashMix(FNV_OFFSET_BASIS, rows.length);
   for (const row of rows) {
     const r = row as Record<string, unknown>;
     const id = String(r[keyField] ?? '');
     const ts = engine.getMutationTimestamp(table, id);
-    parts.push(`${id}@${ts}`);
+    hash = hashString(hash, id);
+    hash = hashMix(hash, 0); // separator
+    hash = hashTimestamp(hash, ts);
+    hash = hashMix(hash, 1); // separator
   }
 
-  return `${table}:${rows.length}:${parts.join(',')}`;
+  return `${table}:${rows.length}:${hash.toString(16).padStart(8, '0')}`;
 }
 
 /**
