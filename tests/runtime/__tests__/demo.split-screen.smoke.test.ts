@@ -25,6 +25,130 @@ function hasPlaywrightChromiumInstalled(): boolean {
   }
 }
 
+async function waitForTaskInBothPanes(args: {
+  page: Page;
+  title: string;
+  timeoutMs: number;
+}): Promise<void> {
+  const { page, title, timeoutMs } = args;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const count = await page.getByText(title, { exact: true }).count();
+    if (count >= 2) return;
+    await page.waitForTimeout(50);
+  }
+  throw new Error(`Task "${title}" was not visible on both panes in time`);
+}
+
+async function measureSplitScreenToggleLatency(args: {
+  page: Page;
+  title: string;
+  timeoutMs: number;
+}): Promise<{ samePaneMs: number | null; mirrorPaneMs: number | null }> {
+  const { page, title, timeoutMs } = args;
+  return await page.evaluate(
+    async ({
+      titleText,
+      maxWaitMs,
+    }: {
+      titleText: string;
+      maxWaitMs: number;
+    }) => {
+      function findPanelRoot(panelTitle: string): HTMLElement | null {
+        const headerSpans = Array.from(
+          document.querySelectorAll('span')
+        ).filter((span) => span.textContent?.trim() === panelTitle);
+        for (const span of headerSpans) {
+          let current = span.parentElement;
+          while (current) {
+            const cls =
+              typeof current.className === 'string' ? current.className : '';
+            if (cls.includes('rounded-[10px]') && cls.includes('bg-panel')) {
+              return current;
+            }
+            current = current.parentElement;
+          }
+        }
+        return null;
+      }
+
+      function findToggleButton(
+        panelRoot: HTMLElement | null,
+        taskTitle: string
+      ): HTMLButtonElement | null {
+        if (!panelRoot) return null;
+        const rows = Array.from(panelRoot.querySelectorAll('div')).filter(
+          (el) => {
+            const cls = typeof el.className === 'string' ? el.className : '';
+            return (
+              cls.includes('group flex items-center') &&
+              (el.textContent ?? '').includes(taskTitle)
+            );
+          }
+        );
+        const row = rows[0];
+        if (!row) return null;
+        const button = row.querySelector('button');
+        return button instanceof HTMLButtonElement ? button : null;
+      }
+
+      const leftPanelRoot = findPanelRoot('Client A · wa-sqlite');
+      const rightPanelRoot = findPanelRoot('Client B · PGlite');
+      if (!leftPanelRoot || !rightPanelRoot) {
+        return { samePaneMs: null, mirrorPaneMs: null };
+      }
+
+      const leftButtonInitial = findToggleButton(leftPanelRoot, titleText);
+      const rightButtonInitial = findToggleButton(rightPanelRoot, titleText);
+      if (!leftButtonInitial || !rightButtonInitial) {
+        return { samePaneMs: null, mirrorPaneMs: null };
+      }
+
+      const leftCheckedInitial =
+        leftButtonInitial.className.includes('bg-healthy');
+      const rightCheckedInitial =
+        rightButtonInitial.className.includes('bg-healthy');
+
+      const startedAt = performance.now();
+      leftButtonInitial.click();
+      const deadline = startedAt + maxWaitMs;
+      let samePaneMs: number | null = null;
+      let mirrorPaneMs: number | null = null;
+
+      while (performance.now() < deadline) {
+        const leftButton = findToggleButton(leftPanelRoot, titleText);
+        const rightButton = findToggleButton(rightPanelRoot, titleText);
+        if (leftButton && rightButton) {
+          const leftCheckedNow = leftButton.className.includes('bg-healthy');
+          const rightCheckedNow = rightButton.className.includes('bg-healthy');
+          const elapsed = performance.now() - startedAt;
+
+          if (samePaneMs === null && leftCheckedNow !== leftCheckedInitial) {
+            samePaneMs = elapsed;
+          }
+          if (
+            mirrorPaneMs === null &&
+            rightCheckedNow !== rightCheckedInitial
+          ) {
+            mirrorPaneMs = elapsed;
+          }
+          if (samePaneMs !== null && mirrorPaneMs !== null) {
+            break;
+          }
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      return { samePaneMs, mirrorPaneMs };
+    },
+    {
+      titleText: title,
+      maxWaitMs: timeoutMs,
+    }
+  );
+}
+
 const hasPlaywrightChromium = hasPlaywrightChromiumInstalled();
 const describeDemoSmoke = hasPlaywrightChromium ? describe : describe.skip;
 
@@ -173,5 +297,37 @@ describeDemoSmoke('Demo split-screen smoke', () => {
       initialThumbnailCount + 2,
       { timeout: 240_000 }
     );
+  }, 300_000);
+
+  it('keeps source-pane toggle responsive while mirroring to target pane', async () => {
+    await page.goto(demoBaseUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll('input[placeholder="Add a task..."]')
+          .length >= 1,
+      undefined,
+      { timeout: 120_000 }
+    );
+
+    const title = `latency-${Date.now()}`;
+    const input = page.getByPlaceholder('Add a task...').first();
+    await input.fill(title);
+    await input.press('Enter');
+    await waitForTaskInBothPanes({
+      page,
+      title,
+      timeoutMs: 240_000,
+    });
+
+    const { samePaneMs, mirrorPaneMs } = await measureSplitScreenToggleLatency({
+      page,
+      title,
+      timeoutMs: 240_000,
+    });
+
+    expect(samePaneMs).not.toBeNull();
+    expect(mirrorPaneMs).not.toBeNull();
+    expect(samePaneMs!).toBeLessThan(500);
+    expect(mirrorPaneMs!).toBeGreaterThanOrEqual(samePaneMs!);
   }, 300_000);
 });

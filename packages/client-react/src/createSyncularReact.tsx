@@ -1827,7 +1827,30 @@ export function createSyncularReact<
         try {
           const { result, receipt, meta } = await baseCommit(fn);
 
-          engine.recordLocalMutations(meta.localMutations);
+          const localMutations =
+            meta.localMutations.length > 0
+              ? meta.localMutations
+              : meta.operations
+                  .map((operation) => {
+                    const rowId = operation.row_id;
+                    if (!operation.table || !rowId) return null;
+                    return {
+                      table: operation.table,
+                      rowId,
+                      op: operation.op === 'delete' ? 'delete' : 'upsert',
+                    } as const;
+                  })
+                  .filter(
+                    (
+                      mutation
+                    ): mutation is {
+                      table: string;
+                      rowId: string;
+                      op: 'upsert' | 'delete';
+                    } => mutation !== null
+                  );
+
+          engine.recordLocalMutations(localMutations);
           void engine.refreshOutboxStats();
 
           onSuccess?.({
