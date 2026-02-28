@@ -30,11 +30,39 @@ interface StableMetricStats {
   runs: number[];
 }
 
+interface PerfRunResourceUsage {
+  durationMs: number;
+  cpuUserMicros: number;
+  cpuSystemMicros: number;
+  cpuTotalMicros: number;
+  maxRssBytes: number;
+  contextSwitchesVoluntary: number;
+  contextSwitchesInvoluntary: number;
+}
+
+interface PerfRunResult {
+  medians: Map<string, number>;
+  resourceUsage: PerfRunResourceUsage;
+}
+
 function parseRunCount(raw: string | undefined): number {
   if (!raw) return 5;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 1) return 5;
   return parsed;
+}
+
+async function resolveGitCommitSha(): Promise<string | null> {
+  const proc = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const sha = stdout.trim();
+  return sha.length > 0 ? sha : null;
 }
 
 function median(values: number[]): number {
@@ -104,8 +132,9 @@ function parseBenchmarkMedians(output: string): Map<string, number> {
   return metrics;
 }
 
-async function runSyncPerf(run: number): Promise<Map<string, number>> {
+async function runSyncPerf(run: number): Promise<PerfRunResult> {
   console.log(`\n### Stable Perf Run ${run}/${RUN_COUNT}`);
+  const startedAt = performance.now();
   const proc = Bun.spawn(['bun', 'test', SYNC_TEST_PATH], {
     cwd: REPO_ROOT,
     env: { ...process.env, PERF_STRICT: 'false' },
@@ -123,15 +152,18 @@ async function runSyncPerf(run: number): Promise<Map<string, number>> {
     throw new Error(`sync perf run ${run} failed with exit code ${exitCode}`);
   }
 
-  const markers = combined
+  const runRegressionMarker = combined
     .split('\n')
-    .filter(
-      (line) =>
-        line.startsWith('PERF_GATE_SYNC_REGRESSION=') ||
-        line.startsWith('PERF_GATE_SYNC_MISSING_BASELINE=')
+    .find((line) => line.startsWith('PERF_GATE_SYNC_REGRESSION='));
+  const runMissingBaselineMarker = combined
+    .split('\n')
+    .find((line) => line.startsWith('PERF_GATE_SYNC_MISSING_BASELINE='));
+  if (runRegressionMarker || runMissingBaselineMarker) {
+    console.log(
+      `sync.perf run ${run} markers: regression=${
+        runRegressionMarker?.split('=')[1] ?? 'unknown'
+      }, missingBaseline=${runMissingBaselineMarker?.split('=')[1] ?? 'unknown'}`
     );
-  for (const marker of markers) {
-    console.log(marker);
   }
 
   const medians = parseBenchmarkMedians(combined);
@@ -139,7 +171,27 @@ async function runSyncPerf(run: number): Promise<Map<string, number>> {
     throw new Error(`unable to parse benchmark medians for run ${run}`);
   }
 
-  return medians;
+  const usage = proc.resourceUsage();
+  const cpuUserMicros = usage ? Number(usage.cpuTime.user) : 0;
+  const cpuSystemMicros = usage ? Number(usage.cpuTime.system) : 0;
+  const cpuTotalMicros = usage ? Number(usage.cpuTime.total) : 0;
+  const maxRssBytes = usage ? Number(usage.maxRSS) : 0;
+  const contextSwitchesVoluntary = usage ? usage.contextSwitches.voluntary : 0;
+  const contextSwitchesInvoluntary = usage
+    ? usage.contextSwitches.involuntary
+    : 0;
+  return {
+    medians,
+    resourceUsage: {
+      durationMs: performance.now() - startedAt,
+      cpuUserMicros,
+      cpuSystemMicros,
+      cpuTotalMicros,
+      maxRssBytes,
+      contextSwitchesVoluntary,
+      contextSwitchesInvoluntary,
+    },
+  };
 }
 
 function toBenchmarkResult(
@@ -173,15 +225,15 @@ async function main() {
     (metric) => !metric.startsWith('dialect_')
   );
 
-  const runResults: Map<string, number>[] = [];
+  const runResults: PerfRunResult[] = [];
   for (let run = 1; run <= RUN_COUNT; run++) {
-    const medians = await runSyncPerf(run);
-    runResults.push(medians);
+    const result = await runSyncPerf(run);
+    runResults.push(result);
   }
 
   const stableMetrics: StableMetricStats[] = trackedMetrics.map((metric) => {
     const values = runResults
-      .map((run) => run.get(metric))
+      .map((run) => run.medians.get(metric))
       .filter((v) => v !== undefined);
     const numericValues = values.map((v) => v!);
     if (numericValues.length !== RUN_COUNT) {
@@ -207,6 +259,46 @@ async function main() {
   const regressions = detectRegressions(aggregatedResults, baseline);
   const hasRegression = hasRegressions(regressions);
   const hasMissingBaseline = hasMissingBaselines(regressions);
+  const resourceStats = {
+    durationMs: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.durationMs)
+    ),
+    cpuUserMicros: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.cpuUserMicros)
+    ),
+    cpuSystemMicros: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.cpuSystemMicros)
+    ),
+    cpuTotalMicros: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.cpuTotalMicros)
+    ),
+    maxRssBytes: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.maxRssBytes)
+    ),
+    contextSwitchesVoluntary: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.contextSwitchesVoluntary)
+    ),
+    contextSwitchesInvoluntary: summarizeResourceMetric(
+      runResults.map((run) => run.resourceUsage.contextSwitchesInvoluntary)
+    ),
+  };
+  const commit =
+    process.env.GITHUB_SHA ?? (await resolveGitCommitSha()) ?? null;
+  const runEnvironment = {
+    source: process.env.GITHUB_ACTIONS === 'true' ? 'ci' : 'local',
+    platform: process.platform,
+    arch: process.arch,
+    bunVersion: Bun.version,
+    runnerOs: process.env.RUNNER_OS ?? null,
+    runnerName: process.env.RUNNER_NAME ?? null,
+  };
+  const baselineCommits = Array.from(
+    new Set(
+      Object.values(baseline)
+        .map((entry) => entry.commit)
+        .filter((entry): entry is string => typeof entry === 'string')
+    )
+  );
 
   if (OUTPUT_JSON_PATH) {
     await Bun.write(
@@ -214,10 +306,14 @@ async function main() {
       JSON.stringify(
         {
           generatedAt: new Date().toISOString(),
+          commit,
           runCount: RUN_COUNT,
           baselinePath: BASELINE_PATH,
+          baselineCommits,
+          runEnvironment,
           hasRegression,
           hasMissingBaseline,
+          resources: resourceStats,
           metrics: stableMetrics.map((metric) => ({
             metric: metric.metric,
             baseline: metric.baseline,
@@ -253,6 +349,16 @@ async function main() {
   }
 
   console.log(`\n${formatRegressionReport(regressions)}`);
+  console.log('\n## Stable Perf Resources');
+  console.log(
+    `- duration per run (median): ${resourceStats.durationMs.median.toFixed(1)}ms`
+  );
+  console.log(
+    `- cpu total per run (median): ${(resourceStats.cpuTotalMicros.median / 1000).toFixed(1)}ms`
+  );
+  console.log(
+    `- max RSS per run (median): ${(resourceStats.maxRssBytes.median / (1024 * 1024)).toFixed(1)} MiB`
+  );
   console.log(`PERF_GATE_SYNC_REGRESSION=${hasRegression ? 'true' : 'false'}`);
   console.log(
     `PERF_GATE_SYNC_MISSING_BASELINE=${hasMissingBaseline ? 'true' : 'false'}`
@@ -261,6 +367,18 @@ async function main() {
   if (hasRegression || hasMissingBaseline) {
     process.exit(1);
   }
+}
+
+function summarizeResourceMetric(values: number[]): {
+  min: number;
+  median: number;
+  max: number;
+} {
+  return {
+    min: Math.min(...values),
+    median: median(values),
+    max: Math.max(...values),
+  };
 }
 
 void main();

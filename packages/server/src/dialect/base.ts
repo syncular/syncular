@@ -34,6 +34,7 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
   abstract readonly family: F;
   abstract readonly supportsForUpdate: boolean;
   abstract readonly supportsSavepoints: boolean;
+  abstract readonly supportsInsertReturning: boolean;
 
   // ===========================================================================
   // Abstract SQL fragment hooks

@@ -106,12 +106,22 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
       affected_tables: dialect.arrayToDb(tables) as string[],
     };
 
-    const insertResult = await syncTrx
-      .insertInto('sync_commits')
-      .values(commitRow)
-      .executeTakeFirstOrThrow();
+    let commitSeq = 0;
+    if (dialect.supportsInsertReturning) {
+      const insertedCommit = await syncTrx
+        .insertInto('sync_commits')
+        .values(commitRow)
+        .returning(['commit_seq'])
+        .executeTakeFirstOrThrow();
+      commitSeq = coerceNumber(insertedCommit.commit_seq) ?? 0;
+    } else {
+      const insertResult = await syncTrx
+        .insertInto('sync_commits')
+        .values(commitRow)
+        .executeTakeFirstOrThrow();
+      commitSeq = coerceNumber(insertResult.insertId) ?? 0;
+    }
 
-    let commitSeq = coerceNumber(insertResult.insertId) ?? 0;
     if (commitSeq <= 0) {
       // Fallback for dialects/drivers that don't provide insertId.
       const inserted = await syncTrx

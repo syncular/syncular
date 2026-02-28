@@ -175,6 +175,13 @@ export interface ServerSyncDialect<F extends SqlFamily = SqlFamily> {
   readonly supportsSavepoints: boolean;
 
   /**
+   * Whether INSERT ... RETURNING is reliable for obtaining inserted rows.
+   * Postgres: true
+   * SQLite variants: false (keep insertId/fallback select for broad compatibility)
+   */
+  readonly supportsInsertReturning: boolean;
+
+  /**
    * Read distinct tables from sync_changes for a given commit.
    * Used for realtime notifications.
    */

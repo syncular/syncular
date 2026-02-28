@@ -306,20 +306,7 @@ export async function pushCommit<
               result_json: null,
             };
 
-            const insertResult = await syncTrx
-              .insertInto('sync_commits')
-              .values(commitRow)
-              .onConflict((oc) =>
-                oc
-                  .columns(['partition_id', 'client_id', 'client_commit_id'])
-                  .doNothing()
-              )
-              .executeTakeFirstOrThrow();
-
-            const insertedRows = Number(
-              insertResult.numInsertedOrUpdatedRows ?? 0
-            );
-            if (insertedRows === 0) {
+            const loadExistingCommit = async (): Promise<PushCommitResult> => {
               // Existing commit: return cached response (applied or rejected)
               // Use forUpdate() for row locking on databases that support it
               let query = (
@@ -393,11 +380,49 @@ export async function pushCommit<
                 scopeKeys: [],
                 emittedChanges: [],
               };
+            };
+
+            let commitSeq = 0;
+            if (dialect.supportsInsertReturning) {
+              const insertedCommit = await syncTrx
+                .insertInto('sync_commits')
+                .values(commitRow)
+                .onConflict((oc) =>
+                  oc
+                    .columns(['partition_id', 'client_id', 'client_commit_id'])
+                    .doNothing()
+                )
+                .returning(['commit_seq'])
+                .executeTakeFirst();
+
+              if (!insertedCommit) {
+                return loadExistingCommit();
+              }
+
+              commitSeq = coerceNumber(insertedCommit.commit_seq) ?? 0;
+            } else {
+              const insertResult = await syncTrx
+                .insertInto('sync_commits')
+                .values(commitRow)
+                .onConflict((oc) =>
+                  oc
+                    .columns(['partition_id', 'client_id', 'client_commit_id'])
+                    .doNothing()
+                )
+                .executeTakeFirstOrThrow();
+
+              const insertedRows = Number(
+                insertResult.numInsertedOrUpdatedRows ?? 0
+              );
+              if (insertedRows === 0) {
+                return loadExistingCommit();
+              }
+
+              commitSeq = coerceNumber(insertResult.insertId) ?? 0;
             }
 
-            let commitSeq = coerceNumber(insertResult.insertId) ?? 0;
             if (commitSeq <= 0) {
-              const insertedCommit = await (
+              const insertedCommitRow = await (
                 syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
                   SyncCoreDb,
                   'sync_commits',
@@ -409,12 +434,21 @@ export async function pushCommit<
                 .where('client_id', '=', request.clientId)
                 .where('client_commit_id', '=', request.clientCommitId)
                 .executeTakeFirstOrThrow();
-              commitSeq = Number(insertedCommit.commit_seq);
+              commitSeq = Number(insertedCommitRow.commit_seq);
             }
             const commitId = `${request.clientId}:${request.clientCommitId}`;
 
             const savepointName = 'sync_apply';
-            const useSavepoints = dialect.supportsSavepoints;
+            let useSavepoints = dialect.supportsSavepoints;
+            if (useSavepoints && ops.length === 1) {
+              const singleOpHandler = getServerHandlerOrThrow(
+                handlers,
+                ops[0]!.table
+              );
+              if (singleOpHandler.canRejectSingleOperationWithoutSavepoint) {
+                useSavepoints = false;
+              }
+            }
             let savepointCreated = false;
 
             try {
@@ -429,44 +463,59 @@ export async function pushCommit<
               const results = [];
               const affectedTablesSet = new Set<string>();
 
-              for (let i = 0; i < ops.length; i++) {
+              for (let i = 0; i < ops.length; ) {
                 const op = ops[i]!;
                 const handler = getServerHandlerOrThrow(handlers, op.table);
-                const applied = await handler.applyOperation(
-                  {
-                    db: trx,
-                    trx,
-                    actorId,
-                    auth: args.auth,
-                    clientId: request.clientId,
-                    commitId,
-                    schemaVersion: request.schemaVersion,
-                  },
-                  op,
-                  i
-                );
 
-                if (applied.result.status !== 'applied') {
-                  results.push(applied.result);
-                  throw new RejectCommitError({
-                    ok: true,
-                    status: 'rejected',
-                    commitSeq,
-                    results,
-                  });
+                const operationCtx = {
+                  db: trx,
+                  trx,
+                  actorId,
+                  auth: args.auth,
+                  clientId: request.clientId,
+                  commitId,
+                  schemaVersion: request.schemaVersion,
+                };
+
+                let appliedBatch:
+                  | Awaited<ReturnType<typeof handler.applyOperation>>[]
+                  | null = null;
+                let consumed = 1;
+
+                if (
+                  handler.applyOperationBatch &&
+                  dialect.supportsInsertReturning
+                ) {
+                  const batchInput = [];
+                  for (let j = i; j < ops.length; j++) {
+                    const nextOp = ops[j]!;
+                    if (nextOp.table !== op.table) break;
+                    batchInput.push({ op: nextOp, opIndex: j });
+                  }
+
+                  if (batchInput.length > 1) {
+                    appliedBatch = await handler.applyOperationBatch(
+                      operationCtx,
+                      batchInput
+                    );
+                    consumed = Math.max(1, appliedBatch.length);
+                  }
                 }
 
-                // Framework-level enforcement: emitted changes must have scopes
-                for (const c of applied.emittedChanges ?? []) {
-                  const scopes = c?.scopes;
-                  if (!scopes || typeof scopes !== 'object') {
-                    results.push({
-                      opIndex: i,
-                      status: 'error' as const,
-                      error: 'MISSING_SCOPES',
-                      code: 'INVALID_SCOPE',
-                      retriable: false,
-                    });
+                if (!appliedBatch) {
+                  appliedBatch = [
+                    await handler.applyOperation(operationCtx, op, i),
+                  ];
+                }
+                if (appliedBatch.length === 0) {
+                  throw new Error(
+                    `Handler "${op.table}" returned no results from applyOperationBatch`
+                  );
+                }
+
+                for (const applied of appliedBatch) {
+                  if (applied.result.status !== 'applied') {
+                    results.push(applied.result);
                     throw new RejectCommitError({
                       ok: true,
                       status: 'rejected',
@@ -474,13 +523,35 @@ export async function pushCommit<
                       results,
                     });
                   }
+
+                  // Framework-level enforcement: emitted changes must have scopes
+                  for (const c of applied.emittedChanges ?? []) {
+                    const scopes = c?.scopes;
+                    if (!scopes || typeof scopes !== 'object') {
+                      results.push({
+                        opIndex: applied.result.opIndex,
+                        status: 'error' as const,
+                        error: 'MISSING_SCOPES',
+                        code: 'INVALID_SCOPE',
+                        retriable: false,
+                      });
+                      throw new RejectCommitError({
+                        ok: true,
+                        status: 'rejected',
+                        commitSeq,
+                        results,
+                      });
+                    }
+                  }
+
+                  results.push(applied.result);
+                  allEmitted.push(...applied.emittedChanges);
+                  for (const c of applied.emittedChanges) {
+                    affectedTablesSet.add(c.table);
+                  }
                 }
 
-                results.push(applied.result);
-                allEmitted.push(...applied.emittedChanges);
-                for (const c of applied.emittedChanges) {
-                  affectedTablesSet.add(c.table);
-                }
+                i += consumed;
               }
 
               if (allEmitted.length > 0) {

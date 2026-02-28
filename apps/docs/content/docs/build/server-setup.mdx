@@ -252,12 +252,14 @@ createSyncServer({
     maxPullLimitSnapshotRows: 5000,   // Max snapshot rows per page (default: 5000)
     maxOperationsPerPush: 200,        // Max operations per push (default: 200)
     requestPayloadSnapshots: {
-      enabled: false,                 // Disable request/response payload snapshots (privacy)
-      maxBytes: 16384,                // Or keep snapshots with aggressive truncation (16 KiB)
+      enabled: true,                  // Opt in to request/response payload snapshots (default: false)
+      maxBytes: 16384,                // Keep snapshots with aggressive truncation (16 KiB)
     },
   },
 });
 ```
+
+`requestPayloadSnapshots` is opt-in. If omitted, Syncular records request events without storing payload bodies.
 
 ## Complete example
 

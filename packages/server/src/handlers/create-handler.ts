@@ -35,6 +35,7 @@ import { sql } from 'kysely';
 import type { SyncCoreDb } from '../schema';
 import type {
   ApplyOperationResult,
+  BatchApplyOperationInput,
   EmittedChange,
   ServerApplyOperationContext,
   ServerContext,
@@ -188,6 +189,17 @@ export interface CreateServerHandlerOptions<
   applyOperation?: ServerTableHandler<ServerDB, Auth>['applyOperation'];
 
   /**
+   * Hint for savepoint optimization on single-op commits.
+   *
+   * `true` means a rejected single operation never leaves durable writes
+   * before returning the rejection result.
+   *
+   * Defaults to `true` for the built-in applyOperation implementation and
+   * `false` when a custom applyOperation is provided.
+   */
+  canRejectSingleOperationWithoutSavepoint?: boolean;
+
+  /**
    * Custom scope extraction from row (for complex scope logic).
    */
   extractScopes?: (row: Record<string, unknown>) => StoredScopes;
@@ -263,6 +275,7 @@ export function createServerHandler<
     extractScopes: customExtractScopes,
   } = options;
   const codecCache = new Map<string, ReturnType<typeof toTableColumnCodecs>>();
+  const primaryKeyColumn = primaryKey as keyof ServerDB[TableName] & string;
   const resolveTableCodecs = (row: Record<string, unknown>) => {
     if (!codecs) return {};
     const columns = Object.keys(row);
@@ -592,62 +605,27 @@ export function createServerHandler<
           delete updateSet[col];
         }
 
+        const insertValues: Record<string, unknown> = {
+          ...payload,
+          [primaryKey]: op.row_id,
+          [versionColumn]: 1,
+        };
+
         updated = (await (
-          trx.updateTable(table) as UpdateQueryBuilder<
+          trx.insertInto(table) as InsertQueryBuilder<
             ServerDB,
             TableName,
-            TableName,
-            UpdateResult
+            InsertResult
           >
         )
-          .set(updateSet as UpdateSetObject)
-          .where(ref<string>(primaryKey), '=', op.row_id)
+          .values(insertValues as Insertable<ServerDB[TableName]>)
+          .onConflict((oc) =>
+            oc
+              .column(primaryKeyColumn)
+              .doUpdateSet(updateSet as UpdateSetObject)
+          )
           .returningAll()
           .executeTakeFirst()) as Record<string, unknown> | undefined;
-
-        if (!updated) {
-          const insertValues: Record<string, unknown> = {
-            ...payload,
-            [primaryKey]: op.row_id,
-            [versionColumn]: 1,
-          };
-
-          try {
-            updated = (await (
-              trx.insertInto(table) as InsertQueryBuilder<
-                ServerDB,
-                TableName,
-                InsertResult
-              >
-            )
-              .values(insertValues as Insertable<ServerDB[TableName]>)
-              .returningAll()
-              .executeTakeFirst()) as Record<string, unknown> | undefined;
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            if (!isConstraintViolationError(message)) {
-              throw err;
-            }
-            updated = (await (
-              trx.updateTable(table) as UpdateQueryBuilder<
-                ServerDB,
-                TableName,
-                TableName,
-                UpdateResult
-              >
-            )
-              .set(updateSet as UpdateSetObject)
-              .where(ref<string>(primaryKey), '=', op.row_id)
-              .returningAll()
-              .executeTakeFirst()) as Record<string, unknown> | undefined;
-            if (!updated) {
-              constraintError = {
-                message,
-                code: classifyConstraintViolationCode(message),
-              };
-            }
-          }
-        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -728,14 +706,170 @@ export function createServerHandler<
     };
   };
 
+  const defaultApplyOperationBatch = async (
+    ctx: ServerApplyOperationContext<ServerDB, Auth>,
+    operations: BatchApplyOperationInput[]
+  ): Promise<ApplyOperationResult[]> => {
+    if (operations.length === 0) return [];
+
+    const runSequentialFallback = async (): Promise<ApplyOperationResult[]> => {
+      const sequential: ApplyOperationResult[] = [];
+      for (const entry of operations) {
+        const applied = await defaultApplyOperation(
+          ctx,
+          entry.op,
+          entry.opIndex
+        );
+        sequential.push(applied);
+        if (applied.result.status !== 'applied') {
+          break;
+        }
+      }
+      return sequential;
+    };
+
+    if (operations.length === 1 || authorize) {
+      return runSequentialFallback();
+    }
+
+    const trx = ctx.trx;
+    const prepared: Array<{
+      entry: BatchApplyOperationInput;
+      payload: Record<string, unknown>;
+      insertValues: Record<string, unknown>;
+    }> = [];
+    const seenRowIds = new Set<string>();
+    const payloadKeySignatures = new Set<string>();
+
+    for (const entry of operations) {
+      const op = entry.op;
+      if (op.table !== table || op.op !== 'upsert' || op.base_version != null) {
+        return runSequentialFallback();
+      }
+      if (seenRowIds.has(op.row_id)) {
+        return runSequentialFallback();
+      }
+      seenRowIds.add(op.row_id);
+
+      const rawPayload = op.payload ?? {};
+      const payloadRecord =
+        rawPayload !== null && typeof rawPayload === 'object'
+          ? (rawPayload as Record<string, unknown>)
+          : {};
+      const payload = applyInboundTransform(
+        payloadRecord,
+        ctx.schemaVersion
+      ) as Record<string, unknown>;
+
+      payloadKeySignatures.add(Object.keys(payload).sort().join('\u0000'));
+
+      const insertValues: Record<string, unknown> = {
+        ...payload,
+        [primaryKey]: op.row_id,
+        [versionColumn]: 1,
+      };
+
+      prepared.push({
+        entry,
+        payload,
+        insertValues,
+      });
+    }
+
+    if (prepared.length <= 1 || payloadKeySignatures.size !== 1) {
+      return runSequentialFallback();
+    }
+
+    const basePayload = prepared[0]!.payload;
+    const updateSet: Record<string, unknown> = {
+      ...basePayload,
+      [versionColumn]: sql`${sql.ref(versionColumn)} + 1`,
+    };
+    delete updateSet[primaryKey];
+    for (const col of Object.values(scopeColumns)) {
+      delete updateSet[col];
+    }
+
+    try {
+      const updatedRows = (await (
+        trx.insertInto(table) as InsertQueryBuilder<
+          ServerDB,
+          TableName,
+          InsertResult
+        >
+      )
+        .values(
+          prepared.map(
+            (item) => item.insertValues as Insertable<ServerDB[TableName]>
+          )
+        )
+        .onConflict((oc) =>
+          oc.column(primaryKeyColumn).doUpdateSet(updateSet as UpdateSetObject)
+        )
+        .returningAll()
+        .execute()) as Record<string, unknown>[];
+
+      const updatedById = new Map<string, Record<string, unknown>>();
+      for (const row of updatedRows) {
+        const rowIdValue = row[primaryKey];
+        if (rowIdValue === null || rowIdValue === undefined) continue;
+        updatedById.set(String(rowIdValue), row);
+      }
+
+      const results: ApplyOperationResult[] = [];
+      for (const item of prepared) {
+        const rowId = item.entry.op.row_id;
+        const updated = updatedById.get(rowId);
+        if (!updated) {
+          return runSequentialFallback();
+        }
+
+        const rowVersion = (updated[versionColumn] as number) ?? 1;
+        const scopes = extractScopesImpl(updated);
+        const rowJson = applyOutboundTransform(
+          updated as Selectable<ServerDB[TableName]>
+        );
+
+        results.push({
+          result: { opIndex: item.entry.opIndex, status: 'applied' },
+          emittedChanges: [
+            {
+              table,
+              row_id: rowId,
+              op: 'upsert',
+              row_json: rowJson,
+              row_version: rowVersion,
+              scopes,
+            },
+          ],
+        });
+      }
+
+      return results;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isConstraintViolationError(message)) {
+        return runSequentialFallback();
+      }
+      throw err;
+    }
+  };
+
   return {
     table,
     scopePatterns,
     dependsOn,
     snapshotChunkTtlMs,
+    canRejectSingleOperationWithoutSavepoint:
+      options.canRejectSingleOperationWithoutSavepoint ??
+      options.applyOperation === undefined,
     resolveScopes: resolveScopesImpl,
     extractScopes: extractScopesImpl,
     snapshot: options.snapshot ?? defaultSnapshot,
     applyOperation: options.applyOperation ?? defaultApplyOperation,
+    applyOperationBatch:
+      options.applyOperation === undefined
+        ? defaultApplyOperationBatch
+        : undefined,
   };
 }

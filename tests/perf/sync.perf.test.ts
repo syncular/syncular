@@ -760,6 +760,76 @@ describe('sync performance', () => {
     expect(result.p99).toBeLessThan(defaultThresholds.reconnect_storm_p99);
   });
 
+  it('pglite concurrent push contention', async () => {
+    const result = await withTestServer('pglite', async (testServer) => {
+      const writerCount = 8;
+      const opsPerWriter = 10;
+      const writers = await Promise.all(
+        Array.from({ length: writerCount }, (_, i) =>
+          createTestClient('bun-sqlite', testServer, {
+            actorId: userId,
+            clientId: `pglite-contention-writer-${i + 1}`,
+          })
+        )
+      );
+
+      let round = 0;
+
+      try {
+        const contentionBenchmark = await benchmark(
+          'pglite_push_contention',
+          async () => {
+            round += 1;
+            const responses = await Promise.all(
+              writers.map((writer, writerIndex) =>
+                writer.transport.sync({
+                  clientId: writer.clientId,
+                  push: {
+                    clientCommitId: `pglite-contention-${round}-${writerIndex + 1}`,
+                    schemaVersion: 1,
+                    operations: Array.from(
+                      { length: opsPerWriter },
+                      (_, opIndex) => ({
+                        table: 'tasks',
+                        row_id: `pglite-contention-task-${round}-${writerIndex + 1}-${opIndex + 1}`,
+                        op: 'upsert' as const,
+                        payload: {
+                          title: `Pglite contention ${round}-${writerIndex + 1}-${opIndex + 1}`,
+                          completed: (round + opIndex) % 2,
+                        },
+                        base_version: null,
+                      })
+                    ),
+                  },
+                })
+              )
+            );
+
+            for (const response of responses) {
+              if (response.push?.status !== 'applied') {
+                throw new Error(
+                  `Unexpected pglite contention push status: ${response.push?.status ?? 'missing'}`
+                );
+              }
+            }
+          },
+          { iterations: 6, warmup: 1 }
+        );
+
+        return contentionBenchmark;
+      } finally {
+        for (const writer of writers) {
+          await writer.destroy();
+        }
+      }
+    });
+
+    results.push(result);
+    expect(result.p99).toBeLessThan(
+      defaultThresholds.pglite_push_contention_p99
+    );
+  });
+
   it('transport lane catchup latency (direct/relay/ws)', async () => {
     const nativeFetch = (
       globalThis as { __nativeFetch?: typeof globalThis.fetch }
