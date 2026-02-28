@@ -179,6 +179,42 @@ jobs:
             perf-results.txt
             perf-summary.json
 
+      - name: Publish perf run summary
+        if: always()
+        run: |
+          if [ ! -f perf-summary.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const report = JSON.parse(fs.readFileSync('perf-summary.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Perf Summary');
+          lines.push('');
+          lines.push(`- Runs: ${report.runCount}`);
+          lines.push(`- Regression: ${report.hasRegression ? 'yes' : 'no'}`);
+          lines.push(`- Missing baseline: ${report.hasMissingBaseline ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Metric | Baseline | Median | Change |');
+          lines.push('|--------|----------|--------|--------|');
+
+          for (const metric of report.metrics) {
+            const baseline =
+              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}ms`;
+            const median = `${Number(metric.aggregatedMedian).toFixed(1)}ms`;
+            const change =
+              metric.changePercent === null
+                ? 'N/A'
+                : `${metric.changePercent >= 0 ? '+' : ''}${Number(metric.changePercent).toFixed(1)}%`;
+            lines.push(`| ${metric.metric} | ${baseline} | ${median} | ${change} |`);
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
+
       - name: Comment PR with performance results
         if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -328,6 +364,42 @@ jobs:
           path: |
             perf-nightly-results.txt
             perf-nightly-summary.json
+
+      - name: Publish nightly perf summary
+        if: always()
+        run: |
+          if [ ! -f perf-nightly-summary.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const report = JSON.parse(fs.readFileSync('perf-nightly-summary.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Nightly Perf Summary');
+          lines.push('');
+          lines.push(`- Runs: ${report.runCount}`);
+          lines.push(`- Regression: ${report.hasRegression ? 'yes' : 'no'}`);
+          lines.push(`- Missing baseline: ${report.hasMissingBaseline ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Metric | Baseline | Median | Change |');
+          lines.push('|--------|----------|--------|--------|');
+
+          for (const metric of report.metrics) {
+            const baseline =
+              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}ms`;
+            const median = `${Number(metric.aggregatedMedian).toFixed(1)}ms`;
+            const change =
+              metric.changePercent === null
+                ? 'N/A'
+                : `${metric.changePercent >= 0 ? '+' : ''}${Number(metric.changePercent).toFixed(1)}%`;
+            lines.push(`| ${metric.metric} | ${baseline} | ${median} | ${change} |`);
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
 
   runtime-browser:
     needs: changes
