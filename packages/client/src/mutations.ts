@@ -31,6 +31,7 @@ import type { Insertable, Kysely, Transaction, Updateable } from 'kysely';
 import { sql } from 'kysely';
 import { enqueueOutboxCommit } from './outbox';
 import type {
+  SyncClientLocalMutationArgs,
   SyncClientPlugin,
   SyncClientPluginContext,
 } from './plugins/types';
@@ -402,6 +403,9 @@ export interface OutboxCommitConfig<DB extends SyncClientDb> {
   omitColumns?: string[];
   codecs?: ColumnCodecSource;
   codecDialect?: ColumnCodecDialect;
+  plugins?: SyncClientPlugin[];
+  actorId?: string;
+  clientId?: string;
 }
 
 export function createOutboxCommit<DB extends SyncClientDb>(
@@ -411,6 +415,11 @@ export function createOutboxCommit<DB extends SyncClientDb>(
   const versionColumn = config.versionColumn ?? 'server_version';
   const omitColumns = config.omitColumns ?? [];
   const codecDialect = config.codecDialect ?? 'sqlite';
+  const sortedPlugins = sortPlugins(config.plugins ?? []);
+  const pluginContext: SyncClientPluginContext = {
+    actorId: config.actorId ?? 'unknown',
+    clientId: config.clientId ?? 'unknown',
+  };
 
   return async (fn) => {
     const operations: SyncOperation[] = [];
@@ -419,6 +428,42 @@ export function createOutboxCommit<DB extends SyncClientDb>(
       rowId: string;
       op: SyncOpKind;
     }> = [];
+
+    const transformLocalOperation = async (
+      operation: SyncOperation
+    ): Promise<SyncOperation> => {
+      if (sortedPlugins.length === 0) return operation;
+
+      const transformed = await runBeforeApplyLocalMutationsPlugins({
+        plugins: sortedPlugins,
+        ctx: pluginContext,
+        operations: [operation],
+      });
+
+      if (transformed.length !== 1) {
+        throw new Error(
+          'beforeApplyLocalMutations must return exactly one operation per input operation'
+        );
+      }
+
+      const [nextOperation] = transformed;
+      if (!nextOperation) {
+        throw new Error(
+          'beforeApplyLocalMutations returned an empty operation'
+        );
+      }
+      if (
+        nextOperation.table !== operation.table ||
+        nextOperation.row_id !== operation.row_id ||
+        nextOperation.op !== operation.op
+      ) {
+        throw new Error(
+          'beforeApplyLocalMutations cannot change operation table, row_id, or op'
+        );
+      }
+
+      return nextOperation;
+    };
 
     const { result, receipt } = await config.db
       .transaction()
@@ -469,14 +514,6 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                 typeof rawId === 'string' && rawId ? rawId : randomId();
 
               const row = { ...raw, [idColumn]: id };
-              const dbRow = applyCodecsToDbRow(
-                row,
-                resolveTableCodecs(table, row),
-                codecDialect
-              );
-
-              await dynamicInsert(trx, table, dbRow);
-
               const payload = sanitizePayload(row, {
                 omit: [
                   idColumn,
@@ -484,6 +521,24 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                   ...omitColumns,
                 ],
               });
+              const localOp = await transformLocalOperation({
+                table,
+                row_id: id,
+                op: 'upsert',
+                payload,
+                base_version: null,
+              });
+              const localPayload = isRecord(localOp.payload)
+                ? localOp.payload
+                : {};
+              const localRow = { ...localPayload, [idColumn]: id };
+              const dbRow = applyCodecsToDbRow(
+                localRow,
+                resolveTableCodecs(table, localRow),
+                codecDialect
+              );
+
+              await dynamicInsert(trx, table, dbRow);
 
               operations.push({
                 table: table,
@@ -503,6 +558,7 @@ export function createOutboxCommit<DB extends SyncClientDb>(
               }
               const ids: string[] = [];
               const toInsert: Record<string, unknown>[] = [];
+              const toLocalInsert: Record<string, unknown>[] = [];
 
               for (const values of rows) {
                 const raw = isRecord(values) ? values : {};
@@ -511,18 +567,6 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                   typeof rawId === 'string' && rawId ? rawId : randomId();
                 ids.push(id);
                 toInsert.push({ ...raw, [idColumn]: id });
-              }
-
-              const dbRows = toInsert.map((row) =>
-                applyCodecsToDbRow(
-                  row,
-                  resolveTableCodecs(table, row),
-                  codecDialect
-                )
-              );
-
-              if (dbRows.length > 0) {
-                await dynamicInsert(trx, table, dbRows);
               }
 
               for (let i = 0; i < toInsert.length; i++) {
@@ -535,6 +579,17 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                     ...omitColumns,
                   ],
                 });
+                const localOp = await transformLocalOperation({
+                  table,
+                  row_id: id,
+                  op: 'upsert',
+                  payload,
+                  base_version: null,
+                });
+                const localPayload = isRecord(localOp.payload)
+                  ? localOp.payload
+                  : {};
+                toLocalInsert.push({ ...localPayload, [idColumn]: id });
 
                 operations.push({
                   table: table,
@@ -545,6 +600,18 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                 });
 
                 localMutations.push({ table, rowId: id, op: 'upsert' });
+              }
+
+              const dbRows = toLocalInsert.map((row) =>
+                applyCodecsToDbRow(
+                  row,
+                  resolveTableCodecs(table, row),
+                  codecDialect
+                )
+              );
+
+              if (dbRows.length > 0) {
+                await dynamicInsert(trx, table, dbRows);
               }
 
               return ids;
@@ -562,9 +629,19 @@ export function createOutboxCommit<DB extends SyncClientDb>(
 
               const hasExplicitBaseVersion =
                 !!opts && hasOwn(opts, 'baseVersion');
+              const localOp = await transformLocalOperation({
+                table,
+                row_id: id,
+                op: 'upsert',
+                payload: sanitized,
+                base_version: null,
+              });
+              const localPayload = isRecord(localOp.payload)
+                ? localOp.payload
+                : {};
               const dbPatch = applyCodecsToDbRow(
-                sanitized,
-                resolveTableCodecs(table, sanitized),
+                localPayload,
+                resolveTableCodecs(table, localPayload),
                 codecDialect
               );
 
@@ -633,9 +710,19 @@ export function createOutboxCommit<DB extends SyncClientDb>(
 
               const hasExplicitBaseVersion =
                 !!opts && hasOwn(opts, 'baseVersion');
+              const localOp = await transformLocalOperation({
+                table,
+                row_id: id,
+                op: 'upsert',
+                payload: sanitized,
+                base_version: null,
+              });
+              const localPayload = isRecord(localOp.payload)
+                ? localOp.payload
+                : {};
               const dbPatch = applyCodecsToDbRow(
-                sanitized,
-                resolveTableCodecs(table, sanitized),
+                localPayload,
+                resolveTableCodecs(table, localPayload),
                 codecDialect
               );
 
@@ -730,6 +817,43 @@ export interface PushCommitConfig {
 function clonePushRequest(request: SyncPushRequest): SyncPushRequest {
   if (typeof structuredClone === 'function') return structuredClone(request);
   return JSON.parse(JSON.stringify(request)) as SyncPushRequest;
+}
+
+function cloneLocalMutationArgs(
+  args: SyncClientLocalMutationArgs
+): SyncClientLocalMutationArgs {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(args);
+  }
+  return JSON.parse(JSON.stringify(args)) as SyncClientLocalMutationArgs;
+}
+
+function sortPlugins(plugins: readonly SyncClientPlugin[]): SyncClientPlugin[] {
+  return [...plugins].sort((a, b) => (a.priority ?? 50) - (b.priority ?? 50));
+}
+
+async function runBeforeApplyLocalMutationsPlugins(args: {
+  plugins: readonly SyncClientPlugin[];
+  ctx: SyncClientPluginContext;
+  operations: SyncOperation[];
+}): Promise<SyncOperation[]> {
+  if (args.plugins.length === 0) {
+    return args.operations;
+  }
+
+  let transformedArgs: SyncClientLocalMutationArgs = cloneLocalMutationArgs({
+    operations: args.operations,
+  });
+
+  for (const plugin of args.plugins) {
+    if (!plugin.beforeApplyLocalMutations) continue;
+    transformedArgs = await plugin.beforeApplyLocalMutations(
+      args.ctx,
+      transformedArgs
+    );
+  }
+
+  return transformedArgs.operations;
 }
 
 export function createPushCommit<DB = AnyDb>(
@@ -915,10 +1039,7 @@ export function createPushCommit<DB = AnyDb>(
     };
 
     const plugins = config.plugins ?? [];
-    // Sort plugins by priority (lower numbers first, default 50)
-    const sortedPlugins = [...plugins].sort(
-      (a, b) => (a.priority ?? 50) - (b.priority ?? 50)
-    );
+    const sortedPlugins = sortPlugins(plugins);
     const ctx: SyncClientPluginContext = {
       actorId: config.actorId ?? 'unknown',
       clientId: config.clientId,

@@ -1490,6 +1490,75 @@ describe('SyncEngine', () => {
       expect(inlineApplyCount).toBe(0);
     });
 
+    it('should apply inline WS changes when afterPull plugins provide WS hook', async () => {
+      let syncCallCount = 0;
+      let inlineApplyCount = 0;
+      let wsHookCalls = 0;
+      const base = createMockTransport({
+        onPull: () => {
+          syncCallCount++;
+        },
+      });
+      const rt = createRealtimeTransport(base);
+
+      const handlers: SyncEngineConfig<SyncClientDb>['handlers'] = [
+        {
+          table: 'tasks',
+          applySnapshot: async () => {},
+          clearAll: async () => {},
+          applyChange: async () => {
+            inlineApplyCount++;
+          },
+        },
+      ];
+
+      const engine = createEngine({
+        transport: rt,
+        handlers,
+        realtimeEnabled: true,
+        plugins: [
+          {
+            name: 'test-plugin',
+            async afterPull(_ctx, args) {
+              return args.response;
+            },
+            async beforeApplyWsChanges(_ctx, args) {
+              wsHookCalls++;
+              return args;
+            },
+          },
+        ],
+      });
+      await engine.start();
+      await waitFor(
+        () => engine.getState().connectionState === 'connected',
+        500
+      );
+
+      syncCallCount = 0;
+
+      rt.simulateSyncEvent({
+        cursor: 100,
+        changes: [
+          {
+            table: 'tasks',
+            row_id: 'task-1',
+            op: 'upsert',
+            row_json: { id: 'task-1' },
+            row_version: 1,
+            scopes: {},
+          },
+        ],
+      });
+
+      await flushPromises();
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(wsHookCalls).toBe(1);
+      expect(syncCallCount).toBe(0);
+      expect(inlineApplyCount).toBe(1);
+    });
+
     it('should emit data:change when WS delivery skips HTTP', async () => {
       const base = createMockTransport();
       const rt = createRealtimeTransport(base);

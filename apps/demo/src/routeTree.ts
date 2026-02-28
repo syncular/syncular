@@ -6,6 +6,7 @@ import { Route as consoleIndexRoute } from './routes/console/index';
 import { Route as consoleOpsRoute } from './routes/console/ops';
 import { Route as consoleStreamRoute } from './routes/console/stream';
 import { Route as demoCatalogRoute } from './routes/demo/catalog';
+import { Route as demoCrdtYjsRoute } from './routes/demo/crdt-yjs';
 import { Route as demoIndexRoute } from './routes/demo/index';
 import { Route as demoKeyshareRoute } from './routes/demo/keyshare';
 import { Route as demoMediaRoute } from './routes/demo/media';
@@ -15,6 +16,7 @@ import { Route as demoShellRoute } from './routes/index';
 export const routeTree = rootRoute.addChildren([
   demoShellRoute.addChildren([
     demoIndexRoute,
+    demoCrdtYjsRoute,
     demoMediaRoute,
     demoCatalogRoute,
     demoKeyshareRoute,

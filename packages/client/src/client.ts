@@ -121,6 +121,9 @@ export interface ClientOptions<DB extends SyncClientDb> {
   /** Optional: Polling interval in milliseconds (default: 10000) */
   pollIntervalMs?: number;
 
+  /** Optional: Deduplicate rows in pull responses on the server */
+  dedupeRows?: boolean;
+
   /**
    * Optional: Debounce window (ms) for coalescing remote/synced `data:change` events.
    * - default: `10`
@@ -369,6 +372,9 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       omitColumns: options.omitColumns ?? [],
       codecs: options.codecs,
       codecDialect: options.codecDialect,
+      plugins: options.plugins,
+      actorId: options.actorId,
+      clientId: options.clientId,
     });
     this.mutations = createMutationsApi(commitFn) as MutationsApi<DB>;
 
@@ -438,6 +444,7 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       plugins: this.options.plugins,
       realtimeEnabled: this.options.realtimeEnabled,
       pollIntervalMs: this.options.pollIntervalMs,
+      dedupeRows: this.options.dedupeRows,
       dataChangeDebounceMs: this.options.dataChangeDebounceMs,
       dataChangeDebounceMsWhenSyncing:
         this.options.dataChangeDebounceMsWhenSyncing,

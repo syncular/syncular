@@ -144,6 +144,7 @@ export interface SyncProviderProps<
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
+  dedupeRows?: boolean;
   stateId?: string;
   pollIntervalMs?: number;
   maxRetries?: number;
@@ -534,6 +535,7 @@ export function createSyncularReact<
     limitCommits,
     limitSnapshotRows,
     maxSnapshotPages,
+    dedupeRows,
     stateId,
     pollIntervalMs,
     maxRetries,
@@ -570,6 +572,7 @@ export function createSyncularReact<
         limitCommits,
         limitSnapshotRows,
         maxSnapshotPages,
+        dedupeRows,
         stateId,
         pollIntervalMs,
         maxRetries,
@@ -597,6 +600,7 @@ export function createSyncularReact<
         limitCommits,
         limitSnapshotRows,
         maxSnapshotPages,
+        dedupeRows,
         stateId,
         pollIntervalMs,
         maxRetries,
@@ -1810,8 +1814,11 @@ export function createSyncularReact<
         createOutboxCommit<DB>({
           db,
           versionColumn,
+          plugins: engine.getPlugins(),
+          actorId: engine.getActorId() ?? undefined,
+          clientId: engine.getClientId() ?? undefined,
         }),
-      [db, versionColumn]
+      [db, engine, versionColumn]
     );
 
     const commit = useCallback<

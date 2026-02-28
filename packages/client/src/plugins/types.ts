@@ -1,4 +1,6 @@
 import type {
+  SyncChange,
+  SyncOperation,
   SyncPullRequest,
   SyncPullResponse,
   SyncPushRequest,
@@ -8,6 +10,22 @@ import type {
 export interface SyncClientPluginContext {
   actorId: string;
   clientId: string;
+}
+
+export interface SyncClientWsDeliveryMetadata {
+  commitSeq?: number;
+  actorId?: string | null;
+  createdAt?: string | null;
+}
+
+export interface SyncClientWsDeliveryArgs {
+  changes: SyncChange[];
+  cursor: number;
+  metadata?: SyncClientWsDeliveryMetadata;
+}
+
+export interface SyncClientLocalMutationArgs {
+  operations: SyncOperation[];
 }
 
 /**
@@ -44,6 +62,16 @@ export interface SyncClientPlugin {
   ): Promise<SyncPushRequest> | SyncPushRequest;
 
   /**
+   * Called before applying local optimistic mutations to the local DB.
+   * Use this when local payloads need shaping different from server push payloads
+   * (for example CRDT envelopes that should not be written as SQL columns).
+   */
+  beforeApplyLocalMutations?(
+    ctx: SyncClientPluginContext,
+    args: SyncClientLocalMutationArgs
+  ): Promise<SyncClientLocalMutationArgs> | SyncClientLocalMutationArgs;
+
+  /**
    * Called after receiving a push response from the server.
    * Receives both the request and the response to allow opIndex correlation.
    */
@@ -60,4 +88,14 @@ export interface SyncClientPlugin {
     ctx: SyncClientPluginContext,
     args: { request: SyncPullRequest; response: SyncPullResponse }
   ): Promise<SyncPullResponse> | SyncPullResponse;
+
+  /**
+   * Called for inline WS-delivered changes before applying to the local DB.
+   * Use this when a plugin needs equivalent transforms for realtime payloads
+   * (for example decryption or CRDT materialization).
+   */
+  beforeApplyWsChanges?(
+    ctx: SyncClientPluginContext,
+    args: SyncClientWsDeliveryArgs
+  ): Promise<SyncClientWsDeliveryArgs> | SyncClientWsDeliveryArgs;
 }
