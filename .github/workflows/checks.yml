@@ -528,6 +528,52 @@ jobs:
           SEED_RANDOM_SEED: 42
         run: bun run test:load:nightly 2>&1 | tee load-nightly-results.txt
 
+      - name: Fetch historical load summaries
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          PERF_HISTORY_WORKFLOW: checks.yml
+          PERF_HISTORY_EVENT: schedule
+          PERF_HISTORY_BRANCH: main
+          PERF_HISTORY_ARTIFACT_PREFIX: load-nightly-
+          PERF_HISTORY_SUMMARY_FILE: load-nightly-summary.json
+          PERF_HISTORY_OUTPUT_DIR: load-history
+          PERF_HISTORY_MAX_FILES: 10
+        run: bun --cwd tests/perf fetch-history 2>&1 | tee load-history-fetch.txt
+
+      - name: Run nightly load trend/change-point analysis
+        if: always()
+        env:
+          LOAD_TREND_CURRENT_PATH: load-nightly-summary.json
+          LOAD_TREND_HISTORY_DIR: load-history
+          LOAD_TREND_OUTPUT_JSON: load-nightly-trend.json
+          LOAD_TREND_MIN_HISTORY: 3
+          LOAD_TREND_DELTA_THRESHOLD: 0.2
+          LOAD_TREND_ROBUST_Z_THRESHOLD: 3
+          LOAD_TREND_FAIL_ON_CHANGE: false
+        run: bun --cwd tests/load trend-ci 2>&1 | tee load-nightly-trend.txt
+
+      - name: Warn on nightly load change points
+        if: always()
+        run: |
+          if [ ! -f load-nightly-trend.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const trend = JSON.parse(fs.readFileSync('load-nightly-trend.json', 'utf8'));
+          if (trend.hasRegressionChangePoint) {
+            const metrics = trend.metrics
+              .filter((metric) => metric.regressionChangePoint)
+              .map((metric) => metric.metric)
+              .join(', ');
+            console.log(`::warning::Nightly load change-point detected for: ${metrics || 'unknown metric'}`);
+          }
+          NODE
+
       - name: Upload nightly load artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -536,6 +582,10 @@ jobs:
           path: |
             load-nightly-summary.json
             load-nightly-results.txt
+            load-nightly-trend.json
+            load-nightly-trend.txt
+            load-history-fetch.txt
+            load-history/index.json
             .tmp/load-nightly
 
       - name: Publish nightly load summary
@@ -581,19 +631,78 @@ jobs:
           fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
           NODE
 
+      - name: Publish nightly load trend summary
+        if: always()
+        run: |
+          if [ ! -f load-nightly-trend.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const trend = JSON.parse(fs.readFileSync('load-nightly-trend.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Nightly Load Trend');
+          lines.push('');
+          lines.push(`- History files: ${trend.historySummaryCount}`);
+          lines.push(`- Regression change-point: ${trend.hasRegressionChangePoint ? 'yes' : 'no'}`);
+          lines.push(`- Insufficient history: ${trend.hasInsufficientHistory ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |');
+          lines.push('|--------|---------|-------------|-------|----------|--------|--------|');
+
+          for (const metric of trend.metrics) {
+            const isRate = metric.metric.endsWith('/httpErrorRate');
+            const current = isRate
+              ? (metric.current == null ? 'N/A' : `${metric.current >= 0 ? '+' : ''}${(Number(metric.current) * 100).toFixed(1)}%`)
+              : Number(metric.current).toFixed(1) + 'ms';
+            const histMedian = metric.historyMedian == null
+              ? 'N/A'
+              : isRate
+                ? `${metric.historyMedian >= 0 ? '+' : ''}${(Number(metric.historyMedian) * 100).toFixed(1)}%`
+                : Number(metric.historyMedian).toFixed(1) + 'ms';
+            const delta =
+              metric.deltaPercent == null
+                ? 'N/A'
+                : `${metric.deltaPercent >= 0 ? '+' : ''}${(Number(metric.deltaPercent) * 100).toFixed(1)}%`;
+            const robustZ =
+              metric.robustZ == null ? 'N/A' : Number(metric.robustZ).toFixed(2);
+            const status = metric.insufficientHistory
+              ? 'insufficient-history'
+              : metric.regressionChangePoint
+                ? 'regression-change-point'
+                : metric.improvementChangePoint
+                  ? 'improvement-change-point'
+                  : 'stable';
+
+            lines.push(
+              `| ${metric.metric} | ${current} | ${histMedian} | ${delta} | ${robustZ} | ${metric.historyCount} | ${status} |`
+            );
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
+
   runtime-browser:
     needs: changes
     if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
+    strategy:
+      matrix:
+        browser: [chromium, firefox]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment
 
-      - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium
+      - name: Install Playwright ${{ matrix.browser }}
+        run: bunx playwright install --with-deps ${{ matrix.browser }}
 
       - name: Run browser runtime tests
+        env:
+          PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
         run: bun test:runtime:browser
 
   demo-smoke:
@@ -680,7 +789,6 @@ jobs:
     if: needs.changes.outputs.expo == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment

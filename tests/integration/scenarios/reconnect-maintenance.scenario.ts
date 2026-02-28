@@ -380,7 +380,7 @@ export async function runReconnectStormCursorScenario(
       expect(pushResult.push?.status).toBe('applied');
 
       if (i % 3 === 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 2));
+        await Bun.sleep(2);
       }
     }
     writesDone = true;
@@ -724,7 +724,7 @@ export async function runMaintenanceChurnScenario(
 
   const maintenanceLoop = async () => {
     for (let i = 0; i < 8; i++) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      await Bun.sleep(5);
       await runMaintenancePass();
     }
   };
@@ -939,7 +939,7 @@ export async function runMaintenanceRaceMatrixScenario(
         }
 
         if (cycle % 4 === 0) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 2));
+          await Bun.sleep(2);
         }
       }
     };

@@ -21,7 +21,7 @@ import {
 } from '@syncular/client';
 import { codecs, createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 
 interface TestDbTasks {
   id: string;
@@ -635,6 +635,427 @@ describe('mutations API', () => {
 
       expect(result.id).toBeTruthy();
       expect(result.commitId).toBeTruthy();
+    });
+  });
+
+  describe('validateTableName rejects SQL injection', () => {
+    it('rejects table name with semicolon', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await expect(
+        commit(async (tx) => {
+          return (tx as any)['tasks; DROP TABLE'].insert({
+            title: 'Hack',
+            completed: 0,
+            user_id: 'u',
+          });
+        })
+      ).rejects.toThrow('Invalid table name');
+    });
+
+    it('rejects table name with comment syntax', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await expect(
+        commit(async (tx) => {
+          return (tx as any)['tasks--'].insert({
+            title: 'Hack',
+            completed: 0,
+            user_id: 'u',
+          });
+        })
+      ).rejects.toThrow('Invalid table name');
+    });
+
+    it('rejects empty table name', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await expect(
+        commit(async (tx) => {
+          return (tx as any)[''].insert({
+            title: 'Hack',
+            completed: 0,
+            user_id: 'u',
+          });
+        })
+      ).rejects.toThrow('Invalid table name');
+    });
+  });
+
+  describe('validateColumnName rejects invalid names', () => {
+    it('rejects column name with spaces', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await expect(
+        commit(async (tx) => {
+          return tx.tasks.insert({
+            title: 'Test',
+            completed: 0,
+            user_id: 'u',
+            'bad column': 'x',
+          } as any);
+        })
+      ).rejects.toThrow('Invalid column name');
+    });
+
+    it('rejects column name starting with digit', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await expect(
+        commit(async (tx) => {
+          return tx.tasks.insert({
+            title: 'Test',
+            completed: 0,
+            user_id: 'u',
+            '1abc': 'x',
+          } as any);
+        })
+      ).rejects.toThrow('Invalid column name');
+    });
+  });
+
+  describe('coerceBaseVersion edge cases', () => {
+    it('coerces baseVersion 0 to null', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await db
+        .insertInto('tasks')
+        .values({
+          id: 'task-1',
+          title: 'T',
+          completed: 0,
+          user_id: 'u',
+          server_version: 5,
+        })
+        .execute();
+
+      const { meta } = await commit(async (tx) => {
+        await tx.tasks.update('task-1', { title: 'Up' }, { baseVersion: 0 });
+      });
+
+      expect(meta.operations[0]!.base_version).toBeNull();
+    });
+
+    it('coerces baseVersion -1 to null', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await db
+        .insertInto('tasks')
+        .values({
+          id: 'task-1',
+          title: 'T',
+          completed: 0,
+          user_id: 'u',
+          server_version: 5,
+        })
+        .execute();
+
+      const { meta } = await commit(async (tx) => {
+        await tx.tasks.update('task-1', { title: 'Up' }, { baseVersion: -1 });
+      });
+
+      expect(meta.operations[0]!.base_version).toBeNull();
+    });
+
+    it('coerces baseVersion NaN to null', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await db
+        .insertInto('tasks')
+        .values({
+          id: 'task-1',
+          title: 'T',
+          completed: 0,
+          user_id: 'u',
+          server_version: 5,
+        })
+        .execute();
+
+      const { meta } = await commit(async (tx) => {
+        await tx.tasks.update(
+          'task-1',
+          { title: 'Up' },
+          { baseVersion: Number.NaN }
+        );
+      });
+
+      expect(meta.operations[0]!.base_version).toBeNull();
+    });
+
+    it('coerces baseVersion Infinity to null', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await db
+        .insertInto('tasks')
+        .values({
+          id: 'task-1',
+          title: 'T',
+          completed: 0,
+          user_id: 'u',
+          server_version: 5,
+        })
+        .execute();
+
+      const { meta } = await commit(async (tx) => {
+        await tx.tasks.update(
+          'task-1',
+          { title: 'Up' },
+          { baseVersion: Number.POSITIVE_INFINITY }
+        );
+      });
+
+      expect(meta.operations[0]!.base_version).toBeNull();
+    });
+
+    it('coerces string baseVersion "5" to number 5', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await db
+        .insertInto('tasks')
+        .values({
+          id: 'task-1',
+          title: 'T',
+          completed: 0,
+          user_id: 'u',
+          server_version: 5,
+        })
+        .execute();
+
+      const { meta } = await commit(async (tx) => {
+        await tx.tasks.update(
+          'task-1',
+          { title: 'Up' },
+          { baseVersion: '5' as any }
+        );
+      });
+
+      expect(meta.operations[0]!.base_version).toBe(5);
+    });
+  });
+
+  describe('sanitizePayload with empty omitColumns', () => {
+    it('returns payload unchanged when omitColumns is empty', async () => {
+      const commit = createOutboxCommit({
+        db,
+        omitColumns: [],
+      });
+
+      const { meta } = await commit(async (tx) => {
+        return tx.tasks.insert({
+          title: 'Keep All',
+          completed: 1,
+          user_id: 'user-1',
+        });
+      });
+
+      // With empty omitColumns, all non-id/version columns should be in payload
+      expect(meta.operations[0]!.payload).toHaveProperty('title', 'Keep All');
+      expect(meta.operations[0]!.payload).toHaveProperty('completed', 1);
+      expect(meta.operations[0]!.payload).toHaveProperty('user_id', 'user-1');
+    });
+  });
+
+  describe('insertMany with empty array', () => {
+    it('throws when insertMany receives an empty array', async () => {
+      const commit = createOutboxCommit({ db });
+
+      await expect(
+        commit(async (tx) => {
+          return tx.tasks.insertMany([]);
+        })
+      ).rejects.toThrow('No mutations were enqueued');
+    });
+  });
+
+  describe('Codec with null values', () => {
+    it('null values pass through codecs untransformed', async () => {
+      // Create a table with a nullable column to test codec null passthrough
+      await db.schema
+        .createTable('notes')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('body', 'text')
+        .addColumn('tag', 'text')
+        .addColumn('server_version', 'integer', (col) =>
+          col.notNull().defaultTo(0)
+        )
+        .execute();
+
+      const codecCalls: { column: string; value: unknown }[] = [];
+
+      const commit = createOutboxCommit({
+        db: db as any,
+        codecs: (col) => {
+          if (col.table !== 'notes') return undefined;
+          if (col.column === 'tag') {
+            return {
+              ts: 'string',
+              toDb: (value: string) => {
+                codecCalls.push({ column: 'tag', value });
+                return value.toUpperCase();
+              },
+              fromDb: (value: string) => value.toLowerCase(),
+            };
+          }
+          return undefined;
+        },
+      });
+
+      const { meta } = await commit(async (tx) => {
+        return (tx as any).notes.insert({
+          body: 'Hello',
+          tag: null,
+        });
+      });
+
+      // The codec's toDb should NOT be called for null values
+      const tagCalls = codecCalls.filter((c) => c.column === 'tag');
+      expect(tagCalls.length).toBe(0);
+
+      // The payload should still contain the null value (tag is not in omitColumns)
+      expect(meta.operations[0]!.payload).toHaveProperty('tag', null);
+    });
+  });
+
+  describe('custom idColumn and versionColumn', () => {
+    it('uses custom column names for id and version', async () => {
+      // Create a table with custom column names
+      await db.schema
+        .createTable('items')
+        .addColumn('item_id', 'text', (col) => col.primaryKey())
+        .addColumn('name', 'text', (col) => col.notNull())
+        .addColumn('rev', 'integer', (col) => col.notNull().defaultTo(0))
+        .execute();
+
+      const commit = createOutboxCommit({
+        db: db as any,
+        idColumn: 'item_id',
+        versionColumn: 'rev',
+      });
+
+      // Insert with custom id column
+      const { result, meta } = await commit(async (tx) => {
+        return (tx as any).items.insert({
+          item_id: 'my-item',
+          name: 'Widget',
+        });
+      });
+
+      expect(result).toBe('my-item');
+      // The idColumn and versionColumn should be omitted from payload
+      expect(meta.operations[0]!.payload).not.toHaveProperty('item_id');
+      expect(meta.operations[0]!.payload).not.toHaveProperty('rev');
+      expect(meta.operations[0]!.payload).toHaveProperty('name', 'Widget');
+      expect(meta.operations[0]!.row_id).toBe('my-item');
+
+      // Verify the row was inserted with the custom id column
+      const row = await db
+        .selectFrom('items' as any)
+        .selectAll()
+        .executeTakeFirst();
+      expect((row as any)?.item_id).toBe('my-item');
+      expect((row as any)?.name).toBe('Widget');
+    });
+
+    it('auto-reads base_version from custom versionColumn on update', async () => {
+      await db.schema
+        .createTable('items')
+        .addColumn('item_id', 'text', (col) => col.primaryKey())
+        .addColumn('name', 'text', (col) => col.notNull())
+        .addColumn('rev', 'integer', (col) => col.notNull().defaultTo(0))
+        .execute();
+
+      await sql`insert into items (item_id, name, rev) values ('i1', 'Old', 7)`.execute(
+        db
+      );
+
+      const commit = createOutboxCommit({
+        db: db as any,
+        idColumn: 'item_id',
+        versionColumn: 'rev',
+      });
+
+      const { meta } = await commit(async (tx) => {
+        await (tx as any).items.update('i1', { name: 'New' });
+      });
+
+      expect(meta.operations[0]!.base_version).toBe(7);
+    });
+  });
+
+  describe('plugin priority ordering', () => {
+    it('runs beforePush in ascending priority and afterPush in descending priority', async () => {
+      const callOrder: string[] = [];
+
+      const commit = createPushCommit({
+        transport: {
+          async sync(request) {
+            if (request.push) {
+              callOrder.push('transport');
+              return {
+                ok: true as const,
+                push: {
+                  ok: true,
+                  status: 'applied' as const,
+                  results: request.push.operations.map((_, i) => ({
+                    opIndex: i,
+                    status: 'applied' as const,
+                  })),
+                },
+              };
+            }
+            return { ok: true as const };
+          },
+          async fetchSnapshotChunk() {
+            return new Uint8Array();
+          },
+        },
+        clientId: 'test-client',
+        plugins: [
+          {
+            name: 'plugin-b',
+            priority: 80,
+            beforePush: async (_ctx, req) => {
+              callOrder.push('b-before');
+              return req;
+            },
+            afterPush: async (_ctx, { response }) => {
+              callOrder.push('b-after');
+              return response;
+            },
+          },
+          {
+            name: 'plugin-a',
+            priority: 10,
+            beforePush: async (_ctx, req) => {
+              callOrder.push('a-before');
+              return req;
+            },
+            afterPush: async (_ctx, { response }) => {
+              callOrder.push('a-after');
+              return response;
+            },
+          },
+        ],
+      });
+
+      await commit(async (tx) => {
+        return tx.tasks.insert({
+          title: 'Plugin Test',
+          completed: 0,
+          user_id: 'u',
+        });
+      });
+
+      // beforePush: ascending priority (a=10 first, then b=80)
+      // transport call
+      // afterPush: descending priority (b=80 first, then a=10)
+      expect(callOrder).toEqual([
+        'a-before',
+        'b-before',
+        'transport',
+        'b-after',
+        'a-after',
+      ]);
     });
   });
 });

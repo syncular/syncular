@@ -679,7 +679,7 @@ export async function runPartitionIsolationHighChurnScenario(
 
   const maintenanceLoop = async () => {
     for (let i = 0; i < 6; i += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      await Bun.sleep(5);
 
       await ctx.server.db
         .updateTable('sync_commits')
