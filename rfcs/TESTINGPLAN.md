@@ -84,12 +84,14 @@
 ## CI Wiring
 - PR jobs:
   - core unit + integration features + matrix quick set
-  - PR-fast perf benchmarks with gates
+  - stable perf lane with 5-run median-of-medians and artifact upload
+  - consecutive-run perf regression gate (hard fail on PR only)
 - Nightly jobs:
   - full integration matrix
   - load scenarios
-  - macro perf workloads
-  - artifact upload and trend report generation
+  - stable perf lane with 7 runs (artifact + summary)
+  - macro perf workloads (remaining)
+  - historical trend/change-point automation (remaining)
 
 ## Launch Exit Criteria
 - No `P0` gaps open.
