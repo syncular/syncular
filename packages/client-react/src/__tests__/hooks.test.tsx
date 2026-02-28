@@ -359,6 +359,7 @@ describe('React Hooks', () => {
         emit.call(result.current.engine, 'data:change', {
           scopes: ['tasks'],
           timestamp: Date.now(),
+          source: 'remote',
         });
       });
 

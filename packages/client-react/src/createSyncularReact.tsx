@@ -1312,6 +1312,7 @@ export function createSyncularReact<
     const hasLoadedRef = useRef(false);
     const inFlightQueryRef = useRef<Promise<void> | null>(null);
     const queryQueuedRef = useRef(false);
+    const queuedUrgentRefreshRef = useRef(false);
     const metricsRef = useRef<UseSyncQueryMetrics>({
       executions: 0,
       coalescedRefreshes: 0,
@@ -1324,8 +1325,8 @@ export function createSyncularReact<
       onMetricsRef.current?.({ ...metricsRef.current });
     }, []);
     const applyUpdate = useCallback(
-      (update: () => void) => {
-        if (transitionUpdates) {
+      (update: () => void, options: { urgent?: boolean } = {}) => {
+        if (transitionUpdates && options.urgent !== true) {
           startTransition(update);
           return;
         }
@@ -1334,109 +1335,136 @@ export function createSyncularReact<
       [transitionUpdates]
     );
 
-    const executeQueryOnce = useCallback(async () => {
-      const startedAt = Date.now();
-      metricsRef.current.executions += 1;
-      if (!enabled) {
-        if (previousFingerprintRef.current !== 'disabled') {
-          previousFingerprintRef.current = 'disabled';
-        }
-        const snapshotLastSyncAt = engine.getState().lastSyncAt;
-        applyUpdate(() => {
-          setData(undefined);
-          setLastSyncAt(snapshotLastSyncAt);
-          setIsLoading(false);
-        });
-        hasLoadedRef.current = true;
-        metricsRef.current.lastDurationMs = Date.now() - startedAt;
-        emitMetrics();
-        return;
-      }
-
-      const version = ++versionRef.current;
-
-      try {
-        if (!hasLoadedRef.current) {
-          setIsLoading(true);
-        }
-
-        fingerprintCollectorRef.current.clear();
-        const scopeCollector = new Set<string>();
-        const ctx = createQueryContext(
-          db,
-          scopeCollector,
-          fingerprintCollectorRef.current,
-          engine,
-          keyField
-        );
-
-        const fnResult = queryFnRef.current(ctx);
-        const result = isExecutableQuery<TResult>(fnResult)
-          ? await fnResult.execute()
-          : await fnResult;
-
-        if (version === versionRef.current) {
-          watchedScopesRef.current = scopeCollector;
-          const snapshotLastSyncAt = engine.getState().lastSyncAt;
-
-          const fingerprint = fingerprintCollectorRef.current.getCombined();
-          const didFingerprintChange =
-            fingerprint !== previousFingerprintRef.current ||
-            fingerprint === '';
-          if (didFingerprintChange) {
-            previousFingerprintRef.current = fingerprint;
-          } else {
-            metricsRef.current.skippedDataUpdates += 1;
+    const executeQueryOnce = useCallback(
+      async (options: { urgentUpdates?: boolean } = {}) => {
+        const urgentUpdates = options.urgentUpdates === true;
+        const startedAt = Date.now();
+        metricsRef.current.executions += 1;
+        if (!enabled) {
+          if (previousFingerprintRef.current !== 'disabled') {
+            previousFingerprintRef.current = 'disabled';
           }
-
-          applyUpdate(() => {
-            setLastSyncAt(snapshotLastSyncAt);
-            if (didFingerprintChange) {
-              setData(result);
-            }
-            setError(null);
-          });
-        }
-      } catch (err) {
-        if (version === versionRef.current) {
-          applyUpdate(() => {
-            setError(err instanceof Error ? err : new Error(String(err)));
-          });
-        }
-      } finally {
-        if (version === versionRef.current) {
-          applyUpdate(() => {
-            setIsLoading(false);
-          });
+          const snapshotLastSyncAt = engine.getState().lastSyncAt;
+          applyUpdate(
+            () => {
+              setData(undefined);
+              setLastSyncAt(snapshotLastSyncAt);
+              setIsLoading(false);
+            },
+            { urgent: urgentUpdates }
+          );
           hasLoadedRef.current = true;
           metricsRef.current.lastDurationMs = Date.now() - startedAt;
           emitMetrics();
+          return;
         }
-      }
-    }, [db, enabled, engine, keyField, applyUpdate, emitMetrics]);
 
-    const executeQuery = useCallback(async () => {
-      queryQueuedRef.current = true;
-      if (inFlightQueryRef.current) {
-        metricsRef.current.coalescedRefreshes += 1;
-        emitMetrics();
-        await inFlightQueryRef.current;
-        return;
-      }
+        const version = ++versionRef.current;
 
-      const runLoop = async () => {
-        while (queryQueuedRef.current) {
-          queryQueuedRef.current = false;
-          await executeQueryOnce();
+        try {
+          if (!hasLoadedRef.current) {
+            setIsLoading(true);
+          }
+
+          fingerprintCollectorRef.current.clear();
+          const scopeCollector = new Set<string>();
+          const ctx = createQueryContext(
+            db,
+            scopeCollector,
+            fingerprintCollectorRef.current,
+            engine,
+            keyField
+          );
+
+          const fnResult = queryFnRef.current(ctx);
+          const result = isExecutableQuery<TResult>(fnResult)
+            ? await fnResult.execute()
+            : await fnResult;
+
+          if (version === versionRef.current) {
+            watchedScopesRef.current = scopeCollector;
+            const snapshotLastSyncAt = engine.getState().lastSyncAt;
+
+            const fingerprint = fingerprintCollectorRef.current.getCombined();
+            const didFingerprintChange =
+              fingerprint !== previousFingerprintRef.current ||
+              fingerprint === '';
+            if (didFingerprintChange) {
+              previousFingerprintRef.current = fingerprint;
+            } else {
+              metricsRef.current.skippedDataUpdates += 1;
+            }
+
+            applyUpdate(
+              () => {
+                setLastSyncAt(snapshotLastSyncAt);
+                if (didFingerprintChange) {
+                  setData(result);
+                }
+                setError(null);
+              },
+              { urgent: urgentUpdates }
+            );
+          }
+        } catch (err) {
+          if (version === versionRef.current) {
+            applyUpdate(
+              () => {
+                setError(err instanceof Error ? err : new Error(String(err)));
+              },
+              { urgent: urgentUpdates }
+            );
+          }
+        } finally {
+          if (version === versionRef.current) {
+            applyUpdate(
+              () => {
+                setIsLoading(false);
+              },
+              { urgent: urgentUpdates }
+            );
+            hasLoadedRef.current = true;
+            metricsRef.current.lastDurationMs = Date.now() - startedAt;
+            emitMetrics();
+          }
         }
-      };
+      },
+      [db, enabled, engine, keyField, applyUpdate, emitMetrics]
+    );
 
-      const inFlight = runLoop().finally(() => {
-        inFlightQueryRef.current = null;
-      });
-      inFlightQueryRef.current = inFlight;
-      await inFlight;
-    }, [executeQueryOnce, emitMetrics]);
+    const executeQuery = useCallback(
+      async (options: { urgentUpdates?: boolean } = {}) => {
+        const urgentUpdates = options.urgentUpdates === true;
+        queryQueuedRef.current = true;
+        if (urgentUpdates) {
+          queuedUrgentRefreshRef.current = true;
+        }
+        if (inFlightQueryRef.current) {
+          metricsRef.current.coalescedRefreshes += 1;
+          emitMetrics();
+          await inFlightQueryRef.current;
+          return;
+        }
+
+        const runLoop = async () => {
+          while (queryQueuedRef.current) {
+            queryQueuedRef.current = false;
+            const runWithUrgentUpdates = queuedUrgentRefreshRef.current;
+            queuedUrgentRefreshRef.current = false;
+            await executeQueryOnce({
+              urgentUpdates: runWithUrgentUpdates,
+            });
+          }
+        };
+
+        const inFlight = runLoop().finally(() => {
+          inFlightQueryRef.current = null;
+        });
+        inFlightQueryRef.current = inFlight;
+        await inFlight;
+      },
+      [executeQueryOnce, emitMetrics]
+    );
 
     useEffect(() => {
       executeQuery();
@@ -1482,7 +1510,7 @@ export function createSyncularReact<
           }
         }
 
-        void executeQuery();
+        void executeQuery({ urgentUpdates: event.source === 'local' });
       });
 
       return unsubscribe;

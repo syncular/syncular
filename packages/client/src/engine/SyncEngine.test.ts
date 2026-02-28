@@ -250,8 +250,10 @@ describe('SyncEngine WS inline apply', () => {
     });
 
     const eventScopes: string[][] = [];
+    const eventSources: Array<'local' | 'remote'> = [];
     engine.on('data:change', (payload) => {
       eventScopes.push(payload.scopes);
+      eventSources.push(payload.source);
     });
 
     const emitDataChange = Reflect.get(engine, 'emitDataChange');
@@ -268,6 +270,7 @@ describe('SyncEngine WS inline apply', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
 
     expect(eventScopes).toEqual([['tasks']]);
+    expect(eventSources).toEqual(['remote']);
     expect(onDataChangeCalls).toEqual([['tasks']]);
   });
 
@@ -292,8 +295,10 @@ describe('SyncEngine WS inline apply', () => {
     });
 
     const defaultEvents: string[][] = [];
+    const defaultEventSources: Array<'local' | 'remote'> = [];
     defaultEngine.on('data:change', (payload) => {
       defaultEvents.push(payload.scopes);
+      defaultEventSources.push(payload.source);
     });
     const emitDataChange = Reflect.get(defaultEngine, 'emitDataChange');
     if (typeof emitDataChange !== 'function') {
@@ -311,6 +316,7 @@ describe('SyncEngine WS inline apply', () => {
       { table: 'tasks', rowId: 'local-1', op: 'upsert' },
     ]);
     expect(defaultEvents).toEqual([['tasks'], ['tasks']]);
+    expect(defaultEventSources).toEqual(['remote', 'local']);
 
     const noDebounceEngine = new SyncEngine<TestDb>({
       db,
@@ -324,12 +330,15 @@ describe('SyncEngine WS inline apply', () => {
     });
 
     const immediateEvents: string[][] = [];
+    const immediateEventSources: Array<'local' | 'remote'> = [];
     noDebounceEngine.on('data:change', (payload) => {
       immediateEvents.push(payload.scopes);
+      immediateEventSources.push(payload.source);
     });
 
     emitDataChange.call(noDebounceEngine, ['tasks'], { source: 'remote' });
     expect(immediateEvents).toEqual([['tasks']]);
+    expect(immediateEventSources).toEqual(['remote']);
 
     const zeroDebounceEngine = new SyncEngine<TestDb>({
       db,
@@ -343,12 +352,15 @@ describe('SyncEngine WS inline apply', () => {
     });
 
     const zeroEvents: string[][] = [];
+    const zeroEventSources: Array<'local' | 'remote'> = [];
     zeroDebounceEngine.on('data:change', (payload) => {
       zeroEvents.push(payload.scopes);
+      zeroEventSources.push(payload.source);
     });
 
     emitDataChange.call(zeroDebounceEngine, ['tasks'], { source: 'remote' });
     expect(zeroEvents).toEqual([['tasks']]);
+    expect(zeroEventSources).toEqual(['remote']);
 
     defaultEngine.destroy();
     noDebounceEngine.destroy();

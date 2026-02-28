@@ -1149,9 +1149,14 @@ describe('SyncEngine', () => {
     it('should emit data:change event after mutation', async () => {
       const engine = await createTestEngine();
 
-      let dataChangeEvent: { scopes: string[]; timestamp: number } = {
+      let dataChangeEvent: {
+        scopes: string[];
+        timestamp: number;
+        source: 'local' | 'remote';
+      } = {
         scopes: [],
         timestamp: 0,
+        source: 'remote',
       };
       engine.on('data:change', (payload) => {
         dataChangeEvent = payload;
@@ -1168,6 +1173,7 @@ describe('SyncEngine', () => {
 
       expect(dataChangeEvent.scopes).toContain('tasks');
       expect(dataChangeEvent.timestamp).toBeGreaterThan(0);
+      expect(dataChangeEvent.source).toBe('local');
     });
   });
 

@@ -217,6 +217,7 @@ export interface SyncEventPayloads {
   'data:change': {
     scopes: string[];
     timestamp: number;
+    source: 'local' | 'remote';
   };
   'conflict:new': ConflictInfo;
   'presence:change': {

@@ -876,7 +876,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       clearTimeout(this.dataChangeDebounceTimeoutId);
       this.dataChangeDebounceTimeoutId = null;
     }
-    this.flushDataChange();
+    this.flushDataChange(undefined, 'remote');
   }
 
   private emitDataChange(
@@ -892,7 +892,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     if (normalizedScopes.size === 0) return;
     if (options.source === 'local') {
-      this.flushDataChange(normalizedScopes);
+      this.flushDataChange(normalizedScopes, 'local');
       return;
     }
 
@@ -922,11 +922,14 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     this.dataChangeDebounceTimeoutId = setTimeout(() => {
       this.dataChangeDebounceTimeoutId = null;
-      this.flushDataChange();
+      this.flushDataChange(undefined, 'remote');
     }, debounceMs);
   }
 
-  private flushDataChange(scopes?: Iterable<string>): void {
+  private flushDataChange(
+    scopes?: Iterable<string>,
+    source: 'local' | 'remote' = 'remote'
+  ): void {
     const scopedList = scopes
       ? Array.from(new Set(scopes))
       : Array.from(this.pendingDataChangeScopes);
@@ -937,6 +940,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.emit('data:change', {
       scopes: scopedList,
       timestamp: Date.now(),
+      source,
     });
     this.config.onDataChange?.(scopedList);
   }
@@ -1537,7 +1541,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         clearTimeout(this.dataChangeDebounceTimeoutId);
         this.dataChangeDebounceTimeoutId = null;
       }
-      this.flushDataChange();
+      this.flushDataChange(undefined, 'remote');
     }
 
     if (state === 'disconnected') {
@@ -1641,7 +1645,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       clearTimeout(this.dataChangeDebounceTimeoutId);
       this.dataChangeDebounceTimeoutId = null;
     }
-    this.flushDataChange();
+    this.flushDataChange(undefined, 'remote');
     this.stopPolling();
     this.stopRealtime();
     this.setConnectionState('disconnected');
