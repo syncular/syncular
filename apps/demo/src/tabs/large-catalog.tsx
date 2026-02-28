@@ -12,7 +12,7 @@ import {
   InfoPanel,
   MetricCard,
 } from '@syncular/ui/demo';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
@@ -34,6 +34,7 @@ import {
   DemoClientSyncControls,
   useDemoClientSyncControls,
 } from '../components/demo-client-sync-controls';
+import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 /* ---------- Constants ---------- */
 
@@ -92,7 +93,7 @@ export function LargeCatalogTab() {
   });
 
   /* Transport with chunk-tracking wrapper */
-  const transport = useMemo(() => {
+  const transport = useKeyedConstant(CATALOG_CLIENT_ID, () => {
     const base = createDemoPollingTransport(CATALOG_ACTOR_ID);
     return {
       ...base,
@@ -108,23 +109,23 @@ export function LargeCatalogTab() {
         return bytes;
       },
     };
-  }, []);
+  });
 
   /* Sync handlers (catalog_items only) */
-  const tables = useMemo(() => [catalogItemsClientHandler], []);
-  const sync = useMemo(
-    () => ({
-      handlers: tables,
-      subscriptions: () => [
-        {
-          id: CATALOG_SUBSCRIPTION_ID,
-          table: 'catalog_items' as const,
-          scopes: { catalog_id: 'demo' },
-        },
-      ],
-    }),
-    [tables]
-  );
+  const sync = useKeyedConstant(CATALOG_CLIENT_ID, () => {
+    const handlers = [catalogItemsClientHandler];
+    const subscriptions = [
+      {
+        id: CATALOG_SUBSCRIPTION_ID,
+        table: 'catalog_items' as const,
+        scopes: { catalog_id: 'demo' },
+      },
+    ];
+    return {
+      handlers,
+      subscriptions: () => subscriptions,
+    };
+  });
 
   if (dbError) {
     return (
