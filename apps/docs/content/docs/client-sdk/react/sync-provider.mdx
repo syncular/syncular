@@ -42,9 +42,9 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 | `migrate` | `Function` | No | Migration function |
 | `realtimeEnabled` | `boolean` | No | Enable WebSocket realtime |
 | `realtimeFallbackPollMs` | `number` | No | Fallback poll interval |
-| `dataChangeDebounceMs` | `number` | No | Debounce window for coalescing `data:change` events |
-| `dataChangeDebounceMsWhenSyncing` | `number` | No | Debounce override while sync is running |
-| `dataChangeDebounceMsWhenReconnecting` | `number` | No | Debounce override while reconnecting |
+| `dataChangeDebounceMs` | `number \| false` | No | Debounce window for `data:change` events (default: `10`; `0`/`false` disables) |
+| `dataChangeDebounceMsWhenSyncing` | `number \| false` | No | Debounce override while sync is running (`0`/`false` disables) |
+| `dataChangeDebounceMsWhenReconnecting` | `number \| false` | No | Debounce override while reconnecting (`0`/`false` disables) |
 | `plugins` | `SyncClientPlugin[]` | No | Client plugins |
 | `autoStart` | `boolean` | No | Start on mount (default: true) |
 | `renderWhileStarting` | `boolean` | No | Render before ready (default: false) |
@@ -52,6 +52,8 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 | `onConflict` | `Function` | No | Conflict callback |
 | `onPushResult` | `Function` | No | Per-commit push result callback (`applied`, `cached`, `rejected`, `retriable`) |
 | `onDataChange` | `Function` | No | Data change callback |
+
+When reconnecting with debounce enabled, incoming change notifications are batched and flushed together after reconnect catch-up settles, reducing repeated UI invalidations on offline → online recovery.
 
 ## Dynamic Subscriptions
 

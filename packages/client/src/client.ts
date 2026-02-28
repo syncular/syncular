@@ -123,21 +123,22 @@ export interface ClientOptions<DB extends SyncClientDb> {
 
   /**
    * Optional: Debounce window (ms) for coalescing `data:change` events.
-   * - `0` (default): emit immediately
+   * - default: `10`
+   * - `0`/`false`: emit immediately (disable debounce)
    * - `>0`: merge scopes and emit once per window
    */
-  dataChangeDebounceMs?: number;
+  dataChangeDebounceMs?: number | false;
   /**
    * Optional: Debounce override while sync is actively running.
    * Falls back to `dataChangeDebounceMs` when omitted.
    */
-  dataChangeDebounceMsWhenSyncing?: number;
+  dataChangeDebounceMsWhenSyncing?: number | false;
   /**
    * Optional: Debounce override while connection is reconnecting.
    * Falls back to `dataChangeDebounceMsWhenSyncing` (if syncing) and then
    * `dataChangeDebounceMs` when omitted.
    */
-  dataChangeDebounceMsWhenReconnecting?: number;
+  dataChangeDebounceMsWhenReconnecting?: number | false;
 
   /** Optional: State ID for multi-tenant scenarios */
   stateId?: string;

@@ -28,6 +28,9 @@ import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import { getDemoAuthHeaders } from '../client/demo-identity';
 import {
   createDemoPollingTransport,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING,
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { tasksClientHandler } from '../client/handlers/tasks';
@@ -465,6 +468,13 @@ function UploaderWrapper({
       identity={{ actorId: userId }}
       clientId="client-media-uploader"
       realtimeEnabled={true}
+      dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
+      dataChangeDebounceMsWhenSyncing={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
+      }
+      dataChangeDebounceMsWhenReconnecting={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
+      }
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
       <UploaderPanel onTransfer={onTransfer} />
@@ -521,6 +531,13 @@ function ReceiverWrapper() {
       identity={{ actorId: userId }}
       clientId="client-media-receiver"
       realtimeEnabled={true}
+      dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
+      dataChangeDebounceMsWhenSyncing={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
+      }
+      dataChangeDebounceMsWhenReconnecting={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
+      }
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
       <ReceiverPanel />

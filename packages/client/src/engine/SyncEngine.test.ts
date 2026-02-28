@@ -273,6 +273,89 @@ describe('SyncEngine WS inline apply', () => {
     expect(onDataChangeCalls).toEqual([['tasks']]);
   });
 
+  it('uses 10ms debounce by default and supports 0/false opt-out', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const defaultEngine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-default-debounce',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    const defaultEvents: string[][] = [];
+    defaultEngine.on('data:change', (payload) => {
+      defaultEvents.push(payload.scopes);
+    });
+
+    defaultEngine.recordLocalMutations([
+      { table: 'tasks', rowId: 'd1', op: 'upsert' },
+    ]);
+    defaultEngine.recordLocalMutations([
+      { table: 'tasks', rowId: 'd2', op: 'upsert' },
+    ]);
+    expect(defaultEvents).toEqual([]);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(defaultEvents).toEqual([['tasks']]);
+
+    const noDebounceEngine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-no-debounce',
+      subscriptions: [],
+      stateId: 'default',
+      dataChangeDebounceMs: false,
+    });
+
+    const immediateEvents: string[][] = [];
+    noDebounceEngine.on('data:change', (payload) => {
+      immediateEvents.push(payload.scopes);
+    });
+
+    noDebounceEngine.recordLocalMutations([
+      { table: 'tasks', rowId: 'n1', op: 'upsert' },
+    ]);
+    expect(immediateEvents).toEqual([['tasks']]);
+
+    const zeroDebounceEngine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-zero-debounce',
+      subscriptions: [],
+      stateId: 'default',
+      dataChangeDebounceMs: 0,
+    });
+
+    const zeroEvents: string[][] = [];
+    zeroDebounceEngine.on('data:change', (payload) => {
+      zeroEvents.push(payload.scopes);
+    });
+
+    zeroDebounceEngine.recordLocalMutations([
+      { table: 'tasks', rowId: 'z1', op: 'upsert' },
+    ]);
+    expect(zeroEvents).toEqual([['tasks']]);
+
+    defaultEngine.destroy();
+    noDebounceEngine.destroy();
+    zeroDebounceEngine.destroy();
+  });
+
   it('supports adaptive debounce overrides while syncing and reconnecting', async () => {
     const handlers: ClientHandlerCollection<TestDb> = [
       {
@@ -301,6 +384,11 @@ describe('SyncEngine WS inline apply', () => {
       eventScopes.push(payload.scopes);
     });
 
+    const setConnectionState = Reflect.get(engine, 'setConnectionState');
+    if (typeof setConnectionState !== 'function') {
+      throw new Error('Expected setConnectionState to be callable');
+    }
+
     const updateState = Reflect.get(engine, 'updateState');
     if (typeof updateState !== 'function') {
       throw new Error('Expected updateState to be callable');
@@ -320,17 +408,28 @@ describe('SyncEngine WS inline apply', () => {
     expect(eventScopes).toEqual([['tasks']]);
 
     updateState.call(engine, {
-      isSyncing: true,
-      connectionState: 'reconnecting',
+      isSyncing: false,
+      connectionState: 'connected',
     });
+    setConnectionState.call(engine, 'reconnecting');
 
     engine.recordLocalMutations([
       { table: 'tasks', rowId: 'reconnecting-1', op: 'upsert' },
     ]);
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(eventScopes).toEqual([['tasks']]);
 
-    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    setConnectionState.call(engine, 'connected');
+    const flushReconnectBatch = Reflect.get(
+      engine,
+      'flushReconnectBatchedDataChangesIfReady'
+    );
+    if (typeof flushReconnectBatch !== 'function') {
+      throw new Error(
+        'Expected flushReconnectBatchedDataChangesIfReady to be callable'
+      );
+    }
+    flushReconnectBatch.call(engine);
     expect(eventScopes).toEqual([['tasks'], ['tasks']]);
   });
 

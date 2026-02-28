@@ -39,6 +39,7 @@ describe('SyncEngine', () => {
       actorId: 'test-actor',
       clientId: 'test-client',
       subscriptions: [],
+      dataChangeDebounceMs: false,
       ...overrides,
     };
     engine = new SyncEngine(config);
@@ -1016,6 +1017,7 @@ describe('SyncEngine', () => {
         actorId: 'test-actor',
         clientId: 'test-client',
         subscriptions: [],
+        dataChangeDebounceMs: false,
       };
       const engine = new SyncEngine<TestDb>(config);
       await engine.start();

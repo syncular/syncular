@@ -29,6 +29,9 @@ import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
   createDemoPollingTransport,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING,
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { patientNotesClientHandler } from '../client/handlers/patient-notes';
@@ -506,6 +509,13 @@ function ActorVaultPanel({
         identity={{ actorId: actor.id }}
         plugins={allPlugins}
         realtimeEnabled={true}
+        dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
+        dataChangeDebounceMsWhenSyncing={
+          DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
+        }
+        dataChangeDebounceMsWhenReconnecting={
+          DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
+        }
         pollIntervalMs={DEMO_POLL_INTERVAL_MS}
         stateId={stateId}
       >
