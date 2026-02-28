@@ -6,6 +6,7 @@
  */
 
 import type { WSContext } from 'hono/ws';
+import { RealtimeConnectionRegistry } from '@syncular/core';
 
 /**
  * Presence entry for a client connected to a scope
@@ -196,9 +197,7 @@ export function createWebSocketConnection(
  * Scope-key based notifications and presence tracking.
  */
 export class WebSocketConnectionManager {
-  private connectionsByClientId = new Map<string, Set<WebSocketConnection>>();
-  private scopeKeysByClientId = new Map<string, Set<string>>();
-  private connectionsByScopeKey = new Map<string, Set<WebSocketConnection>>();
+  private readonly registry: RealtimeConnectionRegistry<WebSocketConnection>;
 
   /**
    * In-memory presence tracking by scope key.
@@ -217,15 +216,17 @@ export class WebSocketConnectionManager {
     metadata?: Record<string, unknown>;
   }) => void;
 
-  private heartbeatIntervalMs: number;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-
   constructor(options?: {
     heartbeatIntervalMs?: number;
     onPresenceChange?: WebSocketConnectionManager['onPresenceChange'];
   }) {
-    this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 30_000;
     this.onPresenceChange = options?.onPresenceChange;
+    this.registry = new RealtimeConnectionRegistry({
+      heartbeatIntervalMs: options?.heartbeatIntervalMs,
+      onClientDisconnected: (clientId) => {
+        this.cleanupClientPresence(clientId);
+      },
+    });
   }
 
   /**
@@ -236,35 +237,7 @@ export class WebSocketConnectionManager {
     connection: WebSocketConnection,
     initialScopeKeys: string[] = []
   ): () => void {
-    const clientId = connection.clientId;
-    let clientConns = this.connectionsByClientId.get(clientId);
-    if (!clientConns) {
-      clientConns = new Set();
-      this.connectionsByClientId.set(clientId, clientConns);
-    }
-    clientConns.add(connection);
-
-    if (!this.scopeKeysByClientId.has(clientId)) {
-      this.scopeKeysByClientId.set(clientId, new Set(initialScopeKeys));
-    }
-
-    const scopeKeys =
-      this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-    for (const k of scopeKeys) {
-      let scopeConns = this.connectionsByScopeKey.get(k);
-      if (!scopeConns) {
-        scopeConns = new Set();
-        this.connectionsByScopeKey.set(k, scopeConns);
-      }
-      scopeConns.add(connection);
-    }
-
-    this.ensureHeartbeat();
-
-    return () => {
-      this.unregister(connection);
-      this.ensureHeartbeat();
-    };
+    return this.registry.register(connection, initialScopeKeys);
   }
 
   /**
@@ -272,52 +245,14 @@ export class WebSocketConnectionManager {
    * If the client has no active connections, this is a no-op.
    */
   updateClientScopeKeys(clientId: string, scopeKeys: string[]): void {
-    const conns = this.connectionsByClientId.get(clientId);
-    if (!conns || conns.size === 0) return;
-
-    const next = new Set(scopeKeys);
-    const prev = this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-
-    // No-op when unchanged (reduces write load when clients pull frequently).
-    if (prev.size === next.size) {
-      let unchanged = true;
-      for (const k of prev) {
-        if (!next.has(k)) {
-          unchanged = false;
-          break;
-        }
-      }
-      if (unchanged) return;
-    }
-
-    this.scopeKeysByClientId.set(clientId, next);
-
-    for (const k of prev) {
-      if (next.has(k)) continue;
-      const set = this.connectionsByScopeKey.get(k);
-      if (!set) continue;
-      for (const conn of conns) set.delete(conn);
-      if (set.size === 0) this.connectionsByScopeKey.delete(k);
-    }
-
-    for (const k of next) {
-      if (prev.has(k)) continue;
-      let set = this.connectionsByScopeKey.get(k);
-      if (!set) {
-        set = new Set();
-        this.connectionsByScopeKey.set(k, set);
-      }
-      for (const conn of conns) set.add(conn);
-    }
+    this.registry.updateClientScopeKeys(clientId, scopeKeys);
   }
 
   /**
    * Check whether a client is currently authorized/subscribed for a scope key.
    */
   isClientSubscribedToScopeKey(clientId: string, scopeKey: string): boolean {
-    const scopeKeys = this.scopeKeysByClientId.get(clientId);
-    if (!scopeKeys || scopeKeys.size === 0) return false;
-    return scopeKeys.has(scopeKey);
+    return this.registry.isClientSubscribedToScopeKey(clientId, scopeKey);
   }
 
   // =========================================================================
@@ -333,7 +268,7 @@ export class WebSocketConnectionManager {
     scopeKey: string,
     metadata?: Record<string, unknown>
   ): boolean {
-    const conns = this.connectionsByClientId.get(clientId);
+    const conns = this.registry.getConnectionsForClient(clientId);
     if (!conns || conns.size === 0) return false;
     if (!this.isClientSubscribedToScopeKey(clientId, scopeKey)) return false;
 
@@ -555,15 +490,15 @@ export class WebSocketConnectionManager {
       metadata?: Record<string, unknown>;
     }
   ): void {
-    const conns = this.connectionsByScopeKey.get(scopeKey);
-    if (!conns) return;
-
-    for (const conn of conns) {
-      if (!conn.isOpen) continue;
-      // Don't send presence events back to the source client
-      if (event.clientId && conn.clientId === event.clientId) continue;
-      conn.sendPresence(event);
-    }
+    this.registry.forEachConnectionInScopeKeys(
+      [scopeKey],
+      (conn) => {
+        conn.sendPresence(event);
+      },
+      {
+        excludeClientIds: event.clientId ? [event.clientId] : undefined,
+      }
+    );
   }
 
   /**
@@ -603,29 +538,20 @@ export class WebSocketConnectionManager {
   // =========================================================================
 
   /**
-   * Notify clients that new data is available for the given scopes.
-   * Dedupes connections that match multiple scopes.
-   */
-  /**
    * Maximum serialized size (bytes) for inline WS change delivery.
    * Larger payloads fall back to cursor-only notification.
    */
   private static readonly WS_INLINE_MAX_BYTES = 64 * 1024;
 
+  /**
+   * Notify clients that new data is available for the given scopes.
+   * Dedupes connections that match multiple scopes.
+   */
   notifyScopeKeys(
     scopeKeys: string[],
     cursor: number,
     opts?: { excludeClientIds?: string[]; changes?: unknown[] }
   ): void {
-    const exclude = new Set(opts?.excludeClientIds ?? []);
-    const targets = new Set<WebSocketConnection>();
-
-    for (const k of scopeKeys) {
-      const conns = this.connectionsByScopeKey.get(k);
-      if (!conns) continue;
-      for (const conn of conns) targets.add(conn);
-    }
-
     // Size guard: only deliver inline changes if under threshold
     let inlineChanges: unknown[] | undefined;
     if (opts?.changes && opts.changes.length > 0) {
@@ -635,15 +561,17 @@ export class WebSocketConnectionManager {
       }
     }
 
-    for (const conn of targets) {
-      if (!conn.isOpen) continue;
-      if (exclude.has(conn.clientId)) continue;
-      if (inlineChanges) {
-        conn.sendSync(cursor, inlineChanges);
-      } else {
-        conn.sendSync(cursor);
-      }
-    }
+    this.registry.forEachConnectionInScopeKeys(
+      scopeKeys,
+      (conn) => {
+        if (inlineChanges) {
+          conn.sendSync(cursor, inlineChanges);
+        } else {
+          conn.sendSync(cursor);
+        }
+      },
+      { excludeClientIds: opts?.excludeClientIds }
+    );
   }
 
   /**
@@ -651,26 +579,23 @@ export class WebSocketConnectionManager {
    * Used for external data changes that affect all clients regardless of scope.
    */
   notifyAllClients(cursor: number): void {
-    for (const conns of this.connectionsByClientId.values()) {
-      for (const conn of conns) {
-        if (!conn.isOpen) continue;
-        conn.sendSync(cursor);
-      }
-    }
+    this.registry.forEachConnection((conn) => {
+      conn.sendSync(cursor);
+    });
   }
 
   /**
    * Get the number of active connections for a client.
    */
   getConnectionCount(clientId: string): number {
-    return this.connectionsByClientId.get(clientId)?.size ?? 0;
+    return this.registry.getConnectionCount(clientId);
   }
 
   /**
    * Get the current transport path for a client if connected.
    */
   getClientTransportPath(clientId: string): 'direct' | 'relay' | null {
-    const conns = this.connectionsByClientId.get(clientId);
+    const conns = this.registry.getConnectionsForClient(clientId);
     if (!conns || conns.size === 0) {
       return null;
     }
@@ -688,115 +613,21 @@ export class WebSocketConnectionManager {
    * Get total number of active connections.
    */
   getTotalConnections(): number {
-    let total = 0;
-    for (const conns of this.connectionsByClientId.values()) {
-      total += conns.size;
-    }
-    return total;
+    return this.registry.getTotalConnections();
   }
 
   /**
    * Close all connections for a client.
    */
   closeClientConnections(clientId: string): void {
-    const conns = this.connectionsByClientId.get(clientId);
-    if (!conns) return;
-
-    const scopeKeys =
-      this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-    for (const k of scopeKeys) {
-      const set = this.connectionsByScopeKey.get(k);
-      if (!set) continue;
-      for (const conn of conns) set.delete(conn);
-      if (set.size === 0) this.connectionsByScopeKey.delete(k);
-    }
-
-    for (const conn of conns) {
-      conn.close(1000, 'client closed');
-    }
-    this.connectionsByClientId.delete(clientId);
-    this.scopeKeysByClientId.delete(clientId);
-    this.ensureHeartbeat();
+    this.registry.closeClientConnections(clientId, 1000, 'client closed');
   }
 
   /**
    * Close all connections.
    */
   closeAll(): void {
-    for (const conns of this.connectionsByClientId.values()) {
-      for (const conn of conns) {
-        conn.close(1000, 'server shutdown');
-      }
-    }
-    this.connectionsByClientId.clear();
-    this.scopeKeysByClientId.clear();
-    this.connectionsByScopeKey.clear();
+    this.registry.closeAll(1000, 'server shutdown');
     this.presenceByScopeKey.clear();
-    this.ensureHeartbeat();
-  }
-
-  private ensureHeartbeat(): void {
-    if (this.heartbeatIntervalMs <= 0) return;
-
-    const total = this.getTotalConnections();
-
-    if (total === 0) {
-      if (this.heartbeatTimer) {
-        clearInterval(this.heartbeatTimer);
-        this.heartbeatTimer = null;
-      }
-      return;
-    }
-
-    if (this.heartbeatTimer) return;
-
-    this.heartbeatTimer = setInterval(() => {
-      this.sendHeartbeats();
-    }, this.heartbeatIntervalMs);
-  }
-
-  private sendHeartbeats(): void {
-    const closed: WebSocketConnection[] = [];
-
-    for (const conns of this.connectionsByClientId.values()) {
-      for (const conn of conns) {
-        if (!conn.isOpen) {
-          closed.push(conn);
-          continue;
-        }
-        conn.sendHeartbeat();
-      }
-    }
-
-    for (const conn of closed) {
-      this.unregister(conn);
-    }
-
-    // Might have removed last connection.
-    this.ensureHeartbeat();
-  }
-
-  private unregister(connection: WebSocketConnection): void {
-    const clientId = connection.clientId;
-
-    const scopeKeys =
-      this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-    for (const k of scopeKeys) {
-      const set = this.connectionsByScopeKey.get(k);
-      if (!set) continue;
-      set.delete(connection);
-      if (set.size === 0) this.connectionsByScopeKey.delete(k);
-    }
-
-    const conns = this.connectionsByClientId.get(clientId);
-    if (!conns) return;
-    conns.delete(connection);
-    if (conns.size > 0) return;
-
-    // Client fully disconnected - clean up presence
-    this.cleanupClientPresence(clientId);
-
-    this.connectionsByClientId.delete(clientId);
-    this.scopeKeysByClientId.delete(clientId);
   }
 }

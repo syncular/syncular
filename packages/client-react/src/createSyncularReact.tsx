@@ -94,6 +94,35 @@ function isPresenceMetadataEqual(left: unknown, right: unknown): boolean {
   return true;
 }
 
+const SYNC_PROGRESS_REFRESH_EVENTS = [
+  'sync:start',
+  'sync:complete',
+  'sync:error',
+  'bootstrap:start',
+  'bootstrap:progress',
+  'bootstrap:complete',
+] as const;
+
+const SYNC_INSPECTOR_REFRESH_EVENTS = [
+  'sync:start',
+  'sync:complete',
+  'sync:error',
+  'bootstrap:start',
+  'bootstrap:progress',
+  'bootstrap:complete',
+  'connection:change',
+  'outbox:change',
+  'data:change',
+] as const;
+
+const SYNC_SUBSCRIPTION_REFRESH_EVENTS = [
+  'sync:complete',
+  'sync:error',
+  'bootstrap:start',
+  'bootstrap:progress',
+  'bootstrap:complete',
+] as const;
+
 export interface SyncContextValue<DB extends SyncClientDb> {
   engine: SyncEngine<DB>;
   db: Kysely<DB>;
@@ -606,14 +635,18 @@ export function createSyncularReact<
     return useSyncContext().engine;
   }
 
+  function useEngineStateSnapshot(): SyncEngineState {
+    const engine = useEngine();
+    const subscribe = useCallback((callback: () => void) => {
+      return engine.subscribe(callback);
+    }, [engine]);
+    const getSnapshot = useCallback(() => engine.getState(), [engine]);
+    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  }
+
   function useSyncEngine(): UseSyncEngineResult {
     const engine = useEngine();
-
-    const state = useSyncExternalStore(
-      useCallback((callback) => engine.subscribe(callback), [engine]),
-      useCallback(() => engine.getState(), [engine]),
-      useCallback(() => engine.getState(), [engine])
-    );
+    const state = useEngineStateSnapshot();
 
     const sync = useCallback(() => engine.sync(), [engine]);
     const reconnect = useCallback(() => engine.reconnect(), [engine]);
@@ -687,13 +720,7 @@ export function createSyncularReact<
 
   function useSyncStatus(options: UseSyncStatusOptions = {}): SyncStatus {
     const { staleAfterMs } = options;
-    const engine = useEngine();
-
-    const state = useSyncExternalStore(
-      useCallback((callback) => engine.subscribe(callback), [engine]),
-      useCallback(() => engine.getState(), [engine]),
-      useCallback(() => engine.getState(), [engine])
-    );
+    const state = useEngineStateSnapshot();
 
     const [staleClock, setStaleClock] = useState<number>(Date.now());
 
@@ -737,12 +764,7 @@ export function createSyncularReact<
 
   function useSyncConnection(): UseSyncConnectionResult {
     const engine = useEngine();
-
-    const engineState = useSyncExternalStore(
-      useCallback((callback) => engine.subscribe(callback), [engine]),
-      useCallback(() => engine.getState(), [engine]),
-      useCallback(() => engine.getState(), [engine])
-    );
+    const engineState = useEngineStateSnapshot();
 
     const reconnect = useCallback(() => engine.reconnect(), [engine]);
     const disconnect = useCallback(() => engine.disconnect(), [engine]);
@@ -790,62 +812,94 @@ export function createSyncularReact<
     return useMemo(() => ({ health }), [health]);
   }
 
-  function useSyncProgress(
-    options: UseSyncProgressOptions = {}
-  ): UseSyncProgressResult {
-    const engine = useEngine();
-    const { pollIntervalMs = 500 } = options;
+  type SyncEngineEventName = Parameters<SyncEngine<DB>['on']>[0];
 
-    const [progress, setProgress] = useState<SyncProgress | null>(null);
+  function useAsyncEngineResource<T>(options: {
+    initialValue: T;
+    load: () => Promise<T>;
+    refreshOn: readonly SyncEngineEventName[];
+    pollIntervalMs?: number;
+    shouldPoll?: (value: T) => boolean;
+  }): {
+    value: T;
+    isLoading: boolean;
+    error: Error | null;
+    refresh: () => Promise<void>;
+  } {
+    const engine = useEngine();
+    const { initialValue, load, refreshOn, pollIntervalMs, shouldPoll } =
+      options;
+
+    const loadRef = useRef(load);
+    loadRef.current = load;
+
+    const [value, setValue] = useState(initialValue);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<Error | null>(null);
     const loadedRef = useRef(false);
+    const versionRef = useRef(0);
 
     const refresh = useCallback(async () => {
+      const version = ++versionRef.current;
+
       if (!loadedRef.current) {
         setIsLoading(true);
       }
 
       try {
-        const next = await engine.getProgress();
-        setProgress(next);
+        const next = await loadRef.current();
+        if (version !== versionRef.current) return;
+        setValue(next);
         setError(null);
       } catch (err) {
+        if (version !== versionRef.current) return;
         setError(err instanceof Error ? err : new Error(String(err)));
       } finally {
+        if (version !== versionRef.current) return;
         loadedRef.current = true;
         setIsLoading(false);
       }
-    }, [engine]);
+    }, []);
 
     useEffect(() => {
       void refresh();
     }, [refresh]);
 
     useEffect(() => {
-      const unsubscribers = [
-        engine.on('sync:start', refresh),
-        engine.on('sync:complete', refresh),
-        engine.on('sync:error', refresh),
-        engine.on('bootstrap:start', refresh),
-        engine.on('bootstrap:progress', refresh),
-        engine.on('bootstrap:complete', refresh),
-      ];
+      if (refreshOn.length === 0) return;
+      const unsubscribers = refreshOn.map((eventName) =>
+        engine.on(eventName, refresh)
+      );
       return () => {
         for (const unsubscribe of unsubscribers) unsubscribe();
       };
-    }, [engine, refresh]);
+    }, [engine, refresh, refreshOn]);
 
     useEffect(() => {
-      if (pollIntervalMs <= 0) return;
-      if (progress?.channelPhase !== 'bootstrapping') return;
-
+      if (pollIntervalMs === undefined || pollIntervalMs <= 0) return;
+      if (shouldPoll && !shouldPoll(value)) return;
       const timer = setInterval(() => {
         void refresh();
       }, pollIntervalMs);
-
       return () => clearInterval(timer);
-    }, [pollIntervalMs, progress?.channelPhase, refresh]);
+    }, [pollIntervalMs, refresh, shouldPoll, value]);
+
+    return { value, isLoading, error, refresh };
+  }
+
+  function useSyncProgress(
+    options: UseSyncProgressOptions = {}
+  ): UseSyncProgressResult {
+    const engine = useEngine();
+    const { pollIntervalMs = 500 } = options;
+    const { value: progress, isLoading, error, refresh } =
+      useAsyncEngineResource<SyncProgress | null>({
+        initialValue: null,
+        load: () => engine.getProgress(),
+        refreshOn: SYNC_PROGRESS_REFRESH_EVENTS,
+        pollIntervalMs,
+        shouldPoll: (value) => value?.channelPhase === 'bootstrapping',
+      });
 
     return useMemo(
       () => ({
@@ -863,59 +917,13 @@ export function createSyncularReact<
   ): UseSyncInspectorResult {
     const engine = useEngine();
     const { pollIntervalMs = 2_000, eventLimit } = options;
-
-    const [snapshot, setSnapshot] = useState<SyncInspectorSnapshot | null>(
-      null
-    );
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<Error | null>(null);
-    const loadedRef = useRef(false);
-
-    const refresh = useCallback(async () => {
-      if (!loadedRef.current) {
-        setIsLoading(true);
-      }
-
-      try {
-        const next = await engine.getInspectorSnapshot({ eventLimit });
-        setSnapshot(next);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        loadedRef.current = true;
-        setIsLoading(false);
-      }
-    }, [engine, eventLimit]);
-
-    useEffect(() => {
-      void refresh();
-    }, [refresh]);
-
-    useEffect(() => {
-      const unsubscribers = [
-        engine.on('sync:start', refresh),
-        engine.on('sync:complete', refresh),
-        engine.on('sync:error', refresh),
-        engine.on('bootstrap:start', refresh),
-        engine.on('bootstrap:progress', refresh),
-        engine.on('bootstrap:complete', refresh),
-        engine.on('connection:change', refresh),
-        engine.on('outbox:change', refresh),
-        engine.on('data:change', refresh),
-      ];
-      return () => {
-        for (const unsubscribe of unsubscribers) unsubscribe();
-      };
-    }, [engine, refresh]);
-
-    useEffect(() => {
-      if (pollIntervalMs <= 0) return;
-      const timer = setInterval(() => {
-        void refresh();
-      }, pollIntervalMs);
-      return () => clearInterval(timer);
-    }, [pollIntervalMs, refresh]);
+    const { value: snapshot, isLoading, error, refresh } =
+      useAsyncEngineResource<SyncInspectorSnapshot | null>({
+        initialValue: null,
+        load: () => engine.getInspectorSnapshot({ eventLimit }),
+        refreshOn: SYNC_INSPECTOR_REFRESH_EVENTS,
+        pollIntervalMs,
+      });
 
     return useMemo(
       () => ({
@@ -933,49 +941,17 @@ export function createSyncularReact<
   ): UseSyncSubscriptionsResult {
     const engine = useEngine();
     const { stateId, table, status } = options;
-
-    const [subscriptions, setSubscriptions] = useState<SubscriptionState[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<Error | null>(null);
-    const loadedRef = useRef(false);
-
-    const refresh = useCallback(async () => {
-      if (!loadedRef.current) {
-        setIsLoading(true);
-      }
-
-      try {
-        const next = await engine.listSubscriptionStates({
-          stateId,
-          table,
-          status,
-        });
-        setSubscriptions(next);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        loadedRef.current = true;
-        setIsLoading(false);
-      }
-    }, [engine, stateId, table, status]);
-
-    useEffect(() => {
-      void refresh();
-    }, [refresh]);
-
-    useEffect(() => {
-      const unsubscribers = [
-        engine.on('sync:complete', refresh),
-        engine.on('sync:error', refresh),
-        engine.on('bootstrap:start', refresh),
-        engine.on('bootstrap:progress', refresh),
-        engine.on('bootstrap:complete', refresh),
-      ];
-      return () => {
-        for (const unsubscribe of unsubscribers) unsubscribe();
-      };
-    }, [engine, refresh]);
+    const { value: subscriptions, isLoading, error, refresh } =
+      useAsyncEngineResource<SubscriptionState[]>({
+        initialValue: [],
+        load: () =>
+          engine.listSubscriptionStates({
+            stateId,
+            table,
+            status,
+          }),
+        refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
+      });
 
     return useMemo(
       () => ({
@@ -994,49 +970,15 @@ export function createSyncularReact<
   ): UseSyncSubscriptionResult {
     const engine = useEngine();
     const { stateId } = options;
-
-    const [subscription, setSubscription] = useState<SubscriptionState | null>(
-      null
-    );
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<Error | null>(null);
-    const loadedRef = useRef(false);
-
-    const refresh = useCallback(async () => {
-      if (!loadedRef.current) {
-        setIsLoading(true);
-      }
-
-      try {
-        const next = await engine.getSubscriptionState(subscriptionId, {
-          stateId,
-        });
-        setSubscription(next);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        loadedRef.current = true;
-        setIsLoading(false);
-      }
-    }, [engine, stateId, subscriptionId]);
-
-    useEffect(() => {
-      void refresh();
-    }, [refresh]);
-
-    useEffect(() => {
-      const unsubscribers = [
-        engine.on('sync:complete', refresh),
-        engine.on('sync:error', refresh),
-        engine.on('bootstrap:start', refresh),
-        engine.on('bootstrap:progress', refresh),
-        engine.on('bootstrap:complete', refresh),
-      ];
-      return () => {
-        for (const unsubscribe of unsubscribers) unsubscribe();
-      };
-    }, [engine, refresh]);
+    const { value: subscription, isLoading, error, refresh } =
+      useAsyncEngineResource<SubscriptionState | null>({
+        initialValue: null,
+        load: () =>
+          engine.getSubscriptionState(subscriptionId, {
+            stateId,
+          }),
+        refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
+      });
 
     return useMemo(
       () => ({
@@ -1051,39 +993,12 @@ export function createSyncularReact<
 
   function useConflicts(): UseConflictsResult {
     const engine = useEngine();
-
-    const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-
-    const refresh = useCallback(async () => {
-      try {
-        setIsLoading(true);
-        const result = await engine.getConflicts();
-        setConflicts(result);
-      } catch (err) {
-        console.error('[useConflicts] Failed to refresh:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    }, [engine]);
-
-    useEffect(() => {
-      refresh();
-    }, [refresh]);
-
-    useEffect(() => {
-      const unsubscribe = engine.on('sync:complete', () => {
-        refresh();
+    const { value: conflicts, isLoading, refresh } =
+      useAsyncEngineResource<ConflictInfo[]>({
+        initialValue: [],
+        load: () => engine.getConflicts(),
+        refreshOn: ['sync:complete', 'sync:error'],
       });
-      return unsubscribe;
-    }, [engine, refresh]);
-
-    useEffect(() => {
-      const unsubscribe = engine.on('sync:error', () => {
-        refresh();
-      });
-      return unsubscribe;
-    }, [engine, refresh]);
 
     return useMemo(
       () => ({

@@ -94,6 +94,11 @@ import {
   type TimeseriesStatsResponse,
   TimeseriesStatsResponseSchema,
 } from './schemas';
+import {
+  closeUnauthenticatedSocket,
+  parseBearerToken,
+  parseWebSocketAuthToken,
+} from './live-auth';
 import type {
   ConsoleAuthResult,
   ConsoleEventEmitter,
@@ -600,7 +605,6 @@ export function createConsoleRoutes<
     }
     return auth;
   };
-
   const requestEventSelectColumns = [
     'event_id',
     'partition_id',
@@ -963,6 +967,7 @@ export function createConsoleRoutes<
     async (c) => {
       const auth = await requireAuth(c);
       if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+
       const { partitionId } = c.req.valid('query');
 
       const stats: SyncStats = await readSyncStats(options.db, {
@@ -2488,17 +2493,9 @@ export function createConsoleRoutes<
         heartbeatInterval: ReturnType<typeof setInterval> | null;
         authTimeout: ReturnType<typeof setTimeout> | null;
         isAuthenticated: boolean;
+        startAuthenticatedSession: (() => void) | null;
       }
     >();
-
-    const closeUnauthenticated = (ws: WebSocketLike) => {
-      try {
-        ws.send(JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' }));
-      } catch {
-        // ignore send errors
-      }
-      ws.close(4001, 'Unauthenticated');
-    };
 
     const cleanup = (ws: WebSocketLike) => {
       const state = wsState.get(ws);
@@ -2553,16 +2550,18 @@ export function createConsoleRoutes<
 
         return {
           onOpen(_event, ws) {
-            const state = {
-              listener: null,
-              heartbeatInterval: null,
-              authTimeout: null,
-              isAuthenticated: false,
-            } as {
+            const state: {
               listener: ConsoleEventListener | null;
               heartbeatInterval: ReturnType<typeof setInterval> | null;
               authTimeout: ReturnType<typeof setTimeout> | null;
               isAuthenticated: boolean;
+              startAuthenticatedSession: (() => void) | null;
+            } = {
+              listener: null,
+              heartbeatInterval: null,
+              authTimeout: null,
+              isAuthenticated: false,
+              startAuthenticatedSession: null,
             };
             wsState.set(ws, state);
 
@@ -2629,6 +2628,7 @@ export function createConsoleRoutes<
               }, heartbeatIntervalMs);
               state.heartbeatInterval = heartbeatInterval;
             };
+            state.startAuthenticatedSession = startAuthenticatedSession;
 
             if (initialAuth) {
               startAuthenticatedSession();
@@ -2640,7 +2640,7 @@ export function createConsoleRoutes<
               if (!current || current.isAuthenticated) {
                 return;
               }
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
             }, 5_000);
           },
@@ -2651,30 +2651,15 @@ export function createConsoleRoutes<
             }
 
             if (typeof event.data !== 'string') {
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
               return;
             }
 
-            let token = '';
-            try {
-              const parsed = JSON.parse(event.data) as {
-                type?: unknown;
-                token?: unknown;
-              };
-              if (
-                parsed.type === 'auth' &&
-                typeof parsed.token === 'string' &&
-                parsed.token.trim().length > 0
-              ) {
-                token = parsed.token;
-              }
-            } catch {
-              // Ignore parse errors and close as unauthenticated below.
-            }
+            const token = parseWebSocketAuthToken(event.data);
 
             if (!token) {
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
               return;
             }
@@ -2685,71 +2670,11 @@ export function createConsoleRoutes<
               return;
             }
             if (!auth) {
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
               return;
             }
-
-            currentState.isAuthenticated = true;
-            if (currentState.authTimeout) {
-              clearTimeout(currentState.authTimeout);
-              currentState.authTimeout = null;
-            }
-
-            const listener: ConsoleEventListener = (liveEvent) => {
-              if (partitionId) {
-                const eventPartitionId = liveEvent.data.partitionId;
-                if (
-                  typeof eventPartitionId !== 'string' ||
-                  eventPartitionId !== partitionId
-                ) {
-                  return;
-                }
-              }
-              try {
-                ws.send(JSON.stringify(liveEvent));
-              } catch {
-                // Connection closed
-              }
-            };
-
-            emitter.addListener(listener);
-            currentState.listener = listener;
-
-            ws.send(
-              JSON.stringify({
-                type: 'connected',
-                timestamp: new Date().toISOString(),
-              })
-            );
-
-            const replayEvents = emitter.replay({
-              since: replaySince,
-              limit: replayLimit,
-              partitionId,
-            });
-            for (const replayEvent of replayEvents) {
-              try {
-                ws.send(JSON.stringify(replayEvent));
-              } catch {
-                // Connection closed
-                break;
-              }
-            }
-
-            const heartbeatInterval = setInterval(() => {
-              try {
-                ws.send(
-                  JSON.stringify({
-                    type: 'heartbeat',
-                    timestamp: new Date().toISOString(),
-                  })
-                );
-              } catch {
-                clearInterval(heartbeatInterval);
-              }
-            }, heartbeatIntervalMs);
-            currentState.heartbeatInterval = heartbeatInterval;
+            currentState.startAuthenticatedSession?.();
           },
           onClose(_event, ws) {
             cleanup(ws);
@@ -3923,12 +3848,9 @@ export function createTokenAuthenticator(
   return async (c: Context) => {
     if (!expectedToken) return null;
 
-    const authHeader = c.req.header('Authorization')?.trim();
-    if (authHeader?.startsWith('Bearer ')) {
-      const bearerToken = authHeader.slice(7).trim();
-      if (bearerToken === expectedToken) {
-        return { consoleUserId: 'token' };
-      }
+    const bearerToken = parseBearerToken(c.req.header('Authorization'));
+    if (bearerToken === expectedToken) {
+      return { consoleUserId: 'token' };
     }
 
     return null;
