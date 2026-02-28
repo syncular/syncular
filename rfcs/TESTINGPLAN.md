@@ -29,6 +29,7 @@
 - E2EE offline writes + key rotation + reconnect across authorized and unauthorized keysets.
 - Retry/backoff correctness for 429/503 across pull/push/chunk fetch paths.
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
+- Perf regression triage + rollback playbook: `tests/perf/README.md`.
 
 ## High-Value Functional Tests (Remaining + Expanded)
 - No open `P0`/`P1`/`P2` functional gaps from this plan.
@@ -96,4 +97,4 @@
 - No `P0` gaps open.
 - All PR-fast benchmarks within thresholds for 7 consecutive days.
 - Nightly macro runs stable (no untriaged regressions) for 5 consecutive days.
-- Documented playbook for perf regression triage and rollback.
+- Perf regression triage and rollback playbook documented in `tests/perf/README.md`.
