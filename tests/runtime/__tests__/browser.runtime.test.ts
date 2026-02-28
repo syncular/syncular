@@ -16,7 +16,13 @@ import {
 } from 'bun:test';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { type Browser, chromium, type Page } from '@playwright/test';
+import {
+  type Browser,
+  type BrowserType,
+  chromium,
+  firefox,
+  type Page,
+} from '@playwright/test';
 import { createIntegrationServer } from '../../integration/harness/create-server';
 import type { IntegrationServer } from '../../integration/harness/types';
 import {
@@ -45,23 +51,26 @@ declare global {
   }
 }
 
-function hasPlaywrightChromiumInstalled(): boolean {
+const browserType: BrowserType =
+  process.env.PLAYWRIGHT_BROWSER === 'firefox' ? firefox : chromium;
+
+function hasPlaywrightBrowserInstalled(): boolean {
   try {
-    return existsSync(chromium.executablePath());
+    return existsSync(browserType.executablePath());
   } catch {
     return false;
   }
 }
 
-const hasPlaywrightChromium = hasPlaywrightChromiumInstalled();
+const hasPlaywrightBrowser = hasPlaywrightBrowserInstalled();
 
-if (!hasPlaywrightChromium) {
+if (!hasPlaywrightBrowser) {
   console.warn(
-    '[runtime-browser] Playwright Chromium is missing. Run `bunx playwright install chromium` to enable browser runtime tests.'
+    `[runtime-browser] Playwright ${browserType.name()} is missing. Run \`bunx playwright install ${browserType.name()}\` to enable browser runtime tests.`
   );
 }
 
-const describeBrowserRuntime = hasPlaywrightChromium ? describe : describe.skip;
+const describeBrowserRuntime = hasPlaywrightBrowser ? describe : describe.skip;
 
 describeBrowserRuntime('Browser runtime (wa-sqlite)', () => {
   let assetProc: ReturnType<typeof Bun.spawn>;
@@ -90,8 +99,8 @@ describeBrowserRuntime('Browser runtime (wa-sqlite)', () => {
     assetUrl = `http://127.0.0.1:${assetPort}`;
     await waitForHealthy(assetUrl, 30_000);
 
-    // Launch Chromium
-    browser = await chromium.launch({ headless: true });
+    // Launch browser (chromium or firefox based on PLAYWRIGHT_BROWSER env)
+    browser = await browserType.launch({ headless: true });
     const context = await browser.newContext();
     page = await context.newPage();
 

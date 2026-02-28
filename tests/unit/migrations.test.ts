@@ -21,6 +21,7 @@ import {
   defineMigrations,
   getAppliedMigrations,
   getMigrationChecksum,
+  getSchemaVersion,
   runMigrations,
   runMigrationsToVersion,
 } from '@syncular/migrations';
@@ -646,6 +647,267 @@ describe('migrations', () => {
           targetVersion: 0,
         })
       ).rejects.toThrow(/down migration is not defined/);
+    });
+  });
+
+  describe('defineMigrations sorting', () => {
+    it('sorts out-of-order version keys into ascending order', () => {
+      const migrations = defineMigrations<TestDb>({
+        v3: async (_db) => {
+          /* v3 */
+        },
+        v1: async (_db) => {
+          /* v1 */
+        },
+        v2: async (_db) => {
+          /* v2 */
+        },
+      });
+      expect(migrations.migrations.map((m) => m.version)).toEqual([1, 2, 3]);
+      expect(migrations.currentVersion).toBe(3);
+    });
+  });
+
+  describe('runMigrationsToVersion partial', () => {
+    it('applies only up to the target version (partial up)', async () => {
+      const applied: number[] = [];
+
+      const migrations = defineMigrations<TestDb>({
+        v1: {
+          up: async (db) => {
+            applied.push(1);
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema.dropTable('items').ifExists().execute();
+          },
+        },
+        v2: {
+          up: async (db) => {
+            applied.push(2);
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .dropColumn('description')
+              .execute();
+          },
+        },
+        v3: {
+          up: async (db) => {
+            applied.push(3);
+            await db.schema
+              .alterTable('items')
+              .addColumn('priority', 'integer')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .dropColumn('priority')
+              .execute();
+          },
+        },
+      });
+
+      const result = await runMigrationsToVersion({
+        db,
+        migrations,
+        targetVersion: 2,
+      });
+
+      expect(result.applied).toEqual([1, 2]);
+      expect(result.reverted).toEqual([]);
+      expect(result.currentVersion).toBe(2);
+      expect(applied).toEqual([1, 2]);
+
+      // v3 should NOT have been applied
+      const appliedRows = await getAppliedMigrations(
+        db,
+        'sync_migration_state'
+      );
+      expect(appliedRows.map((r) => r.version)).toEqual([1, 2]);
+    });
+
+    it('reverts down to the target version (partial down)', async () => {
+      const migrations = defineMigrations<TestDb>({
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema.dropTable('items').ifExists().execute();
+          },
+        },
+        v2: {
+          up: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .dropColumn('description')
+              .execute();
+          },
+        },
+        v3: {
+          up: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .addColumn('priority', 'integer')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .dropColumn('priority')
+              .execute();
+          },
+        },
+      });
+
+      // Apply all three
+      await runMigrations({ db, migrations });
+
+      // Revert from v3 down to v1
+      const result = await runMigrationsToVersion({
+        db,
+        migrations,
+        targetVersion: 1,
+      });
+
+      expect(result.applied).toEqual([]);
+      expect(result.reverted).toEqual([3, 2]);
+      expect(result.currentVersion).toBe(1);
+
+      const appliedRows = await getAppliedMigrations(
+        db,
+        'sync_migration_state'
+      );
+      expect(appliedRows.map((r) => r.version)).toEqual([1]);
+    });
+
+    it('returns a no-op result when already at the target version', async () => {
+      const migrations = defineMigrations<TestDb>({
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema.dropTable('items').ifExists().execute();
+          },
+        },
+        v2: {
+          up: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .dropColumn('description')
+              .execute();
+          },
+        },
+      });
+
+      // Migrate to v2
+      await runMigrationsToVersion({ db, migrations, targetVersion: 2 });
+
+      // Run to v2 again → no-op
+      const result = await runMigrationsToVersion({
+        db,
+        migrations,
+        targetVersion: 2,
+      });
+
+      expect(result.applied).toEqual([]);
+      expect(result.reverted).toEqual([]);
+      expect(result.currentVersion).toBe(2);
+      expect(result.wasReset).toBe(false);
+    });
+  });
+
+  describe('getSchemaVersion', () => {
+    it('returns 0 for a fresh database', async () => {
+      const version = await getSchemaVersion(db, 'sync_migration_state');
+      expect(version).toBe(0);
+    });
+
+    it('returns the correct version after migrations', async () => {
+      const migrations = defineMigrations<TestDb>({
+        v1: async (db) => {
+          await db.schema
+            .createTable('items')
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .addColumn('name', 'text')
+            .execute();
+        },
+        v2: async (db) => {
+          await db.schema
+            .alterTable('items')
+            .addColumn('description', 'text')
+            .execute();
+        },
+      });
+
+      await runMigrations({ db, migrations });
+
+      const version = await getSchemaVersion(db, 'sync_migration_state');
+      expect(version).toBe(2);
+    });
+  });
+
+  describe('custom tracking table', () => {
+    it('uses a custom tracking table isolated from the default', async () => {
+      const migrations = defineMigrations<TestDb>({
+        v1: async (db) => {
+          await db.schema
+            .createTable('items')
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .addColumn('name', 'text')
+            .execute();
+        },
+      });
+
+      await runMigrations({
+        db,
+        migrations,
+        trackingTable: 'custom_tracking',
+      });
+
+      // Custom table should have the migration recorded
+      const customApplied = await getAppliedMigrations(db, 'custom_tracking');
+      expect(customApplied).toHaveLength(1);
+      expect(customApplied[0]!.version).toBe(1);
+
+      // Default table should be empty (no migrations recorded there)
+      const defaultApplied = await getAppliedMigrations(
+        db,
+        'sync_migration_state'
+      );
+      expect(defaultApplied).toHaveLength(0);
     });
   });
 });

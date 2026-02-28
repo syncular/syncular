@@ -8,3 +8,4 @@ preload = ["./tests/integration/harness/native-fetch.ts", "./packages/client-rea
 # Coverage configuration (coverage enabled only via --coverage CLI flag in test:coverage script)
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
+coverageThreshold = { line = 50, function = 50 }

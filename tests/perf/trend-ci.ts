@@ -3,6 +3,16 @@
  */
 
 import path from 'node:path';
+import {
+  detectChangePoint,
+  formatMs,
+  formatPercent,
+  formatRobustZ,
+  mad,
+  median,
+  parseFloatOrDefault,
+  parseIntOrDefault,
+} from './trend-stats';
 
 interface StableMetricSummary {
   metric: string;
@@ -33,54 +43,6 @@ interface TrendMetricResult {
   insufficientHistory: boolean;
   regressionChangePoint: boolean;
   improvementChangePoint: boolean;
-}
-
-function parseFloatOrDefault(
-  raw: string | undefined,
-  fallback: number
-): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return fallback;
-  return parsed;
-}
-
-function parseIntOrDefault(raw: string | undefined, fallback: number): number {
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
-  return parsed;
-}
-
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
-}
-
-function mad(values: number[], center: number): number {
-  if (values.length === 0) return 0;
-  const deviations = values.map((value) => Math.abs(value - center));
-  return median(deviations);
-}
-
-function relativeDelta(current: number, baseline: number): number | null {
-  if (baseline === 0) return null;
-  return (current - baseline) / baseline;
-}
-
-function formatMs(value: number | null): string {
-  if (value == null) return 'N/A';
-  return `${value.toFixed(1)}ms`;
-}
-
-function formatPercent(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return 'N/A';
-  const pct = value * 100;
-  const sign = pct >= 0 ? '+' : '';
-  return `${sign}${pct.toFixed(1)}%`;
-}
-
-function formatRobustZ(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return 'N/A';
-  return value.toFixed(2);
 }
 
 async function loadStableSummary(
@@ -178,29 +140,13 @@ async function main() {
 
     const historyMedian = median(historyValues);
     const historyMad = mad(historyValues, historyMedian);
-    const robustSigma = historyMad * 1.4826;
-    const deltaPercent = relativeDelta(metric.aggregatedMedian, historyMedian);
-
-    const rawRobustZ =
-      robustSigma === 0
-        ? metric.aggregatedMedian === historyMedian
-          ? 0
-          : Number.POSITIVE_INFINITY
-        : (metric.aggregatedMedian - historyMedian) / robustSigma;
-
-    const regressionByDelta =
-      deltaPercent != null && deltaPercent >= deltaThreshold;
-    const regressionByZ =
-      robustSigma === 0
-        ? regressionByDelta
-        : Number.isFinite(rawRobustZ) && rawRobustZ >= robustZThreshold;
-
-    const improvementByDelta =
-      deltaPercent != null && deltaPercent <= -deltaThreshold;
-    const improvementByZ =
-      robustSigma === 0
-        ? improvementByDelta
-        : Number.isFinite(rawRobustZ) && rawRobustZ <= -robustZThreshold;
+    const changePoint = detectChangePoint(
+      metric.aggregatedMedian,
+      historyMedian,
+      historyMad,
+      deltaThreshold,
+      robustZThreshold
+    );
 
     return {
       metric: metric.metric,
@@ -208,11 +154,11 @@ async function main() {
       historyCount,
       historyMedian,
       historyMad,
-      robustZ: Number.isFinite(rawRobustZ) ? rawRobustZ : null,
-      deltaPercent,
+      robustZ: changePoint.robustZ,
+      deltaPercent: changePoint.deltaPercent,
       insufficientHistory: false,
-      regressionChangePoint: regressionByDelta && regressionByZ,
-      improvementChangePoint: improvementByDelta && improvementByZ,
+      regressionChangePoint: changePoint.regressionChangePoint,
+      improvementChangePoint: changePoint.improvementChangePoint,
     };
   });
 
