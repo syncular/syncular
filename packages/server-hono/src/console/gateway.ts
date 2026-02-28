@@ -1104,6 +1104,168 @@ export function createConsoleGatewayRoutes(
     return jsonResponse(result.data, result.status);
   };
 
+  const selectTargetInstances = (
+    c: Context,
+    query: GatewayInstanceFilterQuery
+  ):
+    | { ok: true; selectedInstances: ConsoleGatewayInstance[] }
+    | { ok: false; response: Response } => {
+    const selectedInstances = selectInstances({ instances, query });
+    if (selectedInstances.length > 0) {
+      return { ok: true, selectedInstances };
+    }
+
+    const noInstanceError = noInstancesSelectedResponse();
+    return {
+      ok: false,
+      response: c.json(
+        {
+          error: noInstanceError.error,
+          message: noInstanceError.message,
+        },
+        noInstanceError.status
+      ),
+    };
+  };
+
+  const fetchFromSelectedInstances = async <T>(args: {
+    c: Context;
+    selectedInstances: ConsoleGatewayInstance[];
+    path: string;
+    query: URLSearchParams;
+    schema: z.ZodType<T>;
+  }): Promise<
+    | {
+        ok: true;
+        successfulResults: Array<{
+          instance: ConsoleGatewayInstance;
+          data: T;
+        }>;
+        failedInstances: GatewayFailure[];
+      }
+    | { ok: false; response: Response }
+  > => {
+    const results = await Promise.all(
+      args.selectedInstances.map((instance) =>
+        fetchDownstreamJson({
+          c: args.c,
+          instance,
+          path: args.path,
+          query: args.query,
+          schema: args.schema,
+          fetchImpl,
+        })
+      )
+    );
+
+    const failedInstances = results
+      .filter(
+        (result): result is { ok: false; failure: GatewayFailure } => !result.ok
+      )
+      .map((result) => result.failure);
+    const successfulResults = results
+      .map((result, index) => ({
+        result,
+        instance: args.selectedInstances[index],
+      }))
+      .filter(
+        (
+          entry
+        ): entry is {
+          result: { ok: true; data: T };
+          instance: ConsoleGatewayInstance;
+        } => Boolean(entry.instance) && entry.result.ok
+      )
+      .map((entry) => ({
+        instance: entry.instance,
+        data: entry.result.data,
+      }));
+
+    if (successfulResults.length === 0) {
+      return {
+        ok: false,
+        response: allInstancesFailedResponse(args.c, failedInstances),
+      };
+    }
+
+    return {
+      ok: true,
+      successfulResults,
+      failedInstances,
+    };
+  };
+
+  const fetchPagedFromSelectedInstances = async <T>(args: {
+    c: Context;
+    selectedInstances: ConsoleGatewayInstance[];
+    path: string;
+    query: URLSearchParams;
+    targetCount: number;
+    schema: z.ZodType<ConsolePaginatedResponse<T>>;
+  }): Promise<
+    | {
+        ok: true;
+        successfulResults: Array<{
+          instance: ConsoleGatewayInstance;
+          items: T[];
+          total: number;
+        }>;
+        failedInstances: GatewayFailure[];
+      }
+    | { ok: false; response: Response }
+  > => {
+    const results = await Promise.all(
+      args.selectedInstances.map((instance) =>
+        fetchDownstreamPaged({
+          c: args.c,
+          instance,
+          path: args.path,
+          query: args.query,
+          targetCount: args.targetCount,
+          schema: args.schema,
+          fetchImpl,
+        })
+      )
+    );
+
+    const failedInstances = results
+      .filter(
+        (result): result is { ok: false; failure: GatewayFailure } => !result.ok
+      )
+      .map((result) => result.failure);
+    const successfulResults = results
+      .map((result, index) => ({
+        result,
+        instance: args.selectedInstances[index],
+      }))
+      .filter(
+        (
+          entry
+        ): entry is {
+          result: { ok: true; items: T[]; total: number };
+          instance: ConsoleGatewayInstance;
+        } => Boolean(entry.instance) && entry.result.ok
+      )
+      .map((entry) => ({
+        instance: entry.instance,
+        items: entry.result.items,
+        total: entry.result.total,
+      }));
+
+    if (successfulResults.length === 0) {
+      return {
+        ok: false,
+        response: allInstancesFailedResponse(args.c, failedInstances),
+      };
+    }
+
+    return {
+      ok: true,
+      successfulResults,
+      failedInstances,
+    };
+  };
+
   routes.get(
     '/instances',
     describeRoute({
@@ -1129,18 +1291,15 @@ export function createConsoleGatewayRoutes(
       },
     }),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      return c.json({
-        items: instances.map((instance) => ({
-          instanceId: instance.instanceId,
-          label: instance.label ?? instance.instanceId,
-          baseUrl: instance.baseUrl,
-          enabled: instance.enabled ?? true,
-        })),
+      return withGatewayAuth(c, async () => {
+        return c.json({
+          items: instances.map((instance) => ({
+            instanceId: instance.instanceId,
+            label: instance.label ?? instance.instanceId,
+            baseUrl: instance.baseUrl,
+            enabled: instance.enabled ?? true,
+          })),
+        });
       });
     }
   );
@@ -1171,46 +1330,36 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayInstanceFilterSchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const items = await Promise.all(
+          selection.selectedInstances.map((instance) =>
+            checkDownstreamInstanceHealth({
+              c,
+              instance,
+              fetchImpl,
+            })
+          )
         );
-      }
 
-      const items = await Promise.all(
-        selectedInstances.map((instance) =>
-          checkDownstreamInstanceHealth({
-            c,
-            instance,
-            fetchImpl,
-          })
-        )
-      );
+        const failedInstances = items
+          .filter((item) => !item.healthy)
+          .map((item) => ({
+            instanceId: item.instanceId,
+            reason: item.reason ?? 'Health probe failed',
+            ...(item.status !== undefined ? { status: item.status } : {}),
+          }));
 
-      const failedInstances = items
-        .filter((item) => !item.healthy)
-        .map((item) => ({
-          instanceId: item.instanceId,
-          reason: item.reason ?? 'Health probe failed',
-          ...(item.status !== undefined ? { status: item.status } : {}),
-        }));
-
-      return c.json({
-        items,
-        partial: failedInstances.length > 0,
-        failedInstances,
+        return c.json({
+          items,
+          partial: failedInstances.length > 0,
+          failedInstances,
+        });
       });
     }
   );
@@ -1736,96 +1885,65 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayStatsQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
+        const fetched = await fetchFromSelectedInstances<SyncStats>({
+          c,
+          selectedInstances: selection.selectedInstances,
+          path: '/stats',
+          query: forwardQuery,
+          schema: SyncStatsSchema,
+        });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
+        const statsByInstance = new Map<string, SyncStats>();
+        for (const result of fetched.successfulResults) {
+          statsByInstance.set(result.instance.instanceId, result.data);
+        }
 
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamJson({
-            c,
-            instance,
-            path: '/stats',
-            query: forwardQuery,
-            schema: SyncStatsSchema,
-            fetchImpl,
-          })
-        )
-      );
+        const statsValues = Array.from(statsByInstance.values());
+        const sum = (selector: (stats: SyncStats) => number): number =>
+          statsValues.reduce((acc, stats) => acc + selector(stats), 0);
 
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successfulResults = results.filter(
-        (result): result is { ok: true; data: SyncStats } => result.ok
-      );
+        const minCommitSeqByInstance: Record<string, number> = {};
+        const maxCommitSeqByInstance: Record<string, number> = {};
+        for (const [instanceId, stats] of statsByInstance.entries()) {
+          minCommitSeqByInstance[instanceId] = stats.minCommitSeq;
+          maxCommitSeqByInstance[instanceId] = stats.maxCommitSeq;
+        }
 
-      if (successfulResults.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      const statsByInstance = new Map<string, SyncStats>();
-      for (let i = 0; i < selectedInstances.length; i++) {
-        const result = results[i];
-        if (!result || !result.ok) continue;
-        const instance = selectedInstances[i];
-        if (!instance) continue;
-        statsByInstance.set(instance.instanceId, result.data);
-      }
-
-      const statsValues = Array.from(statsByInstance.values());
-      const sum = (selector: (stats: SyncStats) => number): number =>
-        statsValues.reduce((acc, stats) => acc + selector(stats), 0);
-
-      const minCommitSeqByInstance: Record<string, number> = {};
-      const maxCommitSeqByInstance: Record<string, number> = {};
-      for (const [instanceId, stats] of statsByInstance.entries()) {
-        minCommitSeqByInstance[instanceId] = stats.minCommitSeq;
-        maxCommitSeqByInstance[instanceId] = stats.maxCommitSeq;
-      }
-
-      return c.json({
-        commitCount: sum((stats) => stats.commitCount),
-        changeCount: sum((stats) => stats.changeCount),
-        minCommitSeq: Math.min(
-          ...statsValues.map((stats) => stats.minCommitSeq)
-        ),
-        maxCommitSeq: Math.max(
-          ...statsValues.map((stats) => stats.maxCommitSeq)
-        ),
-        clientCount: sum((stats) => stats.clientCount),
-        activeClientCount: sum((stats) => stats.activeClientCount),
-        minActiveClientCursor: minNullable(
-          statsValues.map((stats) => stats.minActiveClientCursor)
-        ),
-        maxActiveClientCursor: maxNullable(
-          statsValues.map((stats) => stats.maxActiveClientCursor)
-        ),
-        minCommitSeqByInstance,
-        maxCommitSeqByInstance,
-        partial: failedInstances.length > 0,
-        failedInstances,
+        return c.json({
+          commitCount: sum((stats) => stats.commitCount),
+          changeCount: sum((stats) => stats.changeCount),
+          minCommitSeq: Math.min(
+            ...statsValues.map((stats) => stats.minCommitSeq)
+          ),
+          maxCommitSeq: Math.max(
+            ...statsValues.map((stats) => stats.maxCommitSeq)
+          ),
+          clientCount: sum((stats) => stats.clientCount),
+          activeClientCount: sum((stats) => stats.activeClientCount),
+          minActiveClientCursor: minNullable(
+            statsValues.map((stats) => stats.minActiveClientCursor)
+          ),
+          maxActiveClientCursor: maxNullable(
+            statsValues.map((stats) => stats.maxActiveClientCursor)
+          ),
+          minCommitSeqByInstance,
+          maxCommitSeqByInstance,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
+        });
       });
     }
   );
@@ -1848,64 +1966,37 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayTimeseriesQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamJson({
+        const fetched =
+          await fetchFromSelectedInstances<TimeseriesStatsResponse>({
             c,
-            instance,
+            selectedInstances: selection.selectedInstances,
             path: '/stats/timeseries',
             query: forwardQuery,
             schema: TimeseriesStatsResponseSchema,
-            fetchImpl,
-          })
-        )
-      );
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successfulResults = results.filter(
-        (result): result is { ok: true; data: TimeseriesStatsResponse } =>
-          result.ok
-      );
-
-      if (successfulResults.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      return c.json({
-        buckets: mergeTimeseriesBuckets(
-          successfulResults.map((result) => result.data)
-        ),
-        interval: query.interval,
-        range: query.range,
-        partial: failedInstances.length > 0,
-        failedInstances,
+        return c.json({
+          buckets: mergeTimeseriesBuckets(
+            fetched.successfulResults.map((result) => result.data)
+          ),
+          interval: query.interval,
+          range: query.range,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
+        });
       });
     }
   );
@@ -1928,66 +2019,38 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayLatencyQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
+        const fetched = await fetchFromSelectedInstances<LatencyStatsResponse>({
+          c,
+          selectedInstances: selection.selectedInstances,
+          path: '/stats/latency',
+          query: forwardQuery,
+          schema: LatencyStatsResponseSchema,
+        });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamJson({
-            c,
-            instance,
-            path: '/stats/latency',
-            query: forwardQuery,
-            schema: LatencyStatsResponseSchema,
-            fetchImpl,
-          })
-        )
-      );
-
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successfulResults = results.filter(
-        (result): result is { ok: true; data: LatencyStatsResponse } =>
-          result.ok
-      );
-
-      if (successfulResults.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      return c.json({
-        push: averagePercentiles(
-          successfulResults.map((result) => result.data.push)
-        ),
-        pull: averagePercentiles(
-          successfulResults.map((result) => result.data.pull)
-        ),
-        range: query.range,
-        partial: failedInstances.length > 0,
-        failedInstances,
+        return c.json({
+          push: averagePercentiles(
+            fetched.successfulResults.map((result) => result.data.push)
+          ),
+          pull: averagePercentiles(
+            fetched.successfulResults.map((result) => result.data.pull)
+          ),
+          range: query.range,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
+        });
       });
     }
   );
@@ -2012,95 +2075,62 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayPaginatedQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const targetCount = query.offset + query.limit;
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
-
-      const targetCount = query.offset + query.limit;
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      forwardQuery.delete('limit');
-      forwardQuery.delete('offset');
-      const pageSchema = ConsolePaginatedResponseSchema(
-        ConsoleCommitListItemSchema
-      );
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamPaged({
+        forwardQuery.delete('limit');
+        forwardQuery.delete('offset');
+        const pageSchema = ConsolePaginatedResponseSchema(
+          ConsoleCommitListItemSchema
+        );
+        const fetched =
+          await fetchPagedFromSelectedInstances<ConsoleCommitListItem>({
             c,
-            instance,
+            selectedInstances: selection.selectedInstances,
             path: '/commits',
             query: forwardQuery,
             targetCount,
             schema: pageSchema,
-            fetchImpl,
-          })
-        )
-      );
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successful = results
-        .map((result, index) => ({
-          result,
-          instance: selectedInstances[index],
-        }))
-        .filter(
-          (
-            entry
-          ): entry is {
-            result: { ok: true; items: ConsoleCommitListItem[]; total: number };
-            instance: ConsoleGatewayInstance;
-          } => Boolean(entry.instance) && entry.result.ok
-        );
+        const merged = fetched.successfulResults
+          .flatMap(({ items, instance }) =>
+            items.map((commit) => ({
+              ...commit,
+              instanceId: instance.instanceId,
+              federatedCommitId: `${instance.instanceId}:${commit.commitSeq}`,
+            }))
+          )
+          .sort((a, b) => {
+            const byTime = compareIsoDesc(a.createdAt, b.createdAt);
+            if (byTime !== 0) return byTime;
+            const byInstance = a.instanceId.localeCompare(b.instanceId);
+            if (byInstance !== 0) return byInstance;
+            return b.commitSeq - a.commitSeq;
+          });
 
-      if (successful.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      const merged = successful
-        .flatMap(({ result, instance }) =>
-          result.items.map((commit) => ({
-            ...commit,
-            instanceId: instance.instanceId,
-            federatedCommitId: `${instance.instanceId}:${commit.commitSeq}`,
-          }))
-        )
-        .sort((a, b) => {
-          const byTime = compareIsoDesc(a.createdAt, b.createdAt);
-          if (byTime !== 0) return byTime;
-          const byInstance = a.instanceId.localeCompare(b.instanceId);
-          if (byInstance !== 0) return byInstance;
-          return b.commitSeq - a.commitSeq;
+        return c.json({
+          items: merged.slice(query.offset, query.offset + query.limit),
+          total: fetched.successfulResults.reduce(
+            (acc, entry) => acc + entry.total,
+            0
+          ),
+          offset: query.offset,
+          limit: query.limit,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
         });
-
-      return c.json({
-        items: merged.slice(query.offset, query.offset + query.limit),
-        total: successful.reduce((acc, entry) => acc + entry.result.total, 0),
-        offset: query.offset,
-        limit: query.limit,
-        partial: failedInstances.length > 0,
-        failedInstances,
       });
     }
   );
@@ -2127,54 +2157,51 @@ export function createConsoleGatewayRoutes(
       ConsolePartitionQuerySchema.extend(GatewayInstanceFilterSchema.shape)
     ),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { seq } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveCommitTarget({ seq, instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            ...(target.message ? { message: target.message } : {}),
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await fetchDownstreamJson({
-        c,
-        instance: target.instance,
-        path: `/commits/${target.localCommitSeq}`,
-        query: forwardQuery,
-        schema: ConsoleCommitDetailSchema,
-        fetchImpl,
-      });
-
-      if (!result.ok) {
-        if (result.failure.status === 404) {
-          return c.json({ error: 'NOT_FOUND' }, 404);
+      return withGatewayAuth(c, async () => {
+        const { seq } = c.req.valid('param');
+        const query = c.req.valid('query');
+        const target = resolveCommitTarget({ seq, instances, query });
+        if (!target.ok) {
+          return c.json(
+            {
+              error: target.error,
+              ...(target.message ? { message: target.message } : {}),
+            },
+            target.status
+          );
         }
-        return c.json(
-          {
-            error: 'DOWNSTREAM_UNAVAILABLE',
-            failedInstances: [result.failure],
-          },
-          502
-        );
-      }
 
-      return c.json({
-        ...result.data,
-        instanceId: target.instance.instanceId,
-        federatedCommitId: `${target.instance.instanceId}:${result.data.commitSeq}`,
-        localCommitSeq: result.data.commitSeq,
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
+        );
+        const result = await fetchDownstreamJson({
+          c,
+          instance: target.instance,
+          path: `/commits/${target.localCommitSeq}`,
+          query: forwardQuery,
+          schema: ConsoleCommitDetailSchema,
+          fetchImpl,
+        });
+
+        if (!result.ok) {
+          if (result.failure.status === 404) {
+            return c.json({ error: 'NOT_FOUND' }, 404);
+          }
+          return c.json(
+            {
+              error: 'DOWNSTREAM_UNAVAILABLE',
+              failedInstances: [result.failure],
+            },
+            502
+          );
+        }
+
+        return c.json({
+          ...result.data,
+          instanceId: target.instance.instanceId,
+          federatedCommitId: `${target.instance.instanceId}:${result.data.commitSeq}`,
+          localCommitSeq: result.data.commitSeq,
+        });
       });
     }
   );
@@ -2199,93 +2226,59 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayPaginatedQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const targetCount = query.offset + query.limit;
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
-
-      const targetCount = query.offset + query.limit;
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      forwardQuery.delete('limit');
-      forwardQuery.delete('offset');
-      const pageSchema = ConsolePaginatedResponseSchema(ConsoleClientSchema);
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamPaged({
-            c,
-            instance,
-            path: '/clients',
-            query: forwardQuery,
-            targetCount,
-            schema: pageSchema,
-            fetchImpl,
-          })
-        )
-      );
-
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successful = results
-        .map((result, index) => ({
-          result,
-          instance: selectedInstances[index],
-        }))
-        .filter(
-          (
-            entry
-          ): entry is {
-            result: { ok: true; items: ConsoleClient[]; total: number };
-            instance: ConsoleGatewayInstance;
-          } => Boolean(entry.instance) && entry.result.ok
-        );
-
-      if (successful.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      const merged = successful
-        .flatMap(({ result, instance }) =>
-          result.items.map((client) => ({
-            ...client,
-            instanceId: instance.instanceId,
-            federatedClientId: `${instance.instanceId}:${client.clientId}`,
-          }))
-        )
-        .sort((a, b) => {
-          const byTime = compareIsoDesc(a.updatedAt, b.updatedAt);
-          if (byTime !== 0) return byTime;
-          const byInstance = a.instanceId.localeCompare(b.instanceId);
-          if (byInstance !== 0) return byInstance;
-          return a.clientId.localeCompare(b.clientId);
+        forwardQuery.delete('limit');
+        forwardQuery.delete('offset');
+        const pageSchema = ConsolePaginatedResponseSchema(ConsoleClientSchema);
+        const fetched = await fetchPagedFromSelectedInstances<ConsoleClient>({
+          c,
+          selectedInstances: selection.selectedInstances,
+          path: '/clients',
+          query: forwardQuery,
+          targetCount,
+          schema: pageSchema,
         });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      return c.json({
-        items: merged.slice(query.offset, query.offset + query.limit),
-        total: successful.reduce((acc, entry) => acc + entry.result.total, 0),
-        offset: query.offset,
-        limit: query.limit,
-        partial: failedInstances.length > 0,
-        failedInstances,
+        const merged = fetched.successfulResults
+          .flatMap(({ items, instance }) =>
+            items.map((client) => ({
+              ...client,
+              instanceId: instance.instanceId,
+              federatedClientId: `${instance.instanceId}:${client.clientId}`,
+            }))
+          )
+          .sort((a, b) => {
+            const byTime = compareIsoDesc(a.updatedAt, b.updatedAt);
+            if (byTime !== 0) return byTime;
+            const byInstance = a.instanceId.localeCompare(b.instanceId);
+            if (byInstance !== 0) return byInstance;
+            return a.clientId.localeCompare(b.clientId);
+          });
+
+        return c.json({
+          items: merged.slice(query.offset, query.offset + query.limit),
+          total: fetched.successfulResults.reduce(
+            (acc, entry) => acc + entry.total,
+            0
+          ),
+          offset: query.offset,
+          limit: query.limit,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
+        });
       });
     }
   );
@@ -2310,110 +2303,79 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayTimelineQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const targetCount = query.offset + query.limit;
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
-
-      const targetCount = query.offset + query.limit;
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      forwardQuery.delete('limit');
-      forwardQuery.delete('offset');
-      const pageSchema = ConsolePaginatedResponseSchema(
-        ConsoleTimelineItemSchema
-      );
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamPaged({
+        forwardQuery.delete('limit');
+        forwardQuery.delete('offset');
+        const pageSchema = ConsolePaginatedResponseSchema(
+          ConsoleTimelineItemSchema
+        );
+        const fetched =
+          await fetchPagedFromSelectedInstances<ConsoleTimelineItem>({
             c,
-            instance,
+            selectedInstances: selection.selectedInstances,
             path: '/timeline',
             query: forwardQuery,
             targetCount,
             schema: pageSchema,
-            fetchImpl,
-          })
-        )
-      );
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successful = results
-        .map((result, index) => ({
-          result,
-          instance: selectedInstances[index],
-        }))
-        .filter(
-          (
-            entry
-          ): entry is {
-            result: { ok: true; items: ConsoleTimelineItem[]; total: number };
-            instance: ConsoleGatewayInstance;
-          } => Boolean(entry.instance) && entry.result.ok
-        );
+        const merged = fetched.successfulResults
+          .flatMap(({ items, instance }) =>
+            items.map((item) => {
+              const localCommitSeq =
+                item.type === 'commit'
+                  ? (item.commit?.commitSeq ?? null)
+                  : null;
+              const localEventId =
+                item.type === 'event' ? (item.event?.eventId ?? null) : null;
+              const localIdSegment =
+                item.type === 'commit'
+                  ? String(localCommitSeq ?? 'unknown')
+                  : String(localEventId ?? 'unknown');
 
-      if (successful.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
+              return {
+                ...item,
+                instanceId: instance.instanceId,
+                federatedTimelineId: `${instance.instanceId}:${item.type}:${localIdSegment}`,
+                localCommitSeq,
+                localEventId,
+              };
+            })
+          )
+          .sort((a, b) => {
+            const byTime = compareIsoDesc(a.timestamp, b.timestamp);
+            if (byTime !== 0) return byTime;
+            const byInstance = a.instanceId.localeCompare(b.instanceId);
+            if (byInstance !== 0) return byInstance;
+            const aLocalId = a.localCommitSeq ?? a.localEventId ?? 0;
+            const bLocalId = b.localCommitSeq ?? b.localEventId ?? 0;
+            return bLocalId - aLocalId;
+          });
 
-      const merged = successful
-        .flatMap(({ result, instance }) =>
-          result.items.map((item) => {
-            const localCommitSeq =
-              item.type === 'commit' ? (item.commit?.commitSeq ?? null) : null;
-            const localEventId =
-              item.type === 'event' ? (item.event?.eventId ?? null) : null;
-            const localIdSegment =
-              item.type === 'commit'
-                ? String(localCommitSeq ?? 'unknown')
-                : String(localEventId ?? 'unknown');
-
-            return {
-              ...item,
-              instanceId: instance.instanceId,
-              federatedTimelineId: `${instance.instanceId}:${item.type}:${localIdSegment}`,
-              localCommitSeq,
-              localEventId,
-            };
-          })
-        )
-        .sort((a, b) => {
-          const byTime = compareIsoDesc(a.timestamp, b.timestamp);
-          if (byTime !== 0) return byTime;
-          const byInstance = a.instanceId.localeCompare(b.instanceId);
-          if (byInstance !== 0) return byInstance;
-          const aLocalId = a.localCommitSeq ?? a.localEventId ?? 0;
-          const bLocalId = b.localCommitSeq ?? b.localEventId ?? 0;
-          return bLocalId - aLocalId;
+        return c.json({
+          items: merged.slice(query.offset, query.offset + query.limit),
+          total: fetched.successfulResults.reduce(
+            (acc, entry) => acc + entry.total,
+            0
+          ),
+          offset: query.offset,
+          limit: query.limit,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
         });
-
-      return c.json({
-        items: merged.slice(query.offset, query.offset + query.limit),
-        total: successful.reduce((acc, entry) => acc + entry.result.total, 0),
-        offset: query.offset,
-        limit: query.limit,
-        partial: failedInstances.length > 0,
-        failedInstances,
       });
     }
   );
@@ -2438,96 +2400,63 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayOperationsQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const targetCount = query.offset + query.limit;
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
-
-      const targetCount = query.offset + query.limit;
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      forwardQuery.delete('limit');
-      forwardQuery.delete('offset');
-      const pageSchema = ConsolePaginatedResponseSchema(
-        ConsoleOperationEventSchema
-      );
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamPaged({
+        forwardQuery.delete('limit');
+        forwardQuery.delete('offset');
+        const pageSchema = ConsolePaginatedResponseSchema(
+          ConsoleOperationEventSchema
+        );
+        const fetched =
+          await fetchPagedFromSelectedInstances<ConsoleOperationEvent>({
             c,
-            instance,
+            selectedInstances: selection.selectedInstances,
             path: '/operations',
             query: forwardQuery,
             targetCount,
             schema: pageSchema,
-            fetchImpl,
-          })
-        )
-      );
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successful = results
-        .map((result, index) => ({
-          result,
-          instance: selectedInstances[index],
-        }))
-        .filter(
-          (
-            entry
-          ): entry is {
-            result: { ok: true; items: ConsoleOperationEvent[]; total: number };
-            instance: ConsoleGatewayInstance;
-          } => Boolean(entry.instance) && entry.result.ok
-        );
+        const merged = fetched.successfulResults
+          .flatMap(({ items, instance }) =>
+            items.map((operation) => ({
+              ...operation,
+              instanceId: instance.instanceId,
+              federatedOperationId: `${instance.instanceId}:${operation.operationId}`,
+              localOperationId: operation.operationId,
+            }))
+          )
+          .sort((a, b) => {
+            const byTime = compareIsoDesc(a.createdAt, b.createdAt);
+            if (byTime !== 0) return byTime;
+            const byInstance = a.instanceId.localeCompare(b.instanceId);
+            if (byInstance !== 0) return byInstance;
+            return b.localOperationId - a.localOperationId;
+          });
 
-      if (successful.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      const merged = successful
-        .flatMap(({ result, instance }) =>
-          result.items.map((operation) => ({
-            ...operation,
-            instanceId: instance.instanceId,
-            federatedOperationId: `${instance.instanceId}:${operation.operationId}`,
-            localOperationId: operation.operationId,
-          }))
-        )
-        .sort((a, b) => {
-          const byTime = compareIsoDesc(a.createdAt, b.createdAt);
-          if (byTime !== 0) return byTime;
-          const byInstance = a.instanceId.localeCompare(b.instanceId);
-          if (byInstance !== 0) return byInstance;
-          return b.localOperationId - a.localOperationId;
+        return c.json({
+          items: merged.slice(query.offset, query.offset + query.limit),
+          total: fetched.successfulResults.reduce(
+            (acc, entry) => acc + entry.total,
+            0
+          ),
+          offset: query.offset,
+          limit: query.limit,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
         });
-
-      return c.json({
-        items: merged.slice(query.offset, query.offset + query.limit),
-        total: successful.reduce((acc, entry) => acc + entry.result.total, 0),
-        offset: query.offset,
-        limit: query.limit,
-        partial: failedInstances.length > 0,
-        failedInstances,
       });
     }
   );
@@ -2552,96 +2481,63 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayEventsQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
 
-      const query = c.req.valid('query');
-      const selectedInstances = selectInstances({ instances, query });
-      if (selectedInstances.length === 0) {
-        return c.json(
-          {
-            error: 'NO_INSTANCES_SELECTED',
-            message:
-              'No enabled instances matched the provided instance filter.',
-          },
-          400
+        const targetCount = query.offset + query.limit;
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
         );
-      }
-
-      const targetCount = query.offset + query.limit;
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      forwardQuery.delete('limit');
-      forwardQuery.delete('offset');
-      const pageSchema = ConsolePaginatedResponseSchema(
-        ConsoleRequestEventSchema
-      );
-
-      const results = await Promise.all(
-        selectedInstances.map((instance) =>
-          fetchDownstreamPaged({
+        forwardQuery.delete('limit');
+        forwardQuery.delete('offset');
+        const pageSchema = ConsolePaginatedResponseSchema(
+          ConsoleRequestEventSchema
+        );
+        const fetched =
+          await fetchPagedFromSelectedInstances<ConsoleRequestEvent>({
             c,
-            instance,
+            selectedInstances: selection.selectedInstances,
             path: '/events',
             query: forwardQuery,
             targetCount,
             schema: pageSchema,
-            fetchImpl,
-          })
-        )
-      );
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
 
-      const failedInstances = results
-        .filter(
-          (result): result is { ok: false; failure: GatewayFailure } =>
-            !result.ok
-        )
-        .map((result) => result.failure);
-      const successful = results
-        .map((result, index) => ({
-          result,
-          instance: selectedInstances[index],
-        }))
-        .filter(
-          (
-            entry
-          ): entry is {
-            result: { ok: true; items: ConsoleRequestEvent[]; total: number };
-            instance: ConsoleGatewayInstance;
-          } => Boolean(entry.instance) && entry.result.ok
-        );
+        const merged = fetched.successfulResults
+          .flatMap(({ items, instance }) =>
+            items.map((event) => ({
+              ...event,
+              instanceId: instance.instanceId,
+              federatedEventId: `${instance.instanceId}:${event.eventId}`,
+              localEventId: event.eventId,
+            }))
+          )
+          .sort((a, b) => {
+            const byTime = compareIsoDesc(a.createdAt, b.createdAt);
+            if (byTime !== 0) return byTime;
+            const byInstance = a.instanceId.localeCompare(b.instanceId);
+            if (byInstance !== 0) return byInstance;
+            return b.localEventId - a.localEventId;
+          });
 
-      if (successful.length === 0) {
-        return allInstancesFailedResponse(c, failedInstances);
-      }
-
-      const merged = successful
-        .flatMap(({ result, instance }) =>
-          result.items.map((event) => ({
-            ...event,
-            instanceId: instance.instanceId,
-            federatedEventId: `${instance.instanceId}:${event.eventId}`,
-            localEventId: event.eventId,
-          }))
-        )
-        .sort((a, b) => {
-          const byTime = compareIsoDesc(a.createdAt, b.createdAt);
-          if (byTime !== 0) return byTime;
-          const byInstance = a.instanceId.localeCompare(b.instanceId);
-          if (byInstance !== 0) return byInstance;
-          return b.localEventId - a.localEventId;
+        return c.json({
+          items: merged.slice(query.offset, query.offset + query.limit),
+          total: fetched.successfulResults.reduce(
+            (acc, entry) => acc + entry.total,
+            0
+          ),
+          offset: query.offset,
+          limit: query.limit,
+          partial: fetched.failedInstances.length > 0,
+          failedInstances: fetched.failedInstances,
         });
-
-      return c.json({
-        items: merged.slice(query.offset, query.offset + query.limit),
-        total: successful.reduce((acc, entry) => acc + entry.result.total, 0),
-        offset: query.offset,
-        limit: query.limit,
-        partial: failedInstances.length > 0,
-        failedInstances,
       });
     }
   );
@@ -2969,58 +2865,55 @@ export function createConsoleGatewayRoutes(
       ConsolePartitionQuerySchema.extend(GatewayInstanceFilterSchema.shape)
     ),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveEventTarget({
-        id,
-        instances,
-        query,
-      });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            ...(target.message ? { message: target.message } : {}),
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await fetchDownstreamJson({
-        c,
-        instance: target.instance,
-        path: `/events/${target.localEventId}`,
-        query: forwardQuery,
-        schema: ConsoleRequestEventSchema,
-        fetchImpl,
-      });
-
-      if (!result.ok) {
-        if (result.failure.status === 404) {
-          return c.json({ error: 'NOT_FOUND' }, 404);
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        const target = resolveEventTarget({
+          id,
+          instances,
+          query,
+        });
+        if (!target.ok) {
+          return c.json(
+            {
+              error: target.error,
+              ...(target.message ? { message: target.message } : {}),
+            },
+            target.status
+          );
         }
-        return c.json(
-          {
-            error: 'DOWNSTREAM_UNAVAILABLE',
-            failedInstances: [result.failure],
-          },
-          502
-        );
-      }
 
-      return c.json({
-        ...result.data,
-        instanceId: target.instance.instanceId,
-        federatedEventId: `${target.instance.instanceId}:${result.data.eventId}`,
-        localEventId: result.data.eventId,
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
+        );
+        const result = await fetchDownstreamJson({
+          c,
+          instance: target.instance,
+          path: `/events/${target.localEventId}`,
+          query: forwardQuery,
+          schema: ConsoleRequestEventSchema,
+          fetchImpl,
+        });
+
+        if (!result.ok) {
+          if (result.failure.status === 404) {
+            return c.json({ error: 'NOT_FOUND' }, 404);
+          }
+          return c.json(
+            {
+              error: 'DOWNSTREAM_UNAVAILABLE',
+              failedInstances: [result.failure],
+            },
+            502
+          );
+        }
+
+        return c.json({
+          ...result.data,
+          instanceId: target.instance.instanceId,
+          federatedEventId: `${target.instance.instanceId}:${result.data.eventId}`,
+          localEventId: result.data.eventId,
+        });
       });
     }
   );
@@ -3047,58 +2940,55 @@ export function createConsoleGatewayRoutes(
       ConsolePartitionQuerySchema.extend(GatewayInstanceFilterSchema.shape)
     ),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveEventTarget({
-        id,
-        instances,
-        query,
-      });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            ...(target.message ? { message: target.message } : {}),
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await fetchDownstreamJson({
-        c,
-        instance: target.instance,
-        path: `/events/${target.localEventId}/payload`,
-        query: forwardQuery,
-        schema: ConsoleRequestPayloadSchema,
-        fetchImpl,
-      });
-
-      if (!result.ok) {
-        if (result.failure.status === 404) {
-          return c.json({ error: 'NOT_FOUND' }, 404);
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        const target = resolveEventTarget({
+          id,
+          instances,
+          query,
+        });
+        if (!target.ok) {
+          return c.json(
+            {
+              error: target.error,
+              ...(target.message ? { message: target.message } : {}),
+            },
+            target.status
+          );
         }
-        return c.json(
-          {
-            error: 'DOWNSTREAM_UNAVAILABLE',
-            failedInstances: [result.failure],
-          },
-          502
-        );
-      }
 
-      return c.json({
-        ...result.data,
-        instanceId: target.instance.instanceId,
-        federatedEventId: `${target.instance.instanceId}:${target.localEventId}`,
-        localEventId: target.localEventId,
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
+        );
+        const result = await fetchDownstreamJson({
+          c,
+          instance: target.instance,
+          path: `/events/${target.localEventId}/payload`,
+          query: forwardQuery,
+          schema: ConsoleRequestPayloadSchema,
+          fetchImpl,
+        });
+
+        if (!result.ok) {
+          if (result.failure.status === 404) {
+            return c.json({ error: 'NOT_FOUND' }, 404);
+          }
+          return c.json(
+            {
+              error: 'DOWNSTREAM_UNAVAILABLE',
+              failedInstances: [result.failure],
+            },
+            502
+          );
+        }
+
+        return c.json({
+          ...result.data,
+          instanceId: target.instance.instanceId,
+          federatedEventId: `${target.instance.instanceId}:${target.localEventId}`,
+          localEventId: target.localEventId,
+        });
       });
     }
   );
