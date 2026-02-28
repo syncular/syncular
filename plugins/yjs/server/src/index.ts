@@ -336,7 +336,7 @@ function normalizeUpdateEnvelopes(
   return [normalizeUpdateEnvelope(value, context)];
 }
 
-export async function applyYjsTextUpdates(
+/*async function applyYjsTextUpdates(
   args: ApplyYjsTextUpdatesArgs
 ): Promise<ApplyYjsTextUpdatesResult> {
   const containerKey = args.containerKey ?? 'text';
@@ -351,7 +351,7 @@ export async function applyYjsTextUpdates(
   } finally {
     doc.destroy();
   }
-}
+}*/
 
 export async function buildYjsTextUpdate(
   args: BuildYjsTextUpdateArgs
