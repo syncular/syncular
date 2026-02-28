@@ -71,6 +71,7 @@ const REALTIME_RECONNECT_CATCHUP_DELAY_MS = 500;
 const DEFAULT_AWAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_INSPECTOR_EVENT_LIMIT = 100;
 const MAX_INSPECTOR_EVENT_LIMIT = 500;
+const DEFAULT_DATA_CHANGE_DEBOUNCE_MS = 10;
 
 function calculateRetryDelay(attemptIndex: number): number {
   return Math.min(
@@ -304,6 +305,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   private dataChangeDebounceTimeoutId: ReturnType<typeof setTimeout> | null =
     null;
   private pendingDataChangeScopes = new Set<string>();
+  private batchDataChangeUntilReconnectSettles = false;
   private hasRealtimeConnectedOnce = false;
   private transportHealth: TransportHealth = {
     mode: 'disconnected',
@@ -811,19 +813,41 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.emit('state:change', {});
   }
 
-  private resolveDataChangeDebounceMs(): number {
-    const normalize = (value: number | undefined): number | undefined => {
-      if (value === undefined) return undefined;
-      return Number.isFinite(value) ? Math.max(0, value) : 0;
-    };
+  private normalizeDataChangeDebounceMs(
+    value: number | false | undefined
+  ): number | false | undefined {
+    if (value === undefined) return undefined;
+    if (value === false) return false;
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
+  }
+
+  private resolveReconnectDataChangeDebounceMs(): number | false {
+    const reconnectDebounce = this.normalizeDataChangeDebounceMs(
+      this.config.dataChangeDebounceMsWhenReconnecting
+    );
+    if (reconnectDebounce !== undefined) {
+      return reconnectDebounce;
+    }
+
+    const syncingDebounce = this.normalizeDataChangeDebounceMs(
+      this.config.dataChangeDebounceMsWhenSyncing
+    );
+    if (syncingDebounce !== undefined) {
+      return syncingDebounce;
+    }
+
+    return (
+      this.normalizeDataChangeDebounceMs(this.config.dataChangeDebounceMs) ??
+      DEFAULT_DATA_CHANGE_DEBOUNCE_MS
+    );
+  }
+
+  private resolveDataChangeDebounceMs(): number | false {
+    const normalize = (value: number | false | undefined) =>
+      this.normalizeDataChangeDebounceMs(value);
 
     if (this.state.connectionState === 'reconnecting') {
-      const reconnectDebounce = normalize(
-        this.config.dataChangeDebounceMsWhenReconnecting
-      );
-      if (reconnectDebounce !== undefined) {
-        return reconnectDebounce;
-      }
+      return this.resolveReconnectDataChangeDebounceMs();
     }
 
     if (this.state.isSyncing) {
@@ -835,7 +859,24 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       }
     }
 
-    return normalize(this.config.dataChangeDebounceMs) ?? 0;
+    return (
+      normalize(this.config.dataChangeDebounceMs) ??
+      DEFAULT_DATA_CHANGE_DEBOUNCE_MS
+    );
+  }
+
+  private flushReconnectBatchedDataChangesIfReady(): void {
+    if (!this.batchDataChangeUntilReconnectSettles) return;
+    if (this.state.isSyncing || this.state.connectionState === 'reconnecting') {
+      return;
+    }
+
+    this.batchDataChangeUntilReconnectSettles = false;
+    if (this.dataChangeDebounceTimeoutId) {
+      clearTimeout(this.dataChangeDebounceTimeoutId);
+      this.dataChangeDebounceTimeoutId = null;
+    }
+    this.flushDataChange();
   }
 
   private emitDataChange(scopes: Iterable<string>): void {
@@ -849,7 +890,19 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     if (normalizedScopes.size === 0) return;
 
     const debounceMs = this.resolveDataChangeDebounceMs();
-    if (debounceMs <= 0) {
+    const shouldBatchWithoutTimer =
+      (this.batchDataChangeUntilReconnectSettles ||
+        this.state.connectionState === 'reconnecting') &&
+      debounceMs !== false &&
+      debounceMs > 0;
+    if (shouldBatchWithoutTimer) {
+      for (const scope of normalizedScopes) {
+        this.pendingDataChangeScopes.add(scope);
+      }
+      return;
+    }
+
+    if (debounceMs === false || debounceMs <= 0) {
       this.flushDataChange(normalizedScopes);
       return;
     }
@@ -1447,9 +1500,41 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
   private setConnectionState(state: SyncConnectionState): void {
     const previous = this.state.connectionState;
-    if (previous !== state) {
-      this.updateState({ connectionState: state });
-      this.emit('connection:change', { previous, current: state });
+    if (previous === state) return;
+
+    const reconnectDebounceMs = this.resolveReconnectDataChangeDebounceMs();
+    if (
+      state === 'reconnecting' &&
+      reconnectDebounceMs !== false &&
+      reconnectDebounceMs > 0
+    ) {
+      this.batchDataChangeUntilReconnectSettles = true;
+      if (this.dataChangeDebounceTimeoutId) {
+        clearTimeout(this.dataChangeDebounceTimeoutId);
+        this.dataChangeDebounceTimeoutId = null;
+      }
+    }
+
+    this.updateState({ connectionState: state });
+    this.emit('connection:change', { previous, current: state });
+
+    if (previous === 'reconnecting' && state === 'connected') {
+      queueMicrotask(() => {
+        this.flushReconnectBatchedDataChangesIfReady();
+      });
+    }
+
+    if (previous === 'reconnecting' && state !== 'connected') {
+      this.batchDataChangeUntilReconnectSettles = false;
+      if (this.dataChangeDebounceTimeoutId) {
+        clearTimeout(this.dataChangeDebounceTimeoutId);
+        this.dataChangeDebounceTimeoutId = null;
+      }
+      this.flushDataChange();
+    }
+
+    if (state === 'disconnected') {
+      this.batchDataChangeUntilReconnectSettles = false;
     }
   }
 
@@ -1767,6 +1852,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
           attributes: { trigger: triggerLabel },
         }
       );
+      this.flushReconnectBatchedDataChangesIfReady();
 
       return syncResult;
     } catch (err) {
@@ -1814,6 +1900,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       if (error.retryable && this.state.retryCount < maxRetries) {
         this.scheduleRetry();
       }
+      this.flushReconnectBatchedDataChangesIfReady();
 
       return {
         success: false,

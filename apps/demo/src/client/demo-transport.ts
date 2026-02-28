@@ -5,6 +5,9 @@ import { getDemoAuthHeaders } from './demo-identity';
 // Keep SW demo responsive but reduce background churn a bit.
 // Effective sync loop performs both push and pull; lower poll frequency helps UI smoothness.
 export const DEMO_POLL_INTERVAL_MS = 4_000;
+export const DEMO_DATA_CHANGE_DEBOUNCE_MS = 100;
+export const DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING = 100;
+export const DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING = 100;
 
 export function createDemoPollingTransport(actorId: string): SyncTransport {
   return createServiceWorkerWakeTransport({

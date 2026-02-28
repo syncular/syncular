@@ -85,11 +85,14 @@ interface ClientOptions<DB> {
   plugins?: SyncClientPlugin[];
   realtimeEnabled?: boolean;
   pollIntervalMs?: number;
-  dataChangeDebounceMs?: number;
-  dataChangeDebounceMsWhenSyncing?: number;
-  dataChangeDebounceMsWhenReconnecting?: number;
+  dataChangeDebounceMs?: number | false;
+  dataChangeDebounceMsWhenSyncing?: number | false;
+  dataChangeDebounceMsWhenReconnecting?: number | false;
 }
 ```
+
+`data:change` emissions are debounced by default (`10ms`). Pass `0` or `false`
+to any of the debounce options to disable debouncing for that mode.
 
 ### Methods
 

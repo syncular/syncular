@@ -17,6 +17,9 @@ import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
   createDemoPollingTransport,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING,
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
@@ -154,6 +157,13 @@ export function LargeCatalogTab() {
       limitSnapshotRows={CATALOG_SNAPSHOT_ROWS_PER_PAGE}
       maxSnapshotPages={CATALOG_MAX_SNAPSHOT_PAGES_PER_PULL}
       realtimeEnabled={true}
+      dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
+      dataChangeDebounceMsWhenSyncing={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
+      }
+      dataChangeDebounceMsWhenReconnecting={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
+      }
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[catalog-demo] Sync error:', e)}
     >

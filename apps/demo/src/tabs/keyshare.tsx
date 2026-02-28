@@ -42,6 +42,9 @@ import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
   createDemoPollingTransport,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING,
+  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING,
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { sharedTasksClientHandler } from '../client/handlers/shared-tasks';
@@ -358,6 +361,13 @@ function AlicePanel({
       stateId={stateId}
       plugins={plugins}
       realtimeEnabled={true}
+      dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
+      dataChangeDebounceMsWhenSyncing={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
+      }
+      dataChangeDebounceMsWhenReconnecting={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
+      }
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[Alice] Sync error:', e)}
     >
@@ -636,6 +646,13 @@ function BobPanel({
       stateId={stateId}
       plugins={plugins}
       realtimeEnabled={true}
+      dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
+      dataChangeDebounceMsWhenSyncing={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
+      }
+      dataChangeDebounceMsWhenReconnecting={
+        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
+      }
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
       onError={(e) => console.error('[Bob] Sync error:', e)}
     >
