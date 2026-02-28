@@ -11,6 +11,7 @@
     "test:cloudflare": "SYNCULAR_TEST_RUN_CLOUDFLARE=true bun test __tests__/cloudflare.runtime.test.ts",
     "test:d1": "SYNCULAR_TEST_RUN_D1=true bun test __tests__/d1.runtime.test.ts",
     "measure:demo-latency": "bun run scripts/demo-sync-latency.ts",
+    "measure:demo-toggle-latency": "bun run scripts/demo-toggle-latency.ts",
     "test:relay": "bun test __tests__/relay.runtime.test.ts",
     "test:node": "bun test __tests__/node.runtime.test.ts",
     "test:deno": "bun test __tests__/deno.runtime.test.ts",

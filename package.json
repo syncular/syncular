@@ -85,6 +85,7 @@
     "test:runtime:cloudflare": "bun --cwd tests/runtime test:cloudflare",
     "test:runtime:d1": "bun --cwd tests/runtime test:d1",
     "test:runtime:demo-latency": "bun --cwd tests/runtime measure:demo-latency",
+    "test:runtime:demo-toggle-latency": "bun --cwd tests/runtime measure:demo-toggle-latency",
     "test:all": "bun test && bun test:runtime && bun test:perf",
     "ci:cloudflare": "act -j runtime-cloudflare -W .github/workflows/checks.yml",
     "ci:test": "act -j test -W .github/workflows/checks.yml",

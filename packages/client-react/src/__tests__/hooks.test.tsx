@@ -29,6 +29,7 @@ const {
   useSyncConnection,
   useSyncEngine,
   useSyncInspector,
+  useMutations,
   useSyncQuery,
   useSyncStatus,
 } = createSyncularReact<SyncClientDb>();
@@ -40,7 +41,10 @@ describe('React Hooks', () => {
     db = await createMockDb();
   });
 
-  function createWrapper(options?: { autoStart?: boolean }) {
+  function createWrapper(options?: {
+    autoStart?: boolean;
+    dataChangeDebounceMs?: number | false;
+  }) {
     const transport = createMockTransport();
     const handlers = createMockHandlerRegistry();
     const sync = createMockSync({ handlers });
@@ -54,6 +58,7 @@ describe('React Hooks', () => {
         clientId="test-client"
         pollIntervalMs={999999} // Long poll interval to prevent continuous polling
         autoStart={options?.autoStart ?? false} // Disable auto-start for tests
+        dataChangeDebounceMs={options?.dataChangeDebounceMs}
       >
         {children}
       </SyncProvider>
@@ -373,6 +378,133 @@ describe('React Hooks', () => {
           initialExecutions + 1
         );
       });
+    });
+
+    it('does not delay local invalidation even with high debounce configured', async () => {
+      const transport = createMockTransport();
+      const handlers = createMockHandlerRegistry();
+      handlers.push({
+        table: 'tasks',
+        applySnapshot: async () => {},
+        clearAll: async () => {},
+        applyChange: async () => {},
+      });
+      const sync = createMockSync({ handlers });
+
+      const Wrapper = ({ children }: { children: ReactNode }) => (
+        <SyncProvider
+          db={db}
+          transport={transport}
+          sync={sync}
+          identity={{ actorId: 'test-actor' }}
+          clientId="test-client"
+          pollIntervalMs={999999}
+          autoStart={false}
+          dataChangeDebounceMs={5000}
+        >
+          {children}
+        </SyncProvider>
+      );
+
+      let executions = 0;
+      const { result } = renderHook(
+        () => {
+          const engine = useEngine();
+          const query = useSyncQuery(
+            (ctx) =>
+              ctx
+                .selectFrom('sync_outbox_commits')
+                .select((eb) => [eb.fn.count('id').as('total')])
+                .executeTakeFirst()
+                .then((row) => {
+                  executions += 1;
+                  return Number(row?.total ?? 0);
+                }),
+            {
+              watchTables: ['tasks'],
+            }
+          );
+          return { engine, query };
+        },
+        {
+          wrapper: Wrapper,
+        }
+      );
+
+      await waitFor(() => {
+        expect(result.current.query.isLoading).toBe(false);
+      });
+      const initialExecutions = executions;
+
+      await act(async () => {
+        await result.current.engine.applyLocalMutation([
+          {
+            table: 'tasks',
+            rowId: 'local-fast',
+            op: 'upsert',
+            payload: { id: 'local-fast' },
+          },
+        ]);
+      });
+
+      await waitFor(
+        () => {
+          expect(executions).toBeGreaterThan(initialExecutions);
+        },
+        {
+          timeout: 300,
+        }
+      );
+    });
+
+    it('does not delay local useMutations updates with high debounce configured', async () => {
+      await db.schema
+        .createTable('tasks')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('user_id', 'text', (col) => col.notNull())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+        .addColumn('server_version', 'integer')
+        .execute();
+
+      const { result } = renderHook(
+        () => {
+          const query = useSyncQuery((ctx) =>
+            ctx.selectFrom('tasks').selectAll().orderBy('id', 'asc')
+          );
+          const mutations = useMutations({ sync: false });
+          return { query, mutations };
+        },
+        {
+          wrapper: createWrapper({
+            dataChangeDebounceMs: 5000,
+          }),
+        }
+      );
+
+      await waitFor(() => {
+        expect(result.current.query.isLoading).toBe(false);
+      });
+
+      await act(async () => {
+        await result.current.mutations.tasks.insert({
+          id: 'mut-local-fast',
+          user_id: 'test-actor',
+          title: 'mut local',
+          completed: 0,
+          server_version: 0,
+        });
+      });
+
+      await waitFor(
+        () => {
+          expect(result.current.query.data?.[0]?.id).toBe('mut-local-fast');
+        },
+        {
+          timeout: 300,
+        }
+      );
     });
   });
 

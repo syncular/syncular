@@ -126,6 +126,21 @@ bun --cwd apps/docs dev     # docs at http://localhost:3000
 bun --cwd apps/console dev  # console at http://localhost:3000
 ```
 
+## Latency checks
+
+```bash
+bun run test:runtime:demo-latency
+bun run test:runtime:demo-toggle-latency
+```
+
+`test:runtime:demo-toggle-latency` reports split-screen checkbox toggle latency for:
+- `samePaneMs` (click -> left pane update)
+- `mirrorPaneMs` (click -> right pane update)
+
+Optional thresholds can be set via env vars:
+- `LOCAL_P95_BUDGET_MS`
+- `MIRROR_P95_BUDGET_MS`
+
 ## License
 
 Apache-2.0

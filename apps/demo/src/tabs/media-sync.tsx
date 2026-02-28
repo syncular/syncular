@@ -41,6 +41,7 @@ import {
   DemoClientSyncControls,
   useDemoClientSyncControls,
 } from '../components/demo-client-sync-controls';
+import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -104,26 +105,6 @@ function timeNow(): string {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Singletons (stable across re-renders)
-// ---------------------------------------------------------------------------
-
-const uploaderHandlers: ClientHandlerCollection<ClientDb> = [
-  tasksClientHandler,
-];
-
-const receiverHandlers: ClientHandlerCollection<ClientDb> = [
-  tasksClientHandler,
-];
-const mediaSync = {
-  handlers: uploaderHandlers,
-  subscriptions: () => subscriptions,
-};
-const receiverSync = {
-  handlers: receiverHandlers,
-  subscriptions: () => subscriptions,
-};
-
 let uploaderDbPromise: Promise<
   Awaited<ReturnType<typeof createSqliteClient>>
 > | null = null;
@@ -157,9 +138,6 @@ function getReceiverDb() {
   }
   return receiverDbPromise;
 }
-
-const uploaderTransport = createDemoPollingTransport(userId);
-const receiverTransport = createDemoPollingTransport(userId);
 
 // ---------------------------------------------------------------------------
 // BlobImage - fetches a signed URL and displays an image
@@ -420,10 +398,23 @@ function UploaderWrapper({
 }: {
   onTransfer: (entry: TransferEntry) => void;
 }) {
+  const clientId = 'client-media-uploader';
   const [db, setDb] = useState<Awaited<
     ReturnType<typeof createSqliteClient>
   > | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const transport = useKeyedConstant(clientId, () =>
+    createDemoPollingTransport(userId)
+  );
+
+  const sync = useKeyedConstant(clientId, () => {
+    const handlers: ClientHandlerCollection<ClientDb> = [tasksClientHandler];
+    return {
+      handlers,
+      subscriptions: () => subscriptions,
+    };
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -461,12 +452,12 @@ function UploaderWrapper({
 
   return (
     <SyncProvider
-      key="media-uploader"
+      key={`${userId}:${clientId}`}
       db={db}
-      transport={uploaderTransport}
-      sync={mediaSync}
+      transport={transport}
+      sync={sync}
       identity={{ actorId: userId }}
-      clientId="client-media-uploader"
+      clientId={clientId}
       realtimeEnabled={true}
       dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
       dataChangeDebounceMsWhenSyncing={
@@ -483,10 +474,23 @@ function UploaderWrapper({
 }
 
 function ReceiverWrapper() {
+  const clientId = 'client-media-receiver';
   const [db, setDb] = useState<Awaited<
     ReturnType<typeof createPgliteClient>
   > | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const transport = useKeyedConstant(clientId, () =>
+    createDemoPollingTransport(userId)
+  );
+
+  const sync = useKeyedConstant(clientId, () => {
+    const handlers: ClientHandlerCollection<ClientDb> = [tasksClientHandler];
+    return {
+      handlers,
+      subscriptions: () => subscriptions,
+    };
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -524,12 +528,12 @@ function ReceiverWrapper() {
 
   return (
     <SyncProvider
-      key="media-receiver"
+      key={`${userId}:${clientId}`}
       db={db}
-      transport={receiverTransport}
-      sync={receiverSync}
+      transport={transport}
+      sync={sync}
       identity={{ actorId: userId }}
-      clientId="client-media-receiver"
+      clientId={clientId}
       realtimeEnabled={true}
       dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
       dataChangeDebounceMsWhenSyncing={
