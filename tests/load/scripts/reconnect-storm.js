@@ -29,6 +29,9 @@ const reconnects = new Counter('reconnects');
 
 const pullStateByVu = new Map();
 const smokeMode = __ENV.K6_SMOKE === 'true';
+const soakMode = __ENV.K6_SOAK === 'true';
+const soakVus = Number.parseInt(__ENV.RECONNECT_STORM_SOAK_VUS || '80', 10);
+const soakDuration = __ENV.RECONNECT_STORM_SOAK_DURATION || '30m';
 const syncVisibilityTimeoutMs = Number.parseInt(
   __ENV.SYNC_VISIBILITY_TIMEOUT_MS || '20000',
   10
@@ -117,17 +120,25 @@ export const options = {
           duration: '12s',
         },
       }
-    : {
-        reconnect_storm: {
-          executor: 'ramping-vus',
-          startVUs: 0,
-          stages: [
-            { duration: '30s', target: 100 },
-            { duration: '2m', target: 300 },
-            { duration: '30s', target: 0 },
-          ],
+    : soakMode
+      ? {
+          reconnect_storm: {
+            executor: 'constant-vus',
+            vus: soakVus,
+            duration: soakDuration,
+          },
+        }
+      : {
+          reconnect_storm: {
+            executor: 'ramping-vus',
+            startVUs: 0,
+            stages: [
+              { duration: '30s', target: 100 },
+              { duration: '2m', target: 300 },
+              { duration: '30s', target: 0 },
+            ],
+          },
         },
-      },
   thresholds: {
     reconnect_connect_time: ['p(95)<1500'],
     reconnect_pull_latency: ['p(95)<600'],

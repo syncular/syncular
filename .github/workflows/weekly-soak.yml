@@ -1,0 +1,125 @@
+name: Weekly Soak
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: weekly-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run weekly reconnect + mixed soak
+        env:
+          LOAD_SERVER_PORT: 3001
+          LOAD_DB_DIALECT: sqlite
+          SQLITE_PATH: ':memory:'
+          SEED_ROWS: 500000
+          SEED_USERS: 1400
+          SEED_RANDOM_SEED: 42
+          RECONNECT_STORM_SOAK_VUS: 120
+          RECONNECT_STORM_SOAK_DURATION: 30m
+          MIXED_SOAK_DURATION: 25m
+          MIXED_SOAK_READERS: 160
+          MIXED_SOAK_WRITERS: 40
+          MIXED_SOAK_WEBSOCKETS: 220
+        run: |
+          set -euo pipefail
+
+          mkdir -p .tmp/weekly-soak
+          server_log=".tmp/weekly-soak/load-server.log"
+
+          bun tests/load/server.ts >"$server_log" 2>&1 &
+          server_pid=$!
+
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          health_url="http://127.0.0.1:${LOAD_SERVER_PORT}/api/health"
+          for i in $(seq 1 180); do
+            if curl -sf "$health_url" >/dev/null; then
+              break
+            fi
+            if [ "$i" -eq 180 ]; then
+              echo "Load server failed health check: $health_url"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          BASE_URL="http://127.0.0.1:${LOAD_SERVER_PORT}" \
+            K6_SOAK=true \
+            k6 run \
+            --summary-export weekly-soak-reconnect-summary.json \
+            tests/load/scripts/reconnect-storm.js \
+            2>&1 | tee weekly-soak-reconnect.log
+
+          BASE_URL="http://127.0.0.1:${LOAD_SERVER_PORT}" \
+            K6_SOAK=true \
+            k6 run \
+            --summary-export weekly-soak-mixed-summary.json \
+            tests/load/scripts/mixed-workload.js \
+            2>&1 | tee weekly-soak-mixed.log
+
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-soak-${{ github.run_id }}
+          path: |
+            weekly-soak-reconnect-summary.json
+            weekly-soak-reconnect.log
+            weekly-soak-mixed-summary.json
+            weekly-soak-mixed.log
+            .tmp/weekly-soak/load-server.log
+
+      - name: Publish soak summary
+        if: always()
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+
+          function readSummary(path) {
+            if (!fs.existsSync(path)) return null;
+            return JSON.parse(fs.readFileSync(path, 'utf8'));
+          }
+
+          function metric(summary, key, stat) {
+            const value = summary?.metrics?.[key]?.[stat];
+            return Number.isFinite(value) ? Number(value) : null;
+          }
+
+          const reconnect = readSummary('weekly-soak-reconnect-summary.json');
+          const mixed = readSummary('weekly-soak-mixed-summary.json');
+          const lines = [];
+
+          lines.push('## Weekly Soak Summary');
+          lines.push('');
+          lines.push('| Scenario | HTTP p95 | HTTP p99 | HTTP error rate |');
+          lines.push('|----------|----------|----------|-----------------|');
+
+          const reconnectP95 = metric(reconnect, 'http_req_duration', 'p(95)');
+          const reconnectP99 = metric(reconnect, 'http_req_duration', 'p(99)');
+          const reconnectErr = metric(reconnect, 'http_req_failed', 'rate');
+          lines.push(`| reconnect-storm | ${reconnectP95 == null ? 'N/A' : reconnectP95.toFixed(1) + 'ms'} | ${reconnectP99 == null ? 'N/A' : reconnectP99.toFixed(1) + 'ms'} | ${reconnectErr == null ? 'N/A' : (reconnectErr * 100).toFixed(2) + '%'} |`);
+
+          const mixedP95 = metric(mixed, 'http_req_duration', 'p(95)');
+          const mixedP99 = metric(mixed, 'http_req_duration', 'p(99)');
+          const mixedErr = metric(mixed, 'http_req_failed', 'rate');
+          lines.push(`| mixed-workload | ${mixedP95 == null ? 'N/A' : mixedP95.toFixed(1) + 'ms'} | ${mixedP99 == null ? 'N/A' : mixedP99.toFixed(1) + 'ms'} | ${mixedErr == null ? 'N/A' : (mixedErr * 100).toFixed(2) + '%'} |`);
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
