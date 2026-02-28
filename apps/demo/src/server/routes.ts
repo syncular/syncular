@@ -32,7 +32,7 @@ const yjsPushPlugin = createYjsServerPushPlugin({
       field: 'title',
       stateColumn: 'title_yjs_state',
       containerKey: 'title',
-      kind: 'text',
+      kind: 'prosemirror',
     },
   ],
 });
