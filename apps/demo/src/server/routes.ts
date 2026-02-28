@@ -14,7 +14,7 @@ import {
 } from '@syncular/server';
 import { createBlobRoutes } from '@syncular/server-hono/blobs';
 import { createSyncServer } from '@syncular/server-hono/create-server';
-import { createYjsServerPushPlugin } from '@syncular/server-plugin-crdt-yjs';
+import { createYjsServerPushPlugin } from '@syncular/server-plugin-yjs';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';

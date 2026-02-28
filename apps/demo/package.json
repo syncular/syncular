@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@syncular/client": "workspace:*",
-    "@syncular/client-plugin-crdt-yjs": "workspace:*",
+    "@syncular/client-plugin-yjs": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",
     "@syncular/client-react": "workspace:*",
     "@syncular/console": "workspace:*",
@@ -26,7 +26,7 @@
     "@syncular/server-cloudflare": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
-    "@syncular/server-plugin-crdt-yjs": "workspace:*",
+    "@syncular/server-plugin-yjs": "workspace:*",
     "@syncular/server-service-worker": "workspace:*",
     "@syncular/ui": "workspace:*",
     "@tanstack/react-query": "^5.90.21",

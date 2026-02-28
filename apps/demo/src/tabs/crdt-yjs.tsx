@@ -15,7 +15,7 @@ import {
   createYjsClientPlugin,
   YJS_PAYLOAD_KEY,
   type YjsClientUpdateEnvelope,
-} from '@syncular/client-plugin-crdt-yjs';
+} from '@syncular/client-plugin-yjs';
 import {
   captureBrowserSentryMessage,
   logBrowserSentryMessage,
