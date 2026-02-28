@@ -5,6 +5,7 @@
  */
 
 import type {
+  SyncCombinedResponse,
   SyncPullResponse,
   SyncPullSubscriptionResponse,
   SyncPushRequest,
@@ -244,25 +245,34 @@ async function syncOnceCombined<DB extends SyncClientDb>(
     }
   }
 
-  const combined = await transport.sync({
-    clientId,
-    ...(pushRequest && !wsPushResponse
-      ? {
-          push: {
-            clientCommitId: pushRequest.clientCommitId,
-            operations: pushRequest.operations,
-            schemaVersion: pushRequest.schemaVersion,
-          },
-        }
-      : {}),
-    pull: {
-      limitCommits: pullState.request.limitCommits,
-      limitSnapshotRows: pullState.request.limitSnapshotRows,
-      maxSnapshotPages: pullState.request.maxSnapshotPages,
-      dedupeRows: pullState.request.dedupeRows,
-      subscriptions: pullState.request.subscriptions,
-    },
-  });
+  let combined: SyncCombinedResponse;
+  try {
+    combined = await transport.sync({
+      clientId,
+      ...(pushRequest && !wsPushResponse
+        ? {
+            push: {
+              clientCommitId: pushRequest.clientCommitId,
+              operations: pushRequest.operations,
+              schemaVersion: pushRequest.schemaVersion,
+            },
+          }
+        : {}),
+      pull: {
+        limitCommits: pullState.request.limitCommits,
+        limitSnapshotRows: pullState.request.limitSnapshotRows,
+        maxSnapshotPages: pullState.request.maxSnapshotPages,
+        dedupeRows: pullState.request.dedupeRows,
+        subscriptions: pullState.request.subscriptions,
+      },
+    });
+  } catch (err) {
+    if (outbox) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      await markOutboxCommitPending(db, { id: outbox.id, error: message });
+    }
+    throw err;
+  }
 
   // Process push response
   let pushedCommits = 0;
