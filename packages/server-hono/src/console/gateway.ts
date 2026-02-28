@@ -13,16 +13,10 @@ import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
   ConsoleApiKeyCreateResponse,
-  ConsoleClearEventsResult,
   ConsoleClient,
   ConsoleCommitListItem,
-  ConsoleCompactResult,
-  ConsoleEvictResult,
   ConsoleOperationEvent,
   ConsolePaginatedResponse,
-  ConsolePruneEventsResult,
-  ConsolePrunePreview,
-  ConsolePruneResult,
   ConsoleRequestEvent,
   ConsoleTimelineItem,
   LatencyPercentiles,
@@ -1056,6 +1050,60 @@ export function createConsoleGatewayRoutes(
     })
   );
 
+  const withGatewayAuth = async (
+    c: Context,
+    callback: () => Promise<Response>
+  ): Promise<Response> => {
+    const auth = await options.authenticate(c);
+    if (!auth) {
+      return unauthorizedResponse(c);
+    }
+    return callback();
+  };
+
+  const proxySingleInstanceJsonRequest = async <T>(args: {
+    c: Context;
+    query: { instanceId?: string; instanceIds?: string };
+    method: 'GET' | 'POST' | 'DELETE';
+    path: string;
+    responseSchema: z.ZodType<T>;
+    body?: unknown;
+  }): Promise<Response> => {
+    const target = resolveSingleInstanceTarget({
+      instances,
+      query: args.query,
+    });
+    if (!target.ok) {
+      return args.c.json(
+        {
+          error: target.error,
+          message: target.message,
+        },
+        target.status
+      );
+    }
+
+    const forwardQuery = sanitizeForwardQueryParams(
+      new URL(args.c.req.url).searchParams
+    );
+    const result = await forwardDownstreamJsonRequest<T>({
+      c: args.c,
+      instance: target.instance,
+      method: args.method,
+      path: args.path,
+      query: forwardQuery,
+      ...(args.body === undefined ? {} : { body: args.body }),
+      responseSchema: args.responseSchema,
+      fetchImpl,
+    });
+
+    if (!result.ok) {
+      return jsonResponse(result.body, result.status);
+    }
+
+    return jsonResponse(result.data, result.status);
+  };
+
   routes.get(
     '/instances',
     describeRoute({
@@ -1186,41 +1234,16 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest({
-        c,
-        instance: target.instance,
-        method: 'GET',
-        path: '/handlers',
-        query: forwardQuery,
-        responseSchema: GatewayHandlersResponseSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
+          c,
+          query,
+          method: 'GET',
+          path: '/handlers',
+          responseSchema: GatewayHandlersResponseSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1243,41 +1266,16 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<ConsolePrunePreview>({
-        c,
-        instance: target.instance,
-        method: 'POST',
-        path: '/prune/preview',
-        query: forwardQuery,
-        responseSchema: ConsolePrunePreviewSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
+          c,
+          query,
+          method: 'POST',
+          path: '/prune/preview',
+          responseSchema: ConsolePrunePreviewSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1300,41 +1298,16 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<ConsolePruneResult>({
-        c,
-        instance: target.instance,
-        method: 'POST',
-        path: '/prune',
-        query: forwardQuery,
-        responseSchema: ConsolePruneResultSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
+          c,
+          query,
+          method: 'POST',
+          path: '/prune',
+          responseSchema: ConsolePruneResultSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1357,41 +1330,16 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<ConsoleCompactResult>({
-        c,
-        instance: target.instance,
-        method: 'POST',
-        path: '/compact',
-        query: forwardQuery,
-        responseSchema: ConsoleCompactResultSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
+          c,
+          query,
+          method: 'POST',
+          path: '/compact',
+          responseSchema: ConsoleCompactResultSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1415,43 +1363,18 @@ export function createConsoleGatewayRoutes(
     zValidator('query', GatewaySingleInstanceQuerySchema),
     zValidator('json', GatewayNotifyDataChangeRequestSchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const body = c.req.valid('json');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest({
-        c,
-        instance: target.instance,
-        method: 'POST',
-        path: '/notify-data-change',
-        query: forwardQuery,
-        body,
-        responseSchema: GatewayNotifyDataChangeResponseSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const body = c.req.valid('json');
+        return proxySingleInstanceJsonRequest({
+          c,
+          query,
+          method: 'POST',
+          path: '/notify-data-change',
+          body,
+          responseSchema: GatewayNotifyDataChangeResponseSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1475,42 +1398,17 @@ export function createConsoleGatewayRoutes(
     zValidator('param', GatewayClientPathParamSchema),
     zValidator('query', GatewaySingleInstancePartitionQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<ConsoleEvictResult>({
-        c,
-        instance: target.instance,
-        method: 'DELETE',
-        path: `/clients/${encodeURIComponent(id)}`,
-        query: forwardQuery,
-        responseSchema: ConsoleEvictResultSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
+          c,
+          query,
+          method: 'DELETE',
+          path: `/clients/${encodeURIComponent(id)}`,
+          responseSchema: ConsoleEvictResultSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1533,42 +1431,16 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result =
-        await forwardDownstreamJsonRequest<ConsoleClearEventsResult>({
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
           c,
-          instance: target.instance,
+          query,
           method: 'DELETE',
           path: '/events',
-          query: forwardQuery,
           responseSchema: ConsoleClearEventsResultSchema,
-          fetchImpl,
         });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
+      });
     }
   );
 
@@ -1591,42 +1463,16 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result =
-        await forwardDownstreamJsonRequest<ConsolePruneEventsResult>({
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest({
           c,
-          instance: target.instance,
+          query,
           method: 'POST',
           path: '/events/prune',
-          query: forwardQuery,
           responseSchema: ConsolePruneEventsResultSchema,
-          fetchImpl,
         });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
+      });
     }
   );
 
@@ -1651,43 +1497,18 @@ export function createConsoleGatewayRoutes(
     }),
     zValidator('query', GatewayApiKeysQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<
-        ConsolePaginatedResponse<ConsoleApiKey>
-      >({
-        c,
-        instance: target.instance,
-        method: 'GET',
-        path: '/api-keys',
-        query: forwardQuery,
-        responseSchema: ConsolePaginatedResponseSchema(ConsoleApiKeySchema),
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest<
+          ConsolePaginatedResponse<ConsoleApiKey>
+        >({
+          c,
+          query,
+          method: 'GET',
+          path: '/api-keys',
+          responseSchema: ConsolePaginatedResponseSchema(ConsoleApiKeySchema),
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1711,44 +1532,18 @@ export function createConsoleGatewayRoutes(
     zValidator('query', GatewaySingleInstanceQuerySchema),
     zValidator('json', ConsoleApiKeyCreateRequestSchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const body = c.req.valid('json');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result =
-        await forwardDownstreamJsonRequest<ConsoleApiKeyCreateResponse>({
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const body = c.req.valid('json');
+        return proxySingleInstanceJsonRequest<ConsoleApiKeyCreateResponse>({
           c,
-          instance: target.instance,
+          query,
           method: 'POST',
           path: '/api-keys',
-          query: forwardQuery,
           body,
           responseSchema: ConsoleApiKeyCreateResponseSchema,
-          fetchImpl,
         });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
+      });
     }
   );
 
@@ -1772,42 +1567,17 @@ export function createConsoleGatewayRoutes(
     zValidator('param', GatewayApiKeyPathParamSchema),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<ConsoleApiKey>({
-        c,
-        instance: target.instance,
-        method: 'GET',
-        path: `/api-keys/${encodeURIComponent(id)}`,
-        query: forwardQuery,
-        responseSchema: ConsoleApiKeySchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest<ConsoleApiKey>({
+          c,
+          query,
+          method: 'GET',
+          path: `/api-keys/${encodeURIComponent(id)}`,
+          responseSchema: ConsoleApiKeySchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1831,42 +1601,17 @@ export function createConsoleGatewayRoutes(
     zValidator('param', GatewayApiKeyPathParamSchema),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result = await forwardDownstreamJsonRequest<{ revoked: boolean }>({
-        c,
-        instance: target.instance,
-        method: 'DELETE',
-        path: `/api-keys/${encodeURIComponent(id)}`,
-        query: forwardQuery,
-        responseSchema: ConsoleApiKeyRevokeResponseSchema,
-        fetchImpl,
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest<{ revoked: boolean }>({
+          c,
+          query,
+          method: 'DELETE',
+          path: `/api-keys/${encodeURIComponent(id)}`,
+          responseSchema: ConsoleApiKeyRevokeResponseSchema,
+        });
       });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
     }
   );
 
@@ -1890,44 +1635,18 @@ export function createConsoleGatewayRoutes(
     zValidator('query', GatewaySingleInstanceQuerySchema),
     zValidator('json', ConsoleApiKeyBulkRevokeRequestSchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const query = c.req.valid('query');
-      const body = c.req.valid('json');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result =
-        await forwardDownstreamJsonRequest<ConsoleApiKeyBulkRevokeResponse>({
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const body = c.req.valid('json');
+        return proxySingleInstanceJsonRequest<ConsoleApiKeyBulkRevokeResponse>({
           c,
-          instance: target.instance,
+          query,
           method: 'POST',
           path: '/api-keys/bulk-revoke',
-          query: forwardQuery,
           body,
           responseSchema: ConsoleApiKeyBulkRevokeResponseSchema,
-          fetchImpl,
         });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
+      });
     }
   );
 
@@ -1951,43 +1670,17 @@ export function createConsoleGatewayRoutes(
     zValidator('param', GatewayApiKeyPathParamSchema),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result =
-        await forwardDownstreamJsonRequest<ConsoleApiKeyCreateResponse>({
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest<ConsoleApiKeyCreateResponse>({
           c,
-          instance: target.instance,
+          query,
           method: 'POST',
           path: `/api-keys/${encodeURIComponent(id)}/rotate/stage`,
-          query: forwardQuery,
           responseSchema: ConsoleApiKeyCreateResponseSchema,
-          fetchImpl,
         });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
+      });
     }
   );
 
@@ -2011,43 +1704,17 @@ export function createConsoleGatewayRoutes(
     zValidator('param', GatewayApiKeyPathParamSchema),
     zValidator('query', GatewaySingleInstanceQuerySchema),
     async (c) => {
-      const auth = await options.authenticate(c);
-      if (!auth) {
-        return unauthorizedResponse(c);
-      }
-
-      const { id } = c.req.valid('param');
-      const query = c.req.valid('query');
-      const target = resolveSingleInstanceTarget({ instances, query });
-      if (!target.ok) {
-        return c.json(
-          {
-            error: target.error,
-            message: target.message,
-          },
-          target.status
-        );
-      }
-
-      const forwardQuery = sanitizeForwardQueryParams(
-        new URL(c.req.url).searchParams
-      );
-      const result =
-        await forwardDownstreamJsonRequest<ConsoleApiKeyCreateResponse>({
+      return withGatewayAuth(c, async () => {
+        const { id } = c.req.valid('param');
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest<ConsoleApiKeyCreateResponse>({
           c,
-          instance: target.instance,
+          query,
           method: 'POST',
           path: `/api-keys/${encodeURIComponent(id)}/rotate`,
-          query: forwardQuery,
           responseSchema: ConsoleApiKeyCreateResponseSchema,
-          fetchImpl,
         });
-
-      if (!result.ok) {
-        return jsonResponse(result.body, result.status);
-      }
-
-      return jsonResponse(result.data, result.status);
+      });
     }
   );
 
