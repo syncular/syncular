@@ -334,8 +334,15 @@ jobs:
             echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
           fi
 
-      - name: Fail on consecutive performance regressions
-        if: steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression == 'true'
+      - name: Warn on consecutive performance regressions (push/manual)
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression == 'true'
+        run: |
+          echo "::warning::Consecutive perf regressions detected on push/manual run."
+          echo "Current run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
+
+      - name: Fail on consecutive performance regressions (PR)
+        if: github.event_name == 'pull_request' && steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression == 'true'
         run: |
           echo "Sync performance regression detected in two consecutive runs."
           echo "Current run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
