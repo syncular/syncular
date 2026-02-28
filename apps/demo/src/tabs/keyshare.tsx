@@ -62,6 +62,7 @@ import {
   DemoClientSyncControls,
   useDemoClientSyncControls,
 } from '../components/demo-client-sync-controls';
+import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 // ---------------------------------------------------------------------------
 // Key management
@@ -284,11 +285,8 @@ function AlicePanel({
     }
   );
 
-  const transport = useMemo(() => createDemoPollingTransport(actorId), []);
-
-  const tables = useMemo<ClientHandlerCollection<ClientDb>>(
-    () => [sharedTasksClientHandler],
-    []
+  const transport = useKeyedConstant(actorId, () =>
+    createDemoPollingTransport(actorId)
   );
 
   const keys = useMemo(
@@ -314,23 +312,22 @@ function AlicePanel({
     [keys]
   );
 
-  const subscriptions = useMemo(
-    () => [
+  const sync = useKeyedConstant(shareId, () => {
+    const handlers: ClientHandlerCollection<ClientDb> = [
+      sharedTasksClientHandler,
+    ];
+    const subscriptions = [
       {
         id: `share-demo-${shareId}`,
         table: 'shared_tasks' as const,
         scopes: { share_id: shareId },
       },
-    ],
-    [shareId]
-  );
-  const sync = useMemo(
-    () => ({
-      handlers: tables,
+    ];
+    return {
+      handlers,
       subscriptions: () => subscriptions,
-    }),
-    [tables, subscriptions]
-  );
+    };
+  });
 
   if (error) {
     return (
@@ -555,11 +552,8 @@ function BobPanel({
   );
   const recipientKeyRef = useRef<Uint8Array | null>(recipientKey);
 
-  const transport = useMemo(() => createDemoPollingTransport(actorId), []);
-
-  const tables = useMemo<ClientHandlerCollection<ClientDb>>(
-    () => [sharedTasksClientHandler],
-    []
+  const transport = useKeyedConstant(actorId, () =>
+    createDemoPollingTransport(actorId)
   );
 
   useEffect(() => {
@@ -599,23 +593,22 @@ function BobPanel({
     [fieldEncryptionPlugin]
   );
 
-  const subscriptions = useMemo(
-    () => [
+  const sync = useKeyedConstant(shareId, () => {
+    const handlers: ClientHandlerCollection<ClientDb> = [
+      sharedTasksClientHandler,
+    ];
+    const subscriptions = [
       {
         id: `share-demo-${shareId}`,
         table: 'shared_tasks' as const,
         scopes: { share_id: shareId },
       },
-    ],
-    [shareId]
-  );
-  const sync = useMemo(
-    () => ({
-      handlers: tables,
+    ];
+    return {
+      handlers,
       subscriptions: () => subscriptions,
-    }),
-    [tables, subscriptions]
-  );
+    };
+  });
 
   if (error) {
     return (

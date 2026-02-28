@@ -68,6 +68,7 @@ import {
   DemoClientSyncControls,
   useDemoClientSyncControls,
 } from '../components/demo-client-sync-controls';
+import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -405,34 +406,32 @@ function SyncClientPanel({
     }
   }, [clientStoreKey, isRecoveringInitError, onRecoverFromInitError]);
 
-  const transport = useMemo(
-    () => createDemoPollingTransport(actorId),
-    [actorId]
+  const transport = useKeyedConstant(actorId, () =>
+    createDemoPollingTransport(actorId)
   );
 
-  const handlers = useMemo(() => {
-    const configured: ClientHandlerCollection<ClientDb> = [
+  const plugins = useKeyedConstant(clientId, () => [
+    createIncrementingVersionPlugin(),
+  ]);
+
+  const sync = useKeyedConstant(actorId, () => {
+    const handlers: ClientHandlerCollection<ClientDb> = [
       tasksClientHandler,
       sharedTasksClientHandler,
       catalogItemsClientHandler,
     ];
-    return configured;
-  }, []);
-
-  const plugins = useMemo(() => [createIncrementingVersionPlugin()], []);
-
-  const subscriptions = useMemo(
-    () => [
+    const subscriptions = [
       { id: 'my-tasks', table: 'tasks' as const, scopes: { user_id: actorId } },
-    ],
-    [actorId]
-  );
-  const sync = useMemo(
-    () => ({
+    ];
+    return {
       handlers,
       subscriptions: () => subscriptions,
-    }),
-    [handlers, subscriptions]
+    };
+  });
+
+  const providerKey = useMemo(
+    () => `${actorId}:${clientId}`,
+    [actorId, clientId]
   );
 
   if (initError) {
@@ -491,6 +490,7 @@ function SyncClientPanel({
 
   return (
     <SyncProvider
+      key={providerKey}
       db={db}
       transport={transport}
       sync={sync}

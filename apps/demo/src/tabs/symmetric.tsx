@@ -55,6 +55,7 @@ import {
   createPassphraseStore,
   createScopedKeyProvider,
 } from '../lib/scoped-encryption';
+import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -381,36 +382,28 @@ function ActorVaultPanel({
     }
   );
 
-  const transport = useMemo(
-    () => createDemoPollingTransport(actor.id),
-    [actor.id]
+  const transport = useKeyedConstant(actor.id, () =>
+    createDemoPollingTransport(actor.id)
   );
 
-  const handlers = useMemo(() => {
-    const configured: ClientHandlerCollection<ClientDb> = [
+  const plugins = useKeyedConstant(clientId, () => [
+    createIncrementingVersionPlugin(),
+  ]);
+
+  const sync = useKeyedConstant(actor.id, () => {
+    const handlers: ClientHandlerCollection<ClientDb> = [
       patientNotesClientHandler,
     ];
-    return configured;
-  }, []);
-
-  const plugins = useMemo(() => [createIncrementingVersionPlugin()], []);
-
-  const subscriptions = useMemo(
-    () =>
-      CHANNELS.map((ch) => ({
-        id: `channel-${ch.id}`,
-        table: 'patient_notes' as const,
-        scopes: { patient_id: ch.id },
-      })),
-    []
-  );
-  const sync = useMemo(
-    () => ({
+    const subscriptions = CHANNELS.map((ch) => ({
+      id: `channel-${ch.id}`,
+      table: 'patient_notes' as const,
+      scopes: { patient_id: ch.id },
+    }));
+    return {
       handlers,
       subscriptions: () => subscriptions,
-    }),
-    [handlers, subscriptions]
-  );
+    };
+  });
 
   const createEncryptionPlugin = useCallback(
     (channelId: string) =>
@@ -442,6 +435,10 @@ function ActorVaultPanel({
 
   const hasPassphrase = passphrases.has(`patient:${selectedChannel}`);
   const currentPassphrase = passphrases.get(`patient:${selectedChannel}`) ?? '';
+  const providerKey = useMemo(
+    () => `${actor.id}:${clientId}:${stateId}`,
+    [actor.id, clientId, stateId]
+  );
 
   if (initError) {
     return (
@@ -502,6 +499,7 @@ function ActorVaultPanel({
       </div>
 
       <SyncProvider
+        key={providerKey}
         db={db}
         transport={transport}
         sync={sync}
