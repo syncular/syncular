@@ -13,8 +13,8 @@ import {
 } from '@syncular/client';
 import {
   createYjsClientPlugin,
-  type YjsClientUpdateEnvelope,
   YJS_PAYLOAD_KEY,
+  type YjsClientUpdateEnvelope,
 } from '@syncular/client-plugin-crdt-yjs';
 import {
   captureBrowserSentryMessage,
@@ -288,7 +288,11 @@ function EditorPanelContent({
     if (localStateBase64 === remoteStateBase64) return;
 
     try {
-      Y.applyUpdate(ydoc, base64ToBytes(remoteStateBase64), REMOTE_STATE_ORIGIN);
+      Y.applyUpdate(
+        ydoc,
+        base64ToBytes(remoteStateBase64),
+        REMOTE_STATE_ORIGIN
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setEditorError(`Failed to apply remote Yjs state: ${message}`);
@@ -323,7 +327,8 @@ function EditorPanelContent({
             ...queuedUpdates,
             ...pendingUpdatesRef.current,
           ];
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           setEditorError(message);
           break;
         }
