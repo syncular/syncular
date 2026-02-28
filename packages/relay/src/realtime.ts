@@ -7,6 +7,8 @@
  * Adapted from @syncular/server-hono/ws.ts for relay use.
  */
 
+import { RealtimeConnectionRegistry } from '@syncular/core';
+
 /**
  * WebSocket event data for sync notifications.
  */
@@ -39,21 +41,12 @@ export interface RelayWebSocketConnection {
  * efficient notification routing.
  */
 export class RelayRealtime {
-  private connectionsByClientId = new Map<
-    string,
-    Set<RelayWebSocketConnection>
-  >();
-  private scopeKeysByClientId = new Map<string, Set<string>>();
-  private connectionsByScopeKey = new Map<
-    string,
-    Set<RelayWebSocketConnection>
-  >();
-
-  private heartbeatIntervalMs: number;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly registry: RealtimeConnectionRegistry<RelayWebSocketConnection>;
 
   constructor(options?: { heartbeatIntervalMs?: number }) {
-    this.heartbeatIntervalMs = options?.heartbeatIntervalMs ?? 30_000;
+    this.registry = new RealtimeConnectionRegistry({
+      heartbeatIntervalMs: options?.heartbeatIntervalMs,
+    });
   }
 
   /**
@@ -64,92 +57,14 @@ export class RelayRealtime {
     connection: RelayWebSocketConnection,
     initialScopeKeys: string[] = []
   ): () => void {
-    const clientId = connection.clientId;
-    let clientConns = this.connectionsByClientId.get(clientId);
-    if (!clientConns) {
-      clientConns = new Set();
-      this.connectionsByClientId.set(clientId, clientConns);
-    }
-    clientConns.add(connection);
-
-    if (!this.scopeKeysByClientId.has(clientId)) {
-      this.scopeKeysByClientId.set(clientId, new Set(initialScopeKeys));
-    }
-
-    const scopeKeys =
-      this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-    for (const k of scopeKeys) {
-      let scopeConns = this.connectionsByScopeKey.get(k);
-      if (!scopeConns) {
-        scopeConns = new Set();
-        this.connectionsByScopeKey.set(k, scopeConns);
-      }
-      scopeConns.add(connection);
-    }
-
-    this.ensureHeartbeat();
-
-    return () => {
-      this.unregister(connection);
-      this.ensureHeartbeat();
-    };
+    return this.registry.register(connection, initialScopeKeys);
   }
 
   /**
-   * Update the effective tables/scopes for an already-connected client.
-   * In the new scope model, this is called with table names.
-   */
-  updateClientTables(clientId: string, tables: string[]): void {
-    this._updateScopeKeys(clientId, tables);
-  }
-
-  /**
-   * Alias for backwards compatibility.
+   * Update the effective scopes for an already-connected client.
    */
   updateClientScopeKeys(clientId: string, scopeKeys: string[]): void {
-    this._updateScopeKeys(clientId, scopeKeys);
-  }
-
-  private _updateScopeKeys(clientId: string, keys: string[]): void {
-    const conns = this.connectionsByClientId.get(clientId);
-    if (!conns || conns.size === 0) return;
-
-    const next = new Set<string>(keys);
-    const prev = this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-
-    // No-op when unchanged
-    if (prev.size === next.size) {
-      let unchanged = true;
-      for (const k of prev) {
-        if (!next.has(k)) {
-          unchanged = false;
-          break;
-        }
-      }
-      if (unchanged) return;
-    }
-
-    this.scopeKeysByClientId.set(clientId, next);
-
-    // Remove from old scopes
-    for (const k of prev) {
-      if (next.has(k)) continue;
-      const set = this.connectionsByScopeKey.get(k);
-      if (!set) continue;
-      for (const conn of conns) set.delete(conn);
-      if (set.size === 0) this.connectionsByScopeKey.delete(k);
-    }
-
-    // Add to new scopes
-    for (const k of next) {
-      if (prev.has(k)) continue;
-      let set = this.connectionsByScopeKey.get(k);
-      if (!set) {
-        set = new Set();
-        this.connectionsByScopeKey.set(k, set);
-      }
-      for (const conn of conns) set.add(conn);
-    }
+    this.registry.updateClientScopeKeys(clientId, scopeKeys);
   }
 
   /**
@@ -160,138 +75,41 @@ export class RelayRealtime {
     cursor: number,
     opts?: { excludeClientIds?: string[] }
   ): void {
-    const exclude = new Set(opts?.excludeClientIds ?? []);
-    const targets = new Set<RelayWebSocketConnection>();
-
-    for (const k of scopeKeys) {
-      const conns = this.connectionsByScopeKey.get(k);
-      if (!conns) continue;
-      for (const conn of conns) targets.add(conn);
-    }
-
-    for (const conn of targets) {
-      if (!conn.isOpen) continue;
-      if (exclude.has(conn.clientId)) continue;
-      conn.sendSync(cursor);
-    }
+    this.registry.forEachConnectionInScopeKeys(
+      scopeKeys,
+      (conn) => {
+        conn.sendSync(cursor);
+      },
+      { excludeClientIds: opts?.excludeClientIds }
+    );
   }
 
   /**
    * Get the number of active connections for a client.
    */
   getConnectionCount(clientId: string): number {
-    return this.connectionsByClientId.get(clientId)?.size ?? 0;
+    return this.registry.getConnectionCount(clientId);
   }
 
   /**
    * Get total number of active connections.
    */
   getTotalConnections(): number {
-    let total = 0;
-    for (const conns of this.connectionsByClientId.values()) {
-      total += conns.size;
-    }
-    return total;
+    return this.registry.getTotalConnections();
   }
 
   /**
    * Close all connections for a client.
    */
   closeClientConnections(clientId: string): void {
-    const conns = this.connectionsByClientId.get(clientId);
-    if (!conns) return;
-
-    const scopeKeys =
-      this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-    for (const k of scopeKeys) {
-      const set = this.connectionsByScopeKey.get(k);
-      if (!set) continue;
-      for (const conn of conns) set.delete(conn);
-      if (set.size === 0) this.connectionsByScopeKey.delete(k);
-    }
-
-    for (const conn of conns) {
-      conn.close(1000, 'client closed');
-    }
-    this.connectionsByClientId.delete(clientId);
-    this.scopeKeysByClientId.delete(clientId);
-    this.ensureHeartbeat();
+    this.registry.closeClientConnections(clientId, 1000, 'client closed');
   }
 
   /**
    * Close all connections.
    */
   closeAll(): void {
-    for (const conns of this.connectionsByClientId.values()) {
-      for (const conn of conns) {
-        conn.close(1000, 'server shutdown');
-      }
-    }
-    this.connectionsByClientId.clear();
-    this.scopeKeysByClientId.clear();
-    this.connectionsByScopeKey.clear();
-    this.ensureHeartbeat();
-  }
-
-  private ensureHeartbeat(): void {
-    if (this.heartbeatIntervalMs <= 0) return;
-
-    const total = this.getTotalConnections();
-
-    if (total === 0) {
-      if (this.heartbeatTimer) {
-        clearInterval(this.heartbeatTimer);
-        this.heartbeatTimer = null;
-      }
-      return;
-    }
-
-    if (this.heartbeatTimer) return;
-
-    this.heartbeatTimer = setInterval(() => {
-      this.sendHeartbeats();
-    }, this.heartbeatIntervalMs);
-  }
-
-  private sendHeartbeats(): void {
-    const closed: RelayWebSocketConnection[] = [];
-
-    for (const conns of this.connectionsByClientId.values()) {
-      for (const conn of conns) {
-        if (!conn.isOpen) {
-          closed.push(conn);
-          continue;
-        }
-        conn.sendHeartbeat();
-      }
-    }
-
-    for (const conn of closed) {
-      this.unregister(conn);
-    }
-
-    this.ensureHeartbeat();
-  }
-
-  private unregister(connection: RelayWebSocketConnection): void {
-    const clientId = connection.clientId;
-
-    const scopeKeys =
-      this.scopeKeysByClientId.get(clientId) ?? new Set<string>();
-    for (const k of scopeKeys) {
-      const set = this.connectionsByScopeKey.get(k);
-      if (!set) continue;
-      set.delete(connection);
-      if (set.size === 0) this.connectionsByScopeKey.delete(k);
-    }
-
-    const conns = this.connectionsByClientId.get(clientId);
-    if (!conns) return;
-    conns.delete(connection);
-    if (conns.size > 0) return;
-
-    this.connectionsByClientId.delete(clientId);
-    this.scopeKeysByClientId.delete(clientId);
+    this.registry.closeAll(1000, 'server shutdown');
   }
 }
 

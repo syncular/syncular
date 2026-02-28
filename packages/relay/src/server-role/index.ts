@@ -266,8 +266,10 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
     });
 
     // Notify realtime about updated scope values
-    const tables = Object.keys(pullResult.effectiveScopes);
-    options.realtime.updateClientTables(request.clientId, tables);
+    options.realtime.updateClientScopeKeys(
+      request.clientId,
+      Object.keys(pullResult.effectiveScopes)
+    );
 
     logSyncEvent({
       event: 'relay.pull',

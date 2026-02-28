@@ -60,6 +60,11 @@ import {
   TimeseriesQuerySchema,
   TimeseriesStatsResponseSchema,
 } from './schemas';
+import {
+  closeUnauthenticatedSocket,
+  parseBearerToken,
+  parseWebSocketAuthToken,
+} from './live-auth';
 import type { ConsoleAuthResult } from './types';
 
 export interface ConsoleGatewayInstance {
@@ -154,6 +159,11 @@ const GatewaySingleInstanceQuerySchema = GatewayInstanceFilterSchema;
 
 const GatewaySingleInstancePartitionQuerySchema =
   ConsolePartitionQuerySchema.extend(GatewayInstanceFilterSchema.shape);
+
+type GatewayInstanceFilterQuery = {
+  instanceId?: string;
+  instanceIds?: string;
+};
 
 const GatewayApiKeyStatusSchema = z.enum(['active', 'revoked', 'expiring']);
 
@@ -416,12 +426,56 @@ function parseLocalNumericId(value: string): number | null {
   return parsed;
 }
 
-function resolveEventTarget(args: {
+function noInstancesSelectedResponse(): {
+  ok: false;
+  status: 400;
+  error: 'NO_INSTANCES_SELECTED';
+  message: string;
+} {
+  return {
+    ok: false,
+    status: 400,
+    error: 'NO_INSTANCES_SELECTED',
+    message: 'No enabled instances matched the provided instance filter.',
+  };
+}
+
+function resolveSingleSelectedInstance(args: {
+  instances: ConsoleGatewayInstance[];
+  query: GatewayInstanceFilterQuery;
+  onMultiple: { error: string; message: string };
+}):
+  | { ok: true; instance: ConsoleGatewayInstance }
+  | { ok: false; status: 400; error: string; message: string } {
+  const selectedInstances = selectInstances(args);
+  if (selectedInstances.length === 0) {
+    return noInstancesSelectedResponse();
+  }
+  if (selectedInstances.length > 1) {
+    return {
+      ok: false,
+      status: 400,
+      error: args.onMultiple.error,
+      message: args.onMultiple.message,
+    };
+  }
+
+  const instance = selectedInstances[0];
+  if (!instance) {
+    return noInstancesSelectedResponse();
+  }
+  return { ok: true, instance };
+}
+
+function resolveFederatedOrLocalNumericTarget(args: {
   id: string;
   instances: ConsoleGatewayInstance[];
-  query: { instanceId?: string; instanceIds?: string };
+  query: GatewayInstanceFilterQuery;
+  invalidMessage: string;
+  ambiguousError: string;
+  ambiguousMessage: string;
 }):
-  | { ok: true; instance: ConsoleGatewayInstance; localEventId: number }
+  | { ok: true; instance: ConsoleGatewayInstance; localId: number }
   | { ok: false; status: 400 | 404; error: string; message?: string } {
   const federated = parseFederatedNumericId(args.id);
   if (federated) {
@@ -437,162 +491,96 @@ function resolveEventTarget(args: {
         message: 'Instance not found',
       };
     }
-    return { ok: true, instance, localEventId: federated.localId };
+    return { ok: true, instance, localId: federated.localId };
   }
 
-  const localEventId = parseLocalNumericId(args.id);
-  if (localEventId === null) {
+  const localId = parseLocalNumericId(args.id);
+  if (localId === null) {
     return {
       ok: false,
       status: 400,
       error: 'INVALID_FEDERATED_ID',
-      message:
-        'Expected either "<instanceId>:<eventId>" or "<eventId>" with an explicit instance filter.',
+      message: args.invalidMessage,
     };
   }
 
-  const selectedInstances = selectInstances({
+  const selection = resolveSingleSelectedInstance({
     instances: args.instances,
     query: args.query,
+    onMultiple: {
+      error: args.ambiguousError,
+      message: args.ambiguousMessage,
+    },
   });
-  if (selectedInstances.length === 0) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'NO_INSTANCES_SELECTED',
-      message: 'No enabled instances matched the provided instance filter.',
-    };
-  }
-  if (selectedInstances.length > 1) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'AMBIGUOUS_EVENT_ID',
-      message:
-        'Local event IDs are ambiguous across multiple instances. Use "<instanceId>:<eventId>" or select one instance.',
-    };
-  }
+  if (!selection.ok) return selection;
 
-  const instance = selectedInstances[0];
-  if (!instance) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'NO_INSTANCES_SELECTED',
-      message: 'No enabled instances matched the provided instance filter.',
-    };
-  }
+  return { ok: true, instance: selection.instance, localId };
+}
 
-  return { ok: true, instance, localEventId };
+function resolveEventTarget(args: {
+  id: string;
+  instances: ConsoleGatewayInstance[];
+  query: GatewayInstanceFilterQuery;
+}):
+  | { ok: true; instance: ConsoleGatewayInstance; localEventId: number }
+  | { ok: false; status: 400 | 404; error: string; message?: string } {
+  const resolved = resolveFederatedOrLocalNumericTarget({
+    id: args.id,
+    instances: args.instances,
+    query: args.query,
+    invalidMessage:
+      'Expected either "<instanceId>:<eventId>" or "<eventId>" with an explicit instance filter.',
+    ambiguousError: 'AMBIGUOUS_EVENT_ID',
+    ambiguousMessage:
+      'Local event IDs are ambiguous across multiple instances. Use "<instanceId>:<eventId>" or select one instance.',
+  });
+  if (!resolved.ok) return resolved;
+  return {
+    ok: true,
+    instance: resolved.instance,
+    localEventId: resolved.localId,
+  };
 }
 
 function resolveCommitTarget(args: {
   seq: string;
   instances: ConsoleGatewayInstance[];
-  query: { instanceId?: string; instanceIds?: string };
+  query: GatewayInstanceFilterQuery;
 }):
   | { ok: true; instance: ConsoleGatewayInstance; localCommitSeq: number }
   | { ok: false; status: 400 | 404; error: string; message?: string } {
-  const federated = parseFederatedNumericId(args.seq);
-  if (federated) {
-    const instance = findInstanceById({
-      instances: args.instances,
-      instanceId: federated.instanceId,
-    });
-    if (!instance) {
-      return {
-        ok: false,
-        status: 404,
-        error: 'NOT_FOUND',
-        message: 'Instance not found',
-      };
-    }
-    return { ok: true, instance, localCommitSeq: federated.localId };
-  }
-
-  const localCommitSeq = parseLocalNumericId(args.seq);
-  if (localCommitSeq === null) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'INVALID_FEDERATED_ID',
-      message:
-        'Expected either "<instanceId>:<commitSeq>" or "<commitSeq>" with an explicit instance filter.',
-    };
-  }
-
-  const selectedInstances = selectInstances({
+  const resolved = resolveFederatedOrLocalNumericTarget({
+    id: args.seq,
     instances: args.instances,
     query: args.query,
+    invalidMessage:
+      'Expected either "<instanceId>:<commitSeq>" or "<commitSeq>" with an explicit instance filter.',
+    ambiguousError: 'AMBIGUOUS_COMMIT_ID',
+    ambiguousMessage:
+      'Local commit IDs are ambiguous across multiple instances. Use "<instanceId>:<commitSeq>" or select one instance.',
   });
-  if (selectedInstances.length === 0) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'NO_INSTANCES_SELECTED',
-      message: 'No enabled instances matched the provided instance filter.',
-    };
-  }
-  if (selectedInstances.length > 1) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'AMBIGUOUS_COMMIT_ID',
-      message:
-        'Local commit IDs are ambiguous across multiple instances. Use "<instanceId>:<commitSeq>" or select one instance.',
-    };
-  }
-
-  const instance = selectedInstances[0];
-  if (!instance) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'NO_INSTANCES_SELECTED',
-      message: 'No enabled instances matched the provided instance filter.',
-    };
-  }
-
-  return { ok: true, instance, localCommitSeq };
+  if (!resolved.ok) return resolved;
+  return {
+    ok: true,
+    instance: resolved.instance,
+    localCommitSeq: resolved.localId,
+  };
 }
 
 function resolveSingleInstanceTarget(args: {
   instances: ConsoleGatewayInstance[];
-  query: { instanceId?: string; instanceIds?: string };
+  query: GatewayInstanceFilterQuery;
 }):
   | { ok: true; instance: ConsoleGatewayInstance }
   | { ok: false; status: 400; error: string; message: string } {
-  const selectedInstances = selectInstances(args);
-  if (selectedInstances.length === 0) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'NO_INSTANCES_SELECTED',
-      message: 'No enabled instances matched the provided instance filter.',
-    };
-  }
-
-  if (selectedInstances.length > 1) {
-    return {
-      ok: false,
-      status: 400,
+  return resolveSingleSelectedInstance({
+    ...args,
+    onMultiple: {
       error: 'INSTANCE_REQUIRED',
       message:
         'This endpoint requires exactly one target instance. Provide `instanceId` or a single-value `instanceIds` filter.',
-    };
-  }
-
-  const instance = selectedInstances[0];
-  if (!instance) {
-    return {
-      ok: false,
-      status: 400,
-      error: 'NO_INSTANCES_SELECTED',
-      message: 'No enabled instances matched the provided instance filter.',
-    };
-  }
-
-  return { ok: true, instance };
+    },
+  });
 }
 
 function minNullable(values: Array<number | null>): number | null {
@@ -726,17 +714,6 @@ function resolveForwardAuthorization(args: {
     return header;
   }
   return null;
-}
-
-function parseBearerToken(
-  authHeader: string | null | undefined
-): string | null {
-  const value = authHeader?.trim();
-  if (!value?.startsWith('Bearer ')) {
-    return null;
-  }
-  const token = value.slice(7).trim();
-  return token.length > 0 ? token : null;
 }
 
 async function fetchDownstreamJson<T>(args: {
@@ -3024,6 +3001,7 @@ export function createConsoleGatewayRoutes(
         heartbeatInterval: ReturnType<typeof setInterval> | null;
         authTimeout: ReturnType<typeof setTimeout> | null;
         isAuthenticated: boolean;
+        startAuthenticatedSession: ((token: string | null) => void) | null;
       }
     >();
 
@@ -3066,17 +3044,6 @@ export function createConsoleGatewayRoutes(
           return options.authenticate(authContext);
         };
 
-        const closeUnauthenticated = (ws: WebSocketLike) => {
-          try {
-            ws.send(
-              JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' })
-            );
-          } catch {
-            // no-op
-          }
-          ws.close(4001, 'Unauthenticated');
-        };
-
         const cleanup = (ws: WebSocketLike) => {
           const state = liveState.get(ws);
           if (!state) return;
@@ -3115,11 +3082,15 @@ export function createConsoleGatewayRoutes(
               heartbeatInterval: ReturnType<typeof setInterval> | null;
               authTimeout: ReturnType<typeof setTimeout> | null;
               isAuthenticated: boolean;
+              startAuthenticatedSession:
+                | ((token: string | null) => void)
+                | null;
             } = {
               downstreamSockets: [],
               heartbeatInterval: null,
               authTimeout: null,
               isAuthenticated: false,
+              startAuthenticatedSession: null,
             };
             liveState.set(ws, state);
 
@@ -3248,6 +3219,7 @@ export function createConsoleGatewayRoutes(
               }, heartbeatIntervalMs);
               state.heartbeatInterval = heartbeatInterval;
             };
+            state.startAuthenticatedSession = startAuthenticatedSession;
 
             if (initialAuth) {
               startAuthenticatedSession(
@@ -3261,7 +3233,7 @@ export function createConsoleGatewayRoutes(
               if (!current || current.isAuthenticated) {
                 return;
               }
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
             }, 5_000);
           },
@@ -3272,30 +3244,15 @@ export function createConsoleGatewayRoutes(
             }
 
             if (typeof event.data !== 'string') {
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
               return;
             }
 
-            let token = '';
-            try {
-              const parsed = JSON.parse(event.data) as {
-                type?: unknown;
-                token?: unknown;
-              };
-              if (
-                parsed.type === 'auth' &&
-                typeof parsed.token === 'string' &&
-                parsed.token.trim().length > 0
-              ) {
-                token = parsed.token;
-              }
-            } catch {
-              // Invalid auth message will be handled below.
-            }
+            const token = parseWebSocketAuthToken(event.data);
 
             if (!token) {
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
               return;
             }
@@ -3306,131 +3263,11 @@ export function createConsoleGatewayRoutes(
               return;
             }
             if (!auth) {
-              closeUnauthenticated(ws);
+              closeUnauthenticatedSocket(ws);
               cleanup(ws);
               return;
             }
-
-            current.isAuthenticated = true;
-            if (current.authTimeout) {
-              clearTimeout(current.authTimeout);
-              current.authTimeout = null;
-            }
-
-            for (const instance of selectedInstances) {
-              const downstreamQuery = new URLSearchParams();
-              if (partitionId) {
-                downstreamQuery.set('partitionId', partitionId);
-              }
-              if (replaySince) {
-                downstreamQuery.set('since', replaySince);
-              }
-              downstreamQuery.set('replayLimit', String(replayLimit));
-
-              const downstreamUrl = buildConsoleEndpointUrl({
-                instance,
-                requestUrl: c.req.url,
-                path: '/events/live',
-                query: downstreamQuery,
-              });
-
-              const downstreamSocket = createDownstreamSocket(downstreamUrl);
-              const upstreamToken = token.trim();
-              const downstreamToken =
-                instance.token?.trim() ||
-                (upstreamToken.length > 0 ? upstreamToken : null);
-              if (downstreamToken && downstreamSocket.send) {
-                downstreamSocket.onopen = () => {
-                  try {
-                    downstreamSocket.send?.(
-                      JSON.stringify({
-                        type: 'auth',
-                        token: downstreamToken,
-                      })
-                    );
-                  } catch {
-                    // no-op
-                  }
-                };
-              }
-
-              downstreamSocket.onmessage = (message: MessageEvent) => {
-                if (typeof message.data !== 'string') {
-                  return;
-                }
-                try {
-                  const payload = JSON.parse(message.data) as Record<
-                    string,
-                    unknown
-                  >;
-                  if (
-                    typeof payload.type === 'string' &&
-                    (payload.type === 'connected' ||
-                      payload.type === 'heartbeat')
-                  ) {
-                    return;
-                  }
-
-                  const payloadData =
-                    payload.data &&
-                    typeof payload.data === 'object' &&
-                    !Array.isArray(payload.data)
-                      ? { ...payload.data, instanceId: instance.instanceId }
-                      : { instanceId: instance.instanceId };
-
-                  const liveEvent = {
-                    ...payload,
-                    data: payloadData,
-                    instanceId: instance.instanceId,
-                    timestamp:
-                      typeof payload.timestamp === 'string'
-                        ? payload.timestamp
-                        : new Date().toISOString(),
-                  };
-                  ws.send(JSON.stringify(liveEvent));
-                } catch {
-                  // Ignore malformed downstream events
-                }
-              };
-
-              downstreamSocket.onerror = () => {
-                try {
-                  ws.send(
-                    JSON.stringify({
-                      type: 'instance_error',
-                      instanceId: instance.instanceId,
-                      timestamp: new Date().toISOString(),
-                    })
-                  );
-                } catch {
-                  // ignore send errors
-                }
-              };
-
-              current.downstreamSockets.push(downstreamSocket);
-            }
-
-            ws.send(
-              JSON.stringify({
-                type: 'connected',
-                timestamp: new Date().toISOString(),
-                instanceCount: selectedInstances.length,
-              })
-            );
-
-            const heartbeatInterval = setInterval(() => {
-              try {
-                ws.send(
-                  JSON.stringify({
-                    type: 'heartbeat',
-                    timestamp: new Date().toISOString(),
-                  })
-                );
-              } catch {
-                clearInterval(heartbeatInterval);
-              }
-            }, heartbeatIntervalMs);
-            current.heartbeatInterval = heartbeatInterval;
+            current.startAuthenticatedSession?.(token);
           },
           onClose(_event, ws) {
             cleanup(ws);
