@@ -102,7 +102,7 @@
   },
   "workspaces": [
     "packages/*",
-    "plugins/crdt-yjs/*",
+    "plugins/*/*",
     "apps/*",
     "config",
     "tests/*"

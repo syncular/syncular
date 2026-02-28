@@ -1,5 +1,5 @@
 {
-  "name": "@syncular/client-plugin-crdt-yjs",
+  "name": "@syncular/client-plugin-yjs",
   "version": "0.0.0",
   "description": "Yjs CRDT plugin primitives for Syncular client integration",
   "license": "Apache-2.0",

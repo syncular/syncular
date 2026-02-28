@@ -37,8 +37,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
-        "@syncular/client-plugin-crdt-yjs": "workspace:*",
         "@syncular/client-plugin-encryption": "workspace:*",
+        "@syncular/client-plugin-yjs": "workspace:*",
         "@syncular/client-react": "workspace:*",
         "@syncular/console": "workspace:*",
         "@syncular/core": "workspace:*",
@@ -51,7 +51,7 @@
         "@syncular/server-cloudflare": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
         "@syncular/server-hono": "workspace:*",
-        "@syncular/server-plugin-crdt-yjs": "workspace:*",
+        "@syncular/server-plugin-yjs": "workspace:*",
         "@syncular/server-service-worker": "workspace:*",
         "@syncular/ui": "workspace:*",
         "@tanstack/react-query": "^5.90.21",
@@ -131,25 +131,6 @@
       },
       "peerDependencies": {
         "kysely": "*",
-      },
-    },
-    "packages/client-plugin-encryption": {
-      "name": "@syncular/client-plugin-encryption",
-      "version": "0.0.0",
-      "dependencies": {
-        "@noble/ciphers": "^2.1.1",
-        "@noble/curves": "^2.0.1",
-        "@noble/hashes": "^2.0.1",
-        "@scure/bip39": "^2.0.1",
-        "@syncular/client": "workspace:*",
-        "@syncular/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely-bun-sqlite": "^0.4.0",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
       },
     },
     "packages/client-react": {
@@ -658,8 +639,27 @@
         "react-dom": "^19.0.0",
       },
     },
-    "plugins/crdt-yjs/client": {
-      "name": "@syncular/client-plugin-crdt-yjs",
+    "plugins/encryption/client": {
+      "name": "@syncular/client-plugin-encryption",
+      "version": "0.0.0",
+      "dependencies": {
+        "@noble/ciphers": "^2.1.1",
+        "@noble/curves": "^2.0.1",
+        "@noble/hashes": "^2.0.1",
+        "@scure/bip39": "^2.0.1",
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "kysely-bun-sqlite": "^0.4.0",
+      },
+      "peerDependencies": {
+        "kysely": "^0.28.0",
+      },
+    },
+    "plugins/yjs/client": {
+      "name": "@syncular/client-plugin-yjs",
       "version": "0.0.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
@@ -669,8 +669,8 @@
         "@syncular/config": "workspace:*",
       },
     },
-    "plugins/crdt-yjs/server": {
-      "name": "@syncular/server-plugin-crdt-yjs",
+    "plugins/yjs/server": {
+      "name": "@syncular/server-plugin-yjs",
       "version": "0.0.0",
       "dependencies": {
         "@syncular/server": "workspace:*",
@@ -1912,9 +1912,9 @@
 
     "@syncular/client": ["@syncular/client@workspace:packages/client"],
 
-    "@syncular/client-plugin-crdt-yjs": ["@syncular/client-plugin-crdt-yjs@workspace:plugins/crdt-yjs/client"],
+    "@syncular/client-plugin-encryption": ["@syncular/client-plugin-encryption@workspace:plugins/encryption/client"],
 
-    "@syncular/client-plugin-encryption": ["@syncular/client-plugin-encryption@workspace:packages/client-plugin-encryption"],
+    "@syncular/client-plugin-yjs": ["@syncular/client-plugin-yjs@workspace:plugins/yjs/client"],
 
     "@syncular/client-react": ["@syncular/client-react@workspace:packages/client-react"],
 
@@ -1966,7 +1966,7 @@
 
     "@syncular/server-hono": ["@syncular/server-hono@workspace:packages/server-hono"],
 
-    "@syncular/server-plugin-crdt-yjs": ["@syncular/server-plugin-crdt-yjs@workspace:plugins/crdt-yjs/server"],
+    "@syncular/server-plugin-yjs": ["@syncular/server-plugin-yjs@workspace:plugins/yjs/server"],
 
     "@syncular/server-service-worker": ["@syncular/server-service-worker@workspace:packages/server-service-worker"],
 
