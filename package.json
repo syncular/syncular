@@ -52,7 +52,7 @@
     "generate:openapi:types": "bun --cwd packages/transport-http generate-types",
     "generate:openapi:docs": "bun --cwd apps/docs generate:openapi",
     "sync:icons": "bun scripts/copy-app-icons.ts",
-    "postinstall": "ln -sfn AGENTS.md CLAUDE.md && ln -sfn AGENTS.md WARP.md && bun sync:icons && git config core.hooksPath .githooks 2>/dev/null || true",
+    "postinstall": "bun sync:icons && git config core.hooksPath .githooks 2>/dev/null || true",
     "test": "bun test packages tests/unit tests/integration tests/dialects tests/typegen",
     "test:coverage": "bun test --coverage packages tests/unit tests/integration tests/dialects tests/typegen",
     "test:watch": "bun test --watch packages tests/unit tests/integration tests/dialects tests/typegen",
