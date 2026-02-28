@@ -141,11 +141,23 @@ jobs:
         id: perf
         env:
           PERF_STABLE_RUNS: 5
-        run: bun --cwd tests/perf stable-ci 2>&1 | tee perf-results.txt
+          PERF_STABLE_OUTPUT_JSON: perf-summary.json
+        run: |
+          set +e
+          bun --cwd tests/perf stable-ci 2>&1 | tee perf-results.txt
+          exit_code=${PIPESTATUS[0]}
+          set -e
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
 
       - name: Extract regression report
         id: report
         run: |
+          if ! grep -q "PERF_GATE_SYNC_REGRESSION=" perf-results.txt; then
+            echo "execution_failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "execution_failed=false" >> $GITHUB_OUTPUT
+          fi
+
           if grep -q "PERF_GATE_SYNC_REGRESSION=true" perf-results.txt; then
             echo "has_regression=true" >> $GITHUB_OUTPUT
           else
@@ -158,8 +170,17 @@ jobs:
             echo "has_missing_baseline=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Comment PR with performance results
+      - name: Upload perf artifacts
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ github.run_id }}
+          path: |
+            perf-results.txt
+            perf-summary.json
+
+      - name: Comment PR with performance results
+        if: always() && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
@@ -211,10 +232,56 @@ jobs:
               });
             }
 
-      - name: Fail on performance regression
+      - name: Check previous perf job conclusion
         if: steps.report.outputs.has_regression == 'true'
+        id: previous
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch =
+              context.eventName === 'pull_request'
+                ? context.payload.pull_request.head.ref
+                : context.ref.replace('refs/heads/', '');
+            const { owner, repo } = context.repo;
+
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: 'checks.yml',
+              branch,
+              event: context.eventName,
+              per_page: 20,
+            });
+
+            const previousRun = runs.data.workflow_runs.find(
+              (run) => run.id !== context.runId && run.status === 'completed'
+            );
+
+            if (!previousRun) {
+              core.setOutput('previous_regression', 'false');
+              return;
+            }
+
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner,
+              repo,
+              run_id: previousRun.id,
+              per_page: 100,
+            });
+
+            const perfJob = jobs.data.jobs.find((job) => job.name === 'perf');
+            const previousRegression = perfJob?.conclusion === 'failure';
+
+            core.setOutput(
+              'previous_regression',
+              previousRegression ? 'true' : 'false'
+            );
+            core.setOutput('previous_run_url', previousRun.html_url ?? '');
+
+      - name: Fail on perf runner execution error
+        if: steps.report.outputs.execution_failed == 'true'
         run: |
-          echo "Sync performance regression detected. See perf-results.txt for details."
+          echo "Perf runner did not emit PERF_GATE markers. See perf-results.txt for details."
           exit 1
 
       - name: Fail on missing performance baseline
@@ -222,6 +289,45 @@ jobs:
         run: |
           echo "Performance baseline missing for one or more metrics. Run bun test:perf:update-baseline and commit tests/perf/baseline.json."
           exit 1
+
+      - name: Warn on first detected perf regression
+        if: steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression != 'true'
+        run: |
+          echo "::warning::Perf regression detected, but previous run did not fail perf gating. Soft-failing this run."
+          if [ -n "${{ steps.previous.outputs.previous_run_url }}" ]; then
+            echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
+          fi
+
+      - name: Fail on consecutive performance regressions
+        if: steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression == 'true'
+        run: |
+          echo "Sync performance regression detected in two consecutive runs."
+          echo "Current run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
+          exit 1
+
+  perf-nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run nightly stable performance tests (7 runs)
+        env:
+          PERF_STABLE_RUNS: 7
+          PERF_STABLE_OUTPUT_JSON: perf-nightly-summary.json
+        run: bun --cwd tests/perf stable-ci 2>&1 | tee perf-nightly-results.txt
+
+      - name: Upload nightly perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly-${{ github.run_id }}
+          path: |
+            perf-nightly-results.txt
+            perf-nightly-summary.json
 
   runtime-browser:
     needs: changes

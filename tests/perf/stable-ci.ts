@@ -19,6 +19,7 @@ const RUN_COUNT = parseRunCount(Bun.env.PERF_STABLE_RUNS);
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
 const SYNC_TEST_PATH = 'tests/perf/sync.perf.test.ts';
+const OUTPUT_JSON_PATH = Bun.env.PERF_STABLE_OUTPUT_JSON;
 
 interface StableMetricStats {
   metric: string;
@@ -206,6 +207,35 @@ async function main() {
   const regressions = detectRegressions(aggregatedResults, baseline);
   const hasRegression = hasRegressions(regressions);
   const hasMissingBaseline = hasMissingBaselines(regressions);
+
+  if (OUTPUT_JSON_PATH) {
+    await Bun.write(
+      OUTPUT_JSON_PATH,
+      JSON.stringify(
+        {
+          generatedAt: new Date().toISOString(),
+          runCount: RUN_COUNT,
+          baselinePath: BASELINE_PATH,
+          hasRegression,
+          hasMissingBaseline,
+          metrics: stableMetrics.map((metric) => ({
+            metric: metric.metric,
+            baseline: metric.baseline,
+            aggregatedMedian: metric.median,
+            min: metric.min,
+            max: metric.max,
+            runs: metric.runs,
+            changePercent:
+              metric.baseline === null || metric.baseline === 0
+                ? null
+                : ((metric.median - metric.baseline) / metric.baseline) * 100,
+          })),
+        },
+        null,
+        2
+      )
+    );
+  }
 
   console.log(`\n## Stable Performance (${RUN_COUNT} runs, median-of-medians)`);
   console.log(
