@@ -22,8 +22,10 @@ import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   type ApplyOperationResult,
+  computePruneWatermarkCommitSeq,
   type EmittedChange,
   ensureSyncSchema,
+  pruneSync,
   type ServerSyncDialect,
   type ServerTableHandler,
   type SyncCoreDb,
@@ -319,6 +321,24 @@ async function main() {
   const seedRows = Number.parseInt(process.env.SEED_ROWS || '10000', 10);
   const seedUsers = Number.parseInt(process.env.SEED_USERS || '100', 10);
   const seedRandomSeed = process.env.SEED_RANDOM_SEED;
+  const pruneActiveWindowMs = Number.parseInt(
+    process.env.MAINTENANCE_PRUNE_ACTIVE_WINDOW_MS ||
+      `${14 * 24 * 60 * 60 * 1000}`,
+    10
+  );
+  const pruneFallbackMaxAgeMs = Number.parseInt(
+    process.env.MAINTENANCE_PRUNE_FALLBACK_MAX_AGE_MS ||
+      `${30 * 24 * 60 * 60 * 1000}`,
+    10
+  );
+  const pruneKeepNewestCommits = Number.parseInt(
+    process.env.MAINTENANCE_PRUNE_KEEP_NEWEST_COMMITS || '1000',
+    10
+  );
+  const compactFullHistoryHours = Number.parseInt(
+    process.env.MAINTENANCE_COMPACT_FULL_HISTORY_HOURS || `${24 * 7}`,
+    10
+  );
   const dbDialectRaw = process.env.LOAD_DB_DIALECT || 'sqlite';
   const dbDialect: LoadServerDialect =
     dbDialectRaw === 'pglite' ? 'pglite' : 'sqlite';
@@ -333,6 +353,10 @@ async function main() {
   console.log(`Seed rows: ${seedRows}`);
   console.log(`Seed users: ${seedUsers}`);
   console.log(`Seed random seed: ${seedRandomSeed ?? '(random)'}`);
+  console.log(`Prune active window ms: ${pruneActiveWindowMs}`);
+  console.log(`Prune fallback max age ms: ${pruneFallbackMaxAgeMs}`);
+  console.log(`Prune keep newest commits: ${pruneKeepNewestCommits}`);
+  console.log(`Compact full history hours: ${compactFullHistoryHours}`);
   console.log('');
 
   // Initialize database
@@ -452,6 +476,62 @@ async function main() {
     return c.json({
       userId,
       rows: Number(taskCount?.count ?? 0),
+    });
+  });
+
+  app.post('/api/maintenance/prune', async (c) => {
+    const startedAt = Date.now();
+    const body = await c.req.json().catch(() => ({}));
+    const activeWindowMs = Number.isFinite(body?.activeWindowMs)
+      ? Number(body.activeWindowMs)
+      : pruneActiveWindowMs;
+    const fallbackMaxAgeMs = Number.isFinite(body?.fallbackMaxAgeMs)
+      ? Number(body.fallbackMaxAgeMs)
+      : pruneFallbackMaxAgeMs;
+    const keepNewestCommits = Number.isFinite(body?.keepNewestCommits)
+      ? Number(body.keepNewestCommits)
+      : pruneKeepNewestCommits;
+
+    const watermark = await computePruneWatermarkCommitSeq(db, {
+      activeWindowMs,
+      fallbackMaxAgeMs,
+      keepNewestCommits,
+    });
+
+    const deletedCommits = await pruneSync(db, {
+      watermarkCommitSeq: watermark,
+      keepNewestCommits,
+    });
+
+    return c.json({
+      ok: true,
+      durationMs: Date.now() - startedAt,
+      watermarkCommitSeq: watermark,
+      deletedCommits,
+      options: {
+        activeWindowMs,
+        fallbackMaxAgeMs,
+        keepNewestCommits,
+      },
+    });
+  });
+
+  app.post('/api/maintenance/compact', async (c) => {
+    const startedAt = Date.now();
+    const body = await c.req.json().catch(() => ({}));
+    const fullHistoryHours = Number.isFinite(body?.fullHistoryHours)
+      ? Number(body.fullHistoryHours)
+      : compactFullHistoryHours;
+
+    const deletedChanges = await dialect.compactChanges(db, {
+      fullHistoryHours: Math.max(0, Math.floor(fullHistoryHours)),
+    });
+
+    return c.json({
+      ok: true,
+      durationMs: Date.now() - startedAt,
+      deletedChanges,
+      options: { fullHistoryHours },
     });
   });
 

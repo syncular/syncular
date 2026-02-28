@@ -352,7 +352,7 @@ jobs:
   perf-nightly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment
@@ -363,6 +363,52 @@ jobs:
           PERF_STABLE_OUTPUT_JSON: perf-nightly-summary.json
         run: bun --cwd tests/perf stable-ci 2>&1 | tee perf-nightly-results.txt
 
+      - name: Fetch historical perf summaries
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          PERF_HISTORY_WORKFLOW: checks.yml
+          PERF_HISTORY_EVENT: schedule
+          PERF_HISTORY_BRANCH: main
+          PERF_HISTORY_ARTIFACT_PREFIX: perf-nightly-
+          PERF_HISTORY_SUMMARY_FILE: perf-nightly-summary.json
+          PERF_HISTORY_OUTPUT_DIR: perf-history
+          PERF_HISTORY_MAX_FILES: 10
+        run: bun --cwd tests/perf fetch-history 2>&1 | tee perf-history-fetch.txt
+
+      - name: Run nightly trend/change-point analysis
+        if: always()
+        env:
+          PERF_TREND_CURRENT_PATH: perf-nightly-summary.json
+          PERF_TREND_HISTORY_DIR: perf-history
+          PERF_TREND_OUTPUT_JSON: perf-nightly-trend.json
+          PERF_TREND_MIN_HISTORY: 3
+          PERF_TREND_DELTA_THRESHOLD: 0.2
+          PERF_TREND_ROBUST_Z_THRESHOLD: 3
+          PERF_TREND_FAIL_ON_CHANGE: false
+        run: bun --cwd tests/perf trend-ci 2>&1 | tee perf-nightly-trend.txt
+
+      - name: Warn on nightly perf change points
+        if: always()
+        run: |
+          if [ ! -f perf-nightly-trend.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const trend = JSON.parse(fs.readFileSync('perf-nightly-trend.json', 'utf8'));
+          if (trend.hasRegressionChangePoint) {
+            const metrics = trend.metrics
+              .filter((metric) => metric.regressionChangePoint)
+              .map((metric) => metric.metric)
+              .join(', ');
+            console.log(`::warning::Nightly perf change-point detected for: ${metrics || 'unknown metric'}`);
+          }
+          NODE
+
       - name: Upload nightly perf artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -371,6 +417,10 @@ jobs:
           path: |
             perf-nightly-results.txt
             perf-nightly-summary.json
+            perf-nightly-trend.json
+            perf-nightly-trend.txt
+            perf-history-fetch.txt
+            perf-history/index.json
 
       - name: Publish nightly perf summary
         if: always()
@@ -403,6 +453,129 @@ jobs:
                 ? 'N/A'
                 : `${metric.changePercent >= 0 ? '+' : ''}${Number(metric.changePercent).toFixed(1)}%`;
             lines.push(`| ${metric.metric} | ${baseline} | ${median} | ${change} |`);
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
+
+      - name: Publish nightly trend summary
+        if: always()
+        run: |
+          if [ ! -f perf-nightly-trend.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const trend = JSON.parse(fs.readFileSync('perf-nightly-trend.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Nightly Perf Trend');
+          lines.push('');
+          lines.push(`- History files: ${trend.historySummaryCount}`);
+          lines.push(`- Regression change-point: ${trend.hasRegressionChangePoint ? 'yes' : 'no'}`);
+          lines.push(`- Insufficient history: ${trend.hasInsufficientHistory ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |');
+          lines.push('|--------|---------|-------------|-------|----------|--------|--------|');
+
+          for (const metric of trend.metrics) {
+            const current = Number(metric.current).toFixed(1) + 'ms';
+            const histMedian =
+              metric.historyMedian == null ? 'N/A' : Number(metric.historyMedian).toFixed(1) + 'ms';
+            const delta =
+              metric.deltaPercent == null
+                ? 'N/A'
+                : `${metric.deltaPercent >= 0 ? '+' : ''}${(Number(metric.deltaPercent) * 100).toFixed(1)}%`;
+            const robustZ =
+              metric.robustZ == null ? 'N/A' : Number(metric.robustZ).toFixed(2);
+            const status = metric.insufficientHistory
+              ? 'insufficient-history'
+              : metric.regressionChangePoint
+                ? 'regression-change-point'
+                : metric.improvementChangePoint
+                  ? 'improvement-change-point'
+                  : 'stable';
+
+            lines.push(
+              `| ${metric.metric} | ${current} | ${histMedian} | ${delta} | ${robustZ} | ${metric.historyCount} | ${status} |`
+            );
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
+
+  load-macro-nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run nightly macro load suite
+        env:
+          LOAD_NIGHTLY_SMOKE: false
+          LOAD_NIGHTLY_OUTPUT_JSON: load-nightly-summary.json
+          LOAD_NIGHTLY_RESULTS_DIR: .tmp/load-nightly
+          LOAD_SERVER_PORT: 3001
+          LOAD_DB_DIALECT: sqlite
+          SQLITE_PATH: ':memory:'
+          SEED_ROWS: 250000
+          SEED_USERS: 800
+          SEED_RANDOM_SEED: 42
+        run: bun run test:load:nightly 2>&1 | tee load-nightly-results.txt
+
+      - name: Upload nightly load artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-nightly-${{ github.run_id }}
+          path: |
+            load-nightly-summary.json
+            load-nightly-results.txt
+            .tmp/load-nightly
+
+      - name: Publish nightly load summary
+        if: always()
+        run: |
+          if [ ! -f load-nightly-summary.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const report = JSON.parse(fs.readFileSync('load-nightly-summary.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Nightly Macro Load Summary');
+          lines.push('');
+          lines.push(`- Scenarios: ${report.scenarioCount}`);
+          lines.push(`- Failed scenarios: ${report.failedScenarioCount}`);
+          lines.push(`- Smoke mode: ${report.smokeMode ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Scenario | Status | Duration | HTTP p95 | HTTP p99 | HTTP error rate |');
+          lines.push('|----------|--------|----------|----------|----------|-----------------|');
+
+          for (const scenario of report.scenarios ?? []) {
+            const status = scenario.passed ? 'pass' : 'fail';
+            const duration = `${(Number(scenario.durationMs) / 1000).toFixed(1)}s`;
+            const httpP95 =
+              scenario.metrics?.httpP95 == null
+                ? 'N/A'
+                : `${Number(scenario.metrics.httpP95).toFixed(1)}ms`;
+            const httpP99 =
+              scenario.metrics?.httpP99 == null
+                ? 'N/A'
+                : `${Number(scenario.metrics.httpP99).toFixed(1)}ms`;
+            const errorRate =
+              scenario.metrics?.httpErrorRate == null
+                ? 'N/A'
+                : `${(Number(scenario.metrics.httpErrorRate) * 100).toFixed(2)}%`;
+            lines.push(`| ${scenario.id} | ${status} | ${duration} | ${httpP95} | ${httpP99} | ${errorRate} |`);
           }
 
           fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);

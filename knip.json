@@ -171,8 +171,7 @@
       "entry": [
         "lib/*.js",
         "scripts/*.js",
-        "seeding.ts",
-        "server.ts"
+        "*.ts"
       ],
       "ignoreDependencies": ["k6"]
     },

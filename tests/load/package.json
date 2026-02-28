@@ -6,9 +6,13 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "server": "bun server.ts",
+    "nightly": "bun run nightly.ts",
     "k6:push-pull": "k6 run scripts/push-pull.js",
     "k6:websocket": "k6 run scripts/websocket.js",
     "k6:bootstrap": "k6 run scripts/bootstrap.js",
+    "k6:bootstrap-storm": "k6 run scripts/bootstrap-storm.js",
+    "k6:reconnect-storm": "k6 run scripts/reconnect-storm.js",
+    "k6:maintenance-churn": "k6 run scripts/maintenance-churn.js",
     "k6:mixed": "k6 run scripts/mixed-workload.js",
     "k6:dashboard": "k6 run --out dashboard scripts/mixed-workload.js"
   },
