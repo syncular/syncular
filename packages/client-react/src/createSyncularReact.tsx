@@ -637,9 +637,12 @@ export function createSyncularReact<
 
   function useEngineStateSnapshot(): SyncEngineState {
     const engine = useEngine();
-    const subscribe = useCallback((callback: () => void) => {
-      return engine.subscribe(callback);
-    }, [engine]);
+    const subscribe = useCallback(
+      (callback: () => void) => {
+        return engine.subscribe(callback);
+      },
+      [engine]
+    );
     const getSnapshot = useCallback(() => engine.getState(), [engine]);
     return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   }
@@ -841,6 +844,7 @@ export function createSyncularReact<
 
     const refresh = useCallback(async () => {
       const version = ++versionRef.current;
+      const isCurrent = () => version === versionRef.current;
 
       if (!loadedRef.current) {
         setIsLoading(true);
@@ -848,16 +852,17 @@ export function createSyncularReact<
 
       try {
         const next = await loadRef.current();
-        if (version !== versionRef.current) return;
+        if (!isCurrent()) return;
         setValue(next);
         setError(null);
       } catch (err) {
-        if (version !== versionRef.current) return;
+        if (!isCurrent()) return;
         setError(err instanceof Error ? err : new Error(String(err)));
       } finally {
-        if (version !== versionRef.current) return;
-        loadedRef.current = true;
-        setIsLoading(false);
+        if (isCurrent()) {
+          loadedRef.current = true;
+          setIsLoading(false);
+        }
       }
     }, []);
 
@@ -892,14 +897,18 @@ export function createSyncularReact<
   ): UseSyncProgressResult {
     const engine = useEngine();
     const { pollIntervalMs = 500 } = options;
-    const { value: progress, isLoading, error, refresh } =
-      useAsyncEngineResource<SyncProgress | null>({
-        initialValue: null,
-        load: () => engine.getProgress(),
-        refreshOn: SYNC_PROGRESS_REFRESH_EVENTS,
-        pollIntervalMs,
-        shouldPoll: (value) => value?.channelPhase === 'bootstrapping',
-      });
+    const {
+      value: progress,
+      isLoading,
+      error,
+      refresh,
+    } = useAsyncEngineResource<SyncProgress | null>({
+      initialValue: null,
+      load: () => engine.getProgress(),
+      refreshOn: SYNC_PROGRESS_REFRESH_EVENTS,
+      pollIntervalMs,
+      shouldPoll: (value) => value?.channelPhase === 'bootstrapping',
+    });
 
     return useMemo(
       () => ({
@@ -917,13 +926,17 @@ export function createSyncularReact<
   ): UseSyncInspectorResult {
     const engine = useEngine();
     const { pollIntervalMs = 2_000, eventLimit } = options;
-    const { value: snapshot, isLoading, error, refresh } =
-      useAsyncEngineResource<SyncInspectorSnapshot | null>({
-        initialValue: null,
-        load: () => engine.getInspectorSnapshot({ eventLimit }),
-        refreshOn: SYNC_INSPECTOR_REFRESH_EVENTS,
-        pollIntervalMs,
-      });
+    const {
+      value: snapshot,
+      isLoading,
+      error,
+      refresh,
+    } = useAsyncEngineResource<SyncInspectorSnapshot | null>({
+      initialValue: null,
+      load: () => engine.getInspectorSnapshot({ eventLimit }),
+      refreshOn: SYNC_INSPECTOR_REFRESH_EVENTS,
+      pollIntervalMs,
+    });
 
     return useMemo(
       () => ({
@@ -941,17 +954,21 @@ export function createSyncularReact<
   ): UseSyncSubscriptionsResult {
     const engine = useEngine();
     const { stateId, table, status } = options;
-    const { value: subscriptions, isLoading, error, refresh } =
-      useAsyncEngineResource<SubscriptionState[]>({
-        initialValue: [],
-        load: () =>
-          engine.listSubscriptionStates({
-            stateId,
-            table,
-            status,
-          }),
-        refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
-      });
+    const {
+      value: subscriptions,
+      isLoading,
+      error,
+      refresh,
+    } = useAsyncEngineResource<SubscriptionState[]>({
+      initialValue: [],
+      load: () =>
+        engine.listSubscriptionStates({
+          stateId,
+          table,
+          status,
+        }),
+      refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
+    });
 
     return useMemo(
       () => ({
@@ -970,15 +987,19 @@ export function createSyncularReact<
   ): UseSyncSubscriptionResult {
     const engine = useEngine();
     const { stateId } = options;
-    const { value: subscription, isLoading, error, refresh } =
-      useAsyncEngineResource<SubscriptionState | null>({
-        initialValue: null,
-        load: () =>
-          engine.getSubscriptionState(subscriptionId, {
-            stateId,
-          }),
-        refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
-      });
+    const {
+      value: subscription,
+      isLoading,
+      error,
+      refresh,
+    } = useAsyncEngineResource<SubscriptionState | null>({
+      initialValue: null,
+      load: () =>
+        engine.getSubscriptionState(subscriptionId, {
+          stateId,
+        }),
+      refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
+    });
 
     return useMemo(
       () => ({
@@ -993,12 +1014,15 @@ export function createSyncularReact<
 
   function useConflicts(): UseConflictsResult {
     const engine = useEngine();
-    const { value: conflicts, isLoading, refresh } =
-      useAsyncEngineResource<ConflictInfo[]>({
-        initialValue: [],
-        load: () => engine.getConflicts(),
-        refreshOn: ['sync:complete', 'sync:error'],
-      });
+    const {
+      value: conflicts,
+      isLoading,
+      refresh,
+    } = useAsyncEngineResource<ConflictInfo[]>({
+      initialValue: [],
+      load: () => engine.getConflicts(),
+      refreshOn: ['sync:complete', 'sync:error'],
+    });
 
     return useMemo(
       () => ({

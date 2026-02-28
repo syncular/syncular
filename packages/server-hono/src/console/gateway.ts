@@ -4,6 +4,11 @@ import { cors } from 'hono/cors';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import { z } from 'zod';
+import {
+  closeUnauthenticatedSocket,
+  parseBearerToken,
+  parseWebSocketAuthToken,
+} from './live-auth';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
@@ -60,11 +65,6 @@ import {
   TimeseriesQuerySchema,
   TimeseriesStatsResponseSchema,
 } from './schemas';
-import {
-  closeUnauthenticatedSocket,
-  parseBearerToken,
-  parseWebSocketAuthToken,
-} from './live-auth';
 import type { ConsoleAuthResult } from './types';
 
 export interface ConsoleGatewayInstance {

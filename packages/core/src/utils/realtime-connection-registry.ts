@@ -24,7 +24,10 @@ export class RealtimeConnectionRegistry<
     this.onClientDisconnected = options?.onClientDisconnected;
   }
 
-  register(connection: TConnection, initialScopeKeys: string[] = []): () => void {
+  register(
+    connection: TConnection,
+    initialScopeKeys: string[] = []
+  ): () => void {
     const clientId = connection.clientId;
     let clientConns = this.connectionsByClientId.get(clientId);
     if (!clientConns) {
@@ -101,7 +104,9 @@ export class RealtimeConnectionRegistry<
     return scopeKeys.has(scopeKey);
   }
 
-  getConnectionsForClient(clientId: string): ReadonlySet<TConnection> | undefined {
+  getConnectionsForClient(
+    clientId: string
+  ): ReadonlySet<TConnection> | undefined {
     return this.connectionsByClientId.get(clientId);
   }
 
