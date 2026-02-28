@@ -16,6 +16,15 @@ import type { Transaction } from 'kysely';
 export interface ClientHandlerContext<DB> {
   /** Database transaction */
   trx: Transaction<DB>;
+  /**
+   * Commit metadata for server-delivered changes.
+   * Undefined for local optimistic changes.
+   */
+  commitSeq?: number | null;
+  /** Actor that authored the server commit, when available. */
+  actorId?: string | null;
+  /** Commit creation timestamp (ISO string), when available. */
+  createdAt?: string | null;
 }
 
 /**

@@ -10,6 +10,7 @@ import type {
 import { countSyncMetric } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { upsertConflictsForRejectedCommit } from './conflicts';
+import type { PushResultInfo } from './engine/types';
 import {
   getNextSendableOutboxCommit,
   markOutboxCommitAcked,
@@ -31,6 +32,7 @@ export interface SyncPushOnceOptions {
 export interface SyncPushOnceResult {
   pushed: boolean;
   response?: SyncPushResponse;
+  pushResult?: PushResultInfo;
 }
 
 interface TransportWithWsPush extends SyncTransport {
@@ -46,6 +48,41 @@ function hasPushViaWs(
 function clonePushRequest(request: SyncPushRequest): SyncPushRequest {
   if (typeof structuredClone === 'function') return structuredClone(request);
   return JSON.parse(JSON.stringify(request)) as SyncPushRequest;
+}
+
+function firstPushErrorCode(response: SyncPushResponse): string | null {
+  const firstError = response.results.find(
+    (result) => result.status === 'error'
+  );
+  if (
+    firstError &&
+    'code' in firstError &&
+    typeof firstError.code === 'string' &&
+    firstError.code
+  ) {
+    return firstError.code;
+  }
+  const hasConflict = response.results.some(
+    (result) => result.status === 'conflict'
+  );
+  return hasConflict ? 'CONFLICT' : null;
+}
+
+function buildPushResult(args: {
+  outboxCommitId: string;
+  clientCommitId: string;
+  status: PushResultInfo['status'];
+  response: SyncPushResponse;
+}): PushResultInfo {
+  return {
+    outboxCommitId: args.outboxCommitId,
+    clientCommitId: args.clientCommitId,
+    status: args.status,
+    commitSeq: args.response.commitSeq ?? null,
+    results: args.response.results,
+    errorCode: firstPushErrorCode(args.response),
+    timestamp: Date.now(),
+  };
 }
 
 export async function syncPushOnce<DB extends SyncClientDb>(
@@ -178,7 +215,16 @@ export async function syncPushOnce<DB extends SyncClientDb>(
       commitSeq: responseToUse.commitSeq ?? null,
       responseJson,
     });
-    return { pushed: true, response: responseToUse };
+    return {
+      pushed: true,
+      response: responseToUse,
+      pushResult: buildPushResult({
+        outboxCommitId: next.id,
+        clientCommitId: next.client_commit_id,
+        status: responseToUse.status,
+        response: responseToUse,
+      }),
+    };
   }
 
   // Check if all errors are retriable - if so, keep pending for retry
@@ -198,7 +244,16 @@ export async function syncPushOnce<DB extends SyncClientDb>(
       error: `Retriable: ${errorMessages}`,
       responseJson,
     });
-    return { pushed: true, response: responseToUse };
+    return {
+      pushed: true,
+      response: responseToUse,
+      pushResult: buildPushResult({
+        outboxCommitId: next.id,
+        clientCommitId: next.client_commit_id,
+        status: 'retriable',
+        response: responseToUse,
+      }),
+    };
   }
 
   // Terminal rejection - mark as failed and record conflicts
@@ -212,5 +267,14 @@ export async function syncPushOnce<DB extends SyncClientDb>(
     error: 'REJECTED',
     responseJson,
   });
-  return { pushed: true, response: responseToUse };
+  return {
+    pushed: true,
+    response: responseToUse,
+    pushResult: buildPushResult({
+      outboxCommitId: next.id,
+      clientCommitId: next.client_commit_id,
+      status: 'rejected',
+      response: responseToUse,
+    }),
+  };
 }

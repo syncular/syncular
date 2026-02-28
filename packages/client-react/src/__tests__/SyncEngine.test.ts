@@ -343,6 +343,141 @@ describe('SyncEngine', () => {
       expect(errorPayload.message).toBe('Network error');
     });
 
+    it('should emit push:result and conflict:new for rejected pushes', async () => {
+      const transport = createMockTransport({
+        pushResponse: {
+          status: 'rejected',
+          results: [
+            {
+              opIndex: 0,
+              status: 'conflict',
+              message: 'Version conflict',
+              server_version: 2,
+              server_row: { id: 'conflict-row', title: 'Server' },
+            },
+          ],
+        },
+      });
+
+      const engine = createEngine({ transport });
+      const pushStatuses: string[] = [];
+      const conflictTables: string[] = [];
+      engine.on('push:result', (payload) => {
+        pushStatuses.push(payload.status);
+      });
+      engine.on('conflict:new', (payload) => {
+        conflictTables.push(payload.table);
+      });
+
+      await engine.start();
+      await enqueueOutboxCommit(db, {
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'conflict-row',
+            op: 'upsert',
+            payload: { title: 'Local' },
+            base_version: 1,
+          },
+        ],
+      });
+
+      const result = await engine.sync();
+      expect(result.success).toBe(true);
+      expect(pushStatuses).toContain('rejected');
+      expect(conflictTables).toEqual(['tasks']);
+    });
+
+    it('passes commit metadata to applyChange for WS inline deliveries', async () => {
+      type ConnState = 'disconnected' | 'connecting' | 'connected';
+      let currentState: ConnState = 'disconnected';
+      let onRealtimeEvent:
+        | ((event: { event: string; data: Record<string, unknown> }) => void)
+        | null = null;
+      const appliedContexts: Array<{
+        commitSeq: number | null | undefined;
+        actorId: string | null | undefined;
+        createdAt: string | null | undefined;
+      }> = [];
+
+      const handlers = createMockHandlerRegistry();
+      handlers.push({
+        table: 'tasks',
+        applySnapshot: async () => {},
+        clearAll: async () => {},
+        applyChange: async (ctx) => {
+          appliedContexts.push({
+            commitSeq: ctx.commitSeq,
+            actorId: ctx.actorId,
+            createdAt: ctx.createdAt,
+          });
+        },
+      });
+
+      const base = createMockTransport();
+      const realtimeTransport = {
+        ...base,
+        connect(
+          _args: { clientId: string },
+          onEvent: (event: {
+            event: string;
+            data: Record<string, unknown>;
+          }) => void,
+          onStateChange?: (state: ConnState) => void
+        ) {
+          onRealtimeEvent = onEvent;
+          currentState = 'connected';
+          onStateChange?.('connected');
+          return () => {
+            currentState = 'disconnected';
+            onStateChange?.('disconnected');
+          };
+        },
+        getConnectionState(): ConnState {
+          return currentState;
+        },
+        reconnect() {
+          currentState = 'connected';
+        },
+      };
+
+      const engine = createEngine({
+        handlers,
+        transport: realtimeTransport,
+        realtimeEnabled: true,
+      });
+
+      await engine.start();
+      expect(onRealtimeEvent).not.toBeNull();
+
+      onRealtimeEvent?.({
+        event: 'sync',
+        data: {
+          cursor: 11,
+          actorId: 'peer-user',
+          createdAt: '2026-02-28T12:00:00.000Z',
+          changes: [
+            {
+              table: 'tasks',
+              row_id: 'ws-row-1',
+              op: 'upsert',
+              row_json: { id: 'ws-row-1', title: 'Inline' },
+              row_version: 11,
+              scopes: {},
+            },
+          ],
+          timestamp: Date.now(),
+        },
+      });
+
+      await waitFor(() => appliedContexts.length === 1, 1_000);
+      expect(appliedContexts[0]).toEqual({
+        commitSeq: 11,
+        actorId: 'peer-user',
+        createdAt: '2026-02-28T12:00:00.000Z',
+      });
+    });
+
     it('should dedupe concurrent sync calls', async () => {
       let pullCount = 0;
       const transport = createMockTransport({

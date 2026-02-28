@@ -22,6 +22,7 @@ const {
   SyncProvider,
   useConflicts,
   useEngine,
+  useNewConflicts,
   useOutbox,
   usePresenceWithJoin,
   useResolveConflict,
@@ -576,6 +577,65 @@ describe('React Hooks', () => {
       expect(result.current.conflicts).toEqual([]);
       expect(result.current.count).toBe(0);
       expect(result.current.hasConflicts).toBe(false);
+    });
+  });
+
+  describe('useNewConflicts', () => {
+    it('buffers conflict:new notifications and supports dismiss/clear', async () => {
+      const { result } = renderHook(
+        () => ({
+          stream: useNewConflicts({ maxBuffered: 2 }),
+          engine: useEngine(),
+        }),
+        { wrapper: createWrapper() }
+      );
+
+      const emit = Reflect.get(result.current.engine, 'emit');
+      if (typeof emit !== 'function') {
+        throw new Error('Expected engine.emit to be callable');
+      }
+
+      const makeConflict = (id: string) => ({
+        id,
+        outboxCommitId: `outbox-${id}`,
+        clientCommitId: `client-${id}`,
+        opIndex: 0,
+        resultStatus: 'conflict' as const,
+        message: `Conflict ${id}`,
+        code: 'CONFLICT',
+        serverVersion: 2,
+        serverRowJson: JSON.stringify({ id }),
+        createdAt: Date.now(),
+        table: 'tasks',
+        rowId: id,
+        localPayload: { id },
+      });
+
+      await act(async () => {
+        emit.call(result.current.engine, 'conflict:new', makeConflict('c1'));
+        emit.call(result.current.engine, 'conflict:new', makeConflict('c2'));
+        emit.call(result.current.engine, 'conflict:new', makeConflict('c3'));
+      });
+
+      await waitFor(() => {
+        expect(result.current.stream.count).toBe(2);
+      });
+      expect(
+        result.current.stream.conflicts.map((conflict) => conflict.id)
+      ).toEqual(['c2', 'c3']);
+
+      act(() => {
+        result.current.stream.dismiss('c2');
+      });
+      expect(
+        result.current.stream.conflicts.map((conflict) => conflict.id)
+      ).toEqual(['c3']);
+
+      act(() => {
+        result.current.stream.clear();
+      });
+      expect(result.current.stream.count).toBe(0);
+      expect(result.current.stream.latest).toBe(null);
     });
   });
 

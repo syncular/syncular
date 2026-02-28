@@ -16,6 +16,8 @@ All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at `/
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/sync` | Combined sync (`push` and/or `pull`) |
+| `GET` | `/sync/audit/commits` | List commit audit history (auth/partition scoped) |
+| `GET` | `/sync/audit/commits/{commitSeq}` | Get one commit with operation-level changes |
 | `GET` | `/sync/realtime` | WebSocket "wake-up" connection (not part of OpenAPI) |
 | `GET` | `/sync/snapshot-chunks/{chunkId}` | Download snapshot chunks for large bootstraps |
 | `POST` | `/sync/blobs/upload` | Initiate a blob upload (optional feature) |

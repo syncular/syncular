@@ -888,9 +888,20 @@ export async function applyPullResponse<DB extends SyncClientDb>(
       } else {
         // Apply incremental changes
         for (const commit of sub.commits) {
+          const commitSeq = commit.commitSeq ?? null;
+          const actorId = commit.actorId ?? null;
+          const createdAt = commit.createdAt ?? null;
           for (const change of commit.changes) {
             const handler = getClientHandlerOrThrow(handlers, change.table);
-            await handler.applyChange({ trx }, change);
+            await handler.applyChange(
+              {
+                trx,
+                commitSeq,
+                actorId,
+                createdAt,
+              },
+              change
+            );
           }
         }
       }

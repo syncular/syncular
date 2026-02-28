@@ -50,6 +50,7 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 | `renderWhileStarting` | `boolean` | No | Render before ready (default: false) |
 | `onError` | `Function` | No | Error callback |
 | `onConflict` | `Function` | No | Conflict callback |
+| `onPushResult` | `Function` | No | Per-commit push result callback (`applied`, `cached`, `rejected`, `retriable`) |
 | `onDataChange` | `Function` | No | Data change callback |
 
 ## Dynamic Subscriptions

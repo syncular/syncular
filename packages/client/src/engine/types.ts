@@ -140,13 +140,27 @@ export type SyncEventType =
   | 'sync:complete'
   | 'sync:live'
   | 'sync:error'
+  | 'push:result'
   | 'bootstrap:start'
   | 'bootstrap:progress'
   | 'bootstrap:complete'
   | 'connection:change'
   | 'outbox:change'
   | 'data:change'
+  | 'conflict:new'
   | 'presence:change';
+
+export type PushResultStatus = 'applied' | 'cached' | 'rejected' | 'retriable';
+
+export interface PushResultInfo {
+  outboxCommitId: string;
+  clientCommitId: string;
+  status: PushResultStatus;
+  commitSeq: number | null;
+  results: SyncPushResponse['results'];
+  errorCode: string | null;
+  timestamp: number;
+}
 
 /**
  * Presence entry for a client connected to a scope
@@ -172,6 +186,7 @@ export interface SyncEventPayloads {
   };
   'sync:live': { timestamp: number };
   'sync:error': SyncError;
+  'push:result': PushResultInfo;
   'bootstrap:start': {
     timestamp: number;
     stateId: string;
@@ -203,6 +218,7 @@ export interface SyncEventPayloads {
     scopes: string[];
     timestamp: number;
   };
+  'conflict:new': ConflictInfo;
   'presence:change': {
     scopeKey: string;
     presence: PresenceEntry[];
@@ -260,6 +276,8 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   onError?: (error: SyncError) => void;
   /** Conflict callback */
   onConflict?: (conflict: ConflictInfo) => void;
+  /** Per-commit push outcome callback */
+  onPushResult?: (result: PushResultInfo) => void;
   /** Data change callback */
   onDataChange?: (scopes: string[]) => void;
   /**
@@ -317,8 +335,11 @@ export interface RealtimeTransportLike extends SyncTransport {
       event: string;
       data: {
         cursor?: number;
+        commitSeq?: number;
         changes?: unknown[];
         error?: string;
+        actorId?: string;
+        createdAt?: string;
         timestamp: number;
       };
     }) => void,

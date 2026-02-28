@@ -37,6 +37,7 @@ import type {
   ConflictInfo,
   OutboxStats,
   PresenceEntry,
+  PushResultInfo,
   RealtimeTransportLike,
   SubscriptionProgress,
   SyncAwaitBootstrapOptions,
@@ -313,6 +314,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   };
   private activeBootstrapSubscriptions = new Set<string>();
   private bootstrapStartedAt = new Map<string, number>();
+  private emittedConflictIds = new Set<string>();
   private inspectorEvents: SyncInspectorEvent[] = [];
   private nextInspectorEventId = 1;
 
@@ -1133,6 +1135,49 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
   }
 
+  private emitPushResult(result: PushResultInfo): void {
+    this.emit('push:result', result);
+    this.config.onPushResult?.(result);
+  }
+
+  private async emitNewConflicts(): Promise<void> {
+    const conflicts = await this.getConflicts();
+    const activeIds = new Set(conflicts.map((conflict) => conflict.id));
+
+    for (const id of this.emittedConflictIds) {
+      if (!activeIds.has(id)) {
+        this.emittedConflictIds.delete(id);
+      }
+    }
+
+    const sorted = [...conflicts].sort((left, right) => {
+      if (left.createdAt !== right.createdAt) {
+        return left.createdAt - right.createdAt;
+      }
+      return left.opIndex - right.opIndex;
+    });
+
+    for (const conflict of sorted) {
+      if (this.emittedConflictIds.has(conflict.id)) {
+        continue;
+      }
+      this.emittedConflictIds.add(conflict.id);
+      this.emit('conflict:new', conflict);
+      this.config.onConflict?.(conflict);
+    }
+  }
+
+  private async emitNewConflictsSafe(context: string): Promise<void> {
+    try {
+      await this.emitNewConflicts();
+    } catch (error) {
+      console.warn(
+        `[SyncEngine] Failed to emit conflict:new during ${context}`,
+        error
+      );
+    }
+  }
+
   private async resolveResetTargets(
     options: SyncResetOptions
   ): Promise<SubscriptionState[]> {
@@ -1279,6 +1324,9 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     this.resetLocalState();
     await this.refreshOutboxStats();
+    if (result.deletedConflicts > 0) {
+      this.emittedConflictIds.clear();
+    }
     this.updateState({ error: null });
 
     return result;
@@ -1446,6 +1494,9 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
                 }
               );
               pushed = result.pushed;
+              if (result.pushResult) {
+                this.emitPushResult(result.pushResult);
+              }
             }
           }
         } catch {
@@ -1636,6 +1687,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
           )
       );
 
+      for (const pushResult of result.pushResults) {
+        this.emitPushResult(pushResult);
+      }
+
       const syncResult: SyncResult = {
         success: true,
         pushedCommits: result.pushedCommits,
@@ -1674,6 +1729,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         this.emitDataChange(changedTables);
       }
       this.handleBootstrapLifecycle(result.pullResponse);
+      await this.emitNewConflictsSafe('sync success');
 
       // Refresh outbox stats (fire-and-forget — don't block sync:complete)
       this.refreshOutboxStats().catch((error) => {
@@ -1732,6 +1788,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       });
 
       this.handleError(error);
+      await this.emitNewConflictsSafe('sync error');
 
       const durationMs = Math.max(0, Date.now() - startedAtMs);
       countSyncMetric('sync.client.sync.results', 1, {
@@ -1797,9 +1854,17 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    */
   private async applyWsDeliveredChanges(
     changes: SyncChange[],
-    cursor: number
+    cursor: number,
+    metadata?: {
+      commitSeq?: number;
+      actorId?: string | null;
+      createdAt?: string | null;
+    }
   ): Promise<boolean> {
     try {
+      const commitSeq = metadata?.commitSeq ?? cursor;
+      const actorId = metadata?.actorId ?? null;
+      const createdAt = metadata?.createdAt ?? null;
       await this.config.db.transaction().execute(async (trx) => {
         for (const change of changes) {
           const handler = getClientHandler(this.config.handlers, change.table);
@@ -1808,7 +1873,15 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               `Missing client table handler for WS change table "${change.table}"`
             );
           }
-          await handler.applyChange({ trx }, change);
+          await handler.applyChange(
+            {
+              trx,
+              commitSeq,
+              actorId,
+              createdAt,
+            },
+            change
+          );
         }
 
         // Update subscription cursors
@@ -1851,7 +1924,12 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    */
   private async handleWsDelivery(
     changes: SyncChange[],
-    cursor: number
+    cursor: number,
+    metadata?: {
+      commitSeq?: number;
+      actorId?: string | null;
+      createdAt?: string | null;
+    }
   ): Promise<void> {
     // If a sync is already in-flight, let it handle everything
     if (this.syncPromise) {
@@ -1895,7 +1973,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
 
     // Apply changes + update cursor
     const inlineApplyStartedAtMs = Date.now();
-    const applied = await this.applyWsDeliveredChanges(changes, cursor);
+    const applied = await this.applyWsDeliveredChanges(
+      changes,
+      cursor,
+      metadata
+    );
     const inlineApplyDurationMs = Math.max(
       0,
       Date.now() - inlineApplyStartedAtMs
@@ -2161,10 +2243,27 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
           const hasInlineChanges =
             Array.isArray(event.data.changes) && event.data.changes.length > 0;
           const cursor = event.data.cursor;
+          const commitSeqRaw = event.data.commitSeq;
+          const commitSeq =
+            typeof commitSeqRaw === 'number'
+              ? commitSeqRaw
+              : typeof cursor === 'number'
+                ? cursor
+                : undefined;
+          const actorId =
+            typeof event.data.actorId === 'string' ? event.data.actorId : null;
+          const createdAt =
+            typeof event.data.createdAt === 'string'
+              ? event.data.createdAt
+              : null;
 
           if (hasInlineChanges && typeof cursor === 'number') {
             // WS delivered changes + cursor — may skip HTTP pull
-            this.handleWsDelivery(event.data.changes as SyncChange[], cursor);
+            this.handleWsDelivery(event.data.changes as SyncChange[], cursor, {
+              commitSeq,
+              actorId,
+              createdAt,
+            });
           } else {
             // Cursor-only wake-up or no cursor — must HTTP sync
             countSyncMetric('sync.client.ws.delivery.events', 1, {

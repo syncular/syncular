@@ -13,6 +13,7 @@
     "auth",
     "data-modeling",
     "external-changes",
+    "audit-ui",
     "realtime",
     "presence",
     "blob-storage",
