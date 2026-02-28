@@ -5,8 +5,8 @@
  * Also supports presence tracking for collaborative features.
  */
 
-import type { WSContext } from 'hono/ws';
 import { RealtimeConnectionRegistry } from '@syncular/core';
+import type { WSContext } from 'hono/ws';
 
 /**
  * Presence entry for a client connected to a scope

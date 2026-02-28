@@ -31,6 +31,11 @@ import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
 import {
+  closeUnauthenticatedSocket,
+  parseBearerToken,
+  parseWebSocketAuthToken,
+} from './live-auth';
+import {
   type ApiKeyType,
   ApiKeyTypeSchema,
   type ConsoleApiKey,
@@ -94,11 +99,6 @@ import {
   type TimeseriesStatsResponse,
   TimeseriesStatsResponseSchema,
 } from './schemas';
-import {
-  closeUnauthenticatedSocket,
-  parseBearerToken,
-  parseWebSocketAuthToken,
-} from './live-auth';
 import type {
   ConsoleAuthResult,
   ConsoleEventEmitter,
