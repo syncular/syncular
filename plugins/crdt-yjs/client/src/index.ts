@@ -15,7 +15,7 @@ export const YJS_PAYLOAD_KEY = '__yjs';
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-type YjsFieldKind = 'text';
+export type YjsFieldKind = 'text' | 'xml-fragment' | 'prosemirror';
 
 export interface YjsClientFieldRule {
   table: string;
@@ -34,7 +34,7 @@ export interface YjsClientFieldRule {
    */
   rowIdField?: string;
   /**
-   * CRDT container type (text for v1).
+   * CRDT container type.
    */
   kind?: YjsFieldKind;
 }
@@ -97,6 +97,16 @@ export interface CreateYjsClientPluginOptions {
    * @default true
    */
   stripEnvelope?: boolean;
+  /**
+   * Remove the Yjs envelope key from push payloads.
+   * Default inherits from `stripEnvelope`.
+   */
+  stripEnvelopeBeforePush?: boolean;
+  /**
+   * Remove the Yjs envelope key from local optimistic mutation payloads.
+   * Default inherits from `stripEnvelope`.
+   */
+  stripEnvelopeBeforeApplyLocalMutations?: boolean;
 }
 
 type RuleIndex = Map<string, Map<string, ResolvedYjsClientFieldRule>>;
@@ -197,8 +207,73 @@ function replaceText(doc: Y.Doc, containerKey: string, nextText: string): void {
   });
 }
 
+function patchText(doc: Y.Doc, containerKey: string, nextText: string): void {
+  const text = doc.getText(containerKey);
+  const currentText = text.toString();
+  if (currentText === nextText) return;
+
+  const minLength = Math.min(currentText.length, nextText.length);
+  let prefixLength = 0;
+  while (
+    prefixLength < minLength &&
+    currentText.charCodeAt(prefixLength) === nextText.charCodeAt(prefixLength)
+  ) {
+    prefixLength += 1;
+  }
+
+  let currentSuffixStart = currentText.length;
+  let nextSuffixStart = nextText.length;
+  while (
+    currentSuffixStart > prefixLength &&
+    nextSuffixStart > prefixLength &&
+    currentText.charCodeAt(currentSuffixStart - 1) ===
+      nextText.charCodeAt(nextSuffixStart - 1)
+  ) {
+    currentSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+
+  const deleteLength = currentSuffixStart - prefixLength;
+  const insertSegment = nextText.slice(prefixLength, nextSuffixStart);
+
+  doc.transact(() => {
+    if (deleteLength > 0) {
+      text.delete(prefixLength, deleteLength);
+    }
+    if (insertSegment.length > 0) {
+      text.insert(prefixLength, insertSegment);
+    }
+  });
+}
+
 function ensureTextContainer(doc: Y.Doc, containerKey: string): string {
   return doc.getText(containerKey).toString();
+}
+
+function ensureXmlFragmentContainer(doc: Y.Doc, containerKey: string): string {
+  return doc.getXmlFragment(containerKey).toString();
+}
+
+function materializeRuleValue(
+  doc: Y.Doc,
+  rule: ResolvedYjsClientFieldRule
+): unknown {
+  if (rule.kind === 'text') {
+    return ensureTextContainer(doc, rule.containerKey);
+  }
+  return ensureXmlFragmentContainer(doc, rule.containerKey);
+}
+
+function seedRuleValueFromPayload(
+  doc: Y.Doc,
+  rule: ResolvedYjsClientFieldRule,
+  source: Record<string, unknown>
+): void {
+  if (rule.kind !== 'text') return;
+  const initialText = readString(source[rule.field]);
+  if (initialText) {
+    replaceText(doc, rule.containerKey, initialText);
+  }
 }
 
 function buildRuleIndex(rules: readonly YjsClientFieldRule[]): {
@@ -324,7 +399,7 @@ export function buildYjsTextUpdate(
   const doc = createDocFromState(args.previousStateBase64);
   try {
     const from = Y.encodeStateVector(doc);
-    replaceText(doc, containerKey, args.nextText);
+    patchText(doc, containerKey, args.nextText);
     const update = bytesToBase64(Y.encodeStateAsUpdate(doc, from));
     const nextText = ensureTextContainer(doc, containerKey);
     const nextStateBase64 = exportSnapshotBase64(doc);
@@ -375,9 +450,9 @@ function materializeRowFromState(args: {
 
     const doc = createDocFromState(stateBase64);
     try {
-      const nextText = ensureTextContainer(doc, rule.containerKey);
-      if (source[rule.field] !== nextText) {
-        ensureRow()[rule.field] = nextText;
+      const nextValue = materializeRuleValue(doc, rule);
+      if (source[rule.field] !== nextValue) {
+        ensureRow()[rule.field] = nextValue;
       }
       if (args.rowId) {
         args.stateByRowField.set(
@@ -479,20 +554,17 @@ function transformPushPayload(args: {
       const doc = createDocFromState(baseState);
       try {
         if (!baseState) {
-          const initialText = readString(source[rule.field]);
-          if (initialText) {
-            replaceText(doc, rule.containerKey, initialText);
-          }
+          seedRuleValueFromPayload(doc, rule, source);
         }
 
         for (const update of updates) {
           Y.applyUpdate(doc, base64ToBytes(update.updateBase64));
         }
 
-        const nextText = ensureTextContainer(doc, rule.containerKey);
+        const nextValue = materializeRuleValue(doc, rule);
         const nextStateBase64 = exportSnapshotBase64(doc);
         const target = ensurePayload();
-        target[rule.field] = nextText;
+        target[rule.field] = nextValue;
         target[rule.stateColumn] = nextStateBase64;
         args.stateByRowField.set(cacheKey, nextStateBase64);
       } finally {
@@ -614,6 +686,10 @@ export function createYjsClientPlugin(
   const envelopeKey = options.envelopeKey ?? YJS_PAYLOAD_KEY;
   const strict = options.strict ?? true;
   const stripEnvelope = options.stripEnvelope ?? true;
+  const stripEnvelopeBeforePush =
+    options.stripEnvelopeBeforePush ?? stripEnvelope;
+  const stripEnvelopeBeforeApplyLocalMutations =
+    options.stripEnvelopeBeforeApplyLocalMutations ?? stripEnvelope;
   const { index } = buildRuleIndex(options.rules);
   const stateByRowField = new Map<string, string>();
 
@@ -633,7 +709,7 @@ export function createYjsClientPlugin(
           index,
           stateByRowField,
           envelopeKey,
-          stripEnvelope,
+          stripEnvelope: stripEnvelopeBeforePush,
           strict,
         });
 
@@ -659,7 +735,7 @@ export function createYjsClientPlugin(
           index,
           stateByRowField,
           envelopeKey,
-          stripEnvelope,
+          stripEnvelope: stripEnvelopeBeforeApplyLocalMutations,
           strict,
         });
 

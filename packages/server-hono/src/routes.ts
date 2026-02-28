@@ -28,6 +28,7 @@ import type {
   SyncRealtimeBroadcaster,
   SyncRealtimeEvent,
   SyncServerAuth,
+  SyncServerPushPlugin,
 } from '@syncular/server';
 import {
   type CompactOptions,
@@ -190,6 +191,7 @@ export interface CreateSyncRoutesOptions<
   db: Kysely<DB>;
   dialect: ServerSyncDialect<F>;
   handlers: ServerTableHandler<DB, Auth>[];
+  plugins?: SyncServerPushPlugin<DB, Auth>[];
   authenticate: (c: Context) => Promise<Auth | null>;
   sync?: SyncRoutesConfigWithRateLimit;
   wsConnectionManager?: WebSocketConnectionManager;
@@ -1220,6 +1222,7 @@ export function createSyncRoutes<
           db: options.db,
           dialect: options.dialect,
           handlers: handlerRegistry,
+          plugins: options.plugins,
           auth,
           request: {
             clientId,
@@ -2098,6 +2101,7 @@ export function createSyncRoutes<
         db: options.db,
         dialect: options.dialect,
         handlers: handlerRegistry,
+        plugins: options.plugins,
         auth,
         request: {
           clientId,

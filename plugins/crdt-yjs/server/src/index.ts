@@ -1,3 +1,9 @@
+import {
+  type ApplyOperationResult,
+  ServerPushPluginPriority,
+  type SyncServerPushPlugin,
+} from '@syncular/server';
+import { sql } from 'kysely';
 import * as Y from 'yjs';
 
 export const YJS_PAYLOAD_KEY = '__yjs';
@@ -5,7 +11,7 @@ export const YJS_PAYLOAD_KEY = '__yjs';
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-type YjsFieldKind = 'text';
+export type YjsFieldKind = 'text' | 'xml-fragment' | 'prosemirror';
 
 export interface YjsServerFieldRule {
   table: string;
@@ -24,7 +30,7 @@ export interface YjsServerFieldRule {
    */
   rowIdField?: string;
   /**
-   * CRDT container type (text for v1).
+   * CRDT container type.
    */
   kind?: YjsFieldKind;
 }
@@ -86,6 +92,11 @@ export interface CreateYjsServerModuleOptions {
    * @default true
    */
   stripEnvelope?: boolean;
+}
+
+export interface CreateYjsServerPushPluginOptions
+  extends CreateYjsServerModuleOptions {
+  priority?: number;
 }
 
 type RuleIndex = Map<string, Map<string, ResolvedYjsServerFieldRule>>;
@@ -201,6 +212,10 @@ function ensureTextContainer(doc: Y.Doc, containerKey: string): string {
   return doc.getText(containerKey).toString();
 }
 
+function ensureXmlFragmentContainer(doc: Y.Doc, containerKey: string): string {
+  return doc.getXmlFragment(containerKey).toString();
+}
+
 function replaceText(doc: Y.Doc, containerKey: string, nextText: string): void {
   const text = doc.getText(containerKey);
   const currentLength = text.length;
@@ -212,6 +227,28 @@ function replaceText(doc: Y.Doc, containerKey: string, nextText: string): void {
       text.insert(0, nextText);
     }
   });
+}
+
+function materializeRuleValue(
+  doc: Y.Doc,
+  rule: ResolvedYjsServerFieldRule
+): unknown {
+  if (rule.kind === 'text') {
+    return ensureTextContainer(doc, rule.containerKey);
+  }
+  return ensureXmlFragmentContainer(doc, rule.containerKey);
+}
+
+function seedRuleValueFromPayload(
+  doc: Y.Doc,
+  rule: ResolvedYjsServerFieldRule,
+  source: Record<string, unknown>
+): void {
+  if (rule.kind !== 'text') return;
+  const initialText = readString(source[rule.field]);
+  if (initialText) {
+    replaceText(doc, rule.containerKey, initialText);
+  }
 }
 
 function createUpdateId(): string {
@@ -372,9 +409,9 @@ async function materializeRowFromState(args: {
 
     const doc = createDocFromState(stateBase64);
     try {
-      const nextText = ensureTextContainer(doc, rule.containerKey);
-      if (source[rule.field] !== nextText) {
-        ensureRow()[rule.field] = nextText;
+      const nextValue = materializeRuleValue(doc, rule);
+      if (source[rule.field] !== nextValue) {
+        ensureRow()[rule.field] = nextValue;
       }
     } finally {
       doc.destroy();
@@ -461,20 +498,17 @@ async function applyYjsEnvelopeToPayload(args: {
       const doc = createDocFromState(baseState);
       try {
         if (!baseState) {
-          const initialText = readString(source[rule.field]);
-          if (initialText) {
-            replaceText(doc, rule.containerKey, initialText);
-          }
+          seedRuleValueFromPayload(doc, rule, source);
         }
 
         for (const update of updates) {
           Y.applyUpdate(doc, base64ToBytes(update.updateBase64));
         }
 
-        const nextText = ensureTextContainer(doc, rule.containerKey);
+        const nextValue = materializeRuleValue(doc, rule);
         const nextStateBase64 = exportSnapshotBase64(doc);
         const target = ensurePayload();
-        target[rule.field] = nextText;
+        target[rule.field] = nextValue;
         target[rule.stateColumn] = nextStateBase64;
       } finally {
         doc.destroy();
@@ -532,6 +566,137 @@ export function createYjsServerModule(
         envelopeKey,
         stripEnvelope,
       });
+    },
+  };
+}
+
+function buildTableRowIdFieldIndex(
+  rules: readonly YjsServerFieldRule[]
+): Map<string, string> {
+  const tableRowIdFields = new Map<string, string>();
+
+  for (const rule of rules) {
+    const rowIdField = rule.rowIdField ?? 'id';
+    const existing = tableRowIdFields.get(rule.table);
+    if (existing && existing !== rowIdField) {
+      throw new Error(
+        `Yjs rules for table "${rule.table}" must use a single rowIdField`
+      );
+    }
+    tableRowIdFields.set(rule.table, rowIdField);
+  }
+
+  return tableRowIdFields;
+}
+
+async function materializeAppliedResult(
+  yjsModule: YjsServerModule,
+  opTable: string,
+  applied: ApplyOperationResult
+): Promise<ApplyOperationResult> {
+  let nextResult: ApplyOperationResult['result'] = applied.result;
+  let resultChanged = false;
+
+  if (nextResult.status === 'conflict' && isRecord(nextResult.server_row)) {
+    const materializedServerRow = await yjsModule.materializeRow({
+      table: opTable,
+      row: nextResult.server_row,
+    });
+    if (materializedServerRow !== nextResult.server_row) {
+      nextResult = {
+        ...nextResult,
+        server_row: materializedServerRow,
+      };
+      resultChanged = true;
+    }
+  }
+
+  let emittedChanged = false;
+  const nextEmitted: ApplyOperationResult['emittedChanges'] = [];
+  for (const emitted of applied.emittedChanges) {
+    if (emitted.op !== 'upsert' || !isRecord(emitted.row_json)) {
+      nextEmitted.push(emitted);
+      continue;
+    }
+
+    const materializedRow = await yjsModule.materializeRow({
+      table: emitted.table,
+      row: emitted.row_json,
+    });
+    if (materializedRow !== emitted.row_json) {
+      emittedChanged = true;
+      nextEmitted.push({
+        ...emitted,
+        row_json: materializedRow,
+      });
+      continue;
+    }
+
+    nextEmitted.push(emitted);
+  }
+
+  if (!resultChanged && !emittedChanged) {
+    return applied;
+  }
+
+  return {
+    result: nextResult,
+    emittedChanges: emittedChanged ? nextEmitted : applied.emittedChanges,
+  };
+}
+
+export function createYjsServerPushPlugin(
+  options: CreateYjsServerPushPluginOptions
+): SyncServerPushPlugin {
+  const yjsModule = createYjsServerModule(options);
+  const tableRowIdFields = buildTableRowIdFieldIndex(options.rules);
+
+  return {
+    name: options.name ?? yjsModule.name,
+    priority: options.priority ?? ServerPushPluginPriority.CRDT,
+
+    async beforeApplyOperation(args) {
+      const op = args.op;
+      if (op.op !== 'upsert' || !isRecord(op.payload)) {
+        return op;
+      }
+
+      const rowIdField = tableRowIdFields.get(op.table);
+      let existingRow: Record<string, unknown> | null = null;
+
+      if (rowIdField) {
+        const loadedRows = await sql<Record<string, unknown>>`
+          select *
+          from ${sql.table(op.table)}
+          where ${sql.ref(rowIdField)} = ${sql.val(op.row_id)}
+          limit ${sql.val(1)}
+        `.execute(args.ctx.trx);
+        const loadedRow = loadedRows.rows[0];
+        if (loadedRow && isRecord(loadedRow)) {
+          existingRow = loadedRow;
+        }
+      }
+
+      const nextPayload = await yjsModule.applyPayload({
+        table: op.table,
+        rowId: op.row_id,
+        payload: op.payload,
+        existingRow,
+      });
+
+      if (nextPayload === op.payload) return op;
+      return {
+        ...op,
+        payload: nextPayload,
+      };
+    },
+
+    async afterApplyOperation(args) {
+      return await materializeAppliedResult(
+        yjsModule,
+        args.op.table,
+        args.applied
+      );
     },
   };
 }

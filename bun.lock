@@ -671,6 +671,8 @@
       "name": "@syncular/server-plugin-crdt-yjs",
       "version": "0.0.0",
       "dependencies": {
+        "@syncular/server": "workspace:*",
+        "kysely": "^0.28.11",
         "yjs": "^13.6.29",
       },
       "devDependencies": {

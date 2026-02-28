@@ -8,6 +8,7 @@ import {
   createServerHandler,
 } from './handlers';
 import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
+import type { SyncServerPushPlugin } from './plugins/types';
 import type { SyncCoreDb } from './schema';
 
 type SharedTableName<ServerDB, ClientDB> = keyof ServerDB &
@@ -31,6 +32,7 @@ export interface ServerSyncConfig<
 > {
   authenticate: (request: Request) => Promise<Auth | null> | Auth | null;
   handlers: ServerTableHandler<ServerDB, Auth>[];
+  plugins?: SyncServerPushPlugin<ServerDB, Auth>[];
 }
 
 export interface DefineServerSyncOptions<Auth extends SyncServerAuth> {
@@ -54,6 +56,8 @@ export interface ServerSyncBuilder<
       ScopeDefs
     >
   ): this;
+
+  addPushPlugin(plugin: SyncServerPushPlugin<ServerDB, Auth>): this;
 }
 
 export function defineServerSync<
@@ -65,11 +69,13 @@ export function defineServerSync<
   options: DefineServerSyncOptions<Auth>
 ): ServerSyncBuilder<ServerDB, ClientDB, ScopeDefs, Auth> {
   const handlers: ServerTableHandler<ServerDB, Auth>[] = [];
+  const plugins: SyncServerPushPlugin<ServerDB, Auth>[] = [];
   const registeredTables = new Set<string>();
 
   const sync: ServerSyncBuilder<ServerDB, ClientDB, ScopeDefs, Auth> = {
     authenticate: options.authenticate,
     handlers,
+    plugins,
     addHandler<TableName extends SharedTableName<ServerDB, ClientDB>>(
       handlerOptions: ServerSyncHandlerOptionsForTable<
         ServerDB,
@@ -93,6 +99,10 @@ export function defineServerSync<
         })
       );
       registeredTables.add(handlerOptions.table);
+      return sync;
+    },
+    addPushPlugin(plugin: SyncServerPushPlugin<ServerDB, Auth>) {
+      plugins.push(plugin);
       return sync;
     },
   };

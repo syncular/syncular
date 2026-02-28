@@ -595,6 +595,8 @@ function SyncClientPanel({
           containerKey: TASK_TITLE_YJS_CONTAINER,
         },
       ],
+      stripEnvelopeBeforePush: false,
+      stripEnvelopeBeforeApplyLocalMutations: true,
     }),
   ]);
 

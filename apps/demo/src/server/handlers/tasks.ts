@@ -6,7 +6,6 @@
  */
 
 import { createServerHandler, type EmittedChange } from '@syncular/server';
-import { createYjsServerModule } from '@syncular/server-plugin-crdt-yjs';
 import { sql } from 'kysely';
 import type { ClientDb } from '../../client/types.generated';
 import type { ServerDb } from '../db';
@@ -23,17 +22,6 @@ interface TaskRow {
 
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-
-const tasksYjs = createYjsServerModule({
-  rules: [
-    {
-      table: 'tasks',
-      field: 'title',
-      stateColumn: 'title_yjs_state',
-      containerKey: 'title',
-    },
-  ],
-});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -224,12 +212,7 @@ export const tasksServerHandler = createServerHandler<
           status: 'conflict',
           message: `Version conflict: server=${existingVersion}, base=${op.base_version}`,
           server_version: existingVersion,
-          server_row: normalizeOutboundTaskRow(
-            await tasksYjs.materializeRow({
-              table: 'tasks',
-              row: existing,
-            })
-          ),
+          server_row: normalizeOutboundTaskRow(existing),
         },
         emittedChanges: [],
       };
@@ -248,12 +231,7 @@ export const tasksServerHandler = createServerHandler<
       };
     }
 
-    const mergedPayload = await tasksYjs.applyPayload({
-      table: 'tasks',
-      rowId: op.row_id,
-      payload,
-      existingRow: existing ?? null,
-    });
+    const mergedPayload = payload;
 
     const payloadUserId = readOptionalString(mergedPayload.user_id);
     const existingUserId = readOptionalString(existing?.user_id);
@@ -367,12 +345,7 @@ export const tasksServerHandler = createServerHandler<
     }
     const updatedVersion = coerceInteger(updated.server_version, 1);
 
-    const outboundRow = normalizeOutboundTaskRow(
-      await tasksYjs.materializeRow({
-        table: 'tasks',
-        row: updated,
-      })
-    );
+    const outboundRow = normalizeOutboundTaskRow(updated);
     outboundRow.user_id = updatedUserId;
     outboundRow.server_version = updatedVersion;
 

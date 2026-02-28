@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import * as Y from 'yjs';
 import {
   buildYjsTextUpdate,
   createYjsServerModule,
@@ -19,6 +20,45 @@ function createUpdate(
     update: value.update,
     state: value.nextStateBase64,
   }));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function createXmlInsert(
+  text: string,
+  previousStateBase64?: string
+): { update: YjsServerUpdateEnvelope; state: string } {
+  const doc = new Y.Doc();
+  if (previousStateBase64) {
+    Y.applyUpdate(
+      doc,
+      new Uint8Array(Buffer.from(previousStateBase64, 'base64'))
+    );
+  }
+
+  const from = Y.encodeStateVector(doc);
+  const fragment = doc.getXmlFragment('content');
+  doc.transact(() => {
+    const paragraph = new Y.XmlElement('p');
+    const xmlText = new Y.XmlText();
+    xmlText.insert(0, text);
+    paragraph.insert(0, [xmlText]);
+    fragment.insert(fragment.length, [paragraph]);
+  });
+
+  const update = bytesToBase64(Y.encodeStateAsUpdate(doc, from));
+  const state = bytesToBase64(Y.encodeStateAsUpdate(doc));
+  doc.destroy();
+
+  return {
+    update: {
+      updateId: `xml-${text}`,
+      updateBase64: update,
+    },
+    state,
+  };
 }
 
 describe('@syncular/server-plugin-crdt-yjs', () => {
@@ -179,5 +219,31 @@ describe('@syncular/server-plugin-crdt-yjs', () => {
     expect(nextPayload.content).toContain('from other client');
     expect(nextPayload.content).toContain('from this client');
     expect(nextPayload.content_yjs_state).not.toBe(localUpdate.state);
+  });
+
+  it('materializes xml-fragment kind from Yjs state snapshots', async () => {
+    const module = createYjsServerModule({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+          kind: 'xml-fragment',
+        },
+      ],
+    });
+
+    const xml = createXmlInsert('Hello XML');
+    const row = await module.materializeRow({
+      table: 'tasks',
+      row: {
+        id: 'task-1',
+        content: 'stale',
+        content_yjs_state: xml.state,
+      },
+    });
+
+    expect(typeof row.content).toBe('string');
+    expect(String(row.content)).toContain('Hello XML');
   });
 });

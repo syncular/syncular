@@ -148,6 +148,7 @@ export function createSyncServer<
     db,
     dialect,
     handlers: sync.handlers,
+    plugins: sync.plugins,
     authenticate: async (context): Promise<Auth | null> =>
       sync.authenticate(context.req.raw),
     chunkStorage,
