@@ -879,7 +879,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.flushDataChange();
   }
 
-  private emitDataChange(scopes: Iterable<string>): void {
+  private emitDataChange(
+    scopes: Iterable<string>,
+    options: { source?: 'local' | 'remote' } = {}
+  ): void {
     const normalizedScopes = new Set<string>();
     for (const scope of scopes) {
       if (scope) {
@@ -888,6 +891,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
 
     if (normalizedScopes.size === 0) return;
+    if (options.source === 'local') {
+      this.flushDataChange(normalizedScopes);
+      return;
+    }
 
     const debounceMs = this.resolveDataChangeDebounceMs();
     const shouldBatchWithoutTimer =
@@ -1811,7 +1818,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       // Emit data change for any tables that had changes
       const changedTables = this.extractChangedTables(result.pullResponse);
       if (changedTables.length > 0) {
-        this.emitDataChange(changedTables);
+        this.emitDataChange(changedTables, { source: 'remote' });
       }
       this.handleBootstrapLifecycle(result.pullResponse);
       await this.emitNewConflictsSafe('sync success');
@@ -1996,7 +2003,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       // Emit (or debounce) data change for UI update
       const changedTables = [...new Set(changes.map((c) => c.table))];
       if (changedTables.length > 0) {
-        this.emitDataChange(changedTables);
+        this.emitDataChange(changedTables, { source: 'remote' });
       }
 
       return true;
@@ -2180,7 +2187,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
 
     if (affectedTables.size > 0) {
-      this.emitDataChange(affectedTables);
+      this.emitDataChange(affectedTables, { source: 'local' });
     }
   }
 
@@ -2475,7 +2482,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.tableMutationTimestamps.clear();
 
     if (tables.length > 0) {
-      this.emitDataChange(tables);
+      this.emitDataChange(tables, { source: 'local' });
     }
   }
 

@@ -254,15 +254,13 @@ describe('SyncEngine WS inline apply', () => {
       eventScopes.push(payload.scopes);
     });
 
-    engine.recordLocalMutations([
-      { table: 'tasks', rowId: 't1', op: 'upsert' },
-    ]);
-    engine.recordLocalMutations([
-      { table: 'tasks', rowId: 't2', op: 'upsert' },
-    ]);
-    engine.recordLocalMutations([
-      { table: 'tasks', rowId: 't3', op: 'delete' },
-    ]);
+    const emitDataChange = Reflect.get(engine, 'emitDataChange');
+    if (typeof emitDataChange !== 'function') {
+      throw new Error('Expected emitDataChange to be callable');
+    }
+    emitDataChange.call(engine, ['tasks'], { source: 'remote' });
+    emitDataChange.call(engine, ['tasks'], { source: 'remote' });
+    emitDataChange.call(engine, ['tasks'], { source: 'remote' });
 
     expect(eventScopes).toEqual([]);
     expect(onDataChangeCalls).toEqual([]);
@@ -297,17 +295,22 @@ describe('SyncEngine WS inline apply', () => {
     defaultEngine.on('data:change', (payload) => {
       defaultEvents.push(payload.scopes);
     });
+    const emitDataChange = Reflect.get(defaultEngine, 'emitDataChange');
+    if (typeof emitDataChange !== 'function') {
+      throw new Error('Expected emitDataChange to be callable');
+    }
 
-    defaultEngine.recordLocalMutations([
-      { table: 'tasks', rowId: 'd1', op: 'upsert' },
-    ]);
-    defaultEngine.recordLocalMutations([
-      { table: 'tasks', rowId: 'd2', op: 'upsert' },
-    ]);
+    emitDataChange.call(defaultEngine, ['tasks'], { source: 'remote' });
+    emitDataChange.call(defaultEngine, ['tasks'], { source: 'remote' });
     expect(defaultEvents).toEqual([]);
 
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(defaultEvents).toEqual([['tasks']]);
+
+    defaultEngine.recordLocalMutations([
+      { table: 'tasks', rowId: 'local-1', op: 'upsert' },
+    ]);
+    expect(defaultEvents).toEqual([['tasks'], ['tasks']]);
 
     const noDebounceEngine = new SyncEngine<TestDb>({
       db,
@@ -325,9 +328,7 @@ describe('SyncEngine WS inline apply', () => {
       immediateEvents.push(payload.scopes);
     });
 
-    noDebounceEngine.recordLocalMutations([
-      { table: 'tasks', rowId: 'n1', op: 'upsert' },
-    ]);
+    emitDataChange.call(noDebounceEngine, ['tasks'], { source: 'remote' });
     expect(immediateEvents).toEqual([['tasks']]);
 
     const zeroDebounceEngine = new SyncEngine<TestDb>({
@@ -346,9 +347,7 @@ describe('SyncEngine WS inline apply', () => {
       zeroEvents.push(payload.scopes);
     });
 
-    zeroDebounceEngine.recordLocalMutations([
-      { table: 'tasks', rowId: 'z1', op: 'upsert' },
-    ]);
+    emitDataChange.call(zeroDebounceEngine, ['tasks'], { source: 'remote' });
     expect(zeroEvents).toEqual([['tasks']]);
 
     defaultEngine.destroy();
@@ -399,9 +398,11 @@ describe('SyncEngine WS inline apply', () => {
       connectionState: 'connected',
     });
 
-    engine.recordLocalMutations([
-      { table: 'tasks', rowId: 'syncing-1', op: 'upsert' },
-    ]);
+    const emitDataChange = Reflect.get(engine, 'emitDataChange');
+    if (typeof emitDataChange !== 'function') {
+      throw new Error('Expected emitDataChange to be callable');
+    }
+    emitDataChange.call(engine, ['tasks'], { source: 'remote' });
     expect(eventScopes).toEqual([]);
 
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -413,9 +414,7 @@ describe('SyncEngine WS inline apply', () => {
     });
     setConnectionState.call(engine, 'reconnecting');
 
-    engine.recordLocalMutations([
-      { table: 'tasks', rowId: 'reconnecting-1', op: 'upsert' },
-    ]);
+    emitDataChange.call(engine, ['tasks'], { source: 'remote' });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(eventScopes).toEqual([['tasks']]);
 
