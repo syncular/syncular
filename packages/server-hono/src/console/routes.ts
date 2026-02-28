@@ -419,8 +419,12 @@ export function createConsoleRoutes<
   DB extends SyncCoreDb,
   Auth extends SyncServerAuth,
   F extends SqlFamily = SqlFamily,
->(options: CreateConsoleRoutesOptions<DB, Auth, F>): Hono {
-  const routes = new Hono();
+>(
+  options: CreateConsoleRoutesOptions<DB, Auth, F>
+): Hono<{ Variables: { consoleAuth: ConsoleAuthResult } }> {
+  const routes = new Hono<{
+    Variables: { consoleAuth: ConsoleAuthResult };
+  }>();
 
   routes.onError((error, context) => {
     const message =
@@ -597,14 +601,23 @@ export function createConsoleRoutes<
     await next();
   });
 
-  // Auth middleware
-  const requireAuth = async (c: Context): Promise<ConsoleAuthResult | null> => {
+  // Route auth middleware. Keep /events/live exempt to preserve websocket
+  // message-based auth handshake fallback when no Authorization header is sent.
+  routes.use('*', async (c, next) => {
+    if (c.req.method === 'OPTIONS' || c.req.path.endsWith('/events/live')) {
+      await next();
+      return;
+    }
+
     const auth = await options.authenticate(c);
     if (!auth) {
-      return null;
+      return c.json({ error: 'UNAUTHENTICATED' }, 401);
     }
-    return auth;
-  };
+
+    c.set('consoleAuth', auth);
+    await next();
+  });
+
   const requestEventSelectColumns = [
     'event_id',
     'partition_id',
@@ -965,9 +978,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', ConsolePartitionQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { partitionId } = c.req.valid('query');
 
       const stats: SyncStats = await readSyncStats(options.db, {
@@ -976,7 +986,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.stats',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
       });
 
       return c.json(stats, 200);
@@ -1011,9 +1021,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', TimeseriesQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { interval, range, partitionId } = c.req.valid('query');
 
       const rangeMs = rangeToMs(range);
@@ -1210,9 +1217,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', LatencyQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { range, partitionId } = c.req.valid('query');
 
       const rangeMs = rangeToMs(range);
@@ -1326,9 +1330,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', ConsoleTimelineQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const {
         limit,
         offset,
@@ -1558,9 +1559,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', ConsolePartitionedPaginationQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { limit, offset, partitionId } = c.req.valid('query');
 
       let query = db
@@ -1656,9 +1654,6 @@ export function createConsoleRoutes<
     zValidator('param', commitSeqParamSchema),
     zValidator('query', commitDetailQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { seq } = c.req.valid('param');
       const { partitionId } = c.req.valid('query');
 
@@ -1777,9 +1772,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', ConsolePartitionedPaginationQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { limit, offset, partitionId } = c.req.valid('query');
 
       let clientsQuery = db
@@ -1945,9 +1937,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const items: ConsoleHandler[] = options.handlers.map((handler) => ({
         table: handler.table,
         dependsOn: handler.dependsOn,
@@ -1988,9 +1977,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', ConsoleOperationsQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { limit, offset, operationType, partitionId } =
         c.req.valid('query');
 
@@ -2060,9 +2046,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const watermarkCommitSeq = await computePruneWatermarkCommitSeq(
         options.db,
         options.prune
@@ -2111,9 +2094,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const watermarkCommitSeq = await computePruneWatermarkCommitSeq(
         options.db,
         options.prune
@@ -2126,13 +2106,13 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.prune',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         deletedCommits,
         watermarkCommitSeq,
       });
       await recordOperationEvent({
         operationType: 'prune',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         requestPayload: {
           watermarkCommitSeq,
           keepNewestCommits: options.prune?.keepNewestCommits ?? null,
@@ -2172,9 +2152,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const fullHistoryHours = options.compact?.fullHistoryHours ?? 24 * 7;
 
       const deletedChanges = await compactChanges(options.db, {
@@ -2184,13 +2161,13 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.compact',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         deletedChanges,
         fullHistoryHours,
       });
       await recordOperationEvent({
         operationType: 'compact',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         requestPayload: { fullHistoryHours },
         resultPayload: { deletedChanges },
       });
@@ -2248,9 +2225,6 @@ export function createConsoleRoutes<
     }),
     zValidator('json', NotifyDataChangeRequestSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const body = c.req.valid('json');
 
       const result = await notifyExternalDataChange({
@@ -2262,14 +2236,14 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.notify_data_change',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         tables: body.tables,
         commitSeq: result.commitSeq,
         deletedChunks: result.deletedChunks,
       });
       await recordOperationEvent({
         operationType: 'notify_data_change',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         partitionId: body.partitionId ?? null,
         requestPayload: {
           tables: body.tables,
@@ -2320,9 +2294,6 @@ export function createConsoleRoutes<
     zValidator('param', clientIdParamSchema),
     zValidator('query', evictClientQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: clientId } = c.req.valid('param');
       const { partitionId } = c.req.valid('query');
 
@@ -2340,13 +2311,13 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.evict_client',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         clientId,
         evicted,
       });
       await recordOperationEvent({
         operationType: 'evict_client',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         partitionId: partitionId ?? null,
         targetClientId: clientId,
         requestPayload: { clientId, partitionId: partitionId ?? null },
@@ -2388,9 +2359,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', eventsQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const {
         limit,
         offset,
@@ -2728,9 +2696,6 @@ export function createConsoleRoutes<
     zValidator('param', eventIdParamSchema),
     zValidator('query', eventDetailQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: eventId } = c.req.valid('param');
       const { partitionId } = c.req.valid('query');
 
@@ -2794,9 +2759,6 @@ export function createConsoleRoutes<
     zValidator('param', eventIdParamSchema),
     zValidator('query', eventDetailQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: eventId } = c.req.valid('param');
       const { partitionId } = c.req.valid('query');
 
@@ -2882,9 +2844,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const res = await db.deleteFrom('sync_request_events').executeTakeFirst();
 
       const deletedCount = Number(res?.numDeletedRows ?? 0);
@@ -2892,7 +2851,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.clear_events',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         deletedCount,
         payloadDeletedCount,
       });
@@ -2929,15 +2888,12 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const pruneResult = await runEventsPrune();
       const deletedCount = pruneResult.totalDeleted;
 
       logSyncEvent({
         event: 'console.prune_events',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         deletedCount,
         requestEventsDeleted: pruneResult.requestEventsDeleted,
         operationEventsDeleted: pruneResult.operationEventsDeleted,
@@ -2979,9 +2935,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', apiKeysQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const {
         limit,
         offset,
@@ -3115,9 +3068,6 @@ export function createConsoleRoutes<
     }),
     zValidator('json', ConsoleApiKeyCreateRequestSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const body = c.req.valid('json');
 
       // Generate key components
@@ -3157,7 +3107,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.create_api_key',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         keyId,
         keyType: body.keyType,
       });
@@ -3216,9 +3166,6 @@ export function createConsoleRoutes<
     }),
     zValidator('param', apiKeyIdParamSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: keyId } = c.req.valid('param');
 
       const row = await db
@@ -3287,9 +3234,6 @@ export function createConsoleRoutes<
     }),
     zValidator('param', apiKeyIdParamSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: keyId } = c.req.valid('param');
       const now = new Date().toISOString();
 
@@ -3304,7 +3248,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.revoke_api_key',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         keyId,
         revoked,
       });
@@ -3347,9 +3291,6 @@ export function createConsoleRoutes<
     }),
     zValidator('json', ConsoleApiKeyBulkRevokeRequestSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const body = c.req.valid('json');
       const keyIds = [...new Set(body.keyIds.map((keyId) => keyId.trim()))]
         .filter((keyId) => keyId.length > 0)
@@ -3412,7 +3353,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.bulk_revoke_api_keys',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         requestedCount: response.requestedCount,
         revokedCount: response.revokedCount,
         alreadyRevokedCount: response.alreadyRevokedCount,
@@ -3457,9 +3398,6 @@ export function createConsoleRoutes<
     }),
     zValidator('param', apiKeyIdParamSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: keyId } = c.req.valid('param');
       const now = new Date().toISOString();
 
@@ -3507,7 +3445,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.stage_rotate_api_key',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         oldKeyId: keyId,
         newKeyId,
       });
@@ -3568,9 +3506,6 @@ export function createConsoleRoutes<
     }),
     zValidator('param', apiKeyIdParamSchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       const { id: keyId } = c.req.valid('param');
       const now = new Date().toISOString();
 
@@ -3628,7 +3563,7 @@ export function createConsoleRoutes<
 
       logSyncEvent({
         event: 'console.rotate_api_key',
-        consoleUserId: auth.consoleUserId,
+        consoleUserId: c.var.consoleAuth.consoleUserId,
         oldKeyId: keyId,
         newKeyId,
       });
@@ -3684,9 +3619,6 @@ export function createConsoleRoutes<
     }),
     zValidator('query', ConsoleBlobListQuerySchema),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       if (!bucket) {
         return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
       }
@@ -3738,9 +3670,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       if (!bucket) {
         return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
       }
@@ -3793,9 +3722,6 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const auth = await requireAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
-
       if (!bucket) {
         return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
       }
