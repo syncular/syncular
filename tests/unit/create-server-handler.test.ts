@@ -513,6 +513,56 @@ describe('createServerHandler', () => {
     ]);
   });
 
+  it('treats base_version=0 upsert as insert when row is missing', async () => {
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
+
+    const pushed = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'commit-base-zero-insert',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'base-zero-row',
+            op: 'upsert',
+            payload: {
+              user_id: 'u1',
+              title: 'created from base zero',
+            },
+            base_version: 0,
+          },
+        ],
+      },
+    });
+
+    expect(pushed.response.status).toBe('applied');
+    expect(pushed.response.results).toEqual([
+      { opIndex: 0, status: 'applied' },
+    ]);
+
+    const inserted = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'base-zero-row')
+      .executeTakeFirst();
+
+    expect(inserted).not.toBeUndefined();
+    expect(inserted?.user_id).toBe('u1');
+    expect(inserted?.title).toBe('created from base zero');
+    expect(inserted?.server_version).toBe(1);
+  });
+
   it('returns constraint error in push response instead of throwing', async () => {
     const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
       table: 'tasks',

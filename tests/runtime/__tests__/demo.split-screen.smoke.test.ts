@@ -139,7 +139,15 @@ describeDemoSmoke('Demo split-screen smoke', () => {
       await page.getByText('Database initialization failed:').count()
     ).toBe(0);
 
-    const initialImageCount = await page.locator('main img').count();
+    await page.waitForFunction(
+      () => !document.body.innerText.includes('Initializing PGlite...'),
+      undefined,
+      { timeout: 180_000 }
+    );
+
+    const initialThumbnailCount = await page
+      .locator('[data-testid="media-thumbnail"]')
+      .count();
     const fileName = `smoke-media-${Date.now()}.png`;
     const png1x1 = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8LhB4AAAAASUVORK5CYII=',
@@ -159,8 +167,10 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     );
 
     await page.waitForFunction(
-      (minImages) => document.querySelectorAll('main img').length >= minImages,
-      initialImageCount + 2,
+      (minThumbnails) =>
+        document.querySelectorAll('[data-testid="media-thumbnail"]').length >=
+        minThumbnails,
+      initialThumbnailCount + 2,
       { timeout: 240_000 }
     );
   }, 300_000);

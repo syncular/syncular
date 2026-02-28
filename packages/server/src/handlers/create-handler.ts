@@ -558,7 +558,7 @@ export function createServerHandler<
           .executeTakeFirst()) as Record<string, unknown> | undefined;
 
         if (!updated) {
-          const conflictRow = await (
+          let conflictRow = await (
             trx.selectFrom(table).selectAll() as SelectQueryBuilder<
               ServerDB,
               keyof ServerDB & string,
@@ -568,7 +568,42 @@ export function createServerHandler<
             .where(ref<string>(primaryKey), '=', op.row_id)
             .executeTakeFirst();
 
-          if (!conflictRow) {
+          if (!conflictRow && expectedVersion === 0) {
+            const insertValues: Record<string, unknown> = {
+              ...payload,
+              [primaryKey]: op.row_id,
+              [versionColumn]: 1,
+            };
+
+            try {
+              updated = (await (
+                trx.insertInto(table) as InsertQueryBuilder<
+                  ServerDB,
+                  TableName,
+                  InsertResult
+                >
+              )
+                .values(insertValues as Insertable<ServerDB[TableName]>)
+                .returningAll()
+                .executeTakeFirst()) as Record<string, unknown> | undefined;
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              if (!isConstraintViolationError(message)) {
+                throw err;
+              }
+              conflictRow = await (
+                trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+                  ServerDB,
+                  keyof ServerDB & string,
+                  Record<string, unknown>
+                >
+              )
+                .where(ref<string>(primaryKey), '=', op.row_id)
+                .executeTakeFirst();
+            }
+          }
+
+          if (!updated && !conflictRow) {
             return {
               result: {
                 opIndex,
@@ -581,20 +616,22 @@ export function createServerHandler<
             };
           }
 
-          const existingVersion =
-            (conflictRow[versionColumn] as number | undefined) ?? 0;
-          return {
-            result: {
-              opIndex,
-              status: 'conflict',
-              message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
-              server_version: existingVersion,
-              server_row: applyOutboundTransform(
-                conflictRow as Selectable<ServerDB[TableName]>
-              ),
-            },
-            emittedChanges: [],
-          };
+          if (!updated && conflictRow) {
+            const existingVersion =
+              (conflictRow[versionColumn] as number | undefined) ?? 0;
+            return {
+              result: {
+                opIndex,
+                status: 'conflict',
+                message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
+                server_version: existingVersion,
+                server_row: applyOutboundTransform(
+                  conflictRow as Selectable<ServerDB[TableName]>
+                ),
+              },
+              emittedChanges: [],
+            };
+          }
         }
       } else {
         const updateSet: Record<string, unknown> = {
