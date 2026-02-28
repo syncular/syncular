@@ -281,7 +281,7 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   /** Data change callback */
   onDataChange?: (scopes: string[]) => void;
   /**
-   * Debounce window for coalescing `data:change` emissions.
+   * Debounce window for coalescing remote/synced `data:change` emissions.
    * - default: `10`
    * - `0`/`false`: emit immediately (disable debounce)
    * - `>0`: merge scopes and emit once per window

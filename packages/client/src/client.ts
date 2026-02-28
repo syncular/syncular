@@ -122,7 +122,7 @@ export interface ClientOptions<DB extends SyncClientDb> {
   pollIntervalMs?: number;
 
   /**
-   * Optional: Debounce window (ms) for coalescing `data:change` events.
+   * Optional: Debounce window (ms) for coalescing remote/synced `data:change` events.
    * - default: `10`
    * - `0`/`false`: emit immediately (disable debounce)
    * - `>0`: merge scopes and emit once per window

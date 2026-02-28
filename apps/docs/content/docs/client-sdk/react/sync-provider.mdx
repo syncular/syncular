@@ -42,7 +42,7 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 | `migrate` | `Function` | No | Migration function |
 | `realtimeEnabled` | `boolean` | No | Enable WebSocket realtime |
 | `realtimeFallbackPollMs` | `number` | No | Fallback poll interval |
-| `dataChangeDebounceMs` | `number \| false` | No | Debounce window for `data:change` events (default: `10`; `0`/`false` disables) |
+| `dataChangeDebounceMs` | `number \| false` | No | Debounce window for remote/synced `data:change` events (default: `10`; `0`/`false` disables) |
 | `dataChangeDebounceMsWhenSyncing` | `number \| false` | No | Debounce override while sync is running (`0`/`false` disables) |
 | `dataChangeDebounceMsWhenReconnecting` | `number \| false` | No | Debounce override while reconnecting (`0`/`false` disables) |
 | `plugins` | `SyncClientPlugin[]` | No | Client plugins |
@@ -53,7 +53,7 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 | `onPushResult` | `Function` | No | Per-commit push result callback (`applied`, `cached`, `rejected`, `retriable`) |
 | `onDataChange` | `Function` | No | Data change callback |
 
-When reconnecting with debounce enabled, incoming change notifications are batched and flushed together after reconnect catch-up settles, reducing repeated UI invalidations on offline → online recovery.
+When reconnecting with debounce enabled, incoming remote change notifications are batched and flushed together after reconnect catch-up settles, reducing repeated UI invalidations on offline → online recovery. Local mutation invalidations are emitted immediately.
 
 ## Dynamic Subscriptions
 
