@@ -82,6 +82,9 @@ interface ClientOptions<DB> {
   plugins?: SyncClientPlugin[];
   realtimeEnabled?: boolean;
   pollIntervalMs?: number;
+  dataChangeDebounceMs?: number;
+  dataChangeDebounceMsWhenSyncing?: number;
+  dataChangeDebounceMsWhenReconnecting?: number;
 }
 ```
 

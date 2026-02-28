@@ -42,6 +42,9 @@ const { SyncProvider } = createSyncularReact<AppDb>();
 | `migrate` | `Function` | No | Migration function |
 | `realtimeEnabled` | `boolean` | No | Enable WebSocket realtime |
 | `realtimeFallbackPollMs` | `number` | No | Fallback poll interval |
+| `dataChangeDebounceMs` | `number` | No | Debounce window for coalescing `data:change` events |
+| `dataChangeDebounceMsWhenSyncing` | `number` | No | Debounce override while sync is running |
+| `dataChangeDebounceMsWhenReconnecting` | `number` | No | Debounce override while reconnecting |
 | `plugins` | `SyncClientPlugin[]` | No | Client plugins |
 | `autoStart` | `boolean` | No | Start on mount (default: true) |
 | `renderWhileStarting` | `boolean` | No | Render before ready (default: false) |

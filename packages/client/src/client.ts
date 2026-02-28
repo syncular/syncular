@@ -120,6 +120,24 @@ export interface ClientOptions<DB extends SyncClientDb> {
   /** Optional: Polling interval in milliseconds (default: 10000) */
   pollIntervalMs?: number;
 
+  /**
+   * Optional: Debounce window (ms) for coalescing `data:change` events.
+   * - `0` (default): emit immediately
+   * - `>0`: merge scopes and emit once per window
+   */
+  dataChangeDebounceMs?: number;
+  /**
+   * Optional: Debounce override while sync is actively running.
+   * Falls back to `dataChangeDebounceMs` when omitted.
+   */
+  dataChangeDebounceMsWhenSyncing?: number;
+  /**
+   * Optional: Debounce override while connection is reconnecting.
+   * Falls back to `dataChangeDebounceMsWhenSyncing` (if syncing) and then
+   * `dataChangeDebounceMs` when omitted.
+   */
+  dataChangeDebounceMsWhenReconnecting?: number;
+
   /** Optional: State ID for multi-tenant scenarios */
   stateId?: string;
 
@@ -413,6 +431,11 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       plugins: this.options.plugins,
       realtimeEnabled: this.options.realtimeEnabled,
       pollIntervalMs: this.options.pollIntervalMs,
+      dataChangeDebounceMs: this.options.dataChangeDebounceMs,
+      dataChangeDebounceMsWhenSyncing:
+        this.options.dataChangeDebounceMsWhenSyncing,
+      dataChangeDebounceMsWhenReconnecting:
+        this.options.dataChangeDebounceMsWhenReconnecting,
       stateId: this.options.stateId,
       migrate: undefined, // We already ran migrations
     });
@@ -640,6 +663,20 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       return () => {};
     }
     return this.engine.subscribe(callback);
+  }
+
+  /**
+   * Subscribe to state changes with selector-based equality filtering.
+   */
+  subscribeSelector<T>(
+    selector: () => T,
+    callback: () => void,
+    isEqual?: (previous: T, next: T) => boolean
+  ): () => void {
+    if (!this.engine) {
+      return () => {};
+    }
+    return this.engine.subscribeSelector(selector, callback, isEqual);
   }
 
   // ===========================================================================

@@ -262,6 +262,23 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   onConflict?: (conflict: ConflictInfo) => void;
   /** Data change callback */
   onDataChange?: (scopes: string[]) => void;
+  /**
+   * Debounce window for coalescing `data:change` emissions.
+   * - `0` (default): emit immediately
+   * - `>0`: merge scopes and emit once per window
+   */
+  dataChangeDebounceMs?: number;
+  /**
+   * Override debounce window while `isSyncing === true`.
+   * If omitted, `dataChangeDebounceMs` is used.
+   */
+  dataChangeDebounceMsWhenSyncing?: number;
+  /**
+   * Override debounce window while `connectionState === "reconnecting"`.
+   * If omitted, `dataChangeDebounceMsWhenSyncing` (if syncing) or
+   * `dataChangeDebounceMs` is used.
+   */
+  dataChangeDebounceMsWhenReconnecting?: number;
   /** Optional client plugins (e.g. encryption) */
   plugins?: SyncClientPlugin[];
   /** Custom SHA-256 hash function (for platforms without crypto.subtle, e.g. React Native) */

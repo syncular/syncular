@@ -54,6 +54,7 @@ import { type Kysely, sql } from 'kysely';
 import {
   createContext,
   type ReactNode,
+  startTransition,
   useCallback,
   useContext,
   useEffect,
@@ -152,6 +153,23 @@ export interface SyncProviderProps<
   onError?: (error: SyncError) => void;
   onConflict?: (conflict: ConflictInfo) => void;
   onDataChange?: (scopes: string[]) => void;
+  /**
+   * Debounce window (ms) for coalescing `data:change` events.
+   * - `0` (default): emit immediately
+   * - `>0`: merge scopes and emit once per window
+   */
+  dataChangeDebounceMs?: number;
+  /**
+   * Debounce override while sync is actively running.
+   * Falls back to `dataChangeDebounceMs` when omitted.
+   */
+  dataChangeDebounceMsWhenSyncing?: number;
+  /**
+   * Debounce override while connection is reconnecting.
+   * Falls back to `dataChangeDebounceMsWhenSyncing` (if syncing) and then
+   * `dataChangeDebounceMs` when omitted.
+   */
+  dataChangeDebounceMsWhenReconnecting?: number;
   plugins?: SyncClientPlugin[];
   /** Custom SHA-256 hash function (for platforms without crypto.subtle, e.g. React Native) */
   sha256?: (bytes: Uint8Array) => Promise<string>;
@@ -317,6 +335,13 @@ export interface UseSyncQueryResult<T> {
   refetch: () => Promise<void>;
 }
 
+interface UseSyncQueryMetrics {
+  executions: number;
+  coalescedRefreshes: number;
+  skippedDataUpdates: number;
+  lastDurationMs: number | null;
+}
+
 export interface UseSyncQueryOptions {
   enabled?: boolean;
   deps?: unknown[];
@@ -324,6 +349,15 @@ export interface UseSyncQueryOptions {
   watchTables?: string[];
   pollIntervalMs?: number;
   staleAfterMs?: number;
+  /**
+   * If true (default), non-urgent hook state updates are scheduled in
+   * `startTransition` to keep UI interactions responsive under bursty sync.
+   */
+  transitionUpdates?: boolean;
+  /**
+   * Optional low-overhead instrumentation callback for query executions.
+   */
+  onMetrics?: (metrics: UseSyncQueryMetrics) => void;
 }
 
 export interface UseQueryResult<T> {
@@ -428,6 +462,24 @@ export interface UseOutboxResult {
   clearAll: () => Promise<number>;
 }
 
+interface UseOutboxMetrics {
+  refreshes: number;
+  coalescedRefreshes: number;
+  lastDurationMs: number | null;
+}
+
+interface UseOutboxOptions {
+  /**
+   * If true (default), non-urgent outbox state updates are scheduled in
+   * `startTransition` to reduce render contention during sync bursts.
+   */
+  transitionUpdates?: boolean;
+  /**
+   * Optional low-overhead instrumentation callback for outbox refreshes.
+   */
+  onMetrics?: (metrics: UseOutboxMetrics) => void;
+}
+
 export interface UsePresenceResult<TMetadata = Record<string, unknown>> {
   presence: PresenceEntry<TMetadata>[];
   isLoading: boolean;
@@ -473,6 +525,9 @@ export function createSyncularReact<
     onError,
     onConflict,
     onDataChange,
+    dataChangeDebounceMs,
+    dataChangeDebounceMsWhenSyncing,
+    dataChangeDebounceMsWhenReconnecting,
     plugins,
     sha256,
     autoStart = true,
@@ -505,6 +560,9 @@ export function createSyncularReact<
         onError,
         onConflict,
         onDataChange,
+        dataChangeDebounceMs,
+        dataChangeDebounceMsWhenSyncing,
+        dataChangeDebounceMsWhenReconnecting,
         plugins,
         sha256,
       }),
@@ -528,6 +586,9 @@ export function createSyncularReact<
         onError,
         onConflict,
         onDataChange,
+        dataChangeDebounceMs,
+        dataChangeDebounceMsWhenSyncing,
+        dataChangeDebounceMsWhenReconnecting,
         plugins,
         sha256,
       ]
@@ -793,23 +854,19 @@ export function createSyncularReact<
   function useTransportHealth(): UseTransportHealthResult {
     const engine = useEngine();
 
+    const getSnapshot = useCallback(
+      () => engine.getTransportHealth(),
+      [engine]
+    );
     const health = useSyncExternalStore(
       useCallback(
         (callback) => {
-          const unsubscribers = [
-            engine.subscribe(callback),
-            engine.on('connection:change', callback),
-            engine.on('sync:complete', callback),
-            engine.on('sync:error', callback),
-          ];
-          return () => {
-            for (const unsubscribe of unsubscribers) unsubscribe();
-          };
+          return engine.subscribeSelector(getSnapshot, callback);
         },
-        [engine]
+        [engine, getSnapshot]
       ),
-      useCallback(() => engine.getTransportHealth(), [engine]),
-      useCallback(() => engine.getTransportHealth(), [engine])
+      getSnapshot,
+      getSnapshot
     );
 
     return useMemo(() => ({ health }), [health]);
@@ -823,6 +880,7 @@ export function createSyncularReact<
     refreshOn: readonly SyncEngineEventName[];
     pollIntervalMs?: number;
     shouldPoll?: (value: T) => boolean;
+    transitionUpdates?: boolean;
   }): {
     value: T;
     isLoading: boolean;
@@ -830,8 +888,14 @@ export function createSyncularReact<
     refresh: () => Promise<void>;
   } {
     const engine = useEngine();
-    const { initialValue, load, refreshOn, pollIntervalMs, shouldPoll } =
-      options;
+    const {
+      initialValue,
+      load,
+      refreshOn,
+      pollIntervalMs,
+      shouldPoll,
+      transitionUpdates = true,
+    } = options;
 
     const loadRef = useRef(load);
     loadRef.current = load;
@@ -841,8 +905,20 @@ export function createSyncularReact<
     const [error, setError] = useState<Error | null>(null);
     const loadedRef = useRef(false);
     const versionRef = useRef(0);
+    const inFlightRefreshRef = useRef<Promise<void> | null>(null);
+    const refreshQueuedRef = useRef(false);
+    const applyUpdate = useCallback(
+      (update: () => void) => {
+        if (transitionUpdates) {
+          startTransition(update);
+          return;
+        }
+        update();
+      },
+      [transitionUpdates]
+    );
 
-    const refresh = useCallback(async () => {
+    const refreshOnce = useCallback(async () => {
       const version = ++versionRef.current;
       const isCurrent = () => version === versionRef.current;
 
@@ -853,18 +929,45 @@ export function createSyncularReact<
       try {
         const next = await loadRef.current();
         if (!isCurrent()) return;
-        setValue(next);
-        setError(null);
+        applyUpdate(() => {
+          setValue(next);
+          setError(null);
+        });
       } catch (err) {
         if (!isCurrent()) return;
-        setError(err instanceof Error ? err : new Error(String(err)));
+        applyUpdate(() => {
+          setError(err instanceof Error ? err : new Error(String(err)));
+        });
       } finally {
         if (isCurrent()) {
           loadedRef.current = true;
-          setIsLoading(false);
+          applyUpdate(() => {
+            setIsLoading(false);
+          });
         }
       }
-    }, []);
+    }, [applyUpdate]);
+
+    const refresh = useCallback(async () => {
+      refreshQueuedRef.current = true;
+      if (inFlightRefreshRef.current) {
+        await inFlightRefreshRef.current;
+        return;
+      }
+
+      const runLoop = async () => {
+        while (refreshQueuedRef.current) {
+          refreshQueuedRef.current = false;
+          await refreshOnce();
+        }
+      };
+
+      const inFlight = runLoop().finally(() => {
+        inFlightRefreshRef.current = null;
+      });
+      inFlightRefreshRef.current = inFlight;
+      await inFlight;
+    }, [refreshOnce]);
 
     useEffect(() => {
       void refresh();
@@ -1118,6 +1221,8 @@ export function createSyncularReact<
       watchTables = [],
       pollIntervalMs,
       staleAfterMs,
+      transitionUpdates = true,
+      onMetrics,
     } = options;
     const { db } = useSyncContext();
     const engine = useEngine();
@@ -1139,16 +1244,46 @@ export function createSyncularReact<
     const fingerprintCollectorRef = useRef(new FingerprintCollector());
     const previousFingerprintRef = useRef<string>('');
     const hasLoadedRef = useRef(false);
+    const inFlightQueryRef = useRef<Promise<void> | null>(null);
+    const queryQueuedRef = useRef(false);
+    const metricsRef = useRef<UseSyncQueryMetrics>({
+      executions: 0,
+      coalescedRefreshes: 0,
+      skippedDataUpdates: 0,
+      lastDurationMs: null,
+    });
+    const onMetricsRef = useRef(onMetrics);
+    onMetricsRef.current = onMetrics;
+    const emitMetrics = useCallback(() => {
+      onMetricsRef.current?.({ ...metricsRef.current });
+    }, []);
+    const applyUpdate = useCallback(
+      (update: () => void) => {
+        if (transitionUpdates) {
+          startTransition(update);
+          return;
+        }
+        update();
+      },
+      [transitionUpdates]
+    );
 
-    const executeQuery = useCallback(async () => {
+    const executeQueryOnce = useCallback(async () => {
+      const startedAt = Date.now();
+      metricsRef.current.executions += 1;
       if (!enabled) {
         if (previousFingerprintRef.current !== 'disabled') {
           previousFingerprintRef.current = 'disabled';
-          setData(undefined);
         }
-        setLastSyncAt(engine.getState().lastSyncAt);
-        setIsLoading(false);
+        const snapshotLastSyncAt = engine.getState().lastSyncAt;
+        applyUpdate(() => {
+          setData(undefined);
+          setLastSyncAt(snapshotLastSyncAt);
+          setIsLoading(false);
+        });
         hasLoadedRef.current = true;
+        metricsRef.current.lastDurationMs = Date.now() - startedAt;
+        emitMetrics();
         return;
       }
 
@@ -1176,52 +1311,88 @@ export function createSyncularReact<
 
         if (version === versionRef.current) {
           watchedScopesRef.current = scopeCollector;
-          setLastSyncAt(engine.getState().lastSyncAt);
+          const snapshotLastSyncAt = engine.getState().lastSyncAt;
 
           const fingerprint = fingerprintCollectorRef.current.getCombined();
-          if (
+          const didFingerprintChange =
             fingerprint !== previousFingerprintRef.current ||
-            fingerprint === ''
-          ) {
+            fingerprint === '';
+          if (didFingerprintChange) {
             previousFingerprintRef.current = fingerprint;
-            setData(result);
+          } else {
+            metricsRef.current.skippedDataUpdates += 1;
           }
-          setError(null);
+
+          applyUpdate(() => {
+            setLastSyncAt(snapshotLastSyncAt);
+            if (didFingerprintChange) {
+              setData(result);
+            }
+            setError(null);
+          });
         }
       } catch (err) {
         if (version === versionRef.current) {
-          setError(err instanceof Error ? err : new Error(String(err)));
+          applyUpdate(() => {
+            setError(err instanceof Error ? err : new Error(String(err)));
+          });
         }
       } finally {
         if (version === versionRef.current) {
-          setIsLoading(false);
+          applyUpdate(() => {
+            setIsLoading(false);
+          });
           hasLoadedRef.current = true;
+          metricsRef.current.lastDurationMs = Date.now() - startedAt;
+          emitMetrics();
         }
       }
-    }, [db, enabled, engine, keyField]);
+    }, [db, enabled, engine, keyField, applyUpdate, emitMetrics]);
+
+    const executeQuery = useCallback(async () => {
+      queryQueuedRef.current = true;
+      if (inFlightQueryRef.current) {
+        metricsRef.current.coalescedRefreshes += 1;
+        emitMetrics();
+        await inFlightQueryRef.current;
+        return;
+      }
+
+      const runLoop = async () => {
+        while (queryQueuedRef.current) {
+          queryQueuedRef.current = false;
+          await executeQueryOnce();
+        }
+      };
+
+      const inFlight = runLoop().finally(() => {
+        inFlightQueryRef.current = null;
+      });
+      inFlightQueryRef.current = inFlight;
+      await inFlight;
+    }, [executeQueryOnce, emitMetrics]);
 
     useEffect(() => {
       executeQuery();
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [executeQuery, ...deps]);
 
+    const getLastSyncAtSnapshot = useCallback(
+      () => engine.getState().lastSyncAt,
+      [engine]
+    );
     useEffect(() => {
-      const unsubscribe = engine.subscribe(() => {
-        const nextLastSyncAt = engine.getState().lastSyncAt;
-        setLastSyncAt((previous) =>
-          previous === nextLastSyncAt ? previous : nextLastSyncAt
-        );
-      });
+      const unsubscribe = engine.subscribeSelector(
+        getLastSyncAtSnapshot,
+        () => {
+          const snapshotLastSyncAt = getLastSyncAtSnapshot();
+          applyUpdate(() => {
+            setLastSyncAt(snapshotLastSyncAt);
+          });
+        }
+      );
       return unsubscribe;
-    }, [engine]);
-
-    useEffect(() => {
-      if (!enabled) return;
-      const unsubscribe = engine.on('sync:complete', () => {
-        void executeQuery();
-      });
-      return unsubscribe;
-    }, [engine, enabled, executeQuery]);
+    }, [engine, getLastSyncAtSnapshot, applyUpdate]);
 
     useEffect(() => {
       if (!enabled) return;
@@ -1609,9 +1780,10 @@ export function createSyncularReact<
     );
   }
 
-  function useOutbox(): UseOutboxResult {
+  function useOutbox(options: UseOutboxOptions = {}): UseOutboxResult {
     const { db } = useSyncContext();
     const engine = useEngine();
+    const { transitionUpdates = true, onMetrics } = options;
 
     const [stats, setStats] = useState<OutboxStats>({
       pending: 0,
@@ -1623,13 +1795,36 @@ export function createSyncularReact<
     const [pending, setPending] = useState<OutboxCommit[]>([]);
     const [failed, setFailed] = useState<OutboxCommit[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const inFlightRefreshRef = useRef<Promise<void> | null>(null);
+    const refreshQueuedRef = useRef(false);
+    const metricsRef = useRef<UseOutboxMetrics>({
+      refreshes: 0,
+      coalescedRefreshes: 0,
+      lastDurationMs: null,
+    });
+    const onMetricsRef = useRef(onMetrics);
+    onMetricsRef.current = onMetrics;
+    const emitMetrics = useCallback(() => {
+      onMetricsRef.current?.({ ...metricsRef.current });
+    }, []);
+    const applyUpdate = useCallback(
+      (update: () => void) => {
+        if (transitionUpdates) {
+          startTransition(update);
+          return;
+        }
+        update();
+      },
+      [transitionUpdates]
+    );
 
-    const refresh = useCallback(async () => {
+    const refreshOnce = useCallback(async () => {
+      const startedAt = Date.now();
+      metricsRef.current.refreshes += 1;
       try {
         setIsLoading(true);
 
         const newStats = await engine.refreshOutboxStats({ emit: false });
-        setStats(newStats);
 
         const rowsResult = await sql<{
           id: string;
@@ -1683,14 +1878,46 @@ export function createSyncularReact<
           };
         });
 
-        setPending(commits.filter((c) => c.status === 'pending'));
-        setFailed(commits.filter((c) => c.status === 'failed'));
+        const nextPending = commits.filter((c) => c.status === 'pending');
+        const nextFailed = commits.filter((c) => c.status === 'failed');
+        applyUpdate(() => {
+          setStats(newStats);
+          setPending(nextPending);
+          setFailed(nextFailed);
+        });
       } catch (err) {
         console.error('[useOutbox] Failed to refresh:', err);
       } finally {
-        setIsLoading(false);
+        applyUpdate(() => {
+          setIsLoading(false);
+        });
+        metricsRef.current.lastDurationMs = Date.now() - startedAt;
+        emitMetrics();
       }
-    }, [db, engine]);
+    }, [db, engine, applyUpdate, emitMetrics]);
+
+    const refresh = useCallback(async () => {
+      refreshQueuedRef.current = true;
+      if (inFlightRefreshRef.current) {
+        metricsRef.current.coalescedRefreshes += 1;
+        emitMetrics();
+        await inFlightRefreshRef.current;
+        return;
+      }
+
+      const runLoop = async () => {
+        while (refreshQueuedRef.current) {
+          refreshQueuedRef.current = false;
+          await refreshOnce();
+        }
+      };
+
+      const inFlight = runLoop().finally(() => {
+        inFlightRefreshRef.current = null;
+      });
+      inFlightRefreshRef.current = inFlight;
+      await inFlight;
+    }, [refreshOnce, emitMetrics]);
 
     useEffect(() => {
       refresh();
@@ -1698,13 +1925,6 @@ export function createSyncularReact<
 
     useEffect(() => {
       const unsubscribe = engine.on('outbox:change', () => {
-        refresh();
-      });
-      return unsubscribe;
-    }, [engine, refresh]);
-
-    useEffect(() => {
-      const unsubscribe = engine.on('sync:complete', () => {
         refresh();
       });
       return unsubscribe;
