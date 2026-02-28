@@ -288,7 +288,11 @@ type ClientEventPayloads = {
     durationMs: number;
   };
   'connection:change': { previous: string; current: string };
-  'data:change': { scopes: string[]; timestamp: number };
+  'data:change': {
+    scopes: string[];
+    timestamp: number;
+    source: 'local' | 'remote';
+  };
   'outbox:change': OutboxStats;
   'conflict:new': Conflict;
   'conflict:resolved': Conflict;
