@@ -51,7 +51,11 @@ From repo root:
 | `bun run test:load:push-pull` | HTTP push/pull throughput |
 | `bun run test:load:websocket` | WebSocket wake-up delivery |
 | `bun run test:load:bootstrap` | Bootstrap + snapshot chunk flow |
+| `bun run test:load:bootstrap-storm` | Concurrent first-sync bootstrap storm |
+| `bun run test:load:reconnect-storm` | Reconnect storm with repeated WS reconnect + catchup |
+| `bun run test:load:maintenance-churn` | Mixed traffic while prune/compact execute repeatedly |
 | `bun run test:load:mixed` | Readers/writers/realtime mixed workload |
+| `bun run test:load:nightly` | Start load server + run macro scenario suite with JSON artifacts |
 | `bun run test:load:dashboard` | Mixed workload with dashboard output |
 
 Directly from `tests/load`:
@@ -62,7 +66,11 @@ Directly from `tests/load`:
 | `bun run k6:push-pull` | HTTP push/pull throughput |
 | `bun run k6:websocket` | WebSocket wake-up delivery |
 | `bun run k6:bootstrap` | Bootstrap + snapshot chunk flow |
+| `bun run k6:bootstrap-storm` | Concurrent first-sync bootstrap storm |
+| `bun run k6:reconnect-storm` | Reconnect storm with repeated WS reconnect + catchup |
+| `bun run k6:maintenance-churn` | Mixed traffic while prune/compact execute repeatedly |
 | `bun run k6:mixed` | Mixed workload |
+| `bun run nightly` | Macro suite runner (server + scenarios + summary JSON) |
 | `bun run k6:dashboard` | Mixed workload + dashboard |
 
 ## Scenarios
@@ -104,6 +112,24 @@ Directly from `tests/load`:
 - Writer flow tracks whether pushed rows are later visible in pull responses
 - Measures writer push-to-visibility lag (`writer_sync_lag_ms`)
 
+### Reconnect Storm (`scripts/reconnect-storm.js`)
+
+- Repeated websocket connect/disconnect cycles under concurrent writes
+- Pull catch-up after each reconnect while preserving per-VU cursor state
+- Tracks reconnect latency, reconnect pull latency, and push-to-visibility lag
+
+### Bootstrap Storm (`scripts/bootstrap-storm.js`)
+
+- Many concurrent first-time clients bootstrap from cursor `-1`
+- Repeated pull paging until `bootstrapState` completes
+- Tracks per-client bootstrap duration, pull latency, and rows/pages processed
+
+### Maintenance Churn (`scripts/maintenance-churn.js`)
+
+- Concurrent reader and writer traffic while maintenance endpoints run in-loop
+- Calls `/api/maintenance/compact` and `/api/maintenance/prune`
+- Tracks maintenance operation latency and failure rates alongside sync traffic
+
 ## Server Configuration
 
 The load server supports:
@@ -116,6 +142,10 @@ The load server supports:
 | `SEED_ROWS` | `10000` | Total seeded rows |
 | `SEED_USERS` | `100` | Number of generated users per prefix |
 | `SEED_RANDOM_SEED` | _(unset)_ | Deterministic seed for row randomness |
+| `MAINTENANCE_PRUNE_ACTIVE_WINDOW_MS` | `1209600000` | Prune active client window in ms |
+| `MAINTENANCE_PRUNE_FALLBACK_MAX_AGE_MS` | `2592000000` | Prune fallback age cap in ms |
+| `MAINTENANCE_PRUNE_KEEP_NEWEST_COMMITS` | `1000` | Minimum newest commits to retain |
+| `MAINTENANCE_COMPACT_FULL_HISTORY_HOURS` | `168` | Full-history retention before compaction |
 
 Example:
 
@@ -148,5 +178,5 @@ k6 run --out json=tests/load/results/push-pull.json tests/load/scripts/push-pull
 
 ## Notes
 
-- Load tests are currently on-demand and local/manual by default.
+- Macro load suites are wired into nightly CI (`load-macro-nightly`) and still runnable on-demand locally.
 - Integration load coverage (`tests/integration/__tests__/load.test.ts`) is separate from k6 stress tests.

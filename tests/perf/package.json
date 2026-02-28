@@ -7,7 +7,9 @@
     "tsgo": "tsgo --noEmit",
     "test": "bun test .",
     "update-baseline": "bun run update-baseline.ts",
-    "stable-ci": "bun run stable-ci.ts"
+    "stable-ci": "bun run stable-ci.ts",
+    "fetch-history": "bun run fetch-history.ts",
+    "trend-ci": "bun run trend-ci.ts"
   },
   "devDependencies": {
     "@syncular/client": "workspace:*",

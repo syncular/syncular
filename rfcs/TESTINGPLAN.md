@@ -88,10 +88,9 @@
   - consecutive-run perf regression gate (hard fail on PR only)
 - Nightly jobs:
   - full integration matrix
-  - load scenarios
+  - macro load scenarios (`push-pull`, `reconnect-storm`, `bootstrap-storm`, `maintenance-churn`, `mixed-workload`)
   - stable perf lane with 7 runs (artifact + summary)
-  - macro perf workloads (remaining)
-  - historical trend/change-point automation (remaining)
+  - historical trend/change-point analysis against prior nightly artifacts
 
 ## Launch Exit Criteria
 - No `P0` gaps open.
