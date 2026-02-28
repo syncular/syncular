@@ -382,15 +382,15 @@ describe('syncOnce', () => {
       syncOnce(db, transport, handlers, baseOptions)
     ).rejects.toThrow('Network failure');
 
-    // In syncOnceCombined, the transport error propagates without catching,
-    // so the outbox commit stays in 'sending' status (it was claimed atomically
-    // by getNextSendableOutboxCommit before the transport call).
-    // A subsequent syncOnce will reclaim it once the stale timeout expires.
+    // The transport error is caught and the outbox commit is reset to 'pending'
+    // so it can be retried on the next sync cycle without waiting for stale timeout.
     const rows = await sql<{
       status: string;
-    }>`select status from sync_outbox_commits`.execute(db);
+      error: string | null;
+    }>`select status, error from sync_outbox_commits`.execute(db);
 
     expect(rows.rows.length).toBe(1);
-    expect(rows.rows[0]!.status).toBe('sending');
+    expect(rows.rows[0]!.status).toBe('pending');
+    expect(rows.rows[0]!.error).toBe('Network failure');
   });
 });

@@ -715,7 +715,7 @@ describe('mutations API', () => {
   });
 
   describe('coerceBaseVersion edge cases', () => {
-    it('coerces baseVersion 0 to null', async () => {
+    it('preserves baseVersion 0', async () => {
       const commit = createOutboxCommit({ db });
 
       await db
@@ -733,7 +733,7 @@ describe('mutations API', () => {
         await tx.tasks.update('task-1', { title: 'Up' }, { baseVersion: 0 });
       });
 
-      expect(meta.operations[0]!.base_version).toBeNull();
+      expect(meta.operations[0]!.base_version).toBe(0);
     });
 
     it('coerces baseVersion -1 to null', async () => {
@@ -863,7 +863,7 @@ describe('mutations API', () => {
         commit(async (tx) => {
           return tx.tasks.insertMany([]);
         })
-      ).rejects.toThrow('No mutations were enqueued');
+      ).rejects.toThrow('insertMany requires at least one row');
     });
   });
 

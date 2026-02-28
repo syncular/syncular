@@ -168,7 +168,7 @@ function coerceBaseVersion(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(n)) return null;
-  if (n <= 0) return null;
+  if (n < 0) return null;
   return n;
 }
 
@@ -498,6 +498,9 @@ export function createOutboxCommit<DB extends SyncClientDb>(
             },
 
             async insertMany(rows) {
+              if (rows.length === 0) {
+                throw new Error('insertMany requires at least one row');
+              }
               const ids: string[] = [];
               const toInsert: Record<string, unknown>[] = [];
 
@@ -672,6 +675,7 @@ export function createOutboxCommit<DB extends SyncClientDb>(
             get(_target, prop) {
               if (prop === 'then') return undefined;
               if (typeof prop !== 'string') return undefined;
+              validateTableName(prop);
               return makeTxTable(prop);
             },
           }
@@ -777,6 +781,9 @@ export function createPushCommit<DB = AnyDb>(
         },
 
         async insertMany(rows) {
+          if (rows.length === 0) {
+            throw new Error('insertMany requires at least one row');
+          }
           const ids: string[] = [];
           const toUpsert: Record<string, unknown>[] = [];
 
@@ -885,6 +892,7 @@ export function createPushCommit<DB = AnyDb>(
         get(_target, prop) {
           if (prop === 'then') return undefined;
           if (typeof prop !== 'string') return undefined;
+          validateTableName(prop);
           return makeTxTable(prop);
         },
       }
