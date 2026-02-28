@@ -1,0 +1,85 @@
+---
+title: Audit UI
+description: Build product-facing "who changed what" experiences with Syncular
+---
+
+Use this guide to implement an in-product audit trail UI.
+
+## Recommended Building Blocks
+
+1. Client push outcomes: `push:result` / `onPushResult`
+2. Conflict stream for UX: `useNewConflicts()` + `useConflicts()`
+3. Commit attribution in apply handlers: `commitSeq`, `actorId`, `createdAt`
+4. Scoped API history: `/sync/audit/commits` and `/sync/audit/commits/{commitSeq}`
+
+## Client UX Patterns
+
+### Immediate push feedback
+
+```tsx
+<SyncProvider
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={{ actorId: userId }}
+  onPushResult={(result) => {
+    if (result.status === 'rejected') {
+      showToast(`Commit ${result.clientCommitId} rejected (${result.errorCode ?? 'unknown'})`);
+    }
+  }}
+>
+  <App />
+</SyncProvider>
+```
+
+### New conflict notifications
+
+```tsx
+const { useNewConflicts } = createSyncularReact<AppDb>();
+
+function ConflictNotifications() {
+  const { latest } = useNewConflicts();
+  useEffect(() => {
+    if (!latest) return;
+    showToast(`Conflict on ${latest.table}:${latest.rowId}`);
+  }, [latest]);
+  return null;
+}
+```
+
+## Server Audit API
+
+Use auth-scoped endpoints:
+
+- `GET /sync/audit/commits`
+- `GET /sync/audit/commits/{commitSeq}`
+
+These endpoints are partition/auth scoped and intended for product admin UI (not console-only tokens).
+
+## App-Owned Row Audit Recipe
+
+Sync history is optimized for sync and may be pruned or compacted. If you need long-lived row-level audit records, keep an app-owned `audit_log` table.
+
+Suggested schema:
+
+```sql
+create table audit_log (
+  id bigserial primary key,
+  table_name text not null,
+  row_id text not null,
+  op text not null, -- insert | update | delete
+  actor_id text,
+  commit_seq bigint,
+  changed_at timestamptz not null default now(),
+  before_hash text,
+  after_hash text,
+  before_snapshot jsonb,
+  after_snapshot jsonb
+);
+
+create index audit_log_table_row_changed_at_idx
+  on audit_log (table_name, row_id, changed_at desc);
+
+create index audit_log_actor_changed_at_idx
+  on audit_log (actor_id, changed_at desc);
+```

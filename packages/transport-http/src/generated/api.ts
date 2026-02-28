@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+    "/sync/audit/commits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List sync commits for audit UI
+         * @description Returns commit-level audit history scoped to the authenticated partition.
+         */
+        get: operations["getSyncAuditCommits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/audit/commits/{commitSeq}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a sync commit with emitted changes
+         * @description Returns commit metadata and change rows for one commit within the authenticated partition.
+         */
+        get: operations["getSyncAuditCommitsByCommitSeq"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sync": {
         parameters: {
             query?: never;
@@ -564,6 +604,129 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getSyncAuditCommits: {
+        parameters: {
+            query?: {
+                limit?: number;
+                beforeCommitSeq?: number;
+                actorId?: string;
+                table?: string;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Commit audit history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        commits: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeCount: number;
+                            affectedTables: string[];
+                        }[];
+                        nextCursor: number | null;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                    };
+                };
+            };
+        };
+    };
+    getSyncAuditCommitsByCommitSeq: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commitSeq: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Commit audit detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        commit: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeCount: number;
+                            affectedTables: string[];
+                        };
+                        changes: {
+                            changeId: number;
+                            table: string;
+                            rowId: string;
+                            /** @enum {string} */
+                            op: "upsert" | "delete";
+                            rowVersion: number | null;
+                            rowJson: unknown | null;
+                            scopes: unknown;
+                        }[];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                    };
+                };
+            };
+            /** @description Commit not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                    };
+                };
+            };
+        };
+    };
     postSync: {
         parameters: {
             query?: never;

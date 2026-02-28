@@ -141,13 +141,13 @@ describe('Client conflict events', () => {
   }
 
   async function runConflictCheck(
-    clientInstance: Client<TestDb>
+    engineInstance: SyncEngine<TestDb>
   ): Promise<void> {
-    const checker = Reflect.get(clientInstance, 'checkForNewConflicts');
+    const checker = Reflect.get(engineInstance, 'emitNewConflicts');
     if (typeof checker !== 'function') {
-      throw new Error('Expected checkForNewConflicts to be callable');
+      throw new Error('Expected emitNewConflicts to be callable');
     }
-    await checker.call(clientInstance);
+    await checker.call(engineInstance);
   }
 
   beforeEach(async () => {
@@ -184,6 +184,11 @@ describe('Client conflict events', () => {
       subscriptions: [],
     });
     Reflect.set(client, 'engine', engine);
+    const wireEngineEvents = Reflect.get(client, 'wireEngineEvents');
+    if (typeof wireEngineEvents !== 'function') {
+      throw new Error('Expected wireEngineEvents to be callable');
+    }
+    wireEngineEvents.call(client);
   });
 
   afterEach(async () => {
@@ -220,10 +225,42 @@ describe('Client conflict events', () => {
       newEvents.push(conflict.id);
     });
 
-    await runConflictCheck(client);
-    await runConflictCheck(client);
+    await runConflictCheck(engine);
+    await runConflictCheck(engine);
 
     expect(newEvents).toEqual(['conflict-1']);
+  });
+
+  it('forwards push:result events from the engine', () => {
+    const pushResults: Array<{ clientCommitId: string; status: string }> = [];
+    client.on('push:result', (result) => {
+      pushResults.push({
+        clientCommitId: result.clientCommitId,
+        status: result.status,
+      });
+    });
+
+    const emit = Reflect.get(engine, 'emit');
+    if (typeof emit !== 'function') {
+      throw new Error('Expected SyncEngine.emit to be callable');
+    }
+
+    emit.call(engine, 'push:result', {
+      outboxCommitId: 'outbox-1',
+      clientCommitId: 'commit-1',
+      status: 'rejected',
+      commitSeq: null,
+      results: [],
+      errorCode: 'CONFLICT',
+      timestamp: Date.now(),
+    });
+
+    expect(pushResults).toEqual([
+      {
+        clientCommitId: 'commit-1',
+        status: 'rejected',
+      },
+    ]);
   });
 });
 

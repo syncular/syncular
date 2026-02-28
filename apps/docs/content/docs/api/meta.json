@@ -6,6 +6,8 @@
     "index",
     "---Sync---",
     "postSync",
+    "getSyncAuditCommits",
+    "getSyncAuditCommitsByCommitSeq",
     "getSyncSnapshotChunksByChunkId",
     "---Blobs---",
     "postSyncBlobsUpload",

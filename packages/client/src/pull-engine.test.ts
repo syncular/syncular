@@ -818,4 +818,98 @@ describe('applyPullResponse chunk streaming', () => {
       .executeTakeFirst();
     expect(Number(state?.cursor ?? -1)).toBe(2);
   });
+
+  it('passes commit metadata to applyChange handler context', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+    };
+
+    const appliedContexts: Array<{
+      commitSeq: number | null | undefined;
+      actorId: string | null | undefined;
+      createdAt: string | null | undefined;
+    }> = [];
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'items',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange(ctx) {
+          appliedContexts.push({
+            commitSeq: ctx.commitSeq,
+            actorId: ctx.actorId,
+            createdAt: ctx.createdAt,
+          });
+        },
+      },
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: false,
+          bootstrapState: null,
+          nextCursor: 7,
+          commits: [
+            {
+              commitSeq: 7,
+              actorId: 'remote-user',
+              createdAt: '2026-02-28T12:00:00.000Z',
+              changes: [
+                {
+                  table: 'items',
+                  row_id: 'item-ctx',
+                  op: 'upsert',
+                  row_version: 1,
+                  row_json: { id: 'item-ctx', name: 'ctx-test' },
+                  scopes: {},
+                },
+              ],
+            },
+          ],
+          snapshots: [],
+        },
+      ],
+    };
+
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      pullState,
+      response
+    );
+
+    expect(appliedContexts).toEqual([
+      {
+        commitSeq: 7,
+        actorId: 'remote-user',
+        createdAt: '2026-02-28T12:00:00.000Z',
+      },
+    ]);
+  });
 });

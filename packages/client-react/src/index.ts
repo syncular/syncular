@@ -21,6 +21,8 @@ export type {
   UseMutationOptions,
   UseMutationResult,
   UseMutationsOptions,
+  UseNewConflictsOptions,
+  UseNewConflictsResult,
   UseOutboxResult,
   UsePresenceResult,
   UsePresenceWithJoinOptions,

@@ -15,6 +15,7 @@ import type {
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { upsertConflictsForRejectedCommit } from './conflicts';
+import type { PushResultInfo } from './engine/types';
 import type { ClientHandlerCollection } from './handlers/collection';
 import {
   getNextSendableOutboxCommit,
@@ -41,6 +42,42 @@ interface SyncPushUntilSettledOptions extends SyncPushOnceOptions {
 
 interface SyncPushUntilSettledResult {
   pushedCount: number;
+  pushResults: PushResultInfo[];
+}
+
+function firstPushErrorCode(response: SyncPushResponse): string | null {
+  const firstError = response.results.find(
+    (result) => result.status === 'error'
+  );
+  if (
+    firstError &&
+    'code' in firstError &&
+    typeof firstError.code === 'string' &&
+    firstError.code
+  ) {
+    return firstError.code;
+  }
+  const hasConflict = response.results.some(
+    (result) => result.status === 'conflict'
+  );
+  return hasConflict ? 'CONFLICT' : null;
+}
+
+function buildPushResult(args: {
+  outboxCommitId: string;
+  clientCommitId: string;
+  status: PushResultInfo['status'];
+  response: SyncPushResponse;
+}): PushResultInfo {
+  return {
+    outboxCommitId: args.outboxCommitId,
+    clientCommitId: args.clientCommitId,
+    status: args.status,
+    commitSeq: args.response.commitSeq ?? null,
+    results: args.response.results,
+    errorCode: firstPushErrorCode(args.response),
+    timestamp: Date.now(),
+  };
 }
 
 async function syncPushUntilSettled<DB extends SyncClientDb>(
@@ -51,6 +88,7 @@ async function syncPushUntilSettled<DB extends SyncClientDb>(
   const maxCommits = Math.max(1, Math.min(1000, options.maxCommits ?? 20));
 
   let pushedCount = 0;
+  const pushResults: PushResultInfo[] = [];
   for (let i = 0; i < maxCommits; i++) {
     const res = await syncPushOnce(db, transport, {
       clientId: options.clientId,
@@ -59,9 +97,12 @@ async function syncPushUntilSettled<DB extends SyncClientDb>(
     });
     if (!res.pushed) break;
     pushedCount += 1;
+    if (res.pushResult) {
+      pushResults.push(res.pushResult);
+    }
   }
 
-  return { pushedCount };
+  return { pushedCount, pushResults };
 }
 
 interface SyncPullUntilSettledOptions extends SyncPullOnceOptions {
@@ -176,6 +217,7 @@ export interface SyncOnceResult {
   pushedCommits: number;
   pullRounds: number;
   pullResponse: SyncPullResponse;
+  pushResults: PushResultInfo[];
 }
 
 /**
@@ -276,6 +318,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
 
   // Process push response
   let pushedCommits = 0;
+  const pushResults: PushResultInfo[] = [];
   if (outbox && pushRequest) {
     let pushRes = wsPushResponse ?? combined.push;
     if (!pushRes) {
@@ -303,6 +346,14 @@ async function syncOnceCombined<DB extends SyncClientDb>(
         commitSeq: pushRes.commitSeq ?? null,
         responseJson,
       });
+      pushResults.push(
+        buildPushResult({
+          outboxCommitId: outbox.id,
+          clientCommitId: outbox.client_commit_id,
+          status: pushRes.status,
+          response: pushRes,
+        })
+      );
       pushedCommits = 1;
     } else {
       // Check if all errors are retriable
@@ -317,6 +368,14 @@ async function syncOnceCombined<DB extends SyncClientDb>(
           error: 'Retriable',
           responseJson,
         });
+        pushResults.push(
+          buildPushResult({
+            outboxCommitId: outbox.id,
+            clientCommitId: outbox.client_commit_id,
+            status: 'retriable',
+            response: pushRes,
+          })
+        );
         pushedCommits = 1;
       } else {
         await upsertConflictsForRejectedCommit(db, {
@@ -329,6 +388,14 @@ async function syncOnceCombined<DB extends SyncClientDb>(
           error: 'REJECTED',
           responseJson,
         });
+        pushResults.push(
+          buildPushResult({
+            outboxCommitId: outbox.id,
+            clientCommitId: outbox.client_commit_id,
+            status: 'rejected',
+            response: pushRes,
+          })
+        );
         pushedCommits = 1;
       }
     }
@@ -341,6 +408,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
       maxCommits: (options.maxPushCommits ?? 20) - 1,
     });
     pushedCommits += remaining.pushedCount;
+    pushResults.push(...remaining.pushResults);
   }
 
   // Process pull response
@@ -376,7 +444,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
     }
   }
 
-  return { pushedCommits, pullRounds, pullResponse };
+  return { pushedCommits, pullRounds, pullResponse, pushResults };
 }
 
 export async function syncOnce<DB extends SyncClientDb>(

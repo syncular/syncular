@@ -24,6 +24,7 @@ import type {
   ConflictInfo,
   OutboxStats,
   PresenceEntry,
+  PushResultInfo,
   SubscriptionProgress,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
@@ -249,6 +250,7 @@ type ClientEventType =
   | 'sync:complete'
   | 'sync:live'
   | 'sync:error'
+  | 'push:result'
   | 'bootstrap:start'
   | 'bootstrap:progress'
   | 'bootstrap:complete'
@@ -266,6 +268,7 @@ type ClientEventPayloads = {
   'sync:complete': SyncResult;
   'sync:live': { timestamp: number };
   'sync:error': { code: string; message: string };
+  'push:result': PushResultInfo;
   'bootstrap:start': {
     timestamp: number;
     stateId: string;
@@ -332,7 +335,6 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
   private engine: SyncEngine<DB> | null = null;
   private started = false;
   private destroyed = false;
-  private emittedConflictIds = new Set<string>();
   private eventListeners = new Map<
     ClientEventType,
     Set<ClientEventHandler<any>>
@@ -758,7 +760,6 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       },
     });
 
-    this.emittedConflictIds.delete(id);
     if (resolvedConflict) {
       this.emit('conflict:resolved', resolvedConflict);
     }
@@ -975,9 +976,14 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
 
     this.engine.on('sync:error', (error) => {
       this.emit('sync:error', { code: error.code, message: error.message });
+    });
 
-      // Check for new conflicts after sync error
-      this.checkForNewConflicts();
+    this.engine.on('push:result', (payload) => {
+      this.emit('push:result', payload);
+    });
+
+    this.engine.on('conflict:new', (payload) => {
+      this.emit('conflict:new', this.mapConflictInfo(payload));
     });
 
     this.engine.on('bootstrap:start', (payload) => {
@@ -1018,25 +1024,6 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
     this.engine.on('presence:change', (payload) => {
       this.emit('presence:change', payload);
     });
-  }
-
-  private async checkForNewConflicts(): Promise<void> {
-    const conflicts = await this.getConflicts();
-    const activeIds = new Set(conflicts.map((conflict) => conflict.id));
-
-    for (const id of this.emittedConflictIds) {
-      if (!activeIds.has(id)) {
-        this.emittedConflictIds.delete(id);
-      }
-    }
-
-    for (const conflict of conflicts) {
-      if (this.emittedConflictIds.has(conflict.id)) {
-        continue;
-      }
-      this.emittedConflictIds.add(conflict.id);
-      this.emit('conflict:new', conflict);
-    }
   }
 
   private mapConflictInfo(info: ConflictInfo): Conflict {

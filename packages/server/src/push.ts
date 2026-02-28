@@ -44,6 +44,16 @@ export interface PushCommitResult {
    * Empty for rejected/cached commits.
    */
   emittedChanges: SyncChange[];
+  /**
+   * Commit actor metadata for downstream notifications.
+   * Null when no commit row was persisted.
+   */
+  commitActorId: string | null;
+  /**
+   * Commit timestamp metadata for downstream notifications.
+   * Null when no commit row was persisted.
+   */
+  commitCreatedAt: string | null;
 }
 
 class RejectCommitError extends Error {
@@ -249,6 +259,8 @@ export async function pushCommit<
             affectedTables: [],
             scopeKeys: [],
             emittedChanges: [],
+            commitActorId: null,
+            commitCreatedAt: null,
           });
         }
 
@@ -271,6 +283,8 @@ export async function pushCommit<
             affectedTables: [],
             scopeKeys: [],
             emittedChanges: [],
+            commitActorId: null,
+            commitCreatedAt: null,
           });
         }
 
@@ -346,6 +360,14 @@ export async function pushCommit<
                   affectedTables: [],
                   scopeKeys: [],
                   emittedChanges: [],
+                  commitActorId:
+                    typeof existing.actor_id === 'string'
+                      ? existing.actor_id
+                      : null,
+                  commitCreatedAt:
+                    typeof existing.created_at === 'string'
+                      ? existing.created_at
+                      : null,
                 };
               }
 
@@ -371,6 +393,14 @@ export async function pushCommit<
                         ),
                   scopeKeys: [],
                   emittedChanges: [],
+                  commitActorId:
+                    typeof existing.actor_id === 'string'
+                      ? existing.actor_id
+                      : null,
+                  commitCreatedAt:
+                    typeof existing.created_at === 'string'
+                      ? existing.created_at
+                      : null,
                 };
               }
 
@@ -379,6 +409,44 @@ export async function pushCommit<
                 affectedTables: [],
                 scopeKeys: [],
                 emittedChanges: [],
+                commitActorId:
+                  typeof existing.actor_id === 'string'
+                    ? existing.actor_id
+                    : null,
+                commitCreatedAt:
+                  typeof existing.created_at === 'string'
+                    ? existing.created_at
+                    : null,
+              };
+            };
+
+            const loadPersistedCommitMetadata = async (
+              seq: number
+            ): Promise<{
+              commitActorId: string | null;
+              commitCreatedAt: string | null;
+            }> => {
+              const persisted = await (
+                syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
+                  SyncCoreDb,
+                  'sync_commits',
+                  EmptySelection
+                >
+              )
+                .selectAll()
+                .where('commit_seq', '=', seq)
+                .where('partition_id', '=', partitionId)
+                .executeTakeFirst();
+
+              return {
+                commitActorId:
+                  typeof persisted?.actor_id === 'string'
+                    ? persisted.actor_id
+                    : null,
+                commitCreatedAt:
+                  typeof persisted?.created_at === 'string'
+                    ? persisted.created_at
+                    : null,
               };
             };
 
@@ -624,6 +692,9 @@ export async function pushCommit<
                   .execute(trx);
               }
 
+              const commitMetadata =
+                await loadPersistedCommitMetadata(commitSeq);
+
               return {
                 response: appliedResponse,
                 affectedTables,
@@ -636,6 +707,7 @@ export async function pushCommit<
                   row_version: c.row_version,
                   scopes: c.scopes,
                 })),
+                ...commitMetadata,
               };
             } catch (err) {
               // Roll back app writes but keep the commit row.
@@ -676,11 +748,15 @@ export async function pushCommit<
                 .where('commit_seq', '=', commitSeq)
                 .execute();
 
+              const commitMetadata =
+                await loadPersistedCommitMetadata(commitSeq);
+
               return {
                 response: err.response,
                 affectedTables: [],
                 scopeKeys: [],
                 emittedChanges: [],
+                ...commitMetadata,
               };
             }
           })

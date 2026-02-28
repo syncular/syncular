@@ -57,6 +57,9 @@ await client.mutations.tasks.insert({ title: 'New task' });
 // Listen for events
 client.on('sync:complete', () => console.log('synced'));
 client.on('data:change', ({ scopes }) => console.log('changed:', scopes));
+client.on('push:result', ({ clientCommitId, status }) =>
+  console.log('push result:', clientCommitId, status)
+);
 ```
 
 ## Client Class
@@ -128,6 +131,7 @@ client.on('bootstrap:complete', ({ durationMs }) => {});
 client.on('connection:change', ({ previous, current }) => {});
 client.on('data:change', ({ scopes, timestamp }) => {});
 client.on('outbox:change', (stats) => {});
+client.on('push:result', ({ clientCommitId, status, results, errorCode }) => {});
 client.on('conflict:new', (conflict) => {});
 client.on('conflict:resolved', (conflict) => {});
 ```
@@ -176,6 +180,9 @@ interface ClientTableHandler {
 
 interface ApplyContext {
   trx: Transaction<any>;
+  commitSeq?: number;
+  actorId?: string;
+  createdAt?: string;
 }
 
 interface ClearContext extends ApplyContext {

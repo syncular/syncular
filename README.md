@@ -30,6 +30,7 @@ Your app queries a **local database** — reads are instant, the UI never waits 
 - **Blob storage** — sync binary files (images, documents) alongside structured data; pluggable backends including database storage and Cloudflare R2
 - **End-to-end encryption** — optional field-level E2E encryption plugin (XChaCha20-Poly1305) with BIP39 key sharing between devices
 - **Admin console** — inspect commits/clients/events, browse storage objects, and run maintenance operations (prune/compact/notify)
+- **Audit UI primitives** — per-commit push outcomes, conflict streams, and scoped `/sync/audit/*` endpoints for in-product history
 - **External changes + admin proxy** — integrate existing REST/webhook/pipeline writes and admin SQL without breaking sync semantics
 - **Observability** — pluggable telemetry (logs, traces, metrics, exceptions) with built-in Sentry adapter or bring your own (OpenTelemetry, Datadog, etc.)
 - **Migrations + typegen** — schema versioning for rolling upgrades, plus optional type generation from migrations

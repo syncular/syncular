@@ -39,6 +39,10 @@ export interface SyncWebSocketEvent {
   data: {
     /** New cursor position (for sync events) */
     cursor?: number;
+    /** Commit actor metadata (for sync events with inline changes) */
+    actorId?: string;
+    /** Commit timestamp metadata (for sync events with inline changes) */
+    createdAt?: string;
     /** Error message (for error events) */
     error?: string;
     /** Presence data (for presence events) */
@@ -66,7 +70,11 @@ export interface SyncWebSocketEvent {
  */
 export interface WebSocketConnection {
   /** Send a sync notification, optionally with inline change data */
-  sendSync(cursor: number, changes?: unknown[]): void;
+  sendSync(
+    cursor: number,
+    changes?: unknown[],
+    metadata?: { actorId?: string; createdAt?: string }
+  ): void;
   /** Send a heartbeat */
   sendHeartbeat(): void;
   /** Send a presence event */
@@ -117,7 +125,11 @@ export function createWebSocketConnection(
     actorId: args.actorId,
     clientId: args.clientId,
     transportPath: args.transportPath,
-    sendSync(cursor: number, changes?: unknown[]) {
+    sendSync(
+      cursor: number,
+      changes?: unknown[],
+      metadata?: { actorId?: string; createdAt?: string }
+    ) {
       if (!connection.isOpen) return;
       const payload: Record<string, unknown> = {
         cursor,
@@ -125,6 +137,12 @@ export function createWebSocketConnection(
       };
       if (changes && changes.length > 0) {
         payload.changes = changes;
+      }
+      if (metadata?.actorId) {
+        payload.actorId = metadata.actorId;
+      }
+      if (metadata?.createdAt) {
+        payload.createdAt = metadata.createdAt;
       }
       const ok = safeSend(ws, JSON.stringify({ event: 'sync', data: payload }));
       if (!ok) closed = true;
@@ -550,7 +568,12 @@ export class WebSocketConnectionManager {
   notifyScopeKeys(
     scopeKeys: string[],
     cursor: number,
-    opts?: { excludeClientIds?: string[]; changes?: unknown[] }
+    opts?: {
+      excludeClientIds?: string[];
+      changes?: unknown[];
+      actorId?: string;
+      createdAt?: string;
+    }
   ): void {
     // Size guard: only deliver inline changes if under threshold
     let inlineChanges: unknown[] | undefined;
@@ -565,7 +588,10 @@ export class WebSocketConnectionManager {
       scopeKeys,
       (conn) => {
         if (inlineChanges) {
-          conn.sendSync(cursor, inlineChanges);
+          conn.sendSync(cursor, inlineChanges, {
+            actorId: opts?.actorId,
+            createdAt: opts?.createdAt,
+          });
         } else {
           conn.sendSync(cursor);
         }

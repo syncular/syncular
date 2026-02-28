@@ -238,6 +238,40 @@ function ConflictList() {
 }
 ```
 
+## useNewConflicts
+
+Track newly surfaced unresolved conflicts since this hook mounted.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useNewConflicts } = createSyncularReact<AppDb>();
+
+function ConflictToastHost() {
+  const { latest, count, dismiss, clear } = useNewConflicts({ maxBuffered: 20 });
+
+  if (!latest) return null;
+
+  return (
+    <div>
+      <p>New conflict in {latest.table}</p>
+      <p>Unseen conflicts: {count}</p>
+      <button onClick={() => dismiss(latest.id)}>Dismiss latest</button>
+      <button onClick={clear}>Clear all</button>
+    </div>
+  );
+}
+```
+
+Returns:
+
+- `conflicts`: buffered newly seen unresolved conflicts
+- `latest`: newest buffered conflict (or `null`)
+- `count`: number of buffered conflicts
+- `dismiss(id)`: remove one conflict from the buffer
+- `clear()`: clear the buffer
+
 ## useResolveConflict
 
 Resolve a conflict.

@@ -15,6 +15,7 @@ import type {
   MutationsCommitFn,
   MutationsTx,
   OutboxCommitMeta,
+  PushResultInfo,
   SubscriptionState,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
@@ -152,6 +153,7 @@ export interface SyncProviderProps<
   realtimeFallbackPollMs?: number;
   onError?: (error: SyncError) => void;
   onConflict?: (conflict: ConflictInfo) => void;
+  onPushResult?: (result: PushResultInfo) => void;
   onDataChange?: (scopes: string[]) => void;
   /**
    * Debounce window (ms) for coalescing `data:change` events.
@@ -305,6 +307,22 @@ export interface UseConflictsResult {
   hasConflicts: boolean;
   isLoading: boolean;
   refresh: () => Promise<void>;
+}
+
+export interface UseNewConflictsOptions {
+  /**
+   * Max number of buffered conflict notifications kept in memory.
+   * Oldest notifications are dropped once the buffer reaches this size.
+   */
+  maxBuffered?: number;
+}
+
+export interface UseNewConflictsResult {
+  conflicts: ConflictInfo[];
+  latest: ConflictInfo | null;
+  count: number;
+  clear: () => void;
+  dismiss: (conflictId: string) => void;
 }
 
 export type ConflictResolution = 'accept' | 'reject' | 'merge';
@@ -524,6 +542,7 @@ export function createSyncularReact<
     realtimeFallbackPollMs,
     onError,
     onConflict,
+    onPushResult,
     onDataChange,
     dataChangeDebounceMs,
     dataChangeDebounceMsWhenSyncing,
@@ -559,6 +578,7 @@ export function createSyncularReact<
         realtimeFallbackPollMs,
         onError,
         onConflict,
+        onPushResult,
         onDataChange,
         dataChangeDebounceMs,
         dataChangeDebounceMsWhenSyncing,
@@ -585,6 +605,7 @@ export function createSyncularReact<
         realtimeFallbackPollMs,
         onError,
         onConflict,
+        onPushResult,
         onDataChange,
         dataChangeDebounceMs,
         dataChangeDebounceMsWhenSyncing,
@@ -1124,7 +1145,7 @@ export function createSyncularReact<
     } = useAsyncEngineResource<ConflictInfo[]>({
       initialValue: [],
       load: () => engine.getConflicts(),
-      refreshOn: ['sync:complete', 'sync:error'],
+      refreshOn: ['sync:complete', 'sync:error', 'conflict:new'],
     });
 
     return useMemo(
@@ -1136,6 +1157,50 @@ export function createSyncularReact<
         refresh,
       }),
       [conflicts, isLoading, refresh]
+    );
+  }
+
+  function useNewConflicts(
+    options: UseNewConflictsOptions = {}
+  ): UseNewConflictsResult {
+    const engine = useEngine();
+    const maxBuffered = Math.max(1, Math.min(500, options.maxBuffered ?? 100));
+    const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
+
+    useEffect(() => {
+      setConflicts([]);
+      const unsubscribe = engine.on('conflict:new', (conflict) => {
+        setConflicts((previous) => {
+          if (previous.some((item) => item.id === conflict.id)) {
+            return previous;
+          }
+          const next = [...previous, conflict];
+          const overflow = next.length - maxBuffered;
+          return overflow > 0 ? next.slice(overflow) : next;
+        });
+      });
+      return unsubscribe;
+    }, [engine, maxBuffered]);
+
+    const clear = useCallback(() => {
+      setConflicts([]);
+    }, []);
+
+    const dismiss = useCallback((conflictId: string) => {
+      setConflicts((previous) =>
+        previous.filter((conflict) => conflict.id !== conflictId)
+      );
+    }, []);
+
+    return useMemo(
+      () => ({
+        conflicts,
+        latest: conflicts[conflicts.length - 1] ?? null,
+        count: conflicts.length,
+        clear,
+        dismiss,
+      }),
+      [conflicts, clear, dismiss]
     );
   }
 
@@ -2094,6 +2159,7 @@ export function createSyncularReact<
     useMutations,
     useOutbox,
     useConflicts,
+    useNewConflicts,
     useResolveConflict,
     usePresence,
     usePresenceWithJoin,

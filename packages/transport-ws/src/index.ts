@@ -63,6 +63,8 @@ export interface WebSocketEvent {
   event: 'sync' | 'heartbeat' | 'error' | 'presence' | 'push-response';
   data: {
     cursor?: number;
+    actorId?: string;
+    createdAt?: string;
     /** Inline change data for small payloads (WS data delivery) */
     changes?: unknown[];
     error?: string;
