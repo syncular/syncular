@@ -21,6 +21,10 @@ import {
   type ServerHandlerCollection,
 } from './handlers/collection';
 import type { SyncServerAuth } from './handlers/types';
+import {
+  type SyncServerPushPlugin,
+  sortServerPushPlugins,
+} from './plugins/types';
 import type { SyncCoreDb } from './schema';
 
 // biome-ignore lint/complexity/noBannedTypes: Kysely uses `{}` as the initial "no selected columns yet" marker.
@@ -105,6 +109,28 @@ function isSyncPushResponse(value: unknown): value is SyncPushResponse {
   return (
     isRecord(value) && value.ok === true && typeof value.status === 'string'
   );
+}
+
+function assertOperationIdentityUnchanged(
+  pluginName: string,
+  before: SyncPushRequest['operations'][number],
+  after: SyncPushRequest['operations'][number]
+): void {
+  if (before.table !== after.table) {
+    throw new Error(
+      `Server push plugin "${pluginName}" cannot change op.table (${before.table} -> ${after.table})`
+    );
+  }
+  if (before.row_id !== after.row_id) {
+    throw new Error(
+      `Server push plugin "${pluginName}" cannot change op.row_id (${before.row_id} -> ${after.row_id})`
+    );
+  }
+  if (before.op !== after.op) {
+    throw new Error(
+      `Server push plugin "${pluginName}" cannot change op.op (${before.op} -> ${after.op})`
+    );
+  }
 }
 
 async function readCommitAffectedTables<DB extends SyncCoreDb>(
@@ -198,10 +224,12 @@ export async function pushCommit<
   db: Kysely<DB>;
   dialect: ServerSyncDialect;
   handlers: ServerHandlerCollection<DB, Auth>;
+  plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   request: SyncPushRequest;
 }): Promise<PushCommitResult> {
   const { db, dialect, handlers, request } = args;
+  const pushPlugins = sortServerPushPlugins(args.plugins);
   const actorId = args.auth.actorId;
   const partitionId = args.auth.partitionId ?? 'default';
   const requestedOps = Array.isArray(request.operations)
@@ -545,12 +573,26 @@ export async function pushCommit<
                   schemaVersion: request.schemaVersion,
                 };
 
+                let transformedOp = op;
+                for (const plugin of pushPlugins) {
+                  if (!plugin.beforeApplyOperation) continue;
+                  const nextOp = await plugin.beforeApplyOperation({
+                    ctx: operationCtx,
+                    tableHandler: handler,
+                    op: transformedOp,
+                    opIndex: i,
+                  });
+                  assertOperationIdentityUnchanged(plugin.name, op, nextOp);
+                  transformedOp = nextOp;
+                }
+
                 let appliedBatch:
                   | Awaited<ReturnType<typeof handler.applyOperation>>[]
                   | null = null;
                 let consumed = 1;
 
                 if (
+                  pushPlugins.length === 0 &&
                   handler.applyOperationBatch &&
                   dialect.supportsInsertReturning
                 ) {
@@ -571,9 +613,24 @@ export async function pushCommit<
                 }
 
                 if (!appliedBatch) {
-                  appliedBatch = [
-                    await handler.applyOperation(operationCtx, op, i),
-                  ];
+                  let appliedSingle = await handler.applyOperation(
+                    operationCtx,
+                    transformedOp,
+                    i
+                  );
+
+                  for (const plugin of pushPlugins) {
+                    if (!plugin.afterApplyOperation) continue;
+                    appliedSingle = await plugin.afterApplyOperation({
+                      ctx: operationCtx,
+                      tableHandler: handler,
+                      op: transformedOp,
+                      opIndex: i,
+                      applied: appliedSingle,
+                    });
+                  }
+
+                  appliedBatch = [appliedSingle];
                 }
                 if (appliedBatch.length === 0) {
                   throw new Error(

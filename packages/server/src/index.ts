@@ -17,6 +17,7 @@ export * from './handlers';
 export * from './helpers';
 export * from './migrate';
 export * from './notify';
+export * from './plugins';
 export * from './proxy';
 export * from './prune';
 export * from './pull';

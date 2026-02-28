@@ -7,7 +7,9 @@ import type {
   SyncPushRequest,
   SyncSubscriptionRequest,
 } from '@syncular/client';
+import * as Y from 'yjs';
 import {
+  applyYjsTextUpdates,
   buildYjsTextUpdate,
   createYjsClientPlugin,
   YJS_PAYLOAD_KEY,
@@ -84,7 +86,57 @@ function createUpdate(
   return { update: built.update, state: built.nextStateBase64 };
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('base64');
+}
+
+function createXmlState(text: string): string {
+  const doc = new Y.Doc();
+  const fragment = doc.getXmlFragment('content');
+  doc.transact(() => {
+    const paragraph = new Y.XmlElement('p');
+    const xmlText = new Y.XmlText();
+    xmlText.insert(0, text);
+    paragraph.insert(0, [xmlText]);
+    fragment.insert(0, [paragraph]);
+  });
+  const state = bytesToBase64(Y.encodeStateAsUpdate(doc));
+  doc.destroy();
+  return state;
+}
+
 describe('@syncular/client-plugin-crdt-yjs', () => {
+  it('merges concurrent prepend and append updates without text duplication', () => {
+    const base = buildYjsTextUpdate({
+      nextText: '123',
+      containerKey: 'content',
+    });
+    const prepend = buildYjsTextUpdate({
+      previousStateBase64: base.nextStateBase64,
+      nextText: '0123',
+      containerKey: 'content',
+    });
+    const append = buildYjsTextUpdate({
+      previousStateBase64: base.nextStateBase64,
+      nextText: '1234',
+      containerKey: 'content',
+    });
+
+    const mergedForward = applyYjsTextUpdates({
+      previousStateBase64: base.nextStateBase64,
+      updates: [prepend.update, append.update],
+      containerKey: 'content',
+    });
+    const mergedReverse = applyYjsTextUpdates({
+      previousStateBase64: base.nextStateBase64,
+      updates: [append.update, prepend.update],
+      containerKey: 'content',
+    });
+
+    expect(mergedForward.text).toBe('01234');
+    expect(mergedReverse.text).toBe('01234');
+  });
+
   it('materializes outgoing payload from Yjs envelope updates and strips envelope key', async () => {
     const plugin = createYjsClientPlugin({
       rules: [
@@ -125,6 +177,64 @@ describe('@syncular/client-plugin-crdt-yjs', () => {
     expect(op.payload.content).toBe('Hello Yjs');
     expect(typeof op.payload.content_yjs_state).toBe('string');
     expect(YJS_PAYLOAD_KEY in op.payload).toBe(false);
+  });
+
+  it('can keep envelope key on push while still materializing payload', async () => {
+    const plugin = createYjsClientPlugin({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+        },
+      ],
+      stripEnvelopeBeforePush: false,
+      stripEnvelopeBeforeApplyLocalMutations: true,
+    });
+
+    const { update } = createUpdate('Hello merge');
+    const request: SyncPushRequest = {
+      clientId: 'client-1',
+      clientCommitId: 'commit-keep-envelope',
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'task-1',
+          op: 'upsert',
+          payload: {
+            [YJS_PAYLOAD_KEY]: {
+              content: update,
+            },
+          },
+          base_version: null,
+        },
+      ],
+    };
+
+    const pushed = await callBeforePush(plugin, request);
+    const pushedPayload = pushed.operations[0]?.payload as
+      | Record<string, unknown>
+      | undefined;
+    if (!pushedPayload) {
+      throw new Error('Expected transformed push payload');
+    }
+    expect(pushedPayload.content).toBe('Hello merge');
+    expect(typeof pushedPayload.content_yjs_state).toBe('string');
+    expect(YJS_PAYLOAD_KEY in pushedPayload).toBe(true);
+
+    const local = await callBeforeApplyLocalMutations(plugin, {
+      operations: request.operations,
+    });
+    const localPayload = local.operations[0]?.payload as
+      | Record<string, unknown>
+      | undefined;
+    if (!localPayload) {
+      throw new Error('Expected transformed local payload');
+    }
+    expect(localPayload.content).toBe('Hello merge');
+    expect(typeof localPayload.content_yjs_state).toBe('string');
+    expect(YJS_PAYLOAD_KEY in localPayload).toBe(false);
   });
 
   it('uses cached row state from pull to apply future delta-only updates', async () => {
@@ -338,6 +448,58 @@ describe('@syncular/client-plugin-crdt-yjs', () => {
       throw new Error('Expected transformed snapshot row');
     }
     expect(row.content).toBe('Bytes snapshot');
+  });
+
+  it('materializes xml-fragment kind rows during pull', async () => {
+    const plugin = createYjsClientPlugin({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+          kind: 'xml-fragment',
+        },
+      ],
+    });
+
+    const xmlState = createXmlState('Hello XML');
+    const next = await callAfterPull(plugin, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'tasks',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          nextCursor: 1,
+          bootstrapState: null,
+          commits: [],
+          snapshots: [
+            {
+              table: 'tasks',
+              rows: [
+                {
+                  id: 'task-1',
+                  content: 'stale',
+                  content_yjs_state: xmlState,
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const row = next.subscriptions[0]?.snapshots?.[0]?.rows?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) {
+      throw new Error('Expected transformed snapshot row');
+    }
+    expect(typeof row.content).toBe('string');
+    expect(String(row.content)).toContain('Hello XML');
   });
 
   it('throws when strict mode is enabled and envelope references unknown fields', async () => {

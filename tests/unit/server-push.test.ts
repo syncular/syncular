@@ -7,6 +7,7 @@ import {
   ensureSyncSchema,
   pushCommit,
   type SyncCoreDb,
+  type SyncServerPushPlugin,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Kysely } from 'kysely';
@@ -689,5 +690,168 @@ describe('pushCommit', () => {
     expect(result.response.status).toBe('applied');
     expect(batchApplyCalls).toBe(1);
     expect(singleApplyCalls).toBe(0);
+  });
+
+  it('applies server push plugin hooks before and after handler execution', async () => {
+    const handlers = makeHandlers();
+    const plugin: SyncServerPushPlugin<ServerDb> = {
+      name: 'test-plugin',
+      beforeApplyOperation(args) {
+        if (args.op.op !== 'upsert' || !args.op.payload) return args.op;
+        return {
+          ...args.op,
+          payload: {
+            ...args.op.payload,
+            title: 'Plugin title',
+          },
+        };
+      },
+      afterApplyOperation(args) {
+        const nextEmitted = args.applied.emittedChanges.map((change) => {
+          if (
+            change.op !== 'upsert' ||
+            !change.row_json ||
+            typeof change.row_json !== 'object' ||
+            Array.isArray(change.row_json)
+          ) {
+            return change;
+          }
+          return {
+            ...change,
+            row_json: {
+              ...change.row_json,
+              plugin_after: true,
+            },
+          };
+        });
+
+        return {
+          ...args.applied,
+          emittedChanges: nextEmitted,
+        };
+      },
+    };
+
+    const result = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      plugins: [plugin],
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'plugin-hooks',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'task-plugin-hooks',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'Original title' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    expect(result.response.status).toBe('applied');
+    const row = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'task-plugin-hooks')
+      .executeTakeFirstOrThrow();
+    expect(row.title).toBe('Plugin title');
+
+    const emittedRow = result.emittedChanges[0]?.row_json;
+    if (
+      !emittedRow ||
+      typeof emittedRow !== 'object' ||
+      Array.isArray(emittedRow)
+    ) {
+      throw new Error('Expected emitted row json');
+    }
+    const emittedRowRecord = emittedRow as Record<string, unknown>;
+    expect(emittedRowRecord.plugin_after).toBe(true);
+  });
+
+  it('skips applyOperationBatch when push plugins are enabled', async () => {
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    let singleApplyCalls = 0;
+    let batchApplyCalls = 0;
+    const originalApply = tasksHandler.applyOperation;
+    const originalBatch = tasksHandler.applyOperationBatch;
+
+    tasksHandler.applyOperation = async (...args) => {
+      singleApplyCalls += 1;
+      return originalApply(...args);
+    };
+
+    tasksHandler.applyOperationBatch = async (...args) => {
+      batchApplyCalls += 1;
+      if (!originalBatch) {
+        throw new Error('Expected default applyOperationBatch to be defined');
+      }
+      return originalBatch(...args);
+    };
+
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
+    const insertReturningDialect = createSqliteServerDialect();
+    (
+      insertReturningDialect as unknown as {
+        supportsInsertReturning: boolean;
+      }
+    ).supportsInsertReturning = true;
+
+    const plugin: SyncServerPushPlugin<ServerDb> = {
+      name: 'noop-plugin',
+      beforeApplyOperation(args) {
+        return args.op;
+      },
+    };
+
+    const result = await pushCommit({
+      db,
+      dialect: insertReturningDialect,
+      handlers,
+      plugins: [plugin],
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'batch-path-with-plugin',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'batch-plugin-1',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'plugin 1' },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: 'batch-plugin-2',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'plugin 2' },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: 'batch-plugin-3',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'plugin 3' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    expect(result.response.status).toBe('applied');
+    expect(batchApplyCalls).toBe(0);
+    expect(singleApplyCalls).toBe(3);
   });
 });

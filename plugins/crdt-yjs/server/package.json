@@ -51,6 +51,8 @@
     "src"
   ],
   "dependencies": {
+    "@syncular/server": "workspace:*",
+    "kysely": "^0.28.11",
     "yjs": "^13.6.29"
   }
 }

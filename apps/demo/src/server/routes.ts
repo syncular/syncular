@@ -14,6 +14,7 @@ import {
 } from '@syncular/server';
 import { createBlobRoutes } from '@syncular/server-hono/blobs';
 import { createSyncServer } from '@syncular/server-hono/create-server';
+import { createYjsServerPushPlugin } from '@syncular/server-plugin-crdt-yjs';
 import type { Context } from 'hono';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { Kysely } from 'kysely';
@@ -23,6 +24,18 @@ import { patientNotesServerHandler } from './handlers/patient-notes';
 import { sharedTasksServerHandler } from './handlers/shared-tasks';
 import { tasksServerHandler } from './handlers/tasks';
 import { normalizePartitionId } from './partition-id';
+
+const yjsPushPlugin = createYjsServerPushPlugin({
+  rules: [
+    {
+      table: 'tasks',
+      field: 'title',
+      stateColumn: 'title_yjs_state',
+      containerKey: 'title',
+      kind: 'text',
+    },
+  ],
+});
 
 /**
  * Create sync and console routes for the demo
@@ -66,6 +79,7 @@ export function createDemoRoutes(
         catalogItemsServerHandler,
         patientNotesServerHandler,
       ],
+      plugins: [yjsPushPlugin],
       authenticate: authenticateRequest,
     },
     chunkStorage: args?.chunkStorage,
