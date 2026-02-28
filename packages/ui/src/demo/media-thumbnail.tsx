@@ -22,6 +22,7 @@ export function MediaThumbnail({
 }: MediaThumbnailProps) {
   return (
     <div
+      data-testid="media-thumbnail"
       className={cn(
         'relative aspect-square rounded-[6px] overflow-hidden border border-border cursor-default transition-[border-color] hover:border-border-bright',
         className
