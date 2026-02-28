@@ -30,6 +30,7 @@
 - Retry/backoff correctness for 429/503 across pull/push/chunk fetch paths.
 - Perf benchmarks: bootstrap 1k/10k, push single/batch, incremental pull, reconnect catchup, reconnect storm, forced rebootstrap.
 - Perf regression triage + rollback playbook: `tests/perf/README.md`.
+- Weekly soak CI workflow for long reconnect and mixed workload drift detection: `.github/workflows/weekly-soak.yml`.
 
 ## High-Value Functional Tests (Remaining + Expanded)
 - No open `P0`/`P1`/`P2` functional gaps from this plan.

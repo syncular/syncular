@@ -53,8 +53,10 @@ From repo root:
 | `bun run test:load:bootstrap` | Bootstrap + snapshot chunk flow |
 | `bun run test:load:bootstrap-storm` | Concurrent first-sync bootstrap storm |
 | `bun run test:load:reconnect-storm` | Reconnect storm with repeated WS reconnect + catchup |
+| `bun run test:load:reconnect-soak` | Long reconnect soak (`K6_SOAK=true`) |
 | `bun run test:load:maintenance-churn` | Mixed traffic while prune/compact execute repeatedly |
 | `bun run test:load:mixed` | Readers/writers/realtime mixed workload |
+| `bun run test:load:mixed-soak` | Long mixed workload soak (`K6_SOAK=true`) |
 | `bun run test:load:nightly` | Start load server + run macro scenario suite with JSON artifacts |
 | `bun run test:load:dashboard` | Mixed workload with dashboard output |
 
@@ -68,8 +70,10 @@ Directly from `tests/load`:
 | `bun run k6:bootstrap` | Bootstrap + snapshot chunk flow |
 | `bun run k6:bootstrap-storm` | Concurrent first-sync bootstrap storm |
 | `bun run k6:reconnect-storm` | Reconnect storm with repeated WS reconnect + catchup |
+| `bun run k6:reconnect-soak` | Long reconnect soak profile |
 | `bun run k6:maintenance-churn` | Mixed traffic while prune/compact execute repeatedly |
 | `bun run k6:mixed` | Mixed workload |
+| `bun run k6:mixed-soak` | Long mixed workload soak profile |
 | `bun run nightly` | Macro suite runner (server + scenarios + summary JSON) |
 | `bun run k6:dashboard` | Mixed workload + dashboard |
 
@@ -111,12 +115,16 @@ Directly from `tests/load`:
 - Tracks reader/writer latency + websocket connection/message/error metrics
 - Writer flow tracks whether pushed rows are later visible in pull responses
 - Measures writer push-to-visibility lag (`writer_sync_lag_ms`)
+- Supports a soak profile with `K6_SOAK=true`
+- Soak tuning vars: `MIXED_SOAK_DURATION`, `MIXED_SOAK_READERS`, `MIXED_SOAK_WRITERS`, `MIXED_SOAK_WEBSOCKETS`
 
 ### Reconnect Storm (`scripts/reconnect-storm.js`)
 
 - Repeated websocket connect/disconnect cycles under concurrent writes
 - Pull catch-up after each reconnect while preserving per-VU cursor state
 - Tracks reconnect latency, reconnect pull latency, and push-to-visibility lag
+- Supports a soak profile with `K6_SOAK=true`
+- Soak tuning vars: `RECONNECT_STORM_SOAK_VUS`, `RECONNECT_STORM_SOAK_DURATION`
 
 ### Bootstrap Storm (`scripts/bootstrap-storm.js`)
 
@@ -179,4 +187,5 @@ k6 run --out json=tests/load/results/push-pull.json tests/load/scripts/push-pull
 ## Notes
 
 - Macro load suites are wired into nightly CI (`load-macro-nightly`) and still runnable on-demand locally.
+- Weekly soak lane is wired in `.github/workflows/weekly-soak.yml`.
 - Integration load coverage (`tests/integration/__tests__/load.test.ts`) is separate from k6 stress tests.

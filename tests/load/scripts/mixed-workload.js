@@ -26,6 +26,14 @@ import {
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
 const smokeMode = __ENV.K6_SMOKE === 'true';
+const soakMode = __ENV.K6_SOAK === 'true';
+const mixedSoakDuration = __ENV.MIXED_SOAK_DURATION || '20m';
+const mixedSoakReaders = Number.parseInt(__ENV.MIXED_SOAK_READERS || '120', 10);
+const mixedSoakWriters = Number.parseInt(__ENV.MIXED_SOAK_WRITERS || '30', 10);
+const mixedSoakWebsockets = Number.parseInt(
+  __ENV.MIXED_SOAK_WEBSOCKETS || '160',
+  10
+);
 
 // Custom metrics
 const readerLatency = new Trend('reader_latency', true);
@@ -140,43 +148,64 @@ export const options = {
           duration: '10s',
         },
       }
-    : {
-        // 80% readers - poll for changes periodically
-        readers: {
-          executor: 'ramping-vus',
-          exec: 'reader',
-          startVUs: 0,
-          stages: [
-            { duration: '30s', target: 80 },
-            { duration: '4m', target: 800 },
-            { duration: '30s', target: 0 },
-          ],
-        },
+    : soakMode
+      ? {
+          readers: {
+            executor: 'constant-vus',
+            exec: 'reader',
+            vus: mixedSoakReaders,
+            duration: mixedSoakDuration,
+          },
+          writers: {
+            executor: 'constant-vus',
+            exec: 'writer',
+            vus: mixedSoakWriters,
+            duration: mixedSoakDuration,
+          },
+          websockets: {
+            executor: 'constant-vus',
+            exec: 'websocketClient',
+            vus: mixedSoakWebsockets,
+            duration: mixedSoakDuration,
+          },
+        }
+      : {
+          // 80% readers - poll for changes periodically
+          readers: {
+            executor: 'ramping-vus',
+            exec: 'reader',
+            startVUs: 0,
+            stages: [
+              { duration: '30s', target: 80 },
+              { duration: '4m', target: 800 },
+              { duration: '30s', target: 0 },
+            ],
+          },
 
-        // 20% writers - actively pushing changes
-        writers: {
-          executor: 'ramping-vus',
-          exec: 'writer',
-          startVUs: 0,
-          stages: [
-            { duration: '30s', target: 20 },
-            { duration: '4m', target: 200 },
-            { duration: '30s', target: 0 },
-          ],
-        },
+          // 20% writers - actively pushing changes
+          writers: {
+            executor: 'ramping-vus',
+            exec: 'writer',
+            startVUs: 0,
+            stages: [
+              { duration: '30s', target: 20 },
+              { duration: '4m', target: 200 },
+              { duration: '30s', target: 0 },
+            ],
+          },
 
-        // WebSocket listeners for realtime wake-ups
-        websockets: {
-          executor: 'ramping-vus',
-          exec: 'websocketClient',
-          startVUs: 0,
-          stages: [
-            { duration: '30s', target: 100 },
-            { duration: '4m', target: 1000 },
-            { duration: '30s', target: 0 },
-          ],
+          // WebSocket listeners for realtime wake-ups
+          websockets: {
+            executor: 'ramping-vus',
+            exec: 'websocketClient',
+            startVUs: 0,
+            stages: [
+              { duration: '30s', target: 100 },
+              { duration: '4m', target: 1000 },
+              { duration: '30s', target: 0 },
+            ],
+          },
         },
-      },
 
   thresholds: {
     reader_latency: ['p(95)<300'],
