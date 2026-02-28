@@ -276,6 +276,7 @@ export function createServerHandler<
   } = options;
   const codecCache = new Map<string, ReturnType<typeof toTableColumnCodecs>>();
   const primaryKeyColumn = primaryKey as keyof ServerDB[TableName] & string;
+  const qualifiedVersionRef = `${table}.${versionColumn}`;
   const resolveTableCodecs = (row: Record<string, unknown>) => {
     if (!codecs) return {};
     const columns = Object.keys(row);
@@ -598,7 +599,7 @@ export function createServerHandler<
       } else {
         const updateSet: Record<string, unknown> = {
           ...payload,
-          [versionColumn]: sql`${sql.ref(versionColumn)} + 1`,
+          [versionColumn]: sql`${sql.ref(qualifiedVersionRef)} + 1`,
         };
         delete updateSet[primaryKey];
         for (const col of Object.values(scopeColumns)) {
@@ -783,7 +784,7 @@ export function createServerHandler<
     const basePayload = prepared[0]!.payload;
     const updateSet: Record<string, unknown> = {
       ...basePayload,
-      [versionColumn]: sql`${sql.ref(versionColumn)} + 1`,
+      [versionColumn]: sql`${sql.ref(qualifiedVersionRef)} + 1`,
     };
     delete updateSet[primaryKey];
     for (const col of Object.values(scopeColumns)) {
