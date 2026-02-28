@@ -2,7 +2,7 @@
  * @syncular/demo - CRDT/Yjs tab
  *
  * Two independent clients (wa-sqlite OPFS + PGlite IndexedDB) editing the
- * same CRDT-backed shared text document via Yjs envelopes over Syncular transport.
+ * same CRDT-backed shared rich-text document via Yjs envelopes over Syncular transport.
  */
 
 import {
@@ -12,8 +12,8 @@ import {
   SyncTransportError,
 } from '@syncular/client';
 import {
-  buildYjsTextUpdate,
   createYjsClientPlugin,
+  type YjsClientUpdateEnvelope,
   YJS_PAYLOAD_KEY,
 } from '@syncular/client-plugin-crdt-yjs';
 import {
@@ -30,7 +30,7 @@ import {
   TopologySvgSplit,
 } from '@syncular/ui/demo';
 import { StatusDot } from '@syncular/ui/navigation';
-import type { JSONContent } from '@tiptap/core';
+import Collaboration from '@tiptap/extension-collaboration';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import type { Kysely } from 'kysely';
@@ -42,6 +42,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import * as Y from 'yjs';
 import {
   createPgliteClient,
   getPgliteDataDirState,
@@ -52,9 +53,6 @@ import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
 import {
   createDemoPollingTransport,
-  DEMO_DATA_CHANGE_DEBOUNCE_MS,
-  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING,
-  DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING,
   DEMO_POLL_INTERVAL_MS,
 } from '../client/demo-transport';
 import { catalogItemsClientHandler } from '../client/handlers/catalog-items';
@@ -85,8 +83,7 @@ const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:crdt-yjs:client-seed-v1';
 const TASK_TITLE_YJS_STATE_COLUMN = 'title_yjs_state';
 const TASK_TITLE_YJS_CONTAINER = 'title';
 const EDITOR_DOC_ROW_ID = 'shared-doc-main';
-const EDITOR_INITIAL_TEXT =
-  'This is a shared Yjs text document.\n\nType in either client and watch it sync.';
+const REMOTE_STATE_ORIGIN = 'syncular:demo:remote-state';
 
 function createClientIdSeed(): string {
   if (
@@ -126,74 +123,80 @@ function normalizeEditorText(input: string): string {
   return input.replace(/\r\n/g, '\n');
 }
 
-function plainTextToDocContent(text: string): JSONContent {
-  const normalized = normalizeEditorText(text);
-  const lines = normalized.split('\n');
-  const content: JSONContent[] = lines.map((line) => {
-    if (line.length === 0) {
-      return { type: 'paragraph' };
+function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof btoa === 'function') {
+    let binary = '';
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
     }
-    return {
-      type: 'paragraph',
-      content: [{ type: 'text', text: line }],
-    };
-  });
-  return { type: 'doc', content };
+    return btoa(binary);
+  }
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64');
+  }
+  throw new Error('No base64 encoder available in this runtime');
 }
 
-interface YjsTextEditorProps {
-  value: string;
-  onChange: (nextValue: string) => void;
+function base64ToBytes(base64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const binary = atob(base64);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      out[i] = binary.charCodeAt(i);
+    }
+    return out;
+  }
+  if (typeof Buffer !== 'undefined') {
+    return new Uint8Array(Buffer.from(base64, 'base64'));
+  }
+  throw new Error('No base64 decoder available in this runtime');
 }
 
-function YjsTextEditor({ value, onChange }: YjsTextEditorProps) {
-  const isApplyingRemote = useRef(false);
+function createYjsUpdateId(): string {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
+    return crypto.randomUUID();
+  }
+  return `yjs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function readOptionalString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+interface YjsRichTextEditorProps {
+  ydoc: Y.Doc;
+  onTextChange: (nextValue: string) => void;
+}
+
+function YjsRichTextEditor({ ydoc, onTextChange }: YjsRichTextEditorProps) {
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({
-        bold: false,
-        italic: false,
-        strike: false,
-        code: false,
-        codeBlock: false,
-        blockquote: false,
-        heading: false,
-        bulletList: false,
-        orderedList: false,
-        listItem: false,
-        horizontalRule: false,
+      StarterKit.configure({ undoRedo: false }),
+      Collaboration.configure({
+        document: ydoc,
+        field: TASK_TITLE_YJS_CONTAINER,
       }),
     ],
-    content: plainTextToDocContent(value),
     editorProps: {
       attributes: {
         class:
-          'min-h-[220px] whitespace-pre-wrap break-words rounded-md border border-border bg-transparent px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-neutral-500 font-mono leading-relaxed',
+          'min-h-[220px] whitespace-pre-wrap break-words rounded-md border border-border bg-transparent px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-neutral-500 font-mono leading-relaxed prose prose-invert max-w-none',
       },
     },
-    onUpdate: ({ editor }) => {
-      if (isApplyingRemote.current) return;
-      const nextText = normalizeEditorText(
-        editor.getText({ blockSeparator: '\n' })
+    onCreate: ({ editor }) => {
+      onTextChange(
+        normalizeEditorText(editor.getText({ blockSeparator: '\n' }))
       );
-      onChange(nextText);
+    },
+    onUpdate: ({ editor }) => {
+      onTextChange(
+        normalizeEditorText(editor.getText({ blockSeparator: '\n' }))
+      );
     },
   });
-
-  useEffect(() => {
-    if (!editor) return;
-    const current = normalizeEditorText(
-      editor.getText({ blockSeparator: '\n' })
-    );
-    const next = normalizeEditorText(value);
-    if (current === next) return;
-
-    isApplyingRemote.current = true;
-    editor.commands.setContent(plainTextToDocContent(next), {
-      emitUpdate: false,
-    });
-    isApplyingRemote.current = false;
-  }, [editor, value]);
 
   if (!editor) {
     return (
@@ -234,8 +237,11 @@ function EditorPanelContent({
     error: resolveConflictError,
   } = useResolveConflict();
 
-  const [draft, setDraft] = useState('');
+  const [editorText, setEditorText] = useState('');
   const [editorError, setEditorError] = useState<string | null>(null);
+  const ydoc = useMemo(() => new Y.Doc(), []);
+  const pendingUpdatesRef = useRef<YjsClientUpdateEnvelope[]>([]);
+  const isFlushingRef = useRef(false);
   const documentRow = useMemo(
     () => taskRows?.find((row) => row.id === EDITOR_DOC_ROW_ID) ?? null,
     [taskRows]
@@ -269,104 +275,103 @@ function EditorPanelContent({
     return 'synced' as const;
   }, [controls.isOffline, status.error, status.isSyncing]);
 
-  const ensureEditorDocument = useCallback(async () => {
-    if (documentRow) return;
-    const initial = buildYjsTextUpdate({
-      nextText: EDITOR_INITIAL_TEXT,
-      containerKey: TASK_TITLE_YJS_CONTAINER,
-    });
-    await titleMutation.mutate({
-      op: 'upsert',
-      rowId: EDITOR_DOC_ROW_ID,
-      payload: {
-        title: initial.nextText,
-        title_yjs_state: initial.nextStateBase64,
-        completed: 0,
-        user_id: actorId,
-      },
-    });
-  }, [actorId, documentRow, titleMutation]);
+  useEffect(() => {
+    return () => {
+      ydoc.destroy();
+    };
+  }, [ydoc]);
 
   useEffect(() => {
-    if (documentRow) return;
-    void ensureEditorDocument();
-  }, [documentRow, ensureEditorDocument]);
+    const remoteStateBase64 = readOptionalString(documentRow?.title_yjs_state);
+    if (!remoteStateBase64) return;
+    const localStateBase64 = bytesToBase64(Y.encodeStateAsUpdate(ydoc));
+    if (localStateBase64 === remoteStateBase64) return;
+
+    try {
+      Y.applyUpdate(ydoc, base64ToBytes(remoteStateBase64), REMOTE_STATE_ORIGIN);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setEditorError(`Failed to apply remote Yjs state: ${message}`);
+    }
+  }, [documentRow?.title_yjs_state, ydoc]);
+
+  const flushPendingUpdates = useCallback(async () => {
+    if (isFlushingRef.current) return;
+    isFlushingRef.current = true;
+    try {
+      while (pendingUpdatesRef.current.length > 0) {
+        const queuedUpdates = pendingUpdatesRef.current;
+        pendingUpdatesRef.current = [];
+        const yjsEnvelope =
+          queuedUpdates.length === 1 ? queuedUpdates[0]! : queuedUpdates;
+
+        setEditorError(null);
+        try {
+          await titleMutation.mutate({
+            op: 'upsert',
+            rowId: documentRow?.id ?? EDITOR_DOC_ROW_ID,
+            payload: {
+              completed: documentRow?.completed ?? 0,
+              user_id: documentRow?.user_id ?? actorId,
+              [YJS_PAYLOAD_KEY]: {
+                title: yjsEnvelope,
+              },
+            },
+          });
+        } catch (error) {
+          pendingUpdatesRef.current = [
+            ...queuedUpdates,
+            ...pendingUpdatesRef.current,
+          ];
+          const message = error instanceof Error ? error.message : String(error);
+          setEditorError(message);
+          break;
+        }
+      }
+    } finally {
+      isFlushingRef.current = false;
+    }
+  }, [
+    actorId,
+    documentRow?.completed,
+    documentRow?.id,
+    documentRow?.user_id,
+    titleMutation,
+  ]);
 
   useEffect(() => {
-    setDraft(documentRow?.title ?? '');
-  }, [documentRow?.title]);
+    const handleDocUpdate = (update: Uint8Array, origin: unknown) => {
+      if (origin === REMOTE_STATE_ORIGIN) return;
 
-  const saveDraft = useCallback(async () => {
-    if (!documentRow) return;
-    if (draft === documentRow.title) return;
-
-    const update = buildYjsTextUpdate({
-      previousStateBase64: documentRow.title_yjs_state ?? null,
-      nextText: draft,
-      containerKey: TASK_TITLE_YJS_CONTAINER,
-    });
-
-    setEditorError(null);
-    await titleMutation.mutate({
-      op: 'upsert',
-      rowId: documentRow.id,
-      payload: {
-        title: update.nextText,
-        completed: documentRow.completed ?? 0,
-        user_id: documentRow.user_id ?? actorId,
-        title_yjs_state: update.nextStateBase64,
-        [YJS_PAYLOAD_KEY]: {
-          title: update.update,
-        },
-      },
-    });
-  }, [actorId, documentRow, draft, titleMutation]);
-
-  useEffect(() => {
-    if (!documentRow) return;
-    if (draft === documentRow.title) return;
-    if (typeof window === 'undefined') return;
-
-    const timer = window.setTimeout(() => {
-      void saveDraft().catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setEditorError(message);
+      pendingUpdatesRef.current.push({
+        updateId: createYjsUpdateId(),
+        updateBase64: bytesToBase64(update),
       });
-    }, 180);
+      void flushPendingUpdates();
+    };
 
-    return () => window.clearTimeout(timer);
-  }, [documentRow, draft, saveDraft]);
+    ydoc.on('update', handleDocUpdate);
+    return () => {
+      ydoc.off('update', handleDocUpdate);
+    };
+  }, [flushPendingUpdates, ydoc]);
 
-  const handleResetEditor = useCallback(async () => {
-    const update = buildYjsTextUpdate({
-      previousStateBase64: documentRow?.title_yjs_state ?? null,
-      nextText: '',
-      containerKey: TASK_TITLE_YJS_CONTAINER,
+  const handleResetEditor = useCallback(() => {
+    const fragment = ydoc.getXmlFragment(TASK_TITLE_YJS_CONTAINER);
+    ydoc.transact(() => {
+      if (fragment.length > 0) {
+        fragment.delete(0, fragment.length);
+      }
     });
-
-    setEditorError(null);
-    await titleMutation.mutate({
-      op: 'upsert',
-      rowId: documentRow?.id ?? EDITOR_DOC_ROW_ID,
-      payload: {
-        title: update.nextText,
-        completed: documentRow?.completed ?? 0,
-        user_id: documentRow?.user_id ?? actorId,
-        title_yjs_state: update.nextStateBase64,
-        [YJS_PAYLOAD_KEY]: {
-          title: update.update,
-        },
-      },
-    });
-  }, [actorId, documentRow, titleMutation]);
+  }, [ydoc]);
 
   const editorWordCount = useMemo(() => {
-    const normalized = draft.trim();
+    const normalized = editorText.trim();
     if (!normalized) return 0;
     return normalized.split(/\s+/).length;
-  }, [draft]);
+  }, [editorText]);
 
-  const editorCharCount = draft.length;
+  const editorCharCount = editorText.length;
   const editorVersion = documentRow?.server_version ?? 0;
 
   const handleResolveConflict = useCallback(
@@ -394,10 +399,10 @@ function EditorPanelContent({
         </span>
       </div>
 
-      <YjsTextEditor
-        value={draft}
-        onChange={(nextValue) => {
-          setDraft(nextValue);
+      <YjsRichTextEditor
+        ydoc={ydoc}
+        onTextChange={(nextValue) => {
+          setEditorText(nextValue);
         }}
       />
 
@@ -593,6 +598,7 @@ function SyncClientPanel({
           field: 'title',
           stateColumn: TASK_TITLE_YJS_STATE_COLUMN,
           containerKey: TASK_TITLE_YJS_CONTAINER,
+          kind: 'prosemirror',
         },
       ],
       stripEnvelopeBeforePush: false,
@@ -684,13 +690,9 @@ function SyncClientPanel({
       identity={{ actorId }}
       plugins={plugins}
       realtimeEnabled={true}
-      dataChangeDebounceMs={DEMO_DATA_CHANGE_DEBOUNCE_MS}
-      dataChangeDebounceMsWhenSyncing={
-        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING
-      }
-      dataChangeDebounceMsWhenReconnecting={
-        DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING
-      }
+      dataChangeDebounceMs={0}
+      dataChangeDebounceMsWhenSyncing={0}
+      dataChangeDebounceMsWhenReconnecting={0}
       pollIntervalMs={DEMO_POLL_INTERVAL_MS}
     >
       <EditorPanelContent
@@ -770,7 +772,7 @@ export function CrdtYjsTab() {
     <>
       <DemoHeader
         title="CRDT / Yjs"
-        subtitle="Two independent SQLite clients editing the same Yjs-backed shared document"
+        subtitle="Two independent SQLite clients editing the same Yjs-backed rich-text document"
         right={badges}
       />
 
@@ -819,9 +821,10 @@ export function CrdtYjsTab() {
             are written locally first, then pushed to the server via the Sync
             transport. A service-worker realtime channel wakes other tabs
             immediately, and each client then pulls merged state from the commit
-            log. Editor changes are persisted as Yjs CRDT updates on{' '}
-            <code>tasks.title</code> so concurrent edits merge automatically
-            without manual conflict resolution.
+            log. Editor changes are emitted directly from TipTap/ProseMirror
+            transactions as Yjs updates on <code>tasks.title</code> so
+            concurrent offline/online edits merge without manual conflict
+            resolution.
           </>
         }
       />
