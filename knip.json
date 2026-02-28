@@ -42,15 +42,14 @@
     "packages/client-plugin-encryption": {
       "includeEntryExports": false
     },
-    "plugins/crdt-yjs/client": {
+    "plugins/yjs/client": {
       "includeEntryExports": false
     },
-    "plugins/crdt-yjs/server": {
+    "plugins/yjs/server": {
       "includeEntryExports": false
     },
     "packages/console": {
-      "includeEntryExports": false,
-      "entry": ["build-static.ts"]
+      "includeEntryExports": false
     },
     "packages/server": {
       "includeEntryExports": false
@@ -140,17 +139,14 @@
     "apps/demo": {
       "includeEntryExports": false,
       "entry": [
-        "build.ts",
         "src/main.tsx!",
         "src/cf/index.ts!",
-        "src/server/index.ts!",
         "src/sw/server.ts!",
         "scripts/*.ts"
       ]
     },
     "apps/console": {
       "entry": [
-        "build.ts",
         "src/main.tsx!"
       ]
     },
