@@ -33,6 +33,8 @@ import {
   type CompactOptions,
   createServerHandlerCollection,
   InvalidSubscriptionScopeError,
+  maybeCompactChanges,
+  maybePruneSync,
   type PruneOptions,
   type PullResult,
   pull,
@@ -127,7 +129,7 @@ export interface SyncRoutesConfigWithRateLimit {
   requestPayloadSnapshots?: {
     /**
      * Enable payload snapshot storage in `sync_request_payloads`.
-     * Default: true when console event recording is enabled.
+     * Default: false (opt-in).
      */
     enabled?: boolean;
     /**
@@ -496,14 +498,28 @@ export function createSyncRoutes<
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 5000;
   const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 10;
   const maxOperationsPerPush = config.maxOperationsPerPush ?? 200;
+  const requestPayloadSnapshots = config.requestPayloadSnapshots;
+  const requestPayloadSnapshotsEnabled =
+    requestPayloadSnapshots?.enabled ??
+    requestPayloadSnapshots?.maxBytes !== undefined;
+  const pruneConfig = config.prune;
+  const compactConfig = config.compact;
+  const pruneMinIntervalMs = readPositiveInteger(
+    pruneConfig?.minIntervalMs,
+    5 * 60 * 1000
+  );
+  const compactMinIntervalMs = readPositiveInteger(
+    compactConfig?.minIntervalMs,
+    30 * 60 * 1000
+  );
+  const compactOptions = compactConfig?.options;
   const consoleLiveEmitter = options.consoleLiveEmitter;
   const shouldEmitConsoleLiveEvents = consoleLiveEmitter !== undefined;
   const shouldRecordRequestEvents = shouldEmitConsoleLiveEvents;
   const shouldCaptureRequestPayloadSnapshots =
-    shouldRecordRequestEvents &&
-    config.requestPayloadSnapshots?.enabled !== false;
+    shouldRecordRequestEvents && requestPayloadSnapshotsEnabled;
   const requestPayloadSnapshotMaxBytes = readPositiveInteger(
-    config.requestPayloadSnapshots?.maxBytes,
+    requestPayloadSnapshots?.maxBytes,
     DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES
   );
   const consoleSchemaReadyBase = shouldRecordRequestEvents
@@ -563,6 +579,76 @@ export function createSyncRoutes<
     if (loggedAsyncFailureKeys.has(key)) return;
     loggedAsyncFailureKeys.add(key);
     logSyncEvent(event);
+  };
+
+  if (compactConfig && !compactOptions) {
+    logSyncEvent({
+      event: 'sync.compact_auto_disabled',
+      reason: 'missing_options',
+    });
+  }
+
+  const triggerAutoMaintenance = (ctx: {
+    actorId: string;
+    clientId: string;
+    partitionId: string;
+  }): void => {
+    if (!pruneConfig && !compactConfig) return;
+
+    void (async () => {
+      if (pruneConfig) {
+        try {
+          const deleted = await maybePruneSync(options.db, {
+            minIntervalMs: pruneMinIntervalMs,
+            options: pruneConfig.options,
+          });
+          if (deleted > 0) {
+            logSyncEvent({
+              event: 'sync.prune_auto',
+              userId: ctx.actorId,
+              clientId: ctx.clientId,
+              partitionId: ctx.partitionId,
+              deletedCount: deleted,
+            });
+          }
+        } catch (error) {
+          logAsyncFailureOnce('sync.prune_auto_failed', {
+            event: 'sync.prune_auto_failed',
+            userId: ctx.actorId,
+            clientId: ctx.clientId,
+            partitionId: ctx.partitionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (compactConfig && compactOptions) {
+        try {
+          const deleted = await maybeCompactChanges(options.db, {
+            dialect: options.dialect,
+            minIntervalMs: compactMinIntervalMs,
+            options: compactOptions,
+          });
+          if (deleted > 0) {
+            logSyncEvent({
+              event: 'sync.compact_auto',
+              userId: ctx.actorId,
+              clientId: ctx.clientId,
+              partitionId: ctx.partitionId,
+              deletedCount: deleted,
+            });
+          }
+        } catch (error) {
+          logAsyncFailureOnce('sync.compact_auto_failed', {
+            event: 'sync.compact_auto_failed',
+            userId: ctx.actorId,
+            clientId: ctx.clientId,
+            partitionId: ctx.partitionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    })();
   };
 
   if (wsConnectionManager && realtimeBroadcaster) {
@@ -1181,6 +1267,12 @@ export function createSyncRoutes<
 
         pullResponse = pullResult.response;
       }
+
+      triggerAutoMaintenance({
+        actorId: auth.actorId,
+        clientId,
+        partitionId,
+      });
 
       return c.json(
         {
@@ -1863,6 +1955,12 @@ export function createSyncRoutes<
           affectedTables: pushed.affectedTables,
         }));
       }
+
+      triggerAutoMaintenance({
+        actorId,
+        clientId,
+        partitionId,
+      });
 
       conn.sendPushResponse({
         requestId,

@@ -40,6 +40,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
   readonly family = 'postgres' as const;
   readonly supportsForUpdate = true;
   readonly supportsSavepoints = true;
+  readonly supportsInsertReturning = true;
 
   // ===========================================================================
   // SQL Fragment Hooks

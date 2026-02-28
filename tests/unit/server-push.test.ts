@@ -548,4 +548,146 @@ describe('pushCommit', () => {
       .executeTakeFirst();
     expect(row).toBeUndefined();
   });
+
+  it('keeps savepoint rollback for single-op custom handlers', async () => {
+    const handlerWithSideEffect = createServerHandler<
+      ServerDb,
+      ClientDb,
+      'tasks'
+    >({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      applyOperation: async (ctx, _op, opIndex) => {
+        await ctx.trx
+          .insertInto('tasks')
+          .values({
+            id: 'custom-side-effect-row',
+            user_id: 'u1',
+            title: 'should_rollback',
+            server_version: 1,
+          })
+          .execute();
+
+        return {
+          result: {
+            opIndex,
+            status: 'error',
+            error: 'FORCED_CUSTOM_REJECT',
+            code: 'FORCED_CUSTOM_REJECT',
+            retriable: false,
+          },
+          emittedChanges: [],
+        };
+      },
+    });
+
+    const handlers = createServerHandlerCollection<ServerDb>([
+      handlerWithSideEffect,
+    ]);
+
+    const result = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'custom-handler-reject',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'ignored-op-row',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'ignored' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    expect(result.response.status).toBe('rejected');
+    expect(result.response.results[0]?.status).toBe('error');
+
+    const sideEffectRow = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'custom-side-effect-row')
+      .executeTakeFirst();
+    expect(sideEffectRow).toBeUndefined();
+  });
+
+  it('uses applyOperationBatch for contiguous ops on insert-returning dialects', async () => {
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    let singleApplyCalls = 0;
+    let batchApplyCalls = 0;
+    const originalApply = tasksHandler.applyOperation;
+    const originalBatch = tasksHandler.applyOperationBatch;
+
+    tasksHandler.applyOperation = async (...args) => {
+      singleApplyCalls += 1;
+      return originalApply(...args);
+    };
+
+    tasksHandler.applyOperationBatch = async (...args) => {
+      batchApplyCalls += 1;
+      if (!originalBatch) {
+        throw new Error('Expected default applyOperationBatch to be defined');
+      }
+      return originalBatch(...args);
+    };
+
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
+    const insertReturningDialect = createSqliteServerDialect();
+    (
+      insertReturningDialect as unknown as {
+        supportsInsertReturning: boolean;
+      }
+    ).supportsInsertReturning = true;
+
+    const result = await pushCommit({
+      db,
+      dialect: insertReturningDialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'batch-path-check',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'batch-path-1',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'batch 1' },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: 'batch-path-2',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'batch 2' },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: 'batch-path-3',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'batch 3' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    expect(result.response.status).toBe('applied');
+    expect(batchApplyCalls).toBe(1);
+    expect(singleApplyCalls).toBe(0);
+  });
 });

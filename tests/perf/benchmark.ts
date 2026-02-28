@@ -109,6 +109,7 @@ interface PerformanceThresholds {
   incremental_pull_p99: number; // ms
   reconnect_catchup_p99: number; // ms
   reconnect_storm_p99: number; // ms
+  pglite_push_contention_p99: number; // ms
   transport_direct_catchup_p99: number; // ms
   transport_relay_catchup_p99: number; // ms
   transport_ws_catchup_p99: number; // ms
@@ -128,6 +129,7 @@ export const defaultThresholds: PerformanceThresholds = {
   incremental_pull_p99: 50,
   reconnect_catchup_p99: 1500,
   reconnect_storm_p99: 2000,
+  pglite_push_contention_p99: 12000,
   transport_direct_catchup_p99: 2000,
   transport_relay_catchup_p99: 2500,
   transport_ws_catchup_p99: 2500,

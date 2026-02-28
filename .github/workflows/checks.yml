@@ -21,6 +21,7 @@ jobs:
       runtime_electron: ${{ steps.filter.outputs.runtime_electron }}
       expo: ${{ steps.filter.outputs.expo }}
       demo: ${{ steps.filter.outputs.demo }}
+      sync_matrix: ${{ steps.filter.outputs.sync_matrix }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -55,6 +56,16 @@ jobs:
               - 'packages/transport-ws/**'
               - 'packages/observability-sentry/**'
               - 'tests/runtime/**'
+            sync_matrix:
+              - 'packages/core/**'
+              - 'packages/server/**'
+              - 'packages/server-hono/**'
+              - 'packages/client/**'
+              - 'packages/client-react/**'
+              - 'packages/transport-http/**'
+              - 'packages/transport-ws/**'
+              - 'packages/relay/**'
+              - 'tests/integration/**'
 
   test:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -119,7 +130,8 @@ jobs:
           exit "$exit_code"
 
   integration-full:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    needs: changes
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.sync_matrix == 'true')
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
@@ -128,6 +140,54 @@ jobs:
 
       - name: Run full integration matrix
         run: bun run test:integration:full
+
+  load-smoke-pr:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.sync_matrix == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run PR macro load smoke scenarios
+        env:
+          LOAD_NIGHTLY_SMOKE: true
+          LOAD_NIGHTLY_SCENARIOS: reconnect-storm,mixed-workload
+          LOAD_NIGHTLY_OUTPUT_JSON: load-pr-summary.json
+          LOAD_NIGHTLY_RESULTS_DIR: .tmp/load-pr
+          LOAD_SERVER_PORT: 3001
+          LOAD_DB_DIALECT: sqlite
+          SQLITE_PATH: ':memory:'
+          SEED_RANDOM_SEED: 42
+        run: |
+          set +e
+          bun run test:load:nightly 2>&1 | tee load-pr-results.txt
+          exit_code=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$exit_code" -eq 132 ] || [ "$exit_code" -eq 133 ]; then
+            echo "Bun crashed with exit code $exit_code; retrying once..."
+            bun run test:load:nightly
+            exit $?
+          fi
+
+          exit "$exit_code"
+
+      - name: Upload PR load smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-pr-smoke-${{ github.run_id }}
+          path: |
+            load-pr-results.txt
+            load-pr-summary.json
+            .tmp/load-pr
 
   perf:
     if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -195,8 +255,29 @@ jobs:
           lines.push('## Perf Summary');
           lines.push('');
           lines.push(`- Runs: ${report.runCount}`);
+          lines.push(`- Commit: ${report.commit ?? 'unknown'}`);
           lines.push(`- Regression: ${report.hasRegression ? 'yes' : 'no'}`);
           lines.push(`- Missing baseline: ${report.hasMissingBaseline ? 'yes' : 'no'}`);
+          if (Array.isArray(report.baselineCommits) && report.baselineCommits.length > 0) {
+            lines.push(`- Baseline commits: ${report.baselineCommits.join(', ')}`);
+          }
+          if (report.runEnvironment) {
+            const env = report.runEnvironment;
+            const envLabel = [env.platform, env.arch, `bun ${env.bunVersion}`]
+              .filter(Boolean)
+              .join(' / ');
+            lines.push(`- Environment: ${env.source ?? 'unknown'} (${envLabel})`);
+          }
+          if (report.resources?.durationMs && report.resources?.cpuTotalMicros && report.resources?.maxRssBytes) {
+            lines.push(
+              `- Run resources (median): duration ${Number(report.resources.durationMs.median).toFixed(1)}ms, CPU ${(
+                Number(report.resources.cpuTotalMicros.median) / 1000
+              ).toFixed(1)}ms, max RSS ${(
+                Number(report.resources.maxRssBytes.median) /
+                (1024 * 1024)
+              ).toFixed(1)} MiB`
+            );
+          }
           lines.push('');
           lines.push('| Metric | Baseline | Median | Change |');
           lines.push('|--------|----------|--------|--------|');
@@ -438,8 +519,29 @@ jobs:
           lines.push('## Nightly Perf Summary');
           lines.push('');
           lines.push(`- Runs: ${report.runCount}`);
+          lines.push(`- Commit: ${report.commit ?? 'unknown'}`);
           lines.push(`- Regression: ${report.hasRegression ? 'yes' : 'no'}`);
           lines.push(`- Missing baseline: ${report.hasMissingBaseline ? 'yes' : 'no'}`);
+          if (Array.isArray(report.baselineCommits) && report.baselineCommits.length > 0) {
+            lines.push(`- Baseline commits: ${report.baselineCommits.join(', ')}`);
+          }
+          if (report.runEnvironment) {
+            const env = report.runEnvironment;
+            const envLabel = [env.platform, env.arch, `bun ${env.bunVersion}`]
+              .filter(Boolean)
+              .join(' / ');
+            lines.push(`- Environment: ${env.source ?? 'unknown'} (${envLabel})`);
+          }
+          if (report.resources?.durationMs && report.resources?.cpuTotalMicros && report.resources?.maxRssBytes) {
+            lines.push(
+              `- Run resources (median): duration ${Number(report.resources.durationMs.median).toFixed(1)}ms, CPU ${(
+                Number(report.resources.cpuTotalMicros.median) / 1000
+              ).toFixed(1)}ms, max RSS ${(
+                Number(report.resources.maxRssBytes.median) /
+                (1024 * 1024)
+              ).toFixed(1)} MiB`
+            );
+          }
           lines.push('');
           lines.push('| Metric | Baseline | Median | Change |');
           lines.push('|--------|----------|--------|--------|');
@@ -645,6 +747,186 @@ jobs:
 
           const lines = [];
           lines.push('## Nightly Load Trend');
+          lines.push('');
+          lines.push(`- History files: ${trend.historySummaryCount}`);
+          lines.push(`- Regression change-point: ${trend.hasRegressionChangePoint ? 'yes' : 'no'}`);
+          lines.push(`- Insufficient history: ${trend.hasInsufficientHistory ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |');
+          lines.push('|--------|---------|-------------|-------|----------|--------|--------|');
+
+          for (const metric of trend.metrics) {
+            const isRate = metric.metric.endsWith('/httpErrorRate');
+            const current = isRate
+              ? (metric.current == null ? 'N/A' : `${metric.current >= 0 ? '+' : ''}${(Number(metric.current) * 100).toFixed(1)}%`)
+              : Number(metric.current).toFixed(1) + 'ms';
+            const histMedian = metric.historyMedian == null
+              ? 'N/A'
+              : isRate
+                ? `${metric.historyMedian >= 0 ? '+' : ''}${(Number(metric.historyMedian) * 100).toFixed(1)}%`
+                : Number(metric.historyMedian).toFixed(1) + 'ms';
+            const delta =
+              metric.deltaPercent == null
+                ? 'N/A'
+                : `${metric.deltaPercent >= 0 ? '+' : ''}${(Number(metric.deltaPercent) * 100).toFixed(1)}%`;
+            const robustZ =
+              metric.robustZ == null ? 'N/A' : Number(metric.robustZ).toFixed(2);
+            const status = metric.insufficientHistory
+              ? 'insufficient-history'
+              : metric.regressionChangePoint
+                ? 'regression-change-point'
+                : metric.improvementChangePoint
+                  ? 'improvement-change-point'
+                  : 'stable';
+
+            lines.push(
+              `| ${metric.metric} | ${current} | ${histMedian} | ${delta} | ${robustZ} | ${metric.historyCount} | ${status} |`
+            );
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
+
+  load-pglite-nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run nightly pglite contention load suite
+        env:
+          LOAD_NIGHTLY_SMOKE: false
+          LOAD_NIGHTLY_SCENARIOS: reconnect-storm,mixed-workload,maintenance-churn
+          LOAD_NIGHTLY_OUTPUT_JSON: load-nightly-pglite-summary.json
+          LOAD_NIGHTLY_RESULTS_DIR: .tmp/load-nightly-pglite
+          LOAD_SERVER_PORT: 3002
+          LOAD_DB_DIALECT: pglite
+          SEED_ROWS: 120000
+          SEED_USERS: 600
+          SEED_RANDOM_SEED: 42
+        run: bun run test:load:nightly 2>&1 | tee load-nightly-pglite-results.txt
+
+      - name: Fetch historical pglite load summaries
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          PERF_HISTORY_WORKFLOW: checks.yml
+          PERF_HISTORY_EVENT: schedule
+          PERF_HISTORY_BRANCH: main
+          PERF_HISTORY_ARTIFACT_PREFIX: load-nightly-pglite-
+          PERF_HISTORY_SUMMARY_FILE: load-nightly-pglite-summary.json
+          PERF_HISTORY_OUTPUT_DIR: load-pglite-history
+          PERF_HISTORY_MAX_FILES: 10
+        run: bun --cwd tests/perf fetch-history 2>&1 | tee load-pglite-history-fetch.txt
+
+      - name: Run nightly pglite load trend/change-point analysis
+        if: always()
+        env:
+          LOAD_TREND_CURRENT_PATH: load-nightly-pglite-summary.json
+          LOAD_TREND_HISTORY_DIR: load-pglite-history
+          LOAD_TREND_OUTPUT_JSON: load-nightly-pglite-trend.json
+          LOAD_TREND_MIN_HISTORY: 3
+          LOAD_TREND_DELTA_THRESHOLD: 0.2
+          LOAD_TREND_ROBUST_Z_THRESHOLD: 3
+          LOAD_TREND_FAIL_ON_CHANGE: false
+        run: bun --cwd tests/load trend-ci 2>&1 | tee load-nightly-pglite-trend.txt
+
+      - name: Warn on nightly pglite load change points
+        if: always()
+        run: |
+          if [ ! -f load-nightly-pglite-trend.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const trend = JSON.parse(fs.readFileSync('load-nightly-pglite-trend.json', 'utf8'));
+          if (trend.hasRegressionChangePoint) {
+            const metrics = trend.metrics
+              .filter((metric) => metric.regressionChangePoint)
+              .map((metric) => metric.metric)
+              .join(', ');
+            console.log(`::warning::Nightly pglite load change-point detected for: ${metrics || 'unknown metric'}`);
+          }
+          NODE
+
+      - name: Upload nightly pglite load artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-nightly-pglite-${{ github.run_id }}
+          path: |
+            load-nightly-pglite-summary.json
+            load-nightly-pglite-results.txt
+            load-nightly-pglite-trend.json
+            load-nightly-pglite-trend.txt
+            load-pglite-history-fetch.txt
+            load-pglite-history/index.json
+            .tmp/load-nightly-pglite
+
+      - name: Publish nightly pglite load summary
+        if: always()
+        run: |
+          if [ ! -f load-nightly-pglite-summary.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const report = JSON.parse(fs.readFileSync('load-nightly-pglite-summary.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Nightly Pglite Load Summary');
+          lines.push('');
+          lines.push('- Dialect: pglite');
+          lines.push(`- Scenarios: ${report.scenarioCount}`);
+          lines.push(`- Failed scenarios: ${report.failedScenarioCount}`);
+          lines.push(`- Smoke mode: ${report.smokeMode ? 'yes' : 'no'}`);
+          lines.push('');
+          lines.push('| Scenario | Status | Duration | HTTP p95 | HTTP p99 | HTTP error rate |');
+          lines.push('|----------|--------|----------|----------|----------|-----------------|');
+
+          for (const scenario of report.scenarios ?? []) {
+            const status = scenario.passed ? 'pass' : 'fail';
+            const duration = `${(Number(scenario.durationMs) / 1000).toFixed(1)}s`;
+            const httpP95 =
+              scenario.metrics?.httpP95 == null
+                ? 'N/A'
+                : `${Number(scenario.metrics.httpP95).toFixed(1)}ms`;
+            const httpP99 =
+              scenario.metrics?.httpP99 == null
+                ? 'N/A'
+                : `${Number(scenario.metrics.httpP99).toFixed(1)}ms`;
+            const errorRate =
+              scenario.metrics?.httpErrorRate == null
+                ? 'N/A'
+                : `${(Number(scenario.metrics.httpErrorRate) * 100).toFixed(2)}%`;
+            lines.push(`| ${scenario.id} | ${status} | ${duration} | ${httpP95} | ${httpP99} | ${errorRate} |`);
+          }
+
+          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
+          NODE
+
+      - name: Publish nightly pglite load trend summary
+        if: always()
+        run: |
+          if [ ! -f load-nightly-pglite-trend.json ]; then
+            exit 0
+          fi
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          const trend = JSON.parse(fs.readFileSync('load-nightly-pglite-trend.json', 'utf8'));
+
+          const lines = [];
+          lines.push('## Nightly Pglite Load Trend');
           lines.push('');
           lines.push(`- History files: ${trend.historySummaryCount}`);
           lines.push(`- Regression change-point: ${trend.hasRegressionChangePoint ? 'yes' : 'no'}`);

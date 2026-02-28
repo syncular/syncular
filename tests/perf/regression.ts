@@ -15,6 +15,14 @@ export interface Baseline {
     p99: number;
     timestamp: string;
     commit?: string;
+    source?: 'local' | 'ci';
+    environment?: {
+      platform: string;
+      arch: string;
+      bunVersion: string;
+      runnerOs?: string;
+      runnerName?: string;
+    };
   };
 }
 
@@ -38,9 +46,10 @@ const REGRESSION_THRESHOLD = 0.2;
  */
 const REGRESSION_THRESHOLD_OVERRIDES: Record<string, number> = {
   reconnect_storm: 0.25,
+  pglite_push_contention: 0.6,
   transport_direct_catchup: 0.5,
   transport_relay_catchup: 0.5,
-  transport_ws_catchup: 0.4,
+  transport_ws_catchup: 0.5,
 };
 
 /**

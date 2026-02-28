@@ -66,10 +66,17 @@ describe('detectRegressions', () => {
   it('uses per-metric thresholds for noisy benchmarks', () => {
     const results = [
       makeResult('transport_direct_catchup', 130),
+      makeResult('pglite_push_contention', 150),
       makeResult('regular_metric', 130),
     ];
     const baseline = {
       transport_direct_catchup: {
+        median: 100,
+        p95: 100,
+        p99: 100,
+        timestamp: '2025-01-01',
+      },
+      pglite_push_contention: {
         median: 100,
         p95: 100,
         p99: 100,
@@ -86,6 +93,7 @@ describe('detectRegressions', () => {
     const regressions = detectRegressions(results, baseline);
 
     expect(regressions[0]?.regression).toBe(false);
-    expect(regressions[1]?.regression).toBe(true);
+    expect(regressions[1]?.regression).toBe(false);
+    expect(regressions[2]?.regression).toBe(true);
   });
 });

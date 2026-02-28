@@ -43,6 +43,11 @@ export interface ApplyOperationResult {
   emittedChanges: EmittedChange[];
 }
 
+export interface BatchApplyOperationInput {
+  op: SyncOperation;
+  opIndex: number;
+}
+
 /**
  * Context for server operations.
  */
@@ -259,6 +264,18 @@ export interface ServerTableHandler<
   snapshotChunkTtlMs?: number;
 
   /**
+   * Hint for push engine savepoint optimization on single-op commits.
+   *
+   * When true, the handler guarantees that a rejected single operation
+   * does not leave durable writes behind before returning the rejection.
+   * This allows pushCommit() to skip SAVEPOINT overhead for single-op
+   * commits on savepoint-capable dialects.
+   *
+   * Omit or set false for custom handlers unless this guarantee holds.
+   */
+  canRejectSingleOperationWithoutSavepoint?: boolean;
+
+  /**
    * Resolve allowed scope values for the current actor.
    */
   resolveScopes: (ctx: ServerContext<DB, Auth>) => Promise<ScopeValues>;
@@ -284,4 +301,17 @@ export interface ServerTableHandler<
     op: SyncOperation,
     opIndex: number
   ): Promise<ApplyOperationResult>;
+
+  /**
+   * Apply multiple operations in order.
+   *
+   * Implementations may internally batch writes but must preserve the same
+   * observable semantics as sequential applyOperation calls:
+   * - results are returned in operation order
+   * - processing stops at the first non-applied result
+   */
+  applyOperationBatch?(
+    ctx: ServerApplyOperationContext<DB, Auth>,
+    operations: BatchApplyOperationInput[]
+  ): Promise<ApplyOperationResult[]>;
 }

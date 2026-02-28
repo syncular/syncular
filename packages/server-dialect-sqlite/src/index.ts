@@ -170,6 +170,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
   readonly family = 'sqlite' as const;
   readonly supportsForUpdate = false;
   readonly supportsSavepoints: boolean;
+  readonly supportsInsertReturning = false;
   private readonly _supportsTransactions: boolean;
 
   constructor(options?: { supportsTransactions?: boolean }) {

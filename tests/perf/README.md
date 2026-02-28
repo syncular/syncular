@@ -63,6 +63,7 @@ PERF_TREND_CURRENT_PATH=.tmp/perf-summary.json PERF_TREND_HISTORY_DIR=perf-histo
 - `push_*`: push validation, write path, conflict handling.
 - `incremental_pull`: pull query path, cursor filtering, payload shape.
 - `reconnect_*`: reconnect logic, realtime wakeups, catchup pull path.
+- `pglite_push_contention`: concurrent commit insertion/write-path contention on postgres/pglite lanes.
 - `maintenance_*`: prune/compact interactions and maintenance locks.
 - `transport_*`: transport stack differences (direct/relay/ws wakeups).
 
@@ -104,7 +105,8 @@ bun --cwd tests/perf update-baseline
 ```
 
 3. Review changed metric values in [`baseline.json`](./baseline.json).
-4. In commit/PR description, include:
+4. Confirm provenance metadata is populated (`commit`, `source`, `environment`) for each updated metric.
+5. In commit/PR description, include:
 - reason for baseline change
 - before/after values for affected metrics
 - links to CI run artifacts

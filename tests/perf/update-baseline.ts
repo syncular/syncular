@@ -47,7 +47,21 @@ import {
 } from './benchmark';
 import type { Baseline } from './regression';
 
+const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
+
+async function resolveGitCommitSha(): Promise<string | null> {
+  const proc = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const sha = stdout.trim();
+  return sha.length > 0 ? sha : null;
+}
 
 /**
  * Save baseline to file
@@ -58,7 +72,16 @@ async function saveBaseline(
 ): Promise<void> {
   const baseline: Baseline = {};
   const timestamp = new Date().toISOString();
-  const commit = process.env.GITHUB_SHA ?? 'local';
+  const commit =
+    process.env.GITHUB_SHA ?? (await resolveGitCommitSha()) ?? 'local';
+  const source = process.env.GITHUB_ACTIONS === 'true' ? 'ci' : 'local';
+  const environment = {
+    platform: process.platform,
+    arch: process.arch,
+    bunVersion: Bun.version,
+    runnerOs: process.env.RUNNER_OS,
+    runnerName: process.env.RUNNER_NAME,
+  };
 
   for (const result of results) {
     baseline[result.name] = {
@@ -67,6 +90,8 @@ async function saveBaseline(
       p99: result.p99,
       timestamp,
       commit,
+      source,
+      environment,
     };
   }
 
@@ -800,6 +825,72 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
     await reconnectClient.destroy();
     await testServer.destroy();
     results.push(result);
+  }
+
+  // Pglite concurrent push contention
+  console.log('  Running: pglite_push_contention');
+  {
+    const testServer = await createTestServer('pglite');
+    const writerCount = 8;
+    const opsPerWriter = 10;
+    const writers = await Promise.all(
+      Array.from({ length: writerCount }, (_, i) =>
+        createTestClient('bun-sqlite', testServer, {
+          actorId: userId,
+          clientId: `pglite-contention-writer-${i + 1}`,
+        })
+      )
+    );
+
+    let round = 0;
+
+    try {
+      const result = await benchmark(
+        'pglite_push_contention',
+        async () => {
+          round += 1;
+          const responses = await Promise.all(
+            writers.map((writer, writerIndex) =>
+              writer.transport.sync({
+                clientId: writer.clientId,
+                push: {
+                  clientCommitId: `pglite-contention-${round}-${writerIndex + 1}`,
+                  schemaVersion: 1,
+                  operations: Array.from(
+                    { length: opsPerWriter },
+                    (_, opIndex) => ({
+                      table: 'tasks',
+                      row_id: `pglite-contention-task-${round}-${writerIndex + 1}-${opIndex + 1}`,
+                      op: 'upsert' as const,
+                      payload: {
+                        title: `Pglite contention ${round}-${writerIndex + 1}-${opIndex + 1}`,
+                        completed: (round + opIndex) % 2,
+                      },
+                      base_version: null,
+                    })
+                  ),
+                },
+              })
+            )
+          );
+
+          for (const response of responses) {
+            if (response.push?.status !== 'applied') {
+              throw new Error(
+                `Unexpected pglite contention push status: ${response.push?.status ?? 'missing'}`
+              );
+            }
+          }
+        },
+        { iterations: 6, warmup: 1 }
+      );
+      results.push(result);
+    } finally {
+      for (const writer of writers) {
+        await writer.destroy();
+      }
+      await testServer.destroy();
+    }
   }
 
   // Transport lane catchup parity (direct/relay/ws)

@@ -323,6 +323,70 @@ describe('createServerHandler', () => {
     ]);
   });
 
+  it('does not update scope columns on base_version=null upsert conflicts', async () => {
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+    const handlers = createServerHandlerCollection<ServerDb>([tasksHandler]);
+
+    const first = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'scope-immutability-1',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'scope-row',
+            op: 'upsert',
+            payload: { user_id: 'u1', title: 'initial' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+    expect(first.response.status).toBe('applied');
+
+    const second = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        clientCommitId: 'scope-immutability-2',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'scope-row',
+            op: 'upsert',
+            payload: { user_id: 'u2', title: 'updated title' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+    expect(second.response.status).toBe('applied');
+    expect(second.emittedChanges[0]?.scopes).toEqual({ user_id: 'u1' });
+
+    const row = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'scope-row')
+      .executeTakeFirstOrThrow();
+
+    expect(row.user_id).toBe('u1');
+    expect(row.title).toBe('updated title');
+    expect(row.server_version).toBe(2);
+  });
+
   it('rejects subscriptions with unknown scope keys', async () => {
     const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
       table: 'tasks',

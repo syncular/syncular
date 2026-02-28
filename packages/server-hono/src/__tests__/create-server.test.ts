@@ -363,6 +363,32 @@ describe('createSyncServer console configuration', () => {
     expect(payloadCount).toBe(0);
   });
 
+  it('keeps request payload snapshots disabled by default', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-default-no-payload-snapshot';
+    const response = await app.request(createPushRequest({ requestId }));
+    expect(response.status).toBe(200);
+
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(eventRow.payload_ref).toBeNull();
+
+    const payloadCountResult = await sql<{ total: number | string }>`
+      SELECT COUNT(*)::int AS total
+      FROM sync_request_payloads
+    `.execute(db);
+    const payloadCount = Number(payloadCountResult.rows[0]?.total ?? 0);
+    expect(payloadCount).toBe(0);
+  });
+
   it('supports aggressively reducing stored payload snapshot size', async () => {
     process.env.SYNC_CONSOLE_TOKEN = 'env-token';
     const options = createOptions();
