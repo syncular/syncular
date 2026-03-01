@@ -360,6 +360,13 @@ describe('mutations API', () => {
       // user_id should be omitted from the sync payload
       expect(meta.operations[0]!.payload).not.toHaveProperty('user_id');
       expect(meta.operations[0]!.payload).toHaveProperty('title');
+
+      // Omitted columns are still written locally.
+      const row = await db
+        .selectFrom('tasks')
+        .selectAll()
+        .executeTakeFirstOrThrow();
+      expect(row.user_id).toBe('user-1');
     });
   });
 

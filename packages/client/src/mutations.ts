@@ -521,11 +521,14 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                   ...omitColumns,
                 ],
               });
+              const localSanitized = sanitizePayload(row, {
+                omit: [idColumn, ...(versionColumn ? [versionColumn] : [])],
+              });
               const localOp = await transformLocalOperation({
                 table,
                 row_id: id,
                 op: 'upsert',
-                payload,
+                payload: localSanitized,
                 base_version: null,
               });
               const localPayload = isRecord(localOp.payload)
@@ -579,11 +582,14 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                     ...omitColumns,
                   ],
                 });
+                const localSanitized = sanitizePayload(row, {
+                  omit: [idColumn, ...(versionColumn ? [versionColumn] : [])],
+                });
                 const localOp = await transformLocalOperation({
                   table,
                   row_id: id,
                   op: 'upsert',
-                  payload,
+                  payload: localSanitized,
                   base_version: null,
                 });
                 const localPayload = isRecord(localOp.payload)
@@ -626,6 +632,9 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                   ...omitColumns,
                 ],
               });
+              const localSanitized = sanitizePayload(rawPatch, {
+                omit: [idColumn, ...(versionColumn ? [versionColumn] : [])],
+              });
 
               const hasExplicitBaseVersion =
                 !!opts && hasOwn(opts, 'baseVersion');
@@ -633,7 +642,7 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                 table,
                 row_id: id,
                 op: 'upsert',
-                payload: sanitized,
+                payload: localSanitized,
                 base_version: null,
               });
               const localPayload = isRecord(localOp.payload)
@@ -707,6 +716,9 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                   ...omitColumns,
                 ],
               });
+              const localSanitized = sanitizePayload(rawPatch, {
+                omit: [idColumn, ...(versionColumn ? [versionColumn] : [])],
+              });
 
               const hasExplicitBaseVersion =
                 !!opts && hasOwn(opts, 'baseVersion');
@@ -714,7 +726,7 @@ export function createOutboxCommit<DB extends SyncClientDb>(
                 table,
                 row_id: id,
                 op: 'upsert',
-                payload: sanitized,
+                payload: localSanitized,
                 base_version: null,
               });
               const localPayload = isRecord(localOp.payload)
