@@ -61,10 +61,11 @@ describe('Deno runtime (node:sqlite)', () => {
     const serverSrc = path.resolve(import.meta.dir, '../apps/deno/server.ts');
     const outDir = path.resolve(import.meta.dir, '../apps/deno/dist');
 
-    // Bundle for Deno — workspace packages are linked via bun, so Deno can't
-    // resolve them directly. Mark node:sqlite as external (built-in to Deno 2.x).
+    // Bundle for Deno. Use the Bun condition so workspace package imports
+    // resolve to source entries instead of relying on prebuilt dist exports.
+    // Mark node:sqlite as external (built-in to Deno 2.x).
     execSync(
-      `bun build ${serverSrc} --target=node --outdir=${outDir} --external node:sqlite`,
+      `bun build ${serverSrc} --target=node --conditions bun --outdir=${outDir} --external node:sqlite`,
       { stdio: 'pipe' }
     );
 
