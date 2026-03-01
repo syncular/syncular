@@ -45,7 +45,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --fix --unsafe .",
     "knip": "knip && knip --production --no-exit-code",
-    "release": "turbo release --filter='./packages/*' --concurrency=1",
+    "release": "turbo release --filter='./packages/*' --filter='./plugins/*/client' --filter='./plugins/*/server' --concurrency=1",
     "tsgo": "turbo tsgo --cache-dir=.turbo --concurrency=100% --parallel --force",
     "generate:openapi": "bun generate:openapi:schema && bun generate:openapi:types && bun generate:openapi:docs",
     "generate:openapi:schema": "bun --cwd packages/server-hono generate:openapi",
