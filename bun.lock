@@ -517,6 +517,7 @@
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/client-plugin-encryption": "workspace:*",
+        "@syncular/client-plugin-yjs": "workspace:*",
         "@syncular/client-react": "workspace:*",
         "@syncular/console": "workspace:*",
         "@syncular/core": "workspace:*",
@@ -539,6 +540,7 @@
         "@syncular/server-dialect-postgres": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
         "@syncular/server-hono": "workspace:*",
+        "@syncular/server-plugin-yjs": "workspace:*",
         "@syncular/server-service-worker": "workspace:*",
         "@syncular/server-storage-filesystem": "workspace:*",
         "@syncular/server-storage-s3": "workspace:*",

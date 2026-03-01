@@ -54,6 +54,35 @@ This plugin:
 2. Sets `base_version` on outbox operations automatically
 3. No manual version tracking needed
 
+### createYjsClientPlugin
+
+Adds Yjs CRDT envelope handling for selected fields.
+
+```typescript
+import { createYjsClientPlugin } from '@syncular/client-plugin-yjs';
+// or: import { createYjsClientPlugin } from 'syncular/yjs';
+
+const yjsPlugin = createYjsClientPlugin({
+  rules: [
+    {
+      table: 'tasks',
+      field: 'title',
+      stateColumn: 'title_yjs_state',
+      containerKey: 'title',
+      kind: 'prosemirror',
+    },
+  ],
+  // Keep __yjs on push so server can merge CRDT updates.
+  stripEnvelopeBeforePush: false,
+  // Strip __yjs for local optimistic row apply.
+  stripEnvelopeBeforeApplyLocalMutations: true,
+});
+
+<SyncProvider plugins={[yjsPlugin]} ... />
+```
+
+Use with `@syncular/server-plugin-yjs` on the server side for operation-level merge.
+
 ## Custom Plugin Example
 
 ```typescript

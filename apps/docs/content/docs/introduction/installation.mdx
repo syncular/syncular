@@ -54,6 +54,7 @@ npm install @syncular/dialect-better-sqlite3
 | `@syncular/transport-http` | HTTP transport for push/pull |
 | `@syncular/transport-ws` | WebSocket transport for real-time wake-ups |
 | `@syncular/client-plugin-encryption` | E2E field encryption plugin |
+| `@syncular/client-plugin-yjs` | Yjs CRDT client plugin (text / xml-fragment / prosemirror) |
 
 ### Client database dialects
 
@@ -89,6 +90,11 @@ npm install @syncular/transport-ws
 
 # End-to-end encryption
 npm install @syncular/client-plugin-encryption
+
+# Yjs CRDT plugins (client + server)
+npm install @syncular/client-plugin-yjs @syncular/server-plugin-yjs yjs
+# or umbrella imports (syncular/yjs)
+npm install syncular yjs
 
 # Edge relay server
 npm install @syncular/relay

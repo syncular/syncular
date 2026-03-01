@@ -1,4 +1,4 @@
-# @syncular/server-plugin-crdt-yjs
+# @syncular/server-plugin-yjs
 
 Yjs-first server integration helpers for Syncular.
 
@@ -19,7 +19,7 @@ Implemented:
 ## Example
 
 ```ts
-import { createYjsServerModule } from '@syncular/server-plugin-crdt-yjs';
+import { createYjsServerModule } from '@syncular/server-plugin-yjs';
 
 const yjs = createYjsServerModule({
   rules: [

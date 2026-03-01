@@ -18,6 +18,7 @@
     "presence",
     "blob-storage",
     "encryption",
+    "yjs",
     "---Production---",
     "error-handling",
     "migrations",
