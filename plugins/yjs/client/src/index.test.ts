@@ -317,6 +317,189 @@ describe('@syncular/client-plugin-crdt-yjs', () => {
     expect(typeof payload.content_yjs_state).toBe('string');
   });
 
+  it('invalidates cached row state after pull commit delete before row-id reuse', async () => {
+    const plugin = createYjsClientPlugin({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+        },
+      ],
+    });
+
+    const old = createUpdate('old');
+    await callAfterPull(plugin, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'tasks',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          nextCursor: 1,
+          bootstrapState: null,
+          commits: [],
+          snapshots: [
+            {
+              table: 'tasks',
+              rows: [
+                {
+                  id: 'task-1',
+                  content: 'stale',
+                  content_yjs_state: old.state,
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    await callAfterPull(plugin, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'tasks',
+          status: 'active',
+          scopes: {},
+          bootstrap: false,
+          nextCursor: 2,
+          bootstrapState: null,
+          snapshots: [],
+          commits: [
+            {
+              commitSeq: 2,
+              createdAt: '2026-03-01T00:00:00.000Z',
+              actorId: 'actor-2',
+              changes: [
+                {
+                  table: 'tasks',
+                  row_id: 'task-1',
+                  op: 'delete',
+                  row_json: null,
+                  row_version: null,
+                  scopes: {},
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const fresh = createUpdate('new');
+    const pushed = await callBeforePush(plugin, {
+      clientId: 'client-1',
+      clientCommitId: 'commit-reuse-after-delete',
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'task-1',
+          op: 'upsert',
+          payload: {
+            [YJS_PAYLOAD_KEY]: {
+              content: fresh.update,
+            },
+          },
+          base_version: null,
+        },
+      ],
+    });
+
+    const payload = pushed.operations[0]?.payload as
+      | Record<string, unknown>
+      | undefined;
+    if (!payload) {
+      throw new Error('Expected transformed push payload');
+    }
+
+    expect(payload.content).toBe('new');
+    expect(String(payload.content)).not.toContain('old');
+  });
+
+  it('evicts least-recently-used cached row state when maxTrackedRows is reached', async () => {
+    const plugin = createYjsClientPlugin({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+        },
+      ],
+      maxTrackedRows: 1,
+    });
+
+    const rowOne = createUpdate('old');
+    const rowTwo = createUpdate('other');
+
+    await callAfterPull(plugin, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'tasks',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          nextCursor: 1,
+          bootstrapState: null,
+          commits: [],
+          snapshots: [
+            {
+              table: 'tasks',
+              rows: [
+                {
+                  id: 'task-1',
+                  content: 'stale',
+                  content_yjs_state: rowOne.state,
+                },
+                {
+                  id: 'task-2',
+                  content: 'stale',
+                  content_yjs_state: rowTwo.state,
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const fullFromEmpty = createUpdate('new');
+    const pushed = await callBeforePush(plugin, {
+      clientId: 'client-1',
+      clientCommitId: 'commit-eviction',
+      schemaVersion: 1,
+      operations: [
+        {
+          table: 'tasks',
+          row_id: 'task-1',
+          op: 'upsert',
+          payload: {
+            [YJS_PAYLOAD_KEY]: {
+              content: fullFromEmpty.update,
+            },
+          },
+          base_version: null,
+        },
+      ],
+    });
+
+    const payload = pushed.operations[0]?.payload as
+      | Record<string, unknown>
+      | undefined;
+    if (!payload) {
+      throw new Error('Expected transformed push payload');
+    }
+
+    expect(payload.content).toBe('new');
+  });
+
   it('materializes websocket inline changes through beforeApplyWsChanges', async () => {
     const plugin = createYjsClientPlugin({
       rules: [
