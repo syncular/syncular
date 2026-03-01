@@ -1,20 +1,70 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export function getPackagesDirectory(): string {
-  return join(import.meta.dirname, '..', 'packages');
+type RootPackageJson = {
+  version?: string;
+  workspaces?: string[];
+};
+
+function getRepoRootDirectory(): string {
+  return join(import.meta.dirname, '..');
 }
 
-export function listPackageDirectories(packagesDirectory: string): string[] {
-  return readdirSync(packagesDirectory, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => entry.name);
+function readRootPackageJson(
+  rootDirectory = getRepoRootDirectory()
+): RootPackageJson {
+  const rootPackageJsonPath = join(rootDirectory, 'package.json');
+  return JSON.parse(
+    readFileSync(rootPackageJsonPath, 'utf-8')
+  ) as RootPackageJson;
+}
+
+function toWorkspacePackageJsonGlob(workspacePattern: string): string {
+  const normalized = workspacePattern
+    .trim()
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
+
+  if (normalized.endsWith('package.json')) {
+    return normalized;
+  }
+
+  return `${normalized}/package.json`;
+}
+
+export async function listWorkspacePackageJsonPaths(
+  rootDirectory = getRepoRootDirectory()
+): Promise<string[]> {
+  const rootPackageJson = readRootPackageJson(rootDirectory);
+  const workspacePatterns = rootPackageJson.workspaces;
+  if (!Array.isArray(workspacePatterns) || workspacePatterns.length === 0) {
+    throw new Error('No workspaces found in root package.json');
+  }
+
+  const packageJsonPaths = new Set<string>();
+
+  for (const workspacePattern of workspacePatterns) {
+    if (
+      typeof workspacePattern !== 'string' ||
+      workspacePattern.trim() === ''
+    ) {
+      continue;
+    }
+
+    const glob = new Bun.Glob(toWorkspacePackageJsonGlob(workspacePattern));
+    for await (const relativePath of glob.scan({ cwd: rootDirectory })) {
+      packageJsonPaths.add(join(rootDirectory, relativePath));
+    }
+  }
+
+  return Array.from(packageJsonPaths).sort((left, right) =>
+    left.localeCompare(right)
+  );
 }
 
 function readRootVersion(): string | null {
-  const rootPackageJsonPath = join(import.meta.dirname, '..', 'package.json');
   try {
-    const packageJson = JSON.parse(readFileSync(rootPackageJsonPath, 'utf-8'));
+    const packageJson = readRootPackageJson();
     if (
       typeof packageJson.version === 'string' &&
       packageJson.version.length > 0
@@ -27,10 +77,7 @@ function readRootVersion(): string | null {
   return null;
 }
 
-export function computeStampedVersion(
-  suffix: string,
-  _packagesDirectory = getPackagesDirectory()
-): string {
+export function computeStampedVersion(suffix: string): string {
   const normalizedSuffix = suffix.trim();
   if (normalizedSuffix.length === 0) {
     throw new Error('Stamp suffix is required');
