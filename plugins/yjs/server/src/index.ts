@@ -229,6 +229,45 @@ function replaceText(doc: Y.Doc, containerKey: string, nextText: string): void {
   });
 }
 
+function patchText(doc: Y.Doc, containerKey: string, nextText: string): void {
+  const text = doc.getText(containerKey);
+  const currentText = text.toString();
+  if (currentText === nextText) return;
+
+  const minLength = Math.min(currentText.length, nextText.length);
+  let prefixLength = 0;
+  while (
+    prefixLength < minLength &&
+    currentText.charCodeAt(prefixLength) === nextText.charCodeAt(prefixLength)
+  ) {
+    prefixLength += 1;
+  }
+
+  let currentSuffixStart = currentText.length;
+  let nextSuffixStart = nextText.length;
+  while (
+    currentSuffixStart > prefixLength &&
+    nextSuffixStart > prefixLength &&
+    currentText.charCodeAt(currentSuffixStart - 1) ===
+      nextText.charCodeAt(nextSuffixStart - 1)
+  ) {
+    currentSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+
+  const deleteLength = currentSuffixStart - prefixLength;
+  const insertSegment = nextText.slice(prefixLength, nextSuffixStart);
+
+  doc.transact(() => {
+    if (deleteLength > 0) {
+      text.delete(prefixLength, deleteLength);
+    }
+    if (insertSegment.length > 0) {
+      text.insert(prefixLength, insertSegment);
+    }
+  });
+}
+
 function materializeRuleValue(
   doc: Y.Doc,
   rule: ResolvedYjsServerFieldRule
@@ -360,7 +399,7 @@ export async function buildYjsTextUpdate(
   const doc = createDocFromState(args.previousStateBase64);
   try {
     const from = Y.encodeStateVector(doc);
-    replaceText(doc, containerKey, args.nextText);
+    patchText(doc, containerKey, args.nextText);
     const update = bytesToBase64(Y.encodeStateAsUpdate(doc, from));
     const nextText = ensureTextContainer(doc, containerKey);
     const nextStateBase64 = exportSnapshotBase64(doc);

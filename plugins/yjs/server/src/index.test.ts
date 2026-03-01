@@ -61,7 +61,50 @@ function createXmlInsert(
   };
 }
 
+function applyTextUpdates(args: {
+  previousStateBase64?: string;
+  updates: readonly YjsServerUpdateEnvelope[];
+  containerKey?: string;
+}): string {
+  const doc = new Y.Doc();
+  if (args.previousStateBase64) {
+    Y.applyUpdate(
+      doc,
+      new Uint8Array(Buffer.from(args.previousStateBase64, 'base64'))
+    );
+  }
+  for (const update of args.updates) {
+    Y.applyUpdate(
+      doc,
+      new Uint8Array(Buffer.from(update.updateBase64, 'base64'))
+    );
+  }
+  const text = doc.getText(args.containerKey ?? 'content').toString();
+  doc.destroy();
+  return text;
+}
+
 describe('@syncular/server-plugin-crdt-yjs', () => {
+  it('buildYjsTextUpdate merges concurrent prepend and append without duplication', async () => {
+    const base = await createUpdate('123');
+    const prepend = await createUpdate('0123', base.state);
+    const append = await createUpdate('1234', base.state);
+
+    const mergedForward = applyTextUpdates({
+      previousStateBase64: base.state,
+      updates: [prepend.update, append.update],
+      containerKey: 'content',
+    });
+    const mergedReverse = applyTextUpdates({
+      previousStateBase64: base.state,
+      updates: [append.update, prepend.update],
+      containerKey: 'content',
+    });
+
+    expect(mergedForward).toBe('01234');
+    expect(mergedReverse).toBe('01234');
+  });
+
   it('applies Yjs envelopes against existing row state and strips envelope key', async () => {
     const module = createYjsServerModule({
       rules: [

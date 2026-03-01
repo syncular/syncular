@@ -88,6 +88,12 @@ export interface CreateYjsClientPluginOptions {
   envelopeKey?: string;
   priority?: number;
   /**
+   * Maximum cached row-field Yjs states to keep in memory.
+   * Prevents unbounded growth in long-lived sessions.
+   * @default 10_000
+   */
+  maxTrackedRows?: number;
+  /**
    * Throw when envelope payload references fields without matching rules.
    * @default true
    */
@@ -323,6 +329,36 @@ function rowFieldCacheKey(table: string, rowId: string, field: string): string {
   return `${table}\u001f${rowId}\u001f${field}`;
 }
 
+function touchLruState(
+  map: Map<string, string>,
+  key: string,
+  value: string,
+  maxTrackedRows: number
+): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size <= maxTrackedRows) return;
+  const oldest = map.keys().next().value as string | undefined;
+  if (oldest) {
+    map.delete(oldest);
+  }
+}
+
+function clearRowStateCache(args: {
+  table: string;
+  rowId: string;
+  index: RuleIndex;
+  stateByRowField: Map<string, string>;
+}): void {
+  const tableRules = args.index.get(args.table);
+  if (!tableRules) return;
+  for (const rule of tableRules.values()) {
+    args.stateByRowField.delete(
+      rowFieldCacheKey(args.table, args.rowId, rule.field)
+    );
+  }
+}
+
 function resolveSnapshotRowId(
   row: Record<string, unknown>,
   rule: ResolvedYjsClientFieldRule
@@ -423,6 +459,7 @@ function materializeRowFromState(args: {
   row: Record<string, unknown>;
   index: RuleIndex;
   stateByRowField: Map<string, string>;
+  maxTrackedRows: number;
   envelopeKey: string;
   stripEnvelope: boolean;
 }): Record<string, unknown> {
@@ -455,9 +492,11 @@ function materializeRowFromState(args: {
         ensureRow()[rule.field] = nextValue;
       }
       if (args.rowId) {
-        args.stateByRowField.set(
+        touchLruState(
+          args.stateByRowField,
           rowFieldCacheKey(args.table, args.rowId, rule.field),
-          stateBase64
+          stateBase64,
+          args.maxTrackedRows
         );
       }
     } finally {
@@ -482,6 +521,7 @@ function transformPushPayload(args: {
   payload: Record<string, unknown>;
   index: RuleIndex;
   stateByRowField: Map<string, string>;
+  maxTrackedRows: number;
   envelopeKey: string;
   stripEnvelope: boolean;
   strict: boolean;
@@ -521,9 +561,11 @@ function transformPushPayload(args: {
     const source = nextPayload ?? args.payload;
     const stateBase64 = stateValueToBase64(source[rule.stateColumn]);
     if (stateBase64) {
-      args.stateByRowField.set(
+      touchLruState(
+        args.stateByRowField,
         rowFieldCacheKey(args.table, args.rowId, rule.field),
-        stateBase64
+        stateBase64,
+        args.maxTrackedRows
       );
     }
   }
@@ -566,7 +608,12 @@ function transformPushPayload(args: {
         const target = ensurePayload();
         target[rule.field] = nextValue;
         target[rule.stateColumn] = nextStateBase64;
-        args.stateByRowField.set(cacheKey, nextStateBase64);
+        touchLruState(
+          args.stateByRowField,
+          cacheKey,
+          nextStateBase64,
+          args.maxTrackedRows
+        );
       } finally {
         doc.destroy();
       }
@@ -588,6 +635,7 @@ function transformPullSubscription(args: {
   sub: SyncPullSubscriptionResponse;
   index: RuleIndex;
   stateByRowField: Map<string, string>;
+  maxTrackedRows: number;
   envelopeKey: string;
   stripEnvelope: boolean;
 }): SyncPullSubscriptionResponse {
@@ -603,6 +651,7 @@ function transformPullSubscription(args: {
           row,
           index: args.index,
           stateByRowField: args.stateByRowField,
+          maxTrackedRows: args.maxTrackedRows,
           envelopeKey: args.envelopeKey,
           stripEnvelope: args.stripEnvelope,
         });
@@ -620,6 +669,7 @@ function transformPullSubscription(args: {
         row,
         index: args.index,
         stateByRowField: args.stateByRowField,
+        maxTrackedRows: args.maxTrackedRows,
         envelopeKey: args.envelopeKey,
         stripEnvelope: args.stripEnvelope,
       });
@@ -629,6 +679,15 @@ function transformPullSubscription(args: {
   const nextCommits = (args.sub.commits ?? []).map((commit) => ({
     ...commit,
     changes: (commit.changes ?? []).map((change) => {
+      if (change.op === 'delete') {
+        clearRowStateCache({
+          table: change.table,
+          rowId: change.row_id,
+          index: args.index,
+          stateByRowField: args.stateByRowField,
+        });
+        return change;
+      }
       if (change.op !== 'upsert' || !isRecord(change.row_json)) return change;
       const nextRow = materializeRowFromState({
         table: change.table,
@@ -636,6 +695,7 @@ function transformPullSubscription(args: {
         row: change.row_json,
         index: args.index,
         stateByRowField: args.stateByRowField,
+        maxTrackedRows: args.maxTrackedRows,
         envelopeKey: args.envelopeKey,
         stripEnvelope: args.stripEnvelope,
       });
@@ -655,10 +715,20 @@ function transformWsChanges(args: {
   changes: SyncChange[];
   index: RuleIndex;
   stateByRowField: Map<string, string>;
+  maxTrackedRows: number;
   envelopeKey: string;
   stripEnvelope: boolean;
 }): SyncChange[] {
   return args.changes.map((change) => {
+    if (change.op === 'delete') {
+      clearRowStateCache({
+        table: change.table,
+        rowId: change.row_id,
+        index: args.index,
+        stateByRowField: args.stateByRowField,
+      });
+      return change;
+    }
     if (change.op !== 'upsert' || !isRecord(change.row_json)) return change;
     const nextRow = materializeRowFromState({
       table: change.table,
@@ -666,6 +736,7 @@ function transformWsChanges(args: {
       row: change.row_json,
       index: args.index,
       stateByRowField: args.stateByRowField,
+      maxTrackedRows: args.maxTrackedRows,
       envelopeKey: args.envelopeKey,
       stripEnvelope: args.stripEnvelope,
     });
@@ -690,6 +761,10 @@ export function createYjsClientPlugin(
     options.stripEnvelopeBeforePush ?? stripEnvelope;
   const stripEnvelopeBeforeApplyLocalMutations =
     options.stripEnvelopeBeforeApplyLocalMutations ?? stripEnvelope;
+  const maxTrackedRows = Math.max(
+    1,
+    Math.min(1_000_000, options.maxTrackedRows ?? 10_000)
+  );
   const { index } = buildRuleIndex(options.rules);
   const stateByRowField = new Map<string, string>();
 
@@ -708,6 +783,7 @@ export function createYjsClientPlugin(
           payload: op.payload,
           index,
           stateByRowField,
+          maxTrackedRows,
           envelopeKey,
           stripEnvelope: stripEnvelopeBeforePush,
           strict,
@@ -725,6 +801,15 @@ export function createYjsClientPlugin(
       args: SyncClientLocalMutationArgs
     ): SyncClientLocalMutationArgs {
       const nextOperations = args.operations.map((op) => {
+        if (op.op === 'delete') {
+          clearRowStateCache({
+            table: op.table,
+            rowId: op.row_id,
+            index,
+            stateByRowField,
+          });
+          return op;
+        }
         if (op.op !== 'upsert') return op;
         if (!isRecord(op.payload)) return op;
 
@@ -734,6 +819,7 @@ export function createYjsClientPlugin(
           payload: op.payload,
           index,
           stateByRowField,
+          maxTrackedRows,
           envelopeKey,
           stripEnvelope: stripEnvelopeBeforeApplyLocalMutations,
           strict,
@@ -752,6 +838,7 @@ export function createYjsClientPlugin(
           sub,
           index,
           stateByRowField,
+          maxTrackedRows,
           envelopeKey,
           stripEnvelope,
         })
@@ -771,6 +858,7 @@ export function createYjsClientPlugin(
         changes: args.changes,
         index,
         stateByRowField,
+        maxTrackedRows,
         envelopeKey,
         stripEnvelope,
       });
