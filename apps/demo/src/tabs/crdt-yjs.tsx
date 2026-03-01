@@ -84,6 +84,7 @@ const TASK_TITLE_YJS_STATE_COLUMN = 'title_yjs_state';
 const TASK_TITLE_YJS_CONTAINER = 'title';
 const EDITOR_DOC_ROW_ID = 'shared-doc-main';
 const REMOTE_STATE_ORIGIN = 'syncular:demo:remote-state';
+const EDITOR_UPDATE_FLUSH_DEBOUNCE_MS = 1_000;
 
 function createClientIdSeed(): string {
   if (
@@ -242,6 +243,7 @@ function EditorPanelContent({
   const ydoc = useMemo(() => new Y.Doc(), []);
   const pendingUpdatesRef = useRef<YjsClientUpdateEnvelope[]>([]);
   const isFlushingRef = useRef(false);
+  const flushTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const documentRow = useMemo(
     () => taskRows?.find((row) => row.id === EDITOR_DOC_ROW_ID) ?? null,
     [taskRows]
@@ -277,6 +279,10 @@ function EditorPanelContent({
 
   useEffect(() => {
     return () => {
+      if (flushTimeoutRef.current !== null) {
+        clearTimeout(flushTimeoutRef.current);
+        flushTimeoutRef.current = null;
+      }
       ydoc.destroy();
     };
   }, [ydoc]);
@@ -301,40 +307,53 @@ function EditorPanelContent({
 
   const flushPendingUpdates = useCallback(async () => {
     if (isFlushingRef.current) return;
-    isFlushingRef.current = true;
-    try {
-      while (pendingUpdatesRef.current.length > 0) {
-        const queuedUpdates = pendingUpdatesRef.current;
-        pendingUpdatesRef.current = [];
-        const yjsEnvelope =
-          queuedUpdates.length === 1 ? queuedUpdates[0]! : queuedUpdates;
+    if (pendingUpdatesRef.current.length === 0) return;
 
-        setEditorError(null);
-        try {
-          await titleMutation.mutate({
-            op: 'upsert',
-            rowId: documentRow?.id ?? EDITOR_DOC_ROW_ID,
-            payload: {
-              completed: documentRow?.completed ?? 0,
-              user_id: documentRow?.user_id ?? actorId,
-              [YJS_PAYLOAD_KEY]: {
-                title: yjsEnvelope,
-              },
+    if (flushTimeoutRef.current !== null) {
+      clearTimeout(flushTimeoutRef.current);
+      flushTimeoutRef.current = null;
+    }
+
+    isFlushingRef.current = true;
+    const queuedUpdates = pendingUpdatesRef.current;
+    pendingUpdatesRef.current = [];
+
+    try {
+      const yjsEnvelope =
+        queuedUpdates.length === 1 ? queuedUpdates[0]! : queuedUpdates;
+
+      setEditorError(null);
+      try {
+        await titleMutation.mutate({
+          op: 'upsert',
+          rowId: documentRow?.id ?? EDITOR_DOC_ROW_ID,
+          payload: {
+            completed: documentRow?.completed ?? 0,
+            user_id: documentRow?.user_id ?? actorId,
+            [YJS_PAYLOAD_KEY]: {
+              title: yjsEnvelope,
             },
-          });
-        } catch (error) {
-          pendingUpdatesRef.current = [
-            ...queuedUpdates,
-            ...pendingUpdatesRef.current,
-          ];
-          const message =
-            error instanceof Error ? error.message : String(error);
-          setEditorError(message);
-          break;
-        }
+          },
+        });
+      } catch (error) {
+        pendingUpdatesRef.current = [
+          ...queuedUpdates,
+          ...pendingUpdatesRef.current,
+        ];
+        const message = error instanceof Error ? error.message : String(error);
+        setEditorError(message);
       }
     } finally {
       isFlushingRef.current = false;
+      if (
+        pendingUpdatesRef.current.length > 0 &&
+        flushTimeoutRef.current === null
+      ) {
+        flushTimeoutRef.current = setTimeout(() => {
+          flushTimeoutRef.current = null;
+          void flushPendingUpdates();
+        }, EDITOR_UPDATE_FLUSH_DEBOUNCE_MS);
+      }
     }
   }, [
     actorId,
@@ -352,7 +371,14 @@ function EditorPanelContent({
         updateId: createYjsUpdateId(),
         updateBase64: bytesToBase64(update),
       });
-      void flushPendingUpdates();
+
+      if (flushTimeoutRef.current !== null) {
+        clearTimeout(flushTimeoutRef.current);
+      }
+      flushTimeoutRef.current = setTimeout(() => {
+        flushTimeoutRef.current = null;
+        void flushPendingUpdates();
+      }, EDITOR_UPDATE_FLUSH_DEBOUNCE_MS);
     };
 
     ydoc.on('update', handleDocUpdate);
