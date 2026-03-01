@@ -1,4 +1,4 @@
-# @syncular/client-plugin-crdt-yjs
+# @syncular/client-plugin-yjs
 
 Yjs-first CRDT plugin for Syncular client integration.
 
@@ -45,7 +45,7 @@ The plugin converts this to:
 ## Example
 
 ```ts
-import { createYjsClientPlugin } from '@syncular/client-plugin-crdt-yjs';
+import { createYjsClientPlugin } from '@syncular/client-plugin-yjs';
 
 const yjs = createYjsClientPlugin({
   rules: [

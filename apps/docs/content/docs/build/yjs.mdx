@@ -1,0 +1,122 @@
+---
+title: Yjs CRDT
+description: Configure Yjs-powered CRDT field sync with Syncular client and server plugins.
+---
+
+# Yjs CRDT
+
+Syncular's Yjs plugins let you sync collaborative CRDT fields over the normal push/pull protocol.
+
+Use this when you need concurrent editing with deterministic merge semantics (for example rich text, shared notes, or structured collaborative fields).
+
+## Install
+
+```bash
+bun install @syncular/client-plugin-yjs @syncular/server-plugin-yjs yjs
+# or via umbrella package
+bun install syncular yjs
+```
+
+## Data Model
+
+Each CRDT field needs:
+
+- A projection column (for example `title`) used by regular queries/UI.
+- A state column (for example `title_yjs_state`) storing canonical serialized Yjs state.
+
+Example table columns:
+
+```sql
+title text not null,
+title_yjs_state text
+```
+
+## Client Plugin Setup
+
+```ts
+import { createYjsClientPlugin } from '@syncular/client-plugin-yjs';
+// or: import { createYjsClientPlugin } from 'syncular/yjs';
+
+const yjsClientPlugin = createYjsClientPlugin({
+  rules: [
+    {
+      table: 'tasks',
+      field: 'title',
+      stateColumn: 'title_yjs_state',
+      containerKey: 'title',
+      kind: 'prosemirror', // 'text' | 'xml-fragment' | 'prosemirror'
+    },
+  ],
+  // Required when server should merge incoming __yjs envelopes.
+  stripEnvelopeBeforePush: false,
+  // Keep local optimistic rows DB-safe.
+  stripEnvelopeBeforeApplyLocalMutations: true,
+});
+```
+
+Pass the plugin to your client:
+
+```tsx
+<SyncProvider plugins={[yjsClientPlugin]} ... />
+```
+
+## Server Plugin Setup
+
+Register the push plugin so incoming CRDT envelopes are merged before handlers persist rows.
+
+```ts
+import { createYjsServerPushPlugin } from '@syncular/server-plugin-yjs';
+// or: import { createYjsServerPushPlugin } from 'syncular/yjs';
+
+const yjsPushPlugin = createYjsServerPushPlugin({
+  rules: [
+    {
+      table: 'tasks',
+      field: 'title',
+      stateColumn: 'title_yjs_state',
+      containerKey: 'title',
+      kind: 'prosemirror',
+    },
+  ],
+});
+
+const sync = {
+  handlers: [tasksHandler],
+  plugins: [yjsPushPlugin],
+  authenticate: authenticateRequest,
+};
+```
+
+## Envelope Shape
+
+Client payloads carry incremental updates under `__yjs`:
+
+```ts
+{
+  __yjs: {
+    title: {
+      updateId: "upd-123",
+      updateBase64: "<base64-yjs-update>"
+    }
+  }
+}
+```
+
+The plugins materialize this into projection/state columns:
+
+```ts
+{
+  title: "Materialized text/content",
+  title_yjs_state: "<base64-yjs-snapshot>"
+}
+```
+
+## Rich Text (TipTap / ProseMirror)
+
+For rich text, prefer native Yjs-ProseMirror binding (`kind: 'prosemirror'`) so editor transactions generate CRDT operations directly. This avoids full-text replacement artifacts and preserves structural merge semantics.
+
+## Operational Notes
+
+- For CRDT updates, avoid debouncing mutation flushes unless you explicitly want batched envelopes.
+- Keep client and server rules aligned (`table`, `field`, `stateColumn`, `containerKey`, `kind`).
+- If server-side merge is enabled, do not strip `__yjs` before push.

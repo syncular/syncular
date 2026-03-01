@@ -96,6 +96,13 @@
         "default": "./dist/client-plugin-encryption.js"
       }
     },
+    "./client-plugin-yjs": {
+      "bun": "./src/client-plugin-yjs.ts",
+      "import": {
+        "types": "./dist/client-plugin-yjs.d.ts",
+        "default": "./dist/client-plugin-yjs.js"
+      }
+    },
     "./server": {
       "bun": "./src/server.ts",
       "import": {
@@ -192,6 +199,20 @@
       "import": {
         "types": "./dist/encryption.d.ts",
         "default": "./dist/encryption.js"
+      }
+    },
+    "./server-plugin-yjs": {
+      "bun": "./src/server-plugin-yjs.ts",
+      "import": {
+        "types": "./dist/server-plugin-yjs.d.ts",
+        "default": "./dist/server-plugin-yjs.js"
+      }
+    },
+    "./yjs": {
+      "bun": "./src/yjs.ts",
+      "import": {
+        "types": "./dist/yjs.d.ts",
+        "default": "./dist/yjs.js"
       }
     },
     "./observability-sentry": {
@@ -293,6 +314,7 @@
   "dependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",
+    "@syncular/client-plugin-yjs": "workspace:*",
     "@syncular/client-react": "workspace:*",
     "@syncular/console": "workspace:*",
     "@syncular/core": "workspace:*",
@@ -315,6 +337,7 @@
     "@syncular/server-dialect-postgres": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
+    "@syncular/server-plugin-yjs": "workspace:*",
     "@syncular/server-service-worker": "workspace:*",
     "@syncular/server-storage-filesystem": "workspace:*",
     "@syncular/server-storage-s3": "workspace:*",
