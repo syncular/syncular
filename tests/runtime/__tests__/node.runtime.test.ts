@@ -34,10 +34,11 @@ describe('Node.js runtime (better-sqlite3)', () => {
     const serverSrc = path.resolve(import.meta.dir, '../apps/node/server.ts');
     const outDir = path.resolve(import.meta.dir, '../apps/node/dist');
 
-    // Bundle for Node — workspace packages are linked via bun, so Node can't
-    // resolve them directly. Mark native addons as external.
+    // Bundle for Node. Use the Bun condition so workspace package imports
+    // resolve to source entries instead of relying on prebuilt dist exports.
+    // Mark native addons as external.
     execSync(
-      `bun build ${serverSrc} --target=node --outdir=${outDir} --external better-sqlite3`,
+      `bun build ${serverSrc} --target=node --conditions bun --outdir=${outDir} --external better-sqlite3`,
       { stdio: 'pipe' }
     );
 
