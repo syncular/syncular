@@ -2,13 +2,14 @@ import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { UpgradeWebSocket } from 'hono/ws';
-import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
+import { resolver, validator as zValidator } from 'hono-openapi';
 import { z } from 'zod';
 import {
   closeUnauthenticatedSocket,
   parseBearerToken,
   parseWebSocketAuthToken,
 } from './live-auth';
+import { describeConsoleGatewayRoute } from './route-descriptor';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
@@ -1268,9 +1269,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/instances',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'List configured downstream console instances',
+    describeConsoleGatewayRoute({
+summary: 'List configured downstream console instances',
       responses: {
         200: {
           description: 'Configured instances',
@@ -1306,9 +1306,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/instances/health',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Probe downstream console health by instance',
+    describeConsoleGatewayRoute({
+summary: 'Probe downstream console health by instance',
       responses: {
         200: {
           description: 'Per-instance health results',
@@ -1366,9 +1365,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/handlers',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'List handlers for a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1398,9 +1396,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/prune/preview',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Preview prune on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1430,9 +1427,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/prune',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Trigger prune on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1462,9 +1458,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/compact',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Trigger compaction on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1494,9 +1489,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/notify-data-change',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Notify data change on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1529,9 +1523,8 @@ export function createConsoleGatewayRoutes(
 
   routes.delete(
     '/clients/:id',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Evict client on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1563,9 +1556,8 @@ export function createConsoleGatewayRoutes(
 
   routes.delete(
     '/events',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Clear request events on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1595,9 +1587,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/events/prune',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Prune request events on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1627,9 +1618,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/api-keys',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'List API keys for a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1663,9 +1653,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/api-keys',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Create API key on a single target instance (requires instance selection)',
       responses: {
         201: {
@@ -1698,9 +1687,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/api-keys/:id',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Get API key from a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1732,9 +1720,8 @@ export function createConsoleGatewayRoutes(
 
   routes.delete(
     '/api-keys/:id',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Revoke API key on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1766,9 +1753,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/api-keys/bulk-revoke',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Bulk revoke API keys on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1801,9 +1787,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/api-keys/:id/rotate/stage',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Stage-rotate API key on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1835,9 +1820,8 @@ export function createConsoleGatewayRoutes(
 
   routes.post(
     '/api-keys/:id/rotate',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary:
+    describeConsoleGatewayRoute({
+summary:
         'Rotate API key on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1869,9 +1853,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/stats',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Get merged sync stats across instances',
+    describeConsoleGatewayRoute({
+summary: 'Get merged sync stats across instances',
       responses: {
         200: {
           description: 'Merged stats',
@@ -1950,9 +1933,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/stats/timeseries',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Get merged time-series stats across instances',
+    describeConsoleGatewayRoute({
+summary: 'Get merged time-series stats across instances',
       responses: {
         200: {
           description: 'Merged time-series stats',
@@ -2003,9 +1985,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/stats/latency',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Get merged latency stats across instances',
+    describeConsoleGatewayRoute({
+summary: 'Get merged latency stats across instances',
       responses: {
         200: {
           description: 'Merged latency stats',
@@ -2057,9 +2038,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/commits',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'List merged commits across instances',
+    describeConsoleGatewayRoute({
+summary: 'List merged commits across instances',
       responses: {
         200: {
           description: 'Merged commits',
@@ -2137,9 +2117,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/commits/:seq',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Get merged commit detail by federated id',
+    describeConsoleGatewayRoute({
+summary: 'Get merged commit detail by federated id',
       responses: {
         200: {
           description: 'Commit detail',
@@ -2208,9 +2187,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/clients',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'List merged clients across instances',
+    describeConsoleGatewayRoute({
+summary: 'List merged clients across instances',
       responses: {
         200: {
           description: 'Merged clients',
@@ -2285,9 +2263,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/timeline',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'List merged timeline items across instances',
+    describeConsoleGatewayRoute({
+summary: 'List merged timeline items across instances',
       responses: {
         200: {
           description: 'Merged timeline',
@@ -2382,9 +2359,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/operations',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'List merged operation events across instances',
+    describeConsoleGatewayRoute({
+summary: 'List merged operation events across instances',
       responses: {
         200: {
           description: 'Merged operations',
@@ -2463,9 +2439,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/events',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'List merged request events across instances',
+    describeConsoleGatewayRoute({
+summary: 'List merged request events across instances',
       responses: {
         200: {
           description: 'Merged events',
@@ -2845,9 +2820,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/events/:id',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Get merged event detail by federated id',
+    describeConsoleGatewayRoute({
+summary: 'Get merged event detail by federated id',
       responses: {
         200: {
           description: 'Event detail',
@@ -2920,9 +2894,8 @@ export function createConsoleGatewayRoutes(
 
   routes.get(
     '/events/:id/payload',
-    describeRoute({
-      tags: ['console-gateway'],
-      summary: 'Get merged event payload by federated id',
+    describeConsoleGatewayRoute({
+summary: 'Get merged event payload by federated id',
       responses: {
         200: {
           description: 'Event payload',

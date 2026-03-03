@@ -23,9 +23,9 @@ import type {
 } from '@syncular/core';
 import {
   applyCodecsToDbRow,
+  createTableColumnCodecsResolver,
   isRecord,
   randomId,
-  toTableColumnCodecs,
 } from '@syncular/core';
 import type { Insertable, Kysely, Transaction, Updateable } from 'kysely';
 import { sql } from 'kysely';
@@ -469,38 +469,10 @@ export function createOutboxCommit<DB extends SyncClientDb>(
       .transaction()
       .execute(async (trx) => {
         const txTableCache = new Map<string, any>();
-        const tableCodecCache = new Map<
-          string,
-          Map<string, ReturnType<typeof toTableColumnCodecs>>
-        >();
-        const resolveTableCodecs = (
-          table: string,
-          row: Record<string, unknown>
-        ) => {
-          const codecs = config.codecs;
-          if (!codecs) return {};
-          const columns = Object.keys(row);
-          if (columns.length === 0) return {};
-
-          let tableCache = tableCodecCache.get(table);
-          if (!tableCache) {
-            tableCache = new Map<
-              string,
-              ReturnType<typeof toTableColumnCodecs>
-            >();
-            tableCodecCache.set(table, tableCache);
-          }
-
-          const cacheKey = columns.slice().sort().join('\u0000');
-          const cached = tableCache.get(cacheKey);
-          if (cached) return cached;
-
-          const resolved = toTableColumnCodecs(table, codecs, columns, {
-            dialect: codecDialect,
-          });
-          tableCache.set(cacheKey, resolved);
-          return resolved;
-        };
+        const resolveTableCodecs = createTableColumnCodecsResolver(
+          config.codecs,
+          { dialect: codecDialect }
+        );
 
         const makeTxTable = (table: string) => {
           const cached = txTableCache.get(table);

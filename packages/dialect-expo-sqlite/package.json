@@ -42,7 +42,9 @@
     "build": "tsgo",
     "release": "bunx syncular-publish"
   },
-  "dependencies": {},
+  "dependencies": {
+    "kysely-generic-sqlite": "^1.2.1"
+  },
   "peerDependencies": {
     "expo-sqlite": "*",
     "kysely": "^0.28.0"

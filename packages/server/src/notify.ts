@@ -10,6 +10,7 @@
 
 import { randomId } from '@syncular/core';
 import type { Insertable, Kysely } from 'kysely';
+import { coerceNumber, toDialectJsonValue } from './dialect/helpers';
 import type { ServerSyncDialect } from './dialect/types';
 import type { SyncCoreDb } from './schema';
 
@@ -18,31 +19,6 @@ import type { SyncCoreDb } from './schema';
  * Used by the pull handler to detect external data changes.
  */
 export const EXTERNAL_CLIENT_ID = '__external__';
-
-function toDialectJsonValue(
-  dialect: ServerSyncDialect,
-  value: unknown
-): unknown {
-  if (value === null || value === undefined) return null;
-  if (dialect.family === 'sqlite') return JSON.stringify(value);
-  return value;
-}
-
-function coerceNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (typeof value === 'bigint') {
-    const coerced = Number(value);
-    return Number.isFinite(coerced) ? coerced : null;
-  }
-  if (typeof value === 'string') {
-    const coerced = Number(value);
-    return Number.isFinite(coerced) ? coerced : null;
-  }
-  return null;
-}
 
 export interface NotifyExternalDataChangeArgs<DB extends SyncCoreDb> {
   db: Kysely<DB>;

@@ -36,6 +36,7 @@ import {
   InvalidSubscriptionScopeError,
   maybeCompactChanges,
   maybePruneSync,
+  parseJsonValue,
   type PruneOptions,
   type PullResult,
   pull,
@@ -835,6 +836,175 @@ export function createSyncRoutes<
       });
   };
 
+  type PushRequestBody = Omit<z.infer<typeof SyncPushRequestSchema>, 'clientId'>;
+
+  type PushExecutionContext = {
+    auth: Auth;
+    clientId: string;
+    partitionId: string;
+    requestId: string;
+    traceContext: TraceContext;
+    transportPath: 'direct' | 'relay';
+    syncPath: 'http-combined' | 'ws-push';
+  };
+
+  async function executePushCommitWithSideEffects(
+    ctx: PushExecutionContext,
+    pushBody: PushRequestBody,
+    execOptions: { countConflictsMetric?: boolean } = {}
+  ): Promise<Awaited<ReturnType<typeof pushCommit>>> {
+    const timer = createSyncTimer();
+    const pushOps = pushBody.operations ?? [];
+
+    const pushed = await pushCommit({
+      db: options.db,
+      dialect: options.dialect,
+      handlers: handlerRegistry,
+      plugins: options.plugins,
+      auth: ctx.auth,
+      request: {
+        clientId: ctx.clientId,
+        clientCommitId: pushBody.clientCommitId,
+        operations: pushBody.operations,
+        schemaVersion: pushBody.schemaVersion,
+      },
+    });
+
+    const pushDurationMs = timer();
+
+    logSyncEvent({
+      event: 'sync.push',
+      userId: ctx.auth.actorId,
+      durationMs: pushDurationMs,
+      operationCount: pushOps.length,
+      status: pushed.response.status,
+      commitSeq: pushed.response.commitSeq,
+    });
+
+    recordRequestEventInBackground(() => ({
+      partitionId: ctx.partitionId,
+      requestId: ctx.requestId,
+      traceId: ctx.traceContext.traceId,
+      spanId: ctx.traceContext.spanId,
+      eventType: 'push',
+      syncPath: ctx.syncPath,
+      actorId: ctx.auth.actorId,
+      clientId: ctx.clientId,
+      transportPath: ctx.transportPath,
+      statusCode: 200,
+      outcome: pushed.response.status,
+      responseStatus: normalizeResponseStatus(200, pushed.response.status),
+      durationMs: pushDurationMs,
+      errorCode: firstPushErrorCode(pushed.response.results),
+      commitSeq: pushed.response.commitSeq,
+      operationCount: pushOps.length,
+      tables: pushed.affectedTables,
+      payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+        ? {
+            request: {
+              clientId: ctx.clientId,
+              clientCommitId: pushBody.clientCommitId,
+              schemaVersion: pushBody.schemaVersion,
+              operations: pushBody.operations,
+            },
+            response: pushed.response,
+          }
+        : null,
+    }));
+
+    emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
+      partitionId: ctx.partitionId,
+      requestId: ctx.requestId,
+      traceId: ctx.traceContext.traceId,
+      spanId: ctx.traceContext.spanId,
+      actorId: ctx.auth.actorId,
+      clientId: ctx.clientId,
+      transportPath: ctx.transportPath,
+      syncPath: ctx.syncPath,
+      outcome: pushed.response.status,
+      statusCode: 200,
+      durationMs: pushDurationMs,
+      commitSeq: pushed.response.commitSeq ?? null,
+      operationCount: pushOps.length,
+      tables: pushed.affectedTables,
+    }));
+
+    if (execOptions.countConflictsMetric === true) {
+      const detectedConflicts = pushed.response.results.reduce(
+        (count, result) => count + (result.status === 'conflict' ? 1 : 0),
+        0
+      );
+      if (detectedConflicts > 0) {
+        countSyncMetric('sync.conflicts.detected', detectedConflicts, {
+          attributes: {
+            syncPath: ctx.syncPath,
+            transportPath: ctx.transportPath,
+          },
+        });
+      }
+    }
+
+    if (
+      wsConnectionManager &&
+      pushed.response.ok === true &&
+      pushed.response.status === 'applied' &&
+      typeof pushed.response.commitSeq === 'number'
+    ) {
+      const scopeKeys = applyPartitionToScopeKeys(
+        ctx.partitionId,
+        pushed.scopeKeys
+      );
+
+      if (scopeKeys.length > 0) {
+        wsConnectionManager.notifyScopeKeys(
+          scopeKeys,
+          pushed.response.commitSeq,
+          {
+            excludeClientIds: [ctx.clientId],
+            changes: pushed.emittedChanges,
+            actorId: pushed.commitActorId ?? ctx.auth.actorId,
+            createdAt: pushed.commitCreatedAt ?? new Date().toISOString(),
+          }
+        );
+
+        if (realtimeBroadcaster) {
+          realtimeBroadcaster
+            .publish({
+              type: 'commit',
+              commitSeq: pushed.response.commitSeq,
+              partitionId: ctx.partitionId,
+              scopeKeys,
+              sourceInstanceId: instanceId,
+            })
+            .catch((error) => {
+              logAsyncFailureOnce('sync.realtime.broadcast_publish_failed', {
+                event: 'sync.realtime.broadcast_publish_failed',
+                userId: ctx.auth.actorId,
+                clientId: ctx.clientId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+        }
+      }
+    }
+
+    if (
+      pushed.response.ok === true &&
+      pushed.response.status === 'applied' &&
+      typeof pushed.response.commitSeq === 'number'
+    ) {
+      emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
+        partitionId: ctx.partitionId,
+        commitSeq: pushed.response.commitSeq,
+        actorId: ctx.auth.actorId,
+        clientId: ctx.clientId,
+        affectedTables: pushed.affectedTables,
+      }));
+    }
+
+    return pushed;
+  }
+
   const authCache = new WeakMap<Context, Promise<Auth | null>>();
   const getAuth = (c: Context): Promise<Auth | null> => {
     const cached = authCache.get(c);
@@ -1143,8 +1313,8 @@ export function createSyncRoutes<
             op: change.op,
             rowVersion:
               change.row_version === null ? null : Number(change.row_version),
-            rowJson: parseJsonColumn(change.row_json),
-            scopes: parseJsonColumn(change.scopes),
+            rowJson: parseJsonValue(change.row_json),
+            scopes: parseJsonValue(change.scopes),
           })),
         },
         200
@@ -1191,6 +1361,7 @@ export function createSyncRoutes<
       const auth = await getAuth(c);
       if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
       const partitionId = auth.partitionId ?? 'default';
+      const transportPath = readTransportPath(c);
 
       const body = c.req.valid('json');
       const clientId = body.clientId;
@@ -1215,142 +1386,18 @@ export function createSyncRoutes<
             400
           );
         }
-
-        const timer = createSyncTimer();
-
-        const pushed = await pushCommit({
-          db: options.db,
-          dialect: options.dialect,
-          handlers: handlerRegistry,
-          plugins: options.plugins,
-          auth,
-          request: {
+        const pushed = await executePushCommitWithSideEffects(
+          {
+            auth,
             clientId,
-            clientCommitId: pushBody.clientCommitId,
-            operations: pushBody.operations,
-            schemaVersion: pushBody.schemaVersion,
+            partitionId,
+            requestId,
+            traceContext,
+            transportPath,
+            syncPath: 'http-combined',
           },
-        });
-
-        const pushDurationMs = timer();
-
-        logSyncEvent({
-          event: 'sync.push',
-          userId: auth.actorId,
-          durationMs: pushDurationMs,
-          operationCount: pushOps.length,
-          status: pushed.response.status,
-          commitSeq: pushed.response.commitSeq,
-        });
-
-        recordRequestEventInBackground(() => ({
-          partitionId,
-          requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          eventType: 'push',
-          syncPath: 'http-combined',
-          actorId: auth.actorId,
-          clientId,
-          transportPath: readTransportPath(c),
-          statusCode: 200,
-          outcome: pushed.response.status,
-          responseStatus: normalizeResponseStatus(200, pushed.response.status),
-          durationMs: pushDurationMs,
-          errorCode: firstPushErrorCode(pushed.response.results),
-          commitSeq: pushed.response.commitSeq,
-          operationCount: pushOps.length,
-          tables: pushed.affectedTables,
-          payloadSnapshot: shouldCaptureRequestPayloadSnapshots
-            ? {
-                request: {
-                  clientId,
-                  clientCommitId: pushBody.clientCommitId,
-                  schemaVersion: pushBody.schemaVersion,
-                  operations: pushBody.operations,
-                },
-                response: pushed.response,
-              }
-            : null,
-        }));
-        emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
-          partitionId,
-          requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          actorId: auth.actorId,
-          clientId,
-          transportPath: readTransportPath(c),
-          syncPath: 'http-combined',
-          outcome: pushed.response.status,
-          statusCode: 200,
-          durationMs: pushDurationMs,
-          commitSeq: pushed.response.commitSeq ?? null,
-          operationCount: pushOps.length,
-          tables: pushed.affectedTables,
-        }));
-
-        // WS notifications
-        if (
-          wsConnectionManager &&
-          pushed.response.ok === true &&
-          pushed.response.status === 'applied' &&
-          typeof pushed.response.commitSeq === 'number'
-        ) {
-          const scopeKeys = applyPartitionToScopeKeys(
-            partitionId,
-            pushed.scopeKeys
-          );
-          if (scopeKeys.length > 0) {
-            wsConnectionManager.notifyScopeKeys(
-              scopeKeys,
-              pushed.response.commitSeq,
-              {
-                excludeClientIds: [clientId],
-                changes: pushed.emittedChanges,
-                actorId: pushed.commitActorId ?? auth.actorId,
-                createdAt: pushed.commitCreatedAt ?? new Date().toISOString(),
-              }
-            );
-
-            if (realtimeBroadcaster) {
-              realtimeBroadcaster
-                .publish({
-                  type: 'commit',
-                  commitSeq: pushed.response.commitSeq,
-                  partitionId,
-                  scopeKeys,
-                  sourceInstanceId: instanceId,
-                })
-                .catch((error) => {
-                  logAsyncFailureOnce(
-                    'sync.realtime.broadcast_publish_failed',
-                    {
-                      event: 'sync.realtime.broadcast_publish_failed',
-                      userId: auth.actorId,
-                      clientId,
-                      error:
-                        error instanceof Error ? error.message : String(error),
-                    }
-                  );
-                });
-            }
-          }
-        }
-
-        if (
-          pushed.response.ok === true &&
-          pushed.response.status === 'applied' &&
-          typeof pushed.response.commitSeq === 'number'
-        ) {
-          emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
-            partitionId,
-            commitSeq: pushed.response.commitSeq,
-            actorId: auth.actorId,
-            clientId,
-            affectedTables: pushed.affectedTables,
-          }));
-        }
+          pushBody
+        );
 
         pushResponse = pushed.response;
       }
@@ -1513,7 +1560,7 @@ export function createSyncRoutes<
             syncPath: 'http-combined',
             actorId: auth.actorId,
             clientId,
-            transportPath: readTransportPath(c),
+            transportPath,
             statusCode: 200,
             outcome: 'applied',
             responseStatus: normalizeResponseStatus(200, 'applied'),
@@ -1535,7 +1582,7 @@ export function createSyncRoutes<
             spanId: traceContext.spanId,
             actorId: auth.actorId,
             clientId,
-            transportPath: readTransportPath(c),
+            transportPath,
             syncPath: 'http-combined',
             outcome: 'applied',
             statusCode: 200,
@@ -1790,6 +1837,35 @@ export function createSyncRoutes<
         });
       };
 
+      const teardownRealtimeConnection = (args: {
+        reason: 'closed' | 'error';
+        action: 'realtime_disconnected' | 'realtime_error';
+      }) => {
+        unregister?.();
+        unregister = null;
+        connRef = null;
+        finishRealtimeSession(args.reason);
+        logSyncEvent({
+          event: 'sync.realtime.disconnect',
+          userId: auth.actorId,
+        });
+        emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
+          action: args.action,
+          actorId: auth.actorId,
+          clientId,
+          partitionId,
+        }));
+      };
+
+      const logPresenceRejected = (scopeKey: string) => {
+        logSyncEvent({
+          event: 'sync.realtime.presence.rejected',
+          userId: auth.actorId,
+          reason: 'scope_not_authorized',
+          scopeKey,
+        });
+      };
+
       const upgradeWebSocket = websocketConfig.upgradeWebSocket;
       if (!upgradeWebSocket) {
         return c.json({ error: 'WEBSOCKET_NOT_CONFIGURED' }, 500);
@@ -1830,36 +1906,16 @@ export function createSyncRoutes<
           }));
         },
         onClose(_evt, _ws) {
-          unregister?.();
-          unregister = null;
-          connRef = null;
-          finishRealtimeSession('closed');
-          logSyncEvent({
-            event: 'sync.realtime.disconnect',
-            userId: auth.actorId,
-          });
-          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
+          teardownRealtimeConnection({
+            reason: 'closed',
             action: 'realtime_disconnected',
-            actorId: auth.actorId,
-            clientId,
-            partitionId,
-          }));
+          });
         },
         onError(_evt, _ws) {
-          unregister?.();
-          unregister = null;
-          connRef = null;
-          finishRealtimeSession('error');
-          logSyncEvent({
-            event: 'sync.realtime.disconnect',
-            userId: auth.actorId,
-          });
-          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
+          teardownRealtimeConnection({
+            reason: 'error',
             action: 'realtime_error',
-            actorId: auth.actorId,
-            clientId,
-            partitionId,
-          }));
+          });
         },
         onMessage(evt, _ws) {
           if (!connRef) return;
@@ -1891,12 +1947,7 @@ export function createSyncRoutes<
                     msg.metadata
                   )
                 ) {
-                  logSyncEvent({
-                    event: 'sync.realtime.presence.rejected',
-                    userId: auth.actorId,
-                    reason: 'scope_not_authorized',
-                    scopeKey,
-                  });
+                  logPresenceRejected(scopeKey);
                   return;
                 }
                 // Send presence snapshot back to the joining client
@@ -1924,12 +1975,7 @@ export function createSyncRoutes<
                     scopeKey
                   )
                 ) {
-                  logSyncEvent({
-                    event: 'sync.realtime.presence.rejected',
-                    userId: auth.actorId,
-                    reason: 'scope_not_authorized',
-                    scopeKey,
-                  });
+                  logPresenceRejected(scopeKey);
                 }
                 break;
             }
@@ -1959,6 +2005,58 @@ export function createSyncRoutes<
     wsConnectionManager.notifyScopeKeys(scopeKeys, commitSeq);
   }
 
+  const recordWsPushFailure = (args: {
+    partitionId: string;
+    requestId: string;
+    traceContext: TraceContext;
+    actorId: string;
+    clientId: string;
+    transportPath: 'direct' | 'relay';
+    statusCode: number;
+    outcome: 'rejected' | 'error';
+    durationMs: number;
+    errorCode: string;
+    errorMessage: string;
+    operationCount?: number | null;
+    payloadSnapshot?: RequestPayloadSnapshot | null;
+  }): void => {
+    recordRequestEventInBackground(() => ({
+      partitionId: args.partitionId,
+      requestId: args.requestId,
+      traceId: args.traceContext.traceId,
+      spanId: args.traceContext.spanId,
+      eventType: 'push',
+      syncPath: 'ws-push',
+      actorId: args.actorId,
+      clientId: args.clientId,
+      transportPath: args.transportPath,
+      statusCode: args.statusCode,
+      outcome: args.outcome,
+      responseStatus: normalizeResponseStatus(args.statusCode, args.outcome),
+      durationMs: args.durationMs,
+      errorCode: args.errorCode,
+      errorMessage: args.errorMessage,
+      operationCount: args.operationCount ?? null,
+      payloadSnapshot: args.payloadSnapshot ?? null,
+    }));
+
+    emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
+      partitionId: args.partitionId,
+      requestId: args.requestId,
+      traceId: args.traceContext.traceId,
+      spanId: args.traceContext.spanId,
+      actorId: args.actorId,
+      clientId: args.clientId,
+      transportPath: args.transportPath,
+      syncPath: 'ws-push',
+      outcome: args.outcome,
+      statusCode: args.statusCode,
+      durationMs: args.durationMs,
+      operationCount: args.operationCount ?? null,
+      errorCode: args.errorCode,
+    }));
+  };
+
   async function handleWsPush(
     msg: Record<string, unknown>,
     conn: WebSocketConnection,
@@ -1979,30 +2077,27 @@ export function createSyncRoutes<
       );
       if (!parsed.success) {
         const invalidDurationMs = timer();
+        const errorMessage = 'Invalid push payload';
         conn.sendPushResponse({
           requestId,
           ok: false,
           status: 'rejected',
           results: [
-            { opIndex: 0, status: 'error', error: 'Invalid push payload' },
+            { opIndex: 0, status: 'error', error: errorMessage },
           ],
         });
-        recordRequestEventInBackground(() => ({
+        recordWsPushFailure({
           partitionId,
           requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          eventType: 'push',
-          syncPath: 'ws-push',
           actorId,
           clientId,
           transportPath: conn.transportPath,
           statusCode: 400,
           outcome: 'rejected',
-          responseStatus: normalizeResponseStatus(400, 'rejected'),
           durationMs: invalidDurationMs,
           errorCode: 'INVALID_PUSH_PAYLOAD',
-          errorMessage: 'Invalid push payload',
+          errorMessage,
+          traceContext,
           payloadSnapshot: shouldCaptureRequestPayloadSnapshots
             ? {
                 request: msg,
@@ -2013,27 +2108,14 @@ export function createSyncRoutes<
                 },
               }
             : null,
-        }));
-        emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
-          partitionId,
-          requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          actorId,
-          clientId,
-          transportPath: conn.transportPath,
-          syncPath: 'ws-push',
-          outcome: 'rejected',
-          statusCode: 400,
-          durationMs: invalidDurationMs,
-          errorCode: 'INVALID_PUSH_PAYLOAD',
-        }));
+        });
         return;
       }
 
       const pushOps = parsed.data.operations ?? [];
       if (pushOps.length > maxOperationsPerPush) {
         const rejectedDurationMs = timer();
+        const errorMessage = `Maximum ${maxOperationsPerPush} operations per push`;
         conn.sendPushResponse({
           requestId,
           ok: false,
@@ -2042,26 +2124,22 @@ export function createSyncRoutes<
             {
               opIndex: 0,
               status: 'error',
-              error: `Maximum ${maxOperationsPerPush} operations per push`,
+              error: errorMessage,
             },
           ],
         });
-        recordRequestEventInBackground(() => ({
+        recordWsPushFailure({
           partitionId,
           requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          eventType: 'push',
-          syncPath: 'ws-push',
           actorId,
           clientId,
           transportPath: conn.transportPath,
           statusCode: 400,
           outcome: 'rejected',
-          responseStatus: normalizeResponseStatus(400, 'rejected'),
           durationMs: rejectedDurationMs,
           errorCode: 'MAX_OPERATIONS_EXCEEDED',
-          errorMessage: `Maximum ${maxOperationsPerPush} operations per push`,
+          errorMessage,
+          traceContext,
           operationCount: pushOps.length,
           payloadSnapshot: shouldCaptureRequestPayloadSnapshots
             ? {
@@ -2078,167 +2156,27 @@ export function createSyncRoutes<
                 },
               }
             : null,
-        }));
-        emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
-          partitionId,
-          requestId,
-          traceId: traceContext.traceId,
-          spanId: traceContext.spanId,
-          actorId,
-          clientId,
-          transportPath: conn.transportPath,
-          syncPath: 'ws-push',
-          outcome: 'rejected',
-          statusCode: 400,
-          durationMs: rejectedDurationMs,
-          operationCount: pushOps.length,
-          errorCode: 'MAX_OPERATIONS_EXCEEDED',
-        }));
+        });
         return;
       }
 
-      const pushed = await pushCommit({
-        db: options.db,
-        dialect: options.dialect,
-        handlers: handlerRegistry,
-        plugins: options.plugins,
-        auth,
-        request: {
+      const pushed = await executePushCommitWithSideEffects(
+        {
+          auth,
           clientId,
+          partitionId,
+          requestId,
+          traceContext,
+          transportPath: conn.transportPath,
+          syncPath: 'ws-push',
+        },
+        {
           clientCommitId: parsed.data.clientCommitId,
           operations: parsed.data.operations,
           schemaVersion: parsed.data.schemaVersion,
         },
-      });
-
-      const pushDurationMs = timer();
-
-      logSyncEvent({
-        event: 'sync.push',
-        userId: actorId,
-        durationMs: pushDurationMs,
-        operationCount: pushOps.length,
-        status: pushed.response.status,
-        commitSeq: pushed.response.commitSeq,
-      });
-
-      recordRequestEventInBackground(() => ({
-        partitionId,
-        requestId,
-        traceId: traceContext.traceId,
-        spanId: traceContext.spanId,
-        eventType: 'push',
-        syncPath: 'ws-push',
-        actorId,
-        clientId,
-        transportPath: conn.transportPath,
-        statusCode: 200,
-        outcome: pushed.response.status,
-        responseStatus: normalizeResponseStatus(200, pushed.response.status),
-        durationMs: pushDurationMs,
-        errorCode: firstPushErrorCode(pushed.response.results),
-        commitSeq: pushed.response.commitSeq,
-        operationCount: pushOps.length,
-        tables: pushed.affectedTables,
-        payloadSnapshot: shouldCaptureRequestPayloadSnapshots
-          ? {
-              request: {
-                clientId,
-                clientCommitId: parsed.data.clientCommitId,
-                schemaVersion: parsed.data.schemaVersion,
-                operations: parsed.data.operations,
-              },
-              response: pushed.response,
-            }
-          : null,
-      }));
-      emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
-        partitionId,
-        requestId,
-        traceId: traceContext.traceId,
-        spanId: traceContext.spanId,
-        actorId,
-        clientId,
-        transportPath: conn.transportPath,
-        syncPath: 'ws-push',
-        outcome: pushed.response.status,
-        statusCode: 200,
-        durationMs: pushDurationMs,
-        commitSeq: pushed.response.commitSeq ?? null,
-        operationCount: pushOps.length,
-        tables: pushed.affectedTables,
-      }));
-
-      const detectedConflicts = pushed.response.results.reduce(
-        (count, result) => count + (result.status === 'conflict' ? 1 : 0),
-        0
+        { countConflictsMetric: true }
       );
-      if (detectedConflicts > 0) {
-        countSyncMetric('sync.conflicts.detected', detectedConflicts, {
-          attributes: {
-            syncPath: 'ws-push',
-            transportPath: conn.transportPath,
-          },
-        });
-      }
-
-      // WS notifications to other clients
-      if (
-        wsConnectionManager &&
-        pushed.response.ok === true &&
-        pushed.response.status === 'applied' &&
-        typeof pushed.response.commitSeq === 'number'
-      ) {
-        const scopeKeys = applyPartitionToScopeKeys(
-          partitionId,
-          pushed.scopeKeys
-        );
-        if (scopeKeys.length > 0) {
-          wsConnectionManager.notifyScopeKeys(
-            scopeKeys,
-            pushed.response.commitSeq,
-            {
-              excludeClientIds: [clientId],
-              changes: pushed.emittedChanges,
-              actorId: pushed.commitActorId ?? actorId,
-              createdAt: pushed.commitCreatedAt ?? new Date().toISOString(),
-            }
-          );
-
-          if (realtimeBroadcaster) {
-            realtimeBroadcaster
-              .publish({
-                type: 'commit',
-                commitSeq: pushed.response.commitSeq,
-                partitionId,
-                scopeKeys,
-                sourceInstanceId: instanceId,
-              })
-              .catch((error) => {
-                logAsyncFailureOnce('sync.realtime.broadcast_publish_failed', {
-                  event: 'sync.realtime.broadcast_publish_failed',
-                  userId: actorId,
-                  clientId,
-                  error: error instanceof Error ? error.message : String(error),
-                });
-              });
-          }
-        }
-      }
-
-      if (
-        pushed.response.ok === true &&
-        pushed.response.status === 'applied' &&
-        typeof pushed.response.commitSeq === 'number'
-      ) {
-        emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
-          partitionId,
-          commitSeq: pushed.response.commitSeq,
-          actorId,
-          clientId,
-          affectedTables: pushed.affectedTables,
-        }));
-      }
 
       triggerAutoMaintenance({
         actorId,
@@ -2264,22 +2202,18 @@ export function createSyncRoutes<
       });
       const message =
         err instanceof Error ? err.message : 'Internal server error';
-      recordRequestEventInBackground(() => ({
+      recordWsPushFailure({
         partitionId,
         requestId,
-        traceId: traceContext.traceId,
-        spanId: traceContext.spanId,
-        eventType: 'push',
-        syncPath: 'ws-push',
         actorId,
         clientId,
         transportPath: conn.transportPath,
         statusCode: 500,
         outcome: 'error',
-        responseStatus: normalizeResponseStatus(500, 'error'),
         durationMs: failedDurationMs,
         errorCode: 'INTERNAL_SERVER_ERROR',
         errorMessage: message,
+        traceContext,
         payloadSnapshot: shouldCaptureRequestPayloadSnapshots
           ? {
               request: msg,
@@ -2291,21 +2225,7 @@ export function createSyncRoutes<
               },
             }
           : null,
-      }));
-      emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
-        partitionId,
-        requestId,
-        traceId: traceContext.traceId,
-        spanId: traceContext.spanId,
-        actorId,
-        clientId,
-        transportPath: conn.transportPath,
-        syncPath: 'ws-push',
-        outcome: 'error',
-        statusCode: 500,
-        durationMs: failedDurationMs,
-        errorCode: 'INTERNAL_SERVER_ERROR',
-      }));
+      });
       conn.sendPushResponse({
         requestId,
         ok: false,
@@ -2346,15 +2266,6 @@ function readTransportPath(
   }
 
   return 'direct';
-}
-
-function parseJsonColumn(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
 }
 
 function scopeValuesToScopeKeys(scopes: unknown): string[] {

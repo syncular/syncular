@@ -179,6 +179,33 @@ export function normalizeScopes(
   return result;
 }
 
+export function createSingleVariableScopeMetadata(
+  scopes: readonly ScopeDefinition[]
+): { scopePatterns: ScopePattern[]; scopeColumnsByVariable: Record<string, string> } {
+  const scopeColumnMap = normalizeScopes(scopes);
+  const scopePatterns = Object.keys(scopeColumnMap) as ScopePattern[];
+  const scopeColumnsByVariable: Record<string, string> = {};
+
+  for (const [pattern, columnName] of Object.entries(scopeColumnMap)) {
+    const vars = extractScopeVars(pattern);
+    if (vars.length !== 1) {
+      throw new Error(
+        `Scope pattern "${pattern}" must contain exactly one placeholder (got ${vars.length}).`
+      );
+    }
+    const variableName = vars[0]!;
+    const existingColumn = scopeColumnsByVariable[variableName];
+    if (existingColumn && existingColumn !== columnName) {
+      throw new Error(
+        `Scope variable "${variableName}" is mapped to multiple columns: "${existingColumn}" and "${columnName}".`
+      );
+    }
+    scopeColumnsByVariable[variableName] = columnName;
+  }
+
+  return { scopePatterns, scopeColumnsByVariable };
+}
+
 // ── Value operations (public) ────────────────────────────────────────
 
 /**
@@ -192,4 +219,16 @@ export function extractScopeVars(pattern: ScopePattern): string[] {
   const matches = pattern.match(/\{([^}]+)\}/g);
   if (!matches) return [];
   return matches.map((m) => m.slice(1, -1));
+}
+
+export function collectScopeVars(
+  scopePatterns: readonly ScopePattern[]
+): Set<string> {
+  const keys = new Set<string>();
+  for (const pattern of scopePatterns) {
+    for (const key of extractScopeVars(pattern)) {
+      keys.add(key);
+    }
+  }
+  return keys;
 }

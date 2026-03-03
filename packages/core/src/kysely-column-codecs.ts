@@ -28,8 +28,8 @@ import {
   applyCodecToDbValue,
   type ColumnCodecDialect,
   type ColumnCodecSource,
+  createTableColumnCodecsResolver,
   type TableColumnCodecs,
-  toTableColumnCodecs,
 } from './column-codecs';
 
 interface ColumnCodecPluginOptions {
@@ -343,35 +343,20 @@ function buildResultPlan(node: RootOperationNode): QueryResultPlan | null {
   return null;
 }
 
-function cacheKey(table: string, columns: readonly string[]): string {
-  const sorted = [...columns].sort().join('\u0000');
-  return `${table}\u0001${sorted}`;
-}
-
 class ColumnCodecsTransformer extends OperationNodeTransformer {
-  readonly #codecs: ColumnCodecSource;
   readonly #dialect: ColumnCodecDialect;
-  readonly #tableCodecsCache = new Map<string, TableColumnCodecs>();
+  readonly #resolveTableCodecs: (
+    table: string,
+    row: Record<string, unknown>
+  ) => TableColumnCodecs;
   #currentUpdateTable: string | null = null;
 
   constructor(options: ColumnCodecPluginOptions) {
     super();
-    this.#codecs = options.codecs;
     this.#dialect = options.dialect ?? 'sqlite';
-  }
-
-  resolveTableCodecs(
-    table: string,
-    columns: readonly string[]
-  ): TableColumnCodecs {
-    const key = cacheKey(table, columns);
-    const cached = this.#tableCodecsCache.get(key);
-    if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, this.#codecs, columns, {
+    this.#resolveTableCodecs = createTableColumnCodecsResolver(options.codecs, {
       dialect: this.#dialect,
     });
-    this.#tableCodecsCache.set(key, resolved);
-    return resolved;
   }
 
   protected override transformInsertQuery(
@@ -393,7 +378,10 @@ class ColumnCodecsTransformer extends OperationNodeTransformer {
       .filter((columnName): columnName is string => Boolean(columnName));
     if (columns.length === 0) return transformed;
 
-    const tableCodecs = this.resolveTableCodecs(tableName, columns);
+    const tableCodecs = this.#resolveTableCodecs(
+      tableName,
+      Object.fromEntries(columns.map((column) => [column, null]))
+    );
 
     let didChange = false;
     const nextValueRows = transformed.values.values.map((valueNode) => {
@@ -456,9 +444,9 @@ class ColumnCodecsTransformer extends OperationNodeTransformer {
     const columnName = getColumnName(transformed.column);
     if (!columnName) return transformed;
 
-    const tableCodecs = this.resolveTableCodecs(this.#currentUpdateTable, [
-      columnName,
-    ]);
+    const tableCodecs = this.#resolveTableCodecs(this.#currentUpdateTable, {
+      [columnName]: null,
+    });
     const codec = tableCodecs[columnName];
     if (!codec) return transformed;
 
@@ -485,12 +473,16 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
   readonly #dialect: ColumnCodecDialect;
   readonly #transformer: ColumnCodecsTransformer;
   readonly #resultPlans = new WeakMap<object, QueryResultPlan>();
-  readonly #codecs: ColumnCodecSource;
-  readonly #resultCodecCache = new Map<string, TableColumnCodecs>();
+  readonly #resolveTableCodecs: (
+    table: string,
+    row: Record<string, unknown>
+  ) => TableColumnCodecs;
 
   constructor(options: ColumnCodecPluginOptions) {
     this.#dialect = options.dialect ?? 'sqlite';
-    this.#codecs = options.codecs;
+    this.#resolveTableCodecs = createTableColumnCodecsResolver(options.codecs, {
+      dialect: this.#dialect,
+    });
     this.#transformer = new ColumnCodecsTransformer(options);
   }
 
@@ -521,20 +513,6 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
     };
   }
 
-  #resolveTableCodecs(
-    table: string,
-    columns: readonly string[]
-  ): TableColumnCodecs {
-    const key = cacheKey(table, columns);
-    const cached = this.#resultCodecCache.get(key);
-    if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, this.#codecs, columns, {
-      dialect: this.#dialect,
-    });
-    this.#resultCodecCache.set(key, resolved);
-    return resolved;
-  }
-
   #transformRow(row: UnknownRow, plan: QueryResultPlan): UnknownRow {
     const source = row as Record<string, unknown>;
     const target: Record<string, unknown> = { ...source };
@@ -545,7 +523,7 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
       const ambiguousColumns = new Set<string>();
 
       for (const table of plan.selectAllTables) {
-        const tableCodecs = this.#resolveTableCodecs(table, rowColumns);
+        const tableCodecs = this.#resolveTableCodecs(table, source);
         for (const [column, codec] of Object.entries(tableCodecs)) {
           if (!(column in source)) continue;
           const existing = codecCandidates.get(column);
@@ -569,7 +547,9 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
 
     for (const ref of plan.explicit) {
       if (!(ref.outputKey in source)) continue;
-      const tableCodecs = this.#resolveTableCodecs(ref.table, [ref.column]);
+      const tableCodecs = this.#resolveTableCodecs(ref.table, {
+        [ref.column]: source[ref.outputKey],
+      });
       const codec = tableCodecs[ref.column];
       if (!codec) continue;
       target[ref.outputKey] = applyCodecFromDbValue(

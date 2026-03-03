@@ -1,30 +1,13 @@
 /**
  * @syncular/dialect-sqlite3 - node-sqlite3 dialect for sync
  *
- * Provides a Kysely dialect for the callback-based `sqlite3` npm package
+ * Provides a Kysely dialect for the callback-based `sqlite3` npm package.
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.
- *
- * Implements a custom Kysely Driver that wraps sqlite3's callback API
- * into the promise-based interface Kysely expects.
  */
 
-import type {
-  DatabaseConnection,
-  DatabaseIntrospector,
-  Dialect,
-  DialectAdapter,
-  Driver,
-  Kysely,
-  QueryCompiler,
-  QueryResult,
-  TransactionSettings,
-} from 'kysely';
-import {
-  CompiledQuery,
-  SqliteAdapter,
-  SqliteIntrospector,
-  SqliteQueryCompiler,
-} from 'kysely';
+import type { DatabaseConnection, Dialect, QueryResult } from 'kysely';
+import { CompiledQuery } from 'kysely';
+import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import sqlite3 from 'sqlite3';
 
 export interface Sqlite3PathOptions {
@@ -42,93 +25,53 @@ export type Sqlite3Options = Sqlite3PathOptions | Sqlite3InstanceOptions;
 /**
  * Create the sqlite3 dialect directly.
  */
-export function createSqlite3Dialect(options: Sqlite3Options): Sqlite3Dialect {
-  return new Sqlite3Dialect(options);
+export function createSqlite3Dialect(options: Sqlite3Options): Dialect {
+  return new BaseSqliteDialect(() => new Sqlite3Driver(options));
 }
 
-// ---------------------------------------------------------------------------
-// Kysely Dialect implementation for node-sqlite3
-// ---------------------------------------------------------------------------
-
-class Sqlite3Dialect implements Dialect {
-  readonly #options: Sqlite3Options;
-
-  constructor(options: Sqlite3Options) {
-    this.#options = options;
-  }
-
-  createAdapter(): DialectAdapter {
-    return new SqliteAdapter();
-  }
-
-  createDriver(): Driver {
-    return new Sqlite3Driver(this.#options);
-  }
-
-  createQueryCompiler(): QueryCompiler {
-    return new SqliteQueryCompiler();
-  }
-
-  createIntrospector(db: Kysely<any>): DatabaseIntrospector {
-    return new SqliteIntrospector(db);
-  }
-}
-
-class Sqlite3Driver implements Driver {
-  readonly #options: Sqlite3Options;
+class Sqlite3Driver extends BaseSqliteDriver {
   #db: sqlite3.Database | undefined;
 
   constructor(options: Sqlite3Options) {
-    this.#options = options;
-  }
-
-  async init(): Promise<void> {
-    this.#db = await this.#resolveDatabase();
-  }
-
-  async acquireConnection(): Promise<DatabaseConnection> {
-    return new Sqlite3Connection(this.#db!);
-  }
-
-  async beginTransaction(
-    connection: DatabaseConnection,
-    _settings: TransactionSettings
-  ): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('begin'));
-  }
-
-  async commitTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('commit'));
-  }
-
-  async rollbackTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('rollback'));
-  }
-
-  async releaseConnection(_connection: DatabaseConnection): Promise<void> {
-    // Single-connection model — nothing to release.
+    super(async () => {
+      this.#db = await resolveSqlite3Database(options);
+      this.conn = new Sqlite3Connection(this.#db);
+    });
   }
 
   async destroy(): Promise<void> {
-    if (this.#db) {
-      await new Promise<void>((resolve, reject) => {
-        this.#db!.close((err) => (err ? reject(err) : resolve()));
-      });
-    }
-  }
+    const db = this.#db;
+    this.#db = undefined;
+    if (!db) return;
 
-  async #resolveDatabase(): Promise<sqlite3.Database> {
-    if ('database' in this.#options) {
-      return this.#options.database;
-    }
-    const path = this.#options.path;
-    return new Promise<sqlite3.Database>((resolve, reject) => {
-      const db = new sqlite3.Database(path, (err) => {
-        if (err) reject(err);
-        else resolve(db);
+    await new Promise<void>((resolve, reject) => {
+      db.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
       });
     });
   }
+}
+
+async function resolveSqlite3Database(
+  options: Sqlite3Options
+): Promise<sqlite3.Database> {
+  if ('database' in options) {
+    return options.database;
+  }
+
+  return new Promise<sqlite3.Database>((resolve, reject) => {
+    const db = new sqlite3.Database(options.path, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(db);
+    });
+  });
 }
 
 class Sqlite3Connection implements DatabaseConnection {
@@ -149,7 +92,11 @@ class Sqlite3Connection implements DatabaseConnection {
     if (isSelectLike || hasReturning) {
       return new Promise<QueryResult<R>>((resolve, reject) => {
         this.#db.all(sql, params, (err: Error | null, rows: R[]) => {
-          if (err) return reject(err);
+          if (err) {
+            reject(err);
+            return;
+          }
+
           const normalizedRows = rows ?? [];
           resolve({
             rows: normalizedRows,
@@ -161,10 +108,13 @@ class Sqlite3Connection implements DatabaseConnection {
       });
     }
 
-    // For INSERT, UPDATE, DELETE — use run() to get lastID and changes
     return new Promise<QueryResult<R>>((resolve, reject) => {
-      this.#db.run(sql, params, function (err: Error | null) {
-        if (err) return reject(err);
+      this.#db.run(sql, params, function onRun(err: Error | null) {
+        if (err) {
+          reject(err);
+          return;
+        }
+
         resolve({
           rows: [],
           numAffectedRows: BigInt(this.changes),

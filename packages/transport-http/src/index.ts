@@ -14,9 +14,9 @@ import type {
   SyncTransportBlobs,
   SyncTransportOptions,
 } from '@syncular/core';
-import { SyncTransportError } from '@syncular/core';
+import { resolveUrlFromBase, SyncTransportError } from '@syncular/core';
 import createClient from 'openapi-fetch';
-import type { paths } from './generated/api';
+import type { operations, paths } from './generated/api';
 
 export type {
   SyncAuthErrorContext,
@@ -101,6 +101,7 @@ async function executeWithAuthRetry<T>(
 // Re-export useful types from the generated API
 export type SyncClient = ReturnType<typeof createClient<paths>>;
 export type SyncTransportPath = 'direct' | 'relay';
+export type { operations };
 
 export interface ClientOptions {
   /** Base URL for the API (e.g., 'https://api.example.com') */
@@ -119,19 +120,11 @@ export interface ClientOptions {
 }
 
 function resolveRequestUrl(baseUrl: string, path: string): string {
-  const normalizedPath = path.replace(/^\/+/, '');
-  const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  const isAbsolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(baseUrl);
-  if (isAbsolute) {
-    return new URL(normalizedPath, normalizedBaseUrl).toString();
-  }
-  if (typeof location === 'undefined') {
-    return `${baseUrl.replace(/\/$/, '')}/${normalizedPath}`;
-  }
-  return new URL(
-    `${baseUrl.replace(/\/$/, '')}/${normalizedPath}`,
-    location.origin
-  ).toString();
+  return resolveUrlFromBase(
+    baseUrl,
+    path,
+    typeof location === 'undefined' ? undefined : location.origin
+  );
 }
 
 function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {

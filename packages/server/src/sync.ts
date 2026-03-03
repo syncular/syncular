@@ -3,6 +3,7 @@ import type {
   ColumnCodecSource,
   ScopeDefinition,
 } from '@syncular/core';
+import { registerTableOrThrow } from '@syncular/core';
 import {
   type CreateServerHandlerOptions,
   createServerHandler,
@@ -85,11 +86,11 @@ export function defineServerSync<
         ScopeDefs
       >
     ) {
-      if (registeredTables.has(handlerOptions.table)) {
-        throw new Error(
-          `Server table handler already registered: ${handlerOptions.table}`
-        );
-      }
+      registerTableOrThrow(
+        registeredTables,
+        handlerOptions.table,
+        (table) => `Server table handler already registered: ${table}`
+      );
 
       handlers.push(
         createServerHandler({
@@ -98,7 +99,6 @@ export function defineServerSync<
           codecDialect: options.codecDialect,
         })
       );
-      registeredTables.add(handlerOptions.table);
       return sync;
     },
     addPushPlugin(plugin: SyncServerPushPlugin<ServerDB, Auth>) {

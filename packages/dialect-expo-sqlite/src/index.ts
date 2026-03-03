@@ -1,32 +1,17 @@
 /**
  * @syncular/dialect-expo-sqlite - Expo SQLite dialect for sync
  *
- * Provides a Kysely dialect for Expo's SQLite module (expo-sqlite)
+ * Provides a Kysely dialect for Expo's SQLite module (expo-sqlite).
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.
- *
- * Implements a custom Kysely Driver that wraps expo-sqlite's sync API
- * into the promise-based interface Kysely expects. All operations are
- * serialized through a single connection to prevent "database is locked"
- * errors from concurrent access on the native handle.
  */
 
 import type {
   DatabaseConnection,
-  DatabaseIntrospector,
   Dialect,
-  DialectAdapter,
-  Driver,
-  Kysely,
-  QueryCompiler,
   QueryResult,
-  TransactionSettings,
 } from 'kysely';
-import {
-  CompiledQuery,
-  SqliteAdapter,
-  SqliteIntrospector,
-  SqliteQueryCompiler,
-} from 'kysely';
+import { CompiledQuery } from 'kysely';
+import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 
 export type ExpoSqliteBindValue = null | string | number | Uint8Array;
 
@@ -70,124 +55,43 @@ export type ExpoSqliteOptions =
 /**
  * Create the Expo SQLite dialect directly.
  */
-export function createExpoSqliteDialect(
-  options: ExpoSqliteOptions
-): ExpoSqliteDialect {
-  return new ExpoSqliteDialect(options);
+export function createExpoSqliteDialect(options: ExpoSqliteOptions): Dialect {
+  return new BaseSqliteDialect(() => new ExpoSqliteDriver(options));
 }
 
-// ---------------------------------------------------------------------------
-// Simple async mutex — serializes all DB access on a single native handle.
-// ---------------------------------------------------------------------------
+class ExpoSqliteDriver extends BaseSqliteDriver {
+  #db: ExpoSqliteDatabaseLike | undefined;
 
-class Mutex {
-  #queue: Array<() => void> = [];
-  #locked = false;
-
-  async acquire(): Promise<void> {
-    if (!this.#locked) {
-      this.#locked = true;
-      return;
-    }
-    return new Promise<void>((resolve) => {
-      this.#queue.push(resolve);
+  constructor(options: ExpoSqliteOptions) {
+    super(async () => {
+      this.#db = resolveExpoSqliteDatabase(options);
+      // Better concurrency defaults for sync workloads.
+      this.#db.runSync('PRAGMA journal_mode = WAL', []);
+      this.#db.runSync('PRAGMA busy_timeout = 5000', []);
+      this.conn = new ExpoSqliteConnection(this.#db);
     });
   }
 
-  release(): void {
-    const next = this.#queue.shift();
-    if (next) {
-      next();
-    } else {
-      this.#locked = false;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Kysely Dialect implementation for expo-sqlite
-// ---------------------------------------------------------------------------
-
-class ExpoSqliteDialect implements Dialect {
-  readonly #options: ExpoSqliteOptions;
-
-  constructor(options: ExpoSqliteOptions) {
-    this.#options = options;
-  }
-
-  createAdapter(): DialectAdapter {
-    return new SqliteAdapter();
-  }
-
-  createDriver(): Driver {
-    return new ExpoSqliteDriver(this.#options);
-  }
-
-  createQueryCompiler(): QueryCompiler {
-    return new SqliteQueryCompiler();
-  }
-
-  createIntrospector(db: Kysely<unknown>): DatabaseIntrospector {
-    return new SqliteIntrospector(db);
-  }
-}
-
-class ExpoSqliteDriver implements Driver {
-  readonly #options: ExpoSqliteOptions;
-  #db: ExpoSqliteDatabaseLike | undefined;
-  #connection: ExpoSqliteConnection | undefined;
-  readonly #mutex = new Mutex();
-
-  constructor(options: ExpoSqliteOptions) {
-    this.#options = options;
-  }
-
-  async init(): Promise<void> {
-    this.#db = this.#resolveDatabase();
-    // Enable WAL mode for better concurrency (allows concurrent reads
-    // while writing, prevents "database is locked" errors during sync).
-    this.#db.runSync('PRAGMA journal_mode = WAL', []);
-    // Wait up to 5s for locks to clear instead of failing immediately.
-    this.#db.runSync('PRAGMA busy_timeout = 5000', []);
-    this.#connection = new ExpoSqliteConnection(this.#db);
-  }
-
-  async acquireConnection(): Promise<DatabaseConnection> {
-    await this.#mutex.acquire();
-    return this.#connection!;
-  }
-
   async beginTransaction(
-    connection: DatabaseConnection,
-    _settings: TransactionSettings
+    connection: DatabaseConnection
   ): Promise<void> {
     await connection.executeQuery(CompiledQuery.raw('begin immediate'));
   }
 
-  async commitTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('commit'));
-  }
-
-  async rollbackTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('rollback'));
-  }
-
-  async releaseConnection(_connection: DatabaseConnection): Promise<void> {
-    this.#mutex.release();
-  }
-
   async destroy(): Promise<void> {
-    if (this.#db) {
-      this.#db.closeSync();
-    }
+    const db = this.#db;
+    this.#db = undefined;
+    db?.closeSync();
   }
+}
 
-  #resolveDatabase(): ExpoSqliteDatabaseLike {
-    if ('database' in this.#options) {
-      return this.#options.database;
-    }
-    return this.#options.openDatabaseSync(this.#options.name);
+function resolveExpoSqliteDatabase(
+  options: ExpoSqliteOptions
+): ExpoSqliteDatabaseLike {
+  if ('database' in options) {
+    return options.database;
   }
+  return options.openDatabaseSync(options.name);
 }
 
 class ExpoSqliteConnection implements DatabaseConnection {
@@ -215,7 +119,6 @@ class ExpoSqliteConnection implements DatabaseConnection {
       };
     }
 
-    // For INSERT, UPDATE, DELETE — use runSync to get lastInsertRowId and changes
     const result: ExpoSqliteRunResult = this.#db.runSync(sql, params);
     return {
       rows: [],

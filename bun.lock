@@ -244,6 +244,9 @@
     "packages/dialect-electron-sqlite": {
       "name": "@syncular/dialect-electron-sqlite",
       "version": "0.0.0",
+      "dependencies": {
+        "kysely-generic-sqlite": "^1.2.1",
+      },
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
@@ -256,6 +259,9 @@
     "packages/dialect-expo-sqlite": {
       "name": "@syncular/dialect-expo-sqlite",
       "version": "0.0.0",
+      "dependencies": {
+        "kysely-generic-sqlite": "^1.2.1",
+      },
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
@@ -313,6 +319,9 @@
     "packages/dialect-react-native-nitro-sqlite": {
       "name": "@syncular/dialect-react-native-nitro-sqlite",
       "version": "0.0.0",
+      "dependencies": {
+        "kysely-generic-sqlite": "^1.2.1",
+      },
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
@@ -328,6 +337,7 @@
       "name": "@syncular/dialect-sqlite3",
       "version": "0.0.0",
       "dependencies": {
+        "kysely-generic-sqlite": "^1.2.1",
         "sqlite3": "^5.1.7",
       },
       "devDependencies": {

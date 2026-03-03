@@ -163,16 +163,11 @@ function AliceInner({
     const title = newTitle.trim();
     if (!title || isPending) return;
 
-    await mutate({
-      op: 'upsert',
-      table: 'shared_tasks',
-      rowId: crypto.randomUUID(),
-      payload: {
-        share_id: shareId,
-        title,
-        completed: 0,
-        owner_id: actorId,
-      },
+    await mutate.upsert(crypto.randomUUID(), {
+      share_id: shareId,
+      title,
+      completed: 0,
+      owner_id: actorId,
     });
 
     setNewTitle('');
@@ -184,23 +179,21 @@ function AliceInner({
       task.server_version && task.server_version > 0
         ? task.server_version
         : null;
-    await mutate({
-      op: 'upsert',
-      table: 'shared_tasks',
-      rowId: task.id,
-      baseVersion,
-      payload: {
+    await mutate.upsert(
+      task.id,
+      {
         share_id: task.share_id,
         title: task.title,
         completed: task.completed ? 0 : 1,
         owner_id: task.owner_id,
       },
-    });
+      { baseVersion }
+    );
   };
 
   const handleDelete = async (task: SharedTasksTable) => {
     if (isPending) return;
-    await mutate({ op: 'delete', table: 'shared_tasks', rowId: task.id });
+    await mutate.delete(task.id);
   };
 
   return (

@@ -1,13 +1,10 @@
 import {
-  extractScopeVars,
+  collectScopeVars,
   type ScopeValues,
   type SyncSubscriptionRequest,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import {
-  getServerHandler,
-  type ServerHandlerCollection,
-} from '../handlers/collection';
+import type { ServerHandlerCollection } from '../handlers/collection';
 import type { SyncServerAuth } from '../handlers/types';
 import type { SyncCoreDb } from '../schema';
 import { createDefaultScopeCacheKey, type ScopeCacheBackend } from './cache';
@@ -92,19 +89,6 @@ function scopesEmpty(scopes: ScopeValues): boolean {
   return true;
 }
 
-/**
- * Collect valid scope keys from handler scope patterns.
- */
-function collectScopeKeys(scopePatterns: readonly string[]): Set<string> {
-  const keys = new Set<string>();
-  for (const pattern of scopePatterns) {
-    for (const key of extractScopeVars(pattern)) {
-      keys.add(key);
-    }
-  }
-  return keys;
-}
-
 function validateScopeKeys(args: {
   scopeValues: ScopeValues;
   validScopeKeys: Set<string>;
@@ -166,14 +150,14 @@ export async function resolveEffectiveScopesForSubscriptions<
       );
     }
 
-    const handler = getServerHandler(args.handlers, sub.table);
+    const handler = args.handlers.byTable.get(sub.table);
     if (!handler) {
       throw new InvalidSubscriptionScopeError(
         `Unknown table: ${sub.table} for subscription ${sub.id}`
       );
     }
 
-    const validScopeKeys = collectScopeKeys(handler.scopePatterns);
+    const validScopeKeys = collectScopeVars(handler.scopePatterns);
     const requested = sub.scopes ?? {};
     validateScopeKeys({
       scopeValues: requested,

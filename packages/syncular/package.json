@@ -194,25 +194,11 @@
         "default": "./dist/typegen.js"
       }
     },
-    "./encryption": {
-      "bun": "./src/encryption.ts",
-      "import": {
-        "types": "./dist/encryption.d.ts",
-        "default": "./dist/encryption.js"
-      }
-    },
     "./server-plugin-yjs": {
       "bun": "./src/server-plugin-yjs.ts",
       "import": {
         "types": "./dist/server-plugin-yjs.d.ts",
         "default": "./dist/server-plugin-yjs.js"
-      }
-    },
-    "./yjs": {
-      "bun": "./src/yjs.ts",
-      "import": {
-        "types": "./dist/yjs.d.ts",
-        "default": "./dist/yjs.js"
       }
     },
     "./observability-sentry": {

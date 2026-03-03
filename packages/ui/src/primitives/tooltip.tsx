@@ -1,11 +1,7 @@
 'use client';
 
 import { Tooltip as BaseTooltip } from '@base-ui/react/tooltip';
-import {
-  type ComponentPropsWithoutRef,
-  forwardRef,
-  type ReactNode,
-} from 'react';
+import { type ComponentPropsWithoutRef, forwardRef } from 'react';
 import { cn } from '../lib/cn';
 
 const Tooltip = BaseTooltip.Root;
@@ -35,9 +31,4 @@ const TooltipContent = forwardRef<
 ));
 TooltipContent.displayName = 'TooltipContent';
 
-/** @base-ui doesn't need a provider - this is a passthrough for backward compat */
-function TooltipProvider({ children }: { children: ReactNode }) {
-  return <>{children}</>;
-}
-
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider };
+export { Tooltip, TooltipTrigger, TooltipContent };

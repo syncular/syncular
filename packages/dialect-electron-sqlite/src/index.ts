@@ -10,21 +10,12 @@
 
 import type {
   DatabaseConnection,
-  DatabaseIntrospector,
   Dialect,
-  DialectAdapter,
   Driver,
-  QueryCompiler,
   QueryResult,
-  TransactionSettings,
 } from 'kysely';
-import {
-  CompiledQuery,
-  type Kysely,
-  SqliteAdapter,
-  SqliteIntrospector,
-  SqliteQueryCompiler,
-} from 'kysely';
+import { CompiledQuery } from 'kysely';
+import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 
 export type ElectronSqliteInteger = bigint | number | string;
 
@@ -133,8 +124,8 @@ const INTEGER_PATTERN = /^-?\d+$/;
  */
 export function createElectronSqliteDialect(
   options: ElectronSqliteOptions
-): ElectronSqliteDialect {
-  return new ElectronSqliteDialect(options);
+): Dialect {
+  return new BaseSqliteDialect(() => new ElectronSqliteDriver(options));
 }
 
 /**
@@ -144,7 +135,7 @@ export function createElectronSqliteDialect(
  */
 export function createElectronSqliteDialectFromWindow(
   options: ElectronSqliteWindowOptions = {}
-): ElectronSqliteDialect {
+): Dialect {
   return createElectronSqliteDialect(resolveWindowBridge(options));
 }
 
@@ -373,68 +364,16 @@ class DialectBackedElectronSqliteBridge implements ElectronSqliteBridge {
 // Kysely Dialect implementation for Electron IPC SQLite
 // ---------------------------------------------------------------------------
 
-class ElectronSqliteDialect implements Dialect {
-  readonly #options: ElectronSqliteOptions;
-
-  constructor(options: ElectronSqliteOptions) {
-    this.#options = options;
-  }
-
-  createAdapter(): DialectAdapter {
-    return new SqliteAdapter();
-  }
-
-  createDriver(): Driver {
-    return new ElectronSqliteDriver(this.#options);
-  }
-
-  createQueryCompiler(): QueryCompiler {
-    return new SqliteQueryCompiler();
-  }
-
-  createIntrospector(db: Kysely<unknown>): DatabaseIntrospector {
-    return new SqliteIntrospector(db);
-  }
-}
-
-class ElectronSqliteDriver implements Driver {
+class ElectronSqliteDriver extends BaseSqliteDriver {
   readonly #bridge: ElectronSqliteBridge;
-  readonly #connectionMutex = new ConnectionMutex();
-  readonly #connection: ElectronSqliteConnection;
-
   #opened = false;
 
   constructor(bridge: ElectronSqliteBridge) {
+    super(async () => {
+      await this.#ensureOpen();
+      this.conn = new ElectronSqliteConnection(this.#bridge.execute);
+    });
     this.#bridge = bridge;
-    this.#connection = new ElectronSqliteConnection(bridge.execute);
-  }
-
-  async init(): Promise<void> {
-    await this.#ensureOpen();
-  }
-
-  async acquireConnection(): Promise<DatabaseConnection> {
-    await this.#connectionMutex.lock();
-    return this.#connection;
-  }
-
-  async beginTransaction(
-    connection: DatabaseConnection,
-    _settings: TransactionSettings
-  ): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('begin'));
-  }
-
-  async commitTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('commit'));
-  }
-
-  async rollbackTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('rollback'));
-  }
-
-  async releaseConnection(_connection: DatabaseConnection): Promise<void> {
-    this.#connectionMutex.unlock();
   }
 
   async destroy(): Promise<void> {

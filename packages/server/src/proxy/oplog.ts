@@ -6,18 +6,10 @@
 
 import { randomId, type SyncOp } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
+import { toDialectJsonValue } from '../dialect/helpers';
 import type { ServerSyncDialect } from '../dialect/types';
 import type { SyncCoreDb } from '../schema';
 import type { ProxyTableHandler } from './types';
-
-function toDialectJsonValue(
-  dialect: ServerSyncDialect,
-  value: unknown
-): unknown {
-  if (value === null || value === undefined) return null;
-  if (dialect.family === 'sqlite') return JSON.stringify(value);
-  return value;
-}
 
 /**
  * Create oplog entries for affected rows.

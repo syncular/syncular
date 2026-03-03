@@ -3,7 +3,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ConsoleRequestEvent, LiveEvent } from '../lib/types';
+import type { LiveEvent } from '../lib/types';
 import { useConnection } from './ConnectionContext';
 import { useInstanceContext } from './useInstanceContext';
 
@@ -33,11 +33,6 @@ interface UseLiveEventsResult {
   error: Error | null;
   /** Clear all events from the buffer */
   clearEvents: () => void;
-}
-
-function isServiceWorkerServerMode(): boolean {
-  if (typeof window === 'undefined') return false;
-  return new URLSearchParams(window.location.search).get('swServer') === '1';
 }
 
 export function useLiveEvents(
@@ -70,12 +65,10 @@ export function useLiveEvents(
   const reconnectAttemptsRef = useRef(0);
   const lastActivityAtRef = useRef(0);
   const lastEventTimestampRef = useRef<string | null>(null);
-  const lastEventIdRef = useRef<number | null>(null);
 
   const clearEvents = useCallback(() => {
     setEvents([]);
     lastEventTimestampRef.current = null;
-    lastEventIdRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -87,113 +80,7 @@ export function useLiveEvents(
     const normalizedReplayLimit = Number.isFinite(replayLimit)
       ? Math.max(1, Math.min(500, Math.floor(replayLimit)))
       : 100;
-    const usePollingFallback =
-      isServiceWorkerServerMode() || typeof WebSocket === 'undefined';
-
-    if (usePollingFallback) {
-      setConnectionState('connecting');
-      setIsConnected(false);
-
-      let pollTimer: ReturnType<typeof setInterval> | null = null;
-      let isPolling = false;
-
-      const poll = async () => {
-        if (isCleanedUp || isPolling) return;
-        isPolling = true;
-
-        try {
-          const baseUrl = new URL(config.serverUrl, window.location.origin);
-          const normalizedPath = baseUrl.pathname.endsWith('/')
-            ? baseUrl.pathname.slice(0, -1)
-            : baseUrl.pathname;
-          baseUrl.pathname = `${normalizedPath}/console/events`;
-          baseUrl.search = '';
-          baseUrl.searchParams.set('limit', String(normalizedReplayLimit));
-          baseUrl.searchParams.set('offset', '0');
-          if (partitionId) {
-            baseUrl.searchParams.set('partitionId', partitionId);
-          }
-
-          const response = await fetch(baseUrl.toString(), {
-            headers: {
-              Authorization: `Bearer ${config.token}`,
-            },
-          });
-
-          if (!response.ok) {
-            throw new Error(`Live event polling failed (${response.status})`);
-          }
-
-          const payload = (await response.json()) as {
-            items?: ConsoleRequestEvent[];
-          };
-          const rows = Array.isArray(payload.items) ? payload.items : [];
-          const filtered = rows
-            .filter((row) =>
-              effectiveInstanceId
-                ? row.instanceId === effectiveInstanceId
-                : true
-            )
-            .sort((a, b) => a.eventId - b.eventId);
-
-          const previousLastId = lastEventIdRef.current ?? -1;
-          const newRows = filtered.filter(
-            (row) => row.eventId > previousLastId
-          );
-          if (newRows.length > 0) {
-            const mapped: LiveEvent[] = newRows
-              .map((row) => ({
-                type: row.eventType,
-                timestamp: row.createdAt,
-                data: row as unknown as Record<string, unknown>,
-              }))
-              .reverse();
-
-            setEvents((prev) => [...mapped, ...prev].slice(0, maxEvents));
-            const newest = newRows[newRows.length - 1]!;
-            lastEventIdRef.current = newest.eventId;
-            lastEventTimestampRef.current = newest.createdAt;
-          } else if (filtered.length > 0) {
-            const newest = filtered[filtered.length - 1]!;
-            lastEventIdRef.current = Math.max(
-              lastEventIdRef.current ?? -1,
-              newest.eventId
-            );
-            lastEventTimestampRef.current = newest.createdAt;
-          }
-
-          setError(null);
-          setIsConnected(true);
-          setConnectionState('connected');
-        } catch (err) {
-          if (!isCleanedUp) {
-            setIsConnected(false);
-            setConnectionState('disconnected');
-            setError(
-              err instanceof Error
-                ? err
-                : new Error('Live event polling failed')
-            );
-          }
-        } finally {
-          isPolling = false;
-        }
-      };
-
-      void poll();
-      pollTimer = setInterval(() => {
-        void poll();
-      }, 2_000);
-
-      return () => {
-        isCleanedUp = true;
-        if (pollTimer) {
-          clearInterval(pollTimer);
-        }
-        setIsConnected(false);
-        setConnectionState('disconnected');
-      };
-    }
+    if (typeof WebSocket === 'undefined') return;
 
     const clearReconnectTimeout = () => {
       if (!reconnectTimeoutRef.current) return;

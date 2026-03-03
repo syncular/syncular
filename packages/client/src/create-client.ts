@@ -15,7 +15,7 @@ import type {
   ScopeValues,
   SyncTransport,
 } from '@syncular/core';
-import { extractScopeVars } from '@syncular/core';
+import { collectScopeVars, normalizeSyncBaseUrl } from '@syncular/core';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { Kysely } from 'kysely';
 import { Client } from './client';
@@ -30,12 +30,7 @@ function deriveDefaultSubscriptionScopes<DB>(args: {
   actorId: string;
 }): ScopeValues {
   const patterns = args.handler.scopePatterns ?? [];
-  const vars = new Set<string>();
-  for (const pattern of patterns) {
-    for (const v of extractScopeVars(pattern)) {
-      vars.add(v);
-    }
-  }
+  const vars = collectScopeVars(patterns);
 
   const allVars = Array.from(vars);
   if (allVars.length !== 1) {
@@ -73,16 +68,6 @@ function createAutoHandler<
     codecs: options.codecs,
     codecDialect: options.codecDialect,
   });
-}
-
-function normalizeTransportBaseUrl(url: string): string {
-  const trimmed = url.trim().replace(/\/+$/, '');
-  if (!trimmed.endsWith('/sync')) {
-    return trimmed;
-  }
-
-  const baseUrl = trimmed.slice(0, -'/sync'.length);
-  return baseUrl.length > 0 ? baseUrl : '/';
 }
 
 interface CreateClientOptions<DB extends SyncClientDb> {
@@ -269,7 +254,7 @@ export async function createClient<DB extends SyncClientDb>(
   let transport = customTransport;
   if (!transport && url) {
     transport = createHttpTransport({
-      baseUrl: normalizeTransportBaseUrl(url),
+      baseUrl: normalizeSyncBaseUrl(url),
       getHeaders,
     });
   }

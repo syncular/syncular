@@ -4,22 +4,11 @@
 
 import type { Kysely, SelectQueryBuilder, SqlBool } from 'kysely';
 import { sql } from 'kysely';
+import { coerceNumber } from './dialect/helpers';
 import type { SyncCoreDb } from './schema';
 
 // biome-ignore lint/complexity/noBannedTypes: Kysely uses `{}` as the initial "no selected columns yet" marker.
 type EmptySelection = {};
-
-function coerceNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'bigint')
-    return Number.isFinite(Number(value)) ? Number(value) : null;
-  if (typeof value === 'string') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
 
 export interface SyncStats {
   commitCount: number;

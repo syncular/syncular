@@ -88,6 +88,35 @@ export function toTableColumnCodecs(
   return out;
 }
 
+export function createTableColumnCodecsResolver(
+  codecSource: ColumnCodecSource | undefined,
+  options: { dialect?: ColumnCodecDialect } = {}
+): (table: string, row: Record<string, unknown>) => TableColumnCodecs {
+  const tableCaches = new Map<string, Map<string, TableColumnCodecs>>();
+
+  return (table, row) => {
+    if (!codecSource) return {};
+    const columns = Object.keys(row);
+    if (columns.length === 0) return {};
+
+    const cacheKey = columns.slice().sort().join('\u0000');
+    let perTableCache = tableCaches.get(table);
+    if (!perTableCache) {
+      perTableCache = new Map<string, TableColumnCodecs>();
+      tableCaches.set(table, perTableCache);
+    }
+
+    const cached = perTableCache.get(cacheKey);
+    if (cached) return cached;
+
+    const resolved = toTableColumnCodecs(table, codecSource, columns, {
+      dialect: options.dialect,
+    });
+    perTableCache.set(cacheKey, resolved);
+    return resolved;
+  };
+}
+
 export function applyCodecToDbValue(
   codec: AnyColumnCodec,
   value: unknown,

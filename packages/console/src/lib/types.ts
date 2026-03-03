@@ -1,180 +1,135 @@
 /**
- * Console API types - derived from OpenAPI spec
+ * Console API types derived from generated OpenAPI operations.
  */
 
-export type ApiKeyType = 'relay' | 'proxy' | 'admin';
+import type { operations } from '@syncular/transport-http';
 
-export interface ConsoleApiKey {
-  keyId: string;
-  keyPrefix: string;
-  name: string;
-  keyType: ApiKeyType;
-  scopeKeys: string[];
-  actorId: string | null;
-  createdAt: string;
-  expiresAt: string | null;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
+type OperationName = keyof operations;
+
+type JsonResponse<
+  TOperation extends OperationName,
+  TStatus extends keyof operations[TOperation]['responses'],
+> =
+  operations[TOperation]['responses'][TStatus] extends {
+    content: { 'application/json': infer TJson };
+  }
+    ? TJson
+    : never;
+
+type OperationWithResponse<TStatus extends PropertyKey> = {
+  [TName in OperationName]: TStatus extends keyof operations[TName]['responses']
+    ? TName
+    : never;
+}[OperationName];
+
+type JsonSuccessResponse<TOperation extends OperationWithResponse<200>> = JsonResponse<
+  TOperation,
+  200
+>;
+
+type JsonRequestBody<TOperation extends OperationName> =
+  NonNullable<operations[TOperation]['requestBody']> extends {
+    content: { 'application/json': infer TJson };
+  }
+    ? TJson
+    : never;
+
+type PaginatedItem<TOperation extends OperationWithResponse<200>> =
+  JsonSuccessResponse<TOperation> extends { items: Array<infer TItem> }
+    ? TItem
+    : never;
+
+interface GatewayFailure {
+  instanceId: string;
+  reason: string;
+  status?: number;
 }
 
-export interface ConsoleApiKeyBulkRevokeResponse {
-  requestedCount: number;
-  revokedCount: number;
-  alreadyRevokedCount: number;
-  notFoundCount: number;
-  revokedKeyIds: string[];
-  alreadyRevokedKeyIds: string[];
-  notFoundKeyIds: string[];
+interface GatewayAggregateMetadata {
+  partial?: boolean;
+  failedInstances?: GatewayFailure[];
 }
 
-export interface ConsoleCommitListItem {
-  commitSeq: number;
-  actorId: string;
-  clientId: string;
-  clientCommitId: string;
-  createdAt: string;
-  changeCount: number;
-  affectedTables: string[];
+interface GatewayCommitFields {
   instanceId?: string;
   federatedCommitId?: string;
   localCommitSeq?: number;
 }
 
-export interface ConsoleChange {
-  changeId: number;
-  table: string;
-  rowId: string;
-  op: 'upsert' | 'delete';
-  rowJson: unknown | null;
-  rowVersion: number | null;
-  scopes: Record<string, unknown>;
-}
-
-export interface ConsoleCommitDetail extends ConsoleCommitListItem {
-  changes: ConsoleChange[];
-}
-
-export interface ConsoleClient {
-  clientId: string;
-  actorId: string;
-  cursor: number;
-  lagCommitCount: number;
-  connectionPath: 'direct' | 'relay';
-  connectionMode: 'polling' | 'realtime';
-  realtimeConnectionCount: number;
-  isRealtimeConnected: boolean;
-  activityState: 'active' | 'idle' | 'stale';
-  lastRequestAt: string | null;
-  lastRequestType: 'push' | 'pull' | null;
-  lastRequestOutcome: string | null;
-  effectiveScopes: Record<string, unknown>;
-  updatedAt: string;
+interface GatewayClientFields {
   instanceId?: string;
   federatedClientId?: string;
 }
 
-export interface ConsoleHandler {
-  table: string;
-  dependsOn?: string[];
-  snapshotChunkTtlMs?: number;
-}
-
-export interface ConsoleRequestEvent {
-  eventId: number;
-  partitionId: string;
-  requestId: string;
-  traceId: string | null;
-  spanId: string | null;
-  eventType: 'push' | 'pull';
-  syncPath: 'http-combined' | 'ws-push';
-  transportPath: 'direct' | 'relay';
-  actorId: string;
-  clientId: string;
-  statusCode: number;
-  outcome: string;
-  responseStatus: string;
-  errorCode: string | null;
-  durationMs: number;
-  commitSeq: number | null;
-  operationCount: number | null;
-  rowCount: number | null;
-  subscriptionCount: number | null;
-  scopesSummary: Record<string, string | string[]> | null;
-  tables: string[];
-  errorMessage: string | null;
-  payloadRef: string | null;
-  createdAt: string;
+interface GatewayEventFields {
   instanceId?: string;
   federatedEventId?: string;
   localEventId?: number;
 }
 
-export interface ConsoleRequestPayload {
-  payloadRef: string;
-  partitionId: string;
-  requestPayload: unknown;
-  responsePayload: unknown | null;
-  createdAt: string;
-  instanceId?: string;
-  federatedEventId?: string;
-  localEventId?: number;
-}
-
-export interface ConsoleTimelineItem {
-  type: 'commit' | 'event';
-  timestamp: string;
-  commit: ConsoleCommitListItem | null;
-  event: ConsoleRequestEvent | null;
+interface GatewayTimelineFields {
   instanceId?: string;
   federatedTimelineId?: string;
   localCommitSeq?: number | null;
   localEventId?: number | null;
 }
 
-export type ConsoleOperationType =
-  | 'prune'
-  | 'compact'
-  | 'notify_data_change'
-  | 'evict_client';
-
-export interface ConsoleOperationEvent {
-  operationId: number;
-  operationType: ConsoleOperationType;
-  consoleUserId: string | null;
-  partitionId: string | null;
-  targetClientId: string | null;
-  requestPayload: unknown | null;
-  resultPayload: unknown | null;
-  createdAt: string;
+interface GatewayOperationFields {
   instanceId?: string;
   federatedOperationId?: string;
   localOperationId?: number;
 }
 
-export interface ConsoleNotifyDataChangeResponse {
-  commitSeq: number;
-  tables: string[];
-  deletedChunks: number;
-}
+export type ApiKeyType = JsonRequestBody<'postConsoleApiKeys'>['keyType'];
 
-export interface SyncStats {
-  commitCount: number;
-  changeCount: number;
-  minCommitSeq: number;
-  maxCommitSeq: number;
-  clientCount: number;
-  activeClientCount: number;
-  minActiveClientCursor: number | null;
-  maxActiveClientCursor: number | null;
-  partial?: boolean;
-  failedInstances?: Array<{
-    instanceId: string;
-    reason: string;
-    status?: number;
-  }>;
-  minCommitSeqByInstance?: Record<string, number>;
-  maxCommitSeqByInstance?: Record<string, number>;
-}
+export type ConsoleApiKey = JsonSuccessResponse<'getConsoleApiKeysById'>;
+
+export type ConsoleApiKeyBulkRevokeResponse =
+  JsonSuccessResponse<'postConsoleApiKeysBulkRevoke'>;
+
+export type ConsoleCommitListItem =
+  PaginatedItem<'getConsoleCommits'> & GatewayCommitFields;
+
+export type ConsoleChange =
+  JsonSuccessResponse<'getConsoleCommitsBySeq'>['changes'][number];
+
+export type ConsoleCommitDetail =
+  JsonSuccessResponse<'getConsoleCommitsBySeq'> & GatewayCommitFields;
+
+export type ConsoleClient = PaginatedItem<'getConsoleClients'> &
+  GatewayClientFields;
+
+export type ConsoleHandler =
+  JsonSuccessResponse<'getConsoleHandlers'>['items'][number];
+
+export type ConsoleRequestEvent =
+  PaginatedItem<'getConsoleEvents'> & GatewayEventFields;
+
+export type ConsoleRequestPayload =
+  JsonSuccessResponse<'getConsoleEventsByIdPayload'> & GatewayEventFields;
+
+type BaseConsoleTimelineItem = PaginatedItem<'getConsoleTimeline'>;
+
+export type ConsoleTimelineItem = Omit<BaseConsoleTimelineItem, 'commit' | 'event'> &
+  GatewayTimelineFields & {
+    commit: ConsoleCommitListItem | null;
+    event: ConsoleRequestEvent | null;
+  };
+
+export type ConsoleOperationType =
+  PaginatedItem<'getConsoleOperations'>['operationType'];
+
+export type ConsoleOperationEvent =
+  PaginatedItem<'getConsoleOperations'> & GatewayOperationFields;
+
+export type ConsoleNotifyDataChangeResponse =
+  JsonSuccessResponse<'postConsoleNotifyDataChange'>;
+
+export type SyncStats = JsonSuccessResponse<'getConsoleStats'> &
+  GatewayAggregateMetadata & {
+    minCommitSeqByInstance?: Record<string, number>;
+    maxCommitSeqByInstance?: Record<string, number>;
+  };
 
 export interface PaginatedResponse<T> {
   items: T[];
@@ -183,38 +138,24 @@ export interface PaginatedResponse<T> {
   limit: number;
 }
 
-// Time-series types
-export type TimeseriesInterval = 'minute' | 'hour' | 'day';
-export type TimeseriesRange = '1h' | '6h' | '24h' | '7d' | '30d';
+export type TimeseriesInterval =
+  JsonSuccessResponse<'getConsoleStatsTimeseries'>['interval'];
 
-export interface TimeseriesBucket {
-  timestamp: string;
-  pushCount: number;
-  pullCount: number;
-  errorCount: number;
-  avgLatencyMs: number;
-}
+export type TimeseriesRange =
+  JsonSuccessResponse<'getConsoleStatsTimeseries'>['range'];
 
-export interface TimeseriesStatsResponse {
-  buckets: TimeseriesBucket[];
-  interval: TimeseriesInterval;
-  range: TimeseriesRange;
-}
+export type TimeseriesBucket =
+  JsonSuccessResponse<'getConsoleStatsTimeseries'>['buckets'][number];
 
-// Latency percentiles types
-export interface LatencyPercentiles {
-  p50: number;
-  p90: number;
-  p99: number;
-}
+export type TimeseriesStatsResponse =
+  JsonSuccessResponse<'getConsoleStatsTimeseries'> & GatewayAggregateMetadata;
 
-export interface LatencyStatsResponse {
-  push: LatencyPercentiles;
-  pull: LatencyPercentiles;
-  range: TimeseriesRange;
-}
+export type LatencyPercentiles =
+  JsonSuccessResponse<'getConsoleStatsLatency'>['push'];
 
-// Live events types
+export type LatencyStatsResponse =
+  JsonSuccessResponse<'getConsoleStatsLatency'> & GatewayAggregateMetadata;
+
 export interface LiveEvent {
   type:
     | 'push'
@@ -227,19 +168,6 @@ export interface LiveEvent {
   data: Record<string, unknown>;
 }
 
-// ---------------------------------------------------------------------------
-// Blob storage
-// ---------------------------------------------------------------------------
+export type ConsoleBlob = JsonSuccessResponse<'getConsoleStorage'>['items'][number];
 
-export interface ConsoleBlob {
-  key: string;
-  size: number;
-  uploaded: string;
-  httpMetadata?: { contentType?: string };
-}
-
-export interface ConsoleBlobListResponse {
-  items: ConsoleBlob[];
-  truncated: boolean;
-  cursor: string | null;
-}
+export type ConsoleBlobListResponse = JsonSuccessResponse<'getConsoleStorage'>;

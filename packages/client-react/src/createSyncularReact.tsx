@@ -73,6 +73,10 @@ type ExecutableQuery<TResult> = {
   execute: () => Promise<TResult>;
 };
 
+type QueryFn<DB extends SyncClientDb, TResult> = (
+  ctx: QueryContext<DB>
+) => ExecutableQuery<TResult> | Promise<TResult>;
+
 function isExecutableQuery<TResult>(
   value: unknown
 ): value is ExecutableQuery<TResult> {
@@ -370,6 +374,16 @@ export interface UseSyncQueryOptions {
   pollIntervalMs?: number;
   staleAfterMs?: number;
   /**
+   * Internal: if false, skip `data:change` invalidation listener.
+   * Used by `useQuery` wrapper.
+   */
+  refreshOnDataChange?: boolean;
+  /**
+   * Internal: if true, set loading state on every refresh.
+   * Used by `useQuery` wrapper.
+   */
+  loadingOnRefresh?: boolean;
+  /**
    * If true (default), non-urgent hook state updates are scheduled in
    * `startTransition` to keep UI interactions responsive under bursty sync.
    */
@@ -395,14 +409,12 @@ export interface UseQueryOptions {
 
 export type MutationInput<TTable extends string> =
   | {
-      table?: TTable;
       rowId: string;
       op: 'delete';
       payload?: null;
       baseVersion?: number | null;
     }
   | {
-      table?: TTable;
       rowId: string;
       op: 'upsert';
       payload?: Record<string, unknown> | null;
@@ -415,7 +427,6 @@ export interface MutationResult {
 }
 
 export interface FluentMutation<TTable extends string> {
-  (input: MutationInput<TTable>): Promise<MutationResult>;
   upsert: (
     rowId: string,
     payload: Record<string, unknown>,
@@ -1279,9 +1290,7 @@ export function createSyncularReact<
   }
 
   function useSyncQuery<TResult>(
-    queryFn: (
-      ctx: QueryContext<DB>
-    ) => ExecutableQuery<TResult> | Promise<TResult>,
+    queryFn: QueryFn<DB, TResult>,
     options: UseSyncQueryOptions = {}
   ): UseSyncQueryResult<TResult> {
     const {
@@ -1291,6 +1300,8 @@ export function createSyncularReact<
       watchTables = [],
       pollIntervalMs,
       staleAfterMs,
+      refreshOnDataChange = true,
+      loadingOnRefresh = false,
       transitionUpdates = true,
       onMetrics,
     } = options;
@@ -1366,7 +1377,7 @@ export function createSyncularReact<
         const version = ++versionRef.current;
 
         try {
-          if (!hasLoadedRef.current) {
+          if (!hasLoadedRef.current || loadingOnRefresh) {
             setIsLoading(true);
           }
 
@@ -1433,7 +1444,15 @@ export function createSyncularReact<
           }
         }
       },
-      [db, enabled, engine, keyField, applyUpdate, emitMetrics]
+      [
+        db,
+        enabled,
+        engine,
+        keyField,
+        loadingOnRefresh,
+        applyUpdate,
+        emitMetrics,
+      ]
     );
 
     const executeQuery = useCallback(
@@ -1493,7 +1512,7 @@ export function createSyncularReact<
     }, [engine, getLastSyncAtSnapshot, applyUpdate]);
 
     useEffect(() => {
-      if (!enabled) return;
+      if (!enabled || !refreshOnDataChange) return;
 
       const unsubscribe = engine.on('data:change', (event) => {
         const changedScopes = event.scopes ?? [];
@@ -1518,7 +1537,7 @@ export function createSyncularReact<
       });
 
       return unsubscribe;
-    }, [engine, enabled, executeQuery, watchTablesSet]);
+    }, [engine, enabled, refreshOnDataChange, executeQuery, watchTablesSet]);
 
     useEffect(() => {
       if (!enabled) return;
@@ -1568,92 +1587,32 @@ export function createSyncularReact<
   }
 
   function useQuery<TResult>(
-    queryFn: (
-      ctx: QueryContext<DB>
-    ) => ExecutableQuery<TResult> | Promise<TResult>,
+    queryFn: QueryFn<DB, TResult>,
     options: UseQueryOptions = {}
   ): UseQueryResult<TResult> {
     const { enabled = true, deps = [], keyField = 'id' } = options;
-    const { db } = useSyncContext();
-    const engine = useEngine();
-
-    const queryFnRef = useRef<typeof queryFn>(queryFn);
-    queryFnRef.current = queryFn;
-
-    const [data, setData] = useState<TResult | undefined>(undefined);
-    const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<Error | null>(null);
-
-    const versionRef = useRef(0);
-    const fingerprintCollectorRef = useRef(new FingerprintCollector());
-    const previousFingerprintRef = useRef<string>('');
-
-    const executeQuery = useCallback(async () => {
-      if (!enabled) {
-        setData(undefined);
-        setIsLoading(false);
-        return;
-      }
-
-      const version = ++versionRef.current;
-
-      try {
-        setIsLoading(true);
-
-        fingerprintCollectorRef.current.clear();
-        const scopeCollector = new Set<string>();
-        const ctx = createQueryContext(
-          db,
-          scopeCollector,
-          fingerprintCollectorRef.current,
-          engine,
-          keyField
-        );
-
-        const fnResult = queryFnRef.current(ctx);
-        const result = isExecutableQuery<TResult>(fnResult)
-          ? await fnResult.execute()
-          : await fnResult;
-
-        if (version === versionRef.current) {
-          const fingerprint = fingerprintCollectorRef.current.getCombined();
-          if (
-            fingerprint !== previousFingerprintRef.current ||
-            fingerprint === ''
-          ) {
-            previousFingerprintRef.current = fingerprint;
-            setData(result);
-          }
-          setError(null);
-        }
-      } catch (err) {
-        if (version === versionRef.current) {
-          setError(err instanceof Error ? err : new Error(String(err)));
-        }
-      } finally {
-        if (version === versionRef.current) {
-          setIsLoading(false);
-        }
-      }
-    }, [db, enabled, engine, keyField]);
-
-    useEffect(() => {
-      executeQuery();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [executeQuery, ...deps]);
-
-    const refetch = useCallback(async () => {
-      await executeQuery();
-    }, [executeQuery]);
+    const syncQuery = useSyncQuery(queryFn, {
+      enabled,
+      deps,
+      keyField,
+      refreshOnDataChange: false,
+      loadingOnRefresh: true,
+      transitionUpdates: false,
+    });
 
     return useMemo(
       () => ({
-        data,
-        isLoading,
-        error,
-        refetch,
+        data: syncQuery.data,
+        isLoading: syncQuery.isLoading,
+        error: syncQuery.error,
+        refetch: syncQuery.refetch,
       }),
-      [data, isLoading, error, refetch]
+      [
+        syncQuery.data,
+        syncQuery.isLoading,
+        syncQuery.error,
+        syncQuery.refetch,
+      ]
     );
   }
 
@@ -1673,14 +1632,6 @@ export function createSyncularReact<
         setError(null);
 
         try {
-          for (const input of inputs) {
-            if (input.table !== undefined && input.table !== table) {
-              throw new Error(
-                `[useMutation] MutationInput.table must match hook table "${table}" (got "${input.table}")`
-              );
-            }
-          }
-
           const operations: SyncOperation[] = inputs.map((input) => ({
             scope: table,
             table: table,
@@ -1727,13 +1678,6 @@ export function createSyncularReact<
       [db, engine, table, syncImmediately, onSuccess, onError]
     );
 
-    const mutateLegacy = useCallback(
-      async (input: MutationInput<TTable>): Promise<MutationResult> => {
-        return enqueue([input]);
-      },
-      [enqueue]
-    );
-
     const upsert = useCallback(
       async (
         rowId: string,
@@ -1742,7 +1686,6 @@ export function createSyncularReact<
       ): Promise<MutationResult> => {
         return enqueue([
           {
-            table,
             rowId,
             op: 'upsert',
             payload,
@@ -1750,7 +1693,7 @@ export function createSyncularReact<
           },
         ]);
       },
-      [enqueue, table]
+      [enqueue]
     );
 
     const deleteRow = useCallback(
@@ -1760,22 +1703,22 @@ export function createSyncularReact<
       ): Promise<MutationResult> => {
         return enqueue([
           {
-            table,
             rowId,
             op: 'delete',
             baseVersion: opts?.baseVersion,
           },
         ]);
       },
-      [enqueue, table]
+      [enqueue]
     );
 
-    const mutate = useMemo(() => {
-      const fn = mutateLegacy as FluentMutation<TTable>;
-      fn.upsert = upsert;
-      fn.delete = deleteRow;
-      return fn;
-    }, [mutateLegacy, upsert, deleteRow]);
+    const mutate = useMemo(
+      () => ({
+        upsert,
+        delete: deleteRow,
+      }),
+      [upsert, deleteRow]
+    );
 
     const reset = useCallback(() => {
       setError(null);
