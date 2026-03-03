@@ -8,7 +8,7 @@ import type { Kysely, RawBuilder } from 'kysely';
 import { sql } from 'kysely';
 import type { ServerSyncDialect } from '../dialect/types';
 import type { SyncCoreDb } from '../schema';
-import { getProxyHandler, type ProxyHandlerCollection } from './collection';
+import type { ProxyHandlerCollection } from './collection';
 import {
   appendReturning,
   detectMutation,
@@ -111,7 +111,7 @@ export async function executeProxyQuery<DB extends SyncCoreDb>(
   }
 
   // Check if this table has a registered handler
-  const handler = getProxyHandler(handlers, mutation.tableName);
+  const handler = handlers.byTable.get(mutation.tableName);
   if (!handler) {
     // No handler registered - execute without oplog
     // This allows proxy operations on non-synced tables

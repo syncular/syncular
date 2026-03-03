@@ -8,8 +8,6 @@
 // Collections
 export {
   createProxyHandlerCollection,
-  getProxyHandler,
-  getProxyHandlerOrThrow,
   type ProxyHandlerCollection,
 } from './collection';
 // Query execution

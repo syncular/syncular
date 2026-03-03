@@ -12,6 +12,7 @@ import type {
   BlobSignUploadOptions,
   BlobStorageAdapter,
 } from '@syncular/core';
+import { resolveUrlFromBase } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import type { SyncBlobsDb } from '../types';
 
@@ -157,9 +158,6 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
 ): BlobStorageAdapter {
   const { db, baseUrl, tokenSigner } = options;
 
-  // Normalize base URL (remove trailing slash)
-  const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
-
   return {
     name: 'database',
 
@@ -171,7 +169,8 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
       );
 
       // URL points to server's blob upload endpoint
-      const url = `${normalizedBaseUrl}/blobs/${encodeURIComponent(opts.hash)}/upload?token=${encodeURIComponent(token)}`;
+      const uploadPath = `/blobs/${encodeURIComponent(opts.hash)}/upload?token=${encodeURIComponent(token)}`;
+      const url = resolveUrlFromBase(baseUrl, uploadPath);
 
       return {
         url,
@@ -190,7 +189,10 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
         opts.expiresIn
       );
 
-      return `${normalizedBaseUrl}/blobs/${encodeURIComponent(opts.hash)}/download?token=${encodeURIComponent(token)}`;
+      return resolveUrlFromBase(
+        baseUrl,
+        `/blobs/${encodeURIComponent(opts.hash)}/download?token=${encodeURIComponent(token)}`
+      );
     },
 
     async exists(hash: string): Promise<boolean> {

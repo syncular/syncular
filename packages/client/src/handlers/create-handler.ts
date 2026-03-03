@@ -13,9 +13,9 @@ import type {
 } from '@syncular/core';
 import {
   applyCodecsToDbRow,
+  createTableColumnCodecsResolver,
   isRecord,
   normalizeScopes,
-  toTableColumnCodecs,
 } from '@syncular/core';
 import { sql } from 'kysely';
 import type { SyncClientDb } from '../schema';
@@ -176,25 +176,13 @@ export function createClientHandler<
     options.primaryKey ?? ('id' as keyof DB[TableName] & string);
   const versionColumn = options.versionColumn;
   const codecDialect = options.codecDialect ?? 'sqlite';
-  const codecCache = new Map<string, ReturnType<typeof toTableColumnCodecs>>();
-  const resolveTableCodecs = (row: Record<string, unknown>) => {
-    const codecs = options.codecs;
-    if (!codecs) return {};
-    const columns = Object.keys(row);
-    if (columns.length === 0) return {};
-    const cacheKey = columns.slice().sort().join('\u0000');
-    const cached = codecCache.get(cacheKey);
-    if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, codecs, columns, {
-      dialect: codecDialect,
-    });
-    codecCache.set(cacheKey, resolved);
-    return resolved;
-  };
+  const resolveRowCodecs = createTableColumnCodecsResolver(options.codecs, {
+    dialect: codecDialect,
+  });
+  const resolveTableCodecs = (row: Record<string, unknown>) =>
+    resolveRowCodecs(table, row);
 
-  // Normalize scopes to pattern map (stored for metadata)
-  const scopeColumnMap = normalizeScopes(scopeDefs);
-  const scopePatterns = Object.keys(scopeColumnMap);
+  const scopePatterns = Object.keys(normalizeScopes(scopeDefs));
 
   // Default applySnapshot: upsert all rows
   const defaultApplySnapshot = async (

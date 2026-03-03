@@ -1,30 +1,13 @@
 /**
  * @syncular/dialect-react-native-nitro-sqlite - React Native Nitro SQLite dialect for sync
  *
- * Provides a Kysely dialect for React Native Nitro SQLite (react-native-nitro-sqlite)
+ * Provides a Kysely dialect for React Native Nitro SQLite (react-native-nitro-sqlite).
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.
- *
- * Implements a custom Kysely Driver that wraps react-native-nitro-sqlite's API
- * into the promise-based interface Kysely expects.
  */
 
-import type {
-  DatabaseConnection,
-  DatabaseIntrospector,
-  Dialect,
-  DialectAdapter,
-  Driver,
-  Kysely,
-  QueryCompiler,
-  QueryResult,
-  TransactionSettings,
-} from 'kysely';
-import {
-  CompiledQuery,
-  SqliteAdapter,
-  SqliteIntrospector,
-  SqliteQueryCompiler,
-} from 'kysely';
+import type { DatabaseConnection, Dialect, QueryResult } from 'kysely';
+import { CompiledQuery } from 'kysely';
+import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import type {
   NitroSQLiteConnection,
   NitroSQLiteConnectionOptions,
@@ -57,90 +40,38 @@ export type NitroSqliteOptions =
 /**
  * Create the Nitro SQLite dialect directly.
  */
-export function createNitroSqliteDialect(
-  options: NitroSqliteOptions
-): NitroSqliteDialect {
-  return new NitroSqliteDialect(options);
+export function createNitroSqliteDialect(options: NitroSqliteOptions): Dialect {
+  return new BaseSqliteDialect(() => new NitroSqliteDriver(options));
 }
 
-// ---------------------------------------------------------------------------
-// Kysely Dialect implementation for react-native-nitro-sqlite
-// ---------------------------------------------------------------------------
-
-class NitroSqliteDialect implements Dialect {
-  readonly #options: NitroSqliteOptions;
-
-  constructor(options: NitroSqliteOptions) {
-    this.#options = options;
-  }
-
-  createAdapter(): DialectAdapter {
-    return new SqliteAdapter();
-  }
-
-  createDriver(): Driver {
-    return new NitroSqliteDriver(this.#options);
-  }
-
-  createQueryCompiler(): QueryCompiler {
-    return new SqliteQueryCompiler();
-  }
-
-  createIntrospector(db: Kysely<unknown>): DatabaseIntrospector {
-    return new SqliteIntrospector(db);
-  }
-}
-
-class NitroSqliteDriver implements Driver {
-  readonly #options: NitroSqliteOptions;
+class NitroSqliteDriver extends BaseSqliteDriver {
   #db: NitroSQLiteConnection | undefined;
 
   constructor(options: NitroSqliteOptions) {
-    this.#options = options;
-  }
-
-  async init(): Promise<void> {
-    this.#db = this.#resolveDatabase();
-  }
-
-  async acquireConnection(): Promise<DatabaseConnection> {
-    return new NitroSqliteConnection(this.#db!);
-  }
-
-  async beginTransaction(
-    connection: DatabaseConnection,
-    _settings: TransactionSettings
-  ): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('begin'));
-  }
-
-  async commitTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('commit'));
-  }
-
-  async rollbackTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(CompiledQuery.raw('rollback'));
-  }
-
-  async releaseConnection(_connection: DatabaseConnection): Promise<void> {
-    // Single-connection model — nothing to release.
+    super(async () => {
+      this.#db = resolveNitroSqliteDatabase(options);
+      this.conn = new NitroSqliteConnection(this.#db);
+    });
   }
 
   async destroy(): Promise<void> {
-    if (this.#db) {
-      this.#db.close();
-    }
+    const db = this.#db;
+    this.#db = undefined;
+    db?.close();
+  }
+}
+
+function resolveNitroSqliteDatabase(
+  options: NitroSqliteOptions
+): NitroSQLiteConnection {
+  if ('database' in options) {
+    return options.database;
   }
 
-  #resolveDatabase(): NitroSQLiteConnection {
-    if ('database' in this.#options) {
-      return this.#options.database;
-    }
-    return this.#options.open({
-      name: this.#options.name,
-      location: this.#options.location,
-    });
-  }
+  return options.open({
+    name: options.name,
+    location: options.location,
+  });
 }
 
 class NitroSqliteConnection implements DatabaseConnection {
@@ -157,7 +88,6 @@ class NitroSqliteConnection implements DatabaseConnection {
     const hasReturning = /\breturning\b/i.test(sql);
     const isSelectLike = /^\s*(select|pragma|explain|with)\b/i.test(sql);
 
-    // Execute the query
     const result = this.#db.execute(sql, params);
 
     if (isSelectLike || hasReturning) {
@@ -168,7 +98,6 @@ class NitroSqliteConnection implements DatabaseConnection {
       };
     }
 
-    // For INSERT, UPDATE, DELETE — return affected rows info
     return {
       rows: [],
       numAffectedRows: BigInt(result.rowsAffected ?? 0),

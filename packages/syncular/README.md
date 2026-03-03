@@ -4,7 +4,7 @@ Umbrella package that re-exports the `@syncular/*` packages under a single impor
 
 If you prefer, you can write imports like `syncular/client` instead of `@syncular/client`. Both are supported.
 
-For plugins, you can import from umbrella subpaths (for example `syncular/yjs`).
+For plugins, use explicit umbrella subpaths (for example `syncular/client-plugin-yjs`).
 
 ## Install
 

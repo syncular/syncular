@@ -24,7 +24,6 @@ import type { Kysely } from 'kysely';
 import type { DbExecutor, ServerSyncDialect } from './dialect/types';
 import {
   getServerBootstrapOrderFor,
-  getServerHandlerOrThrow,
   type ServerHandlerCollection,
 } from './handlers/collection';
 import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
@@ -382,7 +381,9 @@ export async function pull<
           for (const sub of resolved) {
             const cursor = Math.max(-1, sub.cursor ?? -1);
             // Validate table handler exists (throws if not registered)
-            getServerHandlerOrThrow(args.handlers, sub.table);
+            if (!args.handlers.byTable.has(sub.table)) {
+              throw new Error(`Unknown table: ${sub.table}`);
+            }
 
             if (
               sub.status === 'revoked' ||
@@ -575,8 +576,10 @@ export async function pull<
                   break;
                 }
 
-                const tableHandler: ServerTableHandler<DB, Auth> =
-                  getServerHandlerOrThrow(args.handlers, nextTableName);
+                const tableHandler = args.handlers.byTable.get(nextTableName);
+                if (!tableHandler) {
+                  throw new Error(`Unknown table: ${nextTableName}`);
+                }
                 if (!activeBundle || activeBundle.table !== nextTableName) {
                   if (activeBundle) {
                     await flushSnapshotBundle(activeBundle);

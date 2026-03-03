@@ -3,7 +3,6 @@
  */
 
 import type {
-  ScopePattern,
   ScopeValues,
   ScopeValuesFromPatterns,
   ScopeDefinition as SimpleScopeDefinition,
@@ -15,9 +14,8 @@ import {
   applyCodecsToDbRow,
   type ColumnCodecDialect,
   type ColumnCodecSource,
-  extractScopeVars,
-  normalizeScopes,
-  toTableColumnCodecs,
+  createSingleVariableScopeMetadata,
+  createTableColumnCodecsResolver,
 } from '@syncular/core';
 import type {
   DeleteQueryBuilder,
@@ -76,11 +74,6 @@ function isMissingColumnReferenceError(message: string): boolean {
     (normalized.includes('column') && normalized.includes('does not exist'))
   );
 }
-
-/**
- * Scope definition for a column - maps scope variable to column name.
- */
-export type ScopeColumnMap = Record<string, string>;
 
 /**
  * Options for creating a declarative server handler.
@@ -274,44 +267,16 @@ export function createServerHandler<
     authorize,
     extractScopes: customExtractScopes,
   } = options;
-  const codecCache = new Map<string, ReturnType<typeof toTableColumnCodecs>>();
+  const resolveRowCodecs = createTableColumnCodecsResolver(codecs, {
+    dialect: codecDialect,
+  });
   const primaryKeyColumn = primaryKey as keyof ServerDB[TableName] & string;
   const qualifiedVersionRef = `${table}.${versionColumn}`;
-  const resolveTableCodecs = (row: Record<string, unknown>) => {
-    if (!codecs) return {};
-    const columns = Object.keys(row);
-    if (columns.length === 0) return {};
-    const cacheKey = columns.slice().sort().join('\u0000');
-    const cached = codecCache.get(cacheKey);
-    if (cached) return cached;
-    const resolved = toTableColumnCodecs(table, codecs, columns, {
-      dialect: codecDialect,
-    });
-    codecCache.set(cacheKey, resolved);
-    return resolved;
-  };
+  const resolveTableCodecs = (row: Record<string, unknown>) =>
+    resolveRowCodecs(table, row);
 
-  // Normalize scopes to pattern map and extract patterns/columns
-  const scopeColumnMap = normalizeScopes(scopeDefs);
-  const scopePatterns = Object.keys(scopeColumnMap) as ScopePattern[];
-  const scopeColumns: ScopeColumnMap = {};
-
-  for (const [pattern, columnName] of Object.entries(scopeColumnMap)) {
-    const vars = extractScopeVars(pattern);
-    if (vars.length !== 1) {
-      throw new Error(
-        `Scope pattern "${pattern}" must contain exactly one placeholder (got ${vars.length}).`
-      );
-    }
-    const varName = vars[0]!;
-    const existing = scopeColumns[varName];
-    if (existing && existing !== columnName) {
-      throw new Error(
-        `Scope variable "${varName}" is mapped to multiple columns: "${existing}" and "${columnName}".`
-      );
-    }
-    scopeColumns[varName] = columnName;
-  }
+  const { scopePatterns, scopeColumnsByVariable: scopeColumns } =
+    createSingleVariableScopeMetadata(scopeDefs);
 
   // Default extractScopes from scope columns
   const defaultExtractScopes = (row: Record<string, unknown>): StoredScopes => {

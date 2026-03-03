@@ -5,5 +5,4 @@ export * from './useLiveEvents';
 export * from './useLocalStorage';
 export * from './usePartitionContext';
 export * from './usePreferences';
-export * from './useRequestEvents';
 export * from './useTimeRange';

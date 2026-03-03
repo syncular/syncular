@@ -19,15 +19,17 @@ import { logSyncEvent } from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   compactChanges,
+  coerceNumber,
   computePruneWatermarkCommitSeq,
   notifyExternalDataChange,
+  parseJsonValue,
   pruneSync,
   readSyncStats,
 } from '@syncular/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
+import { resolver, validator as zValidator } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
 import {
@@ -35,6 +37,7 @@ import {
   parseBearerToken,
   parseWebSocketAuthToken,
 } from './live-auth';
+import { describeConsoleRoute } from './route-descriptor';
 import {
   type ApiKeyType,
   ApiKeyTypeSchema,
@@ -171,18 +174,6 @@ export function createConsoleEventEmitter(options?: {
   };
 }
 
-function coerceNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'bigint')
-    return Number.isFinite(Number(value)) ? Number(value) : null;
-  if (typeof value === 'string') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
-  }
-  return null;
-}
-
 function parseDate(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Date.parse(value);
@@ -198,14 +189,18 @@ function includesSearchTerm(
   return value.toLowerCase().includes(searchTerm);
 }
 
-function parseJsonValue(value: unknown): unknown {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== 'string') return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
   }
+  return parsed as Record<string, unknown>;
+}
+
+function parseJsonStringArray(value: unknown): string[] {
+  const parsed = parseJsonValue(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((entry): entry is string => typeof entry === 'string');
 }
 
 function parseScopesSummary(
@@ -958,9 +953,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/stats',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get sync statistics',
+    describeConsoleRoute({
+summary: 'Get sync statistics',
       responses: {
         200: {
           description: 'Sync statistics',
@@ -999,9 +993,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/stats/timeseries',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get time-series statistics',
+    describeConsoleRoute({
+summary: 'Get time-series statistics',
       responses: {
         200: {
           description: 'Time-series statistics',
@@ -1195,9 +1188,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/stats/latency',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get latency percentiles',
+    describeConsoleRoute({
+summary: 'Get latency percentiles',
       responses: {
         200: {
           description: 'Latency percentiles',
@@ -1306,9 +1298,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/timeline',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List timeline items',
+    describeConsoleRoute({
+summary: 'List timeline items',
       responses: {
         200: {
           description: 'Paginated merged timeline',
@@ -1535,9 +1526,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/commits',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List commits',
+    describeConsoleRoute({
+summary: 'List commits',
       responses: {
         200: {
           description: 'Paginated commit list',
@@ -1621,9 +1611,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/commits/:seq',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get commit details',
+    describeConsoleRoute({
+summary: 'Get commit details',
       responses: {
         200: {
           description: 'Commit with changes',
@@ -1706,21 +1695,9 @@ export function createConsoleRoutes<
         table: row.table ?? '',
         rowId: row.row_id ?? '',
         op: row.op === 'delete' ? 'delete' : 'upsert',
-        rowJson:
-          typeof row.row_json === 'string'
-            ? (() => {
-                try {
-                  return JSON.parse(row.row_json);
-                } catch {
-                  return row.row_json;
-                }
-              })()
-            : row.row_json,
+        rowJson: parseJsonValue(row.row_json),
         rowVersion: coerceNumber(row.row_version),
-        scopes:
-          typeof row.scopes === 'string'
-            ? JSON.parse(row.scopes || '{}')
-            : (row.scopes ?? {}),
+        scopes: parseJsonRecord(row.scopes),
       }));
 
       const commit: ConsoleCommitDetail = {
@@ -1730,11 +1707,7 @@ export function createConsoleRoutes<
         clientCommitId: commitRow.client_commit_id ?? '',
         createdAt: commitRow.created_at ?? '',
         changeCount: coerceNumber(commitRow.change_count) ?? 0,
-        affectedTables: Array.isArray(commitRow.affected_tables)
-          ? commitRow.affected_tables
-          : typeof commitRow.affected_tables === 'string'
-            ? JSON.parse(commitRow.affected_tables || '[]')
-            : [],
+        affectedTables: parseJsonStringArray(commitRow.affected_tables),
         changes,
       };
 
@@ -1748,9 +1721,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/clients',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List clients',
+    describeConsoleRoute({
+summary: 'List clients',
       responses: {
         200: {
           description: 'Paginated client list',
@@ -1918,9 +1890,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/handlers',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List registered handlers',
+    describeConsoleRoute({
+summary: 'List registered handlers',
       responses: {
         200: {
           description: 'Handler list',
@@ -1953,9 +1924,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/operations',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List operation audit events',
+    describeConsoleRoute({
+summary: 'List operation audit events',
       responses: {
         200: {
           description: 'Paginated operation events',
@@ -2027,9 +1997,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/prune/preview',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Preview pruning',
+    describeConsoleRoute({
+summary: 'Preview pruning',
       responses: {
         200: {
           description: 'Prune preview',
@@ -2075,9 +2044,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/prune',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Trigger pruning',
+    describeConsoleRoute({
+summary: 'Trigger pruning',
       responses: {
         200: {
           description: 'Prune result',
@@ -2131,9 +2099,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/compact',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Trigger compaction',
+    describeConsoleRoute({
+summary: 'Trigger compaction',
       responses: {
         200: {
           description: 'Compact result',
@@ -2194,9 +2161,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/notify-data-change',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Notify external data change',
+    describeConsoleRoute({
+summary: 'Notify external data change',
       description:
         'Creates a synthetic commit to force re-bootstrap for affected tables. ' +
         'Use after pipeline imports or direct DB writes to notify connected clients.',
@@ -2267,9 +2233,8 @@ export function createConsoleRoutes<
 
   routes.delete(
     '/clients/:id',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Evict client',
+    describeConsoleRoute({
+summary: 'Evict client',
       responses: {
         200: {
           description: 'Evict result',
@@ -2335,9 +2300,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/events',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List request events',
+    describeConsoleRoute({
+summary: 'List request events',
       responses: {
         200: {
           description: 'Paginated event list',
@@ -2661,9 +2625,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/events/:id',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get event details',
+    describeConsoleRoute({
+summary: 'Get event details',
       responses: {
         200: {
           description: 'Event details',
@@ -2724,9 +2687,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/events/:id/payload',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get event payload snapshot',
+    describeConsoleRoute({
+summary: 'Get event payload snapshot',
       responses: {
         200: {
           description: 'Payload snapshot details',
@@ -2823,9 +2785,8 @@ export function createConsoleRoutes<
 
   routes.delete(
     '/events',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Clear all events',
+    describeConsoleRoute({
+summary: 'Clear all events',
       responses: {
         200: {
           description: 'Clear result',
@@ -2867,9 +2828,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/events/prune',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Prune old events',
+    describeConsoleRoute({
+summary: 'Prune old events',
       responses: {
         200: {
           description: 'Prune result',
@@ -2911,9 +2871,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/api-keys',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List API keys',
+    describeConsoleRoute({
+summary: 'List API keys',
       responses: {
         200: {
           description: 'Paginated API key list',
@@ -3040,9 +2999,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/api-keys',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Create API key',
+    describeConsoleRoute({
+summary: 'Create API key',
       responses: {
         201: {
           description: 'Created API key',
@@ -3140,9 +3098,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/api-keys/:id',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Get API key',
+    describeConsoleRoute({
+summary: 'Get API key',
       responses: {
         200: {
           description: 'API key details',
@@ -3212,9 +3169,8 @@ export function createConsoleRoutes<
 
   routes.delete(
     '/api-keys/:id',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Revoke API key',
+    describeConsoleRoute({
+summary: 'Revoke API key',
       responses: {
         200: {
           description: 'Revoke result',
@@ -3263,9 +3219,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/api-keys/bulk-revoke',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Bulk revoke API keys',
+    describeConsoleRoute({
+summary: 'Bulk revoke API keys',
       responses: {
         200: {
           description: 'Bulk revoke result',
@@ -3370,9 +3325,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/api-keys/:id/rotate/stage',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Stage rotate API key',
+    describeConsoleRoute({
+summary: 'Stage rotate API key',
       responses: {
         200: {
           description: 'Staged API key replacement',
@@ -3478,9 +3432,8 @@ export function createConsoleRoutes<
 
   routes.post(
     '/api-keys/:id/rotate',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Rotate API key',
+    describeConsoleRoute({
+summary: 'Rotate API key',
       responses: {
         200: {
           description: 'Rotated API key',
@@ -3597,9 +3550,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/storage',
-    describeRoute({
-      tags: ['console'],
-      summary: 'List storage items',
+    describeConsoleRoute({
+summary: 'List storage items',
       responses: {
         200: {
           description: 'Paginated list of storage items',
@@ -3650,9 +3602,8 @@ export function createConsoleRoutes<
 
   routes.get(
     '/storage/:key{.+}/download',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Download a storage item',
+    describeConsoleRoute({
+summary: 'Download a storage item',
       responses: {
         200: { description: 'Storage item contents' },
         401: {
@@ -3701,9 +3652,8 @@ export function createConsoleRoutes<
 
   routes.delete(
     '/storage/:key{.+}',
-    describeRoute({
-      tags: ['console'],
-      summary: 'Delete a storage item',
+    describeConsoleRoute({
+summary: 'Delete a storage item',
       responses: {
         200: {
           description: 'Storage item deleted',

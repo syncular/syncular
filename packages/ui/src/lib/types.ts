@@ -1,8 +1,5 @@
 export type ClientStatus = 'online' | 'syncing' | 'offline';
 
-/** @deprecated Use SyncClientNode */
-export type SyncClient = SyncClientNode;
-
 export type SyncClientNode = {
   id: string;
   type: string;

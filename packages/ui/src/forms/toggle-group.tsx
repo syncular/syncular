@@ -19,6 +19,3 @@ ToggleGroup.displayName = 'ToggleGroup';
 
 export { ToggleGroup };
 export type { ToggleGroupProps };
-
-// Re-export Toggle as ToggleGroupItem for backward compat
-export { Toggle as ToggleGroupItem } from './toggle';

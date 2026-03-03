@@ -3,7 +3,6 @@
  *
  * Covers:
  * - Fluent API (upsert, delete)
- * - Legacy mutate interface
  * - mutateMany for batch operations
  * - isPending state
  * - error handling and onError callback
@@ -174,57 +173,7 @@ describe('useMutation', () => {
     });
   });
 
-  describe('legacy mutate interface', () => {
-    it('mutate() with MutationInput works', async () => {
-      const { result } = renderHook(
-        () => useMutation({ table: 'tasks', syncImmediately: false }),
-        { wrapper: createWrapper() }
-      );
-
-      await act(async () => {
-        await result.current.mutate({
-          rowId: 'task-legacy',
-          op: 'upsert',
-          payload: { title: 'Legacy', completed: 0, user_id: 'test-actor' },
-        });
-      });
-
-      const outbox = await db
-        .selectFrom('sync_outbox_commits')
-        .select(['operations_json'])
-        .executeTakeFirstOrThrow();
-
-      const ops = JSON.parse(outbox.operations_json);
-      expect(ops[0].row_id).toBe('task-legacy');
-    });
-
-    it('throws when MutationInput.table does not match hook table', async () => {
-      const { result } = renderHook(
-        () => useMutation({ table: 'tasks', syncImmediately: false }),
-        { wrapper: createWrapper() }
-      );
-
-      let thrownError: Error | null = null;
-      await act(async () => {
-        try {
-          await result.current.mutate({
-            // @ts-expect-error - runtime guard for mismatched table
-            table: 'other_table',
-            rowId: 'task-1',
-            op: 'upsert',
-            payload: { title: 'Test' },
-          });
-        } catch (err) {
-          thrownError = err as Error;
-        }
-      });
-
-      expect(thrownError).not.toBeNull();
-      expect(thrownError!.message).toContain(
-        'MutationInput.table must match hook table'
-      );
-    });
-
+  describe('plugins', () => {
     it('applies beforeApplyLocalMutations plugin for local optimistic writes', async () => {
       let seenPayload: Record<string, unknown> | null | undefined;
       const plugin: SyncClientPlugin = {
@@ -333,19 +282,23 @@ describe('useMutation', () => {
     });
 
     it('isPending resets after error', async () => {
+      const failingPlugin: SyncClientPlugin = {
+        name: 'force-error',
+        beforeApplyLocalMutations() {
+          throw new Error('Forced mutation failure');
+        },
+      };
       const { result } = renderHook(
         () => useMutation({ table: 'tasks', syncImmediately: false }),
-        { wrapper: createWrapper() }
+        { wrapper: createWrapper({ plugins: [failingPlugin] }) }
       );
 
       await act(async () => {
         try {
-          await result.current.mutate({
-            // @ts-expect-error - runtime guard for mismatched table
-            table: 'wrong',
-            rowId: 'x',
-            op: 'upsert',
-            payload: {},
+          await result.current.mutate.upsert('task-failing', {
+            title: 'Test',
+            completed: 0,
+            user_id: 'test-actor',
           });
         } catch {
           // Expected
@@ -358,19 +311,23 @@ describe('useMutation', () => {
 
   describe('error handling', () => {
     it('sets error state on failure', async () => {
+      const failingPlugin: SyncClientPlugin = {
+        name: 'force-error',
+        beforeApplyLocalMutations() {
+          throw new Error('Forced mutation failure');
+        },
+      };
       const { result } = renderHook(
         () => useMutation({ table: 'tasks', syncImmediately: false }),
-        { wrapper: createWrapper() }
+        { wrapper: createWrapper({ plugins: [failingPlugin] }) }
       );
 
       await act(async () => {
         try {
-          await result.current.mutate({
-            // @ts-expect-error - runtime guard for mismatched table
-            table: 'wrong',
-            rowId: 'x',
-            op: 'upsert',
-            payload: {},
+          await result.current.mutate.upsert('task-failing', {
+            title: 'Test',
+            completed: 0,
+            user_id: 'test-actor',
           });
         } catch {
           // Expected
@@ -378,13 +335,17 @@ describe('useMutation', () => {
       });
 
       expect(result.current.error).not.toBeNull();
-      expect(result.current.error?.message).toContain(
-        'MutationInput.table must match'
-      );
+      expect(result.current.error?.message).toContain('Forced mutation failure');
     });
 
     it('calls onError callback on failure', async () => {
       let capturedError: Error | null = null;
+      const failingPlugin: SyncClientPlugin = {
+        name: 'force-error',
+        beforeApplyLocalMutations() {
+          throw new Error('Forced mutation failure');
+        },
+      };
 
       const { result } = renderHook(
         () =>
@@ -395,17 +356,15 @@ describe('useMutation', () => {
               capturedError = err;
             },
           }),
-        { wrapper: createWrapper() }
+        { wrapper: createWrapper({ plugins: [failingPlugin] }) }
       );
 
       await act(async () => {
         try {
-          await result.current.mutate({
-            // @ts-expect-error - runtime guard for mismatched table
-            table: 'wrong',
-            rowId: 'x',
-            op: 'upsert',
-            payload: {},
+          await result.current.mutate.upsert('task-failing', {
+            title: 'Test',
+            completed: 0,
+            user_id: 'test-actor',
           });
         } catch {
           // Expected
@@ -413,25 +372,27 @@ describe('useMutation', () => {
       });
 
       expect(capturedError).not.toBeNull();
-      expect(capturedError!.message).toContain(
-        'MutationInput.table must match'
-      );
+      expect(capturedError!.message).toContain('Forced mutation failure');
     });
 
     it('reset() clears error state', async () => {
+      const failingPlugin: SyncClientPlugin = {
+        name: 'force-error',
+        beforeApplyLocalMutations() {
+          throw new Error('Forced mutation failure');
+        },
+      };
       const { result } = renderHook(
         () => useMutation({ table: 'tasks', syncImmediately: false }),
-        { wrapper: createWrapper() }
+        { wrapper: createWrapper({ plugins: [failingPlugin] }) }
       );
 
       await act(async () => {
         try {
-          await result.current.mutate({
-            // @ts-expect-error - runtime guard for mismatched table
-            table: 'wrong',
-            rowId: 'x',
-            op: 'upsert',
-            payload: {},
+          await result.current.mutate.upsert('task-failing', {
+            title: 'Test',
+            completed: 0,
+            user_id: 'test-actor',
           });
         } catch {
           // Expected

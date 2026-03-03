@@ -1,12 +1,12 @@
 'use client';
 
 import { cn } from '../lib/cn';
-import type { SyncClient } from '../lib/types';
+import type { SyncClientNode } from '../lib/types';
 import { Card, CardContent } from '../primitives/card';
 import { Spinner } from '../primitives/spinner';
 
 export interface TopologyCardProps {
-  clients: SyncClient[];
+  clients: SyncClientNode[];
   emptyMessage?: string;
   isLoading?: boolean;
   relayLabel?: string;

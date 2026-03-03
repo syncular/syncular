@@ -248,16 +248,11 @@ function NotesContent({
     if (!text) return;
     try {
       setMutationError(null);
-      await mutate({
-        op: 'upsert',
-        table: 'patient_notes',
-        rowId: crypto.randomUUID(),
-        payload: {
-          patient_id: selectedChannel,
-          note: text,
-          created_by: actorId,
-          created_at: new Date().toISOString(),
-        },
+      await mutate.upsert(crypto.randomUUID(), {
+        patient_id: selectedChannel,
+        note: text,
+        created_by: actorId,
+        created_at: new Date().toISOString(),
       });
       await sync();
       setNewNote('');
@@ -271,11 +266,7 @@ function NotesContent({
     async (rowId: string) => {
       try {
         setMutationError(null);
-        await mutate({
-          op: 'delete',
-          table: 'patient_notes',
-          rowId,
-        });
+        await mutate.delete(rowId);
         await sync();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

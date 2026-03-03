@@ -6,6 +6,7 @@ import type {
   ScopeValuesFromPatterns,
   SyncSubscriptionRequest,
 } from '@syncular/core';
+import { registerTableOrThrow } from '@syncular/core';
 import {
   type CreateClientHandlerOptions,
   createClientHandler,
@@ -116,11 +117,11 @@ export function defineClientSync<
         Identity
       >
     ) {
-      if (registeredTables.has(handlerOptions.table)) {
-        throw new Error(
-          `Client table handler already registered: ${handlerOptions.table}`
-        );
-      }
+      registerTableOrThrow(
+        registeredTables,
+        handlerOptions.table,
+        (table) => `Client table handler already registered: ${table}`
+      );
 
       handlers.push(
         createClientHandler({
@@ -139,7 +140,6 @@ export function defineClientSync<
           Identity
         >['subscribe']
       );
-      registeredTables.add(handlerOptions.table);
       return sync;
     },
     subscriptions(

@@ -15,9 +15,13 @@ import type {
   Updateable,
 } from 'kysely';
 import { sql } from 'kysely';
+import {
+  coerceNumber,
+  parseJsonValue,
+  toDialectJsonValue,
+} from './dialect/helpers';
 import type { ServerSyncDialect } from './dialect/types';
 import {
-  getServerHandlerOrThrow,
   type ServerHandlerCollection,
 } from './handlers/collection';
 import type { SyncServerAuth } from './handlers/types';
@@ -65,40 +69,6 @@ class RejectCommitError extends Error {
     super('REJECT_COMMIT');
     this.name = 'RejectCommitError';
   }
-}
-
-function toDialectJsonValue(
-  dialect: ServerSyncDialect,
-  value: unknown
-): unknown {
-  if (value === null || value === undefined) return null;
-  if (dialect.family === 'sqlite') return JSON.stringify(value);
-  return value;
-}
-
-function parseJsonValue(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-}
-
-function coerceNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (typeof value === 'bigint') {
-    const coerced = Number(value);
-    return Number.isFinite(coerced) ? coerced : null;
-  }
-  if (typeof value === 'string') {
-    const coerced = Number(value);
-    return Number.isFinite(coerced) ? coerced : null;
-  }
-  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -537,10 +507,10 @@ export async function pushCommit<
             const savepointName = 'sync_apply';
             let useSavepoints = dialect.supportsSavepoints;
             if (useSavepoints && ops.length === 1) {
-              const singleOpHandler = getServerHandlerOrThrow(
-                handlers,
-                ops[0]!.table
-              );
+              const singleOpHandler = handlers.byTable.get(ops[0]!.table);
+              if (!singleOpHandler) {
+                throw new Error(`Unknown table: ${ops[0]!.table}`);
+              }
               if (singleOpHandler.canRejectSingleOperationWithoutSavepoint) {
                 useSavepoints = false;
               }
@@ -561,7 +531,10 @@ export async function pushCommit<
 
               for (let i = 0; i < ops.length; ) {
                 const op = ops[i]!;
-                const handler = getServerHandlerOrThrow(handlers, op.table);
+                const handler = handlers.byTable.get(op.table);
+                if (!handler) {
+                  throw new Error(`Unknown table: ${op.table}`);
+                }
 
                 const operationCtx = {
                   db: trx,

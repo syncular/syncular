@@ -324,17 +324,16 @@ function EditorPanelContent({
 
       setEditorError(null);
       try {
-        await titleMutation.mutate({
-          op: 'upsert',
-          rowId: documentRow?.id ?? EDITOR_DOC_ROW_ID,
-          payload: {
+        await titleMutation.mutate.upsert(
+          documentRow?.id ?? EDITOR_DOC_ROW_ID,
+          {
             completed: documentRow?.completed ?? 0,
             user_id: documentRow?.user_id ?? actorId,
             [YJS_PAYLOAD_KEY]: {
               title: yjsEnvelope,
             },
-          },
-        });
+          }
+        );
       } catch (error) {
         pendingUpdatesRef.current = [
           ...queuedUpdates,

@@ -1,4 +1,4 @@
-import type { SyncClient } from '@syncular/ui';
+import type { SyncClientNode } from '@syncular/ui';
 import type { ConsoleClient, SyncStats } from './types';
 
 interface TopologyAdapterOptions {
@@ -55,7 +55,7 @@ function inferLagCommitCount(
 function inferStatus(
   client: ConsoleClient,
   lagCommitCount: number
-): SyncClient['status'] {
+): SyncClientNode['status'] {
   if (client.activityState === 'stale') {
     return 'offline';
   }
@@ -80,7 +80,7 @@ export function adaptConsoleClientsToTopology(
   clients: ConsoleClient[],
   stats?: SyncStats,
   options: TopologyAdapterOptions = {}
-): SyncClient[] {
+): SyncClientNode[] {
   const maxNodes = options.maxNodes ?? 10;
 
   return clients.slice(0, maxNodes).map((client, index) => {

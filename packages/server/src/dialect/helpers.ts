@@ -5,6 +5,7 @@
  */
 
 import type { StoredScopes } from '@syncular/core';
+import type { ServerSyncDialect } from './types';
 
 export function coerceNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -22,6 +23,24 @@ export function coerceIsoString(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value instanceof Date) return value.toISOString();
   return String(value);
+}
+
+export function parseJsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+export function toDialectJsonValue(
+  dialect: Pick<ServerSyncDialect, 'family'>,
+  value: unknown
+): unknown {
+  if (value === null || value === undefined) return null;
+  if (dialect.family === 'sqlite') return JSON.stringify(value);
+  return value;
 }
 
 export function parseScopes(value: unknown): StoredScopes {
