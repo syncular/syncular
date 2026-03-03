@@ -46,7 +46,9 @@ export function topologicallySortTablesByDependencies<T extends TableEntry>(
   const visit = (table: string) => {
     if (visited.has(table)) return;
     if (visiting.has(table)) {
-      throw new Error(`Circular dependency detected involving table "${table}"`);
+      throw new Error(
+        `Circular dependency detected involving table "${table}"`
+      );
     }
     const handler = byTable.get(table);
     if (!handler) throw new Error(`Unknown table: ${table}`);

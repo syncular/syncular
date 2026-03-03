@@ -9,12 +9,11 @@ type OperationName = keyof operations;
 type JsonResponse<
   TOperation extends OperationName,
   TStatus extends keyof operations[TOperation]['responses'],
-> =
-  operations[TOperation]['responses'][TStatus] extends {
-    content: { 'application/json': infer TJson };
-  }
-    ? TJson
-    : never;
+> = operations[TOperation]['responses'][TStatus] extends {
+  content: { 'application/json': infer TJson };
+}
+  ? TJson
+  : never;
 
 type OperationWithResponse<TStatus extends PropertyKey> = {
   [TName in OperationName]: TStatus extends keyof operations[TName]['responses']
@@ -22,10 +21,8 @@ type OperationWithResponse<TStatus extends PropertyKey> = {
     : never;
 }[OperationName];
 
-type JsonSuccessResponse<TOperation extends OperationWithResponse<200>> = JsonResponse<
-  TOperation,
-  200
->;
+type JsonSuccessResponse<TOperation extends OperationWithResponse<200>> =
+  JsonResponse<TOperation, 200>;
 
 type JsonRequestBody<TOperation extends OperationName> =
   NonNullable<operations[TOperation]['requestBody']> extends {
@@ -87,11 +84,8 @@ export type ConsoleApiKey = JsonSuccessResponse<'getConsoleApiKeysById'>;
 export type ConsoleApiKeyBulkRevokeResponse =
   JsonSuccessResponse<'postConsoleApiKeysBulkRevoke'>;
 
-export type ConsoleCommitListItem =
-  PaginatedItem<'getConsoleCommits'> & GatewayCommitFields;
-
-export type ConsoleChange =
-  JsonSuccessResponse<'getConsoleCommitsBySeq'>['changes'][number];
+export type ConsoleCommitListItem = PaginatedItem<'getConsoleCommits'> &
+  GatewayCommitFields;
 
 export type ConsoleCommitDetail =
   JsonSuccessResponse<'getConsoleCommitsBySeq'> & GatewayCommitFields;
@@ -102,15 +96,18 @@ export type ConsoleClient = PaginatedItem<'getConsoleClients'> &
 export type ConsoleHandler =
   JsonSuccessResponse<'getConsoleHandlers'>['items'][number];
 
-export type ConsoleRequestEvent =
-  PaginatedItem<'getConsoleEvents'> & GatewayEventFields;
+export type ConsoleRequestEvent = PaginatedItem<'getConsoleEvents'> &
+  GatewayEventFields;
 
 export type ConsoleRequestPayload =
   JsonSuccessResponse<'getConsoleEventsByIdPayload'> & GatewayEventFields;
 
 type BaseConsoleTimelineItem = PaginatedItem<'getConsoleTimeline'>;
 
-export type ConsoleTimelineItem = Omit<BaseConsoleTimelineItem, 'commit' | 'event'> &
+export type ConsoleTimelineItem = Omit<
+  BaseConsoleTimelineItem,
+  'commit' | 'event'
+> &
   GatewayTimelineFields & {
     commit: ConsoleCommitListItem | null;
     event: ConsoleRequestEvent | null;
@@ -119,8 +116,8 @@ export type ConsoleTimelineItem = Omit<BaseConsoleTimelineItem, 'commit' | 'even
 export type ConsoleOperationType =
   PaginatedItem<'getConsoleOperations'>['operationType'];
 
-export type ConsoleOperationEvent =
-  PaginatedItem<'getConsoleOperations'> & GatewayOperationFields;
+export type ConsoleOperationEvent = PaginatedItem<'getConsoleOperations'> &
+  GatewayOperationFields;
 
 export type ConsoleNotifyDataChangeResponse =
   JsonSuccessResponse<'postConsoleNotifyDataChange'>;
@@ -144,14 +141,8 @@ export type TimeseriesInterval =
 export type TimeseriesRange =
   JsonSuccessResponse<'getConsoleStatsTimeseries'>['range'];
 
-export type TimeseriesBucket =
-  JsonSuccessResponse<'getConsoleStatsTimeseries'>['buckets'][number];
-
 export type TimeseriesStatsResponse =
   JsonSuccessResponse<'getConsoleStatsTimeseries'> & GatewayAggregateMetadata;
-
-export type LatencyPercentiles =
-  JsonSuccessResponse<'getConsoleStatsLatency'>['push'];
 
 export type LatencyStatsResponse =
   JsonSuccessResponse<'getConsoleStatsLatency'> & GatewayAggregateMetadata;
@@ -167,7 +158,5 @@ export interface LiveEvent {
   timestamp: string;
   data: Record<string, unknown>;
 }
-
-export type ConsoleBlob = JsonSuccessResponse<'getConsoleStorage'>['items'][number];
 
 export type ConsoleBlobListResponse = JsonSuccessResponse<'getConsoleStorage'>;

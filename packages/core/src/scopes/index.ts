@@ -181,7 +181,10 @@ export function normalizeScopes(
 
 export function createSingleVariableScopeMetadata(
   scopes: readonly ScopeDefinition[]
-): { scopePatterns: ScopePattern[]; scopeColumnsByVariable: Record<string, string> } {
+): {
+  scopePatterns: ScopePattern[];
+  scopeColumnsByVariable: Record<string, string>;
+} {
   const scopeColumnMap = normalizeScopes(scopes);
   const scopePatterns = Object.keys(scopeColumnMap) as ScopePattern[];
   const scopeColumnsByVariable: Record<string, string> = {};

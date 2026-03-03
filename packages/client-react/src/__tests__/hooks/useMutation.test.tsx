@@ -335,7 +335,9 @@ describe('useMutation', () => {
       });
 
       expect(result.current.error).not.toBeNull();
-      expect(result.current.error?.message).toContain('Forced mutation failure');
+      expect(result.current.error?.message).toContain(
+        'Forced mutation failure'
+      );
     });
 
     it('calls onError callback on failure', async () => {

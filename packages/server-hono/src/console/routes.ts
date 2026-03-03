@@ -18,8 +18,8 @@
 import { logSyncEvent } from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
-  compactChanges,
   coerceNumber,
+  compactChanges,
   computePruneWatermarkCommitSeq,
   notifyExternalDataChange,
   parseJsonValue,
@@ -954,7 +954,7 @@ export function createConsoleRoutes<
   routes.get(
     '/stats',
     describeConsoleRoute({
-summary: 'Get sync statistics',
+      summary: 'Get sync statistics',
       responses: {
         200: {
           description: 'Sync statistics',
@@ -994,7 +994,7 @@ summary: 'Get sync statistics',
   routes.get(
     '/stats/timeseries',
     describeConsoleRoute({
-summary: 'Get time-series statistics',
+      summary: 'Get time-series statistics',
       responses: {
         200: {
           description: 'Time-series statistics',
@@ -1189,7 +1189,7 @@ summary: 'Get time-series statistics',
   routes.get(
     '/stats/latency',
     describeConsoleRoute({
-summary: 'Get latency percentiles',
+      summary: 'Get latency percentiles',
       responses: {
         200: {
           description: 'Latency percentiles',
@@ -1299,7 +1299,7 @@ summary: 'Get latency percentiles',
   routes.get(
     '/timeline',
     describeConsoleRoute({
-summary: 'List timeline items',
+      summary: 'List timeline items',
       responses: {
         200: {
           description: 'Paginated merged timeline',
@@ -1527,7 +1527,7 @@ summary: 'List timeline items',
   routes.get(
     '/commits',
     describeConsoleRoute({
-summary: 'List commits',
+      summary: 'List commits',
       responses: {
         200: {
           description: 'Paginated commit list',
@@ -1612,7 +1612,7 @@ summary: 'List commits',
   routes.get(
     '/commits/:seq',
     describeConsoleRoute({
-summary: 'Get commit details',
+      summary: 'Get commit details',
       responses: {
         200: {
           description: 'Commit with changes',
@@ -1722,7 +1722,7 @@ summary: 'Get commit details',
   routes.get(
     '/clients',
     describeConsoleRoute({
-summary: 'List clients',
+      summary: 'List clients',
       responses: {
         200: {
           description: 'Paginated client list',
@@ -1891,7 +1891,7 @@ summary: 'List clients',
   routes.get(
     '/handlers',
     describeConsoleRoute({
-summary: 'List registered handlers',
+      summary: 'List registered handlers',
       responses: {
         200: {
           description: 'Handler list',
@@ -1925,7 +1925,7 @@ summary: 'List registered handlers',
   routes.get(
     '/operations',
     describeConsoleRoute({
-summary: 'List operation audit events',
+      summary: 'List operation audit events',
       responses: {
         200: {
           description: 'Paginated operation events',
@@ -1998,7 +1998,7 @@ summary: 'List operation audit events',
   routes.post(
     '/prune/preview',
     describeConsoleRoute({
-summary: 'Preview pruning',
+      summary: 'Preview pruning',
       responses: {
         200: {
           description: 'Prune preview',
@@ -2045,7 +2045,7 @@ summary: 'Preview pruning',
   routes.post(
     '/prune',
     describeConsoleRoute({
-summary: 'Trigger pruning',
+      summary: 'Trigger pruning',
       responses: {
         200: {
           description: 'Prune result',
@@ -2100,7 +2100,7 @@ summary: 'Trigger pruning',
   routes.post(
     '/compact',
     describeConsoleRoute({
-summary: 'Trigger compaction',
+      summary: 'Trigger compaction',
       responses: {
         200: {
           description: 'Compact result',
@@ -2162,7 +2162,7 @@ summary: 'Trigger compaction',
   routes.post(
     '/notify-data-change',
     describeConsoleRoute({
-summary: 'Notify external data change',
+      summary: 'Notify external data change',
       description:
         'Creates a synthetic commit to force re-bootstrap for affected tables. ' +
         'Use after pipeline imports or direct DB writes to notify connected clients.',
@@ -2234,7 +2234,7 @@ summary: 'Notify external data change',
   routes.delete(
     '/clients/:id',
     describeConsoleRoute({
-summary: 'Evict client',
+      summary: 'Evict client',
       responses: {
         200: {
           description: 'Evict result',
@@ -2301,7 +2301,7 @@ summary: 'Evict client',
   routes.get(
     '/events',
     describeConsoleRoute({
-summary: 'List request events',
+      summary: 'List request events',
       responses: {
         200: {
           description: 'Paginated event list',
@@ -2626,7 +2626,7 @@ summary: 'List request events',
   routes.get(
     '/events/:id',
     describeConsoleRoute({
-summary: 'Get event details',
+      summary: 'Get event details',
       responses: {
         200: {
           description: 'Event details',
@@ -2688,7 +2688,7 @@ summary: 'Get event details',
   routes.get(
     '/events/:id/payload',
     describeConsoleRoute({
-summary: 'Get event payload snapshot',
+      summary: 'Get event payload snapshot',
       responses: {
         200: {
           description: 'Payload snapshot details',
@@ -2786,7 +2786,7 @@ summary: 'Get event payload snapshot',
   routes.delete(
     '/events',
     describeConsoleRoute({
-summary: 'Clear all events',
+      summary: 'Clear all events',
       responses: {
         200: {
           description: 'Clear result',
@@ -2829,7 +2829,7 @@ summary: 'Clear all events',
   routes.post(
     '/events/prune',
     describeConsoleRoute({
-summary: 'Prune old events',
+      summary: 'Prune old events',
       responses: {
         200: {
           description: 'Prune result',
@@ -2872,7 +2872,7 @@ summary: 'Prune old events',
   routes.get(
     '/api-keys',
     describeConsoleRoute({
-summary: 'List API keys',
+      summary: 'List API keys',
       responses: {
         200: {
           description: 'Paginated API key list',
@@ -3000,7 +3000,7 @@ summary: 'List API keys',
   routes.post(
     '/api-keys',
     describeConsoleRoute({
-summary: 'Create API key',
+      summary: 'Create API key',
       responses: {
         201: {
           description: 'Created API key',
@@ -3099,7 +3099,7 @@ summary: 'Create API key',
   routes.get(
     '/api-keys/:id',
     describeConsoleRoute({
-summary: 'Get API key',
+      summary: 'Get API key',
       responses: {
         200: {
           description: 'API key details',
@@ -3170,7 +3170,7 @@ summary: 'Get API key',
   routes.delete(
     '/api-keys/:id',
     describeConsoleRoute({
-summary: 'Revoke API key',
+      summary: 'Revoke API key',
       responses: {
         200: {
           description: 'Revoke result',
@@ -3220,7 +3220,7 @@ summary: 'Revoke API key',
   routes.post(
     '/api-keys/bulk-revoke',
     describeConsoleRoute({
-summary: 'Bulk revoke API keys',
+      summary: 'Bulk revoke API keys',
       responses: {
         200: {
           description: 'Bulk revoke result',
@@ -3326,7 +3326,7 @@ summary: 'Bulk revoke API keys',
   routes.post(
     '/api-keys/:id/rotate/stage',
     describeConsoleRoute({
-summary: 'Stage rotate API key',
+      summary: 'Stage rotate API key',
       responses: {
         200: {
           description: 'Staged API key replacement',
@@ -3433,7 +3433,7 @@ summary: 'Stage rotate API key',
   routes.post(
     '/api-keys/:id/rotate',
     describeConsoleRoute({
-summary: 'Rotate API key',
+      summary: 'Rotate API key',
       responses: {
         200: {
           description: 'Rotated API key',
@@ -3551,7 +3551,7 @@ summary: 'Rotate API key',
   routes.get(
     '/storage',
     describeConsoleRoute({
-summary: 'List storage items',
+      summary: 'List storage items',
       responses: {
         200: {
           description: 'Paginated list of storage items',
@@ -3603,7 +3603,7 @@ summary: 'List storage items',
   routes.get(
     '/storage/:key{.+}/download',
     describeConsoleRoute({
-summary: 'Download a storage item',
+      summary: 'Download a storage item',
       responses: {
         200: { description: 'Storage item contents' },
         401: {
@@ -3653,7 +3653,7 @@ summary: 'Download a storage item',
   routes.delete(
     '/storage/:key{.+}',
     describeConsoleRoute({
-summary: 'Delete a storage item',
+      summary: 'Delete a storage item',
       responses: {
         200: {
           description: 'Storage item deleted',

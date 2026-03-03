@@ -8,12 +8,7 @@
  * standard Kysely API in renderer code.
  */
 
-import type {
-  DatabaseConnection,
-  Dialect,
-  Driver,
-  QueryResult,
-} from 'kysely';
+import type { DatabaseConnection, Dialect, Driver, QueryResult } from 'kysely';
 import { CompiledQuery } from 'kysely';
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 

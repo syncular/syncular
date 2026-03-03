@@ -407,7 +407,7 @@ export interface UseQueryOptions {
   keyField?: string;
 }
 
-export type MutationInput<TTable extends string> =
+export type MutationInput =
   | {
       rowId: string;
       op: 'delete';
@@ -426,7 +426,7 @@ export interface MutationResult {
   clientCommitId: string;
 }
 
-export interface FluentMutation<TTable extends string> {
+export interface FluentMutation {
   upsert: (
     rowId: string,
     payload: Record<string, unknown>,
@@ -438,9 +438,9 @@ export interface FluentMutation<TTable extends string> {
   ) => Promise<MutationResult>;
 }
 
-export interface UseMutationResult<TTable extends string> {
-  mutate: FluentMutation<TTable>;
-  mutateMany: (inputs: Array<MutationInput<TTable>>) => Promise<MutationResult>;
+export interface UseMutationResult {
+  mutate: FluentMutation;
+  mutateMany: (inputs: Array<MutationInput>) => Promise<MutationResult>;
   isPending: boolean;
   error: Error | null;
   reset: () => void;
@@ -1607,18 +1607,13 @@ export function createSyncularReact<
         error: syncQuery.error,
         refetch: syncQuery.refetch,
       }),
-      [
-        syncQuery.data,
-        syncQuery.isLoading,
-        syncQuery.error,
-        syncQuery.refetch,
-      ]
+      [syncQuery.data, syncQuery.isLoading, syncQuery.error, syncQuery.refetch]
     );
   }
 
   function useMutation<TTable extends keyof DB & string>(
     options: UseMutationOptions<TTable>
-  ): UseMutationResult<TTable> {
+  ): UseMutationResult {
     const { table, syncImmediately = true, onSuccess, onError } = options;
     const { db } = useSyncContext();
     const engine = useEngine();
@@ -1627,7 +1622,7 @@ export function createSyncularReact<
     const [error, setError] = useState<Error | null>(null);
 
     const enqueue = useCallback(
-      async (inputs: Array<MutationInput<TTable>>): Promise<MutationResult> => {
+      async (inputs: Array<MutationInput>): Promise<MutationResult> => {
         setIsPending(true);
         setError(null);
 

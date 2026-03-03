@@ -5,9 +5,7 @@ type OpenApiRouteConfig = Parameters<typeof describeRoute>[0];
 const CONSOLE_ROUTE_TAGS = ['console'];
 const CONSOLE_GATEWAY_ROUTE_TAGS = ['console-gateway'];
 
-export function describeConsoleRoute(
-  config: Omit<OpenApiRouteConfig, 'tags'>
-) {
+export function describeConsoleRoute(config: Omit<OpenApiRouteConfig, 'tags'>) {
   return describeRoute({
     tags: CONSOLE_ROUTE_TAGS,
     ...config,

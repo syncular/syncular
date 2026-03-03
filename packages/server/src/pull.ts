@@ -26,7 +26,7 @@ import {
   getServerBootstrapOrderFor,
   type ServerHandlerCollection,
 } from './handlers/collection';
-import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
+import type { SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
 import {

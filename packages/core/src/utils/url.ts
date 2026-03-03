@@ -1,6 +1,7 @@
 const ABSOLUTE_URL_SCHEME_REGEX = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
-const trimTrailingSlashes = (value: string): string => value.replace(/\/+$/, '');
+const trimTrailingSlashes = (value: string): string =>
+  value.replace(/\/+$/, '');
 
 export function normalizeSyncBaseUrl(url: string): string {
   const trimmed = trimTrailingSlashes(url.trim());
@@ -22,6 +23,7 @@ export function resolveUrlFromBase(
       baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
     ).toString();
   }
-  if (origin) return new URL(`${normalizedBaseUrl}/${normalizedPath}`, origin).toString();
+  if (origin)
+    return new URL(`${normalizedBaseUrl}/${normalizedPath}`, origin).toString();
   return `${normalizedBaseUrl}/${normalizedPath}`;
 }
