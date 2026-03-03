@@ -3,6 +3,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { ConnectionConfig } from '../lib/api';
 import type {
   ApiKeyType,
   ConsoleApiKey,
@@ -25,7 +26,6 @@ import type {
   TimeseriesRange,
   TimeseriesStatsResponse,
 } from '../lib/types';
-import type { ConnectionConfig } from '../lib/api';
 import { useConnection } from './ConnectionContext';
 import { useInstanceContext } from './useInstanceContext';
 
@@ -95,8 +95,7 @@ type BlobsOptions = {
 };
 
 const queryKeys = {
-  stats: (params?: StatsParams) =>
-    ['console', 'stats', params] as const,
+  stats: (params?: StatsParams) => ['console', 'stats', params] as const,
   timeseries: (params?: TimeseriesParams) =>
     ['console', 'stats', 'timeseries', params] as const,
   latency: (params?: LatencyParams) =>
@@ -107,7 +106,8 @@ const queryKeys = {
     partitionId?: string,
     instanceId?: string
   ) => ['console', 'commit-detail', seq, partitionId, instanceId] as const,
-  timeline: (params?: TimelineParams) => ['console', 'timeline', params] as const,
+  timeline: (params?: TimelineParams) =>
+    ['console', 'timeline', params] as const,
   clients: (params?: ListParams) => ['console', 'clients', params] as const,
   eventDetail: (
     id?: string | number,
@@ -532,12 +532,13 @@ export function useHandlers(options: { instanceId?: string } = {}) {
   });
 }
 
-export function usePrunePreview(
-  options: PrunePreviewOptions = {}
-) {
+export function usePrunePreview(options: PrunePreviewOptions = {}) {
   const instanceId = useEffectiveInstanceId(options.instanceId);
 
-  return useConsoleJsonQuery<{ watermarkCommitSeq: number; commitsToDelete: number }>({
+  return useConsoleJsonQuery<{
+    watermarkCommitSeq: number;
+    commitsToDelete: number;
+  }>({
     queryKey: queryKeys.prunePreview(instanceId),
     path: '/console/prune/preview',
     query: { instanceId },
@@ -671,9 +672,7 @@ export function useNotifyDataChangeMutation() {
   });
 }
 
-export function useApiKeys(
-  params: ApiKeysParams = {}
-) {
+export function useApiKeys(params: ApiKeysParams = {}) {
   const instanceId = useEffectiveInstanceId(params.instanceId);
 
   return useConsoleJsonQuery<PaginatedResponse<ConsoleApiKey>>({
@@ -775,9 +774,7 @@ export function useStageRotateApiKeyMutation() {
 // Blob storage hooks
 // ---------------------------------------------------------------------------
 
-export function useBlobs(
-  options: BlobsOptions = {}
-) {
+export function useBlobs(options: BlobsOptions = {}) {
   return useConsoleJsonQuery<ConsoleBlobListResponse>({
     queryKey: queryKeys.storage({
       prefix: options.prefix,

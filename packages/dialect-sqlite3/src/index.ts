@@ -5,8 +5,12 @@
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.
  */
 
-import type { DatabaseConnection, Dialect, QueryResult } from 'kysely';
-import { CompiledQuery } from 'kysely';
+import type {
+  CompiledQuery,
+  DatabaseConnection,
+  Dialect,
+  QueryResult,
+} from 'kysely';
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import sqlite3 from 'sqlite3';
 

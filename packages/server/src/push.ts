@@ -21,9 +21,7 @@ import {
   toDialectJsonValue,
 } from './dialect/helpers';
 import type { ServerSyncDialect } from './dialect/types';
-import {
-  type ServerHandlerCollection,
-} from './handlers/collection';
+import type { ServerHandlerCollection } from './handlers/collection';
 import type { SyncServerAuth } from './handlers/types';
 import {
   type SyncServerPushPlugin,

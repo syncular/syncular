@@ -5,11 +5,7 @@
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.
  */
 
-import type {
-  DatabaseConnection,
-  Dialect,
-  QueryResult,
-} from 'kysely';
+import type { DatabaseConnection, Dialect, QueryResult } from 'kysely';
 import { CompiledQuery } from 'kysely';
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 
@@ -72,9 +68,7 @@ class ExpoSqliteDriver extends BaseSqliteDriver {
     });
   }
 
-  async beginTransaction(
-    connection: DatabaseConnection
-  ): Promise<void> {
+  async beginTransaction(connection: DatabaseConnection): Promise<void> {
     await connection.executeQuery(CompiledQuery.raw('begin immediate'));
   }
 

@@ -516,7 +516,6 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
   #transformRow(row: UnknownRow, plan: QueryResultPlan): UnknownRow {
     const source = row as Record<string, unknown>;
     const target: Record<string, unknown> = { ...source };
-    const rowColumns = Object.keys(source);
 
     if (plan.selectAllTables.length > 0) {
       const codecCandidates = new Map<string, AnyColumnCodec>();

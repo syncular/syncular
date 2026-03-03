@@ -36,9 +36,9 @@ import {
   InvalidSubscriptionScopeError,
   maybeCompactChanges,
   maybePruneSync,
-  parseJsonValue,
   type PruneOptions,
   type PullResult,
+  parseJsonValue,
   pull,
   pushCommit,
   readSnapshotChunk,
@@ -836,7 +836,10 @@ export function createSyncRoutes<
       });
   };
 
-  type PushRequestBody = Omit<z.infer<typeof SyncPushRequestSchema>, 'clientId'>;
+  type PushRequestBody = Omit<
+    z.infer<typeof SyncPushRequestSchema>,
+    'clientId'
+  >;
 
   type PushExecutionContext = {
     auth: Auth;
@@ -1987,8 +1990,6 @@ export function createSyncRoutes<
     });
   }
 
-  return routes;
-
   async function handleRealtimeEvent(event: SyncRealtimeEvent): Promise<void> {
     if (!wsConnectionManager) return;
     if (event.type !== 'commit') return;
@@ -2082,9 +2083,7 @@ export function createSyncRoutes<
           requestId,
           ok: false,
           status: 'rejected',
-          results: [
-            { opIndex: 0, status: 'error', error: errorMessage },
-          ],
+          results: [{ opIndex: 0, status: 'error', error: errorMessage }],
         });
         recordWsPushFailure({
           partitionId,
@@ -2234,6 +2233,8 @@ export function createSyncRoutes<
       });
     }
   }
+
+  return routes;
 }
 
 export function getSyncWebSocketConnectionManager(

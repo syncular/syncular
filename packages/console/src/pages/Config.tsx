@@ -25,10 +25,10 @@ import {
   TableCell,
   TableHead,
   TableHeader,
-    TableRow,
-    Toggle,
-    ToggleGroup,
-  } from '@syncular/ui';
+  TableRow,
+  Toggle,
+  ToggleGroup,
+} from '@syncular/ui';
 import { useEffect, useMemo, useState } from 'react';
 import {
   PAGE_SIZE_OPTIONS,
@@ -46,7 +46,7 @@ import { useConnection } from '../hooks/ConnectionContext';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
-  } from '../lib/types';
+} from '../lib/types';
 
 const ToggleGroupItem = Toggle;
 

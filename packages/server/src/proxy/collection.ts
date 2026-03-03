@@ -1,6 +1,4 @@
-import {
-  createTableLookup,
-} from '@syncular/core';
+import { createTableLookup } from '@syncular/core';
 import type { ProxyTableHandler } from './types';
 
 export interface ProxyHandlerCollection {

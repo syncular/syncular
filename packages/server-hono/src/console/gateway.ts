@@ -1270,7 +1270,7 @@ export function createConsoleGatewayRoutes(
   routes.get(
     '/instances',
     describeConsoleGatewayRoute({
-summary: 'List configured downstream console instances',
+      summary: 'List configured downstream console instances',
       responses: {
         200: {
           description: 'Configured instances',
@@ -1307,7 +1307,7 @@ summary: 'List configured downstream console instances',
   routes.get(
     '/instances/health',
     describeConsoleGatewayRoute({
-summary: 'Probe downstream console health by instance',
+      summary: 'Probe downstream console health by instance',
       responses: {
         200: {
           description: 'Per-instance health results',
@@ -1366,7 +1366,7 @@ summary: 'Probe downstream console health by instance',
   routes.get(
     '/handlers',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'List handlers for a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1397,7 +1397,7 @@ summary:
   routes.post(
     '/prune/preview',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Preview prune on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1428,7 +1428,7 @@ summary:
   routes.post(
     '/prune',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Trigger prune on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1459,7 +1459,7 @@ summary:
   routes.post(
     '/compact',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Trigger compaction on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1490,7 +1490,7 @@ summary:
   routes.post(
     '/notify-data-change',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Notify data change on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1524,7 +1524,7 @@ summary:
   routes.delete(
     '/clients/:id',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Evict client on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1557,7 +1557,7 @@ summary:
   routes.delete(
     '/events',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Clear request events on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1588,7 +1588,7 @@ summary:
   routes.post(
     '/events/prune',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Prune request events on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1619,7 +1619,7 @@ summary:
   routes.get(
     '/api-keys',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'List API keys for a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1654,7 +1654,7 @@ summary:
   routes.post(
     '/api-keys',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Create API key on a single target instance (requires instance selection)',
       responses: {
         201: {
@@ -1688,7 +1688,7 @@ summary:
   routes.get(
     '/api-keys/:id',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Get API key from a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1721,7 +1721,7 @@ summary:
   routes.delete(
     '/api-keys/:id',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Revoke API key on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1754,7 +1754,7 @@ summary:
   routes.post(
     '/api-keys/bulk-revoke',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Bulk revoke API keys on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1788,7 +1788,7 @@ summary:
   routes.post(
     '/api-keys/:id/rotate/stage',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Stage-rotate API key on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1821,7 +1821,7 @@ summary:
   routes.post(
     '/api-keys/:id/rotate',
     describeConsoleGatewayRoute({
-summary:
+      summary:
         'Rotate API key on a single target instance (requires instance selection)',
       responses: {
         200: {
@@ -1854,7 +1854,7 @@ summary:
   routes.get(
     '/stats',
     describeConsoleGatewayRoute({
-summary: 'Get merged sync stats across instances',
+      summary: 'Get merged sync stats across instances',
       responses: {
         200: {
           description: 'Merged stats',
@@ -1934,7 +1934,7 @@ summary: 'Get merged sync stats across instances',
   routes.get(
     '/stats/timeseries',
     describeConsoleGatewayRoute({
-summary: 'Get merged time-series stats across instances',
+      summary: 'Get merged time-series stats across instances',
       responses: {
         200: {
           description: 'Merged time-series stats',
@@ -1986,7 +1986,7 @@ summary: 'Get merged time-series stats across instances',
   routes.get(
     '/stats/latency',
     describeConsoleGatewayRoute({
-summary: 'Get merged latency stats across instances',
+      summary: 'Get merged latency stats across instances',
       responses: {
         200: {
           description: 'Merged latency stats',
@@ -2039,7 +2039,7 @@ summary: 'Get merged latency stats across instances',
   routes.get(
     '/commits',
     describeConsoleGatewayRoute({
-summary: 'List merged commits across instances',
+      summary: 'List merged commits across instances',
       responses: {
         200: {
           description: 'Merged commits',
@@ -2118,7 +2118,7 @@ summary: 'List merged commits across instances',
   routes.get(
     '/commits/:seq',
     describeConsoleGatewayRoute({
-summary: 'Get merged commit detail by federated id',
+      summary: 'Get merged commit detail by federated id',
       responses: {
         200: {
           description: 'Commit detail',
@@ -2188,7 +2188,7 @@ summary: 'Get merged commit detail by federated id',
   routes.get(
     '/clients',
     describeConsoleGatewayRoute({
-summary: 'List merged clients across instances',
+      summary: 'List merged clients across instances',
       responses: {
         200: {
           description: 'Merged clients',
@@ -2264,7 +2264,7 @@ summary: 'List merged clients across instances',
   routes.get(
     '/timeline',
     describeConsoleGatewayRoute({
-summary: 'List merged timeline items across instances',
+      summary: 'List merged timeline items across instances',
       responses: {
         200: {
           description: 'Merged timeline',
@@ -2360,7 +2360,7 @@ summary: 'List merged timeline items across instances',
   routes.get(
     '/operations',
     describeConsoleGatewayRoute({
-summary: 'List merged operation events across instances',
+      summary: 'List merged operation events across instances',
       responses: {
         200: {
           description: 'Merged operations',
@@ -2440,7 +2440,7 @@ summary: 'List merged operation events across instances',
   routes.get(
     '/events',
     describeConsoleGatewayRoute({
-summary: 'List merged request events across instances',
+      summary: 'List merged request events across instances',
       responses: {
         200: {
           description: 'Merged events',
@@ -2821,7 +2821,7 @@ summary: 'List merged request events across instances',
   routes.get(
     '/events/:id',
     describeConsoleGatewayRoute({
-summary: 'Get merged event detail by federated id',
+      summary: 'Get merged event detail by federated id',
       responses: {
         200: {
           description: 'Event detail',
@@ -2895,7 +2895,7 @@ summary: 'Get merged event detail by federated id',
   routes.get(
     '/events/:id/payload',
     describeConsoleGatewayRoute({
-summary: 'Get merged event payload by federated id',
+      summary: 'Get merged event payload by federated id',
       responses: {
         200: {
           description: 'Event payload',
