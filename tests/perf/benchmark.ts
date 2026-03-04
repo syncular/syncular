@@ -104,6 +104,7 @@ export function formatBenchmarkTable(results: BenchmarkResult[]): string {
 interface PerformanceThresholds {
   bootstrap_1k: number; // ms
   bootstrap_10k: number; // ms
+  bootstrap_100k: number; // ms
   rebootstrap_after_prune_p99: number; // ms
   maintenance_prune_p99: number; // ms
   incremental_pull_p99: number; // ms
@@ -124,6 +125,7 @@ interface PerformanceThresholds {
 export const defaultThresholds: PerformanceThresholds = {
   bootstrap_1k: 500,
   bootstrap_10k: 3000,
+  bootstrap_100k: 25000,
   rebootstrap_after_prune_p99: 2000,
   maintenance_prune_p99: 1500,
   incremental_pull_p99: 50,

@@ -143,8 +143,8 @@ const blobRoutes = createBlobRoutes({
   // Required for database adapter
   tokenSigner,
   db,
-  // Optional: Custom access control
-  canAccessBlob: async ({ actorId, hash }) => {
+  // Required: enforce tenant/ownership access control
+  canAccessBlob: async ({ actorId, hash, partitionId }) => {
     // Check if user can access this blob
     return true;
   },

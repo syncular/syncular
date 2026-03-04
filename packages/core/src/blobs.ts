@@ -56,6 +56,8 @@ export interface BlobTransport {
 export interface BlobSignUploadOptions {
   /** SHA-256 hash (for naming and checksum validation) */
   hash: string;
+  /** Optional tenant/partition namespace for storage lookups */
+  partitionId?: string;
   /** Content size in bytes */
   size: number;
   /** MIME type */
@@ -82,8 +84,14 @@ export interface BlobSignedUpload {
 export interface BlobSignDownloadOptions {
   /** SHA-256 hash */
   hash: string;
+  /** Optional tenant/partition namespace for storage lookups */
+  partitionId?: string;
   /** URL expiration in seconds */
   expiresIn: number;
+}
+
+export interface BlobStoragePartitionOptions {
+  partitionId?: string;
 }
 
 /**
@@ -108,19 +116,20 @@ export interface BlobStorageAdapter {
   /**
    * Check if a blob exists in storage.
    */
-  exists(hash: string): Promise<boolean>;
+  exists(hash: string, options?: BlobStoragePartitionOptions): Promise<boolean>;
 
   /**
    * Delete a blob (for garbage collection).
    */
-  delete(hash: string): Promise<void>;
+  delete(hash: string, options?: BlobStoragePartitionOptions): Promise<void>;
 
   /**
    * Get blob metadata from storage (optional).
    * Used to verify uploads completed successfully.
    */
   getMetadata?(
-    hash: string
+    hash: string,
+    options?: BlobStoragePartitionOptions
   ): Promise<{ size: number; mimeType?: string } | null>;
 
   /**
@@ -130,7 +139,8 @@ export interface BlobStorageAdapter {
   put?(
     hash: string,
     data: Uint8Array,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    options?: BlobStoragePartitionOptions
   ): Promise<void>;
 
   /**
@@ -140,18 +150,25 @@ export interface BlobStorageAdapter {
   putStream?(
     hash: string,
     stream: ReadableStream<Uint8Array>,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    options?: BlobStoragePartitionOptions
   ): Promise<void>;
 
   /**
    * Get blob data directly (for adapters that support direct retrieval).
    */
-  get?(hash: string): Promise<Uint8Array | null>;
+  get?(
+    hash: string,
+    options?: BlobStoragePartitionOptions
+  ): Promise<Uint8Array | null>;
 
   /**
    * Get blob data directly as a stream (for adapters that support stream retrieval).
    */
-  getStream?(hash: string): Promise<ReadableStream<Uint8Array> | null>;
+  getStream?(
+    hash: string,
+    options?: BlobStoragePartitionOptions
+  ): Promise<ReadableStream<Uint8Array> | null>;
 }
 
 // ============================================================================

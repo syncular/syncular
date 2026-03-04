@@ -21,25 +21,49 @@ import type { SyncBlobsDb } from '../types';
  */
 export interface BlobTokenSigner {
   /**
+   * Token payload for upload/download authorization.
+   * Upload tokens are bound to hash + expected byte size.
+   */
+  sign(
+    payload:
+      | {
+          hash: string;
+          partitionId: string;
+          action: 'upload';
+          size: number;
+          expiresAt: number;
+        }
+      | {
+          hash: string;
+          partitionId: string;
+          action: 'download';
+          expiresAt: number;
+        },
+    expiresIn: number
+  ): Promise<string>;
+
+  /**
    * Sign a token for blob upload/download authorization.
    * @param payload The data to sign
    * @param expiresIn Expiration time in seconds
    * @returns A signed token string
    */
-  sign(
-    payload: { hash: string; action: 'upload' | 'download'; expiresAt: number },
-    expiresIn: number
-  ): Promise<string>;
-
-  /**
-   * Verify and decode a signed token.
-   * @returns The payload if valid, null if invalid/expired
-   */
-  verify(token: string): Promise<{
-    hash: string;
-    action: 'upload' | 'download';
-    expiresAt: number;
-  } | null>;
+  verify(token: string): Promise<
+    | {
+        hash: string;
+        partitionId: string;
+        action: 'upload';
+        size: number;
+        expiresAt: number;
+      }
+    | {
+        hash: string;
+        partitionId: string;
+        action: 'download';
+        expiresAt: number;
+      }
+    | null
+  >;
 }
 
 /**
@@ -93,15 +117,37 @@ export function createHmacTokenSigner(secret: string): BlobTokenSigner {
       if (!isValidSig) return null;
 
       try {
-        const data = JSON.parse(atob(dataB64)) as {
-          hash: string;
-          action: 'upload' | 'download';
-          expiresAt: number;
-        };
+        const parsed = JSON.parse(atob(dataB64)) as Record<string, unknown>;
+        if (typeof parsed.hash !== 'string') return null;
+        if (typeof parsed.partitionId !== 'string') return null;
+        if (typeof parsed.expiresAt !== 'number') return null;
+        if (Date.now() > parsed.expiresAt) return null;
 
-        if (Date.now() > data.expiresAt) return null;
+        if (parsed.action === 'download') {
+          return {
+            hash: parsed.hash,
+            partitionId: parsed.partitionId,
+            action: 'download',
+            expiresAt: parsed.expiresAt,
+          };
+        }
 
-        return data;
+        if (
+          parsed.action === 'upload' &&
+          typeof parsed.size === 'number' &&
+          Number.isFinite(parsed.size) &&
+          parsed.size >= 0
+        ) {
+          return {
+            hash: parsed.hash,
+            partitionId: parsed.partitionId,
+            action: 'upload',
+            size: parsed.size,
+            expiresAt: parsed.expiresAt,
+          };
+        }
+
+        return null;
       } catch {
         return null;
       }
@@ -157,14 +203,23 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
   options: DatabaseBlobStorageAdapterOptions<DB>
 ): BlobStorageAdapter {
   const { db, baseUrl, tokenSigner } = options;
+  const resolvePartitionId = (partitionId?: string): string =>
+    partitionId ?? 'default';
 
   return {
     name: 'database',
 
     async signUpload(opts: BlobSignUploadOptions): Promise<BlobSignedUpload> {
+      const partitionId = resolvePartitionId(opts.partitionId);
       const expiresAt = Date.now() + opts.expiresIn * 1000;
       const token = await tokenSigner.sign(
-        { hash: opts.hash, action: 'upload', expiresAt },
+        {
+          hash: opts.hash,
+          partitionId,
+          action: 'upload',
+          size: opts.size,
+          expiresAt,
+        },
         opts.expiresIn
       );
 
@@ -183,9 +238,10 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
     },
 
     async signDownload(opts: BlobSignDownloadOptions): Promise<string> {
+      const partitionId = resolvePartitionId(opts.partitionId);
       const expiresAt = Date.now() + opts.expiresIn * 1000;
       const token = await tokenSigner.sign(
-        { hash: opts.hash, action: 'download', expiresAt },
+        { hash: opts.hash, partitionId, action: 'download', expiresAt },
         opts.expiresIn
       );
 
@@ -195,30 +251,40 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
       );
     },
 
-    async exists(hash: string): Promise<boolean> {
+    async exists(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<boolean> {
+      const partitionId = resolvePartitionId(options?.partitionId);
       const rowResult = await sql<{ hash: string }>`
         select hash
         from ${sql.table('sync_blobs')}
-        where hash = ${hash}
+        where partition_id = ${partitionId} and hash = ${hash}
         limit 1
       `.execute(db);
       return rowResult.rows.length > 0;
     },
 
-    async delete(hash: string): Promise<void> {
+    async delete(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<void> {
+      const partitionId = resolvePartitionId(options?.partitionId);
       await sql`
         delete from ${sql.table('sync_blobs')}
-        where hash = ${hash}
+        where partition_id = ${partitionId} and hash = ${hash}
       `.execute(db);
     },
 
     async getMetadata(
-      hash: string
+      hash: string,
+      options?: { partitionId?: string }
     ): Promise<{ size: number; mimeType?: string } | null> {
+      const partitionId = resolvePartitionId(options?.partitionId);
       const rowResult = await sql<{ size: number; mime_type: string }>`
         select size, mime_type
         from ${sql.table('sync_blobs')}
-        where hash = ${hash}
+        where partition_id = ${partitionId} and hash = ${hash}
         limit 1
       `.execute(db);
       const row = rowResult.rows[0];
@@ -234,13 +300,16 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
     async put(
       hash: string,
       data: Uint8Array,
-      metadata?: Record<string, unknown>
+      metadata?: Record<string, unknown>,
+      options?: { partitionId?: string }
     ): Promise<void> {
+      const partitionId = resolvePartitionId(options?.partitionId);
       const mimeType =
         typeof metadata?.mimeType === 'string'
           ? metadata.mimeType
           : 'application/octet-stream';
       await storeBlobInDatabase(db, {
+        partitionId,
         hash,
         size: data.length,
         mimeType,
@@ -248,8 +317,12 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
       });
     },
 
-    async get(hash: string): Promise<Uint8Array | null> {
-      const result = await readBlobFromDatabase(db, hash);
+    async get(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<Uint8Array | null> {
+      const partitionId = resolvePartitionId(options?.partitionId);
+      const result = await readBlobFromDatabase(db, hash, { partitionId });
       return result?.body ?? null;
     },
   };
@@ -262,6 +335,7 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
 export async function storeBlobInDatabase<DB extends SyncBlobsDb>(
   db: Kysely<DB>,
   args: {
+    partitionId: string;
     hash: string;
     size: number;
     mimeType: string;
@@ -270,6 +344,7 @@ export async function storeBlobInDatabase<DB extends SyncBlobsDb>(
 ): Promise<void> {
   await sql`
     insert into ${sql.table('sync_blobs')} (
+      partition_id,
       hash,
       size,
       mime_type,
@@ -277,13 +352,14 @@ export async function storeBlobInDatabase<DB extends SyncBlobsDb>(
       created_at
     )
     values (
+      ${args.partitionId},
       ${args.hash},
       ${args.size},
       ${args.mimeType},
       ${args.body},
       ${new Date().toISOString()}
     )
-    on conflict (hash) do nothing
+    on conflict (partition_id, hash) do nothing
   `.execute(db);
 }
 
@@ -293,8 +369,10 @@ export async function storeBlobInDatabase<DB extends SyncBlobsDb>(
  */
 export async function readBlobFromDatabase<DB extends SyncBlobsDb>(
   db: Kysely<DB>,
-  hash: string
+  hash: string,
+  options?: { partitionId?: string }
 ): Promise<{ body: Uint8Array; mimeType: string; size: number } | null> {
+  const partitionId = options?.partitionId ?? 'default';
   const rowResult = await sql<{
     body: Uint8Array;
     mime_type: string;
@@ -302,7 +380,7 @@ export async function readBlobFromDatabase<DB extends SyncBlobsDb>(
   }>`
     select body, mime_type, size
     from ${sql.table('sync_blobs')}
-    where hash = ${hash}
+    where partition_id = ${partitionId} and hash = ${hash}
     limit 1
   `.execute(db);
   const row = rowResult.rows[0];

@@ -19,6 +19,27 @@ import type { Kysely } from 'kysely';
 import type { SyncCoreDb } from '../schema';
 import type { SnapshotChunkMetadata, SnapshotChunkPageKey } from './types';
 
+export interface SnapshotChunkCleanupTuning {
+  /** Cleanup select/delete batch size. Default: 250 */
+  batchSize?: number;
+  /** Max concurrent blob deletes during cleanup. Default: 8 */
+  deleteConcurrency?: number;
+}
+
+export const SNAPSHOT_CHUNK_CLEANUP_TUNING_PRESETS = {
+  server: {
+    batchSize: 500,
+    deleteConcurrency: 16,
+  },
+  edge: {
+    batchSize: 100,
+    deleteConcurrency: 4,
+  },
+} as const satisfies Record<
+  'server' | 'edge',
+  Required<SnapshotChunkCleanupTuning>
+>;
+
 export interface DbMetadataSnapshotChunkStorageOptions {
   /** Database instance */
   db: Kysely<SyncCoreDb>;
@@ -26,6 +47,8 @@ export interface DbMetadataSnapshotChunkStorageOptions {
   blobAdapter: BlobStorageAdapter;
   /** Optional prefix for chunk IDs */
   chunkIdPrefix?: string;
+  /** Optional cleanup throughput tuning knobs. */
+  cleanupTuning?: SnapshotChunkCleanupTuning;
 }
 
 /**
@@ -63,7 +86,23 @@ export function createDbMetadataChunkStorage(
   ) => Promise<SyncSnapshotChunkRef | null>;
   cleanupExpired: (beforeIso: string) => Promise<number>;
 } {
-  const { db, blobAdapter, chunkIdPrefix = 'chunk_' } = options;
+  const { db, blobAdapter, chunkIdPrefix = 'chunk_', cleanupTuning } = options;
+
+  function positiveIntOrDefault(value: number | undefined, fallback: number) {
+    if (value === undefined) return fallback;
+    if (!Number.isFinite(value)) return fallback;
+    const normalized = Math.trunc(value);
+    return normalized > 0 ? normalized : fallback;
+  }
+
+  const CLEANUP_BATCH_SIZE = positiveIntOrDefault(
+    cleanupTuning?.batchSize,
+    250
+  );
+  const CLEANUP_DELETE_CONCURRENCY = positiveIntOrDefault(
+    cleanupTuning?.deleteConcurrency,
+    8
+  );
 
   // Generate deterministic blob hash from chunk identity metadata.
   async function computeBlobHash(metadata: {
@@ -130,6 +169,29 @@ export function createDbMetadataChunkStorage(
     } finally {
       reader.releaseLock();
     }
+  }
+
+  async function runWithConcurrency<T>(
+    items: readonly T[],
+    concurrency: number,
+    worker: (item: T) => Promise<void>
+  ): Promise<void> {
+    if (items.length === 0) return;
+
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    let nextIndex = 0;
+
+    async function runWorker(): Promise<void> {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const item = items[index];
+        if (item === undefined) continue;
+        await worker(item);
+      }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
   }
 
   // Generate unique chunk ID
@@ -444,35 +506,53 @@ export function createDbMetadataChunkStorage(
     },
 
     async cleanupExpired(beforeIso: string): Promise<number> {
-      // Find expired chunks
-      const expiredRows = await db
-        .selectFrom('sync_snapshot_chunks')
-        .select(['chunk_id', 'blob_hash'])
-        .where('expires_at', '<=', beforeIso)
-        .execute();
+      let deleted = 0;
 
-      if (expiredRows.length === 0) return 0;
+      while (true) {
+        const expiredRows = await db
+          .selectFrom('sync_snapshot_chunks')
+          .select(['chunk_id', 'blob_hash'])
+          .where('expires_at', '<=', beforeIso)
+          .orderBy('expires_at', 'asc')
+          .limit(CLEANUP_BATCH_SIZE)
+          .execute();
 
-      // Delete from blob storage (best effort)
-      for (const row of expiredRows) {
-        try {
-          await blobAdapter.delete(row.blob_hash);
-        } catch {
-          // Ignore deletion errors - blob may be shared or already deleted
-          // Log for observability but don't fail the cleanup
-          console.warn(
-            `Failed to delete blob ${row.blob_hash} for chunk ${row.chunk_id}, may be already deleted or shared`
-          );
+        if (expiredRows.length === 0) {
+          break;
+        }
+
+        // Delete from blob storage (best effort).
+        await runWithConcurrency(
+          expiredRows,
+          CLEANUP_DELETE_CONCURRENCY,
+          async (row) => {
+            try {
+              await blobAdapter.delete(row.blob_hash);
+            } catch {
+              // Ignore deletion errors - blob may be shared or already deleted
+              // Log for observability but don't fail the cleanup
+              console.warn(
+                `Failed to delete blob ${row.blob_hash} for chunk ${row.chunk_id}, may be already deleted or shared`
+              );
+            }
+          }
+        );
+
+        const chunkIds = expiredRows.map((row) => row.chunk_id);
+        if (chunkIds.length > 0) {
+          const result = await db
+            .deleteFrom('sync_snapshot_chunks')
+            .where('chunk_id', 'in', chunkIds)
+            .executeTakeFirst();
+          deleted += Number(result.numDeletedRows ?? 0);
+        }
+
+        if (expiredRows.length < CLEANUP_BATCH_SIZE) {
+          break;
         }
       }
 
-      // Delete metadata from database
-      const result = await db
-        .deleteFrom('sync_snapshot_chunks')
-        .where('expires_at', '<=', beforeIso)
-        .executeTakeFirst();
-
-      return Number(result.numDeletedRows ?? 0);
+      return deleted;
     },
   };
 }

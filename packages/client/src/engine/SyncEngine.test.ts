@@ -15,6 +15,7 @@ import { ensureClientSyncSchema } from '../migrate';
 import { enqueueOutboxCommit } from '../outbox';
 import type { SyncClientDb } from '../schema';
 import { SyncEngine } from './SyncEngine';
+import type { RealtimeTransportLike } from './types';
 
 interface TasksTable {
   id: string;
@@ -1013,6 +1014,83 @@ describe('SyncEngine WS inline apply', () => {
       engine.destroy();
     } finally {
       globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  it('stops realtime reconnect and fallback polling after auth failures', async () => {
+    let syncAttempts = 0;
+    let disconnectCalls = 0;
+    let reconnectCalls = 0;
+
+    const authFailingRealtimeTransport: RealtimeTransportLike = {
+      async sync() {
+        syncAttempts += 1;
+        throw new SyncTransportError('unauthorized', 401);
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+      connect(_args, _onEvent, onStateChange) {
+        onStateChange?.('disconnected');
+        return () => {
+          disconnectCalls += 1;
+        };
+      },
+      getConnectionState() {
+        return 'disconnected';
+      },
+      reconnect() {
+        reconnectCalls += 1;
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: authFailingRealtimeTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-auth-failed-realtime',
+      subscriptions: [
+        {
+          id: 'sub-1',
+          table: 'tasks',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      realtimeFallbackPollMs: 10,
+      pollIntervalMs: 60_000,
+    });
+
+    await engine.start();
+
+    try {
+      const state = engine.getState();
+      expect(state.error?.code).toBe('AUTH_FAILED');
+      expect(state.error?.retryable).toBe(false);
+      expect(state.connectionState).toBe('disconnected');
+
+      const health = engine.getTransportHealth();
+      expect(health.mode).toBe('disconnected');
+      expect(health.connected).toBe(false);
+      expect(health.fallbackReason).toBe('auth');
+
+      const attemptsAfterStart = syncAttempts;
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
+      expect(syncAttempts).toBe(attemptsAfterStart);
+      expect(disconnectCalls).toBeGreaterThanOrEqual(1);
+      expect(reconnectCalls).toBe(0);
+    } finally {
+      engine.destroy();
     }
   });
 

@@ -1901,6 +1901,25 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       this.handleError(error);
       await this.emitNewConflictsSafe('sync error');
 
+      if (error.code === 'AUTH_FAILED') {
+        if (
+          this.state.transportMode === 'realtime' &&
+          isRealtimeTransport(this.config.transport)
+        ) {
+          this.stopRealtime();
+          this.setConnectionState('disconnected');
+          this.updateTransportHealth({
+            mode: 'disconnected',
+            connected: false,
+            fallbackReason: 'auth',
+          });
+        } else {
+          this.updateTransportHealth({
+            fallbackReason: 'auth',
+          });
+        }
+      }
+
       const durationMs = Math.max(0, Date.now() - startedAtMs);
       countSyncMetric('sync.client.sync.results', 1, {
         attributes: {

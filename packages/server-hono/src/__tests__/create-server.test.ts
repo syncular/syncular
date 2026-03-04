@@ -8,7 +8,7 @@ import {
 } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { Hono } from 'hono';
-import { defineWebSocketHelper } from 'hono/ws';
+import { defineWebSocketHelper, WSContext, type WSEvents } from 'hono/ws';
 import { type Kysely, sql } from 'kysely';
 import { createSyncServer } from '../create-server';
 import { getSyncWebSocketConnectionManager } from '../routes';
@@ -27,6 +27,10 @@ interface ServerDb extends SyncCoreDb {
 
 interface ClientDb {
   tasks: TasksTable;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 describe('createSyncServer console configuration', () => {
@@ -97,6 +101,31 @@ describe('createSyncServer console configuration', () => {
       sendPresence() {},
       sendError() {},
       close() {},
+    };
+  }
+
+  function createUpstreamSocketHarness() {
+    const messages: Array<Record<string, unknown>> = [];
+    const closes: Array<{ code?: number; reason?: string }> = [];
+
+    const ws = new WSContext({
+      readyState: 1,
+      send(data) {
+        if (typeof data !== 'string') return;
+        const parsed = JSON.parse(data);
+        if (isRecord(parsed)) {
+          messages.push(parsed);
+        }
+      },
+      close(code, reason) {
+        closes.push({ code, reason });
+      },
+    });
+
+    return {
+      ws,
+      messages,
+      closes,
     };
   }
 
@@ -226,6 +255,47 @@ describe('createSyncServer console configuration', () => {
     expect(server.consoleRoutes).toBeDefined();
   });
 
+  it('treats destroyed-driver console schema races as benign during startup', async () => {
+    const options = createOptions();
+    const dialect = createPostgresServerDialect();
+    dialect.ensureConsoleSchema = async () => {
+      throw new Error('driver has already been destroyed');
+    };
+
+    const server = createSyncServer({
+      ...options,
+      dialect,
+      console: {
+        token: 'console-token',
+        maintenance: {
+          autoPruneIntervalMs: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/console', server.consoleRoutes!);
+
+    const originalConsoleError = console.error;
+    const consoleErrorCalls: unknown[][] = [];
+    console.error = (...args: unknown[]) => {
+      consoleErrorCalls.push(args);
+    };
+
+    try {
+      const response = await app.request('http://localhost/console/storage', {
+        headers: { Authorization: 'Bearer console-token' },
+      });
+      expect(response.status).toBe(501);
+      expect(await response.json()).toEqual({
+        error: 'BLOB_STORAGE_NOT_CONFIGURED',
+      });
+      expect(consoleErrorCalls).toEqual([]);
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
+
   it('returns not implemented when blobBucket is not configured', async () => {
     const options = createOptions();
     const server = createSyncServer({
@@ -330,6 +400,172 @@ describe('createSyncServer console configuration', () => {
     expect(await response.json()).toEqual({
       error: 'WEBSOCKET_CONNECTION_LIMIT_CLIENT',
     });
+  });
+
+  it('forwards websocket allowedOrigins from factory to realtime route', async () => {
+    const options = createOptions();
+    const upgradeWebSocket = defineWebSocketHelper(async () => {});
+
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+      routes: {
+        websocket: {
+          allowedOrigins: ['https://allowed.syncular.test'],
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-3'
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'FORBIDDEN_ORIGIN',
+    });
+  });
+
+  it('forwards websocket allowedOrigins from factory to console live route', async () => {
+    const options = createOptions();
+    const upgradeWebSocket = defineWebSocketHelper(async () => {});
+
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+      console: { token: 'console-token' },
+      routes: {
+        websocket: {
+          allowedOrigins: ['https://allowed.syncular.test'],
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/console', server.consoleRoutes!);
+
+    const response = await app.request('http://localhost/console/events/live');
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'FORBIDDEN_ORIGIN',
+    });
+  });
+
+  it('enforces inbound websocket message rate limits per connection', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+      routes: {
+        websocket: {
+          maxMessagesPerWindow: 2,
+          messageRateWindowMs: 60000,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-rate-limit'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+
+    const latestClose = upstream.closes[upstream.closes.length - 1];
+    expect(latestClose?.code).toBe(1011);
+    expect(latestClose?.reason).toBe('server error');
+
+    const errorMessage = upstream.messages.find(
+      (message) => message.event === 'error'
+    );
+    expect(errorMessage).toBeDefined();
+    if (!errorMessage || !isRecord(errorMessage.data)) {
+      throw new Error('Expected websocket error payload.');
+    }
+    expect(typeof errorMessage.data.error).toBe('string');
+    expect(String(errorMessage.data.error)).toContain(
+      'WebSocket message rate exceeded'
+    );
+  });
+
+  it('enforces inbound websocket message rate limits on console live route', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+      console: { token: 'console-token' },
+      routes: {
+        websocket: {
+          maxMessagesPerWindow: 1,
+          messageRateWindowMs: 60000,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/console', server.consoleRoutes!);
+
+    const response = await app.request('http://localhost/console/events/live', {
+      headers: { Authorization: 'Bearer console-token' },
+    });
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+
+    const latestClose = upstream.closes[upstream.closes.length - 1];
+    expect(latestClose?.code).toBe(1008);
+    expect(latestClose?.reason).toBe('message rate exceeded');
   });
 
   it('allows disabling request payload snapshots for privacy-sensitive deployments', async () => {

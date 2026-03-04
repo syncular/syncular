@@ -109,6 +109,10 @@ export function createDemoRoutes(
       authenticate: authenticateBlobContext,
       tokenSigner,
       db,
+      canAccessBlob: async ({ actorId, hash, partitionId }) => {
+        const record = await blobManager.getUploadRecord(hash, { partitionId });
+        return record?.status === 'complete' && record.actorId === actorId;
+      },
     });
     syncRoutes.route('/', blobRoutes);
   }

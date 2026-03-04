@@ -234,6 +234,8 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
     await sql`DROP INDEX IF EXISTS idx_sync_commits_client_commit`.execute(db);
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_commits_client_commit
       ON sync_commits(partition_id, client_id, client_commit_id)`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_commits_partition_client_commit_seq
+      ON sync_commits(partition_id, client_id, commit_seq)`.execute(db);
 
     // sync_table_commits table (index of which commits affect which tables)
     await db.schema
@@ -546,74 +548,22 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       Date.now() - args.fullHistoryHours * 60 * 60 * 1000
     ).toISOString();
 
-    // Find all old changes
-    const oldChanges = await sql<{
-      change_id: unknown;
-      partition_id: string;
-      commit_seq: unknown;
-      table: string;
-      row_id: string;
-      scopes: unknown;
-    }>`
-      SELECT c.change_id, c.partition_id, c.commit_seq, c."table", c.row_id, c.scopes
-      FROM sync_changes c
-      JOIN sync_commits cm ON cm.commit_seq = c.commit_seq
-      WHERE cm.created_at < ${cutoffIso}
+    const res = await sql`
+      WITH ranked AS (
+        SELECT
+          c.change_id,
+          row_number() OVER (
+            PARTITION BY c.partition_id, c."table", c.row_id, c.scopes
+            ORDER BY c.commit_seq DESC, c.change_id DESC
+          ) AS rn
+        FROM sync_changes c
+        JOIN sync_commits cm ON cm.commit_seq = c.commit_seq
+        WHERE cm.created_at < ${cutoffIso}
+      )
+      DELETE FROM sync_changes
+      WHERE change_id IN (SELECT change_id FROM ranked WHERE rn > 1)
     `.execute(db);
-
-    // Group by (partition_id, table, row_id, scopes)
-    const groups = new Map<
-      string,
-      Array<{ change_id: number; commit_seq: number }>
-    >();
-
-    for (const row of oldChanges.rows) {
-      const scopesStr = JSON.stringify(parseScopes(row.scopes));
-      const key = `${row.partition_id}|${row.table}|${row.row_id}|${scopesStr}`;
-      if (!groups.has(key)) {
-        groups.set(key, []);
-      }
-      groups.get(key)!.push({
-        change_id: coerceNumber(row.change_id) ?? 0,
-        commit_seq: coerceNumber(row.commit_seq) ?? 0,
-      });
-    }
-
-    // Find change_ids to delete (all but the one with highest commit_seq)
-    const toDelete: number[] = [];
-    for (const changes of groups.values()) {
-      if (changes.length <= 1) continue;
-
-      changes.sort((a, b) => {
-        if (a.commit_seq !== b.commit_seq) return b.commit_seq - a.commit_seq;
-        return b.change_id - a.change_id;
-      });
-
-      for (let i = 1; i < changes.length; i++) {
-        toDelete.push(changes[i]!.change_id);
-      }
-    }
-
-    if (toDelete.length === 0) return 0;
-
-    // Delete in batches
-    const deleteBatchSize = 500;
-    let deleted = 0;
-
-    for (let i = 0; i < toDelete.length; i += deleteBatchSize) {
-      const batch = toDelete.slice(i, i + deleteBatchSize);
-      const batchIn = sql.join(
-        batch.map((id) => sql`${id}`),
-        sql`, `
-      );
-
-      const res = await sql`
-        DELETE FROM sync_changes
-        WHERE change_id IN (${batchIn})
-      `.execute(db);
-
-      deleted += Number(res.numAffectedRows ?? 0);
-    }
+    const deleted = Number(res.numAffectedRows ?? 0);
 
     // Remove routing index entries that no longer have any remaining changes
     await sql`

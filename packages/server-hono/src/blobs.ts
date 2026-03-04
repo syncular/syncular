@@ -9,6 +9,8 @@
  * - GET /blobs/:hash/download - Direct download (for database adapter)
  */
 
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   BlobUploadCompleteResponseSchema,
   BlobUploadInitRequestSchema,
@@ -35,6 +37,7 @@ import { z } from 'zod';
 
 interface BlobAuthResult {
   actorId: string;
+  partitionId?: string;
 }
 
 export interface CreateBlobRoutesOptions<DB extends SyncBlobsDb = SyncBlobsDb> {
@@ -53,11 +56,14 @@ export interface CreateBlobRoutesOptions<DB extends SyncBlobsDb = SyncBlobsDb> {
    */
   db?: Kysely<DB>;
   /**
-   * Optional: Check if actor can access a blob.
-   * By default, any authenticated actor can access any completed blob.
-   * Provide this to implement scope-based access control.
+   * Check whether an authenticated actor can access a blob hash.
+   * This must enforce your tenant or ownership model.
    */
-  canAccessBlob?: (args: { actorId: string; hash: string }) => Promise<boolean>;
+  canAccessBlob: (args: {
+    actorId: string;
+    hash: string;
+    partitionId: string;
+  }) => Promise<boolean>;
   /**
    * Maximum upload size in bytes.
    * Default: 100MB (104857600)
@@ -85,6 +91,11 @@ const tokenQuerySchema = z.object({
  *     if (!token) return null;
  *     const user = await verifyToken(token);
  *     return user ? { actorId: user.id } : null;
+ *   },
+ *   canAccessBlob: async ({ actorId, hash, partitionId }) => {
+ *     // Enforce tenant/ownership permissions here.
+ *     // partitionId defaults to "default" when not provided by auth.
+ *     return true;
  *   },
  * });
  *
@@ -158,11 +169,13 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
       }
 
       try {
+        const partitionId = auth.partitionId ?? 'default';
         const result = await blobManager.initiateUpload({
           hash: body.hash,
           size: body.size,
           mimeType: body.mimeType,
           actorId: auth.actorId,
+          partitionId,
         });
 
         return c.json(result, 200);
@@ -227,9 +240,16 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         );
       }
 
-      const result = await blobManager.completeUpload(hash);
+      const partitionId = auth.partitionId ?? 'default';
+      const result = await blobManager.completeUpload(hash, {
+        actorId: auth.actorId,
+        partitionId,
+      });
 
       if (!result.ok) {
+        if (result.error === 'FORBIDDEN') {
+          return c.json({ error: 'FORBIDDEN' }, 403);
+        }
         return c.json({ error: 'UPLOAD_FAILED', message: result.error }, 400);
       }
 
@@ -300,18 +320,21 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         return c.json({ error: 'NOT_FOUND' }, 404);
       }
 
-      // Check access if canAccessBlob is provided
-      if (canAccessBlob) {
-        const canAccess = await canAccessBlob({ actorId: auth.actorId, hash });
-        if (!canAccess) {
-          return c.json({ error: 'FORBIDDEN' }, 403);
-        }
+      const partitionId = auth.partitionId ?? 'default';
+      const canAccess = await canAccessBlob({
+        actorId: auth.actorId,
+        hash,
+        partitionId,
+      });
+      if (!canAccess) {
+        return c.json({ error: 'FORBIDDEN' }, 403);
       }
 
       try {
         const result = await blobManager.getDownloadUrl({
           hash,
           actorId: auth.actorId,
+          partitionId,
         });
         return c.json(result, 200);
       } catch (err) {
@@ -365,29 +388,134 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           return c.json({ error: 'INVALID_TOKEN' }, 401);
         }
 
-        // Get upload metadata
-        const metadata = await blobManager.getMetadata(hash);
-
-        // Read body
-        const body = await c.req.arrayBuffer();
-        const bodyBytes = new Uint8Array(body);
-
-        // Verify size
-        const expectedSize = metadata?.size;
-        if (expectedSize !== undefined && bodyBytes.length !== expectedSize) {
+        const uploadRecord = await blobManager.getUploadRecord(hash, {
+          partitionId: payload.partitionId,
+        });
+        if (!uploadRecord) {
+          return c.json({ error: 'UPLOAD_NOT_FOUND' }, 404);
+        }
+        if (uploadRecord.status !== 'pending') {
+          return c.json({ error: 'UPLOAD_NOT_PENDING' }, 409);
+        }
+        if (payload.size !== uploadRecord.size) {
+          return c.json({ error: 'INVALID_TOKEN' }, 401);
+        }
+        if (uploadRecord.size > maxUploadSize) {
           return c.json(
             {
-              error: 'SIZE_MISMATCH',
-              message: `Expected ${expectedSize} bytes, got ${bodyBytes.length}`,
+              error: 'BLOB_TOO_LARGE',
+              message: `Maximum upload size is ${maxUploadSize} bytes`,
             },
             400
           );
         }
 
+        const contentLengthHeader = c.req.header('Content-Length');
+        if (contentLengthHeader) {
+          const contentLength = Number(contentLengthHeader);
+          if (!Number.isFinite(contentLength) || contentLength < 0) {
+            return c.json(
+              { error: 'INVALID_REQUEST', message: 'Invalid Content-Length' },
+              400
+            );
+          }
+          if (contentLength > maxUploadSize) {
+            return c.json(
+              {
+                error: 'BLOB_TOO_LARGE',
+                message: `Maximum upload size is ${maxUploadSize} bytes`,
+              },
+              400
+            );
+          }
+          if (contentLength !== uploadRecord.size) {
+            return c.json(
+              {
+                error: 'SIZE_MISMATCH',
+                message: `Expected ${uploadRecord.size} bytes, got ${contentLength}`,
+              },
+              400
+            );
+          }
+        }
+
+        const mimeType =
+          c.req.header('Content-Type') ??
+          uploadRecord.mimeType ??
+          'application/octet-stream';
+        const storagePartitionOptions = { partitionId: payload.partitionId };
+
+        const streamingUpload = blobManager.adapter.putStream
+          ? createValidatedUploadStream(c.req.raw, {
+              expectedSize: uploadRecord.size,
+              maxSize: maxUploadSize,
+            })
+          : null;
+
+        if (streamingUpload && blobManager.adapter.putStream) {
+          try {
+            await blobManager.adapter.putStream(
+              hash,
+              streamingUpload.stream,
+              { mimeType },
+              storagePartitionOptions
+            );
+          } catch (err) {
+            if (isBlobUploadBodyError(err)) {
+              void streamingUpload.hashHex.catch(() => {});
+              return c.json(
+                {
+                  error: err.code,
+                  message: err.message,
+                },
+                400
+              );
+            }
+            void streamingUpload.hashHex.catch(() => {});
+            throw err;
+          }
+
+          const computedHash = await streamingUpload.hashHex;
+          const expectedHex = parseBlobHash(hash);
+          if (!expectedHex || computedHash !== expectedHex) {
+            await deleteUploadedBlobBestEffort(blobManager, hash, {
+              partitionId: payload.partitionId,
+            });
+            return c.json(
+              {
+                error: 'HASH_MISMATCH',
+                message: 'Content hash does not match',
+              },
+              400
+            );
+          }
+
+          return c.text('OK', 200);
+        }
+
+        let bodyBytes: Uint8Array;
+        try {
+          bodyBytes = await readRequestBodyWithLimit(c.req.raw, {
+            expectedSize: uploadRecord.size,
+            maxSize: maxUploadSize,
+          });
+        } catch (err) {
+          if (isBlobUploadBodyError(err)) {
+            return c.json(
+              {
+                error: err.code,
+                message: err.message,
+              },
+              400
+            );
+          }
+          throw err;
+        }
+
         // Verify hash
         const computedHash = await computeSha256Hash(bodyBytes);
         const expectedHex = parseBlobHash(hash);
-        if (computedHash !== expectedHex) {
+        if (!expectedHex || computedHash !== expectedHex) {
           return c.json(
             {
               error: 'HASH_MISMATCH',
@@ -397,16 +525,16 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           );
         }
 
-        // Store via the blob adapter (R2, database, etc.)
-        const mimeType =
-          c.req.header('Content-Type') ??
-          metadata?.mimeType ??
-          'application/octet-stream';
-
         if (blobManager.adapter.put) {
-          await blobManager.adapter.put(hash, bodyBytes, { mimeType });
+          await blobManager.adapter.put(
+            hash,
+            bodyBytes,
+            { mimeType },
+            storagePartitionOptions
+          );
         } else {
           await storeBlobInDatabase(db, {
+            partitionId: payload.partitionId,
             hash,
             size: bodyBytes.length,
             mimeType,
@@ -465,12 +593,16 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
 
         // Read via the blob adapter (R2, database, etc.)
         if (blobManager.adapter.get) {
-          const data = await blobManager.adapter.get(hash);
+          const data = await blobManager.adapter.get(hash, {
+            partitionId: payload.partitionId,
+          });
           if (!data) {
             return c.json({ error: 'NOT_FOUND' }, 404);
           }
           const meta = blobManager.adapter.getMetadata
-            ? await blobManager.adapter.getMetadata(hash)
+            ? await blobManager.adapter.getMetadata(hash, {
+                partitionId: payload.partitionId,
+              })
             : null;
           return new Response(data as BodyInit, {
             status: 200,
@@ -483,7 +615,9 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         }
 
         // Fallback: read from database directly
-        const blob = await readBlobFromDatabase(db, hash);
+        const blob = await readBlobFromDatabase(db, hash, {
+          partitionId: payload.partitionId,
+        });
         if (!blob) {
           return c.json({ error: 'NOT_FOUND' }, 404);
         }
@@ -521,6 +655,198 @@ function isBlobNotFoundError(err: unknown): err is BlobNotFoundError {
     err !== null &&
     (err as { name?: string }).name === 'BlobNotFoundError'
   );
+}
+
+class BlobUploadBodyError extends Error {
+  constructor(
+    public readonly code: 'BLOB_TOO_LARGE' | 'SIZE_MISMATCH',
+    message: string
+  ) {
+    super(message);
+    this.name = 'BlobUploadBodyError';
+  }
+}
+
+function isBlobUploadBodyError(err: unknown): err is BlobUploadBodyError {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: string }).name === 'BlobUploadBodyError'
+  );
+}
+
+async function deleteUploadedBlobBestEffort(
+  blobManager: BlobManager,
+  hash: string,
+  options: { partitionId: string }
+): Promise<void> {
+  try {
+    await blobManager.adapter.delete(hash, options);
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+interface IncrementalSha256 {
+  update(chunk: Uint8Array): void;
+  digestHex(): string;
+}
+
+function createIncrementalSha256(): IncrementalSha256 {
+  const hasher = sha256.create();
+  return {
+    update(chunk) {
+      hasher.update(chunk);
+    },
+    digestHex() {
+      return bytesToHex(hasher.digest());
+    },
+  };
+}
+
+interface ValidatedUploadStream {
+  stream: ReadableStream<Uint8Array>;
+  hashHex: Promise<string>;
+}
+
+function createValidatedUploadStream(
+  request: Request,
+  args: { expectedSize: number; maxSize: number }
+): ValidatedUploadStream | null {
+  const body = request.body;
+  if (!body) return null;
+
+  const hasher = createIncrementalSha256();
+  const reader = body.getReader();
+
+  let resolveHash: ((hashHex: string) => void) | null = null;
+  let rejectHash: ((reason: Error) => void) | null = null;
+  const hashHex = new Promise<string>((resolve, reject) => {
+    resolveHash = resolve;
+    rejectHash = reject;
+  });
+
+  let totalSize = 0;
+  let finalized = false;
+
+  const fail = (error: Error): void => {
+    if (finalized) return;
+    finalized = true;
+    rejectHash?.(error);
+  };
+
+  const complete = (): void => {
+    if (finalized) return;
+    finalized = true;
+    resolveHash?.(hasher.digestHex());
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (totalSize !== args.expectedSize) {
+            const sizeError = new BlobUploadBodyError(
+              'SIZE_MISMATCH',
+              `Expected ${args.expectedSize} bytes, got ${totalSize}`
+            );
+            fail(sizeError);
+            controller.error(sizeError);
+            return;
+          }
+          complete();
+          controller.close();
+          return;
+        }
+
+        if (!value || value.length === 0) {
+          return;
+        }
+
+        totalSize += value.length;
+        if (totalSize > args.maxSize) {
+          const limitError = new BlobUploadBodyError(
+            'BLOB_TOO_LARGE',
+            `Maximum upload size is ${args.maxSize} bytes`
+          );
+          fail(limitError);
+          controller.error(limitError);
+          return;
+        }
+        if (totalSize > args.expectedSize) {
+          const mismatchError = new BlobUploadBodyError(
+            'SIZE_MISMATCH',
+            `Expected ${args.expectedSize} bytes, got more than expected`
+          );
+          fail(mismatchError);
+          controller.error(mismatchError);
+          return;
+        }
+
+        hasher.update(value);
+        controller.enqueue(value);
+      } catch (err) {
+        const streamError =
+          err instanceof Error ? err : new Error('Failed to read upload body');
+        fail(streamError);
+        controller.error(streamError);
+      }
+    },
+    cancel() {
+      reader.cancel().catch(() => {});
+    },
+  });
+
+  return { stream, hashHex };
+}
+
+async function readRequestBodyWithLimit(
+  request: Request,
+  args: { expectedSize: number; maxSize: number }
+): Promise<Uint8Array> {
+  const body = request.body;
+  if (!body) {
+    if (args.expectedSize === 0) return new Uint8Array();
+    throw new BlobUploadBodyError(
+      'SIZE_MISMATCH',
+      `Expected ${args.expectedSize} bytes, got 0`
+    );
+  }
+
+  const reader = body.getReader();
+  const merged = new Uint8Array(args.expectedSize);
+  let totalSize = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.length === 0) continue;
+
+    totalSize += value.length;
+    if (totalSize > args.maxSize) {
+      throw new BlobUploadBodyError(
+        'BLOB_TOO_LARGE',
+        `Maximum upload size is ${args.maxSize} bytes`
+      );
+    }
+    if (totalSize > args.expectedSize) {
+      throw new BlobUploadBodyError(
+        'SIZE_MISMATCH',
+        `Expected ${args.expectedSize} bytes, got more than expected`
+      );
+    }
+    merged.set(value, totalSize - value.length);
+  }
+
+  if (totalSize !== args.expectedSize) {
+    throw new BlobUploadBodyError(
+      'SIZE_MISMATCH',
+      `Expected ${args.expectedSize} bytes, got ${totalSize}`
+    );
+  }
+
+  return merged;
 }
 
 async function computeSha256Hash(data: Uint8Array): Promise<string> {

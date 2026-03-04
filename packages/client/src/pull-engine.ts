@@ -3,6 +3,7 @@
  */
 
 import type {
+  ScopeValues,
   SyncBootstrapState,
   SyncPullRequest,
   SyncPullResponse,
@@ -307,12 +308,15 @@ async function computeSha256Hex(
 
 async function fetchSnapshotChunkStream(
   transport: SyncTransport,
-  chunkId: string
+  request: {
+    chunkId: string;
+    scopeValues?: ScopeValues;
+  }
 ): Promise<ReadableStream<Uint8Array>> {
   if (transport.fetchSnapshotChunkStream) {
-    return transport.fetchSnapshotChunkStream({ chunkId });
+    return transport.fetchSnapshotChunkStream(request);
   }
-  const bytes = await transport.fetchSnapshotChunk({ chunkId });
+  const bytes = await transport.fetchSnapshotChunk(request);
   return bytesToReadableStream(bytes);
 }
 
@@ -404,7 +408,10 @@ async function materializeChunkedSnapshots(
             async (chunk) => {
               const promise =
                 chunkCache.get(chunk.id) ??
-                transport.fetchSnapshotChunk({ chunkId: chunk.id });
+                transport.fetchSnapshotChunk({
+                  chunkId: chunk.id,
+                  scopeValues: sub.scopes,
+                });
               chunkCache.set(chunk.id, promise);
 
               const raw = await promise;
@@ -451,6 +458,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
   handler: Pick<ClientTableHandler<DB>, 'applySnapshot'>,
   trx: Transaction<DB>,
   snapshot: SyncSnapshot,
+  scopeValues: ScopeValues,
   sha256Override?: (bytes: Uint8Array) => Promise<string>
 ): Promise<void> {
   const chunks = snapshot.chunks ?? [];
@@ -465,7 +473,10 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
     const chunk = chunks[chunkIndex];
     if (!chunk) continue;
 
-    const rawStream = await fetchSnapshotChunkStream(transport, chunk.id);
+    const rawStream = await fetchSnapshotChunkStream(transport, {
+      chunkId: chunk.id,
+      scopeValues,
+    });
     const decodedStream = await maybeGunzipStream(rawStream);
     let applyStream = decodedStream;
     let chunkHashPromise: Promise<string> | null = null;
@@ -777,6 +788,27 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 
     const subsById = new Map<string, (typeof options.subscriptions)[number]>();
     for (const s of options.subscriptions ?? []) subsById.set(s.id, s);
+    const latestStateRows = await sql<{
+      subscription_id: string;
+      cursor: number | string | null;
+    }>`
+      select
+        ${sql.ref('subscription_id')} as subscription_id,
+        ${sql.ref('cursor')} as cursor
+      from ${sql.table('sync_subscription_state')}
+      where ${sql.ref('state_id')} = ${sql.val(stateId)}
+    `.execute(trx);
+    const latestCursorBySubscriptionId = new Map<string, number | null>();
+    for (const row of latestStateRows.rows) {
+      const raw = row.cursor;
+      const cursor =
+        typeof raw === 'number'
+          ? raw
+          : raw === null || raw === undefined
+            ? null
+            : Number(raw);
+      latestCursorBySubscriptionId.set(row.subscription_id, cursor);
+    }
 
     for (const sub of responseToApply.subscriptions) {
       const def = subsById.get(sub.id);
@@ -788,13 +820,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
           : prevCursorRaw === null || prevCursorRaw === undefined
             ? null
             : Number(prevCursorRaw);
-      const latestStateResult = await sql<{ cursor: number | string | null }>`
-        select ${sql.ref('cursor')} as cursor
-        from ${sql.table('sync_subscription_state')}
-        where ${sql.ref('state_id')} = ${sql.val(stateId)}
-          and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
-      `.execute(trx);
-      const latestCursorRaw = latestStateResult.rows[0]?.cursor;
+      const latestCursorRaw = latestCursorBySubscriptionId.get(sub.id);
       const latestCursor =
         typeof latestCursorRaw === 'number'
           ? latestCursorRaw
@@ -841,10 +867,11 @@ export async function applyPullResponse<DB extends SyncClientDb>(
         }
 
         await sql`
-	          delete from ${sql.table('sync_subscription_state')}
-	          where ${sql.ref('state_id')} = ${sql.val(stateId)}
-	            and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
-	        `.execute(trx);
+		          delete from ${sql.table('sync_subscription_state')}
+		          where ${sql.ref('state_id')} = ${sql.val(stateId)}
+		            and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
+		        `.execute(trx);
+        latestCursorBySubscriptionId.delete(sub.id);
         continue;
       }
 
@@ -870,6 +897,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
               handler,
               trx,
               snapshot,
+              sub.scopes,
               options.sha256
             );
           } else {
@@ -919,7 +947,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 
       const table = def?.table ?? 'unknown';
       await sql`
-	        insert into ${sql.table('sync_subscription_state')} (
+		        insert into ${sql.table('sync_subscription_state')} (
 	          ${sql.join([
               sql.ref('state_id'),
               sql.ref('subscription_id'),
@@ -953,9 +981,10 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 	          ${sql.ref('params_json')} = ${sql.val(paramsJson)},
 	          ${sql.ref('cursor')} = ${sql.val(sub.nextCursor)},
 	          ${sql.ref('bootstrap_state_json')} = ${sql.val(bootstrapStateJson)},
-	          ${sql.ref('status')} = ${sql.val('active')},
-	          ${sql.ref('updated_at')} = ${sql.val(now)}
-	      `.execute(trx);
+		          ${sql.ref('status')} = ${sql.val('active')},
+		          ${sql.ref('updated_at')} = ${sql.val(now)}
+		      `.execute(trx);
+      latestCursorBySubscriptionId.set(sub.id, sub.nextCursor);
     }
   });
 

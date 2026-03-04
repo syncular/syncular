@@ -30,6 +30,7 @@ interface CompleteResponse {
 }
 
 const ACTOR_HEADER = 'x-user-id';
+const PARTITION_HEADER = 'x-partition-id';
 const ACTOR_ID = 'user-1';
 const INVALID_HASH = 'invalid-hash';
 
@@ -48,11 +49,31 @@ async function signBlobToken(args: {
   signer: BlobTokenSigner;
   hash: string;
   action: 'upload' | 'download';
+  size?: number;
+  partitionId?: string;
 }): Promise<string> {
+  const partitionId = args.partitionId ?? 'default';
+  if (args.action === 'upload') {
+    if (typeof args.size !== 'number') {
+      throw new Error('size is required for upload tokens');
+    }
+    return args.signer.sign(
+      {
+        hash: args.hash,
+        partitionId,
+        action: 'upload',
+        size: args.size,
+        expiresAt: Date.now() + 60_000,
+      },
+      60
+    );
+  }
+
   return args.signer.sign(
     {
       hash: args.hash,
-      action: args.action,
+      partitionId,
+      action: 'download',
       expiresAt: Date.now() + 60_000,
     },
     60
@@ -85,6 +106,78 @@ function createFallbackAdapter(
   };
 }
 
+async function readStreamBytes(
+  stream: ReadableStream<Uint8Array>
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.length === 0) continue;
+    chunks.push(value);
+    total += value.length;
+  }
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function createStreamCapableAdapter(
+  db: Kysely<SyncBlobDb>,
+  tokenSigner: BlobTokenSigner
+): {
+  adapter: BlobStorageAdapter;
+  getCounts: () => {
+    putCalls: number;
+    putStreamCalls: number;
+    deleteCalls: number;
+  };
+} {
+  const baseAdapter = createDefaultAdapter(db, tokenSigner);
+  let putCalls = 0;
+  let putStreamCalls = 0;
+  let deleteCalls = 0;
+
+  const adapter: BlobStorageAdapter = {
+    name: 'database-stream-capable',
+    signUpload: baseAdapter.signUpload,
+    signDownload: baseAdapter.signDownload,
+    exists: baseAdapter.exists,
+    getMetadata: baseAdapter.getMetadata,
+    get: baseAdapter.get,
+    put: async (hash, data, metadata, options) => {
+      putCalls += 1;
+      await baseAdapter.put?.(hash, data, metadata, options);
+    },
+    putStream: async (hash, stream, metadata, options) => {
+      putStreamCalls += 1;
+      const bytes = await readStreamBytes(stream);
+      await baseAdapter.put?.(hash, bytes, metadata, options);
+    },
+    delete: async (hash, options) => {
+      deleteCalls += 1;
+      await baseAdapter.delete(hash, options);
+    },
+  };
+
+  return {
+    adapter,
+    getCounts: () => ({
+      putCalls,
+      putStreamCalls,
+      deleteCalls,
+    }),
+  };
+}
+
 function buildApp(args: {
   db: Kysely<SyncBlobDb>;
   tokenSigner: BlobTokenSigner;
@@ -113,7 +206,7 @@ function buildApp(args: {
       },
       tokenSigner: args.tokenSigner,
       db: args.db,
-      canAccessBlob: args.canAccessBlob,
+      canAccessBlob: args.canAccessBlob ?? (async () => true),
     })
   );
   return app;
@@ -124,6 +217,7 @@ async function initiateUpload(args: {
   hash: string;
   size: number;
   mimeType?: string;
+  partitionId?: string;
 }): Promise<UploadInitResponse> {
   const response = await args.app.request(
     'http://localhost/sync/blobs/upload',
@@ -132,6 +226,7 @@ async function initiateUpload(args: {
       headers: {
         'content-type': 'application/json',
         [ACTOR_HEADER]: ACTOR_ID,
+        [PARTITION_HEADER]: args.partitionId ?? 'default',
       },
       body: JSON.stringify({
         hash: args.hash,
@@ -213,31 +308,18 @@ describe('createBlobRoutes', () => {
 
     const content = new Uint8Array([1, 2, 3, 4]);
     const hash = await createHash(content);
-    const init = await initiateUpload({
+    await initiateUpload({
       app,
       hash,
       size: content.length,
     });
 
-    const firstUpload = await app.request(init.uploadUrl!, {
-      method: init.uploadMethod ?? 'PUT',
-      body: content,
-    });
-    expect(firstUpload.status).toBe(200);
-
-    const complete = await app.request(
-      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
-      {
-        method: 'POST',
-        headers: { [ACTOR_HEADER]: ACTOR_ID },
-      }
-    );
-    expect(complete.status).toBe(200);
-
     const token = await signBlobToken({
       signer: tokenSigner,
       hash,
       action: 'upload',
+      size: content.length,
+      partitionId: 'default',
     });
 
     const response = await app.request(
@@ -272,6 +354,8 @@ describe('createBlobRoutes', () => {
       signer: tokenSigner,
       hash,
       action: 'upload',
+      size: expected.length,
+      partitionId: 'default',
     });
 
     const response = await app.request(
@@ -315,6 +399,41 @@ describe('createBlobRoutes', () => {
     expect(await forbiddenResponse.json()).toEqual({ error: 'FORBIDDEN' });
   });
 
+  it('rejects upload completion from a different actor', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+    });
+
+    const content = new TextEncoder().encode('actor-ownership-check');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+      partitionId: 'default',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+
+    expect(completeResponse.status).toBe(403);
+    expect(await completeResponse.json()).toEqual({ error: 'FORBIDDEN' });
+  });
+
   it('uploads and downloads blobs through adapter put/get branches', async () => {
     const app = buildApp({
       db,
@@ -329,6 +448,7 @@ describe('createBlobRoutes', () => {
       hash,
       size: content.length,
       mimeType: 'text/plain',
+      partitionId: 'default',
     });
 
     expect(init.exists).toBe(false);
@@ -370,6 +490,86 @@ describe('createBlobRoutes', () => {
     );
   });
 
+  it('prefers streaming direct upload when adapter exposes putStream', async () => {
+    const streamHarness = createStreamCapableAdapter(db, tokenSigner);
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: streamHarness.adapter,
+    });
+
+    const content = new TextEncoder().encode('streaming-upload-content');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+      partitionId: 'default',
+    });
+
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+
+    expect(streamHarness.getCounts()).toEqual({
+      putCalls: 0,
+      putStreamCalls: 1,
+      deleteCalls: 0,
+    });
+  });
+
+  it('deletes streamed upload on hash mismatch', async () => {
+    const streamHarness = createStreamCapableAdapter(db, tokenSigner);
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: streamHarness.adapter,
+    });
+
+    const expected = new Uint8Array([1, 2, 3, 4, 5]);
+    const hash = await createHash(expected);
+    await initiateUpload({
+      app,
+      hash,
+      size: expected.length,
+      partitionId: 'default',
+    });
+
+    const uploadResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/upload?token=${encodeURIComponent(
+        await signBlobToken({
+          signer: tokenSigner,
+          hash,
+          action: 'upload',
+          size: expected.length,
+          partitionId: 'default',
+        })
+      )}`,
+      {
+        method: 'PUT',
+        body: new Uint8Array([9, 9, 9, 9, 9]),
+      }
+    );
+    expect(uploadResponse.status).toBe(400);
+    expect(await uploadResponse.json()).toEqual({
+      error: 'HASH_MISMATCH',
+      message: 'Content hash does not match',
+    });
+
+    expect(
+      await streamHarness.adapter.exists(hash, { partitionId: 'default' })
+    ).toBe(false);
+    expect(streamHarness.getCounts()).toEqual({
+      putCalls: 0,
+      putStreamCalls: 1,
+      deleteCalls: 1,
+    });
+  });
+
   it('uploads and downloads blobs through DB fallback branches when adapter lacks put/get', async () => {
     const app = buildApp({
       db,
@@ -384,6 +584,7 @@ describe('createBlobRoutes', () => {
       hash,
       size: content.length,
       mimeType: 'text/plain',
+      partitionId: 'default',
     });
 
     const uploadResponse = await app.request(init.uploadUrl!, {
@@ -420,5 +621,72 @@ describe('createBlobRoutes', () => {
     expect(new Uint8Array(await downloadResponse.arrayBuffer())).toEqual(
       content
     );
+  });
+
+  it('isolates blob lookup by partition', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      authenticate: async (c) => {
+        const actorId = c.req.header(ACTOR_HEADER);
+        if (!actorId) return null;
+        return {
+          actorId,
+          partitionId: c.req.header(PARTITION_HEADER) ?? 'default',
+        };
+      },
+      canAccessBlob: async () => true,
+    });
+
+    const content = new TextEncoder().encode('partition-isolated-blob');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      partitionId: 'tenant-a',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: {
+          [ACTOR_HEADER]: ACTOR_ID,
+          [PARTITION_HEADER]: 'tenant-a',
+        },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    const samePartitionUrl = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: {
+          [ACTOR_HEADER]: ACTOR_ID,
+          [PARTITION_HEADER]: 'tenant-a',
+        },
+      }
+    );
+    expect(samePartitionUrl.status).toBe(200);
+
+    const otherPartitionUrl = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: {
+          [ACTOR_HEADER]: ACTOR_ID,
+          [PARTITION_HEADER]: 'tenant-b',
+        },
+      }
+    );
+    expect(otherPartitionUrl.status).toBe(404);
+    expect(await otherPartitionUrl.json()).toEqual({ error: 'NOT_FOUND' });
   });
 });

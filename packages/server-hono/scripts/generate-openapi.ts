@@ -75,6 +75,7 @@ const blobManager = createBlobManager({ db: blobDb, adapter: blobAdapter });
 const blobRoutes = createBlobRoutes({
   blobManager,
   authenticate: async () => ({ actorId: 'spec-gen' }),
+  canAccessBlob: async () => true,
 });
 
 // Mount routes

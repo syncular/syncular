@@ -102,6 +102,12 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .columns(['partition_id', 'client_id', 'client_commit_id'])
       .unique()
       .execute();
+    await db.schema
+      .createIndex('idx_sync_commits_partition_client_commit_seq')
+      .ifNotExists()
+      .on('sync_commits')
+      .columns(['partition_id', 'client_id', 'commit_seq'])
+      .execute();
 
     // Table-based commit routing index
     await db.schema

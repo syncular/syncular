@@ -13,11 +13,22 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
+import { type BlobStorageAdapter, createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
+  BLOB_CLEANUP_TUNING_PRESETS,
   computePruneWatermarkCommitSeq,
+  createBlobManager,
+  ensureBlobStorageSchemaSqlite,
+  ensureSyncSchema,
   pruneSync,
+  type SyncBlobDb,
   type SyncCoreDb,
 } from '@syncular/server';
+import {
+  createDbMetadataChunkStorage,
+  SNAPSHOT_CHUNK_CLEANUP_TUNING_PRESETS,
+} from '@syncular/server/snapshot-chunks';
 import {
   createHttpClientFixture,
   createHttpServerFixture,
@@ -31,6 +42,7 @@ import {
 } from '@syncular/testkit';
 import { createHttpTransport } from '@syncular/transport-http';
 import { createWebSocketTransport } from '@syncular/transport-ws';
+import type { Kysely } from 'kysely';
 import {
   type BenchmarkResult,
   benchmark,
@@ -46,6 +58,34 @@ import {
 } from './regression';
 
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
+const RUN_LARGE_PERF = Bun.env.SYNC_PERF_LARGE === '1';
+
+function parsePositiveIntEnv(
+  name: string,
+  fallback: number,
+  minValue = 1
+): number {
+  const raw = Bun.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(minValue, parsed);
+}
+
+const LARGE_BOOTSTRAP_ROWS = parsePositiveIntEnv(
+  'SYNC_PERF_BOOTSTRAP_ROWS',
+  100_000,
+  100_000
+);
+const LARGE_CLEANUP_ROWS = parsePositiveIntEnv(
+  'SYNC_PERF_CLEANUP_ROWS',
+  50_000,
+  10_000
+);
+const LARGE_PERF_ITERATIONS = parsePositiveIntEnv(
+  'SYNC_PERF_LARGE_ITERATIONS',
+  1
+);
 
 interface TransportLaneServerDb extends SyncCoreDb {
   tasks: {
@@ -102,10 +142,56 @@ function createTransportLaneTransport(
   });
 }
 
+async function insertBlobRowsChunked(
+  db: Kysely<SyncBlobDb>,
+  rows: Array<{
+    partition_id: string;
+    hash: string;
+    size: number;
+    mime_type: string;
+    status: 'pending' | 'complete';
+    actor_id: string;
+    expires_at: string;
+    completed_at: string | null;
+  }>,
+  chunkSize = 1_000
+): Promise<void> {
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    await db.insertInto('sync_blob_uploads').values(chunk).execute();
+  }
+}
+
+async function insertSnapshotChunkRowsChunked(
+  db: Kysely<SyncCoreDb>,
+  rows: Array<{
+    chunk_id: string;
+    partition_id: string;
+    scope_key: string;
+    scope: string;
+    as_of_commit_seq: number;
+    row_cursor: string;
+    row_limit: number;
+    encoding: string;
+    compression: string;
+    sha256: string;
+    byte_length: number;
+    blob_hash: string;
+    expires_at: string;
+  }>,
+  chunkSize = 1_000
+): Promise<void> {
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    await db.insertInto('sync_snapshot_chunks').values(chunk).execute();
+  }
+}
+
 describe('sync performance', () => {
   let server: TestServer;
   const results: BenchmarkResult[] = [];
   const userId = 'perf-user';
+  const itLarge = RUN_LARGE_PERF ? it : it.skip;
 
   beforeAll(async () => {
     server = await createTestServer('sqlite');
@@ -194,6 +280,274 @@ describe('sync performance', () => {
     results.push(result);
     expect(result.median).toBeLessThan(defaultThresholds.bootstrap_10k);
   });
+
+  itLarge('bootstrap 100K rows (profile)', async () => {
+    const result = await benchmark(
+      'bootstrap_100k',
+      async () => {
+        await withTestServer('sqlite', async (testServer) => {
+          await seedServerData(testServer, {
+            userId,
+            count: LARGE_BOOTSTRAP_ROWS,
+          });
+
+          await withTestClient(
+            'bun-sqlite',
+            testServer,
+            {
+              actorId: userId,
+              clientId: `client-${Date.now()}`,
+            },
+            async (client) => {
+              await syncPullOnce(client.db, client.transport, client.handlers, {
+                clientId: `client-${Date.now()}`,
+                subscriptions: [
+                  {
+                    id: 'my-tasks',
+                    table: 'tasks',
+                    scopes: { user_id: userId },
+                  },
+                ],
+              });
+            }
+          );
+        });
+      },
+      { iterations: LARGE_PERF_ITERATIONS, warmup: 0 }
+    );
+
+    results.push(result);
+    expect(result.median).toBeLessThan(defaultThresholds.bootstrap_100k);
+  });
+
+  itLarge(
+    'blob cleanup throughput with server/edge presets (large catalog)',
+    async () => {
+      const blobPresets = [
+        {
+          presetName: 'server',
+          tuning: BLOB_CLEANUP_TUNING_PRESETS.server,
+        },
+        {
+          presetName: 'edge',
+          tuning: BLOB_CLEANUP_TUNING_PRESETS.edge,
+        },
+      ] as const;
+
+      for (const preset of blobPresets) {
+        const metricName = `blob_cleanup_${preset.presetName}_${LARGE_CLEANUP_ROWS}`;
+        const pendingCount = Math.floor(LARGE_CLEANUP_ROWS * 0.6);
+        const completeCount = LARGE_CLEANUP_ROWS - pendingCount;
+        const referencedCount = Math.floor(completeCount * 0.2);
+        const expectedDeleted = LARGE_CLEANUP_ROWS - referencedCount;
+
+        const result = await benchmark(
+          metricName,
+          async () => {
+            const db = createDatabase<SyncBlobDb>({
+              dialect: createBunSqliteDialect({ path: ':memory:' }),
+              family: 'sqlite',
+            });
+
+            try {
+              await ensureBlobStorageSchemaSqlite(db);
+
+              let deletedFromStorage = 0;
+              const adapter: BlobStorageAdapter = {
+                name: 'perf-cleanup',
+                async signUpload() {
+                  return { url: 'http://example.test/upload', method: 'PUT' };
+                },
+                async signDownload() {
+                  return 'http://example.test/download';
+                },
+                async exists() {
+                  return false;
+                },
+                async delete() {
+                  deletedFromStorage += 1;
+                },
+              };
+
+              const manager = createBlobManager({
+                db,
+                adapter,
+                cleanupTuning: preset.tuning,
+              });
+
+              const partitionId = 'perf';
+              const expiredIso = new Date(Date.now() - 60_000).toISOString();
+              const activeIso = new Date(Date.now() + 60_000).toISOString();
+              const completedIso = new Date().toISOString();
+
+              const pendingRows = Array.from(
+                { length: pendingCount },
+                (_, i) => ({
+                  partition_id: partitionId,
+                  hash: `sha256:pending-${preset.presetName}-${i}`,
+                  size: 1,
+                  mime_type: 'application/octet-stream',
+                  status: 'pending' as const,
+                  actor_id: 'perf',
+                  expires_at: expiredIso,
+                  completed_at: null,
+                })
+              );
+
+              const completeRows = Array.from(
+                { length: completeCount },
+                (_, i) => ({
+                  partition_id: partitionId,
+                  hash: `sha256:complete-${preset.presetName}-${i}`,
+                  size: 1,
+                  mime_type: 'application/octet-stream',
+                  status: 'complete' as const,
+                  actor_id: 'perf',
+                  expires_at: activeIso,
+                  completed_at: completedIso,
+                })
+              );
+
+              await insertBlobRowsChunked(db, [
+                ...pendingRows,
+                ...completeRows,
+              ]);
+
+              const referencedHashes = new Set(
+                completeRows.slice(0, referencedCount).map((row) => row.hash)
+              );
+
+              const cleanup = await manager.cleanup({
+                partitionId,
+                deleteFromStorage: true,
+                isReferenced: async (hash) => referencedHashes.has(hash),
+              });
+
+              if (cleanup.deleted !== expectedDeleted) {
+                throw new Error(
+                  `Expected ${expectedDeleted} deleted rows for ${metricName}, received ${cleanup.deleted}`
+                );
+              }
+              if (deletedFromStorage !== expectedDeleted) {
+                throw new Error(
+                  `Expected ${expectedDeleted} storage deletes for ${metricName}, received ${deletedFromStorage}`
+                );
+              }
+            } finally {
+              await db.destroy();
+            }
+          },
+          {
+            iterations: LARGE_PERF_ITERATIONS,
+            warmup: 0,
+          }
+        );
+
+        results.push(result);
+      }
+    }
+  );
+
+  itLarge(
+    'snapshot chunk cleanup throughput with server/edge presets (large catalog)',
+    async () => {
+      const snapshotPresets = [
+        {
+          presetName: 'server',
+          tuning: SNAPSHOT_CHUNK_CLEANUP_TUNING_PRESETS.server,
+        },
+        {
+          presetName: 'edge',
+          tuning: SNAPSHOT_CHUNK_CLEANUP_TUNING_PRESETS.edge,
+        },
+      ] as const;
+
+      for (const preset of snapshotPresets) {
+        const metricName = `snapshot_cleanup_${preset.presetName}_${LARGE_CLEANUP_ROWS}`;
+
+        const result = await benchmark(
+          metricName,
+          async () => {
+            const db = createDatabase<SyncCoreDb>({
+              dialect: createBunSqliteDialect({ path: ':memory:' }),
+              family: 'sqlite',
+            });
+
+            try {
+              await ensureSyncSchema(db, server.dialect);
+
+              let deletedBlobCount = 0;
+              const blobAdapter: BlobStorageAdapter = {
+                name: 'perf-snapshot-cleanup',
+                async signUpload() {
+                  return { url: 'http://example.test/upload', method: 'PUT' };
+                },
+                async signDownload() {
+                  return 'http://example.test/download';
+                },
+                async exists() {
+                  return true;
+                },
+                async delete() {
+                  deletedBlobCount += 1;
+                },
+              };
+
+              const chunkStorage = createDbMetadataChunkStorage({
+                db,
+                blobAdapter,
+                cleanupTuning: preset.tuning,
+              });
+
+              const expiredIso = new Date(Date.now() - 60_000).toISOString();
+              const rows = Array.from(
+                { length: LARGE_CLEANUP_ROWS },
+                (_, i) => ({
+                  chunk_id: `chunk-${preset.presetName}-${i}`,
+                  partition_id: 'default',
+                  scope_key: 'perf-scope',
+                  scope: 'tasks',
+                  as_of_commit_seq: 1,
+                  row_cursor: String(i),
+                  row_limit: 1000,
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                  sha256: `sha-${preset.presetName}-${i}`,
+                  byte_length: 128,
+                  blob_hash: `sha256:blob-${preset.presetName}-${i}`,
+                  expires_at: expiredIso,
+                })
+              );
+
+              await insertSnapshotChunkRowsChunked(db, rows);
+
+              const deleted = await chunkStorage.cleanupExpired(
+                new Date().toISOString()
+              );
+              if (deleted !== LARGE_CLEANUP_ROWS) {
+                throw new Error(
+                  `Expected ${LARGE_CLEANUP_ROWS} deleted snapshot rows for ${metricName}, received ${deleted}`
+                );
+              }
+              if (deletedBlobCount !== LARGE_CLEANUP_ROWS) {
+                throw new Error(
+                  `Expected ${LARGE_CLEANUP_ROWS} blob deletes for ${metricName}, received ${deletedBlobCount}`
+                );
+              }
+            } finally {
+              await db.destroy();
+            }
+          },
+          {
+            iterations: LARGE_PERF_ITERATIONS,
+            warmup: 0,
+          }
+        );
+
+        results.push(result);
+      }
+    }
+  );
 
   it('forced rebootstrap after prune', async () => {
     const result = await withTestServer('sqlite', async (testServer) => {

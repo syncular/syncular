@@ -6,11 +6,13 @@
  */
 
 import {
+  type ScopeValues,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   type SyncSnapshotChunkCompression,
   type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
+  sha256Hex,
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import type { SyncCoreDb } from './schema';
@@ -40,6 +42,22 @@ export interface SnapshotChunkRow {
   byteLength: number;
   body: Uint8Array | ReadableStream<Uint8Array>;
   expiresAt: string;
+}
+
+/**
+ * Generate a stable cache key for snapshot chunks from effective scopes.
+ */
+export async function scopesToSnapshotChunkScopeKey(
+  scopes: ScopeValues
+): Promise<string> {
+  const sorted = Object.entries(scopes)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => {
+      const values = Array.isArray(value) ? [...value].sort() : [value];
+      return `${key}:${values.join(',')}`;
+    })
+    .join('|');
+  return sha256Hex(sorted);
 }
 
 function coerceChunkRow(value: unknown): Uint8Array {

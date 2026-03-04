@@ -84,6 +84,13 @@ export interface ConsoleMaintenanceOptions {
    * Default: 5000.
    */
   operationEventsMaxRows?: number;
+  /**
+   * Max rows to scan per source (commits/events) for `/timeline` requests.
+   * Prevents unbounded memory growth on large histories.
+   * Set to 0 to disable the guard.
+   * Default: 10000.
+   */
+  timelineScanMaxRows?: number;
 }
 
 export interface ConsoleBlobObject {
@@ -176,6 +183,31 @@ export interface CreateConsoleRoutesOptions<
      * Heartbeat interval in milliseconds. Default: 30000
      */
     heartbeatIntervalMs?: number;
+    /**
+     * Maximum inbound websocket message size in bytes.
+     * Messages above this limit are rejected and the connection is closed.
+     * Default: 1048576 (1 MiB)
+     */
+    maxMessageBytes?: number;
+    /**
+     * Maximum inbound websocket messages allowed per connection within one window.
+     * Set to 0 to disable rate limiting.
+     * Default: 120
+     */
+    maxMessagesPerWindow?: number;
+    /**
+     * Window size in milliseconds for inbound websocket message rate limiting.
+     * Ignored when maxMessagesPerWindow is 0.
+     * Default: 10000 (10s)
+     */
+    messageRateWindowMs?: number;
+    /**
+     * Optional list of allowed websocket origins.
+     * - undefined: allow all origins
+     * - '*': allow all origins
+     * - string[]: exact origin match (scheme + host + port)
+     */
+    allowedOrigins?: string[] | '*';
   };
   /**
    * Optional console schema readiness promise.

@@ -99,6 +99,10 @@ export class SyncDO extends SyncDurableObject<Env> {
         return { actorId: userId };
       },
       tokenSigner,
+      canAccessBlob: async ({ actorId, hash, partitionId }) => {
+        const record = await blobManager.getUploadRecord(hash, { partitionId });
+        return record?.status === 'complete' && record.actorId === actorId;
+      },
     });
 
     app.route('/sync', syncRoutes);

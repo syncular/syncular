@@ -6,7 +6,9 @@ describe('createHmacTokenSigner', () => {
     const signer = createHmacTokenSigner('test-secret');
     const payload = {
       hash: 'sha256:abc',
+      partitionId: 'default',
       action: 'upload' as const,
+      size: 3,
       expiresAt: Date.now() + 60_000,
     };
 
@@ -20,6 +22,7 @@ describe('createHmacTokenSigner', () => {
     const signer = createHmacTokenSigner('test-secret');
     const payload = {
       hash: 'sha256:def',
+      partitionId: 'default',
       action: 'download' as const,
       expiresAt: Date.now() + 60_000,
     };
@@ -40,7 +43,9 @@ describe('createHmacTokenSigner', () => {
     const signer = createHmacTokenSigner('test-secret');
     const payload = {
       hash: 'sha256:ghi',
+      partitionId: 'default',
       action: 'upload' as const,
+      size: 3,
       expiresAt: Date.now() + 60_000,
     };
 
@@ -57,7 +62,9 @@ describe('createHmacTokenSigner', () => {
     const signer = createHmacTokenSigner('test-secret');
     const payload = {
       hash: 'sha256:jkl',
+      partitionId: 'default',
       action: 'upload' as const,
+      size: 3,
       expiresAt: Date.now() - 1,
     };
 

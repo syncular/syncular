@@ -88,6 +88,10 @@ export interface CreateConsoleGatewayRoutesOptions {
     upgradeWebSocket?: UpgradeWebSocket;
     heartbeatIntervalMs?: number;
     createWebSocket?: (url: string) => ConsoleGatewayDownstreamSocket;
+    maxMessageBytes?: number;
+    maxMessagesPerWindow?: number;
+    messageRateWindowMs?: number;
+    allowedOrigins?: string[] | '*';
   };
 }
 
@@ -2523,6 +2527,9 @@ export function createConsoleGatewayRoutes(
   ) {
     const upgradeWebSocket = options.websocket.upgradeWebSocket;
     const heartbeatIntervalMs = options.websocket.heartbeatIntervalMs ?? 30000;
+    const maxMessageBytes = options.websocket.maxMessageBytes ?? 1024 * 1024;
+    const maxMessagesPerWindow = options.websocket.maxMessagesPerWindow ?? 120;
+    const messageRateWindowMs = options.websocket.messageRateWindowMs ?? 10000;
     const createDownstreamSocket =
       options.websocket.createWebSocket ??
       ((url: string): ConsoleGatewayDownstreamSocket => new WebSocket(url));
@@ -2540,282 +2547,315 @@ export function createConsoleGatewayRoutes(
         authTimeout: ReturnType<typeof setTimeout> | null;
         isAuthenticated: boolean;
         startAuthenticatedSession: ((token: string | null) => void) | null;
+        messageRateWindowStart: number;
+        messageRateWindowCount: number;
       }
     >();
 
-    routes.get(
-      '/events/live',
-      upgradeWebSocket(async (c) => {
-        const initialAuth = await options.authenticate(c);
-        const partitionId = c.req.query('partitionId')?.trim() || undefined;
-        const replaySince = c.req.query('since')?.trim() || undefined;
-        const replayLimitRaw = c.req.query('replayLimit');
-        const replayLimitNumber = replayLimitRaw
-          ? Number.parseInt(replayLimitRaw, 10)
-          : Number.NaN;
-        const replayLimit = Number.isFinite(replayLimitNumber)
-          ? Math.max(1, Math.min(500, replayLimitNumber))
-          : 100;
+    const liveEventsWebSocketRoute = upgradeWebSocket(async (c) => {
+      const initialAuth = await options.authenticate(c);
+      const partitionId = c.req.query('partitionId')?.trim() || undefined;
+      const replaySince = c.req.query('since')?.trim() || undefined;
+      const replayLimitRaw = c.req.query('replayLimit');
+      const replayLimitNumber = replayLimitRaw
+        ? Number.parseInt(replayLimitRaw, 10)
+        : Number.NaN;
+      const replayLimit = Number.isFinite(replayLimitNumber)
+        ? Math.max(1, Math.min(500, replayLimitNumber))
+        : 100;
 
-        const selectedInstances = selectInstances({
-          instances,
-          query: {
-            instanceId: c.req.query('instanceId') ?? undefined,
-            instanceIds: c.req.query('instanceIds') ?? undefined,
+      const selectedInstances = selectInstances({
+        instances,
+        query: {
+          instanceId: c.req.query('instanceId') ?? undefined,
+          instanceIds: c.req.query('instanceIds') ?? undefined,
+        },
+      });
+
+      const authenticateWithBearer = async (
+        token: string
+      ): Promise<ConsoleAuthResult | null> => {
+        const trimmedToken = token.trim();
+        if (!trimmedToken) {
+          return null;
+        }
+        const authContext = {
+          req: {
+            header: (name: string) =>
+              name === 'Authorization' ? `Bearer ${trimmedToken}` : undefined,
+            query: () => undefined,
           },
-        });
+        } as unknown as Context;
+        return options.authenticate(authContext);
+      };
 
-        const authenticateWithBearer = async (
-          token: string
-        ): Promise<ConsoleAuthResult | null> => {
-          const trimmedToken = token.trim();
-          if (!trimmedToken) {
-            return null;
+      const cleanup = (ws: WebSocketLike) => {
+        const state = liveState.get(ws);
+        if (!state) return;
+        if (state.heartbeatInterval) {
+          clearInterval(state.heartbeatInterval);
+        }
+        if (state.authTimeout) {
+          clearTimeout(state.authTimeout);
+        }
+        for (const downstream of state.downstreamSockets) {
+          try {
+            downstream.close();
+          } catch {
+            // no-op
           }
-          const authContext = {
-            req: {
-              header: (name: string) =>
-                name === 'Authorization' ? `Bearer ${trimmedToken}` : undefined,
-              query: () => undefined,
-            },
-          } as unknown as Context;
-          return options.authenticate(authContext);
-        };
+        }
+        liveState.delete(ws);
+      };
 
-        const cleanup = (ws: WebSocketLike) => {
-          const state = liveState.get(ws);
-          if (!state) return;
-          if (state.heartbeatInterval) {
-            clearInterval(state.heartbeatInterval);
+      return {
+        onOpen(_event, ws) {
+          if (selectedInstances.length === 0) {
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                message:
+                  'No enabled instances matched the provided instance filter.',
+              })
+            );
+            ws.close(4004, 'No instances selected');
+            return;
           }
-          if (state.authTimeout) {
-            clearTimeout(state.authTimeout);
-          }
-          for (const downstream of state.downstreamSockets) {
-            try {
-              downstream.close();
-            } catch {
-              // no-op
-            }
-          }
-          liveState.delete(ws);
-        };
 
-        return {
-          onOpen(_event, ws) {
-            if (selectedInstances.length === 0) {
-              ws.send(
-                JSON.stringify({
-                  type: 'error',
-                  message:
-                    'No enabled instances matched the provided instance filter.',
-                })
-              );
-              ws.close(4004, 'No instances selected');
+          const state: {
+            downstreamSockets: ConsoleGatewayDownstreamSocket[];
+            heartbeatInterval: ReturnType<typeof setInterval> | null;
+            authTimeout: ReturnType<typeof setTimeout> | null;
+            isAuthenticated: boolean;
+            startAuthenticatedSession: ((token: string | null) => void) | null;
+            messageRateWindowStart: number;
+            messageRateWindowCount: number;
+          } = {
+            downstreamSockets: [],
+            heartbeatInterval: null,
+            authTimeout: null,
+            isAuthenticated: false,
+            startAuthenticatedSession: null,
+            messageRateWindowStart: Date.now(),
+            messageRateWindowCount: 0,
+          };
+          liveState.set(ws, state);
+
+          const startAuthenticatedSession = (
+            upstreamBearerToken: string | null
+          ) => {
+            if (state.isAuthenticated) {
               return;
             }
+            state.isAuthenticated = true;
+            if (state.authTimeout) {
+              clearTimeout(state.authTimeout);
+              state.authTimeout = null;
+            }
 
-            const state: {
-              downstreamSockets: ConsoleGatewayDownstreamSocket[];
-              heartbeatInterval: ReturnType<typeof setInterval> | null;
-              authTimeout: ReturnType<typeof setTimeout> | null;
-              isAuthenticated: boolean;
-              startAuthenticatedSession:
-                | ((token: string | null) => void)
-                | null;
-            } = {
-              downstreamSockets: [],
-              heartbeatInterval: null,
-              authTimeout: null,
-              isAuthenticated: false,
-              startAuthenticatedSession: null,
-            };
-            liveState.set(ws, state);
-
-            const startAuthenticatedSession = (
-              upstreamBearerToken: string | null
-            ) => {
-              if (state.isAuthenticated) {
-                return;
+            for (const instance of selectedInstances) {
+              const downstreamQuery = new URLSearchParams();
+              if (partitionId) {
+                downstreamQuery.set('partitionId', partitionId);
               }
-              state.isAuthenticated = true;
-              if (state.authTimeout) {
-                clearTimeout(state.authTimeout);
-                state.authTimeout = null;
+              if (replaySince) {
+                downstreamQuery.set('since', replaySince);
               }
+              downstreamQuery.set('replayLimit', String(replayLimit));
 
-              for (const instance of selectedInstances) {
-                const downstreamQuery = new URLSearchParams();
-                if (partitionId) {
-                  downstreamQuery.set('partitionId', partitionId);
-                }
-                if (replaySince) {
-                  downstreamQuery.set('since', replaySince);
-                }
-                downstreamQuery.set('replayLimit', String(replayLimit));
+              const downstreamUrl = buildConsoleEndpointUrl({
+                instance,
+                requestUrl: c.req.url,
+                path: '/events/live',
+                query: downstreamQuery,
+              });
 
-                const downstreamUrl = buildConsoleEndpointUrl({
-                  instance,
-                  requestUrl: c.req.url,
-                  path: '/events/live',
-                  query: downstreamQuery,
-                });
-
-                const downstreamSocket = createDownstreamSocket(downstreamUrl);
-                const downstreamToken =
-                  instance.token?.trim() ?? upstreamBearerToken?.trim() ?? null;
-                if (downstreamToken && downstreamSocket.send) {
-                  downstreamSocket.onopen = () => {
-                    try {
-                      downstreamSocket.send?.(
-                        JSON.stringify({
-                          type: 'auth',
-                          token: downstreamToken,
-                        })
-                      );
-                    } catch {
-                      // no-op
-                    }
-                  };
-                }
-
-                downstreamSocket.onmessage = (message: MessageEvent) => {
-                  if (typeof message.data !== 'string') {
-                    return;
-                  }
+              const downstreamSocket = createDownstreamSocket(downstreamUrl);
+              const downstreamToken =
+                instance.token?.trim() ?? upstreamBearerToken?.trim() ?? null;
+              if (downstreamToken && downstreamSocket.send) {
+                downstreamSocket.onopen = () => {
                   try {
-                    const payload = JSON.parse(message.data) as Record<
-                      string,
-                      unknown
-                    >;
-                    if (
-                      typeof payload.type === 'string' &&
-                      (payload.type === 'connected' ||
-                        payload.type === 'heartbeat')
-                    ) {
-                      return;
-                    }
-
-                    const payloadData =
-                      payload.data &&
-                      typeof payload.data === 'object' &&
-                      !Array.isArray(payload.data)
-                        ? { ...payload.data, instanceId: instance.instanceId }
-                        : { instanceId: instance.instanceId };
-
-                    const event = {
-                      ...payload,
-                      data: payloadData,
-                      instanceId: instance.instanceId,
-                      timestamp:
-                        typeof payload.timestamp === 'string'
-                          ? payload.timestamp
-                          : new Date().toISOString(),
-                    };
-                    ws.send(JSON.stringify(event));
-                  } catch {
-                    // Ignore malformed downstream events
-                  }
-                };
-
-                downstreamSocket.onerror = () => {
-                  try {
-                    ws.send(
+                    downstreamSocket.send?.(
                       JSON.stringify({
-                        type: 'instance_error',
-                        instanceId: instance.instanceId,
-                        timestamp: new Date().toISOString(),
+                        type: 'auth',
+                        token: downstreamToken,
                       })
                     );
                   } catch {
-                    // ignore send errors
+                    // no-op
                   }
                 };
-
-                state.downstreamSockets.push(downstreamSocket);
               }
 
-              ws.send(
-                JSON.stringify({
-                  type: 'connected',
-                  timestamp: new Date().toISOString(),
-                  instanceCount: selectedInstances.length,
-                })
-              );
+              downstreamSocket.onmessage = (message: MessageEvent) => {
+                if (typeof message.data !== 'string') {
+                  return;
+                }
+                try {
+                  const payload = JSON.parse(message.data) as Record<
+                    string,
+                    unknown
+                  >;
+                  if (
+                    typeof payload.type === 'string' &&
+                    (payload.type === 'connected' ||
+                      payload.type === 'heartbeat')
+                  ) {
+                    return;
+                  }
 
-              const heartbeatInterval = setInterval(() => {
+                  const payloadData =
+                    payload.data &&
+                    typeof payload.data === 'object' &&
+                    !Array.isArray(payload.data)
+                      ? { ...payload.data, instanceId: instance.instanceId }
+                      : { instanceId: instance.instanceId };
+
+                  const event = {
+                    ...payload,
+                    data: payloadData,
+                    instanceId: instance.instanceId,
+                    timestamp:
+                      typeof payload.timestamp === 'string'
+                        ? payload.timestamp
+                        : new Date().toISOString(),
+                  };
+                  ws.send(JSON.stringify(event));
+                } catch {
+                  // Ignore malformed downstream events
+                }
+              };
+
+              downstreamSocket.onerror = () => {
                 try {
                   ws.send(
                     JSON.stringify({
-                      type: 'heartbeat',
+                      type: 'instance_error',
+                      instanceId: instance.instanceId,
                       timestamp: new Date().toISOString(),
                     })
                   );
                 } catch {
-                  clearInterval(heartbeatInterval);
+                  // ignore send errors
                 }
-              }, heartbeatIntervalMs);
-              state.heartbeatInterval = heartbeatInterval;
-            };
-            state.startAuthenticatedSession = startAuthenticatedSession;
+              };
 
-            if (initialAuth) {
-              startAuthenticatedSession(
-                parseBearerToken(c.req.header('Authorization'))
-              );
-              return;
+              state.downstreamSockets.push(downstreamSocket);
             }
 
-            state.authTimeout = setTimeout(() => {
-              const current = liveState.get(ws);
-              if (!current || current.isAuthenticated) {
-                return;
+            ws.send(
+              JSON.stringify({
+                type: 'connected',
+                timestamp: new Date().toISOString(),
+                instanceCount: selectedInstances.length,
+              })
+            );
+
+            const heartbeatInterval = setInterval(() => {
+              try {
+                ws.send(
+                  JSON.stringify({
+                    type: 'heartbeat',
+                    timestamp: new Date().toISOString(),
+                  })
+                );
+              } catch {
+                clearInterval(heartbeatInterval);
               }
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-            }, 5_000);
-          },
-          async onMessage(event, ws) {
-            const state = liveState.get(ws);
-            if (!state || state.isAuthenticated) {
-              return;
-            }
+            }, heartbeatIntervalMs);
+            state.heartbeatInterval = heartbeatInterval;
+          };
+          state.startAuthenticatedSession = startAuthenticatedSession;
 
-            if (typeof event.data !== 'string') {
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-              return;
-            }
+          if (initialAuth) {
+            startAuthenticatedSession(
+              parseBearerToken(c.req.header('Authorization'))
+            );
+            return;
+          }
 
-            const token = parseWebSocketAuthToken(event.data);
-
-            if (!token) {
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-              return;
-            }
-
-            const auth = await authenticateWithBearer(token);
+          state.authTimeout = setTimeout(() => {
             const current = liveState.get(ws);
             if (!current || current.isAuthenticated) {
               return;
             }
-            if (!auth) {
-              closeUnauthenticatedSocket(ws);
+            closeUnauthenticatedSocket(ws);
+            cleanup(ws);
+          }, 5_000);
+        },
+        async onMessage(event, ws) {
+          const state = liveState.get(ws);
+          if (!state) {
+            return;
+          }
+
+          const messageBytes = measureWebSocketMessageBytes(event.data);
+          if (messageBytes > maxMessageBytes) {
+            ws.close(1009, 'message too large');
+            cleanup(ws);
+            return;
+          }
+
+          if (maxMessagesPerWindow > 0 && messageRateWindowMs > 0) {
+            const nowMs = Date.now();
+            if (nowMs - state.messageRateWindowStart >= messageRateWindowMs) {
+              state.messageRateWindowStart = nowMs;
+              state.messageRateWindowCount = 0;
+            }
+            state.messageRateWindowCount += 1;
+            if (state.messageRateWindowCount > maxMessagesPerWindow) {
+              ws.close(1008, 'message rate exceeded');
               cleanup(ws);
               return;
             }
-            current.startAuthenticatedSession?.(token);
-          },
-          onClose(_event, ws) {
+          }
+
+          if (state.isAuthenticated) {
+            return;
+          }
+
+          if (typeof event.data !== 'string') {
+            closeUnauthenticatedSocket(ws);
             cleanup(ws);
-          },
-          onError(_event, ws) {
+            return;
+          }
+
+          const token = parseWebSocketAuthToken(event.data);
+
+          if (!token) {
+            closeUnauthenticatedSocket(ws);
             cleanup(ws);
-          },
-        };
-      })
-    );
+            return;
+          }
+
+          const auth = await authenticateWithBearer(token);
+          const current = liveState.get(ws);
+          if (!current || current.isAuthenticated) {
+            return;
+          }
+          if (!auth) {
+            closeUnauthenticatedSocket(ws);
+            cleanup(ws);
+            return;
+          }
+          current.startAuthenticatedSession?.(token);
+        },
+        onClose(_event, ws) {
+          cleanup(ws);
+        },
+        onError(_event, ws) {
+          cleanup(ws);
+        },
+      };
+    });
+
+    routes.get('/events/live', async (c, next) => {
+      if (!isWebSocketOriginAllowed(c, options.websocket?.allowedOrigins)) {
+        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+      }
+      return liveEventsWebSocketRoute(c, next);
+    });
   }
 
   routes.get(
@@ -2967,4 +3007,38 @@ export function createConsoleGatewayRoutes(
   );
 
   return routes;
+}
+
+function isWebSocketOriginAllowed(
+  c: Context,
+  allowedOrigins?: string[] | '*'
+): boolean {
+  if (!allowedOrigins) return true;
+  if (allowedOrigins === '*') return true;
+
+  const origin = c.req.header('origin');
+  if (!origin) return false;
+
+  try {
+    const normalizedOrigin = new URL(origin).origin;
+    return allowedOrigins.includes(normalizedOrigin);
+  } catch {
+    return false;
+  }
+}
+
+function measureWebSocketMessageBytes(data: unknown): number {
+  if (typeof data === 'string') {
+    return new TextEncoder().encode(data).byteLength;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (ArrayBuffer.isView(data)) {
+    return data.byteLength;
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return data.size;
+  }
+  return new TextEncoder().encode(String(data)).byteLength;
 }

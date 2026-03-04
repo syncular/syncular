@@ -175,7 +175,10 @@ export interface SyncTransport {
    * Download an encoded bootstrap snapshot chunk.
    */
   fetchSnapshotChunk(
-    request: { chunkId: string },
+    request: {
+      chunkId: string;
+      scopeValues?: Record<string, string | string[]>;
+    },
     options?: SyncTransportOptions
   ): Promise<Uint8Array>;
 
@@ -186,7 +189,10 @@ export interface SyncTransport {
    * incrementally without materializing the entire chunk in memory.
    */
   fetchSnapshotChunkStream?(
-    request: { chunkId: string },
+    request: {
+      chunkId: string;
+      scopeValues?: Record<string, string | string[]>;
+    },
     options?: SyncTransportOptions
   ): Promise<ReadableStream<Uint8Array>>;
 

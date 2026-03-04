@@ -109,7 +109,16 @@ const adapter = createDatabaseBlobStorageAdapter({ db, baseUrl, tokenSigner });
 const blobManager = createBlobManager({ db, adapter });
 
 // Add blob routes
-const blobRoutes = createBlobRoutes({ blobManager, authenticate, tokenSigner, db });
+const blobRoutes = createBlobRoutes({
+  blobManager,
+  authenticate,
+  tokenSigner,
+  db,
+  canAccessBlob: async ({ actorId, hash, partitionId }) => {
+    // Enforce your tenant/ownership model before issuing download URLs.
+    return true;
+  },
+});
 app.route('/api/sync', blobRoutes);
 ```
 
