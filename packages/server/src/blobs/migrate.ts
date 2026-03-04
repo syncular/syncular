@@ -21,7 +21,8 @@ async function ensureBlobUploadsSchemaPostgres<DB extends SyncBlobUploadsDb>(
   await db.schema
     .createTable('sync_blob_uploads')
     .ifNotExists()
-    .addColumn('hash', 'text', (col) => col.primaryKey())
+    .addColumn('partition_id', 'text', (col) => col.notNull())
+    .addColumn('hash', 'text', (col) => col.notNull())
     .addColumn('size', 'bigint', (col) => col.notNull())
     .addColumn('mime_type', 'text', (col) => col.notNull())
     .addColumn('status', 'text', (col) => col.notNull())
@@ -31,20 +32,21 @@ async function ensureBlobUploadsSchemaPostgres<DB extends SyncBlobUploadsDb>(
     )
     .addColumn('expires_at', 'timestamptz', (col) => col.notNull())
     .addColumn('completed_at', 'timestamptz')
+    .addPrimaryKeyConstraint('pk_sync_blob_uploads', ['partition_id', 'hash'])
     .execute();
 
   await db.schema
     .createIndex('idx_sync_blob_uploads_status')
     .ifNotExists()
     .on('sync_blob_uploads')
-    .columns(['status'])
+    .columns(['partition_id', 'status'])
     .execute();
 
   await db.schema
     .createIndex('idx_sync_blob_uploads_expires_at')
     .ifNotExists()
     .on('sync_blob_uploads')
-    .columns(['expires_at'])
+    .columns(['partition_id', 'expires_at'])
     .execute();
 }
 
@@ -60,7 +62,8 @@ async function ensureBlobUploadsSchemasSqlite<DB extends SyncBlobUploadsDb>(
   await db.schema
     .createTable('sync_blob_uploads')
     .ifNotExists()
-    .addColumn('hash', 'text', (col) => col.primaryKey())
+    .addColumn('partition_id', 'text', (col) => col.notNull())
+    .addColumn('hash', 'text', (col) => col.notNull())
     .addColumn('size', 'integer', (col) => col.notNull())
     .addColumn('mime_type', 'text', (col) => col.notNull())
     .addColumn('status', 'text', (col) => col.notNull())
@@ -70,20 +73,21 @@ async function ensureBlobUploadsSchemasSqlite<DB extends SyncBlobUploadsDb>(
     )
     .addColumn('expires_at', 'text', (col) => col.notNull())
     .addColumn('completed_at', 'text')
+    .addPrimaryKeyConstraint('pk_sync_blob_uploads', ['partition_id', 'hash'])
     .execute();
 
   await db.schema
     .createIndex('idx_sync_blob_uploads_status')
     .ifNotExists()
     .on('sync_blob_uploads')
-    .columns(['status'])
+    .columns(['partition_id', 'status'])
     .execute();
 
   await db.schema
     .createIndex('idx_sync_blob_uploads_expires_at')
     .ifNotExists()
     .on('sync_blob_uploads')
-    .columns(['expires_at'])
+    .columns(['partition_id', 'expires_at'])
     .execute();
 }
 
@@ -103,13 +107,15 @@ export async function ensureBlobStorageSchemaPostgres<DB extends SyncBlobDb>(
   await db.schema
     .createTable('sync_blobs')
     .ifNotExists()
-    .addColumn('hash', 'text', (col) => col.primaryKey())
+    .addColumn('partition_id', 'text', (col) => col.notNull())
+    .addColumn('hash', 'text', (col) => col.notNull())
     .addColumn('size', 'bigint', (col) => col.notNull())
     .addColumn('mime_type', 'text', (col) => col.notNull())
     .addColumn('body', 'bytea', (col) => col.notNull())
     .addColumn('created_at', 'timestamptz', (col) =>
       col.notNull().defaultTo(sql`now()`)
     )
+    .addPrimaryKeyConstraint('pk_sync_blobs', ['partition_id', 'hash'])
     .execute();
 }
 
@@ -129,13 +135,15 @@ export async function ensureBlobStorageSchemaSqlite<DB extends SyncBlobDb>(
   await db.schema
     .createTable('sync_blobs')
     .ifNotExists()
-    .addColumn('hash', 'text', (col) => col.primaryKey())
+    .addColumn('partition_id', 'text', (col) => col.notNull())
+    .addColumn('hash', 'text', (col) => col.notNull())
     .addColumn('size', 'integer', (col) => col.notNull())
     .addColumn('mime_type', 'text', (col) => col.notNull())
     .addColumn('body', 'blob', (col) => col.notNull())
     .addColumn('created_at', 'text', (col) =>
       col.notNull().defaultTo(sql`(datetime('now'))`)
     )
+    .addPrimaryKeyConstraint('pk_sync_blobs', ['partition_id', 'hash'])
     .execute();
 }
 

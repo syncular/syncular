@@ -56,8 +56,11 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
   const { db, dialect, tables } = args;
   const partitionId = args.partitionId ?? 'default';
   const actorId = args.actorId ?? EXTERNAL_CLIENT_ID;
+  const uniqueTables = Array.from(
+    new Set(tables.filter((table) => typeof table === 'string'))
+  );
 
-  if (tables.length === 0) {
+  if (uniqueTables.length === 0) {
     throw new Error('notifyExternalDataChange: tables must not be empty');
   }
 
@@ -79,7 +82,7 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
       meta: null,
       result_json: toDialectJsonValue(dialect, { ok: true, status: 'applied' }),
       change_count: 0,
-      affected_tables: dialect.arrayToDb(tables) as string[],
+      affected_tables: dialect.arrayToDb(uniqueTables) as string[],
     };
 
     let commitSeq = 0;
@@ -112,7 +115,7 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
 
     // 2. Insert sync_table_commits entries for each affected table
     const tableCommits: Array<Insertable<SyncCoreDb['sync_table_commits']>> =
-      tables.map((table) => ({
+      uniqueTables.map((table) => ({
         partition_id: partitionId,
         table,
         commit_seq: commitSeq,
@@ -126,21 +129,17 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
       )
       .execute();
 
-    // 3. Delete cached snapshot chunks for affected tables
-    let deletedChunks = 0;
-    for (const table of tables) {
-      const result = await syncTrx
-        .deleteFrom('sync_snapshot_chunks')
-        .where('partition_id', '=', partitionId)
-        .where('scope', '=', table)
-        .executeTakeFirst();
-
-      deletedChunks += Number(result?.numDeletedRows ?? 0);
-    }
+    // 3. Delete cached snapshot chunks for affected tables.
+    const deletedResult = await syncTrx
+      .deleteFrom('sync_snapshot_chunks')
+      .where('partition_id', '=', partitionId)
+      .where('scope', 'in', uniqueTables)
+      .executeTakeFirst();
+    const deletedChunks = Number(deletedResult?.numDeletedRows ?? 0);
 
     return {
       commitSeq,
-      tables,
+      tables: uniqueTables,
       deletedChunks,
     };
   });

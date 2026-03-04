@@ -14,6 +14,7 @@ import {
   distributionSyncMetric,
   ErrorResponseSchema,
   logSyncEvent,
+  ScopeValuesSchema,
   SyncCombinedRequestSchema,
   SyncCombinedResponseSchema,
   SyncPushRequestSchema,
@@ -43,6 +44,8 @@ import {
   pushCommit,
   readSnapshotChunk,
   recordClientCursor,
+  resolveEffectiveScopesForSubscriptions,
+  scopesToSnapshotChunkScopeKey,
 } from '@syncular/server';
 import type { Context, MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
@@ -56,6 +59,7 @@ import {
   sql,
 } from 'kysely';
 import { z } from 'zod';
+import { isBenignConsoleSchemaError } from './console/schema-errors';
 import {
   createRateLimiter,
   DEFAULT_SYNC_RATE_LIMITS,
@@ -97,6 +101,27 @@ export interface SyncWebSocketConfig {
    * Default: 3
    */
   maxConnectionsPerClient?: number;
+  /**
+   * Maximum inbound websocket message size in bytes.
+   * Default: 1 MiB.
+   */
+  maxMessageBytes?: number;
+  /**
+   * Maximum inbound websocket messages allowed per connection within one window.
+   * Default: 120 messages.
+   * Set to 0 or a negative value to disable rate limiting.
+   */
+  maxMessagesPerWindow?: number;
+  /**
+   * Window size in milliseconds for inbound websocket message rate limiting.
+   * Default: 10000 ms.
+   */
+  messageRateWindowMs?: number;
+  /**
+   * Optional list of allowed websocket origins.
+   * Use '*' to allow all origins.
+   */
+  allowedOrigins?: string[] | '*';
 }
 
 export interface SyncRoutesConfigWithRateLimit {
@@ -232,6 +257,9 @@ export interface CreateSyncRoutesOptions<
 const snapshotChunkParamsSchema = z.object({
   chunkId: z.string().min(1),
 });
+const snapshotChunkQuerySchema = z.object({
+  scopes: z.string().optional(),
+});
 
 const auditCommitListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).optional(),
@@ -279,6 +307,7 @@ const auditCommitDetailResponseSchema = z.object({
 });
 
 const DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES = 128 * 1024;
+const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';
 
 type TraceContext = {
   traceId: string | null;
@@ -485,6 +514,18 @@ function countPullRows(response: PullResult['response']): number {
   }, 0);
 }
 
+function readSnapshotScopeValues(
+  c: Context,
+  queryScopes: string | undefined
+): Record<string, string | string[]> | null {
+  const rawValue = queryScopes ?? c.req.header(SNAPSHOT_SCOPES_HEADER);
+  if (!rawValue) return null;
+  const parsed = parseJsonValue(rawValue);
+  const validated = ScopeValuesSchema.safeParse(parsed);
+  if (!validated.success) return null;
+  return validated.data;
+}
+
 function encodePayloadSnapshot(value: unknown, maxBytes: number): string {
   try {
     const serialized = JSON.stringify(value);
@@ -576,6 +617,9 @@ export function createSyncRoutes<
       Promise.resolve())
     : Promise.resolve();
   const consoleSchemaReady = consoleSchemaReadyBase.catch((error) => {
+    if (isBenignConsoleSchemaError(error)) {
+      return;
+    }
     logSyncEvent({
       event: 'sync.console_schema_ready_failed',
       error: error instanceof Error ? error.message : String(error),
@@ -1659,10 +1703,13 @@ export function createSyncRoutes<
       },
     }),
     zValidator('param', snapshotChunkParamsSchema),
+    zValidator('query', snapshotChunkQuerySchema),
     async (c) => {
       const auth = await getAuth(c);
       if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
       const partitionId = auth.partitionId ?? 'default';
+      const query = c.req.valid('query');
+      const requestedChunkScopes = readSnapshotScopeValues(c, query.scopes);
 
       const { chunkId } = c.req.valid('param');
 
@@ -1679,9 +1726,40 @@ export function createSyncRoutes<
         return c.json({ error: 'NOT_FOUND' }, 404);
       }
 
-      // Note: Snapshot chunks are created during authorized pull requests
-      // and have opaque IDs that expire. Additional authorization is handled
-      // at the pull layer via table-level resolveScopes.
+      if (requestedChunkScopes) {
+        try {
+          const resolved = await resolveEffectiveScopesForSubscriptions({
+            db: options.db,
+            auth,
+            subscriptions: [
+              {
+                id: 'snapshot-chunk-authz',
+                table: chunk.scope,
+                scopes: requestedChunkScopes,
+                cursor: 0,
+              },
+            ],
+            handlers: handlerRegistry,
+            scopeCache: options.scopeCache,
+          });
+          const scopeAuth = resolved[0];
+          if (!scopeAuth || scopeAuth.status !== 'active') {
+            return c.json({ error: 'FORBIDDEN' }, 403);
+          }
+
+          const scopeKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
+            scopeAuth.scopes
+          )}`;
+          if (scopeKey !== chunk.scopeKey) {
+            return c.json({ error: 'FORBIDDEN' }, 403);
+          }
+        } catch (error) {
+          if (error instanceof InvalidSubscriptionScopeError) {
+            return c.json({ error: 'FORBIDDEN' }, 403);
+          }
+          throw error;
+        }
+      }
 
       const etag = `"sha256:${chunk.sha256}"`;
       const ifNoneMatch = c.req.header('if-none-match');
@@ -1722,6 +1800,9 @@ export function createSyncRoutes<
     routes.get('/realtime', async (c) => {
       const auth = await getAuth(c);
       if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!isWebSocketOriginAllowed(c, websocketConfig.allowedOrigins)) {
+        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+      }
       const partitionId = auth.partitionId ?? 'default';
 
       const clientId = c.req.query('clientId');
@@ -1783,6 +1864,11 @@ export function createSyncRoutes<
       const maxConnectionsTotal = websocketConfig.maxConnectionsTotal ?? 5000;
       const maxConnectionsPerClient =
         websocketConfig.maxConnectionsPerClient ?? 3;
+      const maxMessageBytes = websocketConfig.maxMessageBytes ?? 1024 * 1024;
+      const maxMessagesPerWindow = websocketConfig.maxMessagesPerWindow ?? 120;
+      const messageRateWindowMs = websocketConfig.messageRateWindowMs ?? 10000;
+      let messageRateWindowStartedAtMs = Date.now();
+      let messageRateWindowCount = 0;
 
       if (
         maxConnectionsTotal > 0 &&
@@ -1923,6 +2009,27 @@ export function createSyncRoutes<
         onMessage(evt, _ws) {
           if (!connRef) return;
           try {
+            const messageBytes = measureWebSocketMessageBytes(evt.data);
+            if (messageBytes > maxMessageBytes) {
+              connRef.sendError(
+                `WebSocket message exceeds max size (${maxMessageBytes} bytes)`
+              );
+              return;
+            }
+            if (maxMessagesPerWindow > 0 && messageRateWindowMs > 0) {
+              const nowMs = Date.now();
+              if (nowMs - messageRateWindowStartedAtMs >= messageRateWindowMs) {
+                messageRateWindowStartedAtMs = nowMs;
+                messageRateWindowCount = 0;
+              }
+              messageRateWindowCount += 1;
+              if (messageRateWindowCount > maxMessagesPerWindow) {
+                connRef.sendError(
+                  `WebSocket message rate exceeded (${maxMessagesPerWindow}/${messageRateWindowMs}ms)`
+                );
+                return;
+              }
+            }
             const raw =
               typeof evt.data === 'string' ? evt.data : String(evt.data);
             const msg = JSON.parse(raw);
@@ -2251,6 +2358,40 @@ export function getSyncRealtimeUnsubscribe(
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function isWebSocketOriginAllowed(
+  c: Context,
+  allowedOrigins?: string[] | '*'
+): boolean {
+  if (!allowedOrigins) return true;
+  if (allowedOrigins === '*') return true;
+
+  const origin = c.req.header('origin');
+  if (!origin) return false;
+
+  try {
+    const normalizedOrigin = new URL(origin).origin;
+    return allowedOrigins.includes(normalizedOrigin);
+  } catch {
+    return false;
+  }
+}
+
+function measureWebSocketMessageBytes(data: unknown): number {
+  if (typeof data === 'string') {
+    return new TextEncoder().encode(data).byteLength;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (ArrayBuffer.isView(data)) {
+    return data.byteLength;
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return data.size;
+  }
+  return new TextEncoder().encode(String(data)).byteLength;
 }
 
 function readTransportPath(

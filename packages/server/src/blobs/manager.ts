@@ -30,19 +30,66 @@ export interface BlobManagerOptions<
   defaultExpiresIn?: number;
   /** How long incomplete uploads are kept before cleanup. Default: 86400 (24 hours) */
   uploadTtlSeconds?: number;
+  /** Optional cleanup throughput tuning knobs. */
+  cleanupTuning?: BlobCleanupTuning;
 }
+
+export interface BlobCleanupTuning {
+  /** Cleanup select/delete batch size. Default: 250 */
+  batchSize?: number;
+  /** Max concurrent storage deletes during cleanup. Default: 8 */
+  storageDeleteConcurrency?: number;
+  /** Max concurrent reference checks for completed uploads. Default: 16 */
+  referenceCheckConcurrency?: number;
+}
+
+export const BLOB_CLEANUP_TUNING_PRESETS = {
+  server: {
+    batchSize: 500,
+    storageDeleteConcurrency: 16,
+    referenceCheckConcurrency: 24,
+  },
+  edge: {
+    batchSize: 100,
+    storageDeleteConcurrency: 4,
+    referenceCheckConcurrency: 8,
+  },
+} as const satisfies Record<'server' | 'edge', Required<BlobCleanupTuning>>;
 
 export interface InitiateUploadOptions {
   hash: string;
   size: number;
   mimeType: string;
   actorId: string;
+  partitionId?: string;
 }
 
 export interface GetDownloadUrlOptions {
   hash: string;
   /** Optional: verify actor has access to this blob via a scope check */
   actorId?: string;
+  partitionId?: string;
+}
+
+export interface CompleteUploadOptions {
+  /**
+   * Optional actor identity to authorize upload completion.
+   * When provided, only the initiating actor may mark an upload complete.
+   */
+  actorId?: string;
+  partitionId?: string;
+}
+
+export interface BlobUploadRecord {
+  partitionId: string;
+  hash: string;
+  size: number;
+  mimeType: string;
+  status: 'pending' | 'complete';
+  actorId: string;
+  createdAt: string;
+  expiresAt: string;
+  completedAt: string | null;
 }
 
 /**
@@ -56,7 +103,77 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
     adapter,
     defaultExpiresIn = 3600,
     uploadTtlSeconds = 86400,
+    cleanupTuning,
   } = options;
+
+  function positiveIntOrDefault(value: number | undefined, fallback: number) {
+    if (value === undefined) return fallback;
+    if (!Number.isFinite(value)) return fallback;
+    const normalized = Math.trunc(value);
+    return normalized > 0 ? normalized : fallback;
+  }
+
+  function resolvePartitionId(partitionId?: string): string {
+    return partitionId ?? 'default';
+  }
+
+  function toStoragePartitionOptions(partitionId: string): {
+    partitionId?: string;
+  } {
+    if (partitionId === 'default') return {};
+    return { partitionId };
+  }
+
+  const CLEANUP_BATCH_SIZE = positiveIntOrDefault(
+    cleanupTuning?.batchSize,
+    250
+  );
+  const STORAGE_DELETE_CONCURRENCY = positiveIntOrDefault(
+    cleanupTuning?.storageDeleteConcurrency,
+    8
+  );
+  const REFERENCE_CHECK_CONCURRENCY = positiveIntOrDefault(
+    cleanupTuning?.referenceCheckConcurrency,
+    16
+  );
+
+  async function runWithConcurrency<T>(
+    items: readonly T[],
+    concurrency: number,
+    worker: (item: T) => Promise<void>
+  ): Promise<void> {
+    if (items.length === 0) return;
+
+    const workerCount = Math.max(1, Math.min(concurrency, items.length));
+    let nextIndex = 0;
+
+    async function runWorker(): Promise<void> {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const item = items[index];
+        if (item === undefined) continue;
+        await worker(item);
+      }
+    }
+
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  }
+
+  async function deleteUploadRowsByHashes(
+    partitionId: string,
+    hashes: readonly string[]
+  ): Promise<number> {
+    if (hashes.length === 0) return 0;
+
+    const deletedResult = await sql`
+      delete from ${sql.table('sync_blob_uploads')}
+      where partition_id = ${partitionId}
+        and hash in (${sql.join(hashes)})
+    `.execute(db);
+
+    return Number(deletedResult.numAffectedRows ?? 0);
+  }
 
   return {
     /**
@@ -68,6 +185,8 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       opts: InitiateUploadOptions
     ): Promise<BlobUploadInitResponse> {
       const { hash, size, mimeType, actorId } = opts;
+      const partitionId = resolvePartitionId(opts.partitionId);
+      const storagePartitionOptions = toStoragePartitionOptions(partitionId);
 
       // Validate hash format
       if (!parseBlobHash(hash)) {
@@ -75,13 +194,15 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       }
 
       // Check if blob already exists (deduplication)
-      const exists = await adapter.exists(hash);
+      const exists = await adapter.exists(hash, storagePartitionOptions);
       if (exists) {
         // Also check if we have a complete upload record
         const existingResult = await sql<{ status: 'pending' | 'complete' }>`
           select status
           from ${sql.table('sync_blob_uploads')}
-          where hash = ${hash} and status = 'complete'
+          where partition_id = ${partitionId}
+            and hash = ${hash}
+            and status = 'complete'
           limit 1
         `.execute(db);
         const existing = existingResult.rows[0];
@@ -98,6 +219,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
 
         await sql`
           insert into ${sql.table('sync_blob_uploads')} (
+            partition_id,
             hash,
             size,
             mime_type,
@@ -107,6 +229,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
             completed_at
           )
           values (
+            ${partitionId},
             ${hash},
             ${size},
             ${mimeType},
@@ -115,7 +238,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
             ${existsExpiresAt},
             ${existsCompletedAt}
           )
-          on conflict (hash) do nothing
+          on conflict (partition_id, hash) do nothing
         `.execute(db);
 
         return { exists: true };
@@ -128,6 +251,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
 
       await sql`
         insert into ${sql.table('sync_blob_uploads')} (
+          partition_id,
           hash,
           size,
           mime_type,
@@ -137,6 +261,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
           completed_at
         )
         values (
+          ${partitionId},
           ${hash},
           ${size},
           ${mimeType},
@@ -145,7 +270,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
           ${expiresAt},
           ${null}
         )
-        on conflict (hash)
+        on conflict (partition_id, hash)
         do update set
           size = ${size},
           mime_type = ${mimeType},
@@ -158,6 +283,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       // Generate presigned upload URL
       const signed = await adapter.signUpload({
         hash,
+        partitionId: storagePartitionOptions.partitionId,
         size,
         mimeType,
         expiresIn: defaultExpiresIn,
@@ -177,7 +303,13 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
      *
      * Verifies the blob exists in storage and marks the upload as complete.
      */
-    async completeUpload(hash: string): Promise<BlobUploadCompleteResponse> {
+    async completeUpload(
+      hash: string,
+      options?: CompleteUploadOptions
+    ): Promise<BlobUploadCompleteResponse> {
+      const partitionId = resolvePartitionId(options?.partitionId);
+      const storagePartitionOptions = toStoragePartitionOptions(partitionId);
+
       // Validate hash format
       if (!parseBlobHash(hash)) {
         return { ok: false, error: 'Invalid blob hash format' };
@@ -189,17 +321,25 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
         size: number;
         mime_type: string;
         status: 'pending' | 'complete';
+        actor_id: string;
         created_at: string;
       }>`
-        select hash, size, mime_type, status, created_at
+        select hash, size, mime_type, status, actor_id, created_at
         from ${sql.table('sync_blob_uploads')}
-        where hash = ${hash}
+        where partition_id = ${partitionId} and hash = ${hash}
         limit 1
       `.execute(db);
       const upload = uploadResult.rows[0];
 
       if (!upload) {
         return { ok: false, error: 'Upload not found' };
+      }
+
+      if (
+        options?.actorId !== undefined &&
+        upload.actor_id !== options.actorId
+      ) {
+        return { ok: false, error: 'FORBIDDEN' };
       }
 
       if (upload.status === 'complete') {
@@ -217,14 +357,14 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       }
 
       // Verify blob exists in storage
-      const exists = await adapter.exists(hash);
+      const exists = await adapter.exists(hash, storagePartitionOptions);
       if (!exists) {
         return { ok: false, error: 'Blob not found in storage' };
       }
 
       // Optionally verify size matches
       if (adapter.getMetadata) {
-        const meta = await adapter.getMetadata(hash);
+        const meta = await adapter.getMetadata(hash, storagePartitionOptions);
         if (meta && meta.size !== upload.size) {
           return {
             ok: false,
@@ -238,7 +378,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       await sql`
         update ${sql.table('sync_blob_uploads')}
         set status = 'complete', completed_at = ${completedAt}
-        where hash = ${hash}
+        where partition_id = ${partitionId} and hash = ${hash}
       `.execute(db);
 
       return {
@@ -260,6 +400,8 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       opts: GetDownloadUrlOptions
     ): Promise<{ url: string; expiresAt: string; metadata: BlobMetadata }> {
       const { hash } = opts;
+      const partitionId = resolvePartitionId(opts.partitionId);
+      const storagePartitionOptions = toStoragePartitionOptions(partitionId);
 
       // Validate hash format
       if (!parseBlobHash(hash)) {
@@ -276,7 +418,9 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       }>`
         select hash, size, mime_type, status, created_at
         from ${sql.table('sync_blob_uploads')}
-        where hash = ${hash} and status = 'complete'
+        where partition_id = ${partitionId}
+          and hash = ${hash}
+          and status = 'complete'
         limit 1
       `.execute(db);
       const upload = uploadResult.rows[0];
@@ -288,6 +432,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       // Generate presigned download URL
       const url = await adapter.signDownload({
         hash,
+        partitionId: storagePartitionOptions.partitionId,
         expiresIn: defaultExpiresIn,
       });
 
@@ -309,9 +454,69 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
     },
 
     /**
+     * Get upload record for a blob hash, including pending uploads.
+     */
+    async getUploadRecord(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<BlobUploadRecord | null> {
+      const partitionId = resolvePartitionId(options?.partitionId);
+      if (!parseBlobHash(hash)) {
+        return null;
+      }
+
+      const uploadResult = await sql<{
+        partition_id: string;
+        hash: string;
+        size: number;
+        mime_type: string;
+        status: 'pending' | 'complete';
+        actor_id: string;
+        created_at: string;
+        expires_at: string;
+        completed_at: string | null;
+      }>`
+        select
+          partition_id,
+          hash,
+          size,
+          mime_type,
+          status,
+          actor_id,
+          created_at,
+          expires_at,
+          completed_at
+        from ${sql.table('sync_blob_uploads')}
+        where partition_id = ${partitionId} and hash = ${hash}
+        limit 1
+      `.execute(db);
+      const upload = uploadResult.rows[0];
+
+      if (!upload) {
+        return null;
+      }
+
+      return {
+        partitionId: upload.partition_id,
+        hash: upload.hash,
+        size: upload.size,
+        mimeType: upload.mime_type,
+        status: upload.status,
+        actorId: upload.actor_id,
+        createdAt: upload.created_at,
+        expiresAt: upload.expires_at,
+        completedAt: upload.completed_at,
+      };
+    },
+
+    /**
      * Get blob metadata without generating a download URL.
      */
-    async getMetadata(hash: string): Promise<BlobMetadata | null> {
+    async getMetadata(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<BlobMetadata | null> {
+      const partitionId = resolvePartitionId(options?.partitionId);
       // Validate hash format
       if (!parseBlobHash(hash)) {
         return null;
@@ -326,7 +531,9 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       }>`
         select hash, size, mime_type, status, created_at
         from ${sql.table('sync_blob_uploads')}
-        where hash = ${hash} and status = 'complete'
+        where partition_id = ${partitionId}
+          and hash = ${hash}
+          and status = 'complete'
         limit 1
       `.execute(db);
       const upload = uploadResult.rows[0];
@@ -347,13 +554,19 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
     /**
      * Check if a blob exists and is complete.
      */
-    async exists(hash: string): Promise<boolean> {
+    async exists(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<boolean> {
+      const partitionId = resolvePartitionId(options?.partitionId);
       if (!parseBlobHash(hash)) return false;
 
       const rowResult = await sql<{ hash: string }>`
         select hash
         from ${sql.table('sync_blob_uploads')}
-        where hash = ${hash} and status = 'complete'
+        where partition_id = ${partitionId}
+          and hash = ${hash}
+          and status = 'complete'
         limit 1
       `.execute(db);
 
@@ -372,62 +585,131 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       isReferenced?: (hash: string) => Promise<boolean>;
       /** Delete from storage too (not just tracking table) */
       deleteFromStorage?: boolean;
+      /** Optional partition filter for cleanup */
+      partitionId?: string;
     }): Promise<{ deleted: number }> {
       const now = new Date().toISOString();
-
-      // Find expired pending uploads
-      const expiredResult = await sql<{ hash: string }>`
-        select hash
-        from ${sql.table('sync_blob_uploads')}
-        where status = 'pending' and expires_at < ${now}
-      `.execute(db);
-      const expired = expiredResult.rows;
+      const partitionId = resolvePartitionId(options?.partitionId);
+      const storagePartitionOptions = toStoragePartitionOptions(partitionId);
 
       let deleted = 0;
 
-      for (const row of expired) {
-        if (options?.deleteFromStorage) {
-          try {
-            await adapter.delete(row.hash);
-          } catch {
-            // Ignore storage errors during cleanup
-          }
-        }
-
-        await sql`
-          delete from ${sql.table('sync_blob_uploads')}
-          where hash = ${row.hash}
-        `.execute(db);
-
-        deleted++;
-      }
-
-      // If reference check provided, also clean up unreferenced complete uploads
-      if (options?.isReferenced) {
-        const completeResult = await sql<{ hash: string }>`
+      // Find and delete expired pending uploads in batches.
+      while (true) {
+        const expiredResult = await sql<{ hash: string }>`
           select hash
           from ${sql.table('sync_blob_uploads')}
-          where status = 'complete'
+          where partition_id = ${partitionId}
+            and status = 'pending'
+            and expires_at < ${now}
+          order by expires_at asc
+          limit ${CLEANUP_BATCH_SIZE}
         `.execute(db);
-        const complete = completeResult.rows;
+        const expiredHashes = expiredResult.rows
+          .map((row) => row.hash)
+          .filter((hash): hash is string => typeof hash === 'string');
 
-        for (const row of complete) {
-          const referenced = await options.isReferenced(row.hash);
-          if (!referenced) {
-            if (options?.deleteFromStorage) {
+        if (expiredHashes.length === 0) {
+          break;
+        }
+
+        if (options?.deleteFromStorage) {
+          await runWithConcurrency(
+            expiredHashes,
+            STORAGE_DELETE_CONCURRENCY,
+            async (hash) => {
               try {
-                await adapter.delete(row.hash);
+                await adapter.delete(hash, storagePartitionOptions);
               } catch {
                 // Ignore storage errors during cleanup
               }
             }
+          );
+        }
 
-            await sql`
-              delete from ${sql.table('sync_blob_uploads')}
-              where hash = ${row.hash}
+        deleted += await deleteUploadRowsByHashes(partitionId, expiredHashes);
+
+        if (expiredHashes.length < CLEANUP_BATCH_SIZE) {
+          break;
+        }
+      }
+
+      // If reference check provided, also clean up unreferenced complete uploads
+      // in batches with bounded parallelism.
+      if (options?.isReferenced) {
+        const isReferenced = options.isReferenced;
+        let afterHash: string | null = null;
+
+        while (true) {
+          let completeRows: Array<{ hash: string }>;
+          if (afterHash === null) {
+            const completeResult = await sql<{ hash: string }>`
+              select hash
+              from ${sql.table('sync_blob_uploads')}
+              where partition_id = ${partitionId}
+                and status = 'complete'
+              order by hash asc
+              limit ${CLEANUP_BATCH_SIZE}
             `.execute(db);
+            completeRows = completeResult.rows;
+          } else {
+            const completeResult = await sql<{ hash: string }>`
+              select hash
+              from ${sql.table('sync_blob_uploads')}
+              where partition_id = ${partitionId}
+                and status = 'complete'
+                and hash > ${afterHash}
+              order by hash asc
+              limit ${CLEANUP_BATCH_SIZE}
+            `.execute(db);
+            completeRows = completeResult.rows;
+          }
 
-            deleted++;
+          const completeHashes = completeRows
+            .map((row) => row.hash)
+            .filter((hash): hash is string => typeof hash === 'string');
+
+          if (completeHashes.length === 0) {
+            break;
+          }
+
+          afterHash = completeHashes[completeHashes.length - 1] ?? afterHash;
+
+          const unreferencedHashes: string[] = [];
+          await runWithConcurrency(
+            completeHashes,
+            REFERENCE_CHECK_CONCURRENCY,
+            async (hash) => {
+              const referenced = await isReferenced(hash);
+              if (!referenced) {
+                unreferencedHashes.push(hash);
+              }
+            }
+          );
+
+          if (unreferencedHashes.length > 0) {
+            if (options?.deleteFromStorage) {
+              await runWithConcurrency(
+                unreferencedHashes,
+                STORAGE_DELETE_CONCURRENCY,
+                async (hash) => {
+                  try {
+                    await adapter.delete(hash, storagePartitionOptions);
+                  } catch {
+                    // Ignore storage errors during cleanup
+                  }
+                }
+              );
+            }
+
+            deleted += await deleteUploadRowsByHashes(
+              partitionId,
+              unreferencedHashes
+            );
+          }
+
+          if (completeHashes.length < CLEANUP_BATCH_SIZE) {
+            break;
           }
         }
       }
@@ -455,6 +737,8 @@ export interface BlobCleanupSchedulerOptions {
   deleteFromStorage?: boolean;
   /** Optional: Check if a blob hash is referenced by any row */
   isReferenced?: (hash: string) => Promise<boolean>;
+  /** Optional partition to scope cleanup. Defaults to "default". */
+  partitionId?: string;
   /** Optional: Called after each cleanup run */
   onCleanup?: (result: { deleted: number; error?: Error }) => void;
 }
@@ -499,6 +783,7 @@ export function createBlobCleanupScheduler(
     intervalMs = 3600000, // 1 hour
     deleteFromStorage = true,
     isReferenced,
+    partitionId,
     onCleanup,
   } = options;
 
@@ -516,6 +801,7 @@ export function createBlobCleanupScheduler(
       const result = await blobManager.cleanup({
         deleteFromStorage,
         isReferenced,
+        partitionId,
       });
 
       onCleanup?.({ deleted: result.deleted });

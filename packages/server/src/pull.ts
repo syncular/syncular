@@ -5,7 +5,6 @@ import {
   encodeSnapshotRowFrames,
   encodeSnapshotRows,
   gzipBytes,
-  gzipBytesToStream,
   randomId,
   type ScopeValues,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
@@ -32,6 +31,7 @@ import type { SyncCoreDb } from './schema';
 import {
   insertSnapshotChunk,
   readSnapshotChunkRefByPageKey,
+  scopesToSnapshotChunkScopeKey,
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
 import {
@@ -61,6 +61,152 @@ function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   return merged;
 }
 
+function byteChunksToStream(
+  chunks: readonly Uint8Array[]
+): ReadableStream<BufferSource> {
+  return new ReadableStream<BufferSource>({
+    start(controller) {
+      for (const chunk of chunks) {
+        if (chunk.length === 0) continue;
+        controller.enqueue(chunk.slice());
+      }
+      controller.close();
+    },
+  });
+}
+
+function bufferSourceToUint8Array(chunk: BufferSource): Uint8Array {
+  if (chunk instanceof Uint8Array) {
+    return chunk;
+  }
+  if (chunk instanceof ArrayBuffer) {
+    return new Uint8Array(chunk);
+  }
+  return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+}
+
+async function streamToBytes(
+  stream: ReadableStream<BufferSource>
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const bytes = bufferSourceToUint8Array(value);
+      if (bytes.length === 0) continue;
+      chunks.push(bytes);
+      total += bytes.length;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (chunks.length === 0) return new Uint8Array();
+  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function bufferSourceStreamToUint8ArrayStream(
+  stream: ReadableStream<BufferSource>
+): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          const bytes = bufferSourceToUint8Array(value);
+          if (bytes.length === 0) continue;
+          controller.enqueue(bytes);
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+  });
+}
+
+let nodeCryptoModulePromise: Promise<
+  typeof import('node:crypto') | null
+> | null = null;
+
+async function getNodeCryptoModule(): Promise<
+  typeof import('node:crypto') | null
+> {
+  if (!nodeCryptoModulePromise) {
+    nodeCryptoModulePromise = import('node:crypto').catch(() => null);
+  }
+  return nodeCryptoModulePromise;
+}
+
+async function sha256HexFromByteChunks(
+  chunks: readonly Uint8Array[]
+): Promise<string> {
+  const nodeCrypto = await getNodeCryptoModule();
+  if (nodeCrypto) {
+    const hasher = nodeCrypto.createHash('sha256');
+    for (const chunk of chunks) {
+      if (chunk.length === 0) continue;
+      hasher.update(chunk);
+    }
+    return hasher.digest('hex');
+  }
+
+  return sha256Hex(concatByteChunks(chunks));
+}
+
+async function gzipByteChunks(
+  chunks: readonly Uint8Array[]
+): Promise<Uint8Array> {
+  if (typeof CompressionStream !== 'undefined') {
+    const stream = byteChunksToStream(chunks).pipeThrough(
+      new CompressionStream('gzip')
+    );
+    return streamToBytes(stream);
+  }
+
+  return gzipBytes(concatByteChunks(chunks));
+}
+
+async function gzipByteChunksToStream(chunks: readonly Uint8Array[]): Promise<{
+  stream: ReadableStream<Uint8Array>;
+  byteLength?: number;
+}> {
+  if (typeof CompressionStream !== 'undefined') {
+    const source = byteChunksToStream(chunks).pipeThrough(
+      new CompressionStream('gzip')
+    );
+    return {
+      stream: bufferSourceStreamToUint8ArrayStream(source),
+    };
+  }
+
+  const compressed = await gzipBytes(concatByteChunks(chunks));
+  return {
+    stream: bufferSourceStreamToUint8ArrayStream(
+      byteChunksToStream([compressed])
+    ),
+    byteLength: compressed.length,
+  };
+}
+
 export interface PullResult {
   response: SyncPullResponse;
   /**
@@ -82,22 +228,31 @@ interface PendingExternalChunkWrite {
     rowCursor: string | null;
     rowLimit: number;
   };
-  rowFramePayload: Uint8Array;
+  rowFrameParts: Uint8Array[];
   expiresAt: string;
 }
 
-/**
- * Generate a stable cache key for snapshot chunks.
- */
-async function scopesToCacheKey(scopes: ScopeValues): Promise<string> {
-  const sorted = Object.entries(scopes)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => {
-      const arr = Array.isArray(v) ? [...v].sort() : [v];
-      return `${k}:${arr.join(',')}`;
-    })
-    .join('|');
-  return await sha256Hex(sorted);
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) return;
+
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  let nextIndex = 0;
+
+  async function runWorker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const item = items[index];
+      if (item === undefined) continue;
+      await worker(item);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
 }
 
 /**
@@ -238,31 +393,43 @@ function recordPullMetrics(args: {
   );
 }
 
-/**
- * Read synthetic commits created by notifyExternalDataChange() after a given cursor.
- * Returns commit_seq and affected tables for each external change commit.
- */
-async function readExternalDataChanges<DB extends SyncCoreDb>(
+async function readLatestExternalCommitByTable<DB extends SyncCoreDb>(
   trx: DbExecutor<DB>,
-  dialect: ServerSyncDialect,
-  args: { partitionId: string; afterCursor: number }
-): Promise<Array<{ commitSeq: number; tables: string[] }>> {
+  args: { partitionId: string; afterCursor: number; tables: string[] }
+): Promise<Map<string, number>> {
+  const tableNames = Array.from(
+    new Set(args.tables.filter((table) => typeof table === 'string'))
+  );
+  const latestByTable = new Map<string, number>();
+  if (tableNames.length === 0) {
+    return latestByTable;
+  }
+
   type SyncExecutor = Pick<Kysely<SyncCoreDb>, 'selectFrom'>;
   const executor = trx as SyncExecutor;
-
   const rows = await executor
-    .selectFrom('sync_commits')
-    .select(['commit_seq', 'affected_tables'])
-    .where('partition_id', '=', args.partitionId)
-    .where('client_id', '=', EXTERNAL_CLIENT_ID)
-    .where('commit_seq', '>', args.afterCursor)
-    .orderBy('commit_seq', 'asc')
+    .selectFrom('sync_table_commits as tc')
+    .innerJoin('sync_commits as cm', (join) =>
+      join
+        .onRef('cm.commit_seq', '=', 'tc.commit_seq')
+        .onRef('cm.partition_id', '=', 'tc.partition_id')
+    )
+    .select(['tc.table as table'])
+    .select((eb) => eb.fn.max('tc.commit_seq').as('latest_commit_seq'))
+    .where('tc.partition_id', '=', args.partitionId)
+    .where('cm.client_id', '=', EXTERNAL_CLIENT_ID)
+    .where('tc.commit_seq', '>', args.afterCursor)
+    .where('tc.table', 'in', tableNames)
+    .groupBy('tc.table')
     .execute();
 
-  return rows.map((row) => ({
-    commitSeq: Number(row.commit_seq),
-    tables: dialect.dbToArray(row.affected_tables),
-  }));
+  for (const row of rows) {
+    const commitSeq = Number(row.latest_commit_seq ?? -1);
+    if (!Number.isFinite(commitSeq) || commitSeq < 0) continue;
+    latestByTable.set(row.table, commitSeq);
+  }
+
+  return latestByTable;
 }
 
 export async function pull<
@@ -349,34 +516,28 @@ export async function pull<
           // Detect external data changes (synthetic commits from notifyExternalDataChange)
           // Compute minimum cursor across all active subscriptions to scope the query.
           let minSubCursor = Number.MAX_SAFE_INTEGER;
+          const activeTables = new Set<string>();
           for (const sub of resolved) {
             if (
               sub.status === 'revoked' ||
               Object.keys(sub.scopes).length === 0
             )
               continue;
+            activeTables.add(sub.table);
             const cursor = Math.max(-1, sub.cursor ?? -1);
             if (cursor >= 0 && cursor < minSubCursor) {
               minSubCursor = cursor;
             }
           }
 
-          const externalDataChanges =
+          const maxExternalCommitByTable =
             minSubCursor < Number.MAX_SAFE_INTEGER && minSubCursor >= 0
-              ? await readExternalDataChanges(trx, dialect, {
+              ? await readLatestExternalCommitByTable(trx, {
                   partitionId,
                   afterCursor: minSubCursor,
+                  tables: Array.from(activeTables),
                 })
-              : [];
-          const maxExternalCommitByTable = new Map<string, number>();
-          for (const change of externalDataChanges) {
-            for (const table of change.tables) {
-              const previous = maxExternalCommitByTable.get(table) ?? -1;
-              if (change.commitSeq > previous) {
-                maxExternalCommitByTable.set(table, change.commitSeq);
-              }
-            }
-          }
+              : new Map<string, number>();
 
           for (const sub of resolved) {
             const cursor = Math.max(-1, sub.cursor ?? -1);
@@ -461,7 +622,9 @@ export async function pull<
 
               const snapshots: SyncSnapshot[] = [];
               let nextState: SyncBootstrapState | null = effectiveState;
-              const cacheKey = `${partitionId}:${await scopesToCacheKey(effectiveScopes)}`;
+              const cacheKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
+                effectiveScopes
+              )}`;
 
               interface SnapshotBundle {
                 table: string;
@@ -496,9 +659,6 @@ export async function pull<
 
                 let chunkRef = cached;
                 if (!chunkRef) {
-                  const rowFramePayload = concatByteChunks(
-                    bundle.rowFrameParts
-                  );
                   const expiresAt = new Date(
                     Date.now() + Math.max(1000, bundle.ttlMs)
                   ).toISOString();
@@ -522,13 +682,17 @@ export async function pull<
                         rowCursor: bundle.startCursor,
                         rowLimit: bundleRowLimit,
                       },
-                      rowFramePayload,
+                      rowFrameParts: [...bundle.rowFrameParts],
                       expiresAt,
                     });
                     return;
                   }
-                  const sha256 = await sha256Hex(rowFramePayload);
-                  const compressedBody = await gzipBytes(rowFramePayload);
+                  const sha256 = await sha256HexFromByteChunks(
+                    bundle.rowFrameParts
+                  );
+                  const compressedBody = await gzipByteChunks(
+                    bundle.rowFrameParts
+                  );
                   const chunkId = randomId();
                   chunkRef = await insertSnapshotChunk(trx, {
                     chunkId,
@@ -849,57 +1013,65 @@ export async function pull<
 
         const chunkStorage = args.chunkStorage;
         if (chunkStorage && pendingExternalChunkWrites.length > 0) {
-          for (const pending of pendingExternalChunkWrites) {
-            let chunkRef = await readSnapshotChunkRefByPageKey(db, {
-              partitionId: pending.cacheLookup.partitionId,
-              scopeKey: pending.cacheLookup.scopeKey,
-              scope: pending.cacheLookup.scope,
-              asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-              rowCursor: pending.cacheLookup.rowCursor,
-              rowLimit: pending.cacheLookup.rowLimit,
-              encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-              compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-            });
+          await runWithConcurrency(
+            pendingExternalChunkWrites,
+            4,
+            async (pending) => {
+              let chunkRef = await readSnapshotChunkRefByPageKey(db, {
+                partitionId: pending.cacheLookup.partitionId,
+                scopeKey: pending.cacheLookup.scopeKey,
+                scope: pending.cacheLookup.scope,
+                asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                rowCursor: pending.cacheLookup.rowCursor,
+                rowLimit: pending.cacheLookup.rowLimit,
+                encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+              });
 
-            if (!chunkRef) {
-              const sha256 = await sha256Hex(pending.rowFramePayload);
-              if (chunkStorage.storeChunkStream) {
-                const { stream: bodyStream, byteLength } =
-                  await gzipBytesToStream(pending.rowFramePayload);
-                chunkRef = await chunkStorage.storeChunkStream({
-                  partitionId: pending.cacheLookup.partitionId,
-                  scopeKey: pending.cacheLookup.scopeKey,
-                  scope: pending.cacheLookup.scope,
-                  asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                  rowCursor: pending.cacheLookup.rowCursor,
-                  rowLimit: pending.cacheLookup.rowLimit,
-                  encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                  compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                  sha256,
-                  byteLength,
-                  bodyStream,
-                  expiresAt: pending.expiresAt,
-                });
-              } else {
-                const compressedBody = await gzipBytes(pending.rowFramePayload);
-                chunkRef = await chunkStorage.storeChunk({
-                  partitionId: pending.cacheLookup.partitionId,
-                  scopeKey: pending.cacheLookup.scopeKey,
-                  scope: pending.cacheLookup.scope,
-                  asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                  rowCursor: pending.cacheLookup.rowCursor,
-                  rowLimit: pending.cacheLookup.rowLimit,
-                  encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                  compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                  sha256,
-                  body: compressedBody,
-                  expiresAt: pending.expiresAt,
-                });
+              if (!chunkRef) {
+                const sha256 = await sha256HexFromByteChunks(
+                  pending.rowFrameParts
+                );
+                if (chunkStorage.storeChunkStream) {
+                  const { stream: bodyStream, byteLength } =
+                    await gzipByteChunksToStream(pending.rowFrameParts);
+                  chunkRef = await chunkStorage.storeChunkStream({
+                    partitionId: pending.cacheLookup.partitionId,
+                    scopeKey: pending.cacheLookup.scopeKey,
+                    scope: pending.cacheLookup.scope,
+                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                    rowCursor: pending.cacheLookup.rowCursor,
+                    rowLimit: pending.cacheLookup.rowLimit,
+                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                    sha256,
+                    byteLength,
+                    bodyStream,
+                    expiresAt: pending.expiresAt,
+                  });
+                } else {
+                  const compressedBody = await gzipByteChunks(
+                    pending.rowFrameParts
+                  );
+                  chunkRef = await chunkStorage.storeChunk({
+                    partitionId: pending.cacheLookup.partitionId,
+                    scopeKey: pending.cacheLookup.scopeKey,
+                    scope: pending.cacheLookup.scope,
+                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                    rowCursor: pending.cacheLookup.rowCursor,
+                    rowLimit: pending.cacheLookup.rowLimit,
+                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                    sha256,
+                    body: compressedBody,
+                    expiresAt: pending.expiresAt,
+                  });
+                }
               }
-            }
 
-            pending.snapshot.chunks = [chunkRef];
-          }
+              pending.snapshot.chunks = [chunkRef];
+            }
+          );
         }
 
         const durationMs = Math.max(0, Date.now() - startedAtMs);

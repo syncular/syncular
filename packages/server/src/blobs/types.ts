@@ -13,6 +13,8 @@ import type { Generated } from 'kysely';
  * Tracks initiated uploads and their completion status.
  */
 export interface SyncBlobUploadsTable {
+  /** Partition/tenant namespace */
+  partition_id: string;
   /** SHA-256 hash with prefix: "sha256:<hex>" */
   hash: string;
   /** Expected size in bytes */
@@ -44,6 +46,8 @@ export interface SyncBlobUploadsDb {
  * Stores blob content directly in the database.
  */
 export interface SyncBlobsTable {
+  /** Partition/tenant namespace */
+  partition_id: string;
   /** SHA-256 hash with prefix: "sha256:<hex>" */
   hash: string;
   /** Size in bytes */

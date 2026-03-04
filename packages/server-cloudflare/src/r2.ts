@@ -18,6 +18,8 @@
 export interface BlobSignUploadOptions {
   /** SHA-256 hash (for naming and checksum validation) */
   hash: string;
+  /** Optional tenant/partition namespace for storage lookups */
+  partitionId?: string;
   /** Content size in bytes */
   size: number;
   /** MIME type */
@@ -44,6 +46,8 @@ export interface BlobSignedUpload {
 export interface BlobSignDownloadOptions {
   /** SHA-256 hash */
   hash: string;
+  /** Optional tenant/partition namespace for storage lookups */
+  partitionId?: string;
   /** URL expiration in seconds */
   expiresIn: number;
 }
@@ -69,18 +73,19 @@ export interface BlobStorageAdapter {
   /**
    * Check if a blob exists in storage.
    */
-  exists(hash: string): Promise<boolean>;
+  exists(hash: string, options?: { partitionId?: string }): Promise<boolean>;
 
   /**
    * Delete a blob (for garbage collection).
    */
-  delete(hash: string): Promise<void>;
+  delete(hash: string, options?: { partitionId?: string }): Promise<void>;
 
   /**
    * Get blob metadata from storage (optional).
    */
   getMetadata?(
-    hash: string
+    hash: string,
+    options?: { partitionId?: string }
   ): Promise<{ size: number; mimeType?: string } | null>;
 
   /**
@@ -89,7 +94,8 @@ export interface BlobStorageAdapter {
   put?(
     hash: string,
     data: Uint8Array,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    options?: { partitionId?: string }
   ): Promise<void>;
 
   /**
@@ -98,18 +104,25 @@ export interface BlobStorageAdapter {
   putStream?(
     hash: string,
     stream: ReadableStream<Uint8Array>,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    options?: { partitionId?: string }
   ): Promise<void>;
 
   /**
    * Get blob data directly (for adapters that support direct retrieval).
    */
-  get?(hash: string): Promise<Uint8Array | null>;
+  get?(
+    hash: string,
+    options?: { partitionId?: string }
+  ): Promise<Uint8Array | null>;
 
   /**
    * Get blob data directly as a stream.
    */
-  getStream?(hash: string): Promise<ReadableStream<Uint8Array> | null>;
+  getStream?(
+    hash: string,
+    options?: { partitionId?: string }
+  ): Promise<ReadableStream<Uint8Array> | null>;
 }
 
 /**
@@ -123,7 +136,20 @@ export interface BlobTokenSigner {
    * @returns A signed token string
    */
   sign(
-    payload: { hash: string; action: 'upload' | 'download'; expiresAt: number },
+    payload:
+      | {
+          hash: string;
+          partitionId: string;
+          action: 'upload';
+          size: number;
+          expiresAt: number;
+        }
+      | {
+          hash: string;
+          partitionId: string;
+          action: 'download';
+          expiresAt: number;
+        },
     expiresIn: number
   ): Promise<string>;
 
@@ -131,11 +157,22 @@ export interface BlobTokenSigner {
    * Verify and decode a signed token.
    * @returns The payload if valid, null if invalid/expired
    */
-  verify(token: string): Promise<{
-    hash: string;
-    action: 'upload' | 'download';
-    expiresAt: number;
-  } | null>;
+  verify(token: string): Promise<
+    | {
+        hash: string;
+        partitionId: string;
+        action: 'upload';
+        size: number;
+        expiresAt: number;
+      }
+    | {
+        hash: string;
+        partitionId: string;
+        action: 'download';
+        expiresAt: number;
+      }
+    | null
+  >;
 }
 
 /**
@@ -176,15 +213,37 @@ export function createHmacTokenSigner(secret: string): BlobTokenSigner {
       if (sig !== expectedSig) return null;
 
       try {
-        const data = JSON.parse(atob(dataB64)) as {
-          hash: string;
-          action: 'upload' | 'download';
-          expiresAt: number;
-        };
+        const parsed = JSON.parse(atob(dataB64)) as Record<string, unknown>;
+        if (typeof parsed.hash !== 'string') return null;
+        if (typeof parsed.partitionId !== 'string') return null;
+        if (typeof parsed.expiresAt !== 'number') return null;
+        if (Date.now() > parsed.expiresAt) return null;
 
-        if (Date.now() > data.expiresAt) return null;
+        if (parsed.action === 'download') {
+          return {
+            hash: parsed.hash,
+            partitionId: parsed.partitionId,
+            action: 'download',
+            expiresAt: parsed.expiresAt,
+          };
+        }
 
-        return data;
+        if (
+          parsed.action === 'upload' &&
+          typeof parsed.size === 'number' &&
+          Number.isFinite(parsed.size) &&
+          parsed.size >= 0
+        ) {
+          return {
+            hash: parsed.hash,
+            partitionId: parsed.partitionId,
+            action: 'upload',
+            size: parsed.size,
+            expiresAt: parsed.expiresAt,
+          };
+        }
+
+        return null;
       } catch {
         return null;
       }
@@ -236,10 +295,14 @@ export function createR2BlobStorageAdapter(
   // Normalize base URL (remove trailing slash)
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
 
-  function getKey(hash: string): string {
+  function getKey(hash: string, partitionId?: string): string {
     // Remove "sha256:" prefix and use hex as key
     const hex = hash.startsWith('sha256:') ? hash.slice(7) : hash;
-    return `${keyPrefix}${hex}`;
+    const normalizedPartition = partitionId?.trim();
+    if (!normalizedPartition || normalizedPartition === 'default') {
+      return `${keyPrefix}${hex}`;
+    }
+    return `${keyPrefix}${encodeURIComponent(normalizedPartition)}/${hex}`;
   }
 
   function resolveMimeType(metadata?: Record<string, unknown>): string {
@@ -313,9 +376,10 @@ export function createR2BlobStorageAdapter(
   async function putStreamInternal(
     hash: string,
     stream: ReadableStream<Uint8Array>,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    options?: { partitionId?: string }
   ): Promise<void> {
-    const key = getKey(hash);
+    const key = getKey(hash, options?.partitionId);
     const mimeType = resolveMimeType(metadata);
     const checksum = resolveChecksum(hash, metadata);
     const contentLength = resolveContentLength(metadata);
@@ -356,9 +420,10 @@ export function createR2BlobStorageAdapter(
   }
 
   async function getStreamInternal(
-    hash: string
+    hash: string,
+    options?: { partitionId?: string }
   ): Promise<ReadableStream<Uint8Array> | null> {
-    const key = getKey(hash);
+    const key = getKey(hash, options?.partitionId);
     const object = await bucket.get(key);
     if (!object) return null;
     return object.body as ReadableStream<Uint8Array> | null;
@@ -368,9 +433,16 @@ export function createR2BlobStorageAdapter(
     name: 'r2',
 
     async signUpload(opts: BlobSignUploadOptions): Promise<BlobSignedUpload> {
+      const partitionId = opts.partitionId ?? 'default';
       const expiresAt = Date.now() + opts.expiresIn * 1000;
       const token = await tokenSigner.sign(
-        { hash: opts.hash, action: 'upload', expiresAt },
+        {
+          hash: opts.hash,
+          partitionId,
+          action: 'upload',
+          size: opts.size,
+          expiresAt,
+        },
         opts.expiresIn
       );
 
@@ -388,30 +460,38 @@ export function createR2BlobStorageAdapter(
     },
 
     async signDownload(opts: BlobSignDownloadOptions): Promise<string> {
+      const partitionId = opts.partitionId ?? 'default';
       const expiresAt = Date.now() + opts.expiresIn * 1000;
       const token = await tokenSigner.sign(
-        { hash: opts.hash, action: 'download', expiresAt },
+        { hash: opts.hash, partitionId, action: 'download', expiresAt },
         opts.expiresIn
       );
 
       return `${normalizedBaseUrl}/blobs/${encodeURIComponent(opts.hash)}/download?token=${encodeURIComponent(token)}`;
     },
 
-    async exists(hash: string): Promise<boolean> {
-      const key = getKey(hash);
+    async exists(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<boolean> {
+      const key = getKey(hash, options?.partitionId);
       const head = await bucket.head(key);
       return head !== null;
     },
 
-    async delete(hash: string): Promise<void> {
-      const key = getKey(hash);
+    async delete(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<void> {
+      const key = getKey(hash, options?.partitionId);
       await bucket.delete(key);
     },
 
     async getMetadata(
-      hash: string
+      hash: string,
+      options?: { partitionId?: string }
     ): Promise<{ size: number; mimeType?: string } | null> {
-      const key = getKey(hash);
+      const key = getKey(hash, options?.partitionId);
       const head = await bucket.head(key);
       if (!head) return null;
 
@@ -424,9 +504,10 @@ export function createR2BlobStorageAdapter(
     async put(
       hash: string,
       data: Uint8Array,
-      metadata?: Record<string, unknown>
+      metadata?: Record<string, unknown>,
+      options?: { partitionId?: string }
     ): Promise<void> {
-      const key = getKey(hash);
+      const key = getKey(hash, options?.partitionId);
       const mimeType = resolveMimeType(metadata);
       const checksum = resolveChecksum(hash, metadata);
       await bucket.put(key, data, {
@@ -440,13 +521,17 @@ export function createR2BlobStorageAdapter(
     async putStream(
       hash: string,
       stream: ReadableStream<Uint8Array>,
-      metadata?: Record<string, unknown>
+      metadata?: Record<string, unknown>,
+      options?: { partitionId?: string }
     ): Promise<void> {
-      await putStreamInternal(hash, stream, metadata);
+      await putStreamInternal(hash, stream, metadata, options);
     },
 
-    async get(hash: string): Promise<Uint8Array | null> {
-      const stream = await getStreamInternal(hash);
+    async get(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<Uint8Array | null> {
+      const stream = await getStreamInternal(hash, options);
       if (!stream) return null;
 
       const reader = stream.getReader();
@@ -472,8 +557,11 @@ export function createR2BlobStorageAdapter(
       }
     },
 
-    async getStream(hash: string): Promise<ReadableStream<Uint8Array> | null> {
-      return getStreamInternal(hash);
+    async getStream(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<ReadableStream<Uint8Array> | null> {
+      return getStreamInternal(hash, options);
     },
   };
 }

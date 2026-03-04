@@ -44,7 +44,14 @@ class MockDownstreamSocket {
   }
 }
 
-function createGatewayLiveHarness() {
+function createGatewayLiveHarness(options?: {
+  websocket?: {
+    allowedOrigins?: string[] | '*';
+    maxMessageBytes?: number;
+    maxMessagesPerWindow?: number;
+    messageRateWindowMs?: number;
+  };
+}) {
   const downstreamSockets: MockDownstreamSocket[] = [];
   let capturedEvents: WSEvents | null = null;
 
@@ -85,6 +92,7 @@ function createGatewayLiveHarness() {
           downstreamSockets.push(socket);
           return socket;
         },
+        ...options?.websocket,
       },
     })
   );
@@ -293,5 +301,57 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
       { code: 4004, reason: 'No instances selected' },
     ]);
     expect(downstreamSockets).toHaveLength(0);
+  });
+
+  it('rejects websocket upgrades from disallowed origins', async () => {
+    const { app } = createGatewayLiveHarness({
+      websocket: {
+        allowedOrigins: ['https://allowed.syncular.test'],
+      },
+    });
+
+    const response = await app.request('http://localhost/console/events/live', {
+      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: 'FORBIDDEN_ORIGIN',
+    });
+  });
+
+  it('enforces inbound websocket message rate limits per upstream connection', async () => {
+    const { app, getEvents } = createGatewayLiveHarness({
+      websocket: {
+        maxMessagesPerWindow: 1,
+        messageRateWindowMs: 60000,
+      },
+    });
+
+    const response = await app.request('http://localhost/console/events/live', {
+      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+    });
+    expect(response.status).toBe(200);
+
+    const events = getEvents();
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+    await events.onMessage(
+      new MessageEvent('message', { data: '{}' }),
+      upstream.ws
+    );
+
+    const latestClose = upstream.closes[upstream.closes.length - 1];
+    expect(latestClose?.code).toBe(1008);
+    expect(latestClose?.reason).toBe('message rate exceeded');
   });
 });

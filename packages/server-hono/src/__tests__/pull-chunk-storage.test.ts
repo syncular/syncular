@@ -360,6 +360,104 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     ]);
   }, 10_000);
 
+  it('requires scope-bound authorization for snapshot chunk downloads', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't1',
+        user_id: 'u1',
+        title: 'Task 1',
+        server_version: 1,
+      })
+      .execute();
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const pullResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u1',
+        },
+        body: JSON.stringify({
+          clientId: 'client-1',
+          pull: {
+            limitCommits: 10,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 1,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                table: 'tasks',
+                scopes: { user_id: 'u1' },
+                cursor: -1,
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(pullResponse.status).toBe(200);
+    const combined = SyncCombinedResponseSchema.parse(
+      await pullResponse.json()
+    );
+    const parsed = combined.pull!;
+    const chunkId = mustGetFirstChunkId(parsed);
+
+    const noScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
+        headers: {
+          'x-user-id': 'u1',
+        },
+      })
+    );
+    expect(noScopesResponse.status).toBe(200);
+
+    const wrongScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u2' }),
+        },
+      })
+    );
+    expect(wrongScopesResponse.status).toBe(403);
+
+    const validScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+    expect(validScopesResponse.status).toBe(200);
+    const chunkBytes = new Uint8Array(await validScopesResponse.arrayBuffer());
+    const rows = decodeSnapshotRows(gunzipSync(chunkBytes));
+    expect(rows).toEqual([
+      { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
+    ]);
+  });
+
   it('bundles multiple snapshot pages into one stored chunk', async () => {
     await db
       .insertInto('tasks')

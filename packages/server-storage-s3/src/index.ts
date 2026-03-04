@@ -95,17 +95,21 @@ export function createS3BlobStorageAdapter(
     requireChecksum = true,
   } = options;
 
-  function getKey(hash: string): string {
+  function getKey(hash: string, partitionId?: string): string {
     // Remove "sha256:" prefix and use hex as key
     const hex = hash.startsWith('sha256:') ? hash.slice(7) : hash;
-    return `${keyPrefix}${hex}`;
+    const normalizedPartition = partitionId?.trim();
+    if (!normalizedPartition || normalizedPartition === 'default') {
+      return `${keyPrefix}${hex}`;
+    }
+    return `${keyPrefix}${encodeURIComponent(normalizedPartition)}/${hex}`;
   }
 
   return {
     name: 's3',
 
     async signUpload(opts: BlobSignUploadOptions): Promise<BlobSignedUpload> {
-      const key = getKey(opts.hash);
+      const key = getKey(opts.hash, opts.partitionId);
 
       // Extract hex hash for checksum (S3 expects base64-encoded SHA-256)
       const hexHash = opts.hash.startsWith('sha256:')
@@ -154,7 +158,7 @@ export function createS3BlobStorageAdapter(
     },
 
     async signDownload(opts: BlobSignDownloadOptions): Promise<string> {
-      const key = getKey(opts.hash);
+      const key = getKey(opts.hash, opts.partitionId);
       const command = new commands.GetObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -162,8 +166,11 @@ export function createS3BlobStorageAdapter(
       return getSignedUrl(client, command, { expiresIn: opts.expiresIn });
     },
 
-    async exists(hash: string): Promise<boolean> {
-      const key = getKey(hash);
+    async exists(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<boolean> {
+      const key = getKey(hash, options?.partitionId);
       try {
         const command = new commands.HeadObjectCommand({
           Bucket: bucket,
@@ -180,8 +187,11 @@ export function createS3BlobStorageAdapter(
       }
     },
 
-    async delete(hash: string): Promise<void> {
-      const key = getKey(hash);
+    async delete(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<void> {
+      const key = getKey(hash, options?.partitionId);
       const command = new commands.DeleteObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -190,9 +200,10 @@ export function createS3BlobStorageAdapter(
     },
 
     async getMetadata(
-      hash: string
+      hash: string,
+      options?: { partitionId?: string }
     ): Promise<{ size: number; mimeType?: string } | null> {
-      const key = getKey(hash);
+      const key = getKey(hash, options?.partitionId);
       try {
         const command = new commands.HeadObjectCommand({
           Bucket: bucket,
@@ -214,8 +225,13 @@ export function createS3BlobStorageAdapter(
       }
     },
 
-    async put(hash: string, data: Uint8Array): Promise<void> {
-      const key = getKey(hash);
+    async put(
+      hash: string,
+      data: Uint8Array,
+      _metadata?: Record<string, unknown>,
+      options?: { partitionId?: string }
+    ): Promise<void> {
+      const key = getKey(hash, options?.partitionId);
       const command = new commands.PutObjectCommand({
         Bucket: bucket,
         Key: key,
@@ -226,8 +242,11 @@ export function createS3BlobStorageAdapter(
       await client.send(command);
     },
 
-    async get(hash: string): Promise<Uint8Array | null> {
-      const key = getKey(hash);
+    async get(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<Uint8Array | null> {
+      const key = getKey(hash, options?.partitionId);
       try {
         const command = new commands.GetObjectCommand({
           Bucket: bucket,
@@ -246,8 +265,11 @@ export function createS3BlobStorageAdapter(
       }
     },
 
-    async getStream(hash: string): Promise<ReadableStream<Uint8Array> | null> {
-      const key = getKey(hash);
+    async getStream(
+      hash: string,
+      options?: { partitionId?: string }
+    ): Promise<ReadableStream<Uint8Array> | null> {
+      const key = getKey(hash, options?.partitionId);
       try {
         const command = new commands.GetObjectCommand({
           Bucket: bucket,

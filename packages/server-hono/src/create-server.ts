@@ -21,6 +21,7 @@ import {
   createConsoleRoutes,
   createTokenAuthenticator,
 } from './console/routes';
+import { isBenignConsoleSchemaError } from './console/schema-errors';
 import type {
   ConsoleEventEmitter,
   ConsoleSharedOptions,
@@ -140,7 +141,12 @@ export function createSyncServer<
     : undefined;
   const consoleSchemaReady =
     isConsoleEnabled && dialect.ensureConsoleSchema
-      ? dialect.ensureConsoleSchema(db)
+      ? dialect.ensureConsoleSchema(db).catch((error) => {
+          if (isBenignConsoleSchemaError(error)) {
+            return;
+          }
+          throw error;
+        })
       : undefined;
 
   // Create sync routes
@@ -159,17 +165,9 @@ export function createSyncServer<
       ...routes,
       websocket: upgradeWebSocket
         ? {
+            ...routes?.websocket,
             enabled: true,
             upgradeWebSocket,
-            ...(routes?.websocket?.heartbeatIntervalMs !== undefined && {
-              heartbeatIntervalMs: routes.websocket.heartbeatIntervalMs,
-            }),
-            ...(routes?.websocket?.maxConnectionsTotal !== undefined && {
-              maxConnectionsTotal: routes.websocket.maxConnectionsTotal,
-            }),
-            ...(routes?.websocket?.maxConnectionsPerClient !== undefined && {
-              maxConnectionsPerClient: routes.websocket.maxConnectionsPerClient,
-            }),
           }
         : { enabled: false },
     },
@@ -196,6 +194,11 @@ export function createSyncServer<
       websocket: {
         enabled: true,
         upgradeWebSocket,
+        heartbeatIntervalMs: routes?.websocket?.heartbeatIntervalMs,
+        maxMessageBytes: routes?.websocket?.maxMessageBytes,
+        maxMessagesPerWindow: routes?.websocket?.maxMessagesPerWindow,
+        messageRateWindowMs: routes?.websocket?.messageRateWindowMs,
+        allowedOrigins: routes?.websocket?.allowedOrigins,
       },
     }),
   });

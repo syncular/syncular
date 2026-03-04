@@ -467,6 +467,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@hono/standard-validator": "^0.2.2",
+        "@noble/hashes": "^2.0.1",
         "@standard-community/standard-json": "^0.3.5",
         "@standard-community/standard-openapi": "^0.2.9",
         "@syncular/console": "workspace:*",

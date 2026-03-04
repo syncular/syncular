@@ -5,6 +5,7 @@
  */
 
 import type {
+  ScopeValues,
   SyncAuthErrorContext,
   SyncAuthLifecycle,
   SyncAuthOperation,
@@ -134,6 +135,24 @@ function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function encodeSnapshotScopes(
+  scopeValues: ScopeValues | undefined
+): string | null {
+  if (!scopeValues) return null;
+  if (Object.keys(scopeValues).length === 0) return null;
+  return JSON.stringify(scopeValues);
+}
+
+function appendSnapshotScopesQuery(
+  url: string,
+  scopeValues: ScopeValues | undefined
+): string {
+  const encodedScopes = encodeSnapshotScopes(scopeValues);
+  if (!encodedScopes) return url;
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}scopes=${encodeURIComponent(encodedScopes)}`;
 }
 
 /**
@@ -356,33 +375,105 @@ export function createHttpTransport(
     },
 
     async fetchSnapshotChunk(
-      request: { chunkId: string },
-      transportOptions?: SyncTransportOptions
+      request: {
+        chunkId: string;
+        scopeValues?: Record<string, string | string[]>;
+      },
+      options?: SyncTransportOptions
     ): Promise<Uint8Array> {
-      const { data, error, response } = await executeWithAuthRetry(
-        (signal) =>
-          client.GET('/sync/snapshot-chunks/{chunkId}', {
-            params: { path: { chunkId: request.chunkId } },
-            parseAs: 'blob',
-            ...(signal ? { signal } : {}),
-          }),
-        transportOptions,
-        'snapshotChunk',
-        resolveAuthRetry
+      if (!transportOptions) {
+        const { data, error, response } = await executeWithAuthRetry(
+          (signal) =>
+            client.GET('/sync/snapshot-chunks/{chunkId}', {
+              params: { path: { chunkId: request.chunkId } },
+              parseAs: 'blob',
+              ...(signal ? { signal } : {}),
+            }),
+          options,
+          'snapshotChunk',
+          resolveAuthRetry
+        );
+
+        if (error || !data) {
+          throw new SyncTransportError(
+            `Snapshot chunk download failed: ${getErrorMessage(error) || response.statusText}`,
+            response.status
+          );
+        }
+
+        return new Uint8Array(await (data as Blob).arrayBuffer());
+      }
+
+      const fetchImpl = transportOptions.fetch ?? globalThis.fetch;
+      const requestUrl = appendSnapshotScopesQuery(
+        resolveRequestUrl(
+          transportOptions.baseUrl,
+          `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
+        ),
+        request.scopeValues
       );
 
-      if (error || !data) {
+      const performRequest = async (
+        signal?: AbortSignal
+      ): Promise<Response> => {
+        const headers = new Headers();
+        const extraHeaders = await transportOptions.getHeaders?.();
+        if (extraHeaders) {
+          for (const [key, value] of Object.entries(extraHeaders)) {
+            headers.set(key, value);
+          }
+        }
+        if (!headers.has('x-syncular-transport-path')) {
+          headers.set(
+            'x-syncular-transport-path',
+            transportOptions.transportPath ?? 'direct'
+          );
+        }
+        return fetchImpl(requestUrl, {
+          method: 'GET',
+          headers,
+          ...(signal ? { signal } : {}),
+        });
+      };
+
+      let response = await performRequest(options?.signal);
+      if (response.status === 401 || response.status === 403) {
+        const shouldRetry = await resolveAuthRetry(
+          {
+            operation: 'snapshotChunk',
+            status: response.status,
+          },
+          options
+        );
+        if (shouldRetry) {
+          response = await performRequest(options?.signal);
+        }
+      }
+
+      if (!response.ok) {
+        let reason = response.statusText || 'Request failed';
+        try {
+          const maybeJson = (await response.json()) as
+            | { error?: unknown; message?: unknown }
+            | undefined;
+          reason = getErrorMessage(maybeJson) || reason;
+        } catch {
+          // ignore parse failures
+        }
         throw new SyncTransportError(
-          `Snapshot chunk download failed: ${getErrorMessage(error) || response.statusText}`,
+          `Snapshot chunk download failed: ${reason}`,
           response.status
         );
       }
 
-      return new Uint8Array(await (data as Blob).arrayBuffer());
+      return new Uint8Array(await response.arrayBuffer());
     },
 
     async fetchSnapshotChunkStream(
-      request: { chunkId: string },
+      request: {
+        chunkId: string;
+        scopeValues?: Record<string, string | string[]>;
+      },
       options?: SyncTransportOptions
     ): Promise<ReadableStream<Uint8Array>> {
       if (!transportOptions) {
@@ -391,9 +482,12 @@ export function createHttpTransport(
       }
 
       const fetchImpl = transportOptions.fetch ?? globalThis.fetch;
-      const requestUrl = resolveRequestUrl(
-        transportOptions.baseUrl,
-        `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
+      const requestUrl = appendSnapshotScopesQuery(
+        resolveRequestUrl(
+          transportOptions.baseUrl,
+          `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
+        ),
+        request.scopeValues
       );
 
       const performRequest = async (

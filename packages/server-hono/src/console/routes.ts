@@ -38,6 +38,7 @@ import {
   parseWebSocketAuthToken,
 } from './live-auth';
 import { describeConsoleRoute } from './route-descriptor';
+import { isBenignConsoleSchemaError } from './schema-errors';
 import {
   type ApiKeyType,
   ApiKeyTypeSchema,
@@ -395,6 +396,7 @@ const DEFAULT_REQUEST_EVENTS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_REQUEST_EVENTS_MAX_ROWS = 10_000;
 const DEFAULT_OPERATION_EVENTS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_OPERATION_EVENTS_MAX_ROWS = 5_000;
+const DEFAULT_TIMELINE_SCAN_MAX_ROWS = 10_000;
 const DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
 
 function readNonNegativeInteger(
@@ -528,6 +530,10 @@ export function createConsoleRoutes<
     options.maintenance?.operationEventsMaxRows,
     DEFAULT_OPERATION_EVENTS_MAX_ROWS
   );
+  const timelineScanMaxRows = readNonNegativeInteger(
+    options.maintenance?.timelineScanMaxRows,
+    DEFAULT_TIMELINE_SCAN_MAX_ROWS
+  );
   const autoEventsPruneIntervalMs = readNonNegativeInteger(
     options.maintenance?.autoPruneIntervalMs,
     DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS
@@ -540,6 +546,9 @@ export function createConsoleRoutes<
     options.dialect.ensureConsoleSchema?.(options.db) ??
     Promise.resolve()
   ).catch((err) => {
+    if (isBenignConsoleSchemaError(err)) {
+      return;
+    }
     console.error('[console] Failed to ensure console schema:', err);
     throw err;
   });
@@ -1341,6 +1350,9 @@ export function createConsoleRoutes<
       const items: ConsoleTimelineItem[] = [];
       const normalizedSearchTerm = search?.trim().toLowerCase() || null;
       const normalizedTable = table?.trim() || null;
+      const timelineSourceScanLimit =
+        timelineScanMaxRows > 0 ? timelineScanMaxRows : null;
+      let timelineTruncated = false;
 
       if (
         view !== 'events' &&
@@ -1377,8 +1389,29 @@ export function createConsoleRoutes<
           commitsQuery = commitsQuery.where('created_at', '<=', to);
         }
 
-        const commitRows = await commitsQuery.execute();
-        for (const row of commitRows) {
+        let commitsQueryWithOrdering = commitsQuery.orderBy(
+          'created_at',
+          'desc'
+        );
+        if (timelineSourceScanLimit !== null) {
+          commitsQueryWithOrdering = commitsQueryWithOrdering.limit(
+            timelineSourceScanLimit + 1
+          );
+        }
+
+        const commitRows = await commitsQueryWithOrdering.execute();
+        const scannedCommitRows =
+          timelineSourceScanLimit === null
+            ? commitRows
+            : commitRows.slice(0, timelineSourceScanLimit);
+        if (
+          timelineSourceScanLimit !== null &&
+          commitRows.length > timelineSourceScanLimit
+        ) {
+          timelineTruncated = true;
+        }
+
+        for (const row of scannedCommitRows) {
           const commit: ConsoleCommitListItem = {
             commitSeq: coerceNumber(row.commit_seq) ?? 0,
             actorId: row.actor_id ?? '',
@@ -1431,8 +1464,26 @@ export function createConsoleRoutes<
           eventsQuery = eventsQuery.where('created_at', '<=', to);
         }
 
-        const eventRows = await eventsQuery.execute();
-        for (const row of eventRows) {
+        let eventsQueryWithOrdering = eventsQuery.orderBy('created_at', 'desc');
+        if (timelineSourceScanLimit !== null) {
+          eventsQueryWithOrdering = eventsQueryWithOrdering.limit(
+            timelineSourceScanLimit + 1
+          );
+        }
+
+        const eventRows = await eventsQueryWithOrdering.execute();
+        const scannedEventRows =
+          timelineSourceScanLimit === null
+            ? eventRows
+            : eventRows.slice(0, timelineSourceScanLimit);
+        if (
+          timelineSourceScanLimit !== null &&
+          eventRows.length > timelineSourceScanLimit
+        ) {
+          timelineTruncated = true;
+        }
+
+        for (const row of scannedEventRows) {
           const event = mapRequestEvent(row);
 
           items.push({
@@ -1516,6 +1567,12 @@ export function createConsoleRoutes<
       };
 
       c.header('X-Total-Count', String(total));
+      if (timelineTruncated) {
+        c.header('X-Timeline-Truncated', 'true');
+        if (timelineSourceScanLimit !== null) {
+          c.header('X-Timeline-Scan-Limit', String(timelineSourceScanLimit));
+        }
+      }
       return c.json(response, 200);
     }
   );
@@ -2412,6 +2469,9 @@ export function createConsoleRoutes<
     const emitter = options.eventEmitter;
     const upgradeWebSocket = options.websocket.upgradeWebSocket;
     const heartbeatIntervalMs = options.websocket.heartbeatIntervalMs ?? 30000;
+    const maxMessageBytes = options.websocket.maxMessageBytes ?? 1024 * 1024;
+    const maxMessagesPerWindow = options.websocket.maxMessagesPerWindow ?? 120;
+    const messageRateWindowMs = options.websocket.messageRateWindowMs ?? 10000;
 
     type WebSocketLike = {
       send: (data: string) => void;
@@ -2426,6 +2486,8 @@ export function createConsoleRoutes<
         authTimeout: ReturnType<typeof setTimeout> | null;
         isAuthenticated: boolean;
         startAuthenticatedSession: (() => void) | null;
+        messageRateWindowStart: number;
+        messageRateWindowCount: number;
       }
     >();
 
@@ -2444,179 +2506,212 @@ export function createConsoleRoutes<
       wsState.delete(ws);
     };
 
-    routes.get(
-      '/events/live',
-      upgradeWebSocket(async (c) => {
-        const authHeader = c.req.header('Authorization');
-        const partitionId = c.req.query('partitionId')?.trim() || undefined;
-        const replaySince = c.req.query('since');
-        const replayLimitRaw = c.req.query('replayLimit');
-        const replayLimitNumber = replayLimitRaw
-          ? Number.parseInt(replayLimitRaw, 10)
-          : Number.NaN;
-        const replayLimit = Number.isFinite(replayLimitNumber)
-          ? Math.max(1, Math.min(500, replayLimitNumber))
-          : 100;
-        const mockContext = {
+    const liveEventsWebSocketRoute = upgradeWebSocket(async (c) => {
+      const authHeader = c.req.header('Authorization');
+      const partitionId = c.req.query('partitionId')?.trim() || undefined;
+      const replaySince = c.req.query('since');
+      const replayLimitRaw = c.req.query('replayLimit');
+      const replayLimitNumber = replayLimitRaw
+        ? Number.parseInt(replayLimitRaw, 10)
+        : Number.NaN;
+      const replayLimit = Number.isFinite(replayLimitNumber)
+        ? Math.max(1, Math.min(500, replayLimitNumber))
+        : 100;
+      const mockContext = {
+        req: {
+          header: (name: string) =>
+            name === 'Authorization' ? authHeader : undefined,
+          query: () => undefined,
+        },
+      } as unknown as Context;
+
+      const initialAuth = await options.authenticate(mockContext);
+
+      const authenticateWithBearer = async (token: string) => {
+        const trimmedToken = token.trim();
+        if (!trimmedToken) return null;
+        const authContext = {
           req: {
             header: (name: string) =>
-              name === 'Authorization' ? authHeader : undefined,
+              name === 'Authorization' ? `Bearer ${trimmedToken}` : undefined,
             query: () => undefined,
           },
         } as unknown as Context;
+        return options.authenticate(authContext);
+      };
 
-        const initialAuth = await options.authenticate(mockContext);
+      return {
+        onOpen(_event, ws) {
+          const state: {
+            listener: ConsoleEventListener | null;
+            heartbeatInterval: ReturnType<typeof setInterval> | null;
+            authTimeout: ReturnType<typeof setTimeout> | null;
+            isAuthenticated: boolean;
+            startAuthenticatedSession: (() => void) | null;
+            messageRateWindowStart: number;
+            messageRateWindowCount: number;
+          } = {
+            listener: null,
+            heartbeatInterval: null,
+            authTimeout: null,
+            isAuthenticated: false,
+            startAuthenticatedSession: null,
+            messageRateWindowStart: Date.now(),
+            messageRateWindowCount: 0,
+          };
+          wsState.set(ws, state);
 
-        const authenticateWithBearer = async (token: string) => {
-          const trimmedToken = token.trim();
-          if (!trimmedToken) return null;
-          const authContext = {
-            req: {
-              header: (name: string) =>
-                name === 'Authorization' ? `Bearer ${trimmedToken}` : undefined,
-              query: () => undefined,
-            },
-          } as unknown as Context;
-          return options.authenticate(authContext);
-        };
+          const startAuthenticatedSession = () => {
+            if (state.isAuthenticated) return;
+            state.isAuthenticated = true;
+            if (state.authTimeout) {
+              clearTimeout(state.authTimeout);
+              state.authTimeout = null;
+            }
 
-        return {
-          onOpen(_event, ws) {
-            const state: {
-              listener: ConsoleEventListener | null;
-              heartbeatInterval: ReturnType<typeof setInterval> | null;
-              authTimeout: ReturnType<typeof setTimeout> | null;
-              isAuthenticated: boolean;
-              startAuthenticatedSession: (() => void) | null;
-            } = {
-              listener: null,
-              heartbeatInterval: null,
-              authTimeout: null,
-              isAuthenticated: false,
-              startAuthenticatedSession: null,
+            const listener: ConsoleEventListener = (event) => {
+              if (partitionId) {
+                const eventPartitionId = event.data.partitionId;
+                if (
+                  typeof eventPartitionId !== 'string' ||
+                  eventPartitionId !== partitionId
+                ) {
+                  return;
+                }
+              }
+              try {
+                ws.send(JSON.stringify(event));
+              } catch {
+                // Connection closed
+              }
             };
-            wsState.set(ws, state);
 
-            const startAuthenticatedSession = () => {
-              if (state.isAuthenticated) return;
-              state.isAuthenticated = true;
-              if (state.authTimeout) {
-                clearTimeout(state.authTimeout);
-                state.authTimeout = null;
+            emitter.addListener(listener);
+            state.listener = listener;
+
+            ws.send(
+              JSON.stringify({
+                type: 'connected',
+                timestamp: new Date().toISOString(),
+              })
+            );
+
+            const replayEvents = emitter.replay({
+              since: replaySince,
+              limit: replayLimit,
+              partitionId,
+            });
+            for (const replayEvent of replayEvents) {
+              try {
+                ws.send(JSON.stringify(replayEvent));
+              } catch {
+                // Connection closed
+                break;
               }
+            }
 
-              const listener: ConsoleEventListener = (event) => {
-                if (partitionId) {
-                  const eventPartitionId = event.data.partitionId;
-                  if (
-                    typeof eventPartitionId !== 'string' ||
-                    eventPartitionId !== partitionId
-                  ) {
-                    return;
-                  }
-                }
-                try {
-                  ws.send(JSON.stringify(event));
-                } catch {
-                  // Connection closed
-                }
-              };
-
-              emitter.addListener(listener);
-              state.listener = listener;
-
-              ws.send(
-                JSON.stringify({
-                  type: 'connected',
-                  timestamp: new Date().toISOString(),
-                })
-              );
-
-              const replayEvents = emitter.replay({
-                since: replaySince,
-                limit: replayLimit,
-                partitionId,
-              });
-              for (const replayEvent of replayEvents) {
-                try {
-                  ws.send(JSON.stringify(replayEvent));
-                } catch {
-                  // Connection closed
-                  break;
-                }
+            const heartbeatInterval = setInterval(() => {
+              try {
+                ws.send(
+                  JSON.stringify({
+                    type: 'heartbeat',
+                    timestamp: new Date().toISOString(),
+                  })
+                );
+              } catch {
+                clearInterval(heartbeatInterval);
               }
+            }, heartbeatIntervalMs);
+            state.heartbeatInterval = heartbeatInterval;
+          };
+          state.startAuthenticatedSession = startAuthenticatedSession;
 
-              const heartbeatInterval = setInterval(() => {
-                try {
-                  ws.send(
-                    JSON.stringify({
-                      type: 'heartbeat',
-                      timestamp: new Date().toISOString(),
-                    })
-                  );
-                } catch {
-                  clearInterval(heartbeatInterval);
-                }
-              }, heartbeatIntervalMs);
-              state.heartbeatInterval = heartbeatInterval;
-            };
-            state.startAuthenticatedSession = startAuthenticatedSession;
+          if (initialAuth) {
+            startAuthenticatedSession();
+            return;
+          }
 
-            if (initialAuth) {
-              startAuthenticatedSession();
+          state.authTimeout = setTimeout(() => {
+            const current = wsState.get(ws);
+            if (!current || current.isAuthenticated) {
               return;
             }
-
-            state.authTimeout = setTimeout(() => {
-              const current = wsState.get(ws);
-              if (!current || current.isAuthenticated) {
-                return;
-              }
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-            }, 5_000);
-          },
-          async onMessage(event, ws) {
-            const state = wsState.get(ws);
-            if (!state || state.isAuthenticated) {
-              return;
-            }
-
-            if (typeof event.data !== 'string') {
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-              return;
-            }
-
-            const token = parseWebSocketAuthToken(event.data);
-
-            if (!token) {
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-              return;
-            }
-
-            const auth = await authenticateWithBearer(token);
-            const currentState = wsState.get(ws);
-            if (!currentState || currentState.isAuthenticated) {
-              return;
-            }
-            if (!auth) {
-              closeUnauthenticatedSocket(ws);
-              cleanup(ws);
-              return;
-            }
-            currentState.startAuthenticatedSession?.();
-          },
-          onClose(_event, ws) {
+            closeUnauthenticatedSocket(ws);
             cleanup(ws);
-          },
-          onError(_event, ws) {
+          }, 5_000);
+        },
+        async onMessage(event, ws) {
+          const state = wsState.get(ws);
+          if (!state) {
+            return;
+          }
+
+          const messageBytes = measureWebSocketMessageBytes(event.data);
+          if (messageBytes > maxMessageBytes) {
+            ws.close(1009, 'message too large');
             cleanup(ws);
-          },
-        };
-      })
-    );
+            return;
+          }
+
+          if (maxMessagesPerWindow > 0 && messageRateWindowMs > 0) {
+            const nowMs = Date.now();
+            if (nowMs - state.messageRateWindowStart >= messageRateWindowMs) {
+              state.messageRateWindowStart = nowMs;
+              state.messageRateWindowCount = 0;
+            }
+            state.messageRateWindowCount += 1;
+            if (state.messageRateWindowCount > maxMessagesPerWindow) {
+              ws.close(1008, 'message rate exceeded');
+              cleanup(ws);
+              return;
+            }
+          }
+
+          if (state.isAuthenticated) {
+            return;
+          }
+
+          if (typeof event.data !== 'string') {
+            closeUnauthenticatedSocket(ws);
+            cleanup(ws);
+            return;
+          }
+
+          const token = parseWebSocketAuthToken(event.data);
+
+          if (!token) {
+            closeUnauthenticatedSocket(ws);
+            cleanup(ws);
+            return;
+          }
+
+          const auth = await authenticateWithBearer(token);
+          const currentState = wsState.get(ws);
+          if (!currentState || currentState.isAuthenticated) {
+            return;
+          }
+          if (!auth) {
+            closeUnauthenticatedSocket(ws);
+            cleanup(ws);
+            return;
+          }
+          currentState.startAuthenticatedSession?.();
+        },
+        onClose(_event, ws) {
+          cleanup(ws);
+        },
+        onError(_event, ws) {
+          cleanup(ws);
+        },
+      };
+    });
+
+    routes.get('/events/live', async (c, next) => {
+      if (!isWebSocketOriginAllowed(c, options.websocket?.allowedOrigins)) {
+        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+      }
+      return liveEventsWebSocketRoute(c, next);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -3683,6 +3778,40 @@ export function createConsoleRoutes<
   );
 
   return routes;
+}
+
+function isWebSocketOriginAllowed(
+  c: Context,
+  allowedOrigins?: string[] | '*'
+): boolean {
+  if (!allowedOrigins) return true;
+  if (allowedOrigins === '*') return true;
+
+  const origin = c.req.header('origin');
+  if (!origin) return false;
+
+  try {
+    const normalizedOrigin = new URL(origin).origin;
+    return allowedOrigins.includes(normalizedOrigin);
+  } catch {
+    return false;
+  }
+}
+
+function measureWebSocketMessageBytes(data: unknown): number {
+  if (typeof data === 'string') {
+    return new TextEncoder().encode(data).byteLength;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (ArrayBuffer.isView(data)) {
+    return data.byteLength;
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return data.size;
+  }
+  return new TextEncoder().encode(String(data)).byteLength;
 }
 
 // ===========================================================================

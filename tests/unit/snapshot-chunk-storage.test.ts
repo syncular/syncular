@@ -586,6 +586,45 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       expect(deleted).toBe(0);
     });
 
+    it('supports custom cleanup tuning across multiple batches', async () => {
+      const storage = createDbMetadataChunkStorage({
+        db,
+        blobAdapter: mockBlobAdapter,
+        cleanupTuning: {
+          batchSize: 1,
+          deleteConcurrency: 1,
+        },
+      });
+
+      const expiresAt = new Date(Date.now() - 1_000).toISOString();
+
+      for (let i = 0; i < 3; i++) {
+        const body = new TextEncoder().encode(`expired-${i}`);
+        await storage.storeChunk({
+          partitionId: 'test',
+          scopeKey: `user:${i}`,
+          scope: 'tasks',
+          asOfCommitSeq: 100 + i,
+          rowCursor: `cursor-${i}`,
+          rowLimit: 1000,
+          encoding: 'json-row-frame-v1',
+          compression: 'gzip',
+          sha256: `expired-batch-${i}`,
+          body,
+          expiresAt,
+        });
+      }
+
+      const deleted = await storage.cleanupExpired(new Date().toISOString());
+      expect(deleted).toBe(3);
+
+      const remaining = await db
+        .selectFrom('sync_snapshot_chunks')
+        .select('chunk_id')
+        .execute();
+      expect(remaining).toHaveLength(0);
+    });
+
     it('handles blob deletion errors gracefully', async () => {
       // Create adapter that throws on delete
       const failingAdapter: BlobStorageAdapter & {

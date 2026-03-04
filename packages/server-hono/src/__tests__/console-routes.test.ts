@@ -157,6 +157,7 @@ describe('console timeline route filters', () => {
   async function requestTimeline(args: {
     query?: Record<string, string | number | undefined>;
     authenticated?: boolean;
+    targetApp?: Hono;
   }): Promise<Response> {
     const params = new URLSearchParams({ limit: '50', offset: '0' });
     for (const [key, value] of Object.entries(args.query ?? {})) {
@@ -164,7 +165,7 @@ describe('console timeline route filters', () => {
       params.set(key, String(value));
     }
 
-    return app.request(
+    return (args.targetApp ?? app).request(
       `http://localhost/console/timeline?${params.toString()}`,
       {
         headers:
@@ -733,6 +734,34 @@ describe('console timeline route filters', () => {
 
     expect(pageOneKeys[0]).not.toBe(pageTwoKeys[0]);
     expect(pageOneKeys.some((key) => pageTwoKeys.includes(key))).toBe(false);
+  });
+
+  it('caps timeline source scans to avoid unbounded in-memory merges', async () => {
+    const cappedTimelineApp = createTestApp({
+      maintenance: {
+        timelineScanMaxRows: 1,
+      },
+    });
+
+    const response = await requestTimeline({
+      targetApp: cappedTimelineApp,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-timeline-truncated')).toBe('true');
+    expect(response.headers.get('x-timeline-scan-limit')).toBe('1');
+
+    const payload = (await response.json()) as TimelineResponse;
+    expect(payload.total).toBeLessThanOrEqual(2);
+    expect(payload.items.length).toBeLessThanOrEqual(2);
+  });
+
+  it('rejects oversized timeline offsets to prevent deep pagination scans', async () => {
+    const response = await requestTimeline({
+      query: { offset: 10001 },
+    });
+
+    expect(response.status).toBe(400);
   });
 
   it('lists operation audit events and filters by operation type', async () => {

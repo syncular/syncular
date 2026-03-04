@@ -58,6 +58,16 @@ interface CreateProxyRoutesConfig<DB extends SyncCoreDb = SyncCoreDb> {
   maxConnections?: number;
   /** Idle connection timeout in ms (default: 30000) */
   idleTimeoutMs?: number;
+  /**
+   * Maximum inbound websocket message size in bytes.
+   * Default: 1 MiB.
+   */
+  maxMessageBytes?: number;
+  /**
+   * Optional list of allowed websocket origins.
+   * Use '*' to allow all origins.
+   */
+  allowedOrigins?: string[] | '*';
 }
 
 /**
@@ -90,6 +100,7 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
   config: CreateProxyRoutesConfig<DB>
 ): Hono {
   const app = new Hono();
+  const maxMessageBytes = config.maxMessageBytes ?? 1024 * 1024;
 
   const manager = new ProxyConnectionManager({
     db: config.db,
@@ -104,6 +115,10 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
 
   // WebSocket upgrade endpoint - using regular route since WebSocket doesn't fit OpenAPI well
   app.get('/', async (c) => {
+    if (!isWebSocketOriginAllowed(c, config.allowedOrigins)) {
+      return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+    }
+
     // Authenticate before upgrade
     const auth = await config.authenticate(c);
     if (!auth) {
@@ -132,10 +147,19 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
 
       async onMessage(evt, ws) {
         try {
-          const data =
-            typeof evt.data === 'string'
-              ? evt.data
-              : new TextDecoder().decode(evt.data as ArrayBuffer);
+          const messageBytes = measureWebSocketMessageBytes(evt.data);
+          if (messageBytes > maxMessageBytes) {
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                error: `Message exceeds max size (${maxMessageBytes} bytes)`,
+              })
+            );
+            ws.close(1009, 'Message too large');
+            return;
+          }
+
+          const data = decodeWebSocketData(evt.data);
 
           const message = JSON.parse(data);
 
@@ -172,11 +196,7 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
         } catch (err) {
           // Send error response if we can parse the message ID
           try {
-            const parsed = JSON.parse(
-              typeof evt.data === 'string'
-                ? evt.data
-                : new TextDecoder().decode(evt.data as ArrayBuffer)
-            );
+            const parsed = JSON.parse(decodeWebSocketData(evt.data));
             if (parsed.id) {
               ws.send(
                 JSON.stringify({
@@ -211,6 +231,50 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
   });
 
   return app;
+}
+
+function isWebSocketOriginAllowed(
+  c: Context,
+  allowedOrigins?: string[] | '*'
+): boolean {
+  if (!allowedOrigins) return true;
+  if (allowedOrigins === '*') return true;
+
+  const origin = c.req.header('origin');
+  if (!origin) return false;
+
+  try {
+    const normalizedOrigin = new URL(origin).origin;
+    return allowedOrigins.includes(normalizedOrigin);
+  } catch {
+    return false;
+  }
+}
+
+function measureWebSocketMessageBytes(data: unknown): number {
+  if (typeof data === 'string') {
+    return new TextEncoder().encode(data).byteLength;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (ArrayBuffer.isView(data)) {
+    return data.byteLength;
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return data.size;
+  }
+  return new TextEncoder().encode(String(data)).byteLength;
+}
+
+function decodeWebSocketData(data: unknown): string {
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) {
+    const view = data as Uint8Array;
+    return new TextDecoder().decode(view);
+  }
+  return String(data);
 }
 
 /**
