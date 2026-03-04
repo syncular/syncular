@@ -160,7 +160,7 @@ async function sha256HexFromByteChunks(
   chunks: readonly Uint8Array[]
 ): Promise<string> {
   const nodeCrypto = await getNodeCryptoModule();
-  if (nodeCrypto) {
+  if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
     const hasher = nodeCrypto.createHash('sha256');
     for (const chunk of chunks) {
       if (chunk.length === 0) continue;
