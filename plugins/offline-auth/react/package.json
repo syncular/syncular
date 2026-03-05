@@ -1,0 +1,61 @@
+{
+  "name": "@syncular/client-plugin-offline-auth-react",
+  "version": "0.0.0",
+  "description": "React hooks for Syncular offline auth client primitives",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "plugins/offline-auth/react"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "auth",
+    "offline-auth",
+    "react"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test --pass-with-no-tests",
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/client-plugin-offline-auth": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "@types/react": "^19.2.14"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

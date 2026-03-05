@@ -528,6 +528,8 @@
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/client-plugin-encryption": "workspace:*",
+        "@syncular/client-plugin-offline-auth": "workspace:*",
+        "@syncular/client-plugin-offline-auth-react": "workspace:*",
         "@syncular/client-plugin-yjs": "workspace:*",
         "@syncular/client-react": "workspace:*",
         "@syncular/console": "workspace:*",
@@ -669,6 +671,30 @@
       },
       "peerDependencies": {
         "kysely": "^0.28.0",
+      },
+    },
+    "plugins/offline-auth/client": {
+      "name": "@syncular/client-plugin-offline-auth",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+      },
+    },
+    "plugins/offline-auth/react": {
+      "name": "@syncular/client-plugin-offline-auth-react",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/client-plugin-offline-auth": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "@types/react": "^19.2.14",
+      },
+      "peerDependencies": {
+        "react": "^18.0.0 || ^19.0.0",
       },
     },
     "plugins/yjs/client": {
@@ -1926,6 +1952,10 @@
     "@syncular/client": ["@syncular/client@workspace:packages/client"],
 
     "@syncular/client-plugin-encryption": ["@syncular/client-plugin-encryption@workspace:plugins/encryption/client"],
+
+    "@syncular/client-plugin-offline-auth": ["@syncular/client-plugin-offline-auth@workspace:plugins/offline-auth/client"],
+
+    "@syncular/client-plugin-offline-auth-react": ["@syncular/client-plugin-offline-auth-react@workspace:plugins/offline-auth/react"],
 
     "@syncular/client-plugin-yjs": ["@syncular/client-plugin-yjs@workspace:plugins/yjs/client"],
 

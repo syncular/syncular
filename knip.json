@@ -48,6 +48,12 @@
     "plugins/yjs/server": {
       "includeEntryExports": false
     },
+    "plugins/offline-auth/client": {
+      "includeEntryExports": false
+    },
+    "plugins/offline-auth/react": {
+      "includeEntryExports": false
+    },
     "packages/console": {
       "includeEntryExports": false
     },

@@ -208,6 +208,20 @@
         "default": "./dist/observability-sentry.js"
       }
     },
+    "./client-plugin-offline-auth": {
+      "bun": "./src/client-plugin-offline-auth.ts",
+      "import": {
+        "types": "./dist/client-plugin-offline-auth.d.ts",
+        "default": "./dist/client-plugin-offline-auth.js"
+      }
+    },
+    "./client-plugin-offline-auth-react": {
+      "bun": "./src/client-plugin-offline-auth-react.ts",
+      "import": {
+        "types": "./dist/client-plugin-offline-auth-react.d.ts",
+        "default": "./dist/client-plugin-offline-auth-react.js"
+      }
+    },
     "./testkit": {
       "bun": "./src/testkit.ts",
       "import": {
@@ -299,6 +313,8 @@
   ],
   "dependencies": {
     "@syncular/client": "workspace:*",
+    "@syncular/client-plugin-offline-auth": "workspace:*",
+    "@syncular/client-plugin-offline-auth-react": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",
     "@syncular/client-plugin-yjs": "workspace:*",
     "@syncular/client-react": "workspace:*",

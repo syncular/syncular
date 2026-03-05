@@ -5,6 +5,7 @@
 import type {
   ClientHandlerCollection,
   ClientSyncConfig,
+  SyncIdentityBase,
   SyncClientDb,
   SyncPullRequest,
   SyncPullResponse,
@@ -81,7 +82,7 @@ export function createMockSync<DB extends SyncClientDb = SyncClientDb>(args?: {
     table: string;
     scopes?: Record<string, unknown>;
   }>;
-}): ClientSyncConfig<DB, { actorId: string }> {
+}): ClientSyncConfig<DB, SyncIdentityBase> {
   const handlers = args?.handlers ?? createMockHandlerRegistry<DB>();
   const subscriptions = args?.subscriptions ?? [];
 
