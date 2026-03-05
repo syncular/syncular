@@ -5,9 +5,9 @@
 <h1 align="center">Syncular</h1>
 
 <p align="center">
-  Local-first sync framework for TypeScript apps.
+  Offline-first SQL sync you can operate.
   <br />
-  Local SQLite on the client. Postgres on the server. A commit-log in between.
+  Local SQL on every client. Append-only commit log on the server. Every change tagged, scoped, and auditable.
 </p>
 
 <p align="center">
@@ -21,46 +21,66 @@
 
 ## Why Syncular
 
-Your app queries a **local database** — reads are instant, the UI never waits for the network, and everything works offline. When connectivity returns, an **immutable commit-log** syncs changes between client and server through simple push/pull over HTTP.
+Full SQL on the client — local SQL with its own schema, shaped for fast local queries. An append-only commit log on the server — every change tagged with scope values, monotonically ordered, permanently auditable. Your server-side SQL schema models your domain; your client schema is independent. Table handlers and `resolveScopes` bridge the two in code. When something goes wrong, you read the log.
 
-- **Instant UI** — queries hit local SQLite, sub-millisecond, no loading spinners
-- **Offline by default** — writes go to a local outbox and sync when online
-- **Commit-log sync** — append-only log of changes, incremental pulls, easy to reason about and debug
-- **Scope-based auth** — every change is tagged with scope values (e.g. `user_id`, `project_id`); pulls return only what's requested _and_ allowed
-- **Offline auth primitives** — optional provider-agnostic helpers for offline session continuity, identity restore, token lifecycle wiring, and local lock policy
-- **Blob storage** — sync binary files (images, documents) alongside structured data; pluggable backends including database storage and Cloudflare R2
-- **End-to-end encryption** — optional field-level E2E encryption plugin (XChaCha20-Poly1305) with BIP39 key sharing between devices
-- **Admin console** — inspect commits/clients/events, browse storage objects, and run maintenance operations (prune/compact/notify)
+- **Instant UI** — queries hit local SQL, sub-millisecond, no loading spinners; full SQL, joins, aggregates — not a KV store
+- **Commit-log sync** — append-only, scoped, monotonically ordered; like `git log` for your data
+- **No denormalization tax** — your server schema models your domain, not your sync topology; client schema is independent and optimized for local queries; table handlers bridge the two; when permissions change, you update a function, not a schema
+- **Scope-based auth** — authorization is code not YAML rules; every change tagged with scope values at sync time; pulls return the intersection of requested and allowed scopes
+- **Durable outbox** — writes survive app restarts; sync resumes when connectivity returns
+- **Idempotent push** — keyed by `(clientId, clientCommitId)`; safe to retry indefinitely with no duplicates
+- **Explicit conflict detection** — push with a `baseVersion`; server returns a conflict response with the current row when another write landed first; you decide the resolution
+- **Access revocation** — when a user loses access, the next pull reflects it; local data for revoked scopes is cleared
+- **Compaction + pruning** — commit log stays manageable: prune history all active clients have consumed, compact sequences into snapshots; new clients bootstrap from a snapshot, not a full log replay
+- **Doorbell realtime** — WebSocket carries wake-up signals only; all data flows over HTTP (cacheable, retryable, debuggable with standard tools)
+- **Admin console** — inspect commits, clients, and events; browse storage objects; trigger prune/compact; debug sync in production
+- **Blob storage** — sync binary files alongside structured data; pluggable backends (filesystem, database, S3/R2/MinIO)
+- **Yjs CRDT fields** — optional plugin that stores Yjs collaborative state (text, XML, ProseMirror) as columns alongside structured data, synced through the same commit log
+- **End-to-end encryption** — optional field-level E2E encryption (XChaCha20-Poly1305) with BIP39 key sharing between devices
 - **Audit UI primitives** — per-commit push outcomes, conflict streams, and scoped `/sync/audit/*` endpoints for in-product history
 - **External changes + admin proxy** — integrate existing REST/webhook/pipeline writes and admin SQL without breaking sync semantics
-- **Observability** — pluggable telemetry (logs, traces, metrics, exceptions) with built-in Sentry adapter or bring your own (OpenTelemetry, Datadog, etc.)
-- **Migrations + typegen** — schema versioning for rolling upgrades, plus optional type generation from migrations
+- **Observability** — pluggable telemetry (logs, traces, metrics, exceptions); Sentry adapter or bring your own (OpenTelemetry, Datadog, etc.)
+- **Migrations + typegen** — schema versioning for rolling upgrades; generate TypeScript types from migrations
 - **Type-safe end-to-end** — TypeScript + [Kysely](https://kysely.dev) on both client and server, queries checked at build time
+- **Runs everywhere** — browser (WASM SQLite, PGlite), Electron, React Native (Expo, Nitro SQLite), Bun, Node.js on the client; Postgres, SQLite, Neon, LibSQL, or Cloudflare D1 on the server
 - **Self-hosted, Apache-2.0** — run on your own infrastructure, no vendor lock-in
 
 ## How it works
 
 ```
-┌──────────────────────────────────────────────┐
-│  CLIENT                                      │
-│  React UI → Kysely → Local SQLite            │
-│  Writes → Outbox (queued, survives restart)  │
-└──────────┬───────────────────────────────────┘
-           │  push / pull (HTTP)
-           ▼
-┌──────────────────────────────────────────────┐
-│  SERVER                                      │
-│  Table handlers → Kysely → Postgres          │
-│  Commit log (append-only, scoped, ordered)   │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  CLIENT  (browser · Electron · React Native · Bun …) │
+│  App UI → Kysely → Local SQL                         │
+│  Writes → Outbox (durable, survives restart)         │
+└──────────────────┬───────────────────────────────────┘
+                   │  push / pull (HTTP)
+                   │  wake-up signal (WebSocket only)
+                   ▼
+┌──────────────────────────────────────────────────────┐
+│  SERVER  (Node · Bun · Cloudflare Workers …)         │
+│  Table handlers → Kysely → SQL database              │
+│  Commit log (append-only, scoped, ordered)           │
+└──────────────────────────────────────────────────────┘
 ```
 
-1. **Bootstrap** — first sync sends a point-in-time snapshot (chunked + compressed for large datasets)
-2. **Push** — client writes locally, queues in outbox, pushes to server; server validates, writes to commit log
-3. **Pull** — client sends its cursor, server returns commits since then filtered by scopes
-4. **Realtime** — WebSocket wakes clients on new commits (data still flows over HTTP)
+1. **Bootstrap** — first sync returns a point-in-time snapshot (chunked + compressed for large datasets)
+2. **Push** — client writes locally, queues in outbox, pushes to server; server validates, extracts scopes from row data, writes to commit log
+3. **Pull** — client sends its cursor; server returns commits since then filtered to the intersection of requested and allowed scopes
+4. **Realtime** — WebSocket sends a wake-up signal; client pulls over HTTP (data never flows over WebSocket)
 
-## Supported databases
+Your server schema models your domain. Your client schema is shaped for local queries. Table handlers bridge the two — `resolveScopes` is a function, not a YAML rule, so hierarchical permissions, dynamic lookups, and role changes are just code.
+
+## What Syncular is not
+
+- **Not decentralized.** Syncular is server-authoritative — there is no P2P or fully decentralized mode. If data sovereignty (no server ever sees your data) is a hard requirement, look at [Jazz](https://jazz.tools) or [Evolu](https://www.evolu.dev).
+- **Not a pure CRDT engine.** The core model is server-authoritative structured data sync. For fields that need real-time collaborative editing (rich text, ProseMirror), the optional Yjs plugin bridges both worlds — CRDT state stored as columns, synced through the same commit log.
+- **Not a read-only sync layer.** Syncular owns the full write path. If you only need to stream Postgres changes to clients at CDN scale, [Electric SQL](https://electric-sql.com) may be a better fit.
+- **Conflict resolution is not automatic.** You get version-based detection, field-level merge utilities, and resolution primitives — but you implement the strategy and any resolution UI. There is no silent auto-merge.
+- **JavaScript/TypeScript only.** React Native is supported via JS (Expo SQLite, Nitro SQLite), but there are no native Swift or Kotlin SDKs. If first-class native mobile SDKs are a requirement, [PowerSync](https://www.powersync.com) is worth evaluating.
+
+## Supported platforms
+
+Mix and match any client dialect with any server dialect. The sync protocol is the same everywhere.
 
 ### Client
 
@@ -69,18 +89,23 @@ Your app queries a **local database** — reads are instant, the UI never waits 
 | wa-sqlite | Browser (WASM) | `@syncular/dialect-wa-sqlite` |
 | PGlite | Browser (WASM) | `@syncular/dialect-pglite` |
 | better-sqlite3 | Node.js / Electron | `@syncular/dialect-better-sqlite3` |
+| sqlite3 | Node.js | `@syncular/dialect-sqlite3` |
 | Electron IPC SQLite | Electron (renderer + main process) | `@syncular/dialect-electron-sqlite` |
 | Bun SQLite | Bun | `@syncular/dialect-bun-sqlite` |
 | Expo SQLite | React Native | `@syncular/dialect-expo-sqlite` |
+| Nitro SQLite | React Native | `@syncular/dialect-react-native-nitro-sqlite` |
 | LibSQL | Turso / LibSQL | `@syncular/dialect-libsql` |
+| Neon | Neon serverless | `@syncular/dialect-neon` |
+| D1 | Cloudflare Workers | `@syncular/dialect-d1` |
 
 ### Server
 
-| Dialect | Use case | Package |
+| Dialect / runtime | Use case | Package |
 |---|---|---|
-| Postgres | Production | `@syncular/server-dialect-postgres` |
+| Postgres | Production (Node, Bun, …) | `@syncular/server-dialect-postgres` |
 | SQLite | Dev / testing | `@syncular/server-dialect-sqlite` |
-| D1 | Cloudflare Workers | `@syncular/server-cloudflare` |
+| Cloudflare Worker + D1 | Cloudflare Workers (HTTP only) | `@syncular/server-cloudflare` |
+| Cloudflare Durable Object + D1 | Cloudflare Workers + WebSocket realtime | `@syncular/server-cloudflare` |
 
 ## Quick start
 
@@ -104,17 +129,25 @@ All packages are published under the `@syncular` scope on npm.
 
 | Package | Description |
 |---|---|
+| `syncular` | Meta package — single install for the full stack |
 | `@syncular/core` | Protocol types, schemas, telemetry |
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
-| `@syncular/server-hono` | Hono adapter with OpenAPI spec + WebSocket |
-| `@syncular/server-service-worker` | Service Worker server/runtime + wake transport helpers |
+| `@syncular/server-hono` | Hono adapter with OpenAPI spec + WebSocket; host anywhere (Node, Bun, Deno, …) |
+| `@syncular/server-cloudflare` | Cloudflare adapter: stateless Worker (HTTP) or Durable Object (HTTP + WebSocket realtime) |
+| `@syncular/server-service-worker` | Run the sync server inside a browser Service Worker; wake transport for fully in-browser operation |
+| `@syncular/server-storage-filesystem` | Filesystem blob storage adapter |
+| `@syncular/server-storage-s3` | S3-compatible blob storage adapter (S3, R2, MinIO) |
 | `@syncular/client` | Client sync engine (outbox, conflicts, plugins, blobs) |
 | `@syncular/client-react` | React provider, typed hooks, queries, mutations, presence |
 | `@syncular/transport-http` | HTTP transport with typed client |
 | `@syncular/transport-ws` | WebSocket transport for realtime + presence |
 | `@syncular/relay` | Edge relay (acts as both client and server) |
+| `@syncular/console` | Embeddable console UI — inspect commits, clients, and events inside your own app |
 | `@syncular/migrations` | Versioned migrations with checksum tracking |
 | `@syncular/typegen` | Generate DB types from migrations (with type overrides) |
+| `@syncular/testkit` | Testing toolkit: scenario flows, fault injection, HTTP/WebSocket fixtures, sync assertions |
+| `@syncular/client-plugin-yjs` | Yjs CRDT field plugin for client (text, XML, ProseMirror) |
+| `@syncular/server-plugin-yjs` | Yjs CRDT server integration for table handlers |
 | `@syncular/client-plugin-encryption` | E2E field encryption (XChaCha20-Poly1305) with key sharing |
 | `@syncular/client-plugin-offline-auth` | Provider-agnostic offline auth primitives for JS runtimes |
 | `@syncular/client-plugin-offline-auth-react` | React hooks for offline auth state + local lock policy |
