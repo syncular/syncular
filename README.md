@@ -27,6 +27,7 @@ Your app queries a **local database** — reads are instant, the UI never waits 
 - **Offline by default** — writes go to a local outbox and sync when online
 - **Commit-log sync** — append-only log of changes, incremental pulls, easy to reason about and debug
 - **Scope-based auth** — every change is tagged with scope values (e.g. `user_id`, `project_id`); pulls return only what's requested _and_ allowed
+- **Offline auth primitives** — optional provider-agnostic helpers for offline session continuity, identity restore, token lifecycle wiring, and local lock policy
 - **Blob storage** — sync binary files (images, documents) alongside structured data; pluggable backends including database storage and Cloudflare R2
 - **End-to-end encryption** — optional field-level E2E encryption plugin (XChaCha20-Poly1305) with BIP39 key sharing between devices
 - **Admin console** — inspect commits/clients/events, browse storage objects, and run maintenance operations (prune/compact/notify)
@@ -115,6 +116,8 @@ All packages are published under the `@syncular` scope on npm.
 | `@syncular/migrations` | Versioned migrations with checksum tracking |
 | `@syncular/typegen` | Generate DB types from migrations (with type overrides) |
 | `@syncular/client-plugin-encryption` | E2E field encryption (XChaCha20-Poly1305) with key sharing |
+| `@syncular/client-plugin-offline-auth` | Provider-agnostic offline auth primitives for JS runtimes |
+| `@syncular/client-plugin-offline-auth-react` | React hooks for offline auth state + local lock policy |
 | `@syncular/observability-sentry` | Sentry adapter for logs, traces, metrics |
 
 ## Run locally

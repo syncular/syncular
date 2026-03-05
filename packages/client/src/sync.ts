@@ -3,6 +3,7 @@ import type {
   ColumnCodecSource,
   ScopeDefinition,
   ScopeValue,
+  SyncIdentityBase,
   ScopeValuesFromPatterns,
   SyncSubscriptionRequest,
 } from '@syncular/core';
@@ -47,7 +48,7 @@ export type ClientSyncHandlerOptionsForTable<
 
 export interface ClientSyncConfig<
   DB extends SyncClientDb = SyncClientDb,
-  Identity = { actorId: string },
+  Identity extends SyncIdentityBase = SyncIdentityBase,
 > {
   handlers: ClientTableHandler<DB>[];
   subscriptions(
@@ -63,7 +64,7 @@ export interface DefineClientSyncOptions {
 export interface ClientSyncBuilder<
   DB extends SyncClientDb,
   ScopeDefs extends readonly ScopeDefinition[],
-  Identity,
+  Identity extends SyncIdentityBase,
 > extends ClientSyncConfig<DB, Identity> {
   addHandler<TableName extends SharedTableName<DB>>(
     options: ClientSyncHandlerOptionsForTable<
@@ -78,7 +79,7 @@ export interface ClientSyncBuilder<
 export function defineClientSync<
   DB extends SyncClientDb,
   ScopeDefs extends readonly ScopeDefinition[],
-  Identity,
+  Identity extends SyncIdentityBase,
 >(
   options: DefineClientSyncOptions
 ): ClientSyncBuilder<DB, ScopeDefs, Identity> {

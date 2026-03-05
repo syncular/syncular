@@ -205,6 +205,18 @@ const authenticate = async (c: Context) => {
 };
 ```
 
+## Optional Offline Auth Primitives
+
+If your app supports offline continuity, use `@syncular/client-plugin-offline-auth` on the client and `@syncular/client-plugin-offline-auth-react` for React hooks.
+
+```bash
+npm install @syncular/client-plugin-offline-auth @syncular/client-plugin-offline-auth-react
+```
+
+These packages intentionally avoid provider-specific OAuth/session logic and are designed to plug into your existing auth model while keeping `/sync` auth strict.
+
+See [Offline Auth Primitives](/docs/build/offline-auth) for full setup patterns (client JS, React hooks, and strict server-auth guidance).
+
 ## Push Authorization
 
 The framework validates pushes automatically:
@@ -256,5 +268,6 @@ The system automatically extracts these from row data.
 ## Next Steps
 
 - [Scopes](/docs/introduction/scopes) — Deep dive into scope model
+- [Offline Auth Primitives](/docs/build/offline-auth) — Optional offline continuity helpers
 - [Table Handlers](/docs/build/table-handlers) — Implement handlers
 - [Server Setup](/docs/build/server-setup) — Full server setup

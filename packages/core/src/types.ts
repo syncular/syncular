@@ -62,6 +62,17 @@ export interface MergeResultConflict {
 export type MergeResult = MergeResultOk | MergeResultConflict;
 
 // ============================================================================
+// Identity Types
+// ============================================================================
+
+/**
+ * Canonical identity base shape used across Syncular auth-bound APIs.
+ */
+export interface SyncIdentityBase {
+  actorId: string;
+}
+
+// ============================================================================
 // Transport Types
 // ============================================================================
 

@@ -24,6 +24,7 @@ import type {
   SyncDiagnostics,
   SyncInspectorOptions,
   SyncInspectorSnapshot,
+  SyncIdentityBase,
   SyncOperation,
   SyncProgress,
   SyncRepairOptions,
@@ -133,12 +134,12 @@ export interface SyncContextValue<DB extends SyncClientDb> {
   engine: SyncEngine<DB>;
   db: Kysely<DB>;
   transport: SyncTransport;
-  handlers: ClientSyncConfig<DB, { actorId: string }>['handlers'];
+  handlers: ClientSyncConfig<DB, SyncIdentityBase>['handlers'];
 }
 
 export interface SyncProviderProps<
   DB extends SyncClientDb,
-  Identity extends { actorId: string },
+  Identity extends SyncIdentityBase,
 > {
   db: Kysely<DB>;
   transport: SyncTransport;
@@ -533,7 +534,7 @@ export interface UsePresenceWithJoinResult<TMetadata = Record<string, unknown>>
 
 export function createSyncularReact<
   DB extends SyncClientDb,
-  Identity extends { actorId: string } = { actorId: string },
+  Identity extends SyncIdentityBase = SyncIdentityBase,
 >() {
   const SyncContext = createContext<SyncContextValue<DB> | null>(null);
 

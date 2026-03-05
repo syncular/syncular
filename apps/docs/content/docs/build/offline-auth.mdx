@@ -1,0 +1,184 @@
+---
+title: Offline Auth Primitives
+description: Client-first, offline auth continuity for JS and React
+---
+
+# Offline Auth Primitives
+
+Use offline-auth primitives to keep local auth UX stable when connectivity is poor, without coupling Syncular to any specific provider.
+
+Default model: client-first.
+
+- Keep auth cache + lock policy locally.
+- Keep Sync server auth strict (normal online auth for `/sync`).
+- Clearing online session (logout) clears cached offline identity by default.
+
+## Install
+
+```bash
+npm install @syncular/client-plugin-offline-auth @syncular/client-plugin-offline-auth-react
+```
+
+## Package split
+
+| Package | Required? | Purpose |
+|---------|-----------|---------|
+| `@syncular/client-plugin-offline-auth` | Yes | Offline session/identity cache, expiry checks, subject resolution, token bridge, lock policy state machine |
+| `@syncular/client-plugin-offline-auth-react` | If React app | `useOfflineAuthState` + `useOfflineLockPolicy` hooks |
+
+## Minimum setup (JS)
+
+```typescript
+import {
+  createWebStorageAdapter,
+  createTokenLifecycleBridge,
+  loadOfflineAuthState,
+  persistOnlineSession,
+  resolveOfflineAuthSubject,
+  saveOfflineAuthState,
+} from '@syncular/client-plugin-offline-auth';
+import { createHttpTransport } from '@syncular/transport-http';
+
+// Wrap browser storage so offline-auth primitives can use a uniform interface.
+const storage = createWebStorageAdapter(window.localStorage);
+// Restore previously cached offline auth state (session/identity/last actor).
+const offlineState = await loadOfflineAuthState({ storage, codec });
+
+// Persist latest online session from your provider into the offline cache.
+const next = persistOnlineSession({
+  state: offlineState,
+  session: authSession,
+  getSessionActorId: (s) => s.userId,
+  getExpiresAtMs: (s) => s.expiresAtMs,
+});
+
+// Save updated cache state to storage.
+await saveOfflineAuthState(next, { storage });
+
+// Resolve which subject the app should use right now.
+// Precedence: valid online session -> offline identity -> last actor.
+const subject = resolveOfflineAuthSubject({
+  state: next,
+  getSessionActorId: (s) => s.userId,
+  getSessionTeamId: (s) => s.teamId,
+});
+
+// Bridge token lookup/refresh into Syncular transport auth lifecycle.
+const tokenBridge = createTokenLifecycleBridge({
+  resolveToken: async () => next.session?.value.accessToken ?? null,
+  refreshToken: async () => auth.refreshToken(),
+});
+
+// Use bridge helpers for HTTP auth headers + refresh/retry behavior.
+const transport = createHttpTransport({
+  baseUrl: '/api',
+  getHeaders: tokenBridge.getAuthorizationHeaders,
+  authLifecycle: tokenBridge.authLifecycle,
+});
+```
+
+## React add-on
+
+```typescript
+import {
+  useOfflineAuthState,
+  useOfflineLockPolicy,
+} from '@syncular/client-plugin-offline-auth-react';
+
+// React helper around load/save/update/clear for offline auth state.
+const authState = useOfflineAuthState({ storage, codec });
+
+// Local lock policy state (idle lock + activity tracking).
+const lock = useOfflineLockPolicy({
+  lockOnMount: true,
+  idleTimeoutMs: 5 * 60_000,
+  trackWindowActivity: true,
+});
+```
+
+## PIN code example (React, app-specific)
+
+Use the lock primitives to build your own PIN flow. The plugin does not own PIN UI, PIN storage, or PIN sync.
+
+```tsx
+import { useState } from 'react';
+import { useOfflineLockPolicy } from '@syncular/client-plugin-offline-auth-react';
+
+type PinGateProps = {
+  readStoredPinHash: () => string | null; // local-only storage
+  hashPin: (pin: string) => Promise<string>; // app-owned KDF/hash
+};
+
+export function PinGate({ readStoredPinHash, hashPin }: PinGateProps) {
+  // Local-only lock policy. This is UI/device protection, not server auth.
+  const lock = useOfflineLockPolicy({
+    lockOnMount: true,
+    idleTimeoutMs: 5 * 60_000,
+    maxFailedAttempts: 5,
+    cooldownMs: 30_000,
+    trackWindowActivity: true,
+  });
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    // Verify against app-owned local PIN material (not synced via Syncular).
+    const result = await lock.attemptUnlockAsync(async () => {
+      const expectedHash = readStoredPinHash();
+      if (!expectedHash) return false;
+      const actualHash = await hashPin(pin);
+      return actualHash === expectedHash;
+    });
+
+    if (result.ok) {
+      setPin('');
+      setError(null);
+      return;
+    }
+
+    // Cooldown branch after too many failed attempts.
+    if (result.reason === 'blocked') {
+      setError('Too many attempts. Try again in a moment.');
+      return;
+    }
+
+    setError('Invalid PIN');
+  };
+
+  if (!lock.state.isLocked) return null;
+
+  return (
+    <div>
+      <h2>Unlock</h2>
+      {/* Keep the input UX numeric, but final validation is app-owned. */}
+      <input
+        value={pin}
+        onChange={(e) => setPin(e.target.value)}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+      />
+      <button onClick={submit}>Unlock</button>
+      {error ? <p>{error}</p> : null}
+    </div>
+  );
+}
+```
+
+Notes:
+
+- Keep PIN material local to each device.
+- Do not sync PINs or PIN hashes through Syncular data tables.
+- Use `forceUnlock()` only for explicit operator override flows.
+
+If you involve the server, keep it limited to normal auth concerns:
+
+- issuing normal session/access tokens
+- returning policy config (for example lock timeout/cooldown defaults)
+
+Keep `/sync` authentication strict and online-auth based.
+
+## Related docs
+
+- [Authorization](/docs/build/auth)
+- [Client Setup](/docs/build/client-setup)
+- [Server Setup](/docs/build/server-setup)

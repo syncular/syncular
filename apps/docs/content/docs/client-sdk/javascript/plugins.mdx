@@ -83,6 +83,19 @@ const yjsPlugin = createYjsClientPlugin({
 
 Use with `@syncular/server-plugin-yjs` on the server side for operation-level merge.
 
+### Offline auth primitives (separate package family)
+
+Offline auth helpers are distributed as plugin-style packages but are not `SyncClientPlugin` lifecycle hooks.
+
+Use:
+
+- `@syncular/client-plugin-offline-auth` (JS primitives)
+- `@syncular/client-plugin-offline-auth-react` (React hooks)
+
+No server package is required for this local lock/session-continuity model.
+
+See [Offline Auth Primitives](/docs/build/offline-auth) for integration patterns.
+
 ## Custom Plugin Example
 
 ```typescript

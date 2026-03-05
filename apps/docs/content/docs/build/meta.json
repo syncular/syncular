@@ -11,6 +11,7 @@
     "table-handlers",
     "---Features---",
     "auth",
+    "offline-auth",
     "data-modeling",
     "external-changes",
     "audit-ui",
