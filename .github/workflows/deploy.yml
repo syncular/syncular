@@ -29,7 +29,42 @@ jobs:
       - name: Stamp versions
         run: bun scripts/stamp-versions.ts ${{ github.run_number }}
       - run: bun run build
-      - run: bun generate:openapi
+      - name: Generate OpenAPI (retry on Bun crash)
+        run: |
+          attempts=3
+          delay_seconds=10
+
+          for attempt in $(seq 1 "$attempts"); do
+            echo "OpenAPI generation attempt ${attempt}/${attempts}"
+
+            set +e
+            generate_output=$(bun generate:openapi 2>&1)
+            generate_status=$?
+            set -e
+
+            echo "$generate_output"
+
+            if [ "$generate_status" -eq 0 ]; then
+              exit 0
+            fi
+
+            is_bun_runtime_crash=0
+            if echo "$generate_output" | grep -qiE 'panic\(main thread\)|Segmentation fault|SIGILL|Illegal instruction'; then
+              is_bun_runtime_crash=1
+            fi
+
+            if [ "$is_bun_runtime_crash" -eq 1 ] && [ "$attempt" -lt "$attempts" ]; then
+              echo "Detected Bun runtime crash while generating OpenAPI. Retrying in ${delay_seconds}s..."
+              sleep "$delay_seconds"
+              delay_seconds=$((delay_seconds * 2))
+              continue
+            fi
+
+            echo "OpenAPI generation failed with a non-retryable error, or retries were exhausted."
+            exit "$generate_status"
+          done
+
+          exit 1
 
       - name: Deploy (production)
         if: github.event.workflow_run.event == 'push'
