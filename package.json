@@ -13,7 +13,8 @@
   "overrides": {
     "wrangler": "^4.69.0",
     "@cloudflare/workers-types": "^4.20260304.0",
-    "hono": "4.12.3",
+    "hono": "4.12.5",
+    "@tootallnate/once": "3.0.1",
     "kysely": "0.28.11",
     "minimatch": "^10.2.4",
     "tar": "^7.5.9",
