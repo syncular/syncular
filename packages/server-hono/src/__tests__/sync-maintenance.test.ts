@@ -133,7 +133,10 @@ describe('createSyncRoutes maintenance automation', () => {
     expect(response.status).toBe(200);
   }
 
-  async function triggerMaintenance(app: Hono, clientId: string): Promise<void> {
+  async function triggerMaintenance(
+    app: Hono,
+    clientId: string
+  ): Promise<void> {
     // Trigger multiple pull rounds so at least one background maintenance run
     // executes after any earlier push-triggered debounce/in-flight window.
     await triggerPull(app, clientId);

@@ -5,8 +5,8 @@
 import type {
   ClientHandlerCollection,
   ClientSyncConfig,
-  SyncIdentityBase,
   SyncClientDb,
+  SyncIdentityBase,
   SyncPullRequest,
   SyncPullResponse,
   SyncPushRequest,

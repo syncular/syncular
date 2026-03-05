@@ -3,8 +3,8 @@ import type {
   ColumnCodecSource,
   ScopeDefinition,
   ScopeValue,
-  SyncIdentityBase,
   ScopeValuesFromPatterns,
+  SyncIdentityBase,
   SyncSubscriptionRequest,
 } from '@syncular/core';
 import { registerTableOrThrow } from '@syncular/core';

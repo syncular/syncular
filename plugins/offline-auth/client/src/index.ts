@@ -1,8 +1,8 @@
 import type {
-  SyncIdentityBase,
   SyncAuthErrorContext,
   SyncAuthLifecycle,
   SyncAuthRetryContext,
+  SyncIdentityBase,
 } from '@syncular/core';
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -199,7 +199,9 @@ export interface OfflineLockController {
   resetFailures(): OfflineLockState;
   evaluateIdleTimeout(): OfflineLockState;
   attemptUnlock(verify: () => boolean): OfflineUnlockResult;
-  attemptUnlockAsync(verify: () => MaybePromise<boolean>): Promise<OfflineUnlockResult>;
+  attemptUnlockAsync(
+    verify: () => MaybePromise<boolean>
+  ): Promise<OfflineUnlockResult>;
 }
 
 export const OFFLINE_AUTH_STATE_VERSION = 1;
