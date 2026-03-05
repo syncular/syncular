@@ -133,6 +133,16 @@ describe('createSyncRoutes maintenance automation', () => {
     expect(response.status).toBe(200);
   }
 
+  async function triggerMaintenance(app: Hono, clientId: string): Promise<void> {
+    // Trigger multiple pull rounds so at least one background maintenance run
+    // executes after any earlier push-triggered debounce/in-flight window.
+    await triggerPull(app, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await triggerPull(app, clientId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await triggerPull(app, clientId);
+  }
+
   async function countRows(tableName: 'sync_commits' | 'sync_changes') {
     if (tableName === 'sync_commits') {
       const row = await db
@@ -207,7 +217,7 @@ describe('createSyncRoutes maintenance automation', () => {
         updated_at = EXCLUDED.updated_at
     `.execute(db);
 
-    await triggerPull(app, 'maintenance-client');
+    await triggerMaintenance(app, 'maintenance-client');
 
     await waitFor(
       async () => (await countRows('sync_commits')) <= 1,
@@ -244,7 +254,7 @@ describe('createSyncRoutes maintenance automation', () => {
     const oldIso = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     await db.updateTable('sync_commits').set({ created_at: oldIso }).execute();
 
-    await triggerPull(app, 'compact-client');
+    await triggerMaintenance(app, 'compact-client');
 
     await waitFor(
       async () => (await countRows('sync_changes')) < before,
