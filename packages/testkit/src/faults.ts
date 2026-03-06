@@ -6,6 +6,21 @@ import type {
   SyncTransportOptions,
 } from '@syncular/core';
 
+export type FaultTransportOperation = 'push' | 'pull' | 'fetch';
+
+export type FaultTransportAction = 'pass' | 'fail';
+
+export type FaultTransportPhase = 'before' | 'after';
+
+export interface FaultPlanStep {
+  operation: FaultTransportOperation | 'any';
+  action?: FaultTransportAction;
+  phase?: FaultTransportPhase;
+  repeat?: number;
+  failWith?: Error;
+  latencyMs?: number;
+}
+
 export interface FaultTransportOptions {
   failAfter?: number;
   failWith?: Error;
@@ -14,6 +29,7 @@ export interface FaultTransportOptions {
   failOnPush?: boolean;
   failOnPull?: boolean;
   failOnFetch?: boolean;
+  plan?: FaultPlanStep[];
   onFail?: (operation: 'push' | 'pull' | 'fetch', error: Error) => void;
   onSuccess?: (operation: 'push' | 'pull' | 'fetch') => void;
 }
@@ -32,11 +48,28 @@ export interface FaultTransportResult {
   setOptions: (options: Partial<FaultTransportOptions>) => void;
 }
 
+interface ActiveFaultPlanStep {
+  operation: FaultPlanStep['operation'];
+  action: FaultTransportAction;
+  phase: FaultTransportPhase;
+  remaining: number;
+  failWith?: Error;
+  latencyMs?: number;
+}
+
+interface PlannedFaultDecision {
+  action: FaultTransportAction;
+  phase: FaultTransportPhase;
+  error: Error;
+  latencyMs: number;
+}
+
 export function withFaults(
   baseTransport: SyncTransport,
   options: FaultTransportOptions = {}
 ): FaultTransportResult {
   let currentOptions = { ...options };
+  let currentPlan = createActivePlan(currentOptions.plan);
   const state: FaultTransportState = {
     pushCount: 0,
     pullCount: 0,
@@ -46,28 +79,40 @@ export function withFaults(
 
   const defaultError = new Error('Simulated transport error');
 
-  const maybeDelay = async (): Promise<void> => {
-    if (currentOptions.latencyMs && currentOptions.latencyMs > 0) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, currentOptions.latencyMs)
-      );
+  const maybeDelay = async (extraLatencyMs = 0): Promise<void> => {
+    const latencyMs = (currentOptions.latencyMs ?? 0) + extraLatencyMs;
+    if (latencyMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, latencyMs));
     }
   };
 
+  const shouldTargetOperation = (
+    operation: FaultTransportOperation
+  ): boolean => {
+    const hasTargets =
+      currentOptions.failOnPush === true ||
+      currentOptions.failOnPull === true ||
+      currentOptions.failOnFetch === true;
+
+    if (!hasTargets) {
+      return true;
+    }
+
+    if (operation === 'push') {
+      return currentOptions.failOnPush === true;
+    }
+    if (operation === 'pull') {
+      return currentOptions.failOnPull === true;
+    }
+    return currentOptions.failOnFetch === true;
+  };
+
   const shouldFail = (
-    operation: 'push' | 'pull' | 'fetch',
+    operation: FaultTransportOperation,
     count: number
   ): boolean => {
-    if (operation === 'push' && currentOptions.failOnPull) {
+    if (!shouldTargetOperation(operation)) {
       return false;
-    }
-    if (operation === 'pull' && currentOptions.failOnPush) {
-      return false;
-    }
-    if (operation === 'fetch' && !currentOptions.failOnFetch) {
-      if (currentOptions.failOnPush || currentOptions.failOnPull) {
-        return false;
-      }
     }
 
     if (
@@ -86,51 +131,95 @@ export function withFaults(
 
   const getError = (): Error => currentOptions.failWith ?? defaultError;
 
+  const fail = (operation: FaultTransportOperation, error: Error): never => {
+    state.failureCount++;
+    currentOptions.onFail?.(operation, error);
+    throw error;
+  };
+
+  const recordSuccess = (operation: FaultTransportOperation): void => {
+    if (operation === 'push') {
+      state.pushCount++;
+      return;
+    }
+    if (operation === 'pull') {
+      state.pullCount++;
+      return;
+    }
+    state.fetchCount++;
+  };
+
+  const takePlannedDecision = (
+    operation: FaultTransportOperation
+  ): PlannedFaultDecision | null => {
+    const step = currentPlan.find(
+      (candidate) =>
+        candidate.remaining > 0 &&
+        (candidate.operation === 'any' || candidate.operation === operation)
+    );
+    if (!step) {
+      return null;
+    }
+
+    step.remaining -= 1;
+    return {
+      action: step.action,
+      phase: step.phase,
+      error: step.failWith ?? getError(),
+      latencyMs: step.latencyMs ?? 0,
+    };
+  };
+
+  const runWithFaults = async <Result>(
+    operation: FaultTransportOperation,
+    count: number,
+    run: () => Promise<Result>
+  ): Promise<Result> => {
+    const plannedDecision = takePlannedDecision(operation);
+    await maybeDelay(plannedDecision?.latencyMs ?? 0);
+
+    if (
+      plannedDecision?.action === 'fail' &&
+      plannedDecision.phase === 'before'
+    ) {
+      return fail(operation, plannedDecision.error);
+    }
+
+    if (!plannedDecision && shouldFail(operation, count)) {
+      return fail(operation, getError());
+    }
+
+    const result = await run();
+    recordSuccess(operation);
+
+    if (
+      plannedDecision?.action === 'fail' &&
+      plannedDecision.phase === 'after'
+    ) {
+      return fail(operation, plannedDecision.error);
+    }
+
+    currentOptions.onSuccess?.(operation);
+    return result;
+  };
+
   const transport: SyncTransport = {
     async sync(request, transportOptions) {
-      await maybeDelay();
-
-      const operation = request.push ? 'push' : 'pull';
+      const operation: FaultTransportOperation = request.push ? 'push' : 'pull';
       const count = operation === 'push' ? state.pushCount : state.pullCount;
 
-      if (shouldFail(operation, count)) {
-        const error = getError();
-        state.failureCount++;
-        currentOptions.onFail?.(operation, error);
-        throw error;
-      }
-
-      if (operation === 'push') {
-        state.pushCount++;
-      } else {
-        state.pullCount++;
-      }
-
-      const result = await baseTransport.sync(request, transportOptions);
-      currentOptions.onSuccess?.(operation);
-      return result;
+      return runWithFaults(operation, count, () =>
+        baseTransport.sync(request, transportOptions)
+      );
     },
 
     async fetchSnapshotChunk(
       request: { chunkId: string },
       transportOptions?: SyncTransportOptions
     ): Promise<Uint8Array> {
-      await maybeDelay();
-
-      if (shouldFail('fetch', state.fetchCount)) {
-        const error = getError();
-        state.failureCount++;
-        currentOptions.onFail?.('fetch', error);
-        throw error;
-      }
-
-      state.fetchCount++;
-      const result = await baseTransport.fetchSnapshotChunk(
-        request,
-        transportOptions
+      return runWithFaults('fetch', state.fetchCount, () =>
+        baseTransport.fetchSnapshotChunk(request, transportOptions)
       );
-      currentOptions.onSuccess?.('fetch');
-      return result;
     },
   };
 
@@ -142,11 +231,41 @@ export function withFaults(
       state.pullCount = 0;
       state.fetchCount = 0;
       state.failureCount = 0;
+      currentPlan = createActivePlan(currentOptions.plan);
     },
     setOptions: (newOptions) => {
       currentOptions = { ...currentOptions, ...newOptions };
+      if ('plan' in newOptions) {
+        currentPlan = createActivePlan(currentOptions.plan);
+      }
     },
   };
+}
+
+function createActivePlan(
+  plan: FaultPlanStep[] | undefined
+): ActiveFaultPlanStep[] {
+  if (!plan || plan.length === 0) {
+    return [];
+  }
+
+  return plan.flatMap((step) => {
+    const remaining = step.repeat ?? 1;
+    if (remaining <= 0) {
+      return [];
+    }
+
+    return [
+      {
+        operation: step.operation,
+        action: step.action ?? 'fail',
+        phase: step.phase ?? 'before',
+        remaining,
+        failWith: step.failWith,
+        latencyMs: step.latencyMs,
+      },
+    ];
+  });
 }
 
 export function createMockTransport(options?: {

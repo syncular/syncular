@@ -173,6 +173,34 @@ describe('createSyncServer console configuration', () => {
     });
   }
 
+  function createPullRequest(args: {
+    clientId: string;
+    userId: string;
+    subscriptionUserId: string;
+  }): Request {
+    return new Request('http://localhost/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': args.userId,
+      },
+      body: JSON.stringify({
+        clientId: args.clientId,
+        pull: {
+          limitCommits: 10,
+          subscriptions: [
+            {
+              id: 'tasks-sub',
+              table: 'tasks',
+              scopes: { user_id: args.subscriptionUserId },
+              cursor: -1,
+            },
+          ],
+        },
+      }),
+    });
+  }
+
   function parseSnapshotValue(value: unknown): unknown {
     if (typeof value !== 'string') {
       return value;
@@ -517,6 +545,72 @@ describe('createSyncServer console configuration', () => {
       message: 'clientId is already bound to a different actor',
     });
     expect(capturedEvents).toBeNull();
+  });
+
+  it('allows stale-scope rebinding after a fully revoked pull', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      sync: {
+        ...options.sync,
+        authenticate: async (request) => {
+          const actorId = request.headers.get('x-user-id');
+          return actorId ? { actorId } : null;
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const initialPull = await app.request(
+      createPullRequest({
+        clientId: 'shared-client',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(initialPull.status).toBe(200);
+
+    const revokedPull = await app.request(
+      createPullRequest({
+        clientId: 'shared-client',
+        userId: 'u2',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(revokedPull.status).toBe(200);
+    expect(await revokedPull.json()).toMatchObject({
+      ok: true,
+      pull: {
+        subscriptions: [
+          {
+            id: 'tasks-sub',
+            status: 'revoked',
+          },
+        ],
+      },
+    });
+
+    const reboundPull = await app.request(
+      createPullRequest({
+        clientId: 'shared-client',
+        userId: 'u2',
+        subscriptionUserId: 'u2',
+      })
+    );
+    expect(reboundPull.status).toBe(200);
+    expect(await reboundPull.json()).toMatchObject({
+      ok: true,
+      pull: {
+        subscriptions: [
+          {
+            id: 'tasks-sub',
+            status: 'active',
+          },
+        ],
+      },
+    });
   });
 
   it('forwards websocket allowedOrigins from factory to console live route', async () => {

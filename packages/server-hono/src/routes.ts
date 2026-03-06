@@ -52,10 +52,7 @@ import { Hono } from 'hono';
 
 import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
-import {
-  type Kysely,
-  sql,
-} from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { z } from 'zod';
 import { isBenignConsoleSchemaError } from './console/schema-errors';
 import {
@@ -63,13 +60,13 @@ import {
   DEFAULT_SYNC_RATE_LIMITS,
   type SyncRateLimitConfig,
 } from './rate-limit';
+import { isWebSocketOriginAllowed } from './websocket-origin';
 import {
   createWebSocketConnection,
   createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
   WebSocketConnectionManager,
 } from './ws';
-import { isWebSocketOriginAllowed } from './websocket-origin';
 
 /**
  * WeakMaps for storing Hono-instance-specific data without augmenting the type.
@@ -1422,9 +1419,38 @@ export function createSyncRoutes<
         clientId,
       });
 
-      const clientState = await readClientState(options.db, partitionId, clientId);
-      if (clientState.hasConflict || clientState.ownerActorId !== null) {
-        if (clientState.ownerActorId !== auth.actorId || clientState.hasConflict) {
+      const clientState = await readClientState(
+        options.db,
+        partitionId,
+        clientId
+      );
+      let allowStaleScopeRebind = false;
+      if (
+        body.pull &&
+        !body.push &&
+        clientState.ownerActorId !== null &&
+        clientState.ownerActorId !== auth.actorId
+      ) {
+        const resolved = await resolveEffectiveScopesForSubscriptions({
+          db: options.db,
+          auth,
+          subscriptions: body.pull.subscriptions,
+          handlers: handlerRegistry,
+          scopeCache: options.scopeCache,
+        });
+        allowStaleScopeRebind = resolved.every(
+          (subscription) => subscription.status === 'revoked'
+        );
+      }
+
+      if (
+        !allowStaleScopeRebind &&
+        (clientState.hasConflict || clientState.ownerActorId !== null)
+      ) {
+        if (
+          clientState.ownerActorId !== auth.actorId ||
+          clientState.hasConflict
+        ) {
           return c.json(
             {
               error: 'INVALID_CLIENT_ID',
@@ -1549,31 +1575,29 @@ export function createSyncRoutes<
           throw err;
         }
 
-        // Fire-and-forget bookkeeping
-        void recordClientCursor(options.db, options.dialect, {
-          partitionId,
-          clientId,
-          actorId: auth.actorId,
-          cursor: pullResult.clientCursor,
-          effectiveScopes: pullResult.effectiveScopes,
-        })
-          .then(() => {
-            emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
-              action: 'cursor_recorded',
-              partitionId,
-              actorId: auth.actorId,
-              clientId,
-              cursor: pullResult.clientCursor,
-            }));
-          })
-          .catch((error) => {
-            logAsyncFailureOnce('sync.client_cursor_record_failed', {
-              event: 'sync.client_cursor_record_failed',
-              userId: auth.actorId,
-              clientId,
-              error: error instanceof Error ? error.message : String(error),
-            });
+        try {
+          await recordClientCursor(options.db, options.dialect, {
+            partitionId,
+            clientId,
+            actorId: auth.actorId,
+            cursor: pullResult.clientCursor,
+            effectiveScopes: pullResult.effectiveScopes,
           });
+          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
+            action: 'cursor_recorded',
+            partitionId,
+            actorId: auth.actorId,
+            clientId,
+            cursor: pullResult.clientCursor,
+          }));
+        } catch (error) {
+          logAsyncFailureOnce('sync.client_cursor_record_failed', {
+            event: 'sync.client_cursor_record_failed',
+            userId: auth.actorId,
+            clientId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         wsConnectionManager?.updateConnectionScopeKeys(
           connectionOwnerKey,
@@ -2532,37 +2556,31 @@ async function readClientState<DB extends SyncCoreDb>(
   effectiveScopes: unknown;
   hasConflict: boolean;
 }> {
-  const [cursorRow, latestCommitRow] = await Promise.all([
-    db
-      .selectFrom('sync_client_cursors')
-      .select(['actor_id', 'effective_scopes'])
-      .where('partition_id', '=', partitionId)
-      .where('client_id', '=', clientId)
-      .executeTakeFirst(),
-    db
-      .selectFrom('sync_commits')
-      .select(['actor_id'])
-      .where('partition_id', '=', partitionId)
-      .where('client_id', '=', clientId)
-      .orderBy('commit_seq', 'desc')
-      .limit(1)
-      .executeTakeFirst(),
+  const [cursorResult, latestCommitResult] = await Promise.all([
+    sql<{ actor_id: string | null; effective_scopes: unknown }>`
+      SELECT actor_id, effective_scopes
+      FROM sync_client_cursors
+      WHERE partition_id = ${partitionId} AND client_id = ${clientId}
+      LIMIT 1
+    `.execute(db),
+    sql<{ actor_id: string | null }>`
+      SELECT actor_id
+      FROM sync_commits
+      WHERE partition_id = ${partitionId} AND client_id = ${clientId}
+      ORDER BY commit_seq DESC
+      LIMIT 1
+    `.execute(db),
   ]);
+  const cursorRow = cursorResult.rows[0];
+  const latestCommitRow = latestCommitResult.rows[0];
 
-  const ownerActorIds = new Set<string>();
-  if (cursorRow?.actor_id) {
-    ownerActorIds.add(cursorRow.actor_id);
-  }
-  if (latestCommitRow?.actor_id) {
-    ownerActorIds.add(latestCommitRow.actor_id);
-  }
-
-  const ownerActorId =
-    ownerActorIds.size === 1 ? Array.from(ownerActorIds)[0] ?? null : null;
+  // Cursor state reflects the current authenticated owner for a clientId.
+  // Commit history is only used to seed ownership before the first pull.
+  const ownerActorId = cursorRow?.actor_id ?? latestCommitRow?.actor_id ?? null;
 
   return {
     ownerActorId,
     effectiveScopes: cursorRow?.effective_scopes ?? null,
-    hasConflict: ownerActorIds.size > 1,
+    hasConflict: false,
   };
 }

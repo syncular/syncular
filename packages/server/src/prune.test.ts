@@ -83,12 +83,12 @@ describe('maybePruneSync', () => {
 
     const remainingDefault = await db
       .selectFrom('sync_commits')
-      .select(({ fn }) => fn.countAll().as('count'))
+      .select(({ fn }) => [fn.countAll().as('count')])
       .where('partition_id', '=', 'default')
       .executeTakeFirstOrThrow();
     const remainingTenantB = await db
       .selectFrom('sync_commits')
-      .select(({ fn }) => fn.countAll().as('count'))
+      .select(({ fn }) => [fn.countAll().as('count')])
       .where('partition_id', '=', 'tenant-b')
       .executeTakeFirstOrThrow();
 

@@ -15,6 +15,7 @@ import {
   syncPushOnce,
 } from '@syncular/client';
 import { createDatabase } from '@syncular/core';
+import { withFaults } from '@syncular/testkit';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../../packages/dialect-bun-sqlite/src';
@@ -560,26 +561,15 @@ export async function runOutboxFailedRemediationAcrossRestart(
     getHeaders: () => ({ 'x-actor-id': ctx.userId }),
     ...(nativeFetch ? { fetch: nativeFetch } : {}),
   });
-  let dropFirstAck = true;
-  const flakyFetchBase = async (
-    ...args: Parameters<typeof globalThis.fetch>
-  ): Promise<Response> => {
-    const response = await (nativeFetch ?? globalThis.fetch)(...args);
-    if (dropFirstAck && response.ok) {
-      dropFirstAck = false;
-      await response.arrayBuffer();
-      throw new Error('SIMULATED_FAILED_REMEDIATION_ACK_LOSS');
-    }
-    return response;
-  };
-  const flakyFetch = Object.assign(flakyFetchBase, {
-    preconnect: (nativeFetch ?? globalThis.fetch).preconnect,
-  });
-  const flakyTransport = createHttpTransport({
-    baseUrl: ctx.server.baseUrl,
-    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
-    fetch: flakyFetch,
-  });
+  const flakyTransport = withFaults(transport, {
+    plan: [
+      {
+        operation: 'push',
+        phase: 'after',
+        failWith: new Error('SIMULATED_FAILED_REMEDIATION_ACK_LOSS'),
+      },
+    ],
+  }).transport;
   const handlers = [
     createClientHandler<RestartClientDb, 'tasks'>({
       table: 'tasks',

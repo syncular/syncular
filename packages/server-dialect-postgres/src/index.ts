@@ -404,7 +404,6 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson}::jsonb,
         updated_at = ${now}
-      WHERE sync_client_cursors.actor_id = excluded.actor_id
     `.execute(db);
   }
 

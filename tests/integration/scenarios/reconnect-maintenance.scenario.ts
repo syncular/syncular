@@ -11,6 +11,7 @@ import {
   syncPushOnce,
 } from '@syncular/client';
 import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
+import { withFaults } from '@syncular/testkit';
 import { createHttpTransport } from '@syncular/transport-http';
 import { createWebSocketTransport } from '@syncular/transport-ws';
 import type { ScenarioContext } from '../harness/types';
@@ -50,37 +51,26 @@ function createTransport(
   transportPath: 'direct' | 'relay',
   options?: { dropFirstResponse?: boolean }
 ) {
-  if (options?.dropFirstResponse !== true) {
-    return createHttpTransport({
-      baseUrl,
-      getHeaders: () => ({ 'x-actor-id': actorId }),
-      transportPath,
-      ...(nativeFetch ? { fetch: nativeFetch } : {}),
-    });
-  }
-
-  let dropped = false;
-  const flakyFetchBase = async (
-    ...args: Parameters<typeof globalThis.fetch>
-  ): Promise<Response> => {
-    const response = await (nativeFetch ?? globalThis.fetch)(...args);
-    if (!dropped && response.ok) {
-      dropped = true;
-      await response.arrayBuffer();
-      throw new Error('SIMULATED_RECONNECT_DROP');
-    }
-    return response;
-  };
-  const flakyFetch = Object.assign(flakyFetchBase, {
-    preconnect: (nativeFetch ?? globalThis.fetch).preconnect,
-  });
-
-  return createHttpTransport({
+  const transport = createHttpTransport({
     baseUrl,
     getHeaders: () => ({ 'x-actor-id': actorId }),
     transportPath,
-    fetch: flakyFetch,
+    ...(nativeFetch ? { fetch: nativeFetch } : {}),
   });
+
+  if (options?.dropFirstResponse !== true) {
+    return transport;
+  }
+
+  return withFaults(transport, {
+    plan: [
+      {
+        operation: 'pull',
+        phase: 'after',
+        failWith: new Error('SIMULATED_RECONNECT_DROP'),
+      },
+    ],
+  }).transport;
 }
 
 export async function runReconnectAckLossScenario(
@@ -94,27 +84,22 @@ export async function runReconnectAckLossScenario(
     subscriptions: [sub],
   });
 
-  let dropFirstAck = true;
-  const flakyFetchBase = async (
-    ...args: Parameters<typeof globalThis.fetch>
-  ): Promise<Response> => {
-    const response = await globalThis.fetch(...args);
-    if (dropFirstAck && response.ok) {
-      dropFirstAck = false;
-      await response.arrayBuffer();
-      throw new Error('SIMULATED_PUSH_ACK_LOSS');
+  const flakyTransport = withFaults(
+    createHttpTransport({
+      baseUrl: ctx.server.baseUrl,
+      getHeaders: () => ({ 'x-actor-id': ctx.userId }),
+      ...(nativeFetch ? { fetch: nativeFetch } : {}),
+    }),
+    {
+      plan: [
+        {
+          operation: 'push',
+          phase: 'after',
+          failWith: new Error('SIMULATED_PUSH_ACK_LOSS'),
+        },
+      ],
     }
-    return response;
-  };
-  const flakyFetch = Object.assign(flakyFetchBase, {
-    preconnect: globalThis.fetch.preconnect,
-  });
-
-  const flakyTransport = createHttpTransport({
-    baseUrl: ctx.server.baseUrl,
-    getHeaders: () => ({ 'x-actor-id': ctx.userId }),
-    fetch: flakyFetch,
-  });
+  ).transport;
 
   const clientCommitId = 'ack-loss-retry-commit';
   await enqueueOutboxCommit(client.db, {

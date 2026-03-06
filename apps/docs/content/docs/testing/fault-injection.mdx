@@ -24,6 +24,29 @@ await client.push(); // succeeds
 await client.push(); // throws simulated push failure
 ```
 
+## Scripted ack loss and reconnect drops
+
+Use a `plan` when you need deterministic pass/fail sequences or when the
+failure should happen after the server already responded:
+
+```ts
+const wrapped = withFaults(client.transport, {
+  plan: [
+    { operation: 'push', action: 'pass' },
+    {
+      operation: 'push',
+      phase: 'after',
+      failWith: new Error('simulated ack loss'),
+    },
+  ],
+});
+
+client.transport = wrapped.transport;
+
+await client.push(); // succeeds
+await client.push(); // server applies commit, caller sees an error
+```
+
 ## Flaky + latency simulation
 
 ```ts

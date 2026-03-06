@@ -66,9 +66,16 @@ async function computePruneUpToCommitSeq<DB extends SyncCoreDb>(
 ): Promise<number> {
   if (watermarkCommitSeq <= 0) return 0;
 
-  const maxRow = await db
-    .selectFrom('sync_commits')
-    .select(({ fn }) => fn.max('commit_seq').as('maxSeq'))
+  type SyncDb = Pick<Kysely<SyncCoreDb>, 'selectFrom'>;
+  const syncDb = db as SyncDb;
+  const commitsQ = syncDb.selectFrom('sync_commits') as SelectQueryBuilder<
+    SyncCoreDb,
+    'sync_commits',
+    EmptySelection
+  >;
+
+  const maxRow = await commitsQ
+    .select(({ fn }) => [fn.max('commit_seq').as('maxSeq')])
     .where('partition_id', '=', partitionId)
     .executeTakeFirst();
 
@@ -93,7 +100,7 @@ export async function computePruneWatermarkCommitSeq<DB extends SyncCoreDb>(
   ) as SelectQueryBuilder<SyncCoreDb, 'sync_client_cursors', EmptySelection>;
 
   const row = await cursorsQ
-    .select(({ fn }) => fn.min('cursor').as('minCursor'))
+    .select(({ fn }) => [fn.min('cursor').as('minCursor')])
     .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`updated_at >= ${cutoffIso}`)
     .where(sql<SqlBool>`cursor >= ${0}`)
@@ -112,7 +119,7 @@ export async function computePruneWatermarkCommitSeq<DB extends SyncCoreDb>(
   >;
 
   const ageRow = await commitsQ
-    .select(({ fn }) => fn.max('commit_seq').as('maxSeq'))
+    .select(({ fn }) => [fn.max('commit_seq').as('maxSeq')])
     .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`created_at < ${ageCutoffIso}`)
     .executeTakeFirst();
@@ -187,6 +194,8 @@ export async function previewPruneSync<DB extends SyncCoreDb>(
   db: Kysely<DB>,
   options: PruneOptions = {}
 ): Promise<PartitionPrunePreview[]> {
+  type SyncDb = Pick<Kysely<SyncCoreDb>, 'selectFrom'>;
+  const syncDb = db as SyncDb;
   const partitionIds = await readPrunePartitionIds(db);
   const previews: PartitionPrunePreview[] = [];
 
@@ -203,9 +212,14 @@ export async function previewPruneSync<DB extends SyncCoreDb>(
       options.keepNewestCommits ?? 1000
     );
 
-    const countRow = await db
-      .selectFrom('sync_commits')
-      .select(({ fn }) => fn.countAll().as('count'))
+    const commitsQ = syncDb.selectFrom('sync_commits') as SelectQueryBuilder<
+      SyncCoreDb,
+      'sync_commits',
+      EmptySelection
+    >;
+
+    const countRow = await commitsQ
+      .select(({ fn }) => [fn.countAll().as('count')])
       .where('partition_id', '=', partitionId)
       .where('commit_seq', '<=', pruneUpToCommitSeq)
       .executeTakeFirst();
