@@ -10,7 +10,12 @@ import {
 import { Buffer } from 'node:buffer';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { type Browser, chromium, type Page } from '@playwright/test';
+import {
+  type Browser,
+  type BrowserContext,
+  chromium,
+  type Page,
+} from '@playwright/test';
 import {
   type BrowserErrorCollector,
   collectBrowserErrors,
@@ -187,6 +192,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
   let demoProc: ReturnType<typeof Bun.spawn>;
   let demoBaseUrl = '';
   let browser: Browser;
+  let context: BrowserContext;
   let page: Page;
   let browserErrors: BrowserErrorCollector | null = null;
 
@@ -210,7 +216,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
     await waitForHealthy(`${demoBaseUrl}/api`, 60_000);
 
     browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext();
+    context = await browser.newContext();
     page = await context.newPage();
     browserErrors = collectBrowserErrors(page);
   }, 120_000);
@@ -286,6 +292,65 @@ describeDemoSmoke('Demo split-screen smoke', () => {
       title,
       timeoutMs: 240_000,
     });
+  }, 300_000);
+
+  it('syncs persisted state across a second browser tab in the same profile', async () => {
+    await page.goto(demoBaseUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSplitScreenClientsReady(page);
+
+    await resetDemoData(page);
+
+    const existingTitle = `tab-one-${Date.now()}`;
+    const pageOneInput = page.getByPlaceholder('Add a task...').first();
+    await pageOneInput.fill(existingTitle);
+    await pageOneInput.press('Enter');
+
+    await waitForTaskInBothPanes({
+      page,
+      title: existingTitle,
+      timeoutMs: 240_000,
+    });
+
+    const secondPage = await context.newPage();
+    const secondPageErrors = collectBrowserErrors(secondPage);
+
+    try {
+      await secondPage.goto(demoBaseUrl, { waitUntil: 'domcontentloaded' });
+      await waitForSplitScreenClientsReady(secondPage);
+
+      expect(
+        await secondPage.getByText('Database initialization failed:').count()
+      ).toBe(0);
+
+      await waitForTaskInBothPanes({
+        page: secondPage,
+        title: existingTitle,
+        timeoutMs: 240_000,
+      });
+
+      secondPageErrors.clear();
+
+      const mirroredTitle = `tab-two-${Date.now()}`;
+      const pageTwoInput = secondPage.getByPlaceholder('Add a task...').first();
+      await pageTwoInput.fill(mirroredTitle);
+      await pageTwoInput.press('Enter');
+
+      await waitForTaskInBothPanes({
+        page: secondPage,
+        title: mirroredTitle,
+        timeoutMs: 240_000,
+      });
+      await waitForTaskInBothPanes({
+        page,
+        title: mirroredTitle,
+        timeoutMs: 240_000,
+      });
+
+      secondPageErrors.assertNone('demo multi-tab smoke test');
+    } finally {
+      secondPageErrors.detach();
+      await secondPage.close();
+    }
   }, 300_000);
 
   it('uploads media and syncs thumbnails across both clients', async () => {

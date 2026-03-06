@@ -6,15 +6,12 @@
  */
 
 import path from 'node:path';
-
-type K6Metric = {
-  thresholds?: Record<string, boolean | { ok?: boolean }>;
-  [stat: string]: unknown;
-};
-
-type K6Summary = {
-  metrics?: Record<string, K6Metric>;
-};
+import {
+  evaluateScenarioInvariants,
+  findFailedThresholds,
+  type K6Summary,
+  metricValue,
+} from './nightly-lib';
 
 interface ScenarioConfig {
   id: string;
@@ -28,6 +25,7 @@ interface ScenarioResult {
   passed: boolean;
   durationMs: number;
   failedThresholds: string[];
+  invariantFailures: string[];
   metrics: {
     httpReqs: number | null;
     httpP95: number | null;
@@ -89,33 +87,6 @@ const selectedScenarios =
   scenarioFilter.length === 0
     ? scenarios
     : scenarios.filter((scenario) => scenarioFilter.includes(scenario.id));
-
-function metricValue(
-  summary: K6Summary,
-  metric: string,
-  stat: string
-): number | null {
-  const value = summary.metrics?.[metric]?.[stat];
-  return Number.isFinite(value) ? Number(value) : null;
-}
-
-function findFailedThresholds(summary: K6Summary): string[] {
-  const failures: string[] = [];
-
-  for (const [metricName, metric] of Object.entries(summary.metrics ?? {})) {
-    for (const [thresholdName, result] of Object.entries(
-      metric.thresholds ?? {}
-    )) {
-      const failed =
-        typeof result === 'boolean' ? result : result?.ok === false;
-      if (failed) {
-        failures.push(`${metricName}:${thresholdName}`);
-      }
-    }
-  }
-
-  return failures;
-}
 
 async function ensureDir(dir: string): Promise<void> {
   await Bun.$`mkdir -p ${dir}`;
@@ -195,7 +166,11 @@ async function runScenario(config: ScenarioConfig): Promise<ScenarioResult> {
   }
 
   const failedThresholds = findFailedThresholds(summary);
-  const passed = exitCode === 0 && failedThresholds.length === 0;
+  const invariantFailures = evaluateScenarioInvariants(config.id, summary);
+  const passed =
+    exitCode === 0 &&
+    failedThresholds.length === 0 &&
+    invariantFailures.length === 0;
 
   return {
     id: config.id,
@@ -203,6 +178,7 @@ async function runScenario(config: ScenarioConfig): Promise<ScenarioResult> {
     passed,
     durationMs: Date.now() - start,
     failedThresholds,
+    invariantFailures,
     metrics: {
       httpReqs: metricValue(summary, 'http_reqs', 'count'),
       httpP95: metricValue(summary, 'http_req_duration', 'p(95)'),
@@ -325,6 +301,11 @@ async function main() {
       if (result.failedThresholds.length > 0) {
         console.log(
           `- ${result.id} failed thresholds: ${result.failedThresholds.join(', ')}`
+        );
+      }
+      if (result.invariantFailures.length > 0) {
+        console.log(
+          `- ${result.id} invariant failures: ${result.invariantFailures.join(', ')}`
         );
       }
     }

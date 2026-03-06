@@ -6,7 +6,21 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { type ChildProcess, execSync, spawn } from 'node:child_process';
+import {
+  type ChildProcess,
+  execFileSync,
+  execSync,
+  spawn,
+} from 'node:child_process';
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {
   createProjectScopedTasksSubscription,
@@ -24,6 +38,153 @@ const _fetch = getNativeFetch();
 const RUN = crypto.randomUUID().slice(0, 8);
 const REPO_ROOT = path.resolve(import.meta.dir, '../../..');
 const ESM_FIX_SCRIPT = path.join(REPO_ROOT, 'config/bin/fix-esm-imports.ts');
+const ROOT_BUN_NODE_MODULES = path.join(
+  REPO_ROOT,
+  'node_modules/.bun/node_modules'
+);
+
+interface PublishedPackageFixture {
+  name: string;
+  dir: string;
+}
+
+const publishedPackages: PublishedPackageFixture[] = [
+  {
+    name: '@syncular/core',
+    dir: path.join(REPO_ROOT, 'packages/core'),
+  },
+  {
+    name: '@syncular/transport-http',
+    dir: path.join(REPO_ROOT, 'packages/transport-http'),
+  },
+  {
+    name: '@syncular/client',
+    dir: path.join(REPO_ROOT, 'packages/client'),
+  },
+  {
+    name: '@syncular/client-react',
+    dir: path.join(REPO_ROOT, 'packages/client-react'),
+  },
+  {
+    name: '@syncular/server',
+    dir: path.join(REPO_ROOT, 'packages/server'),
+  },
+  {
+    name: '@syncular/relay',
+    dir: path.join(REPO_ROOT, 'packages/relay'),
+  },
+];
+
+const publishedExternalPackages = [
+  'hono',
+  'kysely',
+  'openapi-fetch',
+  'react',
+  'zod',
+];
+
+function packagePath(root: string, packageName: string): string {
+  return path.join(root, ...packageName.split('/'));
+}
+
+async function linkInstalledPackage(args: {
+  projectRoot: string;
+  packageName: string;
+}): Promise<void> {
+  const { projectRoot, packageName } = args;
+  const source = packagePath(ROOT_BUN_NODE_MODULES, packageName);
+  const target = packagePath(
+    path.join(projectRoot, 'node_modules'),
+    packageName
+  );
+
+  await mkdir(path.dirname(target), { recursive: true });
+  await symlink(source, target, 'dir');
+}
+
+async function packWorkspacePackage(args: {
+  packageDir: string;
+  destinationDir: string;
+}): Promise<string> {
+  const { packageDir, destinationDir } = args;
+
+  execSync('bun run build', { cwd: packageDir, stdio: 'pipe' });
+  execSync(`bun ${ESM_FIX_SCRIPT} dist`, {
+    cwd: packageDir,
+    stdio: 'pipe',
+  });
+  execFileSync('bun', ['pm', 'pack', '--destination', destinationDir], {
+    cwd: packageDir,
+    stdio: 'pipe',
+  });
+  const tarballs = (await readdir(destinationDir))
+    .filter((entry) => entry.endsWith('.tgz'))
+    .sort();
+  const tarballName = tarballs.at(-1);
+  if (!tarballName) {
+    throw new Error(`No tarball created for ${packageDir}`);
+  }
+  return path.join(destinationDir, tarballName);
+}
+
+async function extractPackedPackage(args: {
+  tarballPath: string;
+  projectRoot: string;
+  packageName: string;
+}): Promise<void> {
+  const { tarballPath, projectRoot, packageName } = args;
+  const installDir = packagePath(
+    path.join(projectRoot, 'node_modules'),
+    packageName
+  );
+  await mkdir(installDir, { recursive: true });
+  execFileSync(
+    'tar',
+    ['-xzf', tarballPath, '--strip-components=1', '-C', installDir],
+    {
+      stdio: 'pipe',
+    }
+  );
+}
+
+async function createPackedWorkspaceProject(): Promise<string> {
+  const projectRoot = await mkdtemp(
+    path.join(os.tmpdir(), 'syncular-runtime-packages-')
+  );
+  const packDir = path.join(projectRoot, 'tarballs');
+  await mkdir(packDir, { recursive: true });
+  await writeFile(
+    path.join(projectRoot, 'package.json'),
+    JSON.stringify({
+      name: 'syncular-runtime-smoke',
+      private: true,
+      type: 'module',
+    })
+  );
+
+  for (const fixture of publishedPackages) {
+    const fixturePackDir = path.join(
+      packDir,
+      fixture.name.replaceAll('@', '').replaceAll('/', '-')
+    );
+    await mkdir(fixturePackDir, { recursive: true });
+    const tarballPath = await packWorkspacePackage({
+      packageDir: fixture.dir,
+      destinationDir: fixturePackDir,
+    });
+    await extractPackedPackage({
+      tarballPath,
+      projectRoot,
+      packageName: fixture.name,
+    });
+  }
+
+  for (const packageName of publishedExternalPackages) {
+    await linkInstalledPackage({ projectRoot, packageName });
+  }
+
+  return projectRoot;
+}
 
 describe('Node.js runtime (better-sqlite3)', () => {
   const tasksSubId = 'sub-tasks';
@@ -210,5 +371,36 @@ describe('Node.js runtime (better-sqlite3)', () => {
       cwd: REPO_ROOT,
       stdio: 'pipe',
     });
+  });
+
+  it('imports packed workspace archives through installed package names', async () => {
+    const projectRoot = await createPackedWorkspaceProject();
+
+    try {
+      const smokeScript = [
+        "const core = await import('@syncular/core')",
+        "if (typeof core.createDatabase !== 'function') throw new Error('Missing createDatabase export')",
+        "const transport = await import('@syncular/transport-http')",
+        "if (typeof transport.createHttpTransport !== 'function') throw new Error('Missing createHttpTransport export')",
+        "const client = await import('@syncular/client')",
+        "if (typeof client.enqueueOutboxCommit !== 'function') throw new Error('Missing enqueueOutboxCommit export')",
+        "const clientReact = await import('@syncular/client-react')",
+        "if (typeof clientReact.createSyncularReact !== 'function') throw new Error('Missing createSyncularReact export')",
+        "const server = await import('@syncular/server')",
+        "if (typeof server.ensureSyncSchema !== 'function') throw new Error('Missing ensureSyncSchema export')",
+        "await import('@syncular/server/schema')",
+        "await import('@syncular/server/dialect/types')",
+        "await import('@syncular/server/snapshot-chunks')",
+        "const relay = await import('@syncular/relay')",
+        "if (typeof relay.createRelayServer !== 'function') throw new Error('Missing createRelayServer export')",
+      ].join(';');
+
+      execSync(`node --input-type=module -e ${JSON.stringify(smokeScript)}`, {
+        cwd: projectRoot,
+        stdio: 'pipe',
+      });
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
   });
 });
