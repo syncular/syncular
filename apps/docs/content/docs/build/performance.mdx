@@ -26,6 +26,8 @@ When a client subscribes to a scope for the first time (or after pruned history)
 
 Syncular uses **snapshot chunks**: the server encodes rows with `json-row-frame-v1`, compresses the payload with gzip, caches it, and returns chunk references in the pull response. The client then downloads chunks separately via `GET /sync/snapshot-chunks/:chunkId`.
 
+The built-in HTTP transport automatically sends the subscription scope values back on chunk fetches via `X-Syncular-Snapshot-Scopes`. If you fetch chunk URLs manually, include that header with the same scope values from the pull response; chunk IDs are not treated as standalone bearer tokens.
+
 Each chunk may contain multiple snapshot pages for a table in a single payload (bounded by `maxSnapshotPages` and server-side limits), which reduces the number of round trips on bootstrap.
 
 ### Server-side configuration

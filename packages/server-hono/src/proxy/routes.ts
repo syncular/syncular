@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import type { UpgradeWebSocket, WSContext } from 'hono/ws';
 import type { Kysely } from 'kysely';
 import { ProxyConnectionManager } from './connection-manager';
+import { isWebSocketOriginAllowed } from '../websocket-origin';
 
 /**
  * WeakMap for storing proxy connection manager per Hono instance.
@@ -65,7 +66,9 @@ interface CreateProxyRoutesConfig<DB extends SyncCoreDb = SyncCoreDb> {
   maxMessageBytes?: number;
   /**
    * Optional list of allowed websocket origins.
-   * Use '*' to allow all origins.
+   * - undefined: allow same-origin browser upgrades and origin-less non-browser clients
+   * - '*': allow all origins
+   * - string[]: exact origin match (scheme + host + port)
    */
   allowedOrigins?: string[] | '*';
 }
@@ -231,24 +234,6 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
   });
 
   return app;
-}
-
-function isWebSocketOriginAllowed(
-  c: Context,
-  allowedOrigins?: string[] | '*'
-): boolean {
-  if (!allowedOrigins) return true;
-  if (allowedOrigins === '*') return true;
-
-  const origin = c.req.header('origin');
-  if (!origin) return false;
-
-  try {
-    const normalizedOrigin = new URL(origin).origin;
-    return allowedOrigins.includes(normalizedOrigin);
-  } catch {
-    return false;
-  }
 }
 
 function measureWebSocketMessageBytes(data: unknown): number {

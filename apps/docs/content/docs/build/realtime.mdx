@@ -59,6 +59,7 @@ const syncRoutes = createSyncRoutes({
       heartbeatIntervalMs: 30000,
       maxConnectionsTotal: 5000,
       maxConnectionsPerClient: 3,
+      allowedOrigins: ['https://app.example.com'],
     },
   },
 });
@@ -73,6 +74,7 @@ const syncRoutes = createSyncRoutes({
 | `heartbeatIntervalMs` | 30000 | Heartbeat interval |
 | `maxConnectionsTotal` | 5000 | Max concurrent connections |
 | `maxConnectionsPerClient` | 3 | Max per client ID |
+| `allowedOrigins` | same-origin only | Browser websocket origin policy (`'*'` disables the guard) |
 
 ## Client Setup
 
@@ -96,6 +98,8 @@ const transport = createWebSocketTransport({
 > **Browser note**: WebSocket can't send custom headers. Use cookies (same-origin) or pass short-lived non-sensitive values via `getRealtimeParams`.
 >
 > `@syncular/server-hono` authenticates realtime WebSocket requests during the HTTP upgrade (`authenticate(c)`) and does **not** consume `{ type: 'auth', token }` first-message auth payloads.
+
+When `allowedOrigins` is unset, `@syncular/server-hono` accepts same-origin browser upgrades and origin-less non-browser clients by default. If your app connects from a different origin or relies on cookie auth, set `allowedOrigins` explicitly instead of relying on the default.
 
 ### Enable in SyncProvider
 

@@ -12,7 +12,6 @@ import type {
   SyncSubscriptionRequest,
   SyncTransport,
 } from '@syncular/core';
-import { decodeSnapshotRows } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
 import {
   type ClientHandlerCollection,
@@ -29,7 +28,6 @@ import type { SyncClientDb, SyncSubscriptionStateTable } from './schema';
 // of the same objects during pull operations
 const jsonCache = new WeakMap<object, string>();
 const jsonCacheStats = { hits: 0, misses: 0 };
-const SNAPSHOT_CHUNK_CONCURRENCY = 8;
 const SNAPSHOT_APPLY_BATCH_ROWS = 500;
 const SNAPSHOT_ROW_FRAME_MAGIC = new Uint8Array([0x53, 0x52, 0x46, 0x31]); // "SRF1"
 const FRAME_LENGTH_BYTES = 4;
@@ -163,14 +161,6 @@ async function maybeGunzipStream(
   throw new Error(
     'Snapshot chunk appears gzip-compressed but gzip decompression is not available in this runtime'
   );
-}
-
-async function maybeGunzip(bytes: Uint8Array): Promise<Uint8Array> {
-  if (!isGzipBytes(bytes)) return bytes;
-  const decompressedStream = await maybeGunzipStream(
-    bytesToReadableStream(bytes)
-  );
-  return streamToBytes(decompressedStream);
 }
 
 async function* decodeSnapshotRowStreamBatches(
@@ -356,29 +346,62 @@ async function readAllBytesFromStream(
   return bytes;
 }
 
-async function mapWithConcurrency<T, U>(
-  items: readonly T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<U>
-): Promise<U[]> {
-  if (items.length === 0) return [];
+async function materializeSnapshotChunkRows(
+  transport: SyncTransport,
+  request: {
+    chunkId: string;
+    scopeValues?: ScopeValues;
+  },
+  expectedHash: string | undefined,
+  sha256Override?: (bytes: Uint8Array) => Promise<string>
+): Promise<unknown[]> {
+  const rawStream = await fetchSnapshotChunkStream(transport, request);
+  const decodedStream = await maybeGunzipStream(rawStream);
+  let rowStream = decodedStream;
+  let chunkHashPromise: Promise<string> | null = null;
 
-  const workerCount = Math.max(1, Math.min(concurrency, items.length));
-  const results = new Array<U>(items.length);
-  let nextIndex = 0;
+  if (expectedHash) {
+    const [hashStream, streamForRows] = decodedStream.tee();
+    rowStream = streamForRows;
+    chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
+      computeSha256Hex(bytes, sha256Override)
+    );
+  }
 
-  async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const item = items[index];
-      if (item === undefined) continue;
-      results[index] = await mapper(item, index);
+  const rows: unknown[] = [];
+  let materializeError: unknown = null;
+
+  try {
+    for await (const batch of decodeSnapshotRowStreamBatches(
+      rowStream,
+      SNAPSHOT_APPLY_BATCH_ROWS
+    )) {
+      rows.push(...batch);
+    }
+  } catch (error) {
+    materializeError = error;
+  }
+
+  if (chunkHashPromise) {
+    try {
+      const actualHash = await chunkHashPromise;
+      if (!materializeError && actualHash !== expectedHash) {
+        materializeError = new Error(
+          `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
+        );
+      }
+    } catch (hashError) {
+      if (!materializeError) {
+        materializeError = hashError;
+      }
     }
   }
 
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  return results;
+  if (materializeError) {
+    throw materializeError;
+  }
+
+  return rows;
 }
 
 async function materializeChunkedSnapshots(
@@ -386,69 +409,48 @@ async function materializeChunkedSnapshots(
   response: SyncPullResponse,
   sha256Override?: (bytes: Uint8Array) => Promise<string>
 ): Promise<SyncPullResponse> {
-  const chunkCache = new Map<string, Promise<Uint8Array>>();
+  const subscriptions: SyncPullResponse['subscriptions'] = [];
 
-  const subscriptions = await Promise.all(
-    response.subscriptions.map(async (sub) => {
-      if (!sub.bootstrap) return sub;
-      if (!sub.snapshots || sub.snapshots.length === 0) return sub;
+  for (const sub of response.subscriptions) {
+    if (!sub.bootstrap || !sub.snapshots || sub.snapshots.length === 0) {
+      subscriptions.push(sub);
+      continue;
+    }
 
-      const snapshots = await mapWithConcurrency(
-        sub.snapshots,
-        SNAPSHOT_CHUNK_CONCURRENCY,
-        async (snapshot) => {
-          const chunks = snapshot.chunks ?? [];
-          if (chunks.length === 0) {
-            return snapshot;
-          }
+    const snapshots: SyncPullSubscriptionResponse['snapshots'] = [];
+    for (const snapshot of sub.snapshots) {
+      const chunks = snapshot.chunks ?? [];
+      if (chunks.length === 0) {
+        snapshots.push(snapshot);
+        continue;
+      }
 
-          const parsedRowsByChunk = await mapWithConcurrency(
-            chunks,
-            SNAPSHOT_CHUNK_CONCURRENCY,
-            async (chunk) => {
-              const promise =
-                chunkCache.get(chunk.id) ??
-                transport.fetchSnapshotChunk({
-                  chunkId: chunk.id,
-                  scopeValues: sub.scopes,
-                });
-              chunkCache.set(chunk.id, promise);
+      const rows: unknown[] = [];
+      for (const chunk of chunks) {
+        const chunkRows = await materializeSnapshotChunkRows(
+          transport,
+          {
+            chunkId: chunk.id,
+            scopeValues: sub.scopes,
+          },
+          chunk.sha256,
+          sha256Override
+        );
+        rows.push(...chunkRows);
+      }
 
-              const raw = await promise;
-              const bytes = await maybeGunzip(raw);
+      snapshots.push({
+        ...snapshot,
+        rows,
+        chunks: undefined,
+      });
+    }
 
-              // Verify chunk integrity using sha256 hash
-              if (chunk.sha256) {
-                const actualHash = await computeSha256Hex(
-                  bytes,
-                  sha256Override
-                );
-                if (actualHash !== chunk.sha256) {
-                  throw new Error(
-                    `Snapshot chunk integrity check failed: expected sha256 ${chunk.sha256}, got ${actualHash}`
-                  );
-                }
-              }
-
-              return decodeSnapshotRows(bytes);
-            }
-          );
-
-          const rows: unknown[] = [];
-          for (const parsedRows of parsedRowsByChunk) {
-            rows.push(...parsedRows);
-          }
-
-          return { ...snapshot, rows, chunks: undefined };
-        }
-      );
-
-      return { ...sub, snapshots };
-    })
-  );
-
-  // Clear chunk cache after processing to prevent memory accumulation
-  chunkCache.clear();
+    subscriptions.push({
+      ...sub,
+      snapshots,
+    });
+  }
 
   return { ...response, subscriptions };
 }

@@ -320,6 +320,19 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
     });
   });
 
+  it('allows same-origin websocket upgrades when allowedOrigins is unset', async () => {
+    const { app } = createGatewayLiveHarness();
+
+    const response = await app.request('http://localhost/console/events/live', {
+      headers: {
+        Authorization: `Bearer ${CONSOLE_TOKEN}`,
+        Origin: 'http://localhost',
+      },
+    });
+
+    expect(response.status).toBe(200);
+  });
+
   it('enforces inbound websocket message rate limits per upstream connection', async () => {
     const { app, getEvents } = createGatewayLiveHarness({
       websocket: {

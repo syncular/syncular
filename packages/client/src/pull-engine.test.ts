@@ -149,6 +149,142 @@ describe('applyPullResponse chunk streaming', () => {
     expect(streamFetchCount).toBe(1);
   });
 
+  it('materializes chunked bootstrap snapshots for afterPull plugins via streaming transport', async () => {
+    const firstRows = Array.from({ length: 1200 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const secondRows = Array.from({ length: 1200 }, (_, index) => ({
+      id: `${index + 1201}`,
+      name: `Item ${index + 1201}`,
+    }));
+    const firstChunk = new Uint8Array(gzipSync(encodeSnapshotRows(firstRows)));
+    const secondChunk = new Uint8Array(
+      gzipSync(encodeSnapshotRows(secondRows))
+    );
+
+    let streamFetchCount = 0;
+    let activeStreamFetches = 0;
+    let maxConcurrentStreamFetches = 0;
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream({ chunkId }) {
+        streamFetchCount += 1;
+        activeStreamFetches += 1;
+        maxConcurrentStreamFetches = Math.max(
+          maxConcurrentStreamFetches,
+          activeStreamFetches
+        );
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeStreamFetches -= 1;
+
+        if (chunkId === 'chunk-1') {
+          return createStreamFromBytes(firstChunk, 193);
+        }
+        if (chunkId === 'chunk-2') {
+          return createStreamFromBytes(secondChunk, 211);
+        }
+        throw new Error(`Unexpected chunk id: ${chunkId}`);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    let pluginSawRows = 0;
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      plugins: [
+        {
+          name: 'after-pull-observer',
+          async afterPull(_ctx, { response }) {
+            pluginSawRows =
+              response.subscriptions[0]?.snapshots?.[0]?.rows.length ?? 0;
+            return response;
+          },
+        },
+      ],
+    };
+
+    const pullState = await buildPullRequest(db, options);
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 2,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: firstChunk.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+                {
+                  id: 'chunk-2',
+                  byteLength: secondChunk.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      pullState,
+      response
+    );
+
+    const countResult = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(countResult.rows[0]?.count ?? 0)).toBe(
+      firstRows.length + secondRows.length
+    );
+    expect(pluginSawRows).toBe(firstRows.length + secondRows.length);
+    expect(streamFetchCount).toBe(2);
+    expect(maxConcurrentStreamFetches).toBe(1);
+  });
+
   it('rolls back partial chunked bootstrap when a later chunk fails', async () => {
     const firstRows = Array.from({ length: 1500 }, (_, index) => ({
       id: `${index + 1}`,

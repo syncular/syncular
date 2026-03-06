@@ -39,6 +39,7 @@ import {
 } from './live-auth';
 import { describeConsoleRoute } from './route-descriptor';
 import { isBenignConsoleSchemaError } from './schema-errors';
+import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   type ApiKeyType,
   ApiKeyTypeSchema,
@@ -3778,24 +3779,6 @@ export function createConsoleRoutes<
   );
 
   return routes;
-}
-
-function isWebSocketOriginAllowed(
-  c: Context,
-  allowedOrigins?: string[] | '*'
-): boolean {
-  if (!allowedOrigins) return true;
-  if (allowedOrigins === '*') return true;
-
-  const origin = c.req.header('origin');
-  if (!origin) return false;
-
-  try {
-    const normalizedOrigin = new URL(origin).origin;
-    return allowedOrigins.includes(normalizedOrigin);
-  } catch {
-    return false;
-  }
 }
 
 function measureWebSocketMessageBytes(data: unknown): number {

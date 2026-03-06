@@ -119,6 +119,7 @@ const syncRoutes = createSyncRoutes({
       heartbeatIntervalMs: 30000,
       maxConnectionsTotal: 5000,
       maxConnectionsPerClient: 3,
+      allowedOrigins: ['https://app.example.com'],
     },
   },
 });
@@ -133,6 +134,7 @@ const syncRoutes = createSyncRoutes({
 | `heartbeatIntervalMs` | 30000 | Heartbeat interval |
 | `maxConnectionsTotal` | 5000 | Max total connections |
 | `maxConnectionsPerClient` | 3 | Max connections per client |
+| `allowedOrigins` | same-origin only | Browser websocket origin allowlist (`'*'` disables the guard) |
 
 ## Rate Limiting
 
@@ -196,6 +198,8 @@ These endpoints are **relative to where you mount** `createSyncRoutes`. If you m
 | `/` | POST | Combined sync (`push` and/or `pull`) |
 | `/snapshot-chunks/:chunkId` | GET | Download large snapshot chunks |
 | `/realtime` | GET | WebSocket connection (if enabled) |
+
+`GET /snapshot-chunks/:chunkId` is authenticated and scope-checked. The built-in HTTP transport sends the required `X-Syncular-Snapshot-Scopes` header automatically. If you call the chunk route yourself, send the same scope values that came back on the pull subscription or the route will reject the request.
 
 ## Error Responses
 

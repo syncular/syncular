@@ -124,6 +124,7 @@ Checklist:
 - Reduce scope cardinality (prefer `project_id`/`team_id` over many fine-grained scopes).
 - Tune snapshot limits (`limitSnapshotRows`, `maxSnapshotPages`) carefully; don’t default to “huge”.
 - Use snapshot chunks (`json-row-frame-v1` + gzip) and ensure the `/sync/snapshot-chunks/:chunkId` route is reachable.
+- If chunk downloads return `400 INVALID_REQUEST`, make sure the client is sending `X-Syncular-Snapshot-Scopes`. The built-in HTTP transport does this automatically; manual callers must send the subscription scopes themselves.
 - Index your scope columns and primary keys appropriately (especially on the server DB).
 
 ## Next steps
