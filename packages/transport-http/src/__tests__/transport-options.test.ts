@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'bun:test';
-import { createHttpTransport } from '../index';
+import { createApiClient, createHttpTransport } from '../index';
+
+function readHeaderFromFetchArgs(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  name: string
+): string | null {
+  if (input instanceof Request) {
+    return input.headers.get(name);
+  }
+
+  return new Headers(init?.headers).get(name);
+}
 
 describe('createHttpTransport SyncTransportOptions', () => {
   it('forwards AbortSignal to sync requests', async () => {
@@ -224,6 +236,56 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(seenUrls).toEqual([
       'http://localhost:4311/api/sync/snapshot-chunks/chunk-path-test',
     ]);
+  });
+
+  it('sends snapshot scopes via header when using direct transport options', async () => {
+    let seenHeader: string | null = null;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      fetch: async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        seenHeader = headers.get('x-syncular-snapshot-scopes');
+        return new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      },
+    });
+
+    await transport.fetchSnapshotChunk({
+      chunkId: 'chunk-with-scopes',
+      scopeValues: { user_id: 'u1' },
+    });
+
+    expect(seenHeader).toBe(JSON.stringify({ user_id: 'u1' }));
+  });
+
+  it('sends snapshot scopes via header when wrapping an existing api client', async () => {
+    let seenHeader: string | null = null;
+
+    const client = createApiClient({
+      baseUrl: 'http://localhost',
+      fetch: async (input, init) => {
+        seenHeader = readHeaderFromFetchArgs(
+          input,
+          init,
+          'x-syncular-snapshot-scopes'
+        );
+        return new Response(new Uint8Array([4, 5, 6]), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      },
+    });
+    const transport = createHttpTransport(client);
+
+    await transport.fetchSnapshotChunk({
+      chunkId: 'chunk-from-client',
+      scopeValues: { user_id: 'u2' },
+    });
+
+    expect(seenHeader).toBe(JSON.stringify({ user_id: 'u2' }));
   });
 
   it('supports auth lifecycle callbacks on 401/403', async () => {

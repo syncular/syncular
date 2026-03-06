@@ -23,6 +23,7 @@
     "@syncular/client": "workspace:*",
     "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
+    "@syncular/dialect-better-sqlite3": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
     "@syncular/dialect-d1": "workspace:*",
     "@syncular/dialect-electron-sqlite": "workspace:*",
@@ -35,6 +36,7 @@
     "@syncular/server-hono": "workspace:*",
     "@syncular/testkit": "workspace:*",
     "@syncular/transport-http": "workspace:*",
+    "better-sqlite3": "^12.6.2",
     "hono": "*",
     "kysely": "*",
     "wrangler": "*"

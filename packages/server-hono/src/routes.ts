@@ -54,8 +54,6 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import {
   type Kysely,
-  type SelectQueryBuilder,
-  type SqlBool,
   sql,
 } from 'kysely';
 import { z } from 'zod';
@@ -67,6 +65,7 @@ import {
 } from './rate-limit';
 import {
   createWebSocketConnection,
+  createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
   WebSocketConnectionManager,
 } from './ws';
@@ -1414,6 +1413,26 @@ export function createSyncRoutes<
       const clientId = body.clientId;
       const requestId = readRequestId(c);
       const traceContext = readTraceContext(c);
+      const connectionOwnerKey = createWebSocketConnectionOwnerKey({
+        partitionId,
+        actorId: auth.actorId,
+        clientId,
+      });
+
+      const clientState = await readClientState(options.db, partitionId, clientId);
+      if (clientState.hasConflict || clientState.ownerActorId !== null) {
+        if (clientState.ownerActorId !== auth.actorId || clientState.hasConflict) {
+          return c.json(
+            {
+              error: 'INVALID_CLIENT_ID',
+              message: clientState.hasConflict
+                ? 'clientId has conflicting ownership history'
+                : 'clientId is already bound to a different actor',
+            },
+            400
+          );
+        }
+      }
 
       let pushResponse:
         | undefined
@@ -1553,8 +1572,8 @@ export function createSyncRoutes<
             });
           });
 
-        wsConnectionManager?.updateClientScopeKeys(
-          clientId,
+        wsConnectionManager?.updateConnectionScopeKeys(
+          connectionOwnerKey,
           applyPartitionToScopeKeys(
             partitionId,
             scopeValuesToScopeKeys(pullResult.effectiveScopes)
@@ -1726,39 +1745,47 @@ export function createSyncRoutes<
         return c.json({ error: 'NOT_FOUND' }, 404);
       }
 
-      if (requestedChunkScopes) {
-        try {
-          const resolved = await resolveEffectiveScopesForSubscriptions({
-            db: options.db,
-            auth,
-            subscriptions: [
-              {
-                id: 'snapshot-chunk-authz',
-                table: chunk.scope,
-                scopes: requestedChunkScopes,
-                cursor: 0,
-              },
-            ],
-            handlers: handlerRegistry,
-            scopeCache: options.scopeCache,
-          });
-          const scopeAuth = resolved[0];
-          if (!scopeAuth || scopeAuth.status !== 'active') {
-            return c.json({ error: 'FORBIDDEN' }, 403);
-          }
+      if (!requestedChunkScopes) {
+        return c.json(
+          {
+            error: 'INVALID_REQUEST',
+            message: 'Snapshot chunk scope values are required',
+          },
+          400
+        );
+      }
 
-          const scopeKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
-            scopeAuth.scopes
-          )}`;
-          if (scopeKey !== chunk.scopeKey) {
-            return c.json({ error: 'FORBIDDEN' }, 403);
-          }
-        } catch (error) {
-          if (error instanceof InvalidSubscriptionScopeError) {
-            return c.json({ error: 'FORBIDDEN' }, 403);
-          }
-          throw error;
+      try {
+        const resolved = await resolveEffectiveScopesForSubscriptions({
+          db: options.db,
+          auth,
+          subscriptions: [
+            {
+              id: 'snapshot-chunk-authz',
+              table: chunk.scope,
+              scopes: requestedChunkScopes,
+              cursor: 0,
+            },
+          ],
+          handlers: handlerRegistry,
+          scopeCache: options.scopeCache,
+        });
+        const scopeAuth = resolved[0];
+        if (!scopeAuth || scopeAuth.status !== 'active') {
+          return c.json({ error: 'FORBIDDEN' }, 403);
         }
+
+        const scopeKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
+          scopeAuth.scopes
+        )}`;
+        if (scopeKey !== chunk.scopeKey) {
+          return c.json({ error: 'FORBIDDEN' }, 403);
+        }
+      } catch (error) {
+        if (error instanceof InvalidSubscriptionScopeError) {
+          return c.json({ error: 'FORBIDDEN' }, 403);
+        }
+        throw error;
       }
 
       const etag = `"sha256:${chunk.sha256}"`;
@@ -1769,7 +1796,7 @@ export function createSyncRoutes<
           headers: {
             ETag: etag,
             'Cache-Control': 'private, max-age=0',
-            Vary: 'Authorization',
+            Vary: 'Authorization, X-Syncular-Snapshot-Scopes',
           },
         });
       }
@@ -1782,7 +1809,7 @@ export function createSyncRoutes<
           'Content-Length': String(chunk.byteLength),
           ETag: etag,
           'Cache-Control': 'private, max-age=0',
-          Vary: 'Authorization',
+          Vary: 'Authorization, X-Syncular-Snapshot-Scopes',
           'X-Sync-Chunk-Id': chunk.chunkId,
           'X-Sync-Chunk-Sha256': chunk.sha256,
           'X-Sync-Chunk-Encoding': chunk.encoding,
@@ -1819,31 +1846,39 @@ export function createSyncRoutes<
         c,
         c.req.query('transportPath')
       );
+      const connectionOwnerKey = createWebSocketConnectionOwnerKey({
+        partitionId,
+        actorId: auth.actorId,
+        clientId,
+      });
 
       // Load last-known effective scopes for this client (best-effort).
       // Keeps /realtime lightweight and avoids sending large subscription payloads over the URL.
       let initialScopeKeys: string[] = [];
       try {
-        const cursorsQ = options.db.selectFrom(
-          'sync_client_cursors'
-        ) as SelectQueryBuilder<
-          DB,
-          'sync_client_cursors',
-          // biome-ignore lint/complexity/noBannedTypes: Kysely uses `{}` as the initial "no selected columns yet" marker.
-          {}
-        >;
-
-        const row = await cursorsQ
-          .selectAll()
-          .where(sql<SqlBool>`partition_id = ${partitionId}`)
-          .where(sql<SqlBool>`client_id = ${clientId}`)
-          .executeTakeFirst();
-
-        if (row && row.actor_id !== auth.actorId) {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+        const clientState = await readClientState(
+          options.db,
+          partitionId,
+          clientId
+        );
+        if (clientState.hasConflict || clientState.ownerActorId !== null) {
+          if (
+            clientState.ownerActorId !== auth.actorId ||
+            clientState.hasConflict
+          ) {
+            return c.json(
+              {
+                error: 'INVALID_CLIENT_ID',
+                message: clientState.hasConflict
+                  ? 'clientId has conflicting ownership history'
+                  : 'clientId is already bound to a different actor',
+              },
+              400
+            );
+          }
         }
 
-        const raw = row?.effective_scopes;
+        const raw = clientState.effectiveScopes;
         let parsed: unknown = raw;
         if (typeof raw === 'string') {
           try {
@@ -1884,7 +1919,7 @@ export function createSyncRoutes<
 
       if (
         maxConnectionsPerClient > 0 &&
-        wsConnectionManager.getConnectionCount(clientId) >=
+        wsConnectionManager.getScopedConnectionCount(connectionOwnerKey) >=
           maxConnectionsPerClient
       ) {
         logSyncEvent({
@@ -1900,7 +1935,7 @@ export function createSyncRoutes<
       let unregister: (() => void) | null = null;
       let connRef: ReturnType<typeof createWebSocketConnection> | null = null;
       const connectionCountBeforeUpgrade =
-        wsConnectionManager.getConnectionCount(clientId);
+        wsConnectionManager.getScopedConnectionCount(connectionOwnerKey);
       let sessionStartedAtMs: number | null = null;
       let sessionEnded = false;
 
@@ -1965,6 +2000,7 @@ export function createSyncRoutes<
           const conn = createWebSocketConnection(ws, {
             actorId: auth.actorId,
             clientId,
+            ownerKey: connectionOwnerKey,
             transportPath: realtimeTransportPath,
           });
           connRef = conn;
@@ -2052,7 +2088,7 @@ export function createSyncRoutes<
               case 'join':
                 if (
                   !wsConnectionManager.joinPresence(
-                    clientId,
+                    connectionOwnerKey,
                     scopeKey,
                     msg.metadata
                   )
@@ -2071,17 +2107,17 @@ export function createSyncRoutes<
                 }
                 break;
               case 'leave':
-                wsConnectionManager.leavePresence(clientId, scopeKey);
+                wsConnectionManager.leavePresence(connectionOwnerKey, scopeKey);
                 break;
               case 'update':
                 if (
                   !wsConnectionManager.updatePresenceMetadata(
-                    clientId,
+                    connectionOwnerKey,
                     scopeKey,
                     msg.metadata ?? {}
                   ) &&
-                  !wsConnectionManager.isClientSubscribedToScopeKey(
-                    clientId,
+                  !wsConnectionManager.isConnectionSubscribedToScopeKey(
+                    connectionOwnerKey,
                     scopeKey
                   )
                 ) {
@@ -2500,4 +2536,48 @@ async function readCommitScopeKeys<DB extends SyncCoreDb>(
   }
 
   return Array.from(scopeKeys);
+}
+
+async function readClientState<DB extends SyncCoreDb>(
+  db: Kysely<DB>,
+  partitionId: string,
+  clientId: string
+): Promise<{
+  ownerActorId: string | null;
+  effectiveScopes: unknown;
+  hasConflict: boolean;
+}> {
+  const [cursorRow, latestCommitRow] = await Promise.all([
+    db
+      .selectFrom('sync_client_cursors')
+      .select(['actor_id', 'effective_scopes'])
+      .where('partition_id', '=', partitionId)
+      .where('client_id', '=', clientId)
+      .executeTakeFirst(),
+    db
+      .selectFrom('sync_commits')
+      .select(['actor_id'])
+      .where('partition_id', '=', partitionId)
+      .where('client_id', '=', clientId)
+      .orderBy('commit_seq', 'desc')
+      .limit(1)
+      .executeTakeFirst(),
+  ]);
+
+  const ownerActorIds = new Set<string>();
+  if (cursorRow?.actor_id) {
+    ownerActorIds.add(cursorRow.actor_id);
+  }
+  if (latestCommitRow?.actor_id) {
+    ownerActorIds.add(latestCommitRow.actor_id);
+  }
+
+  const ownerActorId =
+    ownerActorIds.size === 1 ? Array.from(ownerActorIds)[0] ?? null : null;
+
+  return {
+    ownerActorId,
+    effectiveScopes: cursorRow?.effective_scopes ?? null,
+    hasConflict: ownerActorIds.size > 1,
+  };
 }

@@ -9,7 +9,10 @@ import type { Kysely } from 'kysely';
 import type { SyncClientDb } from '../schema';
 import type { FingerprintCollector } from './FingerprintCollector';
 import type { MutationTimestampSource } from './fingerprint';
-import { createTrackedSelectFrom } from './tracked-select';
+import {
+  createTrackedSelectFrom,
+  type FingerprintMode,
+} from './tracked-select';
 
 export type TrackedSelectFrom<DB> = ReturnType<
   typeof createTrackedSelectFrom<DB>
@@ -40,7 +43,8 @@ export function createQueryContext<DB extends SyncClientDb>(
   scopeCollector: Set<string>,
   fingerprintCollector: FingerprintCollector,
   engine: MutationTimestampSource,
-  keyField = 'id'
+  keyField = 'id',
+  fingerprintMode: FingerprintMode = 'auto'
 ): QueryContext<DB> {
   return {
     selectFrom: createTrackedSelectFrom(
@@ -48,7 +52,8 @@ export function createQueryContext<DB extends SyncClientDb>(
       scopeCollector,
       fingerprintCollector,
       engine,
-      keyField
+      keyField,
+      fingerprintMode
     ),
   };
 }

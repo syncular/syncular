@@ -38,9 +38,49 @@ export interface PruneOptions {
   keepNewestCommits?: number;
 }
 
+export interface PartitionPrunePreview {
+  partitionId: string;
+  watermarkCommitSeq: number;
+  commitsToDelete: number;
+}
+
+async function readPrunePartitionIds<DB extends SyncCoreDb>(
+  db: Kysely<DB>
+): Promise<string[]> {
+  const res = await sql<{ partition_id: string }>`
+    SELECT DISTINCT partition_id
+    FROM sync_commits
+    ORDER BY partition_id ASC
+  `.execute(db);
+
+  return res.rows
+    .map((row) => row.partition_id)
+    .filter((partitionId) => typeof partitionId === 'string' && partitionId);
+}
+
+async function computePruneUpToCommitSeq<DB extends SyncCoreDb>(
+  db: Kysely<DB>,
+  partitionId: string,
+  watermarkCommitSeq: number,
+  keepNewestCommits: number
+): Promise<number> {
+  if (watermarkCommitSeq <= 0) return 0;
+
+  const maxRow = await db
+    .selectFrom('sync_commits')
+    .select(({ fn }) => fn.max('commit_seq').as('maxSeq'))
+    .where('partition_id', '=', partitionId)
+    .executeTakeFirst();
+
+  const maxSeq = coerceNumber(maxRow?.maxSeq) ?? 0;
+  const minKept = Math.max(0, maxSeq - keepNewestCommits);
+  return Math.min(watermarkCommitSeq, minKept);
+}
+
 export async function computePruneWatermarkCommitSeq<DB extends SyncCoreDb>(
   db: Kysely<DB>,
-  options: PruneOptions = {}
+  options: PruneOptions = {},
+  partitionId = 'default'
 ): Promise<number> {
   type SyncDb = Pick<Kysely<SyncCoreDb>, 'selectFrom'>;
   const syncDb = db as SyncDb;
@@ -54,6 +94,7 @@ export async function computePruneWatermarkCommitSeq<DB extends SyncCoreDb>(
 
   const row = await cursorsQ
     .select(({ fn }) => fn.min('cursor').as('minCursor'))
+    .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`updated_at >= ${cutoffIso}`)
     .where(sql<SqlBool>`cursor >= ${0}`)
     .executeTakeFirst();
@@ -72,6 +113,7 @@ export async function computePruneWatermarkCommitSeq<DB extends SyncCoreDb>(
 
   const ageRow = await commitsQ
     .select(({ fn }) => fn.max('commit_seq').as('maxSeq'))
+    .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`created_at < ${ageCutoffIso}`)
     .executeTakeFirst();
 
@@ -81,29 +123,25 @@ export async function computePruneWatermarkCommitSeq<DB extends SyncCoreDb>(
 
 export async function pruneSync<DB extends SyncCoreDb>(
   db: Kysely<DB>,
-  args: { watermarkCommitSeq: number; keepNewestCommits?: number }
+  args: {
+    partitionId?: string;
+    watermarkCommitSeq: number;
+    keepNewestCommits?: number;
+  }
 ): Promise<number> {
   if (args.watermarkCommitSeq <= 0) return 0;
 
   type SyncDb = Pick<Kysely<SyncCoreDb>, 'deleteFrom' | 'selectFrom'>;
   const syncDb = db as SyncDb;
+  const partitionId = args.partitionId ?? 'default';
 
   const keepNewestCommits = args.keepNewestCommits ?? 1000;
-
-  // Don't delete the newest N commits (even if watermark is higher)
-  const commitsQ = syncDb.selectFrom('sync_commits') as SelectQueryBuilder<
-    SyncCoreDb,
-    'sync_commits',
-    EmptySelection
-  >;
-
-  const maxRow = await commitsQ
-    .select(({ fn }) => fn.max('commit_seq').as('maxSeq'))
-    .executeTakeFirst();
-
-  const maxSeq = coerceNumber(maxRow?.maxSeq) ?? 0;
-  const minKept = Math.max(0, maxSeq - keepNewestCommits);
-  const pruneUpTo = Math.min(args.watermarkCommitSeq, minKept);
+  const pruneUpTo = await computePruneUpToCommitSeq(
+    db,
+    partitionId,
+    args.watermarkCommitSeq,
+    keepNewestCommits
+  );
 
   if (pruneUpTo <= 0) return 0;
 
@@ -116,6 +154,7 @@ export async function pruneSync<DB extends SyncCoreDb>(
       DeleteResult
     >
   )
+    .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`commit_seq <= ${pruneUpTo}`)
     .executeTakeFirst();
 
@@ -126,6 +165,7 @@ export async function pruneSync<DB extends SyncCoreDb>(
       DeleteResult
     >
   )
+    .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`commit_seq <= ${pruneUpTo}`)
     .executeTakeFirst();
 
@@ -136,10 +176,48 @@ export async function pruneSync<DB extends SyncCoreDb>(
       DeleteResult
     >
   )
+    .where(sql<SqlBool>`partition_id = ${partitionId}`)
     .where(sql<SqlBool>`commit_seq <= ${pruneUpTo}`)
     .executeTakeFirst();
 
   return Number(res?.numDeletedRows ?? 0);
+}
+
+export async function previewPruneSync<DB extends SyncCoreDb>(
+  db: Kysely<DB>,
+  options: PruneOptions = {}
+): Promise<PartitionPrunePreview[]> {
+  const partitionIds = await readPrunePartitionIds(db);
+  const previews: PartitionPrunePreview[] = [];
+
+  for (const partitionId of partitionIds) {
+    const watermarkCommitSeq = await computePruneWatermarkCommitSeq(
+      db,
+      options,
+      partitionId
+    );
+    const pruneUpToCommitSeq = await computePruneUpToCommitSeq(
+      db,
+      partitionId,
+      watermarkCommitSeq,
+      options.keepNewestCommits ?? 1000
+    );
+
+    const countRow = await db
+      .selectFrom('sync_commits')
+      .select(({ fn }) => fn.countAll().as('count'))
+      .where('partition_id', '=', partitionId)
+      .where('commit_seq', '<=', pruneUpToCommitSeq)
+      .executeTakeFirst();
+
+    previews.push({
+      partitionId,
+      watermarkCommitSeq,
+      commitsToDelete: coerceNumber(countRow?.count) ?? 0,
+    });
+  }
+
+  return previews;
 }
 
 interface PruneState {
@@ -173,11 +251,20 @@ export async function maybePruneSync<DB extends SyncCoreDb>(
 
   state.pruneInFlight = (async () => {
     try {
-      const watermark = await computePruneWatermarkCommitSeq(db, args.options);
-      const deleted = await pruneSync(db, {
-        watermarkCommitSeq: watermark,
-        keepNewestCommits: args.options?.keepNewestCommits,
-      });
+      const partitionIds = await readPrunePartitionIds(db);
+      let deleted = 0;
+      for (const partitionId of partitionIds) {
+        const watermark = await computePruneWatermarkCommitSeq(
+          db,
+          args.options,
+          partitionId
+        );
+        deleted += await pruneSync(db, {
+          partitionId,
+          watermarkCommitSeq: watermark,
+          keepNewestCommits: args.options?.keepNewestCommits,
+        });
+      }
       state.lastPruneAtMs = Date.now();
       return deleted;
     } finally {
