@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'bun:test';
 import type { SyncClientDb } from '@syncular/client';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
 import type { ReactNode } from 'react';
 import { createSyncularReact } from '../index';
 import {
@@ -505,6 +506,153 @@ describe('React Hooks', () => {
           timeout: 300,
         }
       );
+    });
+
+    it('tracks joined tables and refreshes when joined data changes', async () => {
+      await db.schema
+        .createTable('users')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('name', 'text', (col) => col.notNull())
+        .execute();
+
+      await db.schema
+        .createTable('tasks')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('user_id', 'text', (col) => col.notNull())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .execute();
+
+      await sql`
+        insert into ${sql.table('users')} (${sql.ref('id')}, ${sql.ref('name')})
+        values (${sql.val('user-1')}, ${sql.val('Alice')})
+      `.execute(db);
+
+      await sql`
+        insert into ${sql.table('tasks')} (
+          ${sql.ref('id')},
+          ${sql.ref('user_id')},
+          ${sql.ref('title')}
+        )
+        values (
+          ${sql.val('task-1')},
+          ${sql.val('user-1')},
+          ${sql.val('First task')}
+        )
+      `.execute(db);
+
+      const { result } = renderHook(
+        () => {
+          const engine = useEngine();
+          const query = useSyncQuery(({ selectFrom }) =>
+            selectFrom('tasks')
+              .innerJoin('users', 'users.id', 'tasks.user_id')
+              .select([
+                'tasks.id as id',
+                'tasks.title as title',
+                'users.name as ownerName',
+              ])
+              .orderBy('tasks.id', 'asc')
+          );
+
+          return { engine, query };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => {
+        expect(result.current.query.isLoading).toBe(false);
+        expect(result.current.query.data?.[0]).toMatchObject({
+          id: 'task-1',
+          ownerName: 'Alice',
+        });
+      });
+
+      await act(async () => {
+        await sql`
+          update ${sql.table('users')}
+          set ${sql.ref('name')} = ${sql.val('Bob')}
+          where ${sql.ref('id')} = ${sql.val('user-1')}
+        `.execute(db);
+
+        result.current.engine.recordLocalMutations([
+          {
+            table: 'users',
+            rowId: 'user-1',
+            op: 'upsert',
+          },
+        ]);
+      });
+
+      await waitFor(() => {
+        expect(result.current.query.data?.[0]).toMatchObject({
+          id: 'task-1',
+          ownerName: 'Bob',
+        });
+      });
+    });
+
+    it('preserves unchanged row references across keyed array refreshes', async () => {
+      await db.schema
+        .createTable('tasks')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .execute();
+
+      await sql`
+        insert into ${sql.table('tasks')} (${sql.ref('id')}, ${sql.ref('title')})
+        values
+          (${sql.val('task-1')}, ${sql.val('First task')}),
+          (${sql.val('task-2')}, ${sql.val('Second task')})
+      `.execute(db);
+
+      const { result } = renderHook(
+        () => {
+          const engine = useEngine();
+          const query = useSyncQuery(({ selectFrom }) =>
+            selectFrom('tasks').selectAll().orderBy('id', 'asc')
+          );
+
+          return { engine, query };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => {
+        expect(result.current.query.isLoading).toBe(false);
+        expect(result.current.query.data?.length).toBe(2);
+      });
+
+      const firstRow = result.current.query.data?.[0];
+      const secondRow = result.current.query.data?.[1];
+
+      await act(async () => {
+        await sql`
+          update ${sql.table('tasks')}
+          set ${sql.ref('title')} = ${sql.val('Second task updated')}
+          where ${sql.ref('id')} = ${sql.val('task-2')}
+        `.execute(db);
+
+        result.current.engine.recordLocalMutations([
+          {
+            table: 'tasks',
+            rowId: 'task-2',
+            op: 'upsert',
+          },
+        ]);
+      });
+
+      await waitFor(() => {
+        expect(result.current.query.data?.[1]).toMatchObject({
+          id: 'task-2',
+          title: 'Second task updated',
+        });
+      });
+
+      expect(result.current.query.data?.[0]).toBe(firstRow);
+      expect(result.current.query.data?.[1]).not.toBe(secondRow);
     });
   });
 

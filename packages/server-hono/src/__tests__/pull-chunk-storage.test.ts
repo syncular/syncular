@@ -430,7 +430,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         },
       })
     );
-    expect(noScopesResponse.status).toBe(200);
+    expect(noScopesResponse.status).toBe(400);
 
     const wrongScopesResponse = await app.request(
       new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
@@ -456,6 +456,119 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
     ]);
+  });
+
+  it('rejects reusing a client id from another actor', async () => {
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      apply: async ({ tx }, change) => {
+        if (change.op !== 'upsert' || !change.row_json) {
+          return { ok: true };
+        }
+
+        const row = change.row_json;
+        if (
+          typeof row !== 'object' ||
+          row === null ||
+          typeof row.id !== 'string' ||
+          typeof row.user_id !== 'string' ||
+          typeof row.title !== 'string' ||
+          typeof row.server_version !== 'number'
+        ) {
+          throw new Error('Unexpected task payload');
+        }
+
+        await tx
+          .insertInto('tasks')
+          .values({
+            id: row.id,
+            user_id: row.user_id,
+            title: row.title,
+            server_version: row.server_version,
+          })
+          .execute();
+
+        return { ok: true };
+      },
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const firstResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u1',
+        },
+        body: JSON.stringify({
+          clientId: 'shared-client',
+          push: {
+            clientCommitId: 'commit-u1',
+            schemaVersion: 1,
+            operations: [
+              {
+                table: 'tasks',
+                row_id: 'task-shared',
+                op: 'upsert',
+                base_version: null,
+                payload: {
+                  id: 'task-shared',
+                  user_id: 'u1',
+                  title: 'Owned by u1',
+                  server_version: 0,
+                },
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(firstResponse.status).toBe(200);
+
+    const reusedClientResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u2',
+        },
+        body: JSON.stringify({
+          clientId: 'shared-client',
+          pull: {
+            limitCommits: 10,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                table: 'tasks',
+                scopes: { user_id: 'u2' },
+                cursor: -1,
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(reusedClientResponse.status).toBe(400);
+    expect(await reusedClientResponse.json()).toEqual({
+      error: 'INVALID_CLIENT_ID',
+      message: 'clientId is already bound to a different actor',
+    });
   });
 
   it('bundles multiple snapshot pages into one stored chunk', async () => {
