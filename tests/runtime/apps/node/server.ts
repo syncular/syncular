@@ -5,9 +5,9 @@
  * Outputs JSON `{ port: <number> }` on stdout when ready.
  */
 
+import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
 import { Hono } from 'hono';
 import { createDatabase } from '../../../../packages/core/src/index';
-import { createBetterSqlite3Dialect } from '../../../../packages/dialect-better-sqlite3/src/index';
 import type { SyncCoreDb } from '../../../../packages/server/src/index';
 import { ensureSyncSchema } from '../../../../packages/server/src/index';
 import { createSqliteServerDialect } from '../../../../packages/server-dialect-sqlite/src/index';

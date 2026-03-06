@@ -8,3 +8,4 @@ export {
   computeFingerprint,
 } from './fingerprint';
 export { createQueryContext, type QueryContext } from './QueryContext';
+export type { FingerprintMode } from './tracked-select';

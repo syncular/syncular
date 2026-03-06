@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { type WebSocketConnection, WebSocketConnectionManager } from '../ws';
+import {
+  createWebSocketConnectionOwnerKey,
+  type WebSocketConnection,
+  WebSocketConnectionManager,
+} from '../ws';
 
 function createConn(args: {
   actorId: string;
@@ -14,6 +18,11 @@ function createConn(args: {
     },
     actorId: args.actorId,
     clientId: args.clientId,
+    ownerKey: createWebSocketConnectionOwnerKey({
+      partitionId: 'default',
+      actorId: args.actorId,
+      clientId: args.clientId,
+    }),
     transportPath: 'direct',
     sendSync(cursor) {
       if (!open) return;
@@ -66,7 +75,7 @@ describe('WebSocketConnectionManager (scopes)', () => {
     mgr.register(c1, ['project:p1']);
     mgr.notifyScopeKeys(['project:p1'], 1);
 
-    mgr.updateClientScopeKeys('c1', ['project:p2']);
+    mgr.updateConnectionScopeKeys(c1.ownerKey, ['project:p2']);
     mgr.notifyScopeKeys(['project:p1'], 2);
     mgr.notifyScopeKeys(['project:p2'], 3);
 
@@ -140,11 +149,15 @@ describe('WebSocketConnectionManager (scopes)', () => {
 
     mgr.register(c1, ['user:u1']);
 
-    const denied = mgr.joinPresence('c1', 'user:u2', { status: 'denied' });
+    const denied = mgr.joinPresence(c1.ownerKey, 'user:u2', {
+      status: 'denied',
+    });
     expect(denied).toBe(false);
     expect(mgr.getPresence('user:u2')).toEqual([]);
 
-    const allowed = mgr.joinPresence('c1', 'user:u1', { status: 'ok' });
+    const allowed = mgr.joinPresence(c1.ownerKey, 'user:u1', {
+      status: 'ok',
+    });
     expect(allowed).toBe(true);
     expect(mgr.getPresence('user:u1')).toHaveLength(1);
   });
@@ -158,14 +171,16 @@ describe('WebSocketConnectionManager (scopes)', () => {
     });
 
     mgr.register(c1, ['user:u1']);
-    expect(mgr.joinPresence('c1', 'user:u1', { status: 'initial' })).toBe(true);
+    expect(
+      mgr.joinPresence(c1.ownerKey, 'user:u1', { status: 'initial' })
+    ).toBe(true);
 
-    const denied = mgr.updatePresenceMetadata('c1', 'user:u2', {
+    const denied = mgr.updatePresenceMetadata(c1.ownerKey, 'user:u2', {
       status: 'denied',
     });
     expect(denied).toBe(false);
 
-    const allowed = mgr.updatePresenceMetadata('c1', 'user:u1', {
+    const allowed = mgr.updatePresenceMetadata(c1.ownerKey, 'user:u1', {
       status: 'updated',
     });
     expect(allowed).toBe(true);

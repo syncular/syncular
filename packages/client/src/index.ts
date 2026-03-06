@@ -19,7 +19,7 @@ export * from './plugins';
 export * from './proxy';
 export * from './pull-engine';
 export * from './push-engine';
-export * from './query';
+export * from './query-public';
 export * from './schema';
 export * from './subscription-state';
 export * from './sync';

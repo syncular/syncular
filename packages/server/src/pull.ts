@@ -41,6 +41,7 @@ import {
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve';
 
 const defaultScopeCache = createMemoryScopeCache();
+const MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
 
 function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
@@ -633,6 +634,7 @@ export async function pull<
                 isLastPage: boolean;
                 pageCount: number;
                 ttlMs: number;
+                rowFrameByteLength: number;
                 rowFrameParts: Uint8Array[];
               }
 
@@ -757,6 +759,7 @@ export async function pull<
                     pageCount: 0,
                     ttlMs:
                       tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
+                    rowFrameByteLength: bundleHeader.length,
                     rowFrameParts: [bundleHeader],
                   };
                 }
@@ -775,7 +778,27 @@ export async function pull<
                   );
 
                 const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
+                if (
+                  activeBundle.pageCount > 0 &&
+                  activeBundle.rowFrameByteLength + rowFrames.length >
+                    MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES
+                ) {
+                  await flushSnapshotBundle(activeBundle);
+                  const bundleHeader = encodeSnapshotRows([]);
+                  activeBundle = {
+                    table: nextTableName,
+                    startCursor: nextState.rowCursor,
+                    isFirstPage: nextState.rowCursor == null,
+                    isLastPage: false,
+                    pageCount: 0,
+                    ttlMs:
+                      tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
+                    rowFrameByteLength: bundleHeader.length,
+                    rowFrameParts: [bundleHeader],
+                  };
+                }
                 activeBundle.rowFrameParts.push(rowFrames);
+                activeBundle.rowFrameByteLength += rowFrames.length;
                 activeBundle.pageCount += 1;
 
                 if (page.nextCursor != null) {

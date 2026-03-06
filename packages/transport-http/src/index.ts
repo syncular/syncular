@@ -120,6 +120,8 @@ export interface ClientOptions {
   transportPath?: SyncTransportPath;
 }
 
+const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';
+
 function resolveRequestUrl(baseUrl: string, path: string): string {
   return resolveUrlFromBase(
     baseUrl,
@@ -145,14 +147,13 @@ function encodeSnapshotScopes(
   return JSON.stringify(scopeValues);
 }
 
-function appendSnapshotScopesQuery(
-  url: string,
+function applySnapshotScopesHeader(
+  headers: Headers,
   scopeValues: ScopeValues | undefined
-): string {
+): void {
   const encodedScopes = encodeSnapshotScopes(scopeValues);
-  if (!encodedScopes) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}scopes=${encodeURIComponent(encodedScopes)}`;
+  if (!encodedScopes) return;
+  headers.set(SNAPSHOT_SCOPES_HEADER, encodedScopes);
 }
 
 /**
@@ -387,6 +388,9 @@ export function createHttpTransport(
             client.GET('/sync/snapshot-chunks/{chunkId}', {
               params: { path: { chunkId: request.chunkId } },
               parseAs: 'blob',
+              headers: request.scopeValues
+                ? { [SNAPSHOT_SCOPES_HEADER]: JSON.stringify(request.scopeValues) }
+                : undefined,
               ...(signal ? { signal } : {}),
             }),
           options,
@@ -405,18 +409,16 @@ export function createHttpTransport(
       }
 
       const fetchImpl = transportOptions.fetch ?? globalThis.fetch;
-      const requestUrl = appendSnapshotScopesQuery(
-        resolveRequestUrl(
-          transportOptions.baseUrl,
-          `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
-        ),
-        request.scopeValues
+      const requestUrl = resolveRequestUrl(
+        transportOptions.baseUrl,
+        `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
       );
 
       const performRequest = async (
         signal?: AbortSignal
       ): Promise<Response> => {
         const headers = new Headers();
+        applySnapshotScopesHeader(headers, request.scopeValues);
         const extraHeaders = await transportOptions.getHeaders?.();
         if (extraHeaders) {
           for (const [key, value] of Object.entries(extraHeaders)) {
@@ -482,18 +484,16 @@ export function createHttpTransport(
       }
 
       const fetchImpl = transportOptions.fetch ?? globalThis.fetch;
-      const requestUrl = appendSnapshotScopesQuery(
-        resolveRequestUrl(
-          transportOptions.baseUrl,
-          `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
-        ),
-        request.scopeValues
+      const requestUrl = resolveRequestUrl(
+        transportOptions.baseUrl,
+        `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
       );
 
       const performRequest = async (
         signal?: AbortSignal
       ): Promise<Response> => {
         const headers = new Headers();
+        applySnapshotScopesHeader(headers, request.scopeValues);
         const extraHeaders = await transportOptions.getHeaders?.();
         if (extraHeaders) {
           for (const [key, value] of Object.entries(extraHeaders)) {
