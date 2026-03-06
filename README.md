@@ -109,6 +109,19 @@ Mix and match any client dialect with any server dialect. The sync protocol is t
 
 ## Quick start
 
+Try the demo first:
+
+```bash
+git clone https://github.com/syncular/syncular.git
+cd syncular
+bun install
+bun --cwd apps/demo dev
+```
+
+Open `http://localhost:9811` for the app and `http://localhost:9811/console` for the built-in Console.
+
+Building your own app instead?
+
 **Server**
 
 ```bash
@@ -121,11 +134,11 @@ npm install @syncular/server @syncular/server-hono @syncular/server-dialect-post
 npm install @syncular/client @syncular/client-react @syncular/transport-http @syncular/dialect-wa-sqlite kysely
 ```
 
-See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for a full walkthrough.
+See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for a walkthrough, and the [Installation guide](https://syncular.dev/docs/introduction/installation) for the package/runtime matrix.
 
 ## Packages
 
-All packages are published under the `@syncular` scope on npm.
+Most packages are published under the `@syncular` scope on npm. The umbrella package is published as `syncular`.
 
 | Package | Description |
 |---|---|
@@ -157,9 +170,9 @@ All packages are published under the `@syncular` scope on npm.
 
 ```bash
 bun install
-bun --cwd apps/demo dev     # demo (single app + console shell, default http://localhost:9811)
-bun --cwd apps/docs dev     # docs at http://localhost:3000
-bun --cwd apps/console dev  # console at http://localhost:3000
+bun --cwd apps/demo dev     # demo + built-in console at http://localhost:9811 and /console
+bun --cwd apps/docs dev     # docs site (Next dev, typically http://localhost:3000)
+bun --cwd apps/console dev  # standalone console app; run separately and use the URL printed at startup
 ```
 
 ## Latency checks
