@@ -32,6 +32,7 @@ import { cors } from 'hono/cors';
 import { resolver, validator as zValidator } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
+import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   closeUnauthenticatedSocket,
   parseBearerToken,
@@ -39,7 +40,6 @@ import {
 } from './live-auth';
 import { describeConsoleRoute } from './route-descriptor';
 import { isBenignConsoleSchemaError } from './schema-errors';
-import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   type ApiKeyType,
   ApiKeyTypeSchema,

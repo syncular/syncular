@@ -389,7 +389,11 @@ export function createHttpTransport(
               params: { path: { chunkId: request.chunkId } },
               parseAs: 'blob',
               headers: request.scopeValues
-                ? { [SNAPSHOT_SCOPES_HEADER]: JSON.stringify(request.scopeValues) }
+                ? {
+                    [SNAPSHOT_SCOPES_HEADER]: JSON.stringify(
+                      request.scopeValues
+                    ),
+                  }
                 : undefined,
               ...(signal ? { signal } : {}),
             }),

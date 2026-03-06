@@ -289,7 +289,10 @@ export class WebSocketConnectionManager {
   /**
    * Check whether a client is currently authorized/subscribed for a scope key.
    */
-  isConnectionSubscribedToScopeKey(ownerKey: string, scopeKey: string): boolean {
+  isConnectionSubscribedToScopeKey(
+    ownerKey: string,
+    scopeKey: string
+  ): boolean {
     return this.registry.isOwnerSubscribedToScopeKey(ownerKey, scopeKey);
   }
 
@@ -308,7 +311,8 @@ export class WebSocketConnectionManager {
   ): boolean {
     const conns = this.registry.getConnectionsForOwner(ownerKey);
     if (!conns || conns.size === 0) return false;
-    if (!this.isConnectionSubscribedToScopeKey(ownerKey, scopeKey)) return false;
+    if (!this.isConnectionSubscribedToScopeKey(ownerKey, scopeKey))
+      return false;
 
     const conn = conns.values().next().value;
     if (!conn) return false;
@@ -393,7 +397,8 @@ export class WebSocketConnectionManager {
     scopeKey: string,
     metadata: Record<string, unknown>
   ): boolean {
-    if (!this.isConnectionSubscribedToScopeKey(ownerKey, scopeKey)) return false;
+    if (!this.isConnectionSubscribedToScopeKey(ownerKey, scopeKey))
+      return false;
     const scopePresence = this.presenceByScopeKey.get(scopeKey);
     if (!scopePresence) return false;
 
