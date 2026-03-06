@@ -20,58 +20,24 @@ jobs:
 
       - name: Run weekly reconnect + mixed soak
         env:
+          LOAD_NIGHTLY_SMOKE: false
+          LOAD_NIGHTLY_SCENARIOS: reconnect-storm,mixed-workload
+          LOAD_NIGHTLY_OUTPUT_JSON: weekly-soak-summary.json
+          LOAD_NIGHTLY_RESULTS_DIR: .tmp/weekly-soak
           LOAD_SERVER_PORT: 3001
           LOAD_DB_DIALECT: sqlite
           SQLITE_PATH: ':memory:'
           SEED_ROWS: 500000
           SEED_USERS: 1400
           SEED_RANDOM_SEED: 42
+          K6_SOAK: true
           RECONNECT_STORM_SOAK_VUS: 120
           RECONNECT_STORM_SOAK_DURATION: 30m
           MIXED_SOAK_DURATION: 25m
           MIXED_SOAK_READERS: 160
           MIXED_SOAK_WRITERS: 40
           MIXED_SOAK_WEBSOCKETS: 220
-        run: |
-          set -euo pipefail
-
-          mkdir -p .tmp/weekly-soak
-          server_log=".tmp/weekly-soak/load-server.log"
-
-          bun tests/load/server.ts >"$server_log" 2>&1 &
-          server_pid=$!
-
-          cleanup() {
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-
-          health_url="http://127.0.0.1:${LOAD_SERVER_PORT}/api/health"
-          for i in $(seq 1 180); do
-            if curl -sf "$health_url" >/dev/null; then
-              break
-            fi
-            if [ "$i" -eq 180 ]; then
-              echo "Load server failed health check: $health_url"
-              exit 1
-            fi
-            sleep 1
-          done
-
-          BASE_URL="http://127.0.0.1:${LOAD_SERVER_PORT}" \
-            K6_SOAK=true \
-            k6 run \
-            --summary-export weekly-soak-reconnect-summary.json \
-            tests/load/scripts/reconnect-storm.js \
-            2>&1 | tee weekly-soak-reconnect.log
-
-          BASE_URL="http://127.0.0.1:${LOAD_SERVER_PORT}" \
-            K6_SOAK=true \
-            k6 run \
-            --summary-export weekly-soak-mixed-summary.json \
-            tests/load/scripts/mixed-workload.js \
-            2>&1 | tee weekly-soak-mixed.log
+        run: bun run test:load:nightly 2>&1 | tee weekly-soak-results.txt
 
       - name: Upload soak artifacts
         if: always()
@@ -79,11 +45,9 @@ jobs:
         with:
           name: weekly-soak-${{ github.run_id }}
           path: |
-            weekly-soak-reconnect-summary.json
-            weekly-soak-reconnect.log
-            weekly-soak-mixed-summary.json
-            weekly-soak-mixed.log
-            .tmp/weekly-soak/load-server.log
+            weekly-soak-results.txt
+            weekly-soak-summary.json
+            .tmp/weekly-soak
 
       - name: Publish soak summary
         if: always()
@@ -91,35 +55,45 @@ jobs:
           node - <<'NODE'
           const fs = require('fs');
           const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-
-          function readSummary(path) {
-            if (!fs.existsSync(path)) return null;
-            return JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (!fs.existsSync('weekly-soak-summary.json')) {
+            process.exit(0);
           }
 
-          function metric(summary, key, stat) {
-            const value = summary?.metrics?.[key]?.[stat];
-            return Number.isFinite(value) ? Number(value) : null;
-          }
-
-          const reconnect = readSummary('weekly-soak-reconnect-summary.json');
-          const mixed = readSummary('weekly-soak-mixed-summary.json');
+          const report = JSON.parse(fs.readFileSync('weekly-soak-summary.json', 'utf8'));
           const lines = [];
 
           lines.push('## Weekly Soak Summary');
           lines.push('');
-          lines.push('| Scenario | HTTP p95 | HTTP p99 | HTTP error rate |');
-          lines.push('|----------|----------|----------|-----------------|');
+          lines.push(`- Scenarios: ${report.scenarioCount}`);
+          lines.push(`- Failed scenarios: ${report.failedScenarioCount}`);
+          lines.push('');
+          lines.push('| Scenario | Status | Duration | HTTP p95 | HTTP p99 | HTTP error rate |');
+          lines.push('|----------|--------|----------|----------|----------|-----------------|');
 
-          const reconnectP95 = metric(reconnect, 'http_req_duration', 'p(95)');
-          const reconnectP99 = metric(reconnect, 'http_req_duration', 'p(99)');
-          const reconnectErr = metric(reconnect, 'http_req_failed', 'rate');
-          lines.push(`| reconnect-storm | ${reconnectP95 == null ? 'N/A' : reconnectP95.toFixed(1) + 'ms'} | ${reconnectP99 == null ? 'N/A' : reconnectP99.toFixed(1) + 'ms'} | ${reconnectErr == null ? 'N/A' : (reconnectErr * 100).toFixed(2) + '%'} |`);
+          for (const scenario of report.scenarios ?? []) {
+            const status = scenario.passed ? 'pass' : 'fail';
+            const duration = `${(Number(scenario.durationMs) / 1000).toFixed(1)}s`;
+            const httpP95 =
+              scenario.metrics?.httpP95 == null
+                ? 'N/A'
+                : `${Number(scenario.metrics.httpP95).toFixed(1)}ms`;
+            const httpP99 =
+              scenario.metrics?.httpP99 == null
+                ? 'N/A'
+                : `${Number(scenario.metrics.httpP99).toFixed(1)}ms`;
+            const errorRate =
+              scenario.metrics?.httpErrorRate == null
+                ? 'N/A'
+                : `${(Number(scenario.metrics.httpErrorRate) * 100).toFixed(2)}%`;
+            lines.push(`| ${scenario.id} | ${status} | ${duration} | ${httpP95} | ${httpP99} | ${errorRate} |`);
 
-          const mixedP95 = metric(mixed, 'http_req_duration', 'p(95)');
-          const mixedP99 = metric(mixed, 'http_req_duration', 'p(99)');
-          const mixedErr = metric(mixed, 'http_req_failed', 'rate');
-          lines.push(`| mixed-workload | ${mixedP95 == null ? 'N/A' : mixedP95.toFixed(1) + 'ms'} | ${mixedP99 == null ? 'N/A' : mixedP99.toFixed(1) + 'ms'} | ${mixedErr == null ? 'N/A' : (mixedErr * 100).toFixed(2) + '%'} |`);
+            if (scenario.failedThresholds?.length > 0) {
+              lines.push(`- ${scenario.id} failed thresholds: ${scenario.failedThresholds.join(', ')}`);
+            }
+            if (scenario.invariantFailures?.length > 0) {
+              lines.push(`- ${scenario.id} invariant failures: ${scenario.invariantFailures.join(', ')}`);
+            }
+          }
 
           fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
           NODE
