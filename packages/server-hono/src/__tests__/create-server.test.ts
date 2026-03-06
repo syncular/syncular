@@ -12,7 +12,10 @@ import { defineWebSocketHelper, WSContext, type WSEvents } from 'hono/ws';
 import { type Kysely, sql } from 'kysely';
 import { createSyncServer } from '../create-server';
 import { getSyncWebSocketConnectionManager } from '../routes';
-import type { WebSocketConnection } from '../ws';
+import {
+  createWebSocketConnectionOwnerKey,
+  type WebSocketConnection,
+} from '../ws';
 
 interface TasksTable {
   id: string;
@@ -92,6 +95,11 @@ describe('createSyncServer console configuration', () => {
     return {
       actorId: args.actorId,
       clientId: args.clientId,
+      ownerKey: createWebSocketConnectionOwnerKey({
+        partitionId: 'default',
+        actorId: args.actorId,
+        clientId: args.clientId,
+      }),
       transportPath: 'direct',
       get isOpen() {
         return true;
@@ -132,15 +140,18 @@ describe('createSyncServer console configuration', () => {
   function createPushRequest(args?: {
     requestId?: string;
     title?: string;
+    clientId?: string;
+    headers?: Record<string, string>;
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         ...(args?.requestId ? { 'x-request-id': args.requestId } : {}),
+        ...args?.headers,
       },
       body: JSON.stringify({
-        clientId: 'client-1',
+        clientId: args?.clientId ?? 'client-1',
         push: {
           clientCommitId: 'commit-1',
           schemaVersion: 1,
@@ -426,6 +437,86 @@ describe('createSyncServer console configuration', () => {
     expect(await response.json()).toEqual({
       error: 'FORBIDDEN_ORIGIN',
     });
+  });
+
+  it('allows same-origin realtime websocket upgrades when allowedOrigins is unset', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-origin-default',
+      {
+        headers: {
+          Origin: 'http://localhost',
+        },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(capturedEvents).not.toBeNull();
+  });
+
+  it('rejects realtime hijack attempts before websocket upgrade', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+      sync: {
+        ...options.sync,
+        authenticate: async (request) => {
+          const actorId = request.headers.get('x-user-id');
+          return actorId ? { actorId } : null;
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const seedResponse = await app.request(
+      createPushRequest({
+        clientId: 'shared-client',
+        headers: {
+          'x-user-id': 'u1',
+        },
+      })
+    );
+    expect(seedResponse.status).toBe(200);
+
+    const hijackResponse = await app.request(
+      'http://localhost/sync/realtime?clientId=shared-client',
+      {
+        headers: {
+          'x-user-id': 'u2',
+          Origin: 'http://localhost',
+        },
+      }
+    );
+
+    expect(hijackResponse.status).toBe(400);
+    expect(await hijackResponse.json()).toEqual({
+      error: 'INVALID_CLIENT_ID',
+      message: 'clientId is already bound to a different actor',
+    });
+    expect(capturedEvents).toBeNull();
   });
 
   it('forwards websocket allowedOrigins from factory to console live route', async () => {

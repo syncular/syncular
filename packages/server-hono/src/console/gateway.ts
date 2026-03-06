@@ -10,6 +10,7 @@ import {
   parseWebSocketAuthToken,
 } from './live-auth';
 import { describeConsoleGatewayRoute } from './route-descriptor';
+import { isWebSocketOriginAllowed } from '../websocket-origin';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,
@@ -91,6 +92,11 @@ export interface CreateConsoleGatewayRoutesOptions {
     maxMessageBytes?: number;
     maxMessagesPerWindow?: number;
     messageRateWindowMs?: number;
+    /**
+     * - undefined: allow same-origin browser upgrades and origin-less non-browser clients
+     * - '*': allow all origins
+     * - string[]: exact origin match (scheme + host + port)
+     */
     allowedOrigins?: string[] | '*';
   };
 }
@@ -3007,24 +3013,6 @@ export function createConsoleGatewayRoutes(
   );
 
   return routes;
-}
-
-function isWebSocketOriginAllowed(
-  c: Context,
-  allowedOrigins?: string[] | '*'
-): boolean {
-  if (!allowedOrigins) return true;
-  if (allowedOrigins === '*') return true;
-
-  const origin = c.req.header('origin');
-  if (!origin) return false;
-
-  try {
-    const normalizedOrigin = new URL(origin).origin;
-    return allowedOrigins.includes(normalizedOrigin);
-  } catch {
-    return false;
-  }
 }
 
 function measureWebSocketMessageBytes(data: unknown): number {

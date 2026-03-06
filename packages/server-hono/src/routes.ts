@@ -69,6 +69,7 @@ import {
   type WebSocketConnection,
   WebSocketConnectionManager,
 } from './ws';
+import { isWebSocketOriginAllowed } from './websocket-origin';
 
 /**
  * WeakMaps for storing Hono-instance-specific data without augmenting the type.
@@ -118,7 +119,9 @@ export interface SyncWebSocketConfig {
   messageRateWindowMs?: number;
   /**
    * Optional list of allowed websocket origins.
-   * Use '*' to allow all origins.
+   * - undefined: allow same-origin browser upgrades and origin-less non-browser clients
+   * - '*': allow all origins
+   * - string[]: exact origin match (scheme + host + port)
    */
   allowedOrigins?: string[] | '*';
 }
@@ -2394,24 +2397,6 @@ export function getSyncRealtimeUnsubscribe(
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function isWebSocketOriginAllowed(
-  c: Context,
-  allowedOrigins?: string[] | '*'
-): boolean {
-  if (!allowedOrigins) return true;
-  if (allowedOrigins === '*') return true;
-
-  const origin = c.req.header('origin');
-  if (!origin) return false;
-
-  try {
-    const normalizedOrigin = new URL(origin).origin;
-    return allowedOrigins.includes(normalizedOrigin);
-  } catch {
-    return false;
-  }
 }
 
 function measureWebSocketMessageBytes(data: unknown): number {

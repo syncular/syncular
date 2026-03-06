@@ -203,7 +203,7 @@ export interface CreateConsoleRoutesOptions<
     messageRateWindowMs?: number;
     /**
      * Optional list of allowed websocket origins.
-     * - undefined: allow all origins
+     * - undefined: allow same-origin browser upgrades and origin-less non-browser clients
      * - '*': allow all origins
      * - string[]: exact origin match (scheme + host + port)
      */
