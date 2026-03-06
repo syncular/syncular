@@ -4,13 +4,13 @@ import { cors } from 'hono/cors';
 import type { UpgradeWebSocket } from 'hono/ws';
 import { resolver, validator as zValidator } from 'hono-openapi';
 import { z } from 'zod';
+import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   closeUnauthenticatedSocket,
   parseBearerToken,
   parseWebSocketAuthToken,
 } from './live-auth';
 import { describeConsoleGatewayRoute } from './route-descriptor';
-import { isWebSocketOriginAllowed } from '../websocket-origin';
 import type {
   ConsoleApiKey,
   ConsoleApiKeyBulkRevokeResponse,

@@ -32,6 +32,14 @@ export interface RelayWebSocketConnection {
   isOpen: boolean;
   actorId: string;
   clientId: string;
+  ownerKey: string;
+}
+
+function createRelayConnectionOwnerKey(args: {
+  actorId: string;
+  clientId: string;
+}): string {
+  return JSON.stringify([args.actorId, args.clientId]);
 }
 
 /**
@@ -64,7 +72,17 @@ export class RelayRealtime {
    * Update the effective scopes for an already-connected client.
    */
   updateClientScopeKeys(clientId: string, scopeKeys: string[]): void {
-    this.registry.updateClientScopeKeys(clientId, scopeKeys);
+    const connections = this.registry.getConnectionsForClient(clientId);
+    if (!connections || connections.size === 0) return;
+
+    const ownerKeys = new Set<string>();
+    for (const connection of connections) {
+      ownerKeys.add(connection.ownerKey);
+    }
+
+    for (const ownerKey of ownerKeys) {
+      this.registry.updateOwnerScopeKeys(ownerKey, scopeKeys);
+    }
   }
 
   /**
@@ -145,6 +163,7 @@ export function createRelayWebSocketConnection(
     },
     actorId: args.actorId,
     clientId: args.clientId,
+    ownerKey: createRelayConnectionOwnerKey(args),
     sendSync(cursor: number) {
       if (!connection.isOpen) return;
       const ok = safeSend(

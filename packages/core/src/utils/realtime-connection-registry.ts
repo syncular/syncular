@@ -170,7 +170,11 @@ export class RealtimeConnectionRegistry<
     }
   }
 
-  closeOwnerConnections(ownerKey: string, code?: number, reason?: string): void {
+  closeOwnerConnections(
+    ownerKey: string,
+    code?: number,
+    reason?: string
+  ): void {
     const conns = this.connectionsByOwnerKey.get(ownerKey);
     if (!conns) return;
 

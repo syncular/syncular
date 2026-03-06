@@ -20,8 +20,8 @@ import type { Context } from 'hono';
 import { Hono } from 'hono';
 import type { UpgradeWebSocket, WSContext } from 'hono/ws';
 import type { Kysely } from 'kysely';
-import { ProxyConnectionManager } from './connection-manager';
 import { isWebSocketOriginAllowed } from '../websocket-origin';
+import { ProxyConnectionManager } from './connection-manager';
 
 /**
  * WeakMap for storing proxy connection manager per Hono instance.

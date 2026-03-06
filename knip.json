@@ -189,7 +189,8 @@
     },
     "tests/runtime": {
       "includeEntryExports": false,
-      "entry": ["**/*.ts"]
+      "entry": ["**/*.ts"],
+      "ignoreDependencies": ["better-sqlite3"]
     },
     "tests/typegen": {
       "includeEntryExports": false,

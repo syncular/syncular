@@ -94,24 +94,6 @@ function toOwnedUint8Array(chunk: Uint8Array): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-async function streamToBytes(
-  stream: ReadableStream<Uint8Array>
-): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  try {
-    const chunks: Uint8Array[] = [];
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value || value.length === 0) continue;
-      chunks.push(value);
-    }
-    return concatBytes(chunks);
-  } finally {
-    reader.releaseLock();
-  }
-}
-
 async function maybeGunzipStream(
   stream: ReadableStream<Uint8Array>
 ): Promise<ReadableStream<Uint8Array>> {
