@@ -30,7 +30,7 @@ export function createNodeHonoServer(
     options?.corsAllowMethods ?? 'GET, POST, PUT, DELETE, OPTIONS';
   const corsAllowHeaders =
     options?.corsAllowHeaders ??
-    'content-type, x-actor-id, x-syncular-transport-path, x-user-id';
+    'content-type, x-actor-id, x-syncular-snapshot-scopes, x-syncular-transport-path, x-user-id';
   const corsMaxAgeSeconds = options?.corsMaxAgeSeconds ?? 86400;
 
   return createServer(async (req, res) => {
