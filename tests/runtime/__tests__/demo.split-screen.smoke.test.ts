@@ -40,6 +40,37 @@ async function waitForTaskInBothPanes(args: {
   throw new Error(`Task "${title}" was not visible on both panes in time`);
 }
 
+async function waitForSplitScreenClientsReady(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll('input[placeholder="Add a task..."]').length >=
+      2,
+    undefined,
+    { timeout: 120_000 }
+  );
+}
+
+async function resetDemoData(page: Page): Promise<void> {
+  const resetButtons = page.getByRole('button', { name: 'Reset my data' });
+  const resetButtonCount = await resetButtons.count();
+  for (let index = 0; index < resetButtonCount; index += 1) {
+    await resetButtons.nth(index).click();
+  }
+
+  if (resetButtonCount === 0) {
+    return;
+  }
+
+  await page.waitForFunction(
+    () =>
+      !Array.from(document.querySelectorAll('button')).some(
+        (button) => button.textContent?.trim() === 'Reset my data'
+      ),
+    undefined,
+    { timeout: 90_000 }
+  );
+}
+
 async function measureSplitScreenToggleLatency(args: {
   page: Page;
   title: string;
@@ -206,34 +237,13 @@ describeDemoSmoke('Demo split-screen smoke', () => {
 
   it('loads both clients and mirrors todo updates', async () => {
     await page.goto(demoBaseUrl, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(
-      () =>
-        document.querySelectorAll('input[placeholder="Add a task..."]')
-          .length >= 1,
-      undefined,
-      { timeout: 120_000 }
-    );
+    await waitForSplitScreenClientsReady(page);
 
     expect(
       await page.getByText('Database initialization failed:').count()
     ).toBe(0);
 
-    const resetButtons = page.getByRole('button', { name: 'Reset my data' });
-    const resetButtonCount = await resetButtons.count();
-    for (let index = 0; index < resetButtonCount; index += 1) {
-      await resetButtons.nth(index).click();
-    }
-
-    if (resetButtonCount > 0) {
-      await page.waitForFunction(
-        () =>
-          !Array.from(document.querySelectorAll('button')).some(
-            (button) => button.textContent?.trim() === 'Reset my data'
-          ),
-        undefined,
-        { timeout: 90_000 }
-      );
-    }
+    await resetDemoData(page);
 
     const title = `smoke-${Date.now()}`;
     const input = page.getByPlaceholder('Add a task...').first();
@@ -249,6 +259,33 @@ describeDemoSmoke('Demo split-screen smoke', () => {
 
     const finalCount = await page.getByText(title, { exact: true }).count();
     expect(finalCount).toBeGreaterThanOrEqual(2);
+  }, 300_000);
+
+  it('persists synced tasks across a full reload', async () => {
+    await page.goto(demoBaseUrl, { waitUntil: 'domcontentloaded' });
+    await waitForSplitScreenClientsReady(page);
+
+    await resetDemoData(page);
+
+    const title = `reload-${Date.now()}`;
+    const input = page.getByPlaceholder('Add a task...').first();
+    await input.fill(title);
+    await input.press('Enter');
+
+    await waitForTaskInBothPanes({
+      page,
+      title,
+      timeoutMs: 240_000,
+    });
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForSplitScreenClientsReady(page);
+
+    await waitForTaskInBothPanes({
+      page,
+      title,
+      timeoutMs: 240_000,
+    });
   }, 300_000);
 
   it('uploads media and syncs thumbnails across both clients', async () => {
@@ -301,13 +338,7 @@ describeDemoSmoke('Demo split-screen smoke', () => {
 
   it('keeps source-pane toggle responsive while mirroring to target pane', async () => {
     await page.goto(demoBaseUrl, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(
-      () =>
-        document.querySelectorAll('input[placeholder="Add a task..."]')
-          .length >= 1,
-      undefined,
-      { timeout: 120_000 }
-    );
+    await waitForSplitScreenClientsReady(page);
 
     const title = `latency-${Date.now()}`;
     const input = page.getByPlaceholder('Add a task...').first();

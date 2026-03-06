@@ -288,6 +288,34 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(seenHeader).toBe(JSON.stringify({ user_id: 'u2' }));
   });
 
+  it('sends snapshot scopes via header for streamed snapshot chunk fetches', async () => {
+    let seenHeader: string | null = null;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      fetch: async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        seenHeader = headers.get('x-syncular-snapshot-scopes');
+        return new Response(new Uint8Array([7, 8, 9]), {
+          status: 200,
+          headers: { 'content-type': 'application/octet-stream' },
+        });
+      },
+    });
+
+    const stream = await transport.fetchSnapshotChunkStream?.({
+      chunkId: 'chunk-stream-with-scopes',
+      scopeValues: { user_id: 'u3' },
+    });
+
+    expect(stream).toBeDefined();
+    const reader = stream!.getReader();
+    await reader.read();
+    reader.releaseLock();
+
+    expect(seenHeader).toBe(JSON.stringify({ user_id: 'u3' }));
+  });
+
   it('supports auth lifecycle callbacks on 401/403', async () => {
     let requestCount = 0;
     let authExpiredCount = 0;

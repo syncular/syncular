@@ -246,7 +246,6 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson},
         updated_at = ${now}
-      WHERE sync_client_cursors.actor_id = excluded.actor_id
     `.execute(db);
   }
 
