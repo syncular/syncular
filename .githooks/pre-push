@@ -19,4 +19,8 @@ if [ "$failed" -ne 0 ]; then
   echo "[pre-push] Checks failed. Push aborted."
   exit 1
 fi
+
+echo "[pre-push] Static checks passed. Running test gate..."
+bun run test:push
+
 echo "[pre-push] All checks passed."
