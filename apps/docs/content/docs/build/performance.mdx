@@ -310,11 +310,12 @@ For high-volume tables, limit the commit batch size to keep pull latency predict
 
 ### Fingerprint-based rerendering
 
-Syncular's `useSyncQuery` hook uses fingerprint-based diffing to avoid unnecessary React rerenders. It tracks mutation timestamps per row and only updates the component when the actual query result changes. Ensure your queries include an `id` column (or configure `keyField`) for optimal fingerprinting:
+Syncular's `useSyncQuery` hook uses fingerprint-based diffing plus structural sharing to avoid unnecessary React rerenders. Single-table keyed lists use row-level mutation timestamps; multi-table queries automatically fall back to value-based fingerprinting so joined data stays correct. Ensure your queries include an `id` column (or configure `keyField`) for the fastest single-table path:
 
 ```typescript
 const { data } = useSyncQuery(
-  (ctx) => ctx.db.selectFrom('notes').selectAll().orderBy('created_at', 'desc'),
+  ({ selectFrom }) =>
+    selectFrom('notes').selectAll().orderBy('created_at', 'desc'),
   { keyField: 'id' } // Default is 'id'
 );
 ```

@@ -46,7 +46,7 @@ export type {
   UseTransportHealthResult,
 } from './createSyncularReact';
 // Re-export core client types for convenience.
-export { createSyncularReact } from './createSyncularReact';
+export { createSyncularReact } from './createSyncularReact-public';
 export type { UseCachedAsyncValueOptions } from './use-cached-async-value';
 export {
   clearCachedAsyncValues,

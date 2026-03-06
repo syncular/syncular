@@ -28,6 +28,8 @@ export interface SyncRealtimePresenceEvent {
   action: 'join' | 'leave' | 'update';
   /** The scope key this presence event relates to */
   scopeKey: string;
+  /** Stable owner identity, when the publisher tracks one. */
+  ownerKey?: string;
   /** Client/device identifier */
   clientId: string;
   /** Actor/user identifier */

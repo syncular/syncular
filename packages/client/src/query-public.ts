@@ -1,29 +1,31 @@
 /**
- * @syncular/client - Tracked SelectFrom
+ * Public query exports used by packages that consume @syncular/client.
  *
- * Provides a wrapped selectFrom that:
- * 1. Tracks tables as watched scopes when called
- * 2. Intercepts .execute() to auto-generate fingerprints
+ * This wrapper keeps query-builder tracking isolated per chain so branching a
+ * base Kysely builder does not leak joined tables into sibling branches.
  */
 
 import type { Kysely } from 'kysely';
-import type { FingerprintCollector } from './FingerprintCollector';
-
-/** Portable type alias for Kysely's selectFrom method signature */
-type TrackedSelectFrom<DB> = Kysely<DB>['selectFrom'];
-
+import type { FingerprintCollector } from './query/FingerprintCollector';
 import {
   computeRowFingerprint,
   computeValueFingerprint,
   hasKeyField,
   type MutationTimestampSource,
-} from './fingerprint';
+} from './query/fingerprint';
+import type { SyncClientDb } from './schema';
+
+export { FingerprintCollector } from './query/FingerprintCollector';
+export {
+  canFingerprint,
+  computeFingerprint,
+} from './query/fingerprint';
 
 export type FingerprintMode = 'auto' | 'value';
 
-/**
- * Create a proxy that intercepts execute() to compute fingerprints.
- */
+type TrackedSelectFrom<DB> = Kysely<DB>['selectFrom'];
+type SelectFromArgs<DB> = Parameters<Kysely<DB>['selectFrom']>;
+type SelectFromResult<DB> = ReturnType<Kysely<DB>['selectFrom']>;
 
 type ExecutableQuery = {
   execute: () => Promise<unknown>;
@@ -41,7 +43,19 @@ const JOIN_METHODS = new Set([
   'leftJoinLateral',
   'crossJoinLateral',
 ]);
-const COMPLEX_QUERY_TRACKING = '__query__';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isExecutableQuery(value: unknown): value is ExecutableQuery {
+  if (!isRecord(value)) return false;
+  return (
+    typeof Reflect.get(value, 'execute') === 'function' &&
+    typeof Reflect.get(value, 'executeTakeFirst') === 'function' &&
+    typeof Reflect.get(value, 'executeTakeFirstOrThrow') === 'function'
+  );
+}
 
 function extractTrackedTableNames(value: unknown): string[] {
   if (typeof value === 'string') {
@@ -56,23 +70,16 @@ function extractTrackedTableNames(value: unknown): string[] {
   }
 
   if (Array.isArray(value)) {
-    const extracted = value.flatMap((entry) => extractTrackedTableNames(entry));
-    return extracted.length === value.length
-      ? extracted
-      : [...new Set([...extracted, COMPLEX_QUERY_TRACKING])];
-  }
-
-  if (typeof value === 'object' && value !== null) {
-    return [COMPLEX_QUERY_TRACKING];
+    return value.flatMap((entry) => extractTrackedTableNames(entry));
   }
 
   return [];
 }
 
-function createQueryFingerprint(args: {
+function addFingerprint(args: {
   rows: unknown;
   primaryTable: string | null;
-  trackedTables: Set<string>;
+  trackedTables: ReadonlySet<string>;
   collector: FingerprintCollector;
   engine: MutationTimestampSource;
   keyField: string;
@@ -107,19 +114,19 @@ function createQueryFingerprint(args: {
   collector.add(computeValueFingerprint(fingerprintScope, rows));
 }
 
-function isExecutableQuery(value: unknown): value is ExecutableQuery {
-  if (typeof value !== 'object' || value === null) return false;
-  return (
-    typeof Reflect.get(value, 'execute') === 'function' &&
-    typeof Reflect.get(value, 'executeTakeFirst') === 'function' &&
-    typeof Reflect.get(value, 'executeTakeFirstOrThrow') === 'function'
-  );
+function addTrackedTablesToScopeCollector(
+  scopeCollector: Set<string>,
+  trackedTables: ReadonlySet<string>
+): void {
+  for (const trackedTable of trackedTables) {
+    scopeCollector.add(trackedTable);
+  }
 }
 
 function createExecuteProxy<B extends ExecutableQuery>(
   builder: B,
   primaryTable: string | null,
-  trackedTables: Set<string>,
+  trackedTables: ReadonlySet<string>,
   scopeCollector: Set<string>,
   collector: FingerprintCollector,
   engine: MutationTimestampSource,
@@ -127,11 +134,12 @@ function createExecuteProxy<B extends ExecutableQuery>(
   fingerprintMode: FingerprintMode
 ): B {
   return new Proxy(builder, {
-    get(target, prop: string | symbol) {
+    get(target, prop, receiver) {
       if (prop === 'execute') {
         return async () => {
           const rows = await target.execute();
-          createQueryFingerprint({
+          addTrackedTablesToScopeCollector(scopeCollector, trackedTables);
+          addFingerprint({
             rows,
             primaryTable,
             trackedTables,
@@ -143,10 +151,12 @@ function createExecuteProxy<B extends ExecutableQuery>(
           return rows;
         };
       }
+
       if (prop === 'executeTakeFirst') {
         return async () => {
           const row = await target.executeTakeFirst();
-          createQueryFingerprint({
+          addTrackedTablesToScopeCollector(scopeCollector, trackedTables);
+          addFingerprint({
             rows: row,
             primaryTable,
             trackedTables,
@@ -158,10 +168,12 @@ function createExecuteProxy<B extends ExecutableQuery>(
           return row;
         };
       }
+
       if (prop === 'executeTakeFirstOrThrow') {
         return async () => {
           const row = await target.executeTakeFirstOrThrow();
-          createQueryFingerprint({
+          addTrackedTablesToScopeCollector(scopeCollector, trackedTables);
+          addFingerprint({
             rows: row,
             primaryTable,
             trackedTables,
@@ -173,46 +185,46 @@ function createExecuteProxy<B extends ExecutableQuery>(
           return row;
         };
       }
-      // For other methods, return wrapped builder for chaining
-      const value = Reflect.get(target, prop, target);
-      if (typeof value === 'function') {
-        return (...args: unknown[]) => {
-          if (
-            typeof prop === 'string' &&
-            JOIN_METHODS.has(prop) &&
-            args.length > 0
-          ) {
-            for (const tableName of extractTrackedTableNames(args[0])) {
-              trackedTables.add(tableName);
-              scopeCollector.add(tableName);
-            }
-          }
 
-          const result = Reflect.apply(value, target, args);
-          if (isExecutableQuery(result)) {
-            return createExecuteProxy(
-              result,
-              primaryTable,
-              trackedTables,
-              scopeCollector,
-              collector,
-              engine,
-              keyField,
-              fingerprintMode
-            );
-          }
-          return result;
-        };
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') {
+        return value;
       }
-      return value;
+
+      return (...args: unknown[]) => {
+        const nextTrackedTables = new Set(trackedTables);
+
+        if (
+          typeof prop === 'string' &&
+          JOIN_METHODS.has(prop) &&
+          args.length > 0
+        ) {
+          for (const tableName of extractTrackedTableNames(args[0])) {
+            nextTrackedTables.add(tableName);
+          }
+        }
+
+        const result = Reflect.apply(value, target, args);
+        if (!isExecutableQuery(result)) {
+          return result;
+        }
+
+        return createExecuteProxy(
+          result,
+          primaryTable,
+          nextTrackedTables,
+          scopeCollector,
+          collector,
+          engine,
+          keyField,
+          fingerprintMode
+        );
+      };
     },
   });
 }
 
-/**
- * Create a tracked selectFrom that registers scopes and generates fingerprints.
- */
-export function createTrackedSelectFrom<DB>(
+function createTrackedSelectFrom<DB extends SyncClientDb>(
   db: Kysely<DB>,
   scopeCollector: Set<string>,
   fingerprintCollector: FingerprintCollector,
@@ -220,21 +232,11 @@ export function createTrackedSelectFrom<DB>(
   keyField = 'id',
   fingerprintMode: FingerprintMode = 'auto'
 ): TrackedSelectFrom<DB> {
-  const selectFrom = (table: unknown) => {
-    const trackedTables = new Set<string>(extractTrackedTableNames(table));
-    for (const trackedTable of trackedTables) {
-      scopeCollector.add(trackedTable);
-    }
+  const selectFrom = (...args: SelectFromArgs<DB>) => {
+    const trackedTables = new Set<string>(extractTrackedTableNames(args[0]));
+    const primaryTable = Array.from(trackedTables)[0] ?? null;
+    const builder = db.selectFrom(...args);
 
-    const primaryTable =
-      Array.from(trackedTables).find(
-        (trackedTable) => trackedTable !== COMPLEX_QUERY_TRACKING
-      ) ?? null;
-
-    // 2. Get the real query builder
-    const builder = db.selectFrom(table as never);
-
-    // 3. Return a proxy that intercepts .execute()
     return createExecuteProxy(
       builder,
       primaryTable,
@@ -244,7 +246,32 @@ export function createTrackedSelectFrom<DB>(
       engine,
       keyField,
       fingerprintMode
-    );
+    ) as SelectFromResult<DB>;
   };
+
   return selectFrom as TrackedSelectFrom<DB>;
+}
+
+export interface QueryContext<DB extends SyncClientDb = SyncClientDb> {
+  selectFrom: TrackedSelectFrom<DB>;
+}
+
+export function createQueryContext<DB extends SyncClientDb>(
+  db: Kysely<DB>,
+  scopeCollector: Set<string>,
+  fingerprintCollector: FingerprintCollector,
+  engine: MutationTimestampSource,
+  keyField = 'id',
+  fingerprintMode: FingerprintMode = 'auto'
+): QueryContext<DB> {
+  return {
+    selectFrom: createTrackedSelectFrom(
+      db,
+      scopeCollector,
+      fingerprintCollector,
+      engine,
+      keyField,
+      fingerprintMode
+    ),
+  };
 }

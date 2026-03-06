@@ -71,8 +71,10 @@ interface UseSyncQueryOptions {
   deps?: unknown[];       // Additional dependencies that trigger re-fetch
   keyField?: string;      // Primary key field for fingerprinting (default: 'id')
   watchTables?: string[]; // Additional tables to invalidate on data:change
+  fingerprintMode?: 'auto' | 'value'; // Fingerprint strategy (default: 'auto')
   pollIntervalMs?: number; // Optional local polling interval in ms
   staleAfterMs?: number;  // Mark result stale after this many ms since last sync
+  structuralSharing?: boolean; // Reuse unchanged row/object references (default: true)
 }
 ```
 
@@ -144,7 +146,9 @@ const { data, isStale, lastSyncAt } = useSyncQuery(
 
 ## Fingerprinting
 
-For large datasets, use `keyField` to optimize re-renders:
+For single-table keyed lists, `useSyncQuery` uses row-level fingerprints by default. Multi-table queries automatically fall back to value-based fingerprints so joined data stays correct.
+
+For large single-table datasets, keep `keyField` aligned with your row id column:
 
 ```tsx
 const { data: tasks } = useSyncQuery(
@@ -152,6 +156,24 @@ const { data: tasks } = useSyncQuery(
   { keyField: 'id' }
 );
 ```
+
+If your query returns joined or heavily derived rows and you want to force value-based fingerprinting, use `fingerprintMode: 'value'`:
+
+```tsx
+const { data } = useSyncQuery(
+  ({ selectFrom }) =>
+    selectFrom('tasks')
+      .innerJoin('projects', 'projects.id', 'tasks.project_id')
+      .select([
+        'tasks.id as id',
+        'tasks.title as title',
+        'projects.name as projectName',
+      ]),
+  { fingerprintMode: 'value' }
+);
+```
+
+Structural sharing is enabled by default, so unchanged rows keep their object identity across refreshes when possible. That helps memoized row components avoid re-rendering when another row changes.
 
 ## Next Steps
 

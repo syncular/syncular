@@ -20,9 +20,9 @@ import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   coerceNumber,
   compactChanges,
-  computePruneWatermarkCommitSeq,
   notifyExternalDataChange,
   parseJsonValue,
+  previewPruneSync,
   pruneSync,
   readSyncStats,
 } from '@syncular/server';
@@ -2072,19 +2072,15 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const watermarkCommitSeq = await computePruneWatermarkCommitSeq(
-        options.db,
-        options.prune
+      const previews = await previewPruneSync(options.db, options.prune);
+      const watermarkCommitSeq = previews.reduce(
+        (max, preview) => Math.max(max, preview.watermarkCommitSeq),
+        0
       );
-
-      // Count commits that would be deleted
-      const countRow = await db
-        .selectFrom('sync_commits')
-        .select(({ fn }) => fn.countAll().as('count'))
-        .where('commit_seq', '<=', watermarkCommitSeq)
-        .executeTakeFirst();
-
-      const commitsToDelete = coerceNumber(countRow?.count) ?? 0;
+      const commitsToDelete = previews.reduce(
+        (total, preview) => total + preview.commitsToDelete,
+        0
+      );
 
       const preview: ConsolePrunePreview = {
         watermarkCommitSeq,
@@ -2119,15 +2115,19 @@ export function createConsoleRoutes<
       },
     }),
     async (c) => {
-      const watermarkCommitSeq = await computePruneWatermarkCommitSeq(
-        options.db,
-        options.prune
+      const previews = await previewPruneSync(options.db, options.prune);
+      const watermarkCommitSeq = previews.reduce(
+        (max, preview) => Math.max(max, preview.watermarkCommitSeq),
+        0
       );
-
-      const deletedCommits = await pruneSync(options.db, {
-        watermarkCommitSeq,
-        keepNewestCommits: options.prune?.keepNewestCommits,
-      });
+      let deletedCommits = 0;
+      for (const preview of previews) {
+        deletedCommits += await pruneSync(options.db, {
+          partitionId: preview.partitionId,
+          watermarkCommitSeq: preview.watermarkCommitSeq,
+          keepNewestCommits: options.prune?.keepNewestCommits,
+        });
+      }
 
       logSyncEvent({
         event: 'console.prune',

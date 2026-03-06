@@ -36,6 +36,41 @@ function createSavepointName(): string {
   return `syncular_sp_${Date.now().toString(36)}_${randomPart}`;
 }
 
+function buildJsonbScopeContainmentFilter(
+  columnReference: string,
+  scopes: ScopeValues
+): RawBuilder<unknown> {
+  const fragments: RawBuilder<unknown>[] = [];
+
+  for (const [key, value] of Object.entries(scopes)) {
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        fragments.push(sql`FALSE`);
+        continue;
+      }
+
+      const anyValueMatches = sql.join(
+        value.map((entry) => {
+          const scopeFilter = JSON.stringify({ [key]: entry });
+          return sql`${sql.ref(columnReference)} @> ${scopeFilter}::jsonb`;
+        }),
+        sql` OR `
+      );
+      fragments.push(sql`(${anyValueMatches})`);
+      continue;
+    }
+
+    const scopeFilter = JSON.stringify({ [key]: value });
+    fragments.push(sql`${sql.ref(columnReference)} @> ${scopeFilter}::jsonb`);
+  }
+
+  if (fragments.length === 0) {
+    return sql`TRUE`;
+  }
+
+  return sql.join(fragments, sql` AND `);
+}
+
 export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'> {
   readonly family = 'postgres' as const;
   readonly supportsForUpdate = true;
@@ -369,6 +404,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson}::jsonb,
         updated_at = ${now}
+      WHERE sync_client_cursors.actor_id = excluded.actor_id
     `.execute(db);
   }
 
@@ -388,17 +424,9 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     const partitionId = args.partitionId ?? 'default';
     if (args.commitSeqs.length === 0) return [];
 
-    // Build JSONB containment conditions for scope filtering
-    const scopeConditions: ReturnType<typeof sql>[] = [];
-    for (const [key, value] of Object.entries(args.scopes)) {
-      if (Array.isArray(value)) {
-        scopeConditions.push(sql`scopes->>${key} = ANY(${value}::text[])`);
-      } else {
-        scopeConditions.push(sql`scopes->>${key} = ${value}`);
-      }
-    }
+    const scopeFilter = buildJsonbScopeContainmentFilter('scopes', args.scopes);
 
-    let query = sql<{
+    const res = await sql<{
       commit_seq: unknown;
       table: string;
       row_id: string;
@@ -412,30 +440,9 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       WHERE commit_seq = ANY(${args.commitSeqs}::bigint[])
         AND partition_id = ${partitionId}
         AND "table" = ${args.table}
-    `;
-
-    if (scopeConditions.length > 0) {
-      const scopeFilter = sql.join(scopeConditions, sql` AND `);
-      query = sql<{
-        commit_seq: unknown;
-        table: string;
-        row_id: string;
-        op: string;
-        row_json: unknown | null;
-        row_version: unknown | null;
-        scopes: unknown;
-      }>`
-        SELECT commit_seq, "table", row_id, op, row_json, row_version, scopes
-        FROM sync_changes
-        WHERE commit_seq = ANY(${args.commitSeqs}::bigint[])
-          AND partition_id = ${partitionId}
-          AND "table" = ${args.table}
-          AND (${scopeFilter})
-        ORDER BY commit_seq ASC, change_id ASC
-      `;
-    }
-
-    const res = await query.execute(db);
+        AND (${scopeFilter})
+      ORDER BY commit_seq ASC, change_id ASC
+    `.execute(db);
 
     return res.rows.map((row) => ({
       commit_seq: coerceNumber(row.commit_seq) ?? 0,
@@ -455,20 +462,10 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     const partitionId = args.partitionId ?? 'default';
     const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
 
-    // Build scope filter conditions
-    const scopeConditions: ReturnType<typeof sql>[] = [];
-    for (const [key, value] of Object.entries(args.scopes)) {
-      if (Array.isArray(value)) {
-        scopeConditions.push(sql`c.scopes->>${key} = ANY(${value}::text[])`);
-      } else {
-        scopeConditions.push(sql`c.scopes->>${key} = ${value}`);
-      }
-    }
-
-    const scopeFilter =
-      scopeConditions.length > 0
-        ? sql.join(scopeConditions, sql` AND `)
-        : sql`TRUE`;
+    const scopeFilter = buildJsonbScopeContainmentFilter(
+      'c.scopes',
+      args.scopes
+    );
 
     const res = await sql<{
       commit_seq: unknown;

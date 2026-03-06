@@ -18,6 +18,14 @@ export interface PresenceEntry {
   metadata?: Record<string, unknown>;
 }
 
+export function createWebSocketConnectionOwnerKey(args: {
+  partitionId: string;
+  actorId: string;
+  clientId: string;
+}): string {
+  return JSON.stringify([args.partitionId, args.actorId, args.clientId]);
+}
+
 /**
  * Push response data sent back to the client over WS
  */
@@ -49,6 +57,7 @@ export interface SyncWebSocketEvent {
     presence?: {
       action: 'join' | 'leave' | 'update' | 'snapshot';
       scopeKey: string;
+      ownerKey?: string;
       clientId?: string;
       actorId?: string;
       metadata?: Record<string, unknown>;
@@ -81,6 +90,7 @@ export interface WebSocketConnection {
   sendPresence(data: {
     action: 'join' | 'leave' | 'update' | 'snapshot';
     scopeKey: string;
+    ownerKey?: string;
     clientId?: string;
     actorId?: string;
     metadata?: Record<string, unknown>;
@@ -98,6 +108,8 @@ export interface WebSocketConnection {
   actorId: string;
   /** Client/device identifier for this connection */
   clientId: string;
+  /** Stable owner identity for this connection */
+  ownerKey: string;
   /** Transport path used by this connection. */
   transportPath: 'direct' | 'relay';
 }
@@ -113,7 +125,12 @@ function safeSend(ws: WSContext, message: string): boolean {
 
 export function createWebSocketConnection(
   ws: WSContext,
-  args: { actorId: string; clientId: string; transportPath: 'direct' | 'relay' }
+  args: {
+    actorId: string;
+    clientId: string;
+    ownerKey: string;
+    transportPath: 'direct' | 'relay';
+  }
 ): WebSocketConnection {
   let closed = false;
 
@@ -124,6 +141,7 @@ export function createWebSocketConnection(
     },
     actorId: args.actorId,
     clientId: args.clientId,
+    ownerKey: args.ownerKey,
     transportPath: args.transportPath,
     sendSync(
       cursor: number,
@@ -158,6 +176,7 @@ export function createWebSocketConnection(
     sendPresence(data: {
       action: 'join' | 'leave' | 'update' | 'snapshot';
       scopeKey: string;
+      ownerKey?: string;
       clientId?: string;
       actorId?: string;
       metadata?: Record<string, unknown>;
@@ -219,7 +238,7 @@ export class WebSocketConnectionManager {
 
   /**
    * In-memory presence tracking by scope key.
-   * Map<scopeKey, Map<clientId, PresenceEntry>>
+   * Map<scopeKey, Map<ownerKey, PresenceEntry>>
    */
   private presenceByScopeKey = new Map<string, Map<string, PresenceEntry>>();
 
@@ -229,6 +248,7 @@ export class WebSocketConnectionManager {
   onPresenceChange?: (event: {
     action: 'join' | 'leave' | 'update';
     scopeKey: string;
+    ownerKey: string;
     clientId: string;
     actorId: string;
     metadata?: Record<string, unknown>;
@@ -241,8 +261,8 @@ export class WebSocketConnectionManager {
     this.onPresenceChange = options?.onPresenceChange;
     this.registry = new RealtimeConnectionRegistry({
       heartbeatIntervalMs: options?.heartbeatIntervalMs,
-      onClientDisconnected: (clientId) => {
-        this.cleanupClientPresence(clientId);
+      onOwnerDisconnected: (ownerKey) => {
+        this.cleanupOwnerPresence(ownerKey);
       },
     });
   }
@@ -262,15 +282,15 @@ export class WebSocketConnectionManager {
    * Update the effective scopes for an already-connected client.
    * If the client has no active connections, this is a no-op.
    */
-  updateClientScopeKeys(clientId: string, scopeKeys: string[]): void {
-    this.registry.updateClientScopeKeys(clientId, scopeKeys);
+  updateConnectionScopeKeys(ownerKey: string, scopeKeys: string[]): void {
+    this.registry.updateOwnerScopeKeys(ownerKey, scopeKeys);
   }
 
   /**
    * Check whether a client is currently authorized/subscribed for a scope key.
    */
-  isClientSubscribedToScopeKey(clientId: string, scopeKey: string): boolean {
-    return this.registry.isClientSubscribedToScopeKey(clientId, scopeKey);
+  isConnectionSubscribedToScopeKey(ownerKey: string, scopeKey: string): boolean {
+    return this.registry.isOwnerSubscribedToScopeKey(ownerKey, scopeKey);
   }
 
   // =========================================================================
@@ -282,20 +302,18 @@ export class WebSocketConnectionManager {
    * Called when a client wants to be visible to others in a scope.
    */
   joinPresence(
-    clientId: string,
+    ownerKey: string,
     scopeKey: string,
     metadata?: Record<string, unknown>
   ): boolean {
-    const conns = this.registry.getConnectionsForClient(clientId);
+    const conns = this.registry.getConnectionsForOwner(ownerKey);
     if (!conns || conns.size === 0) return false;
-    if (!this.isClientSubscribedToScopeKey(clientId, scopeKey)) return false;
+    if (!this.isConnectionSubscribedToScopeKey(ownerKey, scopeKey)) return false;
 
-    // Get actorId from first connection
     const conn = conns.values().next().value;
     if (!conn) return false;
-    const actorId = conn.actorId;
+    const { actorId, clientId } = conn;
 
-    // Add to presence map
     let scopePresence = this.presenceByScopeKey.get(scopeKey);
     if (!scopePresence) {
       scopePresence = new Map();
@@ -308,21 +326,21 @@ export class WebSocketConnectionManager {
       joinedAt: Date.now(),
       metadata,
     };
-    scopePresence.set(clientId, entry);
+    scopePresence.set(ownerKey, entry);
 
-    // Notify other clients in this scope
     this.broadcastPresenceEvent(scopeKey, {
       action: 'join',
       scopeKey,
+      ownerKey,
       clientId,
       actorId,
       metadata,
     });
 
-    // Callback for cross-instance broadcasting
     this.onPresenceChange?.({
       action: 'join',
       scopeKey,
+      ownerKey,
       clientId,
       actorId,
       metadata,
@@ -335,31 +353,31 @@ export class WebSocketConnectionManager {
    * Leave presence for a scope key.
    * Called when a client no longer wants to be visible in a scope.
    */
-  leavePresence(clientId: string, scopeKey: string): boolean {
+  leavePresence(ownerKey: string, scopeKey: string): boolean {
     const scopePresence = this.presenceByScopeKey.get(scopeKey);
     if (!scopePresence) return false;
 
-    const entry = scopePresence.get(clientId);
+    const entry = scopePresence.get(ownerKey);
     if (!entry) return false;
 
-    scopePresence.delete(clientId);
+    scopePresence.delete(ownerKey);
     if (scopePresence.size === 0) {
       this.presenceByScopeKey.delete(scopeKey);
     }
 
-    // Notify other clients in this scope
     this.broadcastPresenceEvent(scopeKey, {
       action: 'leave',
       scopeKey,
-      clientId,
+      ownerKey,
+      clientId: entry.clientId,
       actorId: entry.actorId,
     });
 
-    // Callback for cross-instance broadcasting
     this.onPresenceChange?.({
       action: 'leave',
       scopeKey,
-      clientId,
+      ownerKey,
+      clientId: entry.clientId,
       actorId: entry.actorId,
     });
 
@@ -371,33 +389,33 @@ export class WebSocketConnectionManager {
    * Used to update what entity a user is viewing/editing.
    */
   updatePresenceMetadata(
-    clientId: string,
+    ownerKey: string,
     scopeKey: string,
     metadata: Record<string, unknown>
   ): boolean {
-    if (!this.isClientSubscribedToScopeKey(clientId, scopeKey)) return false;
+    if (!this.isConnectionSubscribedToScopeKey(ownerKey, scopeKey)) return false;
     const scopePresence = this.presenceByScopeKey.get(scopeKey);
     if (!scopePresence) return false;
 
-    const entry = scopePresence.get(clientId);
+    const entry = scopePresence.get(ownerKey);
     if (!entry) return false;
 
     entry.metadata = metadata;
 
-    // Notify other clients in this scope
     this.broadcastPresenceEvent(scopeKey, {
       action: 'update',
       scopeKey,
-      clientId,
+      ownerKey,
+      clientId: entry.clientId,
       actorId: entry.actorId,
       metadata,
     });
 
-    // Callback for cross-instance broadcasting
     this.onPresenceChange?.({
       action: 'update',
       scopeKey,
-      clientId,
+      ownerKey,
+      clientId: entry.clientId,
       actorId: entry.actorId,
       metadata,
     });
@@ -448,13 +466,24 @@ export class WebSocketConnectionManager {
   handleRemotePresenceEvent(event: {
     action: 'join' | 'leave' | 'update';
     scopeKey: string;
+    ownerKey?: string;
     clientId: string;
     actorId: string;
     metadata?: Record<string, unknown>;
   }): void {
-    const { action, scopeKey, clientId, actorId, metadata } = event;
+    const {
+      action,
+      scopeKey,
+      clientId,
+      actorId,
+      metadata,
+      ownerKey = createWebSocketConnectionOwnerKey({
+        partitionId: scopeKey.split(':', 1)[0] ?? 'default',
+        actorId,
+        clientId,
+      }),
+    } = event;
 
-    // Update local presence state
     let scopePresence = this.presenceByScopeKey.get(scopeKey);
 
     switch (action) {
@@ -463,7 +492,7 @@ export class WebSocketConnectionManager {
           scopePresence = new Map();
           this.presenceByScopeKey.set(scopeKey, scopePresence);
         }
-        scopePresence.set(clientId, {
+        scopePresence.set(ownerKey, {
           clientId,
           actorId,
           joinedAt: Date.now(),
@@ -473,7 +502,7 @@ export class WebSocketConnectionManager {
       }
       case 'leave': {
         if (scopePresence) {
-          scopePresence.delete(clientId);
+          scopePresence.delete(ownerKey);
           if (scopePresence.size === 0) {
             this.presenceByScopeKey.delete(scopeKey);
           }
@@ -482,7 +511,7 @@ export class WebSocketConnectionManager {
       }
       case 'update': {
         if (scopePresence) {
-          const entry = scopePresence.get(clientId);
+          const entry = scopePresence.get(ownerKey);
           if (entry) {
             entry.metadata = metadata;
           }
@@ -503,6 +532,7 @@ export class WebSocketConnectionManager {
     event: {
       action: 'join' | 'leave' | 'update';
       scopeKey: string;
+      ownerKey?: string;
       clientId?: string;
       actorId?: string;
       metadata?: Record<string, unknown>;
@@ -520,32 +550,31 @@ export class WebSocketConnectionManager {
   }
 
   /**
-   * Clean up presence when a client fully disconnects (all connections closed).
+   * Clean up presence when an owner fully disconnects (all connections closed).
    */
-  private cleanupClientPresence(clientId: string): void {
-    // Find all scopes this client has presence in
+  private cleanupOwnerPresence(ownerKey: string): void {
     for (const [scopeKey, scopePresence] of this.presenceByScopeKey) {
-      const entry = scopePresence.get(clientId);
+      const entry = scopePresence.get(ownerKey);
       if (!entry) continue;
 
-      scopePresence.delete(clientId);
+      scopePresence.delete(ownerKey);
       if (scopePresence.size === 0) {
         this.presenceByScopeKey.delete(scopeKey);
       }
 
-      // Notify other clients
       this.broadcastPresenceEvent(scopeKey, {
         action: 'leave',
         scopeKey,
-        clientId,
+        ownerKey,
+        clientId: entry.clientId,
         actorId: entry.actorId,
       });
 
-      // Callback for cross-instance broadcasting
       this.onPresenceChange?.({
         action: 'leave',
         scopeKey,
-        clientId,
+        ownerKey,
+        clientId: entry.clientId,
         actorId: entry.actorId,
       });
     }
@@ -615,6 +644,13 @@ export class WebSocketConnectionManager {
    */
   getConnectionCount(clientId: string): number {
     return this.registry.getConnectionCount(clientId);
+  }
+
+  /**
+   * Get the number of active connections for one owner identity.
+   */
+  getScopedConnectionCount(ownerKey: string): number {
+    return this.registry.getScopedConnectionCount(ownerKey);
   }
 
   /**

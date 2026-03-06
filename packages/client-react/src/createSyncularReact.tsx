@@ -40,6 +40,7 @@ import {
   createQueryContext,
   enqueueOutboxCommit,
   FingerprintCollector,
+  type FingerprintMode,
   type OutboxStats,
   type PresenceEntry,
   type QueryContext,
@@ -68,6 +69,125 @@ import {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function shallowEqualRecords(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>
+): boolean {
+  if (left === right) return true;
+
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+
+  for (const key of leftKeys) {
+    if (!(key in right)) return false;
+    if (!Object.is(left[key], right[key])) return false;
+  }
+
+  return true;
+}
+
+function shallowEqualQueryValues(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!isRecord(left) || !isRecord(right)) return false;
+  return shallowEqualRecords(left, right);
+}
+
+function getKeyedQueryValueKey<T>(value: T, keyField: string): string | null {
+  if (!isRecord(value) || !(keyField in value)) return null;
+
+  const key = value[keyField];
+  if (key === null || key === undefined) return null;
+  return String(key);
+}
+
+function shareArrayResult<T>(previous: T[], next: T[], keyField: string): T[] {
+  if (previous.length === 0 || next.length === 0) {
+    return next;
+  }
+
+  const previousByKey = new Map<string, T>();
+  let canShareByKey = true;
+
+  for (const item of previous) {
+    const key = getKeyedQueryValueKey(item, keyField);
+    if (key === null) {
+      canShareByKey = false;
+      break;
+    }
+    previousByKey.set(key, item);
+  }
+
+  const shared = next.slice();
+
+  if (canShareByKey) {
+    for (const [index, item] of next.entries()) {
+      const key = getKeyedQueryValueKey(item, keyField);
+      if (key === null) {
+        return next;
+      }
+
+      const previousItem = previousByKey.get(key);
+      if (
+        previousItem !== undefined &&
+        shallowEqualQueryValues(previousItem, item)
+      ) {
+        shared[index] = previousItem;
+      }
+    }
+  } else {
+    const limit = Math.min(previous.length, next.length);
+    for (let index = 0; index < limit; index += 1) {
+      const previousItem = previous[index];
+      const nextItem = next[index];
+      if (
+        previousItem !== undefined &&
+        nextItem !== undefined &&
+        shallowEqualQueryValues(previousItem, nextItem)
+      ) {
+        shared[index] = previousItem;
+      }
+    }
+  }
+
+  if (shared.length !== previous.length) {
+    return shared;
+  }
+
+  for (let index = 0; index < shared.length; index += 1) {
+    if (!Object.is(shared[index], previous[index])) {
+      return shared;
+    }
+  }
+
+  return previous;
+}
+
+function shareQueryResult<TResult>(
+  previous: TResult | undefined,
+  next: TResult,
+  keyField: string,
+  enabled: boolean
+): TResult {
+  if (!enabled || previous === undefined) {
+    return next;
+  }
+
+  if (Array.isArray(previous) && Array.isArray(next)) {
+    return shareArrayResult(previous, next, keyField) as TResult;
+  }
+
+  if (
+    isRecord(previous) &&
+    isRecord(next) &&
+    shallowEqualRecords(previous, next)
+  ) {
+    return previous;
+  }
+
+  return next;
 }
 
 type ExecutableQuery<TResult> = {
@@ -372,8 +492,21 @@ export interface UseSyncQueryOptions {
   deps?: unknown[];
   keyField?: string;
   watchTables?: string[];
+  /**
+   * Fingerprint strategy used to decide whether a refreshed query result should
+   * publish new data.
+   * - `auto` (default): row-based fingerprints for single-table keyed arrays,
+   *   value-based fingerprints otherwise.
+   * - `value`: always fingerprint the full result value.
+   */
+  fingerprintMode?: FingerprintMode;
   pollIntervalMs?: number;
   staleAfterMs?: number;
+  /**
+   * Reuse unchanged object references between query refreshes.
+   * Enabled by default for safer list rendering.
+   */
+  structuralSharing?: boolean;
   /**
    * Internal: if false, skip `data:change` invalidation listener.
    * Used by `useQuery` wrapper.
@@ -1299,8 +1432,10 @@ export function createSyncularReact<
       deps = [],
       keyField = 'id',
       watchTables = [],
+      fingerprintMode = 'auto',
       pollIntervalMs,
       staleAfterMs,
+      structuralSharing = true,
       refreshOnDataChange = true,
       loadingOnRefresh = false,
       transitionUpdates = true,
@@ -1389,7 +1524,8 @@ export function createSyncularReact<
             scopeCollector,
             fingerprintCollectorRef.current,
             engine,
-            keyField
+            keyField,
+            fingerprintMode
           );
 
           const fnResult = queryFnRef.current(ctx);
@@ -1415,7 +1551,14 @@ export function createSyncularReact<
               () => {
                 setLastSyncAt(snapshotLastSyncAt);
                 if (didFingerprintChange) {
-                  setData(result);
+                  setData((previous) =>
+                    shareQueryResult(
+                      previous,
+                      result,
+                      keyField,
+                      structuralSharing
+                    )
+                  );
                 }
                 setError(null);
               },
@@ -1449,8 +1592,10 @@ export function createSyncularReact<
         db,
         enabled,
         engine,
+        fingerprintMode,
         keyField,
         loadingOnRefresh,
+        structuralSharing,
         applyUpdate,
         emitMetrics,
       ]
