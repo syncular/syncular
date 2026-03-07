@@ -94,9 +94,9 @@ When a client pulls data, the server computes **effective scopes** as the inters
 
 <Mermaid
   chart={`
-flowchart LR
-  Requested["Requested scopes from the subscription"] --> Effective["Effective scopes delivered"]
-  Allowed["Allowed scopes from resolveScopes"] --> Effective
+flowchart TD
+  Requested["Requested by subscription"] --> Effective["Effective scopes delivered"]
+  Allowed["Allowed by resolveScopes"] --> Effective
 `}
   caption="The client can only receive the overlap between what it asked for and what the server says the actor may access."
 />
@@ -105,7 +105,7 @@ flowchart LR
 
 <Mermaid
   chart={`
-flowchart LR
+flowchart TD
   Requested["Requested: project A"] --> Effective["Effective: project A"]
   Allowed["Allowed: user 123 · projects A and B"] --> Effective
 `}
@@ -119,7 +119,7 @@ If the intersection produces no matching scopes, the subscription is **revoked**
 
 <Mermaid
   chart={`
-flowchart LR
+flowchart TD
   Requested["Requested: project A"] --> Empty["No overlap"]
   Allowed["Allowed: user 123 · projects B and C"] --> Empty
   Empty --> Revoked["status = revoked"]
