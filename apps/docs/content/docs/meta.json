@@ -3,15 +3,10 @@
   "pages": [
     "index",
     "introduction",
-    "---Build---",
+    "concepts",
     "build",
-    "---Tooling---",
-    "cli",
     "testing",
-    "---Reference---",
-    "client-sdk",
-    "server",
-    "console",
-    "api"
+    "operate",
+    "reference"
   ]
 }

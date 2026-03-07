@@ -1,0 +1,17 @@
+{
+  "root": true,
+  "title": "Concepts",
+  "pages": [
+    "index",
+    "---Core Model---",
+    "architecture",
+    "first-sync",
+    "commits",
+    "---Access and Sync Semantics---",
+    "scopes",
+    "subscriptions",
+    "conflict-resolution",
+    "---Language---",
+    "glossary"
+  ]
+}

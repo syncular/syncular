@@ -1,9 +1,13 @@
 ---
-title: Audit UI
-description: Build product-facing "who changed what" experiences with Syncular
+title: Audit & History
+description: Build product-facing history views and long-lived audit trails with Syncular
 ---
 
-Use this guide to implement an in-product audit trail UI.
+# Audit & History
+
+Use this guide for product-facing history views: recent sync history, conflict context, and long-lived app-owned audit trails.
+
+If you are investigating incidents or operating a live deployment, use the Console guides in [Operate](/docs/operate/console) instead.
 
 ## Recommended Building Blocks
 
@@ -47,14 +51,14 @@ function ConflictNotifications() {
 }
 ```
 
-## Server Audit API
+## Sync Audit API
 
 Use auth-scoped endpoints:
 
 - `GET /sync/audit/commits`
 - `GET /sync/audit/commits/{commitSeq}`
 
-These endpoints are partition/auth scoped and intended for product admin UI (not console-only tokens).
+These endpoints are partition/auth scoped and intended for product admin UI, not console-only operator workflows.
 
 ## App-Owned Row Audit Recipe
 

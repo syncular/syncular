@@ -11,7 +11,7 @@ description: See Syncular running in 30 seconds
 
 The fastest way to understand Syncular is to **clone the monorepo** and run the demo.
 
-> Prefer scaffolding a new project? See the [CLI docs](/docs/cli) and run `syncular create --template syncular-demo --dir ./my-syncular-demo` (or `npx @syncular/cli create --template syncular-demo --dir ./my-syncular-demo`).
+> Prefer scaffolding a new project? See the [CLI docs](/docs/build/cli) and run `syncular create --template syncular-demo --dir ./my-syncular-demo` (or `npx @syncular/cli create --template syncular-demo --dir ./my-syncular-demo`).
 
 ```bash
 git clone https://github.com/syncular/syncular.git
@@ -30,7 +30,7 @@ In the demo you’re seeing Syncular’s core model:
 - **Push/Pull over HTTP** through an **append-only commit log**.
 - **Scopes** drive auth and partial sync (requested ∩ allowed).
 
-If you want the canonical deep dive, read [How Sync Works](/docs/introduction/architecture).
+If you want the canonical deep dive, read [How Sync Works](/docs/concepts/architecture).
 
 ## Build your own app (canonical path)
 
@@ -39,7 +39,7 @@ Syncular packages are published on npm under the `@syncular` scope. The recommen
 1. [Server Setup](/docs/build/server-setup)
 2. [Client Setup](/docs/build/client-setup)
 3. [Table Handlers](/docs/build/table-handlers)
-4. Learn the concepts: [Scopes](/docs/introduction/scopes) and [Subscriptions](/docs/introduction/subscriptions)
+4. Learn the concepts: [Scopes](/docs/concepts/scopes) and [Subscriptions](/docs/concepts/subscriptions)
 5. Then add features as needed: blobs, encryption, migrations, observability, console, relay
 
 If you’re not sure where to start, see [Adoption Paths](/docs/introduction/adoption-paths).
@@ -72,12 +72,12 @@ Here's the full lifecycle of adding a task:
   └─────────────────┘
 ```
 
-**Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/docs/introduction/first-sync).
+**Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/docs/concepts/first-sync).
 
-**Conflicts:** Version conflicts are detected on push; your app chooses resolution. See [Conflict Resolution](/docs/introduction/conflict-resolution).
+**Conflicts:** Version conflicts are detected on push; your app chooses resolution. See [Conflict Resolution](/docs/concepts/conflict-resolution).
 
 ## Next steps
 
 - [Build](/docs/build) — canonical build path
 - [Try the Demo](/docs/introduction/demo) — explore features hands-on (encryption, large datasets, console)
-- [How Sync Works](/docs/introduction/architecture) — canonical deep dive
+- [How Sync Works](/docs/concepts/architecture) — canonical deep dive

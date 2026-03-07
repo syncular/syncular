@@ -1,0 +1,16 @@
+{
+  "root": true,
+  "title": "Operate",
+  "pages": [
+    "index",
+    "---Setup and Production---",
+    "operations-setup",
+    "console-integration",
+    "deployment",
+    "observability",
+    "performance",
+    "troubleshooting",
+    "---Console Guides---",
+    "console"
+  ]
+}

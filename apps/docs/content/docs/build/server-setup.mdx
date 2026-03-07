@@ -16,7 +16,7 @@ description: Set up a Syncular server with Postgres and Hono
 
 - Node.js 18+ or Bun
 - Postgres 14+ (logical replication not required)
-- Familiarity with [How Sync Works](/docs/introduction/architecture)
+- Familiarity with [How Sync Works](/docs/concepts/architecture)
 
 ## Install packages
 
@@ -224,7 +224,7 @@ mountConsoleUi(app, {
 });
 ```
 
-See [Operations Guide](/docs/build/operations) for console API details.
+See [Operations Guide](/docs/operate/operations-setup) for console API details.
 
 > **Migration note:** `createSyncServer` no longer enables console routes by default and no longer falls back to `demo-token`. To enable console routes, pass `console: { ... }` and configure either `console.token` or `SYNC_CONSOLE_TOKEN`.
 
@@ -322,4 +322,4 @@ Bun.serve({ fetch: app.fetch, port: 3001 });
 - [Client Setup](/docs/build/client-setup) — set up the React client
 - [Table Handlers](/docs/build/table-handlers) — deep dive into handlers
 - [Auth](/docs/build/auth) — authorization patterns
-- [Deployment](/docs/build/deployment) — production deployment
+- [Deployment](/docs/operate/deployment) — production deployment
