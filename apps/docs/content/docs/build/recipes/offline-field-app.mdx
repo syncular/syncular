@@ -1,0 +1,34 @@
+---
+title: Offline Field App
+description: A recommended Syncular shape for mobile or desktop apps that must keep working without connectivity.
+---
+
+# Offline Field App
+
+## Use this recipe when
+
+- users may work offline for hours or days
+- local reads and writes are the normal path
+- connectivity is intermittent, expensive, or unpredictable
+
+## Recommended shape
+
+- stable partition key such as `account_id`, `site_id`, `region_id`, or `project_id`
+- long-lived local SQLite storage with stable `clientId` and identity continuity
+- explicit offline session strategy with [Offline Auth](/docs/build/offline-auth)
+- conflict resolution UX for the few records that can actually collide
+
+## Prioritize these guides
+
+- [Client Setup](/docs/build/client-setup)
+- [Offline Auth](/docs/build/offline-auth)
+- [Error Handling](/docs/build/error-handling)
+- [Testing](/docs/testing)
+- [Performance](/docs/operate/performance)
+- [Troubleshooting](/docs/operate/troubleshooting)
+
+## Watch-outs
+
+- align prune windows with real offline behavior
+- keep scope boundaries stable so clients do not constantly re-bootstrap
+- test reconnect churn, duplicate pushes, and stale sessions before release

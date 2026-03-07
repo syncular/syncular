@@ -5,6 +5,27 @@ description: Configure logs, traces, metrics, and exceptions for Syncular with S
 
 # Observability
 
+This guide is about making Syncular visible in production: what gets emitted, how to wire a backend, and how to connect sync behavior to the rest of your incident tooling.
+
+## Use this page when
+
+- you are moving from local development to a real deployment
+- you need logs, traces, metrics, or exceptions in an existing observability stack
+- you want to debug sync incidents without guessing from user reports
+
+## What you'll learn
+
+- what Syncular emits by default
+- how the pluggable telemetry contract is shaped
+- how to wire Sentry or a custom backend
+- how to emit app-specific telemetry alongside Syncular telemetry
+
+## Prerequisites
+
+- a working Syncular server or client setup
+- familiarity with your target observability backend
+- access to the deployment environment where telemetry configuration lives
+
 Syncular emits telemetry through `@syncular/core` using a pluggable runtime backend:
 
 - Structured logs

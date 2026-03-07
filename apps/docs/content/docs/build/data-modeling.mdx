@@ -5,6 +5,14 @@ description: Design schemas and scopes that sync well
 
 # Data Modeling
 
+This guide helps you choose scope boundaries and row shapes that stay understandable under load, offline churn, and changing permissions.
+
+## Use this page when
+
+- you are deciding which columns should become scope keys
+- you are shaping a multi-tenant, project-based, or user-owned schema
+- you want to avoid high-cardinality or volatile scope designs that become hard to operate
+
 ## What you'll learn
 
 - How to choose scope keys for your data model

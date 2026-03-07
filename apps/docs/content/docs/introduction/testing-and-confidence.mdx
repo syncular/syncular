@@ -1,0 +1,85 @@
+---
+title: Testing & Confidence
+description: "How Syncular earns trust: layered tests, runtime coverage, fault injection, and operator tooling."
+---
+
+# Testing & Confidence
+
+Use this page when you are evaluating whether Syncular is safe enough to adopt, or when you want a concrete picture of how the project is tested and debugged.
+
+## Why this matters
+
+Sync systems fail in ugly ways when they are under-tested: silent data leaks, missing writes, replay bugs, broken auth boundaries, bad offline recovery, and impossible-to-debug production incidents.
+
+Syncular tries to make those risks visible and testable.
+
+## What earns trust in a sync system
+
+You should be able to answer these questions before adopting one:
+
+- can I test protocol behavior without spinning up a whole stack every time?
+- do real HTTP and runtime tests exist, or only unit tests?
+- can I force failure modes like latency, retries, conflicts, and reconnect churn?
+- when something goes wrong in production, do I have operator tooling and history?
+
+## How Syncular is tested
+
+The repo exercises the system in layers:
+
+| Layer | Purpose | Typical entry point |
+|---|---|---|
+| In-process tests | Fast protocol, handler, scope, conflict, and client-engine verification | `bun test` |
+| Real integration tests | End-to-end HTTP, auth, subscriptions, maintenance, and convergence checks | `tests/integration` |
+| Runtime tests | Runtime-specific behavior across Node, Deno, Cloudflare, browser, relay, and Electron | `bun test:runtime` |
+| Performance and load tests | Large dataset, reconnect storm, bootstrap, maintenance churn, and trend tracking | `bun test:perf`, `tests/load` |
+
+## Testkit is part of the product story
+
+[`@syncular/testkit`](/docs/testing) is not just internal scaffolding. It exists so application teams can test the same hard edges that matter in production:
+
+- deterministic IDs and clocks
+- fixture-based server and client setup
+- real HTTP server/client flows
+- transport fault injection
+- realtime helpers
+- assertions for rows, outbox state, conflicts, and convergence
+
+## Runtime and production confidence
+
+The project does not stop at a single runtime or happy-path local tests.
+
+- runtime suites cover published package usage, server boot, and real push/pull flows
+- integration suites exercise auth boundaries, bootstrap churn, prune/compact interactions, and tenant isolation
+- performance suites exist for large datasets and operational stress, not just microbenchmarks
+
+## Operability is part of confidence
+
+Testing is only half the story. The other half is being able to see what happened.
+
+Syncular makes that visible through:
+
+- [Audit & History](/docs/build/audit-ui) for product-facing history and app-owned audit logs
+- [Console](/docs/operate/console) for request forensics, client lag, commits, and maintenance actions
+- [Observability](/docs/operate/observability) for logs, traces, metrics, and captured exceptions
+- [Troubleshooting](/docs/operate/troubleshooting) for concrete “why isn’t it syncing?” checklists
+
+## Recommended evaluation path
+
+1. Read [Good Fit & Not Fit](/docs/introduction/good-fit) so you know whether the architecture matches your workload.
+2. Run the [Demo](/docs/introduction/demo) or [Quick Start](/docs/introduction/quick-start).
+3. Skim the [Testing](/docs/testing) section to see how application-level tests are written.
+4. Read [Operate](/docs/operate) so you know how incidents would be debugged in a real deployment.
+
+## Useful commands
+
+```bash
+bun test
+bun test:runtime
+bun test:perf
+```
+
+## What to read next
+
+- [Testing](/docs/testing)
+- [Operate](/docs/operate)
+- [Audit & History](/docs/build/audit-ui)

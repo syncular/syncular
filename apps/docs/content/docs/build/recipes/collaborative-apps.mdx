@@ -1,0 +1,33 @@
+---
+title: Collaborative Apps
+description: A recommended Syncular shape for shared workspaces, presence, and optional CRDT-backed collaboration.
+---
+
+# Collaborative Apps
+
+## Use this recipe when
+
+- multiple users work in the same project, room, or workspace
+- most product state is durable records, but some fields need richer collaboration
+- you want presence and fast wake-ups without giving up a server-authoritative sync model
+
+## Recommended shape
+
+- shared scope boundary such as `project_id`, `room_id`, or `workspace_id`
+- durable records sync through normal table handlers and commit-log pull/push
+- presence runs over realtime for ephemeral online state
+- Yjs is optional for rich collaborative subdocuments, not a replacement for the whole data model
+
+## Prioritize these guides
+
+- [Realtime](/docs/build/realtime)
+- [Presence](/docs/build/presence)
+- [Yjs](/docs/build/yjs)
+- [Data Modeling](/docs/build/data-modeling)
+- [Troubleshooting](/docs/operate/troubleshooting)
+
+## Watch-outs
+
+- separate durable product records from ephemeral presence or cursor state
+- test reconnect and concurrent edit flows early
+- if your whole product is effectively a CRDT document, compare this shape against [Jazz](/docs/introduction/comparison/vs-jazz)

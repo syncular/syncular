@@ -1,0 +1,33 @@
+---
+title: Blobs and Media
+description: A recommended Syncular shape for apps that mix structured sync data with large files or media.
+---
+
+# Blobs and Media
+
+## Use this recipe when
+
+- records need to reference uploaded files, previews, or derived assets
+- bootstrap size matters because the catalog is large
+- operators need visibility into chunking, storage, and cleanup behavior
+
+## Recommended shape
+
+- keep structured metadata in synced tables
+- store binary content through Syncular blob adapters
+- use content hashes as durable references between rows and files
+- plan for snapshot chunking and storage cleanup from the start
+
+## Prioritize these guides
+
+- [Blob Storage](/docs/build/blob-storage)
+- [Performance](/docs/operate/performance)
+- [Observability](/docs/operate/observability)
+- [Operations Setup](/docs/operate/operations-setup)
+- [Console Storage](/docs/operate/console/storage)
+
+## Watch-outs
+
+- do not put binary payloads in normal row JSON
+- separate authorization for metadata visibility from authorization to fetch blob URLs
+- test bootstrap behavior on realistic dataset sizes, not only small fixtures

@@ -23,6 +23,8 @@
     "yjs",
     "---Tooling---",
     "cli",
+    "---Recipes---",
+    "recipes",
     "---Advanced---",
     "service-worker-server",
     "relay",

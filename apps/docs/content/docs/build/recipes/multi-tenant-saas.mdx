@@ -1,0 +1,35 @@
+---
+title: Multi-Tenant SaaS
+description: A recommended Syncular shape for B2B SaaS products with tenant and workspace isolation.
+---
+
+# Multi-Tenant SaaS
+
+## Use this recipe when
+
+- your product has clear tenant or organization boundaries
+- users collaborate inside projects, workspaces, or accounts
+- operators need to debug sync issues without raw database access
+
+## Recommended shape
+
+- base scope boundary: `org_id`
+- collaboration scope: `project_id` or `workspace_id`
+- private data scope: `user_id` for drafts, preferences, or personal queues
+- backend: Postgres plus server handlers with explicit membership lookups
+- client: local SQLite plus subscriptions per workspace or project
+
+## Prioritize these guides
+
+- [Server Setup](/docs/build/server-setup)
+- [Table Handlers](/docs/build/table-handlers)
+- [Authorization](/docs/build/auth)
+- [Data Modeling](/docs/build/data-modeling)
+- [Audit & History](/docs/build/audit-ui)
+- [Console](/docs/operate/console)
+
+## Watch-outs
+
+- do not make row-level scopes your primary partitioning strategy
+- test membership changes and revocation paths early
+- make tenant deletion and data eviction part of your schema design, not an afterthought

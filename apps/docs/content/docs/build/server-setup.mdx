@@ -5,6 +5,14 @@ description: Set up a Syncular server with Postgres and Hono
 
 # Server Setup
 
+This is the canonical server bring-up path: database, sync schema, handlers, routes, and optional realtime.
+
+## Use this page when
+
+- you are wiring your first Syncular backend
+- you want the recommended Postgres plus Hono setup before adding advanced features
+- you need a reference implementation to compare against an existing server
+
 ## What you'll learn
 
 - How to connect to Postgres and create sync infrastructure tables
@@ -87,13 +95,17 @@ const tasksHandler = createServerHandler({
 
 How this works:
 
-```
-  1. Client subscribes:  { table: 'tasks', scopes: { user_id: '123' } }
-  2. Server calls resolveScopes → { user_id: ['123'] }
-  3. Effective scopes = requested ∩ allowed = { user_id: '123' }
-  4. Server returns only data where user_id = '123'
-  5. On push: scopes auto-extracted from rows, tagged on changes
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Requested["1. Client subscription<br>{ table: tasks, scopes: { user_id: '123' } }"] --> Allowed["2. resolveScopes(ctx)<br>{ user_id: ['123'] }"]
+  Allowed --> Effective["3. Effective scopes<br>requested ∩ allowed"]
+  Effective --> Pull["4. Pull returns matching rows only"]
+  Push["5. Push operation"] --> Extract["Scopes extracted from row data"]
+  Extract --> Tagged["Tagged on emitted changes"]
+`}
+  caption="Handlers derive allowed scopes on pull and attach stored scopes automatically on push."
+/>
 
 ### Multi-scope handler (project membership)
 

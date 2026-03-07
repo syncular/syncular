@@ -9,6 +9,24 @@ Use this guide for product-facing history views: recent sync history, conflict c
 
 If you are investigating incidents or operating a live deployment, use the Console guides in [Operate](/docs/operate/console) instead.
 
+## Use this page when
+
+- you want users or admins inside your product to inspect recent sync history
+- you need a durable business or compliance audit trail that outlives sync retention
+- you want a clear boundary between product-facing history and operator-only forensics
+
+## What you'll build
+
+- product-visible commit history
+- conflict-aware history UI
+- app-owned row audit records for long retention
+- links from product history into deeper operator workflows when needed
+
+## Prerequisites
+
+- a working Syncular app with authenticated actors
+- familiarity with [Commits](/docs/concepts/commits) and [Scopes](/docs/concepts/scopes)
+
 ## Choose the right history surface
 
 | Need | Use |
@@ -18,7 +36,7 @@ If you are investigating incidents or operating a live deployment, use the Conso
 | Incident forensics, request payloads, and client lag investigation | [Console Stream Investigation](/docs/operate/console/stream-investigation) |
 | Maintenance action history such as prune, compact, or notify-data-change | [Console Operations](/docs/operate/console/operations) |
 
-## Recommended Building Blocks
+## Recommended building blocks
 
 1. Client push outcomes: `push:result` / `onPushResult`
 2. Conflict stream for UX: `useNewConflicts()` + `useConflicts()`

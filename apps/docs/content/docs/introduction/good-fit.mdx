@@ -1,0 +1,84 @@
+---
+title: Good Fit & Not Fit
+description: Decide where Syncular is a strong architectural match, and where a different system is the better choice.
+---
+
+# Good Fit & Not Fit
+
+Use this page when you are deciding whether Syncular matches your product shape, team constraints, and operational expectations.
+
+## Why this page exists
+
+Syncular is opinionated:
+
+- queries run against local SQLite
+- the server stays authoritative
+- changes move through an append-only commit log
+- access control is modeled explicitly with scopes
+
+That model is strong for some app classes and the wrong tradeoff for others.
+
+## Strong fit
+
+Syncular is usually a strong fit when you need most of these at the same time:
+
+- a real offline path, not just cached reads
+- fast local queries as part of normal product UX
+- explicit authorization boundaries between users, projects, teams, or tenants
+- a backend you already control, especially Postgres plus TypeScript
+- a system you can debug in production with audit trails, logs, and operator tooling
+
+Typical app shapes:
+
+- B2B SaaS with tenant, workspace, or project isolation
+- field or warehouse apps with long offline windows
+- desktop or mobile apps that need durable local state
+- media or catalog products with large local datasets and attachment sync
+- collaborative apps with durable shared records and optional Yjs-powered fields
+
+## Weak fit
+
+Syncular is usually the wrong tool when one of these is the dominant requirement:
+
+- fully managed sync infrastructure with minimal backend ownership
+- arbitrary client queries directly against centralized state without server-defined handlers
+- a pure CRDT-first product where the whole app model is collaborative documents, canvas state, or rich text
+- a product where local SQL is not important and offline is not a core requirement
+
+## Not a fit for multiplayer games
+
+Syncular is not built for multiplayer games or other latency-critical simulation loops.
+
+It can store durable game data:
+
+- player inventory
+- progression
+- quests
+- match history
+- map or level metadata
+
+It is not the right transport for moment-to-moment gameplay state:
+
+- frequent position updates
+- authoritative physics
+- hit detection
+- frame-level combat state
+- high-frequency room replication
+
+Those workloads want a game networking model, not a durable commit-log sync model.
+
+## Signals you should prototype first
+
+Do a small proof-of-concept before committing if any of these are true:
+
+- one actor can access thousands of fine-grained partitions
+- rows move between scopes very frequently
+- your auth model is still unclear
+- you expect long offline windows and aggressive pruning at the same time
+- you need to mix durable records, blobs, realtime, and rich collaborative fields in one product
+
+## What to read next
+
+- [Testing & Confidence](/docs/introduction/testing-and-confidence)
+- [Common Architectures](/docs/build/recipes)
+- [Comparison](/docs/introduction/comparison)

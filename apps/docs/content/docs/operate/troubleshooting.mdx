@@ -5,6 +5,14 @@ description: Diagnose and fix common sync issues
 
 # Troubleshooting
 
+Use this page when sync behavior looks wrong and you need a practical debugging order instead of theory.
+
+## Use this page when
+
+- a subscription is empty, revoked, or unexpectedly re-bootstrapping
+- writes are not appearing on other clients
+- realtime connections or scope boundaries are behaving unexpectedly
+
 ## What you'll learn
 
 - How to verify URL wiring, table names, and scope alignment
@@ -13,9 +21,11 @@ description: Diagnose and fix common sync issues
 - How to diagnose missing writes across clients
 - How to resolve WebSocket connection issues
 
----
+## Prerequisites
 
-This page is a practical checklist for debugging "why isn't it syncing?" issues.
+- access to the running client and server configuration
+- the ability to inspect logs, Console, or browser devtools
+- familiarity with your table names and scope keys
 
 ## First: confirm the basics
 

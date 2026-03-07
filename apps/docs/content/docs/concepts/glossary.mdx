@@ -111,9 +111,16 @@ Client-to-server operation in a push. Contains the `table`, `row_id`, `op`, `pay
 
 Client-side queue of pending commits waiting to be pushed to the server. Mutations write to the local database and the outbox immediately. When the device is online, the outbox drains in order. See [Commits -- Push Lifecycle](/docs/concepts/commits#push-lifecycle-client-to-server).
 
-```
-User action --> Local DB + Outbox --> [when online] --> Server
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Action["User action"] --> Local["Local SQLite write"]
+  Local --> Outbox["Commit enters outbox"]
+  Outbox --> Online["When online"]
+  Online --> Server["Push to server"]
+`}
+  caption="Mutations are durable locally first. The outbox is what turns them into eventual server writes."
+/>
 
 ### Conflict
 
