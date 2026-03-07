@@ -148,29 +148,26 @@ Syncular handles reads and writes in one system.
 
 ### Electric SQL
 
-```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Client    │◄────►│   Electric  │◄────►│   Postgres  │
-│  (any)      │      │  (shapes)   │      │ (logical    │
-└─────────────┘      └─────────────┘      │ replication)│
-       │                                    └─────────────┘
-       │ (writes via API)
-       ▼
-┌─────────────┐
-│  Your API   │
-└─────────────┘
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Client["Client (any)"] <--> Electric["Electric shapes"]
+  Electric <--> Postgres["Postgres logical replication"]
+  Client -->|writes via API| Api["Your API"]
+`}
+/>
 
 Electric handles read-path sync. You handle writes separately.
 
 ### Syncular
 
-```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Client    │◄────►│ Your Server │◄────►│   Postgres  │
-│  (SQLite)   │      │   (Hono)    │      │             │
-└─────────────┘      └─────────────┘      └─────────────┘
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Client["Client (SQLite)"] <--> Server["Your server (Hono)"]
+  Server <--> Postgres["Postgres"]
+`}
+/>
 
 Syncular handles both read and write sync.
 

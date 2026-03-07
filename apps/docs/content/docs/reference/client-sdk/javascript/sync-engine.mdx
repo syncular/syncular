@@ -16,33 +16,29 @@ The sync engine provides fine-grained control over the sync process. These are l
 
 The sync engine manages its own lifecycle through a set of well-defined states. Understanding these transitions helps when debugging sync issues or building custom transport integrations.
 
-```
-                 start()
-                   |
-                   v
-  +------------> IDLE <-----------+
-  |              / |              |
-  |   (poll or  /  | sync()      | success
-  |   wakeup)  /   v             |
-  |           / SYNCING ------>--+
-  |          /     |
-  |         /      | error
-  |        /       v
-  |       /    RETRYING (exponential backoff)
-  |      /        |
-  |     /         | retry timer fires
-  |    /          v
-  +---<-----  SYNCING
+<Mermaid
+  chart={`
+stateDiagram-v2
+  [*] --> IDLE: start()
+  IDLE --> SYNCING: poll / wake-up / sync()
+  SYNCING --> IDLE: success
+  SYNCING --> RETRYING: error
+  RETRYING --> SYNCING: retry timer
+  IDLE --> STOPPED: stop() / destroy()
+  SYNCING --> STOPPED: stop() / destroy()
+  RETRYING --> STOPPED: stop() / destroy()
 
-  stop() / destroy() ---> STOPPED
-  (from any state)
-
-  Connection states (for realtime transport):
-    disconnected --> connecting --> connected
-         ^                            |
-         |         reconnecting  <----+
-         +----------------------------+
-```
+  state "Realtime transport" as Realtime {
+    [*] --> disconnected
+    disconnected --> connecting
+    connecting --> connected
+    connected --> reconnecting
+    reconnecting --> connecting
+    reconnecting --> disconnected
+  }
+`}
+  caption="The engine cycles between idle, syncing, and retrying. Realtime connection state is tracked separately from the sync loop."
+/>
 
 ## Outbox
 

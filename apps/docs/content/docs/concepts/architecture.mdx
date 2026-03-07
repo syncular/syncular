@@ -9,35 +9,28 @@ Syncular is built on a **commit-log architecture**. Every data change is recorde
 
 ## The Big Picture
 
-```
-                        +-----------------------+
-                        |    Postgres Server     |
-                        |                       |
-                        |  sync_commits         |
-                        |  ┌───┬───┬───┬───┐   |
-                        |  │ 1 │ 2 │ 3 │ 4 │...|
-                        |  └───┴───┴───┴───┘   |
-                        |                       |
-                        |  sync_changes         |
-                        |  (scoped per row)     |
-                        +-----------+-----------+
-                           ▲        |
-                     push  |        |  pull
-                     (HTTP)|        |  (HTTP)
-                           |        ▼
-          +----------------+--------+----------------+
-          |                                          |
-  +-------+-------+                          +-------+-------+
-  |   Client A    |                          |   Client B    |
-  |               |                          |               |
-  |  SQLite       |                          |  SQLite       |
-  |  ┌──────────┐ |                          |  ┌──────────┐ |
-  |  │ outbox   │ |                          |  │ outbox   │ |
-  |  │ cursors  │ |                          |  │ cursors  │ |
-  |  │ data     │ |                          |  │ data     │ |
-  |  └──────────┘ |                          |  └──────────┘ |
-  +---------------+                          +---------------+
-```
+<Mermaid
+  chart={`
+flowchart LR
+  subgraph Server["Postgres server"]
+    Log["sync_commits + sync_changes"]
+  end
+
+  subgraph A["Client A"]
+    ADb["Local SQLite · outbox · cursor · data"]
+  end
+
+  subgraph B["Client B"]
+    BDb["Local SQLite · outbox · cursor · data"]
+  end
+
+  ADb -->|push over HTTP| Log
+  Log -->|pull over HTTP| ADb
+  BDb -->|push over HTTP| Log
+  Log -->|pull over HTTP| BDb
+`}
+  caption="Every client talks to the server commit log. Clients never replicate directly from each other."
+/>
 
 Data always flows through the server's commit log. Clients never talk to each other directly. The server is the single source of truth; clients hold local replicas filtered by [scopes](/docs/concepts/scopes).
 
@@ -45,18 +38,16 @@ Data always flows through the server's commit log. Clients never talk to each ot
 
 Every client goes through the same lifecycle. The four phases happen in a continuous loop managed by the sync engine:
 
-```
-  ┌─────────────┐    ┌─────────────────┐    ┌────────────┐    ┌────────────┐
-  │  1. Bootstrap│───▶│ 2. Incremental  │───▶│  3. Push   │───▶│  4. Pull   │
-  │  (first sync)│    │    Pull         │    │  (outbox)  │    │  (commits) │
-  └──────────────┘    └─────────────────┘    └────────────┘    └────────────┘
-         │                    ▲                                       │
-         │                    └───────────────────────────────────────┘
-         │                              continuous loop
-         ▼
-  Client is now synced.
-  Push local changes, pull remote changes, repeat.
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Bootstrap["1. Bootstrap"] --> Incremental["2. Incremental pull"]
+  Incremental --> Push["3. Push outbox"]
+  Push --> Pull["4. Pull commits"]
+  Pull --> Incremental
+  Bootstrap --> Ready["Client is synced and enters the steady-state loop"]
+`}
+/>
 
 ---
 
@@ -73,34 +64,20 @@ When a client subscribes for the first time (or has fallen too far behind), it n
 5. Client applies the snapshot to local SQLite
 6. Client sets its cursor to the snapshot's `asOfCommitSeq`
 
-```
-Client                              Server
-  │                                    │
-  │  POST /sync (pull)                 │
-  │  { subscriptions: [{              │
-  │      id: 'my-tasks',             │
-  │      table: 'tasks',             │
-  │      cursor: -1,  ◀── bootstrap   │
-  │      scopes: { user_id: '123' }  │
-  │  }]}                              │
-  │ ──────────────────────────────────▶│
-  │                                    │  resolveScopes()
-  │                                    │  build snapshot
-  │                                    │  (optionally chunked)
-  │◀────────────────────────────────── │
-  │  { subscriptions: [{              │
-  │      bootstrap: true,             │
-  │      nextCursor: 42,             │
-  │      snapshots: [{               │
-  │        table: 'tasks',           │
-  │        rows: [...] or chunks     │
-  │      }]                          │
-  │  }]}                              │
-  │                                    │
-  │  apply snapshot to SQLite          │
-  │  set cursor = 42                   │
-  │                                    │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  participant Client
+  participant Server
+
+  Client->>Server: POST /sync pull with cursor = -1
+  Server->>Server: resolveScopes()
+  Server->>Server: Build snapshot as of commit 42
+  Server-->>Client: Return bootstrap snapshots or chunks
+  Client->>Client: Apply snapshot to SQLite
+  Client->>Client: Set cursor = 42
+`}
+/>
 
 For large datasets, snapshots are returned as **compressed chunks** (gzip + framed JSON rows). The client fetches each chunk separately via `GET /sync/snapshot-chunks/:chunkId`, verifies integrity, decodes framed rows, and applies them to SQLite.
 
@@ -112,33 +89,19 @@ For caching, streaming, and tuning knobs, see [Bootstrap Deep Dive](/docs/concep
 
 Once bootstrapped, subsequent syncs only fetch new commits since the client's cursor. This is the steady-state mode.
 
-```
-Client                              Server
-  │                                    │
-  │  POST /sync (pull)                 │
-  │  { subscriptions: [{              │
-  │      id: 'my-tasks',             │
-  │      cursor: 42,  ◀── resume      │
-  │      scopes: { user_id: '123' }  │
-  │  }]}                              │
-  │ ──────────────────────────────────▶│
-  │                                    │  fetch commits > 42
-  │                                    │  matching scopes
-  │◀────────────────────────────────── │
-  │  { subscriptions: [{              │
-  │      bootstrap: false,            │
-  │      nextCursor: 47,             │
-  │      commits: [                  │
-  │        { commitSeq: 43, ... },   │
-  │        { commitSeq: 44, ... },   │
-  │        { commitSeq: 47, ... },   │
-  │      ]                           │
-  │  }]}                              │
-  │                                    │
-  │  apply each change to SQLite       │
-  │  advance cursor to 47             │
-  │                                    │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  participant Client
+  participant Server
+
+  Client->>Server: POST /sync pull with cursor = 42
+  Server->>Server: Fetch commits greater than 42 that match scopes
+  Server-->>Client: Return commits 43..47 and nextCursor 47
+  Client->>Client: Apply changes to SQLite
+  Client->>Client: Advance cursor to 47
+`}
+/>
 
 The server only returns commits whose scopes match the client's subscription. Scope filtering is covered in detail on the [Scopes](/docs/concepts/scopes) page.
 
@@ -148,35 +111,23 @@ The server only returns commits whose scopes match the client's subscription. Sc
 
 When the user makes a local change, it is applied optimistically and queued for push:
 
-```
- User Action          Client                        Server
-  │                     │                              │
-  │  insert/update      │                              │
-  │ ──────────────────▶ │                              │
-  │                     │  1. Write to local SQLite     │
-  │                     │  2. Add to outbox             │
-  │                     │                              │
-  │                     │  POST /sync (push)           │
-  │                     │  { clientId, clientCommitId, │
-  │                     │    operations: [{            │
-  │                     │      table: 'tasks',         │
-  │                     │      row_id: 'task-1',       │
-  │                     │      op: 'upsert',           │
-  │                     │      payload: {...}          │
-  │                     │    }]                        │
-  │                     │  }                           │
-  │                     │ ────────────────────────────▶│
-  │                     │                              │  validate auth
-  │                     │                              │  apply in txn
-  │                     │                              │  extract scopes
-  │                     │                              │  write to commit log
-  │                     │◀──────────────────────────── │
-  │                     │  { status: 'applied',        │
-  │                     │    commitSeq: 48 }           │
-  │                     │                              │
-  │                     │  3. Mark outbox commit acked  │
-  │                     │                              │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  actor User
+  participant Client
+  participant Server
+
+  User->>Client: Insert or update a row
+  Client->>Client: Write to local SQLite
+  Client->>Client: Add operation to the outbox
+  Client->>Server: POST /sync push with operations
+  Server->>Server: Validate auth and apply in a transaction
+  Server->>Server: Extract scopes and write the commit log
+  Server-->>Client: status = applied, commitSeq = 48
+  Client->>Client: Mark outbox commit acked
+`}
+/>
 
 The push pipeline on the server:
 
@@ -219,15 +170,15 @@ After pushing, the client pulls to receive changes from other clients. This uses
 
 The full push-then-pull cycle looks like this:
 
-```
-  ┌─────────┐      ┌──────────┐      ┌──────────┐
-  │  Push   │─────▶│  Pull    │─────▶│  Apply   │
-  │ outbox  │      │ commits  │      │ to SQLite│
-  └─────────┘      └──────────┘      └──────────┘
-       │                                    │
-       └──────── wait for next trigger ─────┘
-                 (poll / WebSocket wake-up)
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Push["Push outbox"] --> Pull["Pull commits"]
+  Pull --> Apply["Apply to SQLite"]
+  Apply --> Wait["Wait for the next trigger (poll or wake-up)"]
+  Wait --> Pull
+`}
+/>
 
 ---
 
@@ -235,19 +186,17 @@ The full push-then-pull cycle looks like this:
 
 By default the sync engine polls on an interval. When WebSocket transport is enabled, the server sends **wake-up signals** (not data) to trigger an immediate pull:
 
-```
-Server                              Client
-  │                                    │
-  │  [new commit matching              │
-  │   client's scopes]                │
-  │                                    │
-  │  wake-up signal (WebSocket)        │
-  │ ──────────────────────────────────▶│
-  │                                    │  trigger pull immediately
-  │                                    │  (same HTTP pull path)
-  │◀────────────────────────────────── │
-  │                                    │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  participant Server
+  participant Client
+
+  Server-->>Client: WebSocket wake-up for a matching commit
+  Client->>Server: Trigger the normal HTTP pull immediately
+  Server-->>Client: Return commits and snapshots
+`}
+/>
 
 WebSocket carries only wake-up signals. All data transfer stays on the HTTP pull path. This keeps the data flow simple and the protocol easy to debug.
 
@@ -257,17 +206,12 @@ WebSocket carries only wake-up signals. All data transfer stays on the HTTP pull
 
 The server commit log is the backbone of the sync protocol. It consists of two tables:
 
-```
-sync_commits                              sync_changes
-┌────────────┬───────────┬─────────┐     ┌───────────┬────────┬────────┬─────────┬──────────┐
-│ commit_seq │ client_id │ actor_id│     │ commit_seq│ table  │ row_id │ op      │ scopes   │
-├────────────┼───────────┼─────────┤     ├───────────┼────────┼────────┼─────────┼──────────┤
-│ 1          │ device-A  │ user-1  │     │ 1         │ tasks  │ t-1    │ upsert  │{user:"1"}│
-│ 2          │ device-B  │ user-2  │     │ 2         │ tasks  │ t-2    │ upsert  │{user:"2"}│
-│ 3          │ device-A  │ user-1  │     │ 3         │ tasks  │ t-1    │ upsert  │{user:"1"}│
-│ 4          │ device-B  │ user-2  │     │ 4         │ tasks  │ t-2    │ delete  │{user:"2"}│
-└────────────┴───────────┴─────────┘     └───────────┴────────┴────────┴─────────┴──────────┘
-```
+| `sync_commits` | `sync_changes` |
+|---|---|
+| `1 · device-A · user-1` | `1 · tasks · t-1 · upsert · { user: "1" }` |
+| `2 · device-B · user-2` | `2 · tasks · t-2 · upsert · { user: "2" }` |
+| `3 · device-A · user-1` | `3 · tasks · t-1 · upsert · { user: "1" }` |
+| `4 · device-B · user-2` | `4 · tasks · t-2 · delete · { user: "2" }` |
 
 Each commit:
 - Has a **monotonically increasing `commit_seq`** assigned by the server
@@ -283,30 +227,24 @@ Clients track their position with a **cursor** (the last `commit_seq` they have 
 
 Here is the complete flow when Client A makes a change that Client B receives:
 
-```
-Client A                    Server                     Client B
-  │                           │                           │
-  │  user edits task          │                           │
-  │  write to local SQLite    │                           │
-  │  queue in outbox          │                           │
-  │                           │                           │
-  │  POST /sync (push) ──────▶│                           │
-  │                           │  validate + apply         │
-  │                           │  write commit_seq: 48     │
-  │                           │  extract scopes           │
-  │  ◀──── { applied, 48 }   │                           │
-  │                           │                           │
-  │  mark outbox acked        │  wake-up (WebSocket) ───▶ │
-  │                           │                           │
-  │                           │  ◀──── POST /sync (pull)  │
-  │                           │  fetch commits > cursor   │
-  │                           │  filter by scopes         │
-  │                           │  return commit 48 ───────▶│
-  │                           │                           │
-  │                           │                    apply to SQLite
-  │                           │                    advance cursor
-  │                           │                           │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  participant A as Client A
+  participant Server
+  participant B as Client B
+
+  A->>A: User edits task locally
+  A->>A: Write to SQLite and queue outbox
+  A->>Server: POST /sync (push)
+  Server->>Server: Validate, apply, write commit 48
+  Server-->>A: { applied, commitSeq: 48 }
+  Server-->>B: WebSocket wake-up
+  B->>Server: POST /sync (pull)
+  Server-->>B: Return commit 48
+  B->>B: Apply to SQLite and advance cursor
+`}
+/>
 
 ---
 

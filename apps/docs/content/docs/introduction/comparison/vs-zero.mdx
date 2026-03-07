@@ -72,23 +72,25 @@ At a high level:
 
 ### Zero
 
-```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Client    │◄────►│    Zero     │◄────►│   Postgres  │
-│  (SQLite)   │      │   (sync)    │      │             │
-└─────────────┘      └─────────────┘      └─────────────┘
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Client["Client (SQLite)"] <--> Zero["Zero sync layer"]
+  Zero <--> Postgres["Postgres"]
+`}
+/>
 
 Zero sits between your client and Postgres, handling reactive queries and sync.
 
 ### Syncular
 
-```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Client    │◄────►│ Your Server │◄────►│   Postgres  │
-│  (SQLite)   │      │   (Hono)    │      │             │
-└─────────────┘      └─────────────┘      └─────────────┘
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Client["Client (SQLite)"] <--> Server["Your server (Hono)"]
+  Server <--> Postgres["Postgres"]
+`}
+/>
 
 You run the full stack with explicit control over sync logic.
 

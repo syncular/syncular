@@ -80,26 +80,26 @@ For production, use Redis/NATS/Postgres NOTIFY/etc. as the transport and impleme
 
 ## Architecture
 
-```
-┌─────────────────┐     ┌─────────────────┐
-│   Instance A    │     │   Instance B    │
-│                 │     │                 │
-│ ┌─────────────┐ │     │ ┌─────────────┐ │
-│ │ WS Manager  │ │     │ │ WS Manager  │ │
-│ └──────┬──────┘ │     │ └──────┬──────┘ │
-│        │        │     │        │        │
-│ ┌──────▼──────┐ │     │ ┌──────▼──────┐ │
-│ │ Broadcaster │◄├─────┼►│ Broadcaster │ │
-│ └──────┬──────┘ │     │ └──────┬──────┘ │
-└────────┼────────┘     └────────┼────────┘
-         │                       │
-         └───────────┬───────────┘
-                     │
-              ┌──────▼──────┐
-              │  PostgreSQL │
-              │   NOTIFY    │
-              └─────────────┘
-```
+<Mermaid
+  chart={`
+flowchart TB
+  subgraph A["Instance A"]
+    AManager["WS manager"]
+    ABroadcaster["Broadcaster adapter"]
+    AManager --> ABroadcaster
+  end
+
+  subgraph B["Instance B"]
+    BManager["WS manager"]
+    BBroadcaster["Broadcaster adapter"]
+    BManager --> BBroadcaster
+  end
+
+  ABroadcaster <--> Bus["Postgres NOTIFY / Redis / NATS"]
+  BBroadcaster <--> Bus
+`}
+  caption="Each server instance manages its own WebSocket clients. A shared broadcaster fan-outs wake-up events so every instance can notify the right connections."
+/>
 
 ## Single Instance
 

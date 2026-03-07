@@ -192,3 +192,49 @@ html {
 .animate-fade-up {
   animation: fade-up 0.5s ease-out both;
 }
+
+.sync-diagram {
+  margin: 1.75rem 0;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 1rem;
+  background:
+    radial-gradient(circle at top right, rgb(168 85 247 / 0.14), transparent 38%),
+    linear-gradient(180deg, rgb(9 9 11 / 0.96), rgb(0 0 0 / 0.98));
+  overflow: hidden;
+}
+
+.sync-diagram__canvas {
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.sync-diagram__canvas > div,
+.sync-diagram__canvas svg {
+  display: block;
+}
+
+.sync-diagram__canvas svg {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+}
+
+.sync-diagram__caption {
+  border-top: 1px solid rgb(255 255 255 / 0.06);
+  padding: 0.75rem 1rem 0.9rem;
+  color: var(--color-fd-muted-foreground);
+  font-size: 0.875rem;
+}
+
+.sync-diagram__loading,
+.sync-diagram__fallback {
+  color: var(--color-fd-muted-foreground);
+  font-size: 0.9375rem;
+}
+
+.sync-diagram__error {
+  margin-bottom: 0.75rem;
+  color: #fda4af;
+}
