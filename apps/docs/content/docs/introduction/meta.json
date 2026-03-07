@@ -1,22 +1,16 @@
 {
   "root": true,
-  "title": "Introduction",
+  "title": "Get Started",
   "icon": "BookOpen",
   "pages": [
     "index",
-    "adoption-paths",
+    "---Start Here---",
     "quick-start",
-    "demo",
     "installation",
-    "---Core Concepts---",
+    "demo",
     "what-is-syncular",
-    "architecture",
-    "scopes",
-    "subscriptions",
-    "commits",
-    "conflict-resolution",
-    "---Evaluate---",
-    "comparison",
-    "glossary"
+    "---Evaluate Fit---",
+    "adoption-paths",
+    "comparison"
   ]
 }

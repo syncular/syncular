@@ -1,0 +1,14 @@
+{
+  "title": "Server",
+  "icon": "Server",
+  "pages": [
+    "index",
+    "overview",
+    "table-handlers-reference",
+    "subscription-registry",
+    "hono-adapter",
+    "cloudflare-adapter",
+    "dialects",
+    "realtime-bridge"
+  ]
+}

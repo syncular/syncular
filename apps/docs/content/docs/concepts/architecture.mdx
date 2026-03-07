@@ -1,0 +1,330 @@
+---
+title: How Sync Works
+description: The full sync lifecycle -- from bootstrap to incremental push and pull
+---
+
+# How Sync Works
+
+Syncular is built on a **commit-log architecture**. Every data change is recorded as an atomic commit with a monotonically increasing sequence number. Both server and client maintain ordered logs, enabling reliable synchronization even through intermittent connectivity, device restarts, and multi-device concurrency.
+
+## The Big Picture
+
+```
+                        +-----------------------+
+                        |    Postgres Server     |
+                        |                       |
+                        |  sync_commits         |
+                        |  ┌───┬───┬───┬───┐   |
+                        |  │ 1 │ 2 │ 3 │ 4 │...|
+                        |  └───┴───┴───┴───┘   |
+                        |                       |
+                        |  sync_changes         |
+                        |  (scoped per row)     |
+                        +-----------+-----------+
+                           ▲        |
+                     push  |        |  pull
+                     (HTTP)|        |  (HTTP)
+                           |        ▼
+          +----------------+--------+----------------+
+          |                                          |
+  +-------+-------+                          +-------+-------+
+  |   Client A    |                          |   Client B    |
+  |               |                          |               |
+  |  SQLite       |                          |  SQLite       |
+  |  ┌──────────┐ |                          |  ┌──────────┐ |
+  |  │ outbox   │ |                          |  │ outbox   │ |
+  |  │ cursors  │ |                          |  │ cursors  │ |
+  |  │ data     │ |                          |  │ data     │ |
+  |  └──────────┘ |                          |  └──────────┘ |
+  +---------------+                          +---------------+
+```
+
+Data always flows through the server's commit log. Clients never talk to each other directly. The server is the single source of truth; clients hold local replicas filtered by [scopes](/docs/concepts/scopes).
+
+## Sync Lifecycle Overview
+
+Every client goes through the same lifecycle. The four phases happen in a continuous loop managed by the sync engine:
+
+```
+  ┌─────────────┐    ┌─────────────────┐    ┌────────────┐    ┌────────────┐
+  │  1. Bootstrap│───▶│ 2. Incremental  │───▶│  3. Push   │───▶│  4. Pull   │
+  │  (first sync)│    │    Pull         │    │  (outbox)  │    │  (commits) │
+  └──────────────┘    └─────────────────┘    └────────────┘    └────────────┘
+         │                    ▲                                       │
+         │                    └───────────────────────────────────────┘
+         │                              continuous loop
+         ▼
+  Client is now synced.
+  Push local changes, pull remote changes, repeat.
+```
+
+---
+
+## Phase 1: Bootstrap (First Sync)
+
+When a client subscribes for the first time (or has fallen too far behind), it needs a full snapshot of the current data.
+
+### How it works
+
+1. Client sends a pull request with `cursor: -1` for the new subscription
+2. Server calls `resolveScopes` to determine what data this actor can access
+3. Server builds a point-in-time snapshot from the table handler
+4. Server returns snapshot pages (chunked for large datasets) with an `asOfCommitSeq`
+5. Client applies the snapshot to local SQLite
+6. Client sets its cursor to the snapshot's `asOfCommitSeq`
+
+```
+Client                              Server
+  │                                    │
+  │  POST /sync (pull)                 │
+  │  { subscriptions: [{              │
+  │      id: 'my-tasks',             │
+  │      table: 'tasks',             │
+  │      cursor: -1,  ◀── bootstrap   │
+  │      scopes: { user_id: '123' }  │
+  │  }]}                              │
+  │ ──────────────────────────────────▶│
+  │                                    │  resolveScopes()
+  │                                    │  build snapshot
+  │                                    │  (optionally chunked)
+  │◀────────────────────────────────── │
+  │  { subscriptions: [{              │
+  │      bootstrap: true,             │
+  │      nextCursor: 42,             │
+  │      snapshots: [{               │
+  │        table: 'tasks',           │
+  │        rows: [...] or chunks     │
+  │      }]                          │
+  │  }]}                              │
+  │                                    │
+  │  apply snapshot to SQLite          │
+  │  set cursor = 42                   │
+  │                                    │
+```
+
+For large datasets, snapshots are returned as **compressed chunks** (gzip + framed JSON rows). The client fetches each chunk separately via `GET /sync/snapshot-chunks/:chunkId`, verifies integrity, decodes framed rows, and applies them to SQLite.
+
+For caching, streaming, and tuning knobs, see [Bootstrap Deep Dive](/docs/concepts/first-sync).
+
+---
+
+## Phase 2: Incremental Pull
+
+Once bootstrapped, subsequent syncs only fetch new commits since the client's cursor. This is the steady-state mode.
+
+```
+Client                              Server
+  │                                    │
+  │  POST /sync (pull)                 │
+  │  { subscriptions: [{              │
+  │      id: 'my-tasks',             │
+  │      cursor: 42,  ◀── resume      │
+  │      scopes: { user_id: '123' }  │
+  │  }]}                              │
+  │ ──────────────────────────────────▶│
+  │                                    │  fetch commits > 42
+  │                                    │  matching scopes
+  │◀────────────────────────────────── │
+  │  { subscriptions: [{              │
+  │      bootstrap: false,            │
+  │      nextCursor: 47,             │
+  │      commits: [                  │
+  │        { commitSeq: 43, ... },   │
+  │        { commitSeq: 44, ... },   │
+  │        { commitSeq: 47, ... },   │
+  │      ]                           │
+  │  }]}                              │
+  │                                    │
+  │  apply each change to SQLite       │
+  │  advance cursor to 47             │
+  │                                    │
+```
+
+The server only returns commits whose scopes match the client's subscription. Scope filtering is covered in detail on the [Scopes](/docs/concepts/scopes) page.
+
+---
+
+## Phase 3: Push (Client to Server)
+
+When the user makes a local change, it is applied optimistically and queued for push:
+
+```
+ User Action          Client                        Server
+  │                     │                              │
+  │  insert/update      │                              │
+  │ ──────────────────▶ │                              │
+  │                     │  1. Write to local SQLite     │
+  │                     │  2. Add to outbox             │
+  │                     │                              │
+  │                     │  POST /sync (push)           │
+  │                     │  { clientId, clientCommitId, │
+  │                     │    operations: [{            │
+  │                     │      table: 'tasks',         │
+  │                     │      row_id: 'task-1',       │
+  │                     │      op: 'upsert',           │
+  │                     │      payload: {...}          │
+  │                     │    }]                        │
+  │                     │  }                           │
+  │                     │ ────────────────────────────▶│
+  │                     │                              │  validate auth
+  │                     │                              │  apply in txn
+  │                     │                              │  extract scopes
+  │                     │                              │  write to commit log
+  │                     │◀──────────────────────────── │
+  │                     │  { status: 'applied',        │
+  │                     │    commitSeq: 48 }           │
+  │                     │                              │
+  │                     │  3. Mark outbox commit acked  │
+  │                     │                              │
+```
+
+The push pipeline on the server:
+
+1. **Validate** -- Check auth, verify the actor has write access
+2. **Apply** -- Execute operations inside a database transaction
+3. **Extract scopes** -- Automatically tag each change with scope values from row data
+4. **Commit** -- Write to `sync_commits` and `sync_changes`, assign `commit_seq`
+5. **Respond** -- Return the result with per-operation status
+
+### Conflict detection
+
+If another client changed the same row since this client last read it, the server detects a version mismatch and returns a conflict:
+
+```typescript
+// Push operation with base_version
+{
+  table: 'tasks',
+  row_id: 'task-1',
+  op: 'upsert',
+  base_version: 5,
+  payload: { title: 'Updated title' }
+}
+
+// Conflict response (server is at version 6)
+{
+  opIndex: 0,
+  status: 'conflict',
+  server_version: 6,
+  server_row: { ... }
+}
+```
+
+See [Conflict Resolution](/docs/concepts/conflict-resolution) for how to handle conflicts.
+
+---
+
+## Phase 4: Pull (Server to Client)
+
+After pushing, the client pulls to receive changes from other clients. This uses the same incremental pull mechanism from Phase 2.
+
+The full push-then-pull cycle looks like this:
+
+```
+  ┌─────────┐      ┌──────────┐      ┌──────────┐
+  │  Push   │─────▶│  Pull    │─────▶│  Apply   │
+  │ outbox  │      │ commits  │      │ to SQLite│
+  └─────────┘      └──────────┘      └──────────┘
+       │                                    │
+       └──────── wait for next trigger ─────┘
+                 (poll / WebSocket wake-up)
+```
+
+---
+
+## Realtime Wake-ups
+
+By default the sync engine polls on an interval. When WebSocket transport is enabled, the server sends **wake-up signals** (not data) to trigger an immediate pull:
+
+```
+Server                              Client
+  │                                    │
+  │  [new commit matching              │
+  │   client's scopes]                │
+  │                                    │
+  │  wake-up signal (WebSocket)        │
+  │ ──────────────────────────────────▶│
+  │                                    │  trigger pull immediately
+  │                                    │  (same HTTP pull path)
+  │◀────────────────────────────────── │
+  │                                    │
+```
+
+WebSocket carries only wake-up signals. All data transfer stays on the HTTP pull path. This keeps the data flow simple and the protocol easy to debug.
+
+---
+
+## The Commit Log
+
+The server commit log is the backbone of the sync protocol. It consists of two tables:
+
+```
+sync_commits                              sync_changes
+┌────────────┬───────────┬─────────┐     ┌───────────┬────────┬────────┬─────────┬──────────┐
+│ commit_seq │ client_id │ actor_id│     │ commit_seq│ table  │ row_id │ op      │ scopes   │
+├────────────┼───────────┼─────────┤     ├───────────┼────────┼────────┼─────────┼──────────┤
+│ 1          │ device-A  │ user-1  │     │ 1         │ tasks  │ t-1    │ upsert  │{user:"1"}│
+│ 2          │ device-B  │ user-2  │     │ 2         │ tasks  │ t-2    │ upsert  │{user:"2"}│
+│ 3          │ device-A  │ user-1  │     │ 3         │ tasks  │ t-1    │ upsert  │{user:"1"}│
+│ 4          │ device-B  │ user-2  │     │ 4         │ tasks  │ t-2    │ delete  │{user:"2"}│
+└────────────┴───────────┴─────────┘     └───────────┴────────┴────────┴─────────┴──────────┘
+```
+
+Each commit:
+- Has a **monotonically increasing `commit_seq`** assigned by the server
+- Contains one or more changes across one or more tables
+- Each change is tagged with **scopes** (extracted automatically from row data)
+- Stores a cached push response for **idempotent retries**
+
+Clients track their position with a **cursor** (the last `commit_seq` they have seen). On each pull, the server returns commits where `commit_seq > cursor` and scopes match.
+
+---
+
+## Full Sequence: End to End
+
+Here is the complete flow when Client A makes a change that Client B receives:
+
+```
+Client A                    Server                     Client B
+  │                           │                           │
+  │  user edits task          │                           │
+  │  write to local SQLite    │                           │
+  │  queue in outbox          │                           │
+  │                           │                           │
+  │  POST /sync (push) ──────▶│                           │
+  │                           │  validate + apply         │
+  │                           │  write commit_seq: 48     │
+  │                           │  extract scopes           │
+  │  ◀──── { applied, 48 }   │                           │
+  │                           │                           │
+  │  mark outbox acked        │  wake-up (WebSocket) ───▶ │
+  │                           │                           │
+  │                           │  ◀──── POST /sync (pull)  │
+  │                           │  fetch commits > cursor   │
+  │                           │  filter by scopes         │
+  │                           │  return commit 48 ───────▶│
+  │                           │                           │
+  │                           │                    apply to SQLite
+  │                           │                    advance cursor
+  │                           │                           │
+```
+
+---
+
+## Data Integrity Guarantees
+
+Syncular provides three guarantees that make the sync protocol safe for production use:
+
+**Idempotency** -- Every push is keyed by `(client_id, client_commit_id)`. Retrying the same push returns the cached result. No duplicates, even with unreliable networks.
+
+**Atomicity** -- All operations in a commit are applied inside a single database transaction. Either every operation succeeds or none do. Partial application is impossible.
+
+**Ordering** -- Commits have a strict global order via `commit_seq`. Clients always see changes in order. Cursors ensure exactly-once delivery with no gaps.
+
+---
+
+## Next Steps
+
+- [Scopes](/docs/concepts/scopes) -- How authorization and data filtering work
+- [Subscriptions](/docs/concepts/subscriptions) -- How clients declare what data they need
+- [Commits](/docs/concepts/commits) -- Commit structure and operation types
+- [Conflict Resolution](/docs/concepts/conflict-resolution) -- Handling concurrent edits
