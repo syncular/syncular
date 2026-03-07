@@ -48,29 +48,29 @@ If you’re not sure where to start, see [Adoption Paths](/docs/introduction/ado
 
 Here's the full lifecycle of adding a task:
 
-```
-  You click "Add Task"
-       │
-       ▼
-  ┌─────────────────┐
-  │ 1. Local write   │  Task inserted into SQLite → UI updates instantly
-  │ 2. Outbox queue  │  Commit added to outbox table
-  └────────┬────────┘
-           │  (next sync cycle, or immediately if online)
-           ▼
-  ┌─────────────────┐
-  │ 3. Push to server│  POST /api/sync with `push` commit payload
-  │ 4. Server applies│  Handler validates, inserts row, extracts scopes
-  │ 5. Commit log    │  Change written to sync_commits + sync_changes
-  │ 6. Ack           │  Server returns commit_seq, client marks acked
-  └────────┬────────┘
-           │  (other clients pull)
-           ▼
-  ┌─────────────────┐
-  │ 7. Other clients │  Pull returns new commits since their cursor
-  │    apply changes │  Rows upserted/deleted in their local SQLite
-  └─────────────────┘
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  autonumber
+  actor User
+  participant Client as Local client
+  participant Server
+  participant Others as Other clients
+
+  User->>Client: Click "Add Task"
+  Client->>Client: Write row to SQLite
+  Client->>Client: Queue outbox commit
+  Client->>Server: POST /api/sync (push)
+  Server->>Server: Validate handler and apply row
+  Server->>Server: Write sync_commits + sync_changes
+  Server-->>Client: Ack with commitSeq
+  Server-->>Others: Optional wake-up signal
+  Others->>Server: POST /api/sync (pull)
+  Server-->>Others: Return commits since cursor
+  Others->>Others: Apply rows to local SQLite
+`}
+  caption="Local writes happen first. Syncular persists the change, pushes it when possible, and other clients pick it up on their next pull."
+/>
 
 **Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/docs/concepts/first-sync).
 

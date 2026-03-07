@@ -34,27 +34,22 @@ The blob storage system provides:
 
 ## Architecture
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Client    │     │   Server    │     │ Blob Store  │
-│             │     │             │     │ (S3/R2/DB)  │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       │ 1. Initiate       │                   │
-       │──────────────────>│                   │
-       │   presigned URL   │                   │
-       │<──────────────────│                   │
-       │                   │                   │
-       │ 2. Upload blob    │                   │
-       │───────────────────────────────────────>
-       │                   │                   │
-       │ 3. Complete       │                   │
-       │──────────────────>│                   │
-       │                   │                   │
-       │ 4. Use blob ref   │                   │
-       │   in sync data    │                   │
-       │──────────────────>│                   │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  autonumber
+  participant Client
+  participant Server
+  participant Store as Blob store
+
+  Client->>Server: Initiate upload
+  Server-->>Client: Presigned upload URL
+  Client->>Store: Upload blob bytes
+  Client->>Server: Mark upload complete
+  Client->>Server: Include blob ref in sync data
+`}
+  caption="Blob bytes bypass the sync payload. Syncular coordinates metadata, auth, and completion while the actual upload goes directly to the storage backend."
+/>
 
 ## Server Setup
 

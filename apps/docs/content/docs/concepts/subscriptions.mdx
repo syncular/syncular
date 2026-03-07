@@ -68,22 +68,15 @@ The `id` is how Syncular tracks this subscription across pull cycles. It determi
 
 A subscription moves through distinct phases. Here is the full lifecycle:
 
-```
-  Client adds subscription             Client removes subscription
-  with cursor: -1                       (stops including it in pulls)
-        |                                         |
-        v                                         v
-  +-----------+     +-------------+     +---------+
-  | Bootstrap |---->| Incremental |---->| Removed |
-  +-----------+     +-------------+     +---------+
-                          |
-                          | Server returns status: 'revoked'
-                          | (actor lost access)
-                          v
-                    +---------+
-                    | Revoked |
-                    +---------+
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Bootstrap["Bootstrap (cursor = -1)"] --> Incremental["Incremental"]
+  Incremental --> Removed["Removed"]
+  Incremental --> Revoked["Revoked"]
+`}
+  caption="Subscriptions bootstrap once, then run incrementally until the client removes them or the server revokes access."
+/>
 
 ### Phase by phase
 

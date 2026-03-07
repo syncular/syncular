@@ -92,30 +92,24 @@ const tasksHandler = createServerHandler({
 
 When a client pulls data, the server computes **effective scopes** as the intersection of what the client requested (via its [subscription](/docs/concepts/subscriptions)) and what `resolveScopes` allows:
 
-```
-  +------------------------------+
-  |        Requested             |
-  |   (from subscription)        |
-  |                              |
-  |      +----------------+      |        +-----------------------------+
-  |      |                |      |        |          Allowed            |
-  |      |   Effective    |<-----|------->|    (from resolveScopes)     |
-  |      |   (delivered)  |      |        |                             |
-  |      +----------------+      |        +-----------------------------+
-  |                              |
-  +------------------------------+
-
-  Effective = Requested  ∩  Allowed
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Requested["Requested scopes from the subscription"] --> Effective["Effective scopes delivered"]
+  Allowed["Allowed scopes from resolveScopes"] --> Effective
+`}
+  caption="The client can only receive the overlap between what it asked for and what the server says the actor may access."
+/>
 
 **Concrete example:**
 
-```
-Requested (subscription): { project_id: 'A' }
-Allowed   (resolveScopes): { user_id: '123', project_id: ['A', 'B'] }
-                                                         ───
-Effective (delivered):     { project_id: 'A' }
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Requested["Requested: project A"] --> Effective["Effective: project A"]
+  Allowed["Allowed: user 123 · projects A and B"] --> Effective
+`}
+/>
 
 The client asked for project A. The server confirms this actor has access to projects A and B. The intersection yields project A -- so only project A data is delivered.
 
@@ -123,12 +117,14 @@ The client asked for project A. The server confirms this actor has access to pro
 
 If the intersection produces no matching scopes, the subscription is **revoked**. This happens when an actor loses access -- for example, being removed from a project.
 
-```
-Requested (subscription): { project_id: 'A' }
-Allowed   (resolveScopes): { user_id: '123', project_id: ['B', 'C'] }
-                                                          ───
-Effective:                  (empty)  -->  status: 'revoked'
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Requested["Requested: project A"] --> Empty["No overlap"]
+  Allowed["Allowed: user 123 · projects B and C"] --> Empty
+  Empty --> Revoked["status = revoked"]
+`}
+/>
 
 **What happens on the client:**
 1. The server returns `status: 'revoked'` for this subscription.

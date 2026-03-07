@@ -16,33 +16,17 @@ Mutations create local changes that are synced to the server.
 
 Every mutation follows this path from the client to the server:
 
-```
-  client.mutations.tasks.insert({ title: 'New' })
-                  |
-                  v
-  +-------------------------------+
-  | 1. Local DB write (in a tx)   |  <-- immediate, optimistic
-  +-------------------------------+
-                  |
-                  v
-  +-------------------------------+
-  | 2. Outbox commit enqueued     |  <-- persisted in same tx
-  +-------------------------------+
-                  |
-                  v  (next sync cycle)
-  +-------------------------------+
-  | 3. Push to server             |  <-- transport.push()
-  +-------------------------------+
-                  |
-          +-------+--------+
-          |                |
-          v                v
-  +-------------+  +---------------+
-  | 4a. Applied |  | 4b. Conflict  |
-  | (acked)     |  | (stored for   |
-  +-------------+  |  resolution)  |
-                   +---------------+
-```
+<Mermaid
+  chart={`
+flowchart TB
+  Mutation["client.mutations.tasks.insert(...)"] --> Local["1. Local DB write (optimistic)"]
+  Local --> Outbox["2. Outbox commit enqueued"]
+  Outbox --> Push["3. Push to server"]
+  Push --> Applied["4a. Applied and acked"]
+  Push --> Conflict["4b. Conflict stored for resolution"]
+`}
+  caption="Mutations always write locally first. The network step happens afterward, and the result is either an acknowledgement or a stored conflict."
+/>
 
 ## Mutations API (Recommended)
 

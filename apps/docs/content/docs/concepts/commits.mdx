@@ -72,47 +72,25 @@ Removes a row:
 
 ## Push Lifecycle (Client to Server)
 
-```
-  Client                                Server
-  ------                                ------
-  User edits data
-       |
-       v
-  Write to local SQLite
-       |
-       v
-  Create outbox commit
-  (operations array)
-       |
-       v
-  POST /sync (push)  ────────────────>  Idempotency check
-                                        (client_id + client_commit_id)
-                                              |
-                                        ┌─────┴─────┐
-                                        | New?       | Duplicate?
-                                        v            v
-                                   Open TX      Return cached
-                                        |       response
-                                        v
-                                   For each operation:
-                                     - Look up table handler
-                                     - Call applyOperation()
-                                     - Extract scopes
-                                     - Detect conflicts
-                                        |
-                                   ┌────┴────┐
-                                   | All OK?  | Any conflict?
-                                   v          v
-                              Assign      Rollback app writes,
-                              commit_seq  cache rejected response
-                                   |
-                                   v
-  Receive response  <────────────  Return { status, commitSeq, results }
-       |
-       v
-  Mark outbox commit as acked
-  (or store conflicts for resolution)
-```
+<Mermaid
+  chart={`
+flowchart TB
+  Edit["User edits data"] --> Local["Write to local SQLite"]
+  Local --> Outbox["Create outbox commit"]
+  Outbox --> Push["POST /sync (push)"]
+  Push --> Idempotency["Idempotency check by client_id + client_commit_id"]
+  Idempotency --> Duplicate["Duplicate: return cached response"]
+  Idempotency --> Tx["New commit: open transaction"]
+  Tx --> Ops["Apply operations via table handlers"]
+  Ops --> Conflict["Conflict or rejected operation"]
+  Ops --> Commit["All operations succeed"]
+  Commit --> Ack["Assign commitSeq and return results"]
+  Duplicate --> Confirm["Client marks commit acked or stores conflicts"]
+  Conflict --> Confirm
+  Ack --> Confirm
+`}
+  caption="Pushes are idempotent. The server either returns a cached answer, rejects the operation, or assigns a new commit sequence."
+/>
 
 **Step by step:**
 
@@ -126,30 +104,20 @@ Removes a row:
 
 ## Pull Lifecycle (Server to Client)
 
-```
-  Client                                Server
-  ------                                ------
-  POST /sync (pull)
-  (subscriptions + cursors)  ────────>  Resolve scopes
-                                        (call resolveScopes per subscription)
-                                              |
-                                        ┌─────┴──────┐
-                                        | cursor < 0  | cursor >= 0
-                                        | or too old? | (valid)
-                                        v             v
-                                   Bootstrap      Incremental
-                                   (full snapshot  (commits since
-                                    as chunks)      cursor)
-                                        |             |
-                                        v             v
-  Receive response  <────────────  Return subscriptions[]
-       |                           with commits + snapshots
-       v
-  Apply changes to local SQLite
-       |
-       v
-  Advance cursor to nextCursor
-```
+<Mermaid
+  chart={`
+flowchart TB
+  Request["POST /sync (pull) with subscriptions + cursors"] --> Resolve["Resolve scopes for each subscription"]
+  Resolve --> Decision{"Cursor < 0 or too old?"}
+  Decision -->|Yes| Bootstrap["Bootstrap snapshot as rows or chunks"]
+  Decision -->|No| Incremental["Incremental commits since cursor"]
+  Bootstrap --> Response["Return subscriptions with snapshots and nextCursor"]
+  Incremental --> Response
+  Response --> Apply["Apply changes to local SQLite"]
+  Apply --> Advance["Advance cursor to nextCursor"]
+`}
+  caption="Every pull starts with scope resolution. The cursor decides whether the server sends a full bootstrap or just the commits after the current position."
+/>
 
 **Step by step:**
 

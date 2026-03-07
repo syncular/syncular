@@ -45,17 +45,23 @@ const { data: tasks } = useSyncQuery(({ selectFrom }) =>
 
 Instead of replicating database state (complex), Syncular replicates a **log of commits** (simple).
 
-```
-Commit Log
-─────────────────────────────────────────────────────────
-  seq 1  │  client-A  │  created task-1
-  seq 2  │  client-B  │  created task-2
-  seq 3  │  client-A  │  updated task-1 (title changed)
-  seq 4  │  client-B  │  deleted task-2
-─────────────────────────────────────────────────────────
-           ▲ Client B is here (cursor: 2)
-           │ Needs: commits 3 and 4
-```
+<Mermaid
+  chart={`
+flowchart TB
+  subgraph Log["Commit log"]
+    C1["seq 1 · client A · create task-1"]
+    C2["seq 2 · client B · create task-2"]
+    C3["seq 3 · client A · update task-1"]
+    C4["seq 4 · client B · delete task-2"]
+    C1 --> C2 --> C3 --> C4
+  end
+
+  Cursor["Client B cursor = 2"] --> C2
+  Needs["Next sync needs commits 3 and 4"] --> C3
+  Needs --> C4
+`}
+  caption="Clients track a cursor in the append-only log and only request commits after that point."
+/>
 
 Clients track their position in the log (a cursor). To sync, they ask: *"Give me commits after my cursor."* This gives you:
 
@@ -68,60 +74,54 @@ Clients track their position in the log (a cursor). To sync, they ask: *"Give me
 
 Every change is tagged with **scopes** — key-value pairs extracted automatically from row data:
 
-```
-┌───────────────────────────────────────────────────────┐
-│  Row: { id: 't1', title: 'Buy milk', user_id: '123' }│
-│                                                       │
-│  Scope pattern: 'user:{user_id}'                      │
-│  Extracted scope: { user_id: '123' }                  │
-│                                                       │
-│  Stored on the change in the commit log.              │
-│  Only clients subscribed to user_id: '123' receive it.│
-└───────────────────────────────────────────────────────┘
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Row["Row: task t1 owned by user 123"] --> Pattern["Scope pattern: user:{user_id}"]
+  Pattern --> Scope["Extracted scope: user_id = 123"]
+  Scope --> Change["Stored on the commit change"]
+  Change --> Delivery["Only matching subscribers receive it"]
+`}
+/>
 
 On pull, the server computes **effective scopes** as the intersection of what the client requested and what the user is allowed to access:
 
-```
-  Requested:  { project_id: 'A' }
-  Allowed:    { user_id: '123', project_id: ['A', 'B'] }
-                         ┌───────┐
-  Effective:             │   A   │  ← only project A data returned
-                         └───────┘
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Requested["Requested: project A"] --> Effective["Effective: project A"]
+  Allowed["Allowed: user 123 · projects A and B"] --> Effective
+  Effective --> Delivery["Only project A data is returned"]
+`}
+/>
 
 This makes authorization **automatic** (extracted from data), **explicit** (stored on every change), **auditable** (queryable in the database), and **composable** (combine user, project, team scopes).
 
 ## How it fits together
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│                         CLIENT                                 │
-│                                                                │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌──────────┐   │
-│  │  React  │───▶│ Kysely  │───▶│ SQLite  │    │ Changes  │   │
-│  │  UI     │    │ (typed) │    │ (local) │    │ appear   │   │
-│  └────┬────┘    └─────────┘    └─────────┘    │ instantly │   │
-│       │                                        └──────────┘   │
-│       │ mutate                                                 │
-│       ▼                                                        │
-│  ┌──────────┐                                                  │
-│  │ Outbox   │ ← pending commits, survives app restart          │
-│  └────┬─────┘                                                  │
-└───────┼────────────────────────────────────────────────────────┘
-        │ push (HTTP POST)                pull (HTTP POST)
-        ▼                                       │
-┌───────────────────────────────────────────────────────────────┐
-│                         SERVER                                 │
-│                                                                │
-│  ┌───────────────┐    ┌───────────┐    ┌───────────────┐      │
-│  │ Table Handlers│◀──▶│  Kysely   │───▶│   Postgres    │      │
-│  │ (your logic)  │    │  (typed)  │    │               │      │
-│  └───────────────┘    └───────────┘    └───────┬───────┘      │
-│                                                │               │
-│        Commit Log ─ append-only, scoped ◀──────┘               │
-└───────────────────────────────────────────────────────────────┘
-```
+<Mermaid
+  chart={`
+flowchart TB
+  subgraph Client["Client"]
+    direction LR
+    React["React UI"] --> ClientQuery["Kysely"]
+    ClientQuery --> ClientDb["SQLite"]
+    React -->|mutate| Outbox["Outbox"]
+    ClientDb --> Instant["Changes appear instantly"]
+  end
+
+  subgraph Server["Server"]
+    direction LR
+    Handler["Table handlers"] <--> ServerQuery["Kysely"]
+    ServerQuery --> Postgres["Postgres"]
+    Postgres --> CommitLog["Append-only commit log"]
+  end
+
+  Outbox -->|push over HTTP| Handler
+  CommitLog -->|pull over HTTP| ClientDb
+`}
+  caption="Your app always reads local data first. The server owns ordering, validation, and authorization through the commit log."
+/>
 
 ## Key concepts at a glance
 

@@ -24,19 +24,18 @@ Syncular uses WebSockets for realtime "wake-up" notifications. The actual data s
 
 ## How It Works
 
-```
-Server                              Client
-  │                                    │
-  │  [new commit matching              │
-  │   client's scopes]                │
-  │                                    │
-  │  wake-up signal (WebSocket)        │
-  │ ──────────────────────────────────▶│
-  │                                    │  trigger HTTP pull
-  │                                    │  (same pull path)
-  │◀────────────────────────────────── │
-  │                                    │
-```
+<Mermaid
+  chart={`
+sequenceDiagram
+  participant Server
+  participant Client
+
+  Server-->>Client: WebSocket wake-up for a matching commit
+  Client->>Server: HTTP pull using the normal sync path
+  Server-->>Client: Return commits and snapshots
+`}
+  caption="Realtime is only a signal. The actual data still flows through the same HTTP pull path."
+/>
 
 WebSocket carries only wake-up signals. All data transfer stays on the HTTP pull path. This keeps the data flow simple and the protocol easy to debug.
 
