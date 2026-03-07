@@ -10,19 +10,24 @@ The Syncular server handles commit storage, conflict detection, and real-time di
 > **You are here:** Reference (server APIs and configuration).
 >
 > If you're implementing Syncular, start with [Server Setup](/docs/build/server-setup) and [Table Handlers](/docs/build/table-handlers).
+>
+> This section documents the server surface area. It is not the canonical setup path.
 
 <Cards>
   <Card title="Overview" href="/docs/reference/server/overview">
-    Server architecture and concepts
+    Package boundaries, mounted surfaces, and extension points
   </Card>
   <Card title="Table Handlers Reference" href="/docs/reference/server/table-handlers-reference">
-    Configure table handlers
+    Factory options and handler interfaces
   </Card>
   <Card title="Subscription Registry" href="/docs/reference/server/subscription-registry">
-    Define subscription types
+    Requested subscriptions and effective scope resolution
   </Card>
   <Card title="Hono Adapter" href="/docs/reference/server/hono-adapter">
-    HTTP server integration
+    Route factories and HTTP integration
+  </Card>
+  <Card title="Cloudflare Adapter" href="/docs/reference/server/cloudflare-adapter">
+    Cloudflare Workers integration
   </Card>
   <Card title="Dialects" href="/docs/reference/server/dialects">
     Database dialect configuration
@@ -30,7 +35,11 @@ The Syncular server handles commit storage, conflict detection, and real-time di
   <Card title="Realtime Bridge" href="/docs/reference/server/realtime-bridge">
     WebSocket and real-time setup
   </Card>
-  <Card title="Service Worker Server" href="/docs/build/service-worker-server">
-    Run Syncular server APIs in-browser via Service Worker
-  </Card>
 </Cards>
+
+## Related guides
+
+- [Server Setup](/docs/build/server-setup)
+- [Table Handlers](/docs/build/table-handlers)
+- [Blob Storage](/docs/build/blob-storage)
+- [Service Worker Server](/docs/build/service-worker-server)
