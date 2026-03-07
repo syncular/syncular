@@ -1,6 +1,6 @@
 'use client';
 
-import { startTransition, useEffect, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 
 type MermaidProps = {
   caption?: string;
@@ -8,6 +8,33 @@ type MermaidProps = {
   children?: string;
   className?: string;
 };
+
+type DiagramKind = 'flowchart' | 'sequence' | 'generic';
+
+function getDiagramKind(source: string): DiagramKind {
+  const trimmed = source.trimStart();
+
+  if (trimmed.startsWith('sequenceDiagram')) {
+    return 'sequence';
+  }
+
+  if (trimmed.startsWith('flowchart') || trimmed.startsWith('graph')) {
+    return 'flowchart';
+  }
+
+  return 'generic';
+}
+
+function getDiagramWidthCap(kind: DiagramKind) {
+  switch (kind) {
+    case 'sequence':
+      return 840;
+    case 'flowchart':
+      return 720;
+    default:
+      return 760;
+  }
+}
 
 function getMermaidTheme() {
   return document.documentElement.classList.contains('dark')
@@ -22,6 +49,7 @@ async function loadMermaid() {
 
 export function Mermaid({ caption, chart, children, className }: MermaidProps) {
   const source = (chart ?? children ?? '').trim();
+  const diagramKind = useMemo(() => getDiagramKind(source), [source]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(
     'loading'
@@ -49,28 +77,50 @@ export function Mermaid({ caption, chart, children, className }: MermaidProps) {
           fontFamily:
             'var(--font-inter-tight), ui-sans-serif, system-ui, sans-serif',
           flowchart: {
-            curve: 'basis',
+            curve: 'linear',
             htmlLabels: false,
-            nodeSpacing: 36,
-            rankSpacing: 48,
-            useMaxWidth: false,
+            nodeSpacing: 18,
+            rankSpacing: 22,
+            padding: 8,
+            useMaxWidth: true,
           },
           sequence: {
-            diagramMarginX: 28,
-            diagramMarginY: 20,
-            actorMargin: 48,
-            width: 180,
-            height: 56,
-            boxMargin: 12,
-            boxTextMargin: 8,
-            noteMargin: 12,
-            messageMargin: 28,
+            diagramMarginX: 12,
+            diagramMarginY: 12,
+            actorMargin: 18,
+            width: 108,
+            height: 34,
+            boxMargin: 6,
+            boxTextMargin: 5,
+            noteMargin: 6,
+            messageMargin: 14,
             mirrorActors: false,
-            useMaxWidth: false,
+            useMaxWidth: true,
           },
           themeVariables: {
-            fontSize: '15px',
-            lineColor: '#a855f7',
+            fontSize: '12px',
+            primaryColor: '#101016',
+            primaryTextColor: '#f4f4f5',
+            primaryBorderColor: '#3f3f46',
+            secondaryColor: '#0c0c12',
+            secondaryTextColor: '#f4f4f5',
+            secondaryBorderColor: '#2a2a34',
+            tertiaryColor: '#09090b',
+            tertiaryTextColor: '#f4f4f5',
+            tertiaryBorderColor: '#232329',
+            noteBkgColor: '#111118',
+            noteBorderColor: '#2f2f3b',
+            clusterBkg: '#050507',
+            clusterBorder: '#232329',
+            actorBkg: '#101016',
+            actorBorder: '#3f3f46',
+            actorTextColor: '#f4f4f5',
+            signalColor: '#d8b4fe',
+            signalTextColor: '#f4f4f5',
+            labelBoxBkgColor: '#050507',
+            labelBoxBorderColor: '#232329',
+            edgeLabelBackground: '#050507',
+            lineColor: '#c084fc',
           },
         });
 
@@ -83,8 +133,31 @@ export function Mermaid({ caption, chart, children, className }: MermaidProps) {
 
         const container = containerRef.current;
         if (container) {
-          const doc = new DOMParser().parseFromString(nextSvg, 'image/svg+xml');
-          const svgElement = doc.documentElement;
+          const doc = new DOMParser().parseFromString(nextSvg, 'text/html');
+          const svgElement = doc.body.querySelector('svg');
+          if (!svgElement) {
+            throw new Error('Failed to render diagram.');
+          }
+          const widthCap = getDiagramWidthCap(diagramKind);
+          const figure = container.closest<HTMLElement>('.sync-diagram');
+          const viewBox = svgElement.getAttribute('viewBox');
+          const [, , viewBoxWidth] = viewBox?.split(/\s+/) ?? [];
+          const intrinsicWidth = Number.parseFloat(viewBoxWidth ?? '');
+          const fittedWidth =
+            Number.isFinite(intrinsicWidth) && intrinsicWidth > 0
+              ? Math.min(intrinsicWidth, widthCap)
+              : widthCap;
+
+          figure?.style.setProperty(
+            '--sync-diagram-fit-width',
+            `${fittedWidth}px`
+          );
+          figure?.setAttribute('data-diagram-kind', diagramKind);
+
+          svgElement.removeAttribute('width');
+          svgElement.removeAttribute('height');
+          svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+          svgElement.classList.add('sync-diagram__svg');
           container.replaceChildren(document.importNode(svgElement, true));
           if (bindFunctions) bindFunctions(container);
         }
@@ -122,7 +195,7 @@ export function Mermaid({ caption, chart, children, className }: MermaidProps) {
       cancelled = true;
       observer.disconnect();
     };
-  }, [source]);
+  }, [diagramKind, source]);
 
   return (
     <figure className={['sync-diagram', className].filter(Boolean).join(' ')}>
