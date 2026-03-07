@@ -13,6 +13,22 @@ function readHeaderFromFetchArgs(
   return new Headers(init?.headers).get(name);
 }
 
+function readSearchParamFromFetchArgs(
+  input: RequestInfo | URL,
+  name: string
+): string | null {
+  const url =
+    input instanceof Request
+      ? input.url
+      : input instanceof URL
+        ? input.toString()
+        : typeof input === 'string'
+          ? input
+          : null;
+  if (!url) return null;
+  return new URL(url, 'http://localhost').searchParams.get(name);
+}
+
 describe('createHttpTransport SyncTransportOptions', () => {
   it('forwards AbortSignal to sync requests', async () => {
     const controller = new AbortController();
@@ -240,12 +256,15 @@ describe('createHttpTransport SyncTransportOptions', () => {
 
   it('sends snapshot scopes via header when using direct transport options', async () => {
     let seenHeader: string | null = null;
+    let seenQueryScopes: string | null = null;
 
+    const scopeValues = { user_id: 'u1' };
     const transport = createHttpTransport({
       baseUrl: 'http://localhost',
-      fetch: async (_input, init) => {
+      fetch: async (input, init) => {
         const headers = new Headers(init?.headers);
         seenHeader = headers.get('x-syncular-snapshot-scopes');
+        seenQueryScopes = readSearchParamFromFetchArgs(input, 'scopes');
         return new Response(new Uint8Array([1, 2, 3]), {
           status: 200,
           headers: { 'content-type': 'application/octet-stream' },
@@ -255,15 +274,17 @@ describe('createHttpTransport SyncTransportOptions', () => {
 
     await transport.fetchSnapshotChunk({
       chunkId: 'chunk-with-scopes',
-      scopeValues: { user_id: 'u1' },
+      scopeValues,
     });
 
-    expect(seenHeader).toBe(JSON.stringify({ user_id: 'u1' }));
+    expect(seenHeader).toBe(JSON.stringify(scopeValues));
+    expect(seenQueryScopes).toBe(JSON.stringify(scopeValues));
   });
 
   it('sends snapshot scopes via header when wrapping an existing api client', async () => {
     let seenHeader: string | null = null;
 
+    const scopeValues = { user_id: 'u2' };
     const client = createApiClient({
       baseUrl: 'http://localhost',
       fetch: async (input, init) => {
@@ -282,20 +303,23 @@ describe('createHttpTransport SyncTransportOptions', () => {
 
     await transport.fetchSnapshotChunk({
       chunkId: 'chunk-from-client',
-      scopeValues: { user_id: 'u2' },
+      scopeValues,
     });
 
-    expect(seenHeader).toBe(JSON.stringify({ user_id: 'u2' }));
+    expect(seenHeader).toBe(JSON.stringify(scopeValues));
   });
 
   it('sends snapshot scopes via header for streamed snapshot chunk fetches', async () => {
     let seenHeader: string | null = null;
+    let seenQueryScopes: string | null = null;
 
+    const scopeValues = { user_id: 'u3' };
     const transport = createHttpTransport({
       baseUrl: 'http://localhost',
-      fetch: async (_input, init) => {
+      fetch: async (input, init) => {
         const headers = new Headers(init?.headers);
         seenHeader = headers.get('x-syncular-snapshot-scopes');
+        seenQueryScopes = readSearchParamFromFetchArgs(input, 'scopes');
         return new Response(new Uint8Array([7, 8, 9]), {
           status: 200,
           headers: { 'content-type': 'application/octet-stream' },
@@ -305,7 +329,7 @@ describe('createHttpTransport SyncTransportOptions', () => {
 
     const stream = await transport.fetchSnapshotChunkStream?.({
       chunkId: 'chunk-stream-with-scopes',
-      scopeValues: { user_id: 'u3' },
+      scopeValues,
     });
 
     expect(stream).toBeDefined();
@@ -313,7 +337,8 @@ describe('createHttpTransport SyncTransportOptions', () => {
     await reader.read();
     reader.releaseLock();
 
-    expect(seenHeader).toBe(JSON.stringify({ user_id: 'u3' }));
+    expect(seenHeader).toBe(JSON.stringify(scopeValues));
+    expect(seenQueryScopes).toBe(JSON.stringify(scopeValues));
   });
 
   it('supports auth lifecycle callbacks on 401/403', async () => {
