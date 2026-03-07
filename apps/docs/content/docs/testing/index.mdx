@@ -13,6 +13,8 @@ Use `@syncular/testkit` to test Syncular behavior across:
 
 The API is test-runner agnostic. You can use Bun, Vitest, Jest, or other runners without changing testkit code.
 
+If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/introduction/testing-and-confidence).
+
 ## Choose your path
 
 <Cards>
@@ -52,7 +54,4 @@ The API is test-runner agnostic. You can use Bun, Vitest, Jest, or other runners
 | Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
 | Faults | `withFaults`, `withRecording`, `createMockTransport` |
 
-## Build vs Testing docs
-
-The [Build testing strategy page](/docs/build/testing) explains what to verify as you implement Syncular.
-This section is the canonical `@syncular/testkit` reference.
+Need a rollout checklist rather than APIs? See [Testing Strategy](/docs/build/testing).

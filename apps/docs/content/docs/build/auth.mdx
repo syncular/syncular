@@ -5,6 +5,14 @@ description: Implement scope-based authorization patterns
 
 # Authorization
 
+This guide is about the shape of authorization in Syncular: how actors become scopes, how pull and push are constrained, and how to model common access-control patterns without hiding them inside query logic.
+
+## Use this page when
+
+- you are designing `resolveScopes` for a real application
+- you need to model tenant, project, team, or role-based access
+- you want to reason about membership changes and revocation behavior before shipping
+
 ## What you'll learn
 
 - How authorization works at pull and push time
@@ -28,12 +36,15 @@ Authorization happens at two points:
 1. **Pull**: Server resolves what scopes the user can access, intersects with requested scopes
 2. **Push**: Server validates emitted scopes (auto-extracted from row data) are within the allowed set
 
-```
-Client requests { table: 'tasks', scopes: { project_id: 'A' } }
-  → Server calls resolveScopes → { user_id: '123', project_id: ['A', 'B'] }
-  → Effective scopes: { project_id: 'A' }
-  → Server returns data for project_id: 'A' only
-```
+<Mermaid
+  chart={`
+flowchart LR
+  Request["Client requests<br>{ table: tasks, scopes: { project_id: 'A' } }"] --> Resolve["resolveScopes(ctx)<br>{ user_id: ['123'], project_id: ['A', 'B'] }"]
+  Resolve --> Effective["Effective scopes<br>{ project_id: 'A' }"]
+  Effective --> Result["Only project A data is returned"]
+`}
+  caption="Pull authorization is an explicit intersection between requested scopes and the actor's allowed scopes."
+/>
 
 ## Implementing resolveScopes
 

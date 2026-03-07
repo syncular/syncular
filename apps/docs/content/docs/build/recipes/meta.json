@@ -1,0 +1,10 @@
+{
+  "title": "Recipes",
+  "pages": [
+    "index",
+    "multi-tenant-saas",
+    "offline-field-app",
+    "blobs-and-media",
+    "collaborative-apps"
+  ]
+}

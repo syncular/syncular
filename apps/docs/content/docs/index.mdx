@@ -36,7 +36,28 @@ function TaskList() {
 
 No loading spinners. No network requests in the hot path. Queries run against local SQLite in under 1ms. Changes sync automatically in the background.
 
-## Start building
+## Choose your path
+
+Start from the question you actually have right now.
+
+<Cards>
+  <Card title="Evaluate Syncular" href="/docs/introduction" description="Fit, demo, trust signals, and honest comparisons before you commit" />
+  <Card title="Implement the Core Path" href="/docs/build" description="Server setup, client setup, table handlers, and the first production-ready build path" />
+  <Card title="Run It in Production" href="/docs/operate" description="Deployment, observability, troubleshooting, Console, and maintenance workflows" />
+</Cards>
+
+## Why teams trust Syncular
+
+A new sync system should earn trust. Syncular tries to do that in visible ways: deterministic tests, runtime coverage, failure injection, operator tooling, and product-facing history.
+
+<Cards>
+  <Card title="Testing & Confidence" href="/docs/introduction/testing-and-confidence" description="How the test suite is layered, what gets exercised, and how to evaluate risk" />
+  <Card title="Testing" href="/docs/testing" description="Runner-agnostic testkit, fault injection, runtime patterns, and real examples" />
+  <Card title="Audit & History" href="/docs/build/audit-ui" description="Product-facing history, app-owned audit logs, and links into operator forensics" />
+  <Card title="Operate" href="/docs/operate" description="Observability, Console workflows, troubleshooting, and deployment guidance" />
+</Cards>
+
+## Browse by topic
 
 The docs are organized by reader intent. Start with the topic that matches what you're trying to do.
 
@@ -139,6 +160,8 @@ subscriptions: [
 - Need managed infrastructure (consider [PowerSync](/docs/introduction/comparison/vs-powersync) or [Zero](/docs/introduction/comparison/vs-zero))
 - Building Google Docs-style real-time collaboration (consider [Jazz](/docs/introduction/comparison/vs-jazz))
 - Want arbitrary client queries without server-defined table handlers (consider [Zero](/docs/introduction/comparison/vs-zero))
+
+See [Good Fit & Not Fit](/docs/introduction/good-fit) for a fuller decision guide, including multiplayer games and other workloads that want a different architecture.
 
 ## Next
 
