@@ -1,6 +1,7 @@
 {
   "root": true,
   "title": "Operate",
+  "icon": "Wrench",
   "pages": [
     "index",
     "---Setup and Production---",
