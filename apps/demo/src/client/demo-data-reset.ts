@@ -81,8 +81,15 @@ const ALL_DEMO_CLIENT_STORES: readonly DemoClientStore[] =
 
 const DEMO_LOCAL_STORAGE_KEYS = [
   'sync-demo:split-screen:client-seed-v1',
+  'sync-demo:split-screen:actor-seed-v1',
   'sync-demo:crdt-yjs:client-seed-v1',
+  'sync-demo:crdt-yjs:actor-seed-v1',
   'sync-demo:keyshare:owner-key-v3',
+] as const;
+
+const DEMO_SESSION_STORAGE_KEYS = [
+  'sync-demo:split-screen:tab-client-seed-v1',
+  'sync-demo:crdt-yjs:tab-client-seed-v1',
 ] as const;
 
 export interface ActiveClientResetOptions {
@@ -157,6 +164,14 @@ async function resetAllDemoLocalData(): Promise<void> {
     }
   } catch {
     // Ignore localStorage unavailability/failures.
+  }
+
+  try {
+    for (const key of DEMO_SESSION_STORAGE_KEYS) {
+      window.sessionStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore sessionStorage unavailability/failures.
   }
 
   if (errors.length > 0) {

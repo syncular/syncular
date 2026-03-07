@@ -73,42 +73,23 @@ import {
   DemoClientSyncControls,
   useDemoClientSyncControls,
 } from '../components/demo-client-sync-controls';
+import {
+  getPersistentDemoActorSeed,
+  getPerTabDemoClientSeed,
+} from '../lib/demo-client-identity';
 import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:crdt-yjs:client-seed-v1';
+const ACTOR_ID_SEED_STORAGE_KEY = 'sync-demo:crdt-yjs:actor-seed-v1';
+const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:crdt-yjs:tab-client-seed-v1';
 const TASK_TITLE_YJS_STATE_COLUMN = 'title_yjs_state';
 const TASK_TITLE_YJS_CONTAINER = 'title';
 const EDITOR_DOC_ROW_ID = 'shared-doc-main';
 const REMOTE_STATE_ORIGIN = 'syncular:demo:remote-state';
 const EDITOR_UPDATE_FLUSH_DEBOUNCE_MS = 1_000;
-
-function createClientIdSeed(): string {
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.randomUUID === 'function'
-  ) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function getCrdtYjsClientIdSeed(): string {
-  if (typeof window === 'undefined') return 'server';
-  try {
-    const existing = window.localStorage.getItem(CLIENT_ID_SEED_STORAGE_KEY);
-    if (existing) return existing;
-
-    const created = createClientIdSeed();
-    window.localStorage.setItem(CLIENT_ID_SEED_STORAGE_KEY, created);
-    return created;
-  } catch {
-    return createClientIdSeed();
-  }
-}
 
 function shouldShowBackendResetFromSyncError(error: SyncError | null): boolean {
   if (!error) return false;
@@ -748,10 +729,17 @@ const createPgliteDialect = () =>
 // ---------------------------------------------------------------------------
 
 export function CrdtYjsTab() {
-  const clientIdSeed = useMemo(() => getCrdtYjsClientIdSeed(), []);
+  const actorIdSeed = useMemo(
+    () => getPersistentDemoActorSeed(ACTOR_ID_SEED_STORAGE_KEY),
+    []
+  );
+  const clientIdSeed = useMemo(
+    () => getPerTabDemoClientSeed(CLIENT_ID_SEED_STORAGE_KEY),
+    []
+  );
   const actorId = useMemo(
-    () => `demo-user::crdt-yjs-${clientIdSeed}`,
-    [clientIdSeed]
+    () => `demo-user::crdt-yjs-${actorIdSeed}`,
+    [actorIdSeed]
   );
   const sqliteClientId = useMemo(
     () => `client-sqlite-crdt-yjs-${clientIdSeed}`,

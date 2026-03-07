@@ -68,37 +68,18 @@ import {
   DemoClientSyncControls,
   useDemoClientSyncControls,
 } from '../components/demo-client-sync-controls';
+import {
+  getPersistentDemoActorSeed,
+  getPerTabDemoClientSeed,
+} from '../lib/demo-client-identity';
 import { useKeyedConstant } from '../lib/use-keyed-constant';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:split-screen:client-seed-v1';
-
-function createClientIdSeed(): string {
-  if (
-    typeof crypto !== 'undefined' &&
-    typeof crypto.randomUUID === 'function'
-  ) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function getSplitScreenClientIdSeed(): string {
-  if (typeof window === 'undefined') return 'server';
-  try {
-    const existing = window.localStorage.getItem(CLIENT_ID_SEED_STORAGE_KEY);
-    if (existing) return existing;
-
-    const created = createClientIdSeed();
-    window.localStorage.setItem(CLIENT_ID_SEED_STORAGE_KEY, created);
-    return created;
-  } catch {
-    return createClientIdSeed();
-  }
-}
+const ACTOR_ID_SEED_STORAGE_KEY = 'sync-demo:split-screen:actor-seed-v1';
+const CLIENT_ID_SEED_STORAGE_KEY = 'sync-demo:split-screen:tab-client-seed-v1';
 
 function shouldShowBackendResetFromSyncError(error: SyncError | null): boolean {
   if (!error) return false;
@@ -530,10 +511,17 @@ const createPgliteDialect = () =>
 // ---------------------------------------------------------------------------
 
 export function SplitScreenTab() {
-  const clientIdSeed = useMemo(() => getSplitScreenClientIdSeed(), []);
+  const actorIdSeed = useMemo(
+    () => getPersistentDemoActorSeed(ACTOR_ID_SEED_STORAGE_KEY),
+    []
+  );
+  const clientIdSeed = useMemo(
+    () => getPerTabDemoClientSeed(CLIENT_ID_SEED_STORAGE_KEY),
+    []
+  );
   const actorId = useMemo(
-    () => `demo-user::split-${clientIdSeed}`,
-    [clientIdSeed]
+    () => `demo-user::split-${actorIdSeed}`,
+    [actorIdSeed]
   );
   const sqliteClientId = useMemo(
     () => `client-sqlite-demo-${clientIdSeed}`,
