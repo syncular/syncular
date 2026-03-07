@@ -156,6 +156,24 @@ function applySnapshotScopesHeader(
   headers.set(SNAPSHOT_SCOPES_HEADER, encodedScopes);
 }
 
+function resolveSnapshotChunkRequestUrl(
+  baseUrl: string,
+  chunkId: string,
+  scopeValues: ScopeValues | undefined
+): string {
+  const requestUrl = new URL(
+    resolveRequestUrl(
+      baseUrl,
+      `/sync/snapshot-chunks/${encodeURIComponent(chunkId)}`
+    )
+  );
+  const encodedScopes = encodeSnapshotScopes(scopeValues);
+  if (encodedScopes) {
+    requestUrl.searchParams.set('scopes', encodedScopes);
+  }
+  return requestUrl.toString();
+}
+
 /**
  * Create a typed API client for the full Syncular API.
  *
@@ -382,17 +400,17 @@ export function createHttpTransport(
       },
       options?: SyncTransportOptions
     ): Promise<Uint8Array> {
+      const encodedScopes = encodeSnapshotScopes(request.scopeValues);
+
       if (!transportOptions) {
         const { data, error, response } = await executeWithAuthRetry(
           (signal) =>
             client.GET('/sync/snapshot-chunks/{chunkId}', {
               params: { path: { chunkId: request.chunkId } },
               parseAs: 'blob',
-              headers: request.scopeValues
+              headers: encodedScopes
                 ? {
-                    [SNAPSHOT_SCOPES_HEADER]: JSON.stringify(
-                      request.scopeValues
-                    ),
+                    [SNAPSHOT_SCOPES_HEADER]: encodedScopes,
                   }
                 : undefined,
               ...(signal ? { signal } : {}),
@@ -413,9 +431,10 @@ export function createHttpTransport(
       }
 
       const fetchImpl = transportOptions.fetch ?? globalThis.fetch;
-      const requestUrl = resolveRequestUrl(
+      const requestUrl = resolveSnapshotChunkRequestUrl(
         transportOptions.baseUrl,
-        `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
+        request.chunkId,
+        request.scopeValues
       );
 
       const performRequest = async (
@@ -488,9 +507,10 @@ export function createHttpTransport(
       }
 
       const fetchImpl = transportOptions.fetch ?? globalThis.fetch;
-      const requestUrl = resolveRequestUrl(
+      const requestUrl = resolveSnapshotChunkRequestUrl(
         transportOptions.baseUrl,
-        `/sync/snapshot-chunks/${encodeURIComponent(request.chunkId)}`
+        request.chunkId,
+        request.scopeValues
       );
 
       const performRequest = async (
