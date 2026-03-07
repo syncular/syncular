@@ -13,6 +13,8 @@ Each recipe focuses on:
 - the capabilities to prioritize first
 - the docs you should read next
 
+Before choosing a recipe, it helps to skim [How Sync Works](/docs/concepts/architecture) and [Scopes](/docs/concepts/scopes).
+
 <Cards>
   <Card title="Multi-Tenant SaaS" href="/docs/build/recipes/multi-tenant-saas">
     Tenant, workspace, and project isolation with operator tooling and audit trails
@@ -27,3 +29,10 @@ Each recipe focuses on:
     Shared records, presence, realtime wake-ups, and optional Yjs-backed fields
   </Card>
 </Cards>
+
+## After you pick a recipe
+
+- Wire the core backend path with [Server Setup](/docs/build/server-setup)
+- Add the client with [Client Setup](/docs/build/client-setup)
+- Encode the access model in [Table Handlers](/docs/build/table-handlers)
+- Validate the shape with [Testing](/docs/testing)

@@ -10,6 +10,7 @@ Scopes are key-value pairs that tag every change with its authorization context.
 ## What you'll learn
 
 - What scopes are and why they exist
+- Where `ctx.actorId` and `ctx.auth` come from
 - How to define scope patterns on your server handlers
 - How to implement `resolveScopes` to control access
 - How the server computes effective scopes (the intersection model)
@@ -36,6 +37,91 @@ const tasksHandler = createServerHandler({
 ```
 
 That is the entire setup. When a row is inserted with `user_id: 'alice'`, Syncular tags the resulting change with scope `{ user_id: 'alice' }`. When Alice pulls, `resolveScopes` returns `{ user_id: ['alice'] }`, and she receives only her own rows.
+
+---
+
+## Where `ctx` Comes From
+
+You do **not** construct the handler `ctx` yourself. Syncular builds it from:
+
+- your `sync.authenticate(request)` result
+- the request-scoped database executor
+- a few sync-specific fields such as `clientId` and `commitId` in write paths
+
+Whatever you return from `authenticate()` becomes `ctx.auth`. Syncular also exposes `ctx.actorId` as a convenience alias for `ctx.auth.actorId`.
+
+```typescript
+import { createSyncServer } from '@syncular/server-hono';
+
+type AppAuth = {
+  actorId: string;
+  partitionId?: string;
+  workspaceId: string;
+  role: 'admin' | 'member';
+};
+
+const { syncRoutes } = createSyncServer<ServerDb, AppAuth>({
+  db,
+  dialect,
+  sync: {
+    handlers: [tasksHandler],
+    authenticate: async (request) => {
+      const token = request.headers
+        .get('authorization')
+        ?.replace('Bearer ', '');
+      if (!token) return null;
+
+      const session = await verifyToken(token);
+      if (!session) return null;
+
+      return {
+        actorId: session.userId,
+        partitionId: session.workspaceId,
+        workspaceId: session.workspaceId,
+        role: session.role,
+      };
+    },
+  },
+});
+```
+
+Once that is in place, your handlers receive the same auth payload on every call:
+
+```typescript
+const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks', AppAuth>({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  async resolveScopes(ctx) {
+    const projects =
+      ctx.auth.role === 'admin'
+        ? await ctx.db
+            .selectFrom('projects')
+            .select('id as project_id')
+            .where('workspace_id', '=', ctx.auth.workspaceId)
+            .execute()
+        : await ctx.db
+            .selectFrom('project_members')
+            .select('project_id')
+            .where('user_id', '=', ctx.actorId)
+            .execute();
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: projects.map((project) => project.project_id),
+    };
+  },
+});
+```
+
+### What is available on `ctx`
+
+- `ctx.actorId` -- the authenticated actor ID
+- `ctx.auth` -- the full object returned by `authenticate()`
+- `ctx.db` -- the database executor for `resolveScopes()` and snapshots
+- `ctx.trx`, `ctx.clientId`, `ctx.commitId` -- additional fields on write paths such as `authorize()` and `applyOperation()`
+
+For many apps, returning `{ actorId }` is enough. Add extra fields to `ctx.auth` only when your scope logic needs them, such as `role`, `tenantId`, or `partitionId`.
 
 ---
 
