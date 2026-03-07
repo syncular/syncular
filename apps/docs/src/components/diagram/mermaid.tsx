@@ -10,7 +10,9 @@ type MermaidProps = {
 };
 
 function getMermaidTheme() {
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'neutral';
+  return document.documentElement.classList.contains('dark')
+    ? 'dark'
+    : 'neutral';
 }
 
 async function loadMermaid() {
@@ -21,7 +23,9 @@ async function loadMermaid() {
 export function Mermaid({ caption, chart, children, className }: MermaidProps) {
   const source = (chart ?? children ?? '').trim();
   const containerRef = useRef<HTMLDivElement>(null);
-  const [svg, setSvg] = useState<string | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>(
+    'loading'
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,13 +35,19 @@ export function Mermaid({ caption, chart, children, className }: MermaidProps) {
 
     const renderDiagram = async () => {
       try {
+        startTransition(() => {
+          setStatus('loading');
+          setError(null);
+        });
+
         const mermaid = await loadMermaid();
 
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
           theme: getMermaidTheme(),
-          fontFamily: 'var(--font-inter-tight), ui-sans-serif, system-ui, sans-serif',
+          fontFamily:
+            'var(--font-inter-tight), ui-sans-serif, system-ui, sans-serif',
           flowchart: {
             curve: 'basis',
             htmlLabels: false,
@@ -71,22 +81,28 @@ export function Mermaid({ caption, chart, children, className }: MermaidProps) {
 
         if (cancelled) return;
 
-        startTransition(() => {
-          setSvg(nextSvg);
-          setError(null);
-        });
+        const container = containerRef.current;
+        if (container) {
+          const doc = new DOMParser().parseFromString(nextSvg, 'image/svg+xml');
+          const svgElement = doc.documentElement;
+          container.replaceChildren(document.importNode(svgElement, true));
+          if (bindFunctions) bindFunctions(container);
+        }
 
-        queueMicrotask(() => {
-          if (cancelled) return;
-          const container = containerRef.current;
-          if (container && bindFunctions) bindFunctions(container);
+        startTransition(() => {
+          setStatus('ready');
+          setError(null);
         });
       } catch (err) {
         if (cancelled) return;
 
+        containerRef.current?.replaceChildren();
+
         startTransition(() => {
-          setSvg(null);
-          setError(err instanceof Error ? err.message : 'Failed to render diagram.');
+          setStatus('error');
+          setError(
+            err instanceof Error ? err.message : 'Failed to render diagram.'
+          );
         });
       }
     };
@@ -110,19 +126,25 @@ export function Mermaid({ caption, chart, children, className }: MermaidProps) {
 
   return (
     <figure className={['sync-diagram', className].filter(Boolean).join(' ')}>
-      <div className="sync-diagram__canvas" ref={containerRef}>
-        {svg ? (
-          <div dangerouslySetInnerHTML={{ __html: svg }} />
-        ) : error ? (
+      <div className="sync-diagram__canvas">
+        <div
+          className="sync-diagram__mount"
+          hidden={status !== 'ready'}
+          ref={containerRef}
+        />
+        {status === 'error' ? (
           <div className="sync-diagram__fallback">
             <p className="sync-diagram__error">{error}</p>
             <pre>{source}</pre>
           </div>
-        ) : (
+        ) : null}
+        {status === 'loading' ? (
           <div className="sync-diagram__loading">Rendering diagram...</div>
-        )}
+        ) : null}
       </div>
-      {caption ? <figcaption className="sync-diagram__caption">{caption}</figcaption> : null}
+      {caption ? (
+        <figcaption className="sync-diagram__caption">{caption}</figcaption>
+      ) : null}
     </figure>
   );
 }
