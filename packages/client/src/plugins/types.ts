@@ -44,6 +44,11 @@ export const PluginPriority = {
 } as const;
 
 export interface SyncClientPlugin {
+  /**
+   * Stable plugin kind for deduping/default wiring across high-level APIs.
+   */
+  kind?: string;
+
   name: string;
 
   /**

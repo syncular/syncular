@@ -56,6 +56,7 @@ import {
   hasRegressions,
   loadBaseline,
 } from './regression';
+import { installSilentSyncTelemetry } from './telemetry';
 
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
 const RUN_LARGE_PERF = Bun.env.SYNC_PERF_LARGE === '1';
@@ -189,16 +190,19 @@ async function insertSnapshotChunkRowsChunked(
 
 describe('sync performance', () => {
   let server: TestServer;
+  let restoreTelemetry: (() => void) | null = null;
   const results: BenchmarkResult[] = [];
   const userId = 'perf-user';
   const itLarge = RUN_LARGE_PERF ? it : it.skip;
 
   beforeAll(async () => {
+    restoreTelemetry = installSilentSyncTelemetry();
     server = await createTestServer('sqlite');
   });
 
   afterAll(async () => {
     await server.destroy();
+    restoreTelemetry?.();
 
     // Print results
     console.log(`\n${formatBenchmarkTable(results)}`);
@@ -1184,7 +1188,9 @@ describe('sync performance', () => {
     );
   });
 
-  it('transport lane catchup latency (direct/relay/ws)', async () => {
+  it(
+    'transport lane catchup latency (direct/relay/ws)',
+    async () => {
     const nativeFetch = (
       globalThis as { __nativeFetch?: typeof globalThis.fetch }
     ).__nativeFetch;
@@ -1487,7 +1493,9 @@ describe('sync performance', () => {
       await writer.destroy();
       await transportServer.destroy();
     }
-  });
+    },
+    { timeout: 20_000 }
+  );
 
   it('generates regression report', async () => {
     const baseline = await loadBaseline(BASELINE_PATH);

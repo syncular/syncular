@@ -320,18 +320,37 @@ await resolve(conflictId, 'accept'); // or 'reject'
 
 ## Auto-Version Plugin
 
-Automatically track versions with the incrementing version plugin so you do not have to manually set `base_version` on every mutation:
+High-level stateful clients already include the incrementing version plugin by default:
+
+- `SyncProvider`
+- `Client`
+- `createClient`
+- `SyncEngine`
+
+You only need to wire it manually when you are composing low-level mutation/push helpers yourself.
 
 ```typescript
 import { createIncrementingVersionPlugin } from '@syncular/client';
 
-const plugins = [createIncrementingVersionPlugin()];
+const plugin = createIncrementingVersionPlugin();
 
-// Pass to SyncProvider
-<SyncProvider plugins={plugins} ... />
+await syncPushOnce(db, transport, handlers, {
+  ...options,
+  plugins: [plugin],
+});
 ```
 
-This plugin reads the current local row version and sets `base_version` on each outgoing operation automatically.
+This plugin does **not** read local rows or turn on conflict detection by itself.
+
+What it actually does:
+
+- leaves inserts and missing `base_version` values alone
+- tracks the next expected version after successful pushes
+- bumps already-present numeric `base_version` values forward for rapid sequential writes on the same row
+
+That prevents "self-conflicts" when one client enqueues several updates to the same row in quick succession.
+
+For the standard `server_version` flow, `useMutations()` and `useMutation()` already read the current local row version automatically unless you override `baseVersion` yourself.
 
 ## Best Practices
 

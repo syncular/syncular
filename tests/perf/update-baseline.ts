@@ -46,6 +46,7 @@ import {
   formatBenchmarkTable,
 } from './benchmark';
 import type { Baseline } from './regression';
+import { installSilentSyncTelemetry } from './telemetry';
 
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
@@ -242,9 +243,11 @@ async function insertDialectRowsChunked(
 }
 
 async function runBenchmarks(): Promise<BenchmarkResult[]> {
+  const restoreTelemetry = installSilentSyncTelemetry();
   const results: BenchmarkResult[] = [];
 
-  console.log('Running performance benchmarks...\n');
+  try {
+    console.log('Running performance benchmarks...\n');
 
   // Bootstrap 1K
   console.log('  Running: bootstrap_1k');
@@ -1253,7 +1256,10 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
     }
   }
 
-  return results;
+    return results;
+  } finally {
+    restoreTelemetry();
+  }
 }
 
 async function main() {

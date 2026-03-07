@@ -42,6 +42,11 @@ interface RegressionResult {
 const REGRESSION_THRESHOLD = 0.2;
 
 /**
+ * Ignore tiny absolute shifts that are below the noise floor of local runs.
+ */
+const MIN_ABSOLUTE_REGRESSION_DELTA_MS = 1;
+
+/**
  * Per-metric overrides for known noisy benchmarks.
  */
 const REGRESSION_THRESHOLD_OVERRIDES: Record<string, number> = {
@@ -104,6 +109,7 @@ export function detectRegressions(
     const base = baselineMetric?.median ?? r.median;
     const change = calculateRelativeChange(r.median, base);
     const regressionThreshold = getRegressionThreshold(r.name);
+    const absoluteDeltaMs = r.median - base;
 
     return {
       metric: r.name,
@@ -111,7 +117,10 @@ export function detectRegressions(
       current: r.median,
       change,
       baselineMissing,
-      regression: !baselineMissing && change > regressionThreshold,
+      regression:
+        !baselineMissing &&
+        absoluteDeltaMs > MIN_ABSOLUTE_REGRESSION_DELTA_MS &&
+        change > regressionThreshold,
       improvement: !baselineMissing && change < IMPROVEMENT_THRESHOLD,
     };
   });

@@ -96,4 +96,20 @@ describe('detectRegressions', () => {
     expect(regressions[1]?.regression).toBe(false);
     expect(regressions[2]?.regression).toBe(true);
   });
+
+  it('does not flag sub-millisecond local noise as a regression', () => {
+    const results = [makeResult('incremental_pull', 0.35)];
+    const baseline = {
+      incremental_pull: {
+        median: 0.2,
+        p95: 0.2,
+        p99: 0.2,
+        timestamp: '2025-01-01',
+      },
+    };
+
+    const regressions = detectRegressions(results, baseline);
+
+    expect(regressions[0]?.regression).toBe(false);
+  });
 });

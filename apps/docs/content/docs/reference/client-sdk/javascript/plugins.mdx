@@ -32,27 +32,41 @@ interface SyncClientPlugin {
 
 ### createIncrementingVersionPlugin
 
-Automatically tracks `server_version` for conflict detection.
+Prevents self-conflicts on hot rows by advancing already-present numeric `base_version` values across sequential writes from the same client.
 
 ```typescript
 import { createIncrementingVersionPlugin } from '@syncular/client';
 
 const plugin = createIncrementingVersionPlugin();
 
-// Use with syncOnce
-await syncOnce(db, transport, handlers, {
+// Use with low-level push helpers
+await syncPushOnce(db, transport, handlers, {
   ...options,
   plugins: [plugin],
 });
 
-// Or with React
-<SyncProvider plugins={[plugin]} ... />
+// Or with direct outbox commit helpers
+const commit = createOutboxCommit({
+  db,
+  actorId,
+  clientId,
+  plugins: [plugin],
+});
 ```
 
-This plugin:
-1. Reads the current `server_version` from local rows
-2. Sets `base_version` on outbox operations automatically
-3. No manual version tracking needed
+High-level stateful clients already include this plugin by default:
+
+- `Client`
+- `createClient`
+- `SyncProvider`
+- `SyncEngine`
+
+This plugin does **not** read local rows or populate missing `base_version` values.
+
+What it does:
+1. Watches successful pushes for `(table, row_id)` version advancement
+2. Remembers the next expected version for that row
+3. Rewrites later numeric `base_version` values upward when they would otherwise be stale
 
 ### createYjsClientPlugin
 
