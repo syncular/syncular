@@ -238,6 +238,13 @@ captureSyncException(new Error('Payment failed'), { orderId: 'ord_456' });
 
 For Sentry log ingestion and message/issue events, use the platform-specific helpers:
 
+## Related guides
+
+- [Troubleshooting](/docs/operate/troubleshooting) for incident debugging workflows
+- [Performance](/docs/operate/performance) for bootstrap, prune, and compaction tuning
+- [Console Stream Investigation](/docs/operate/console/stream-investigation) for operator-side request forensics
+- [Testing](/docs/testing) if you want to validate failures before production
+
 ```ts
 import {
   logBrowserSentryMessage,
