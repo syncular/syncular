@@ -1,6 +1,7 @@
 {
   "root": true,
   "title": "Concepts",
+  "icon": "Layers",
   "pages": [
     "index",
     "---Core Model---",
