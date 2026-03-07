@@ -5,6 +5,8 @@ import type {
 } from '@syncular/core';
 import type { SyncClientPlugin, SyncClientPluginContext } from './types';
 
+export const INCREMENTING_VERSION_PLUGIN_KIND = 'incrementing-version';
+
 export interface IncrementingVersionPluginOptions {
   /**
    * Plugin name (used for debugging).
@@ -58,7 +60,7 @@ function touchLru(
 export function createIncrementingVersionPlugin(
   options: IncrementingVersionPluginOptions = {}
 ): SyncClientPlugin {
-  const name = options.name ?? 'incrementing-version';
+  const name = options.name ?? INCREMENTING_VERSION_PLUGIN_KIND;
   const maxTrackedRows = Math.max(
     1,
     Math.min(1_000_000, options.maxTrackedRows ?? 10_000)
@@ -66,6 +68,7 @@ export function createIncrementingVersionPlugin(
   const nextExpectedBaseVersionByRow = new Map<string, number>();
 
   return {
+    kind: INCREMENTING_VERSION_PLUGIN_KIND,
     name,
 
     beforePush(

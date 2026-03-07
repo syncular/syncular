@@ -109,7 +109,7 @@ Conflicts typically mean optimistic concurrency is enabled but the client is not
 Checklist:
 
 - Ensure synced tables include a `server_version` column (or your configured version column).
-- Enable the incrementing version plugin for automatic base versioning, or pass `baseVersion` explicitly on updates.
+- Ensure your write path is sending the right `base_version`. `useMutations()` and `useMutation()` read `server_version` automatically by default; low-level helpers should either pass `baseVersion` explicitly or use the incrementing version plugin.
 - Ensure your server handler increments the version column on each successful write.
 
 See: [Conflict Resolution](/docs/concepts/conflict-resolution).

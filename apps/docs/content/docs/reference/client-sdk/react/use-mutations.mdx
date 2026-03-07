@@ -5,6 +5,8 @@ description: Make changes that sync to the server
 
 `useMutations` provides a typed, ergonomic API for making changes.
 
+For the standard `server_version` flow, both `useMutations()` and `useMutation()` automatically read the current local row version for updates and deletes when `baseVersion` is omitted. Pass `baseVersion` to override that value, or `null` to disable optimistic concurrency for a specific write.
+
 ## Basic Usage
 
 ```tsx
@@ -97,7 +99,7 @@ function TaskItem({ task }) {
   const { mutate, isPending, error } = useMutation({ table: 'tasks' });
 
   const updateTitle = async (newTitle: string) => {
-    await mutate.upsert(task.id, { title: newTitle }, { baseVersion: task.server_version });
+    await mutate.upsert(task.id, { title: newTitle });
   };
 
   return <Input value={task.title} onChange={(e) => updateTitle(e.target.value)} />;
@@ -109,6 +111,7 @@ function TaskItem({ task }) {
 ```typescript
 interface UseMutationOptions {
   table: string;
+  versionColumn?: string | null;
   syncImmediately?: boolean;
   onSuccess?: (result: MutationResult) => void;
   onError?: (error: Error) => void;

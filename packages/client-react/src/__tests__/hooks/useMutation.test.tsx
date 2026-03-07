@@ -153,6 +153,40 @@ describe('useMutation', () => {
       expect(ops[0].base_version).toBe(5);
     });
 
+    it('mutate.upsert() auto-reads baseVersion from server_version by default', async () => {
+      await db
+        .insertInto('tasks')
+        .values({
+          id: 'task-1',
+          title: 'Existing',
+          completed: 0,
+          user_id: 'test-actor',
+          server_version: 7,
+        })
+        .execute();
+
+      const { result } = renderHook(
+        () => useMutation({ table: 'tasks', syncImmediately: false }),
+        { wrapper: createWrapper() }
+      );
+
+      await act(async () => {
+        await result.current.mutate.upsert('task-1', {
+          title: 'Updated',
+          completed: 1,
+          user_id: 'test-actor',
+        });
+      });
+
+      const outbox = await db
+        .selectFrom('sync_outbox_commits')
+        .select(['operations_json'])
+        .executeTakeFirstOrThrow();
+
+      const ops = JSON.parse(outbox.operations_json);
+      expect(ops[0].base_version).toBe(7);
+    });
+
     it('mutate.delete() supports baseVersion option', async () => {
       const { result } = renderHook(
         () => useMutation({ table: 'tasks', syncImmediately: false }),

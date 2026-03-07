@@ -81,10 +81,14 @@ sync.addHandler({
 
 ## With Plugins
 
-```tsx
-import { createIncrementingVersionPlugin } from '@syncular/client';
+`SyncProvider` already includes the incrementing version plugin by default, so you do not need to add it manually for the standard `server_version` conflict flow.
 
-const plugins = [createIncrementingVersionPlugin()];
+Use `plugins` when you need additional capabilities such as encryption or Yjs, or when you are overriding the default plugin set deliberately.
+
+```tsx
+import { createYjsClientPlugin } from '@syncular/client-plugin-yjs';
+
+const plugins = [createYjsClientPlugin({ rules })];
 
 <SyncProvider plugins={plugins} ... />
 ```

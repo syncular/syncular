@@ -5,9 +5,12 @@ description: Core client SDK for Syncular
 
 The `@syncular/client` package provides the core sync functionality for JavaScript applications.
 
+For most non-React apps, start with `createClient()`. Reach for `new Client(...)` when you need explicit control over transport construction, subscriptions, or lifecycle wiring.
+
 ### What you'll learn
 
 - How to install and configure the `Client` class
+- When to use `createClient()` instead of `new Client(...)`
 - The high-level mutations API for insert, update, delete, and batch operations
 - How to register table handlers and subscriptions
 - Available events, methods, and static utilities
@@ -21,6 +24,28 @@ npm install @syncular/transport-ws # optional (realtime wake-ups)
 ```
 
 ## Quick Start
+
+Recommended path for most apps:
+
+```typescript
+import { createClient } from '@syncular/client';
+import { createHttpTransport } from '@syncular/transport-http';
+
+const { client } = await createClient({
+  db,
+  actorId: 'user-456',
+  transport: createHttpTransport({
+    baseUrl: '/api',
+    getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+  }),
+  tables: ['tasks', 'projects'],
+  scopes: ['user:{user_id}'],
+});
+
+await client.mutations.tasks.insert({ title: 'New task' });
+```
+
+Manual `Client` setup when you want full wiring control:
 
 ```typescript
 import { Client } from '@syncular/client';
@@ -82,7 +107,7 @@ interface ClientOptions<DB> {
     params?: Record<string, unknown>;
   }>;
   blobStorage?: ClientBlobStorage;  // Optional: for blob support
-  plugins?: SyncClientPlugin[];
+  plugins?: SyncClientPlugin[];     // Optional: additional plugins; incrementing-version is included by default
   realtimeEnabled?: boolean;
   pollIntervalMs?: number;
   dataChangeDebounceMs?: number | false;

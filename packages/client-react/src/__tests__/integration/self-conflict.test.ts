@@ -6,10 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import {
-  createIncrementingVersionPlugin,
-  enqueueOutboxCommit,
-} from '@syncular/client';
+import { enqueueOutboxCommit } from '@syncular/client';
 import {
   createTestClient,
   createTestServer,
@@ -30,7 +27,6 @@ describe('Self-conflict avoidance', () => {
     client = await createTestClient(server, {
       actorId: userId,
       clientId: 'client-a',
-      plugins: [createIncrementingVersionPlugin()],
     });
 
     await client.engine.start();

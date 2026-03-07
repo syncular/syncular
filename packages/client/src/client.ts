@@ -46,6 +46,7 @@ import {
   createOutboxCommit,
   type MutationsApi,
 } from './mutations';
+import { withDefaultClientPlugins } from './plugins';
 import type { SyncClientPlugin } from './plugins/types';
 import type { SyncClientDb } from './schema';
 import type { SubscriptionState } from './subscription-state';
@@ -362,19 +363,20 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
   public readonly blobs: BlobClient | undefined;
 
   constructor(options: ClientOptions<DB>) {
-    this.options = options;
+    const plugins = withDefaultClientPlugins(options.plugins);
+    this.options = { ...options, plugins };
 
     // Create mutations API
     const commitFn = createOutboxCommit({
-      db: options.db,
-      idColumn: options.idColumn ?? 'id',
-      versionColumn: options.versionColumn ?? 'server_version',
-      omitColumns: options.omitColumns ?? [],
-      codecs: options.codecs,
-      codecDialect: options.codecDialect,
-      plugins: options.plugins,
-      actorId: options.actorId,
-      clientId: options.clientId,
+      db: this.options.db,
+      idColumn: this.options.idColumn ?? 'id',
+      versionColumn: this.options.versionColumn ?? 'server_version',
+      omitColumns: this.options.omitColumns ?? [],
+      codecs: this.options.codecs,
+      codecDialect: this.options.codecDialect,
+      plugins: this.options.plugins,
+      actorId: this.options.actorId,
+      clientId: this.options.clientId,
     });
     this.mutations = createMutationsApi(commitFn) as MutationsApi<DB>;
 

@@ -25,7 +25,6 @@ import type {
   SyncIdentityBase,
   SyncInspectorOptions,
   SyncInspectorSnapshot,
-  SyncOperation,
   SyncProgress,
   SyncRepairOptions,
   SyncResetOptions,
@@ -38,7 +37,6 @@ import {
   createMutationsApi,
   createOutboxCommit,
   createQueryContext,
-  enqueueOutboxCommit,
   FingerprintCollector,
   type FingerprintMode,
   type OutboxStats,
@@ -582,6 +580,7 @@ export interface UseMutationResult {
 
 export interface UseMutationOptions<TTable extends string> {
   table: TTable;
+  versionColumn?: string | null;
   syncImmediately?: boolean;
   onSuccess?: (result: MutationResult) => void;
   onError?: (error: Error) => void;
@@ -1760,12 +1759,30 @@ export function createSyncularReact<
   function useMutation<TTable extends keyof DB & string>(
     options: UseMutationOptions<TTable>
   ): UseMutationResult {
-    const { table, syncImmediately = true, onSuccess, onError } = options;
+    const {
+      table,
+      versionColumn = 'server_version',
+      syncImmediately = true,
+      onSuccess,
+      onError,
+    } = options;
     const { db } = useSyncContext();
     const engine = useEngine();
 
     const [isPending, setIsPending] = useState(false);
     const [error, setError] = useState<Error | null>(null);
+
+    const baseCommit = useMemo(
+      () =>
+        createOutboxCommit<DB>({
+          db,
+          versionColumn,
+          plugins: engine.getPlugins(),
+          actorId: engine.getActorId() ?? undefined,
+          clientId: engine.getClientId() ?? undefined,
+        }),
+      [db, engine, versionColumn]
+    );
 
     const enqueue = useCallback(
       async (inputs: Array<MutationInput>): Promise<MutationResult> => {
@@ -1773,30 +1790,60 @@ export function createSyncularReact<
         setError(null);
 
         try {
-          const operations: SyncOperation[] = inputs.map((input) => ({
-            scope: table,
-            table: table,
-            row_id: input.rowId,
-            op: input.op,
-            payload: input.op === 'delete' ? null : (input.payload ?? null),
-            base_version: input.baseVersion ?? null,
-          }));
+          const { receipt, meta } = await baseCommit(async (tx) => {
+            const tableMutations = tx[table];
 
-          const result = await enqueueOutboxCommit(db, { operations });
+            for (const input of inputs) {
+              if (input.op === 'delete') {
+                await tableMutations.delete(
+                  input.rowId,
+                  input.baseVersion === undefined
+                    ? undefined
+                    : { baseVersion: input.baseVersion }
+                );
+                continue;
+              }
+
+              await tableMutations.upsert(
+                input.rowId,
+                input.payload ?? {},
+                input.baseVersion === undefined
+                  ? undefined
+                  : { baseVersion: input.baseVersion }
+              );
+            }
+          });
+
+          const localMutations =
+            meta.localMutations.length > 0
+              ? meta.localMutations
+              : meta.operations
+                  .map((operation) => {
+                    const rowId = operation.row_id;
+                    if (!operation.table || !rowId) return null;
+                    return {
+                      table: operation.table,
+                      rowId,
+                      op: operation.op === 'delete' ? 'delete' : 'upsert',
+                    } as const;
+                  })
+                  .filter(
+                    (
+                      mutation
+                    ): mutation is {
+                      table: string;
+                      rowId: string;
+                      op: 'upsert' | 'delete';
+                    } => mutation !== null
+                  );
+
+          engine.recordLocalMutations(localMutations);
+          void engine.refreshOutboxStats();
 
           const mutationResult: MutationResult = {
-            commitId: result.id,
-            clientCommitId: result.clientCommitId,
+            commitId: receipt.commitId,
+            clientCommitId: receipt.clientCommitId,
           };
-
-          await engine.applyLocalMutation(
-            inputs.map((input) => ({
-              table,
-              rowId: input.rowId,
-              op: input.op,
-              payload: input.op === 'delete' ? null : (input.payload ?? null),
-            }))
-          );
 
           onSuccess?.(mutationResult);
 
@@ -1816,7 +1863,7 @@ export function createSyncularReact<
           setIsPending(false);
         }
       },
-      [db, engine, table, syncImmediately, onSuccess, onError]
+      [baseCommit, engine, table, syncImmediately, onSuccess, onError]
     );
 
     const upsert = useCallback(

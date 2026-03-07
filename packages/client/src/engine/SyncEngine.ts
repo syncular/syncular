@@ -21,6 +21,7 @@ import {
 import { type Kysely, sql, type Transaction } from 'kysely';
 import { getClientHandler } from '../handlers/collection';
 import { ensureClientSyncSchema } from '../migrate';
+import { withDefaultClientPlugins } from '../plugins';
 import type {
   SyncClientLocalMutationArgs,
   SyncClientPluginContext,
@@ -347,7 +348,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   private presenceByScopeKey = new Map<string, PresenceEntry[]>();
 
   constructor(config: SyncEngineConfig<DB>) {
-    this.config = config;
+    this.config = {
+      ...config,
+      plugins: withDefaultClientPlugins(config.plugins),
+    };
     this.listeners = new Map();
     this.state = this.createInitialState();
     this.transportHealth = {
