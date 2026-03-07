@@ -5,9 +5,25 @@ description: Syncular HTTP API reference for sync and console endpoints
 
 # API Reference
 
-The Syncular server exposes HTTP endpoints for synchronization and optional console/ops endpoints.
+The Syncular server exposes two API families:
+
+- `sync` endpoints for client synchronization and product-facing audit history
+- `console` endpoints for operator dashboards, forensics, and maintenance workflows
 
 All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at `/sync` and `/console/*`).
+
+## Choose the right API family
+
+| Need | Surface |
+|---|---|
+| Push and pull application data | `POST /sync` |
+| Show recent sync history inside your product | `/sync/audit/*` |
+| Upload and download blobs | `/sync/blobs/*` |
+| Investigate incidents or inspect request payloads | `/console/events*`, `/console/timeline`, `/console/commits` |
+| Run maintenance actions | `/console/prune*`, `/console/compact`, `/console/notify-data-change` |
+| Manage operator credentials | `/console/api-keys*` |
+
+For human workflows, use [Operate](/docs/operate). For product-facing history UX, use [Audit & History](/docs/build/audit-ui).
 
 ## Base Endpoints
 
@@ -35,6 +51,15 @@ All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at `/
 | `GET` | `/console/storage` | List storage/blob objects (optional, requires `console.blobBucket`) |
 | `GET` | `/console/storage/{key}/download` | Download a storage/blob object (optional) |
 | `DELETE` | `/console/storage/{key}` | Delete a storage/blob object (optional) |
+
+## Endpoint groups in this reference
+
+- **Sync and Audit**: client sync, audit history, and snapshot chunks
+- **Blobs**: blob upload and download flow
+- **Console Read Model**: stats, commits, clients, handlers, and timeline
+- **Console Events and Storage**: request events, payload snapshots, and object storage
+- **Console Auth**: API keys and token lifecycle
+- **Console Maintenance**: notify-data-change, prune, and compact
 
 ## Authentication
 
@@ -78,3 +103,5 @@ bun generate:openapi
 ```
 
 This will update the `openapi.json` file based on the current route definitions.
+
+`GET /sync/realtime` is intentionally not part of the OpenAPI document because it is a WebSocket wake-up channel rather than a JSON HTTP endpoint.

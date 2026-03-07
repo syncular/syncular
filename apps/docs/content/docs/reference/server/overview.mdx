@@ -3,72 +3,32 @@ title: Server Overview
 description: Server-side sync infrastructure for Syncular
 ---
 
-The `@syncular/server` and `@syncular/server-hono` packages provide server-side infrastructure for Syncular. This page is an **API reference** -- for step-by-step setup instructions, see the [Server Setup Guide](/docs/build/server-setup).
+# Server Overview
 
-### What you'll learn
+This page describes the server-side surfaces that make up a Syncular deployment.
 
-- How to install and configure the server packages
-- Table handlers and the `createServerHandler` factory
-- What database tables the sync engine creates
-- Available HTTP/WebSocket endpoints
-- How to add blob storage support
+Use [Server Setup](/docs/build/server-setup) for first-time implementation. Use this section when you need to know which package, route, or extension point owns a piece of server behavior.
 
-## Installation
+## Package map
 
-```bash
-npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
-npm install kysely pg hono
-```
+| Package | Responsibility |
+|---|---|
+| `@syncular/server` | Core sync engine, schema helpers, handler factory, pruning/compaction primitives, blob manager |
+| `@syncular/server-hono` | Hono route factories, realtime wiring, console routes, OpenAPI handler |
+| `@syncular/server-dialect-*` | Dialect-specific schema and SQL behavior |
 
-## Quick Start
+## Server lifecycle
 
-```typescript
-import { Hono } from 'hono';
-import { createSyncRoutes } from '@syncular/server-hono';
-import { ensureSyncSchema } from '@syncular/server';
-import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+1. Your app authenticates a request and produces an actor context.
+2. Table handlers resolve allowed scopes for that actor.
+3. Sync routes read snapshots or apply operations through handlers.
+4. The server records accepted changes in the sync tables.
+5. Optional realtime infrastructure wakes subscribed clients so they pull again.
 
-// Run migrations
-const dialect = createPostgresServerDialect();
-await ensureSyncSchema(db, dialect);
+This split is intentional:
 
-// Register table handlers
-const handlers = [tasksHandler];
-
-// Create routes
-const syncRoutes = createSyncRoutes({
-  db,
-  dialect,
-  handlers,
-  authenticate,
-});
-
-const app = new Hono();
-app.route('/api/sync', syncRoutes);
-```
-
-## Core Concepts
-
-### Table Handlers
-
-Each synced table needs a handler that defines authorization and sync behavior. Use `createServerHandler` for declarative setup:
-
-```typescript
-import { createServerHandler } from '@syncular/server';
-
-const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
-  table: 'tasks',
-  scopes: ['user:{user_id}'],
-  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-});
-
-// Pass handlers as an array to createSyncServer
-const { syncRoutes } = createSyncServer({
-  db, dialect,
-  handlers: [tasksHandler, projectsHandler],
-  authenticate,
-};
-```
+- guides in [Build](/docs/build) explain how to wire the server
+- pages in [Reference](/docs/reference/server) document the server API surface and extension points
 
 ## Sync Tables
 
@@ -81,56 +41,62 @@ Running migrations creates these tables:
 | `sync_client_cursors` | Per-client cursor tracking |
 | `sync_snapshot_chunks` | Large bootstrap chunk storage |
 
-## Endpoints
+## Mounted surfaces
 
-The sync routes provide:
+These routes are relative to where you mount them.
 
-These endpoints are **relative to where you mount** the sync routes (e.g. mount at `/api/sync` → sync is `POST /api/sync`).
+| Surface | Typical mount | Purpose |
+|---|---|---|
+| Sync route | `/api/sync` | Combined push/pull entrypoint |
+| Snapshot chunks | `/api/sync/snapshot-chunks/:chunkId` | Download paged bootstrap chunks |
+| Realtime | `/api/sync/realtime` | WebSocket wake-up channel |
+| Blob routes | `/api/sync/blobs/*` | Binary upload/download flow |
+| Console routes | `/api/console/*` | Operator dashboards, forensics, and maintenance |
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | POST | Combined sync (`push` and/or `pull`) |
-| `/snapshot-chunks/:chunkId` | GET | Download large snapshot chunks |
-| `/realtime` | GET | WebSocket connection (if enabled) |
+## Core extension points
 
-## Blob Storage
+### Table handlers
 
-Handle binary files with the blob manager:
+Table handlers define what syncs, who can access it, and how rows are read or applied.
 
-```typescript
-import { createBlobManager, createDatabaseBlobStorageAdapter, createHmacTokenSigner } from '@syncular/server';
-import { createBlobRoutes } from '@syncular/server-hono';
+- Use [Table Handlers](/docs/build/table-handlers) for patterns and examples.
+- Use [Table Handlers Reference](/docs/reference/server/table-handlers-reference) for factory options and interfaces.
 
-// Create storage adapter
-const tokenSigner = createHmacTokenSigner(process.env.BLOB_SECRET!);
-const adapter = createDatabaseBlobStorageAdapter({ db, baseUrl, tokenSigner });
+### Subscription registry
 
-// Create blob manager
-const blobManager = createBlobManager({ db, adapter });
+Subscriptions describe the requested data shape, and the registry resolves them into the effective scopes that can actually be read.
 
-// Add blob routes
-const blobRoutes = createBlobRoutes({
-  blobManager,
-  authenticate,
-  tokenSigner,
-  db,
-  canAccessBlob: async ({ actorId, hash, partitionId }) => {
-    // Enforce your tenant/ownership model before issuing download URLs.
-    return true;
-  },
-});
-app.route('/api/sync', blobRoutes);
-```
+See [Subscription Registry](/docs/reference/server/subscription-registry).
 
-See the [Blob Storage Guide](/docs/build/blob-storage) for full documentation.
+### Dialects
+
+Dialects encapsulate database-specific behavior for schema setup and sync operations.
+
+See [Dialects](/docs/reference/server/dialects).
+
+### Realtime bridge
+
+Realtime is optional. It does not transport row data; it wakes clients so they perform another HTTP pull.
+
+See [Realtime Bridge](/docs/reference/server/realtime-bridge) and the [Realtime guide](/docs/build/realtime).
+
+### Blob manager
+
+Blob support is separate from core row sync. The server tracks blob metadata and issues authenticated upload/download flows through dedicated routes.
+
+See [Blob Storage](/docs/build/blob-storage).
+
+## Use the right doc
+
+- Implementing a new server: [Server Setup](/docs/build/server-setup)
+- Designing authorization and row sync behavior: [Table Handlers](/docs/build/table-handlers)
+- Wiring Hono routes: [Hono Adapter](/docs/reference/server/hono-adapter)
+- Running operators workflows: [Operate](/docs/operate)
+- Looking for exact HTTP endpoints: [API Reference](/docs/reference/api)
 
 ## Next Steps
 
-**Reference pages** (detailed API docs):
-- [Table Handlers Reference](/docs/reference/server/table-handlers-reference) - Define table handlers
-- [Table Handlers & Scopes](/docs/reference/server/subscription-registry) - Configure scopes
-- [Hono Adapter](/docs/reference/server/hono-adapter) - Route configuration
-
-**Guides** (step-by-step tutorials):
-- [Server Setup Guide](/docs/build/server-setup) - End-to-end server setup walkthrough
-- [Blob Storage](/docs/build/blob-storage) - Binary file handling
+- [Table Handlers Reference](/docs/reference/server/table-handlers-reference)
+- [Subscription Registry](/docs/reference/server/subscription-registry)
+- [Hono Adapter](/docs/reference/server/hono-adapter)
+- [Cloudflare Adapter](/docs/reference/server/cloudflare-adapter)
