@@ -256,13 +256,16 @@ describe('Push Flow', () => {
           ok: true as const,
           push: {
             ok: true as const,
-            status: 'rejected' as const,
-            results: request.push.operations.map((_, i) => ({
-              opIndex: i,
-              status: 'error' as const,
-              error: 'TEMPORARY_FAILURE',
-              code: 'TEMPORARY',
-              retriable: true,
+            commits: request.push.commits.map((commit) => ({
+              clientCommitId: commit.clientCommitId,
+              status: 'rejected' as const,
+              results: commit.operations.map((_, i) => ({
+                opIndex: i,
+                status: 'error' as const,
+                error: 'TEMPORARY_FAILURE',
+                code: 'TEMPORARY',
+                retriable: true,
+              })),
             })),
           },
         };

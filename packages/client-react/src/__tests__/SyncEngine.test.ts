@@ -533,7 +533,7 @@ describe('SyncEngine', () => {
 
         pullCallCount += 1;
 
-        if (pullCallCount === 2) {
+        if (pullCallCount === 1) {
           result.pull = {
             ok: true,
             subscriptions: [
@@ -573,7 +573,7 @@ describe('SyncEngine', () => {
                 status: 'active',
                 scopes: {},
                 bootstrap: false,
-                nextCursor: pullCallCount >= 2 ? 1 : -1,
+                nextCursor: 1,
                 commits: [],
                 snapshots: [],
               },
@@ -587,6 +587,7 @@ describe('SyncEngine', () => {
       const engine = createEngine({
         transport,
         handlers,
+        limitCommits: 1,
         subscriptions: [
           {
             id: 'sub-1',
@@ -598,6 +599,7 @@ describe('SyncEngine', () => {
       });
 
       await engine.start();
+      pullCallCount = 0;
 
       const result = await engine.sync();
       expect(result.success).toBe(true);

@@ -153,19 +153,23 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: args?.clientId ?? 'client-1',
         push: {
-          clientCommitId: 'commit-1',
-          schemaVersion: 1,
-          operations: [
+          commits: [
             {
-              table: 'tasks',
-              row_id: 'task-1',
-              op: 'upsert',
-              payload: {
-                id: 'task-1',
-                user_id: 'u1',
-                title: args?.title ?? 'Task 1',
-                server_version: 0,
-              },
+              clientCommitId: 'commit-1',
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: 'task-1',
+                  op: 'upsert',
+                  payload: {
+                    id: 'task-1',
+                    user_id: 'u1',
+                    title: args?.title ?? 'Task 1',
+                    server_version: 0,
+                  },
+                },
+              ],
             },
           ],
         },

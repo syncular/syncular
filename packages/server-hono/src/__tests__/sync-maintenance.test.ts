@@ -91,20 +91,24 @@ describe('createSyncRoutes maintenance automation', () => {
       createJsonRequest({
         clientId: args.clientId,
         push: {
-          clientCommitId: args.commitId,
-          schemaVersion: 1,
-          operations: [
+          commits: [
             {
-              table: 'tasks',
-              row_id: args.rowId,
-              op: 'upsert',
-              base_version: null,
-              payload: {
-                id: args.rowId,
-                user_id: 'u1',
-                title: args.title,
-                server_version: 0,
-              },
+              clientCommitId: args.commitId,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: args.rowId,
+                  op: 'upsert',
+                  base_version: null,
+                  payload: {
+                    id: args.rowId,
+                    user_id: 'u1',
+                    title: args.title,
+                    server_version: 0,
+                  },
+                },
+              ],
             },
           ],
         },
