@@ -106,7 +106,6 @@ interface ClientOptions<DB> {
     scopes?: Record<string, string | string[]>;
     params?: Record<string, unknown>;
   }>;
-  blobStorage?: ClientBlobStorage;  // Optional: for blob support
   plugins?: SyncClientPlugin[];     // Optional: additional plugins; incrementing-version is included by default
   realtimeEnabled?: boolean;
   pollIntervalMs?: number;
@@ -226,6 +225,7 @@ Handle binary files with optional blob storage:
 
 ```typescript
 import { Client } from '@syncular/client';
+import { createBlobPlugin } from '@syncular/client-plugin-blob';
 
 const client = new Client({
   db,
@@ -234,7 +234,7 @@ const client = new Client({
   clientId: 'device-123',
   actorId: 'user-456',
   subscriptions: [...],
-  blobStorage, // Provide a ClientBlobStorage implementation
+  plugins: [createBlobPlugin({ storage: blobStorage })],
 });
 
 await client.start();
@@ -263,7 +263,7 @@ See the [Blob Storage Guide](/docs/build/blob-storage) for adapter examples.
 const { needsMigration } = await Client.checkMigrations(db);
 
 // Run migrations manually (usually automatic in start())
-await Client.migrate(db, { blobs: true });
+await Client.migrate(db);
 ```
 
 ## Low-Level APIs

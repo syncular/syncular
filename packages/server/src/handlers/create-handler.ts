@@ -259,6 +259,7 @@ export function createServerHandler<
     versionColumn = 'server_version',
     dependsOn,
     snapshotChunkTtlMs,
+    snapshotBundleMaxBytes,
     resolveScopes,
     transformInbound,
     transformOutbound,
@@ -863,6 +864,7 @@ export function createServerHandler<
     scopePatterns,
     dependsOn,
     snapshotChunkTtlMs,
+    snapshotBundleMaxBytes,
     canRejectSingleOperationWithoutSavepoint:
       options.canRejectSingleOperationWithoutSavepoint ??
       options.applyOperation === undefined,

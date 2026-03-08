@@ -1,11 +1,12 @@
 /**
  * @syncular/transport-http - HTTP transport for Sync
  *
- * Provides typed API clients using openapi-fetch with auto-generated types.
+ * Provides:
+ * - a lightweight fetch-based SyncTransport for client runtime use
+ * - a separately exported typed API client for advanced/console use
  */
 
 import type {
-  ScopeValues,
   SyncAuthErrorContext,
   SyncAuthLifecycle,
   SyncAuthOperation,
@@ -15,9 +16,33 @@ import type {
   SyncTransportBlobs,
   SyncTransportOptions,
 } from '@syncular/core';
-import { resolveUrlFromBase, SyncTransportError } from '@syncular/core';
-import createClient from 'openapi-fetch';
-import type { operations, paths } from './generated/api';
+import { SyncTransportError } from '@syncular/core';
+import type { SyncClient } from './api-client';
+import {
+  applySnapshotScopesHeader,
+  bytesToReadableStream,
+  type ClientOptions,
+  type ApiResult,
+  encodeSnapshotScopes,
+  executeWithAuthRetry,
+  getErrorMessage,
+  resolveRequestUrl,
+  ResolveAuthRetry,
+  resolveSnapshotChunkRequestUrl,
+  SNAPSHOT_SCOPES_HEADER,
+  type SyncTransportPath,
+  unwrap,
+} from './shared';
+
+export {
+  type SyncClient,
+  type ClientOptions,
+  type SyncTransportPath,
+  unwrap,
+};
+export { createApiClient } from './api-client';
+
+export type { operations } from './generated/api';
 
 export type {
   SyncAuthErrorContext,
@@ -28,235 +53,44 @@ export type {
   SyncTransportOptions,
 } from '@syncular/core';
 
-/**
- * Error thrown when unwrapping an API response fails.
- */
-class ApiResponseError extends Error {
-  constructor(
-    message: string,
-    public readonly error?: unknown
-  ) {
-    super(message);
-    this.name = 'ApiResponseError';
-  }
-}
-
-/**
- * Helper to unwrap openapi-fetch responses.
- * Throws ApiResponseError if the response contains an error or no data.
- */
-function getErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'error' in error) {
-    const inner = (error as { error: unknown }).error;
-    if (typeof inner === 'string') return inner;
-  }
-  if (error && typeof error === 'object' && 'message' in error) {
-    const msg = (error as { message: unknown }).message;
-    if (typeof msg === 'string') return msg;
-  }
-  return 'Request failed';
-}
-
-export async function unwrap<T>(
-  promise: Promise<{ data?: T; error?: unknown }>
-): Promise<T> {
-  const { data, error } = await promise;
-  if (error || !data) {
-    throw new ApiResponseError(getErrorMessage(error), error);
-  }
-  return data;
-}
-
-type ApiResult<T> = {
-  data?: T;
-  error?: unknown;
-  response: Response;
-};
-
-type ResolveAuthRetry = (
-  context: SyncAuthErrorContext,
-  options?: SyncTransportOptions
-) => Promise<boolean>;
-
-async function executeWithAuthRetry<T>(
-  execute: (signal?: AbortSignal) => Promise<ApiResult<T>>,
-  options: SyncTransportOptions | undefined,
-  operation: SyncAuthOperation,
-  resolveAuthRetry: ResolveAuthRetry
-): Promise<ApiResult<T>> {
-  const first = await execute(options?.signal);
-  if (first.response.status !== 401 && first.response.status !== 403) {
-    return first;
-  }
-  const shouldRetry = await resolveAuthRetry(
-    { operation, status: first.response.status },
-    options
-  );
-  if (!shouldRetry) {
-    return first;
-  }
-
-  return execute(options?.signal);
-}
-
-// Re-export useful types from the generated API
-export type SyncClient = ReturnType<typeof createClient<paths>>;
-export type SyncTransportPath = 'direct' | 'relay';
-export type { operations };
-
-export interface ClientOptions {
-  /** Base URL for the API (e.g., 'https://api.example.com') */
-  baseUrl: string;
-  /** Function to get headers for requests (e.g., for auth tokens) */
-  getHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
-  /** Shared auth lifecycle for all transport operations. */
-  authLifecycle?: SyncAuthLifecycle;
-  /** Custom fetch implementation (defaults to globalThis.fetch) */
-  fetch?: typeof globalThis.fetch;
-  /**
-   * Transport path telemetry sent to the server.
-   * Defaults to 'direct'.
-   */
-  transportPath?: SyncTransportPath;
-}
-
-const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';
-
-function resolveRequestUrl(baseUrl: string, path: string): string {
-  return resolveUrlFromBase(
-    baseUrl,
-    path,
-    typeof location === 'undefined' ? undefined : location.origin
+function isApiClientLike(value: unknown): value is SyncClient {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as SyncClient).GET === 'function' &&
+    typeof (value as SyncClient).POST === 'function'
   );
 }
 
-function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
+function isJsonContentType(contentType: string | null): boolean {
+  return contentType?.includes('application/json') === true;
 }
 
-function encodeSnapshotScopes(
-  scopeValues: ScopeValues | undefined
-): string | null {
-  if (!scopeValues) return null;
-  if (Object.keys(scopeValues).length === 0) return null;
-  return JSON.stringify(scopeValues);
-}
-
-function applySnapshotScopesHeader(
-  headers: Headers,
-  scopeValues: ScopeValues | undefined
-): void {
-  const encodedScopes = encodeSnapshotScopes(scopeValues);
-  if (!encodedScopes) return;
-  headers.set(SNAPSHOT_SCOPES_HEADER, encodedScopes);
-}
-
-function resolveSnapshotChunkRequestUrl(
-  baseUrl: string,
-  chunkId: string,
-  scopeValues: ScopeValues | undefined
-): string {
-  const requestUrl = new URL(
-    resolveRequestUrl(
-      baseUrl,
-      `/sync/snapshot-chunks/${encodeURIComponent(chunkId)}`
-    )
-  );
-  const encodedScopes = encodeSnapshotScopes(scopeValues);
-  if (encodedScopes) {
-    requestUrl.searchParams.set('scopes', encodedScopes);
+async function parseErrorBody(response: Response): Promise<unknown> {
+  if (!isJsonContentType(response.headers.get('content-type'))) {
+    return undefined;
   }
-  return requestUrl.toString();
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
-/**
- * Create a typed API client for the full Syncular API.
- *
- * Returns an openapi-fetch client with full type safety for all endpoints.
- *
- * @example
- * ```typescript
- * const client = createApiClient({
- *   baseUrl: 'https://api.example.com',
- *   getHeaders: () => ({ Authorization: `Bearer ${token}` }),
- * });
- *
- * // Sync endpoints
- * const { data } = await client.POST('/sync', { body: { clientId: 'c1', pull: { ... } } });
- *
- * // Console endpoints
- * const { data: stats } = await client.GET('/console/stats');
- * const { data: commits } = await client.GET('/console/commits', {
- *   params: { query: { limit: 50 } }
- * });
- * ```
- */
-export function createApiClient(options: ClientOptions): SyncClient {
-  const client = createClient<paths>({
-    baseUrl: options.baseUrl,
-    ...(options.fetch && { fetch: options.fetch }),
-  });
-
-  const getHeaders = options.getHeaders;
-  const transportPath = options.transportPath ?? 'direct';
-
-  client.use({
-    async onRequest({ request }) {
-      if (getHeaders) {
-        const headers = await getHeaders();
-        for (const [key, value] of Object.entries(headers)) {
-          request.headers.set(key, value);
-        }
-      }
-
-      if (!request.headers.has('x-syncular-transport-path')) {
-        request.headers.set('x-syncular-transport-path', transportPath);
-      }
-
-      return request;
-    },
-  });
-
-  return client;
+async function parseJsonBody<T>(response: Response): Promise<T | undefined> {
+  if (!isJsonContentType(response.headers.get('content-type'))) {
+    return undefined;
+  }
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return undefined;
+  }
 }
 
-/**
- * Create a SyncTransport from an API client or options.
- *
- * The transport includes both sync and blob operations via the typed OpenAPI client.
- *
- * @example
- * ```typescript
- * // From options (convenience)
- * const transport = createHttpTransport({
- *   baseUrl: 'https://api.example.com',
- *   getHeaders: () => ({ Authorization: `Bearer ${token}` }),
- * });
- *
- * // Or from an existing client
- * const client = createApiClient({ baseUrl: 'https://api.example.com' });
- * const transport = createHttpTransport(client);
- *
- * // Use with Client
- * const syncClient = new Client({ transport, ... });
- * ```
- */
-export function createHttpTransport(
-  clientOrOptions: SyncClient | ClientOptions
-): SyncTransport {
-  const client =
-    'GET' in clientOrOptions
-      ? clientOrOptions
-      : createApiClient(clientOrOptions);
-  const transportOptions =
-    'GET' in clientOrOptions ? undefined : clientOrOptions;
-  const defaultAuthLifecycle = transportOptions?.authLifecycle;
-
+function createAuthRetryResolver(
+  defaultAuthLifecycle: SyncAuthLifecycle | undefined
+): ResolveAuthRetry {
   let refreshInFlight: Promise<boolean> | null = null;
 
   const runRefreshSingleFlight = async (
@@ -276,7 +110,7 @@ export function createHttpTransport(
     return refreshInFlight;
   };
 
-  const resolveAuthRetry: ResolveAuthRetry = async (context, options) => {
+  return async (context, options) => {
     if (options?.onAuthError) {
       return Boolean(await options.onAuthError());
     }
@@ -294,16 +128,217 @@ export function createHttpTransport(
     }
     return refreshResult;
   };
+}
 
-  // Create blob operations using the typed OpenAPI client
+function createRequestHeaders(
+  baseOptions: ClientOptions,
+  extraHeaders?: Record<string, string>
+): Promise<Headers> {
+  return Promise.resolve(baseOptions.getHeaders?.()).then((dynamicHeaders) => {
+    const headers = new Headers(extraHeaders);
+    if (dynamicHeaders) {
+      for (const [key, value] of Object.entries(dynamicHeaders)) {
+        headers.set(key, value);
+      }
+    }
+    if (!headers.has('x-syncular-transport-path')) {
+      headers.set(
+        'x-syncular-transport-path',
+        baseOptions.transportPath ?? 'direct'
+      );
+    }
+    return headers;
+  });
+}
+
+interface TransportApiClient {
+  sync(
+    request: SyncCombinedRequest,
+    signal?: AbortSignal
+  ): Promise<ApiResult<SyncCombinedResponse>>;
+  initiateUpload(
+    args: { hash: string; size: number; mimeType: string },
+    signal?: AbortSignal
+  ): Promise<
+    ApiResult<{
+      exists: boolean;
+      uploadUrl?: string;
+      uploadMethod?: 'PUT' | 'POST';
+      uploadHeaders?: Record<string, string>;
+    }>
+  >;
+  completeUpload(
+    hash: string,
+    signal?: AbortSignal
+  ): Promise<ApiResult<{ ok: boolean; error?: string }>>;
+  getDownloadUrl(
+    hash: string,
+    signal?: AbortSignal
+  ): Promise<ApiResult<{ url: string; expiresAt: string }>>;
+  getSnapshotChunk(
+    chunkId: string,
+    scopeValues: Record<string, string | string[]> | undefined,
+    signal?: AbortSignal
+  ): Promise<ApiResult<Blob>>;
+}
+
+function createFetchApiClient(baseOptions: ClientOptions): TransportApiClient {
+  const fetchImpl = baseOptions.fetch ?? globalThis.fetch;
+
+  const request = async <T>(args: {
+    method: 'GET' | 'POST';
+    path: string;
+    body?: unknown;
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+    parseAs?: 'json' | 'blob';
+  }): Promise<ApiResult<T>> => {
+    const headers = await createRequestHeaders(baseOptions, args.headers);
+    let body: BodyInit | undefined;
+    if (args.body !== undefined) {
+      headers.set('content-type', 'application/json');
+      body = JSON.stringify(args.body);
+    }
+
+    const response = await fetchImpl(
+      resolveRequestUrl(baseOptions.baseUrl, args.path),
+      {
+        method: args.method,
+        headers,
+        body,
+        ...(args.signal ? { signal: args.signal } : {}),
+      }
+    );
+
+    if (!response.ok) {
+      return {
+        response,
+        error: await parseErrorBody(response),
+      };
+    }
+
+    if (args.parseAs === 'blob') {
+      return {
+        response,
+        data: (await response.blob()) as T,
+      };
+    }
+
+    return {
+      response,
+      data: await parseJsonBody<T>(response),
+    };
+  };
+
+  return {
+    sync: (requestBody, signal) =>
+      request({
+        method: 'POST',
+        path: '/sync',
+        body: requestBody,
+        signal,
+      }),
+    initiateUpload: (args, signal) =>
+      request({
+        method: 'POST',
+        path: '/sync/blobs/upload',
+        body: args,
+        signal,
+      }),
+    completeUpload: (hash, signal) =>
+      request({
+        method: 'POST',
+        path: `/sync/blobs/${encodeURIComponent(hash)}/complete`,
+        signal,
+      }),
+    getDownloadUrl: (hash, signal) =>
+      request({
+        method: 'GET',
+        path: `/sync/blobs/${encodeURIComponent(hash)}/url`,
+        signal,
+      }),
+    getSnapshotChunk: (chunkId, scopeValues, signal) =>
+      request({
+        method: 'GET',
+        path: `/sync/snapshot-chunks/${encodeURIComponent(chunkId)}`,
+        headers: (() => {
+          const encodedScopes = encodeSnapshotScopes(scopeValues);
+          return encodedScopes
+            ? {
+                [SNAPSHOT_SCOPES_HEADER]: encodedScopes,
+              }
+            : undefined;
+        })(),
+        signal,
+        parseAs: 'blob',
+      }),
+  };
+}
+
+function createTypedTransportClient(client: SyncClient): TransportApiClient {
+  return {
+    sync: (request, signal) =>
+      client.POST('/sync', {
+        body: request,
+        ...(signal ? { signal } : {}),
+      }) as Promise<ApiResult<SyncCombinedResponse>>,
+    initiateUpload: (args, signal) =>
+      client.POST('/sync/blobs/upload', {
+        body: args,
+        ...(signal ? { signal } : {}),
+      }) as Promise<
+        ApiResult<{
+          exists: boolean;
+          uploadUrl?: string;
+          uploadMethod?: 'PUT' | 'POST';
+          uploadHeaders?: Record<string, string>;
+        }>
+      >,
+    completeUpload: (hash, signal) =>
+      client.POST('/sync/blobs/{hash}/complete', {
+        params: { path: { hash } },
+        ...(signal ? { signal } : {}),
+      }) as Promise<ApiResult<{ ok: boolean; error?: string }>>,
+    getDownloadUrl: (hash, signal) =>
+      client.GET('/sync/blobs/{hash}/url', {
+        params: { path: { hash } },
+        ...(signal ? { signal } : {}),
+      }) as Promise<ApiResult<{ url: string; expiresAt: string }>>,
+    getSnapshotChunk: (chunkId, scopeValues, signal) =>
+      client.GET('/sync/snapshot-chunks/{chunkId}', {
+        params: { path: { chunkId } },
+        parseAs: 'blob',
+        headers: (() => {
+          const encodedScopes = encodeSnapshotScopes(scopeValues);
+          return encodedScopes
+            ? {
+                [SNAPSHOT_SCOPES_HEADER]: encodedScopes,
+              }
+            : undefined;
+        })(),
+        ...(signal ? { signal } : {}),
+      }) as Promise<ApiResult<Blob>>,
+  };
+}
+
+export function createHttpTransport(
+  clientOrOptions: SyncClient | ClientOptions
+): SyncTransport {
+  const client = isApiClientLike(clientOrOptions)
+    ? createTypedTransportClient(clientOrOptions)
+    : createFetchApiClient(clientOrOptions);
+  const transportOptions = isApiClientLike(clientOrOptions)
+    ? undefined
+    : clientOrOptions;
+  const resolveAuthRetry = createAuthRetryResolver(
+    transportOptions?.authLifecycle
+  );
+
   const blobs: SyncTransportBlobs = {
     async initiateUpload(args) {
       const { data, error, response } = await executeWithAuthRetry(
         (signal) =>
-          client.POST('/sync/blobs/upload', {
-            body: args,
-            ...(signal ? { signal } : {}),
-          }),
+          client.initiateUpload(args, signal),
         undefined,
         'blobInitiateUpload',
         resolveAuthRetry
@@ -322,10 +357,7 @@ export function createHttpTransport(
     async completeUpload(hash) {
       const { data, error } = await executeWithAuthRetry(
         (signal) =>
-          client.POST('/sync/blobs/{hash}/complete', {
-            params: { path: { hash } },
-            ...(signal ? { signal } : {}),
-          }),
+          client.completeUpload(hash, signal),
         undefined,
         'blobCompleteUpload',
         resolveAuthRetry
@@ -344,10 +376,7 @@ export function createHttpTransport(
     async getDownloadUrl(hash) {
       const { data, error, response } = await executeWithAuthRetry(
         (signal) =>
-          client.GET('/sync/blobs/{hash}/url', {
-            params: { path: { hash } },
-            ...(signal ? { signal } : {}),
-          }),
+          client.getDownloadUrl(hash, signal),
         undefined,
         'blobGetDownloadUrl',
         resolveAuthRetry
@@ -360,25 +389,19 @@ export function createHttpTransport(
         );
       }
 
-      return {
-        url: data.url,
-        expiresAt: data.expiresAt,
-      };
+      return data;
     },
   };
 
   return {
     async sync(
       request: SyncCombinedRequest,
-      transportOptions?: SyncTransportOptions
+      transportRequestOptions?: SyncTransportOptions
     ): Promise<SyncCombinedResponse> {
       const { data, error, response } = await executeWithAuthRetry(
         (signal) =>
-          client.POST('/sync', {
-            body: request,
-            ...(signal ? { signal } : {}),
-          }),
-        transportOptions,
+          client.sync(request, signal),
+        transportRequestOptions,
         'sync',
         resolveAuthRetry
       );
@@ -400,21 +423,10 @@ export function createHttpTransport(
       },
       options?: SyncTransportOptions
     ): Promise<Uint8Array> {
-      const encodedScopes = encodeSnapshotScopes(request.scopeValues);
-
       if (!transportOptions) {
         const { data, error, response } = await executeWithAuthRetry(
-          (signal) =>
-            client.GET('/sync/snapshot-chunks/{chunkId}', {
-              params: { path: { chunkId: request.chunkId } },
-              parseAs: 'blob',
-              headers: encodedScopes
-                ? {
-                    [SNAPSHOT_SCOPES_HEADER]: encodedScopes,
-                  }
-                : undefined,
-              ...(signal ? { signal } : {}),
-            }),
+        (signal) =>
+            client.getSnapshotChunk(request.chunkId, request.scopeValues, signal),
           options,
           'snapshotChunk',
           resolveAuthRetry
@@ -575,7 +587,6 @@ export function createHttpTransport(
       return response.body as ReadableStream<Uint8Array>;
     },
 
-    // Include blob operations
     blobs,
   };
 }

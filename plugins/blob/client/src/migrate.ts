@@ -1,17 +1,8 @@
-/**
- * @syncular/client - Blob storage migrations
- */
-
 import type { Kysely } from 'kysely';
 
-/**
- * Ensures the client blob schema exists in the database.
- * Safe to call multiple times (idempotent).
- */
 export async function ensureClientBlobSchema<DB>(
   db: Kysely<DB>
 ): Promise<void> {
-  // Blob cache table
   await db.schema
     .createTable('sync_blob_cache')
     .ifNotExists()
@@ -32,7 +23,6 @@ export async function ensureClientBlobSchema<DB>(
     .columns(['last_accessed_at'])
     .execute();
 
-  // Blob upload outbox table
   await db.schema
     .createTable('sync_blob_outbox')
     .ifNotExists()
@@ -58,9 +48,6 @@ export async function ensureClientBlobSchema<DB>(
     .execute();
 }
 
-/**
- * Drops the client blob schema from the database.
- */
 export async function dropClientBlobSchema<DB>(db: Kysely<DB>): Promise<void> {
   await db.schema.dropTable('sync_blob_outbox').ifExists().execute();
   await db.schema.dropTable('sync_blob_cache').ifExists().execute();

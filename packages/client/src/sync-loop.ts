@@ -8,6 +8,7 @@ import type {
   SyncCombinedResponse,
   SyncPullResponse,
   SyncPullSubscriptionResponse,
+  SyncPushBatchCommitResponse,
   SyncPushRequest,
   SyncPushResponse,
   SyncSubscriptionRequest,
@@ -18,6 +19,7 @@ import { upsertConflictsForRejectedCommit } from './conflicts';
 import type { PushResultInfo } from './engine/types';
 import type { ClientHandlerCollection } from './handlers/collection';
 import {
+  type OutboxCommit,
   getNextSendableOutboxCommit,
   markOutboxCommitAcked,
   markOutboxCommitFailed,
@@ -80,6 +82,170 @@ function buildPushResult(args: {
   };
 }
 
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function createPushRequest(
+  clientId: string,
+  outboxCommit: OutboxCommit
+): SyncPushRequest {
+  return {
+    clientId,
+    clientCommitId: outboxCommit.client_commit_id,
+    operations: outboxCommit.operations,
+    schemaVersion: outboxCommit.schema_version,
+  };
+}
+
+function toSyncPushResponse(
+  response: SyncPushBatchCommitResponse
+): SyncPushResponse {
+  return {
+    ok: true,
+    status: response.status,
+    commitSeq: response.commitSeq,
+    results: response.results,
+  };
+}
+
+function isRetriablePushResponse(response: SyncPushResponse): boolean {
+  const errorResults = response.results.filter((result) => result.status === 'error');
+  return (
+    errorResults.length > 0 &&
+    errorResults.every((result) => result.retriable === true)
+  );
+}
+
+async function claimSendableOutboxCommits<DB extends SyncClientDb>(
+  db: Kysely<DB>,
+  maxCommits: number
+): Promise<OutboxCommit[]> {
+  const claimed: OutboxCommit[] = [];
+
+  for (let i = 0; i < maxCommits; i++) {
+    const next = await getNextSendableOutboxCommit(db);
+    if (!next) break;
+    claimed.push(next);
+  }
+
+  return claimed;
+}
+
+async function markClaimedOutboxCommitsPending<DB extends SyncClientDb>(
+  db: Kysely<DB>,
+  outboxCommits: OutboxCommit[],
+  error: string
+): Promise<void> {
+  for (const outboxCommit of outboxCommits) {
+    await markOutboxCommitPending(db, {
+      id: outboxCommit.id,
+      error,
+    });
+  }
+}
+
+interface PreparedPushCommit {
+  outboxCommit: OutboxCommit;
+  request: SyncPushRequest;
+}
+
+async function preparePushCommits(
+  outboxCommits: OutboxCommit[],
+  options: SyncPushOnceOptions
+): Promise<PreparedPushCommit[]> {
+  const plugins = options.plugins ?? [];
+  const ctx: SyncClientPluginContext = {
+    actorId: options.actorId ?? 'unknown',
+    clientId: options.clientId,
+  };
+
+  const prepared: PreparedPushCommit[] = [];
+  for (const outboxCommit of outboxCommits) {
+    let request = createPushRequest(options.clientId, outboxCommit);
+    for (const plugin of plugins) {
+      if (!plugin.beforePush) continue;
+      request = await plugin.beforePush(ctx, request);
+    }
+    prepared.push({ outboxCommit, request });
+  }
+
+  return prepared;
+}
+
+async function finalizePushCommit<DB extends SyncClientDb>(
+  db: Kysely<DB>,
+  options: SyncPushOnceOptions,
+  preparedCommit: PreparedPushCommit,
+  rawResponse: SyncPushResponse
+): Promise<{ pushResult: PushResultInfo; afterPushError: Error | null }> {
+  const plugins = options.plugins ?? [];
+  const ctx: SyncClientPluginContext = {
+    actorId: options.actorId ?? 'unknown',
+    clientId: options.clientId,
+  };
+
+  let response = rawResponse;
+  let afterPushError: Error | null = null;
+  try {
+    for (const plugin of plugins) {
+      if (!plugin.afterPush) continue;
+      response = await plugin.afterPush(ctx, {
+        request: preparedCommit.request,
+        response,
+      });
+    }
+  } catch (error) {
+    afterPushError = normalizeError(error);
+    response = rawResponse;
+  }
+
+  const responseJson = JSON.stringify(response);
+  let status: PushResultInfo['status'];
+
+  if (response.status === 'applied' || response.status === 'cached') {
+    await markOutboxCommitAcked(db, {
+      id: preparedCommit.outboxCommit.id,
+      commitSeq: response.commitSeq ?? null,
+      responseJson,
+    });
+    status = response.status;
+  } else if (isRetriablePushResponse(response)) {
+    const errorMessages = response.results
+      .filter((result) => result.status === 'error')
+      .map((result) => result.error ?? 'Unknown error')
+      .join('; ');
+    await markOutboxCommitPending(db, {
+      id: preparedCommit.outboxCommit.id,
+      error: `Retriable: ${errorMessages}`,
+      responseJson,
+    });
+    status = 'retriable';
+  } else {
+    await upsertConflictsForRejectedCommit(db, {
+      outboxCommitId: preparedCommit.outboxCommit.id,
+      clientCommitId: preparedCommit.outboxCommit.client_commit_id,
+      response,
+    });
+    await markOutboxCommitFailed(db, {
+      id: preparedCommit.outboxCommit.id,
+      error: 'REJECTED',
+      responseJson,
+    });
+    status = 'rejected';
+  }
+
+  return {
+    pushResult: buildPushResult({
+      outboxCommitId: preparedCommit.outboxCommit.id,
+      clientCommitId: preparedCommit.outboxCommit.client_commit_id,
+      status,
+      response,
+    }),
+    afterPushError,
+  };
+}
+
 async function syncPushUntilSettled<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
@@ -89,16 +255,89 @@ async function syncPushUntilSettled<DB extends SyncClientDb>(
 
   let pushedCount = 0;
   const pushResults: PushResultInfo[] = [];
-  for (let i = 0; i < maxCommits; i++) {
-    const res = await syncPushOnce(db, transport, {
-      clientId: options.clientId,
-      actorId: options.actorId,
-      plugins: options.plugins,
-    });
-    if (!res.pushed) break;
-    pushedCount += 1;
-    if (res.pushResult) {
-      pushResults.push(res.pushResult);
+  while (pushedCount < maxCommits) {
+    const claimedCommits = await claimSendableOutboxCommits(
+      db,
+      maxCommits - pushedCount
+    );
+    if (claimedCommits.length === 0) break;
+
+    let preparedCommits: PreparedPushCommit[];
+    try {
+      preparedCommits = await preparePushCommits(claimedCommits, options);
+    } catch (error) {
+      const normalizedError = normalizeError(error);
+      await markClaimedOutboxCommitsPending(
+        db,
+        claimedCommits,
+        normalizedError.message
+      );
+      throw normalizedError;
+    }
+
+    let combined: SyncCombinedResponse;
+    try {
+      combined = await transport.sync({
+        clientId: options.clientId,
+        push: {
+          commits: preparedCommits.map(({ request }) => ({
+            clientCommitId: request.clientCommitId,
+            operations: request.operations,
+            schemaVersion: request.schemaVersion,
+          })),
+        },
+      });
+    } catch (error) {
+      const normalizedError = normalizeError(error);
+      await markClaimedOutboxCommitsPending(
+        db,
+        claimedCommits,
+        normalizedError.message
+      );
+      throw normalizedError;
+    }
+
+    const batchResponses = combined.push?.commits ?? [];
+    const responsesByClientCommitId = new Map(
+      batchResponses.map((response) => [response.clientCommitId, response])
+    );
+
+    if (
+      !combined.push ||
+      preparedCommits.some(
+        ({ request }) => !responsesByClientCommitId.has(request.clientCommitId)
+      )
+    ) {
+      await markClaimedOutboxCommitsPending(
+        db,
+        claimedCommits,
+        'MISSING_PUSH_RESPONSE'
+      );
+      throw new Error('Server returned incomplete push response');
+    }
+
+    let deferredError: Error | null = null;
+    for (const preparedCommit of preparedCommits) {
+      const batchResponse = responsesByClientCommitId.get(
+        preparedCommit.request.clientCommitId
+      );
+      if (!batchResponse) continue;
+
+      const finalized = await finalizePushCommit(
+        db,
+        options,
+        preparedCommit,
+        toSyncPushResponse(batchResponse)
+      );
+      pushResults.push(finalized.pushResult);
+      pushedCount += 1;
+      if (!deferredError && finalized.afterPushError) {
+        deferredError = finalized.afterPushError;
+      }
+    }
+
+    if (deferredError) {
+      throw deferredError;
     }
   }
 
@@ -127,13 +366,17 @@ function hasPushViaWs(
   return 'pushViaWs' in transport && typeof transport.pushViaWs === 'function';
 }
 
-function needsAnotherPull(res: SyncPullResponse): boolean {
+function needsAnotherPull(
+  res: SyncPullResponse,
+  limitCommits: number
+): boolean {
+  let totalCommits = 0;
   for (const sub of res.subscriptions ?? []) {
     if (sub.status !== 'active') continue;
     if (sub.bootstrap) return true;
-    if ((sub.commits?.length ?? 0) > 0) return true;
+    totalCommits += sub.commits?.length ?? 0;
   }
-  return false;
+  return totalCommits >= limitCommits;
 }
 
 function mergePullResponse(
@@ -162,6 +405,34 @@ function mergePullResponse(
   }
 }
 
+function canSkipPullAfterLocalWsPush(
+  pullState: SyncPullRequestState,
+  pushResponse: SyncPushResponse | null,
+  options: SyncOnceOptions
+): boolean {
+  if (!options.allowSkipPullOnLocalWsPush) return false;
+  if (options.trigger !== 'local') return false;
+  if (!pushResponse) return false;
+  if (pushResponse.status !== 'applied' && pushResponse.status !== 'cached') {
+    return false;
+  }
+  if ((options.plugins ?? []).some((plugin) => typeof plugin.afterPull === 'function')) {
+    return false;
+  }
+
+  for (const subscription of pullState.request.subscriptions ?? []) {
+    if (subscription.bootstrapState != null) {
+      return false;
+    }
+    const cursor = subscription.cursor ?? -1;
+    if (cursor < 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function syncPullUntilSettled<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
@@ -180,7 +451,7 @@ async function syncPullUntilSettled<DB extends SyncClientDb>(
     const res = await syncPullOnce(db, transport, handlers, options, pullState);
     mergePullResponse(aggregatedBySubId, res);
 
-    if (!needsAnotherPull(res)) break;
+    if (!needsAnotherPull(res, pullState.request.limitCommits)) break;
     pullState = createFollowupPullState(pullState, res);
   }
 
@@ -209,6 +480,8 @@ export interface SyncOnceOptions {
   maxPullRounds?: number;
   /** When 'ws', peek outbox first and skip push if empty. */
   trigger?: 'ws' | 'local' | 'poll';
+  /** Allow successful local WS pushes to skip the immediate HTTP pull phase. */
+  allowSkipPullOnLocalWsPush?: boolean;
   /** Custom SHA-256 hash function (for platforms without crypto.subtle) */
   sha256?: (bytes: Uint8Array) => Promise<string>;
 }
@@ -252,169 +525,201 @@ async function syncOnceCombined<DB extends SyncClientDb>(
   const pullState = await buildPullRequest(db, pullOpts);
   const { clientId } = pullState.request;
 
-  // Grab at most one outbox commit
-  const outbox = await getNextSendableOutboxCommit(db);
-
   const plugins = options.plugins ?? [];
-  const ctx: SyncClientPluginContext = {
-    actorId: options.actorId ?? 'unknown',
-    clientId,
-  };
 
-  // Build push request, running beforePush plugins
-  let pushRequest: SyncPushRequest | undefined;
+  const outbox = await getNextSendableOutboxCommit(db);
+  let preparedFirstCommit: PreparedPushCommit | null = null;
   if (outbox) {
-    pushRequest = {
-      clientId,
-      clientCommitId: outbox.client_commit_id,
-      operations: outbox.operations,
-      schemaVersion: outbox.schema_version,
-    };
-    for (const plugin of plugins) {
-      if (!plugin.beforePush) continue;
-      pushRequest = await plugin.beforePush(ctx, pushRequest);
+    try {
+      const preparedCommits = await preparePushCommits([outbox], {
+        clientId: options.clientId,
+        actorId: options.actorId,
+        plugins,
+      });
+      preparedFirstCommit = preparedCommits[0] ?? null;
+    } catch (error) {
+      const normalizedError = normalizeError(error);
+      await markClaimedOutboxCommitsPending(db, [outbox], normalizedError.message);
+      throw normalizedError;
     }
   }
 
   // Try WS push first for the first outbox commit (if realtime transport supports it).
   // Fall back to HTTP push in the combined request when WS is unavailable or fails.
   let wsPushResponse: SyncPushResponse | null = null;
-  if (pushRequest && hasPushViaWs(transport)) {
+  if (preparedFirstCommit && hasPushViaWs(transport)) {
     try {
-      wsPushResponse = await transport.pushViaWs(pushRequest);
+      wsPushResponse = await transport.pushViaWs(preparedFirstCommit.request);
     } catch {
       wsPushResponse = null;
     }
   }
 
-  let combined: SyncCombinedResponse;
-  try {
-    combined = await transport.sync({
-      clientId,
-      ...(pushRequest && !wsPushResponse
-        ? {
-            push: {
-              clientCommitId: pushRequest.clientCommitId,
-              operations: pushRequest.operations,
-              schemaVersion: pushRequest.schemaVersion,
-            },
-          }
-        : {}),
-      pull: {
-        limitCommits: pullState.request.limitCommits,
-        limitSnapshotRows: pullState.request.limitSnapshotRows,
-        maxSnapshotPages: pullState.request.maxSnapshotPages,
-        dedupeRows: pullState.request.dedupeRows,
-        subscriptions: pullState.request.subscriptions,
-      },
-    });
-  } catch (err) {
-    if (outbox) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      await markOutboxCommitPending(db, { id: outbox.id, error: message });
+  const skipPullAfterWsPush = canSkipPullAfterLocalWsPush(
+    pullState,
+    wsPushResponse,
+    options
+  );
+
+  let combined: SyncCombinedResponse | null = null;
+  let combinedPushCommits: PreparedPushCommit[] = [];
+  if (!skipPullAfterWsPush) {
+    combinedPushCommits =
+      preparedFirstCommit && !wsPushResponse
+        ? [
+            preparedFirstCommit,
+            ...(
+              await (async () => {
+                const additionalOutboxCommits = await claimSendableOutboxCommits(
+                  db,
+                  Math.max(0, (options.maxPushCommits ?? 20) - 1)
+                );
+                if (additionalOutboxCommits.length === 0) return [];
+                try {
+                  return await preparePushCommits(additionalOutboxCommits, {
+                    clientId: options.clientId,
+                    actorId: options.actorId,
+                    plugins,
+                  });
+                } catch (error) {
+                  const normalizedError = normalizeError(error);
+                  await markClaimedOutboxCommitsPending(
+                    db,
+                    additionalOutboxCommits,
+                    normalizedError.message
+                  );
+                  throw normalizedError;
+                }
+              })()
+            ),
+          ]
+        : [];
+
+    try {
+      combined = await transport.sync({
+        clientId,
+        ...(combinedPushCommits.length > 0
+          ? {
+              push: {
+                commits: combinedPushCommits.map(({ request }) => ({
+                  clientCommitId: request.clientCommitId,
+                  operations: request.operations,
+                  schemaVersion: request.schemaVersion,
+                })),
+              },
+            }
+          : {}),
+        pull: {
+          limitCommits: pullState.request.limitCommits,
+          limitSnapshotRows: pullState.request.limitSnapshotRows,
+          maxSnapshotPages: pullState.request.maxSnapshotPages,
+          dedupeRows: pullState.request.dedupeRows,
+          subscriptions: pullState.request.subscriptions,
+        },
+      });
+    } catch (err) {
+      if (combinedPushCommits.length > 0) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        await markClaimedOutboxCommitsPending(
+          db,
+          combinedPushCommits.map(({ outboxCommit }) => outboxCommit),
+          message
+        );
+      }
+      throw err;
     }
-    throw err;
   }
 
   // Process push response
   let pushedCommits = 0;
   const pushResults: PushResultInfo[] = [];
-  if (outbox && pushRequest) {
-    let pushRes = wsPushResponse ?? combined.push;
-    if (!pushRes) {
-      await markOutboxCommitPending(db, {
-        id: outbox.id,
-        error: 'MISSING_PUSH_RESPONSE',
-      });
-      throw new Error('Server returned no push response');
-    }
-
-    // Run afterPush plugins
-    for (const plugin of plugins) {
-      if (!plugin.afterPush) continue;
-      pushRes = await plugin.afterPush(ctx, {
-        request: pushRequest,
-        response: pushRes,
-      });
-    }
-
-    const responseJson = JSON.stringify(pushRes);
-
-    if (pushRes.status === 'applied' || pushRes.status === 'cached') {
-      await markOutboxCommitAcked(db, {
-        id: outbox.id,
-        commitSeq: pushRes.commitSeq ?? null,
-        responseJson,
-      });
-      pushResults.push(
-        buildPushResult({
-          outboxCommitId: outbox.id,
-          clientCommitId: outbox.client_commit_id,
-          status: pushRes.status,
-          response: pushRes,
-        })
+  if (preparedFirstCommit) {
+    if (wsPushResponse) {
+      const finalizedFirstCommit = await finalizePushCommit(
+        db,
+        {
+          clientId: options.clientId,
+          actorId: options.actorId,
+          plugins,
+        },
+        preparedFirstCommit,
+        wsPushResponse
       );
+      pushResults.push(finalizedFirstCommit.pushResult);
       pushedCommits = 1;
-    } else {
-      // Check if all errors are retriable
-      const errorResults = pushRes.results.filter((r) => r.status === 'error');
-      const allRetriable =
-        errorResults.length > 0 &&
-        errorResults.every((r) => r.retriable === true);
 
-      if (allRetriable) {
-        await markOutboxCommitPending(db, {
-          id: outbox.id,
-          error: 'Retriable',
-          responseJson,
-        });
-        pushResults.push(
-          buildPushResult({
-            outboxCommitId: outbox.id,
-            clientCommitId: outbox.client_commit_id,
-            status: 'retriable',
-            response: pushRes,
-          })
+      if (finalizedFirstCommit.afterPushError) {
+        throw finalizedFirstCommit.afterPushError;
+      }
+    } else {
+      const batchResponses = combined?.push?.commits ?? [];
+      const responsesByClientCommitId = new Map(
+        batchResponses.map((response) => [response.clientCommitId, response])
+      );
+      if (
+        !combined?.push ||
+        combinedPushCommits.some(
+          ({ request }) => !responsesByClientCommitId.has(request.clientCommitId)
+        )
+      ) {
+        await markClaimedOutboxCommitsPending(
+          db,
+          combinedPushCommits.map(({ outboxCommit }) => outboxCommit),
+          'MISSING_PUSH_RESPONSE'
         );
-        pushedCommits = 1;
-      } else {
-        await upsertConflictsForRejectedCommit(db, {
-          outboxCommitId: outbox.id,
-          clientCommitId: outbox.client_commit_id,
-          response: pushRes,
-        });
-        await markOutboxCommitFailed(db, {
-          id: outbox.id,
-          error: 'REJECTED',
-          responseJson,
-        });
-        pushResults.push(
-          buildPushResult({
-            outboxCommitId: outbox.id,
-            clientCommitId: outbox.client_commit_id,
-            status: 'rejected',
-            response: pushRes,
-          })
+        throw new Error('Server returned incomplete push response');
+      }
+
+      let deferredError: Error | null = null;
+      for (const preparedCommit of combinedPushCommits) {
+        const batchResponse = responsesByClientCommitId.get(
+          preparedCommit.request.clientCommitId
         );
-        pushedCommits = 1;
+        if (!batchResponse) continue;
+
+        const finalizedCommit = await finalizePushCommit(
+          db,
+          {
+            clientId: options.clientId,
+            actorId: options.actorId,
+            plugins,
+          },
+          preparedCommit,
+          toSyncPushResponse(batchResponse)
+        );
+        pushResults.push(finalizedCommit.pushResult);
+        pushedCommits += 1;
+        if (!deferredError && finalizedCommit.afterPushError) {
+          deferredError = finalizedCommit.afterPushError;
+        }
+      }
+
+      if (deferredError) {
+        throw deferredError;
       }
     }
 
     // Settle remaining outbox commits
-    const remaining = await syncPushUntilSettled(db, transport, {
-      clientId: options.clientId,
-      actorId: options.actorId,
-      plugins: options.plugins,
-      maxCommits: (options.maxPushCommits ?? 20) - 1,
-    });
-    pushedCommits += remaining.pushedCount;
-    pushResults.push(...remaining.pushResults);
+    const remainingMaxCommits = Math.max(
+      0,
+      (options.maxPushCommits ?? 20) - pushedCommits
+    );
+    if (remainingMaxCommits > 0) {
+      const remaining = await syncPushUntilSettled(db, transport, {
+        clientId: options.clientId,
+        actorId: options.actorId,
+        plugins: options.plugins,
+        maxCommits: remainingMaxCommits,
+      });
+      pushedCommits += remaining.pushedCount;
+      pushResults.push(...remaining.pushResults);
+    }
   }
 
   // Process pull response
   let pullResponse: SyncPullResponse = { ok: true, subscriptions: [] };
   let pullRounds = 0;
-  if (combined.pull) {
+  if (combined?.pull) {
     pullResponse = await applyPullResponse(
       db,
       transport,
@@ -426,7 +731,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
     pullRounds = 1;
 
     // Continue pulling if more data
-    if (needsAnotherPull(pullResponse)) {
+    if (needsAnotherPull(pullResponse, pullState.request.limitCommits)) {
       const aggregatedBySubId = new Map<string, SyncPullSubscriptionResponse>();
       mergePullResponse(aggregatedBySubId, pullResponse);
 

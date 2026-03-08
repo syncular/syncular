@@ -1196,4 +1196,88 @@ describe('SyncEngine WS inline apply', () => {
       .executeTakeFirst();
     expect(Number(conflictsCount?.total ?? 0)).toBe(0);
   });
+
+  it('defers polling-triggered background sync while retry backoff is active', () => {
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers: [],
+      actorId: 'u1',
+      clientId: 'client-retry-poll',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    const syncCalls: Array<{ trigger?: 'ws' | 'local' | 'poll' }> = [];
+    Reflect.set(
+      engine,
+      'sync',
+      async (opts?: { trigger?: 'ws' | 'local' | 'poll' }) => {
+        syncCalls.push(opts ?? {});
+        return {
+          success: true,
+          pushedCommits: 0,
+          pullRounds: 0,
+          pullResponse: { ok: true, subscriptions: [] },
+          error: null,
+        };
+      }
+    );
+
+    const updateState = Reflect.get(engine, 'updateState');
+    if (typeof updateState !== 'function') {
+      throw new Error('Expected updateState to be callable');
+    }
+    updateState.call(engine, { isRetrying: true });
+
+    const triggerSyncInBackground = Reflect.get(engine, 'triggerSyncInBackground');
+    if (typeof triggerSyncInBackground !== 'function') {
+      throw new Error('Expected triggerSyncInBackground to be callable');
+    }
+    triggerSyncInBackground.call(engine, undefined, 'polling interval');
+
+    expect(syncCalls).toEqual([]);
+  });
+
+  it('allows ws-triggered background sync while retry backoff is active', () => {
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers: [],
+      actorId: 'u1',
+      clientId: 'client-retry-ws',
+      subscriptions: [],
+      stateId: 'default',
+    });
+
+    const syncCalls: Array<{ trigger?: 'ws' | 'local' | 'poll' }> = [];
+    Reflect.set(
+      engine,
+      'sync',
+      async (opts?: { trigger?: 'ws' | 'local' | 'poll' }) => {
+        syncCalls.push(opts ?? {});
+        return {
+          success: true,
+          pushedCommits: 0,
+          pullRounds: 0,
+          pullResponse: { ok: true, subscriptions: [] },
+          error: null,
+        };
+      }
+    );
+
+    const updateState = Reflect.get(engine, 'updateState');
+    if (typeof updateState !== 'function') {
+      throw new Error('Expected updateState to be callable');
+    }
+    updateState.call(engine, { isRetrying: true });
+
+    const triggerSyncInBackground = Reflect.get(engine, 'triggerSyncInBackground');
+    if (typeof triggerSyncInBackground !== 'function') {
+      throw new Error('Expected triggerSyncInBackground to be callable');
+    }
+    triggerSyncInBackground.call(engine, { trigger: 'ws' }, 'ws cursor wakeup');
+
+    expect(syncCalls).toEqual([{ trigger: 'ws' }]);
+  });
 });

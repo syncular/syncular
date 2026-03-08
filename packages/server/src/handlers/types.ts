@@ -206,6 +206,13 @@ export interface ServerHandlerOptions<
   snapshotChunkTtlMs?: number;
 
   /**
+   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
+   * Larger values reduce chunk/request overhead for large bootstraps at the
+   * cost of higher transient memory and chunk sizes.
+   */
+  snapshotBundleMaxBytes?: number;
+
+  /**
    * Transform client payload → server row on writes.
    */
   transformInbound?: (
@@ -262,6 +269,11 @@ export interface ServerTableHandler<
    * TTL for cached snapshot chunks (ms).
    */
   snapshotChunkTtlMs?: number;
+
+  /**
+   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
+   */
+  snapshotBundleMaxBytes?: number;
 
   /**
    * Hint for push engine savepoint optimization on single-op commits.

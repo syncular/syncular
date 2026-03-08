@@ -178,7 +178,7 @@ process.on('SIGTERM', () => cleanupScheduler.stop());
 Implement the `ClientBlobStorage` interface for your platform:
 
 ```typescript
-import type { ClientBlobStorage } from '@syncular/client';
+import type { ClientBlobStorage } from '@syncular/client-plugin-blob';
 
 // Example: Browser OPFS implementation
 async function createOpfsBlobStorage(): Promise<ClientBlobStorage> {
@@ -240,7 +240,7 @@ For React Native with Expo:
 
 ```typescript
 import * as FileSystem from 'expo-file-system';
-import type { ClientBlobStorage } from '@syncular/client';
+import type { ClientBlobStorage } from '@syncular/client-plugin-blob';
 
 function createExpoBlobStorage(): ClientBlobStorage {
   const blobsDir = `${FileSystem.documentDirectory}blobs/`;
@@ -293,6 +293,7 @@ const blobStorage = createExpoBlobStorage();
 
 ```typescript
 import { Client } from '@syncular/client';
+import { createBlobPlugin } from '@syncular/client-plugin-blob';
 import { createHttpTransport } from '@syncular/transport-http';
 
 const transport = createHttpTransport({
@@ -307,7 +308,7 @@ const client = new Client({
   clientId: 'device-123',
   actorId: 'user-456',
   subscriptions: [...],
-  blobStorage, // Enable blob support
+  plugins: [createBlobPlugin({ storage: blobStorage })],
 });
 
 await client.start();

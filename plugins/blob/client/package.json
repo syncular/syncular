@@ -1,14 +1,14 @@
 {
-  "name": "@syncular/core",
+  "name": "@syncular/client-plugin-blob",
   "version": "0.0.0",
-  "description": "Core protocol types and shared utilities for the Syncular sync framework",
+  "description": "Blob storage plugin for the Syncular client",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {
     "type": "git",
     "url": "https://github.com/syncular/syncular.git",
-    "directory": "packages/core"
+    "directory": "plugins/blob/client"
   },
   "bugs": {
     "url": "https://github.com/syncular/syncular/issues"
@@ -18,10 +18,11 @@
     "offline-first",
     "realtime",
     "database",
-    "typescript"
+    "typescript",
+    "blob",
+    "storage"
   ],
   "private": false,
-  "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },
@@ -37,19 +38,22 @@
     }
   },
   "scripts": {
-    "test": "bun test src/__tests__",
+    "test": "bun test --pass-with-no-tests",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
     "release": "bunx syncular-publish"
   },
-  "peerDependencies": {
-    "kysely": "^0.28.0",
-    "zod": "^4.0.0"
+  "dependencies": {
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*"
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
     "kysely": "*",
-    "zod": "*"
+    "kysely-bun-sqlite": "^0.4.0"
+  },
+  "peerDependencies": {
+    "kysely": "*"
   },
   "files": [
     "dist",

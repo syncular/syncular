@@ -1041,17 +1041,28 @@ export function createPushCommit<DB = AnyDb>(
     const combined = await config.transport.sync({
       clientId: requestToSend.clientId,
       push: {
-        clientCommitId: requestToSend.clientCommitId,
-        operations: requestToSend.operations,
-        schemaVersion: requestToSend.schemaVersion,
+        commits: [
+          {
+            clientCommitId: requestToSend.clientCommitId,
+            operations: requestToSend.operations,
+            schemaVersion: requestToSend.schemaVersion,
+          },
+        ],
       },
     });
-    if (!combined.push) {
+    const rawResponse = combined.push?.commits.find(
+      (commit) => commit.clientCommitId === requestToSend.clientCommitId
+    );
+    if (!rawResponse) {
       throw new Error('Server returned no push response');
     }
-    const rawResponse = combined.push;
 
-    let response = rawResponse;
+    let response: SyncPushResponse = {
+      ok: true as const,
+      status: rawResponse.status,
+      commitSeq: rawResponse.commitSeq,
+      results: rawResponse.results,
+    };
     if (sortedPlugins.length > 0) {
       // Run afterPush in reverse priority order (higher numbers first)
       for (const plugin of [...sortedPlugins].reverse()) {

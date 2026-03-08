@@ -1797,6 +1797,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               stateId: this.config.stateId,
               sha256: this.config.sha256,
               trigger,
+              allowSkipPullOnLocalWsPush: this.state.transportMode === 'realtime',
             }
           )
       );
@@ -2328,10 +2329,29 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     this.config.onError?.(error);
   }
 
+  private shouldDeferBackgroundSyncForRetry(
+    opts?: { trigger?: 'ws' | 'local' | 'poll' },
+    reason = 'background'
+  ): boolean {
+    if (!this.state.isRetrying) return false;
+    if (opts?.trigger === 'ws') return false;
+
+    return !(
+      reason === 'retry timer' ||
+      reason === 'reconnect' ||
+      reason === 'realtime connected state' ||
+      reason === 'realtime reconnect catchup'
+    );
+  }
+
   private triggerSyncInBackground(
     opts?: { trigger?: 'ws' | 'local' | 'poll' },
     reason = 'background'
   ): void {
+    if (this.shouldDeferBackgroundSyncForRetry(opts, reason)) {
+      return;
+    }
+
     void this.sync(opts).catch((error) => {
       console.error(
         `[SyncEngine] Unexpected sync failure during ${reason}:`,

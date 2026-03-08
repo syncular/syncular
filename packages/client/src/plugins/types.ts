@@ -5,11 +5,28 @@ import type {
   SyncPullResponse,
   SyncPushRequest,
   SyncPushResponse,
+  SyncTransport,
 } from '@syncular/core';
+import type { Kysely } from 'kysely';
+import type { SyncClientDb } from '../schema';
 
 export interface SyncClientPluginContext {
   actorId: string;
   clientId: string;
+}
+
+export interface SyncClientFeatureRegistry {}
+
+export interface SyncClientPluginLifecycleContext<
+  DB extends SyncClientDb = SyncClientDb,
+> extends SyncClientPluginContext {
+  db: Kysely<DB>;
+  transport: SyncTransport;
+  defineFeature<Name extends keyof SyncClientFeatureRegistry & string>(
+    name: Name,
+    value: SyncClientFeatureRegistry[Name]
+  ): void;
+  emit(event: string, payload: object): void;
 }
 
 export interface SyncClientWsDeliveryMetadata {
@@ -56,6 +73,29 @@ export interface SyncClientPlugin {
    * @default PluginPriority.DEFAULT (50)
    */
   priority?: number;
+
+  /**
+   * Called during client construction to attach optional feature APIs.
+   * Use this for capability plugins that extend the client surface.
+   */
+  setup?<DB extends SyncClientDb = SyncClientDb>(
+    ctx: SyncClientPluginLifecycleContext<DB>
+  ): void;
+
+  /**
+   * Called during client start after core sync migrations succeed.
+   * Use this for plugin-owned local schema.
+   */
+  migrate?<DB extends SyncClientDb = SyncClientDb>(
+    ctx: SyncClientPluginLifecycleContext<DB>
+  ): Promise<void> | void;
+
+  /**
+   * Called during client destroy for plugin cleanup.
+   */
+  destroy?<DB extends SyncClientDb = SyncClientDb>(
+    ctx: SyncClientPluginLifecycleContext<DB>
+  ): void;
 
   /**
    * Called before sending a push request to the server.

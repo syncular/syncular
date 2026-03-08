@@ -64,6 +64,12 @@ export const SyncPushRequestSchema = z.object({
 
 export type SyncPushRequest = z.infer<typeof SyncPushRequestSchema>;
 
+export const SyncPushCommitRequestSchema = SyncPushRequestSchema.omit({
+  clientId: true,
+});
+
+export type SyncPushCommitRequest = z.infer<typeof SyncPushCommitRequestSchema>;
+
 const SyncOperationResultAppliedSchema = z.object({
   opIndex: z.number().int(),
   status: z.literal('applied'),
@@ -101,6 +107,28 @@ export const SyncPushResponseSchema = z.object({
 });
 
 export type SyncPushResponse = z.infer<typeof SyncPushResponseSchema>;
+
+export const SyncPushBatchCommitResponseSchema = SyncPushResponseSchema.extend({
+  clientCommitId: z.string().min(1),
+});
+
+export type SyncPushBatchCommitResponse = z.infer<
+  typeof SyncPushBatchCommitResponseSchema
+>;
+
+export const SyncPushBatchRequestSchema = z.object({
+  clientId: z.string().min(1),
+  commits: z.array(SyncPushCommitRequestSchema).min(1),
+});
+
+export type SyncPushBatchRequest = z.infer<typeof SyncPushBatchRequestSchema>;
+
+export const SyncPushBatchResponseSchema = z.object({
+  ok: z.literal(true),
+  commits: z.array(SyncPushBatchCommitResponseSchema),
+});
+
+export type SyncPushBatchResponse = z.infer<typeof SyncPushBatchResponseSchema>;
 
 // ============================================================================
 // Bootstrap State Schema
@@ -211,7 +239,7 @@ export type SyncPullResponse = z.infer<typeof SyncPullResponseSchema>;
 
 export const SyncCombinedRequestSchema = z.object({
   clientId: z.string().min(1),
-  push: SyncPushRequestSchema.omit({ clientId: true }).optional(),
+  push: SyncPushBatchRequestSchema.omit({ clientId: true }).optional(),
   pull: SyncPullRequestSchema.omit({ clientId: true }).optional(),
 });
 
@@ -219,7 +247,7 @@ export type SyncCombinedRequest = z.infer<typeof SyncCombinedRequestSchema>;
 
 export const SyncCombinedResponseSchema = z.object({
   ok: z.literal(true),
-  push: SyncPushResponseSchema.optional(),
+  push: SyncPushBatchResponseSchema.optional(),
   pull: SyncPullResponseSchema.optional(),
 });
 

@@ -307,11 +307,13 @@ export async function pushCommit<
             }
 
             // Insert commit row (idempotency key)
+            const commitCreatedAt = new Date().toISOString();
             const commitRow: Insertable<SyncCoreDb['sync_commits']> = {
               partition_id: partitionId,
               actor_id: actorId,
               client_id: request.clientId,
               client_commit_id: request.clientCommitId,
+              created_at: commitCreatedAt,
               meta: null,
               result_json: null,
             };
@@ -412,36 +414,6 @@ export async function pushCommit<
                 commitCreatedAt:
                   typeof existing.created_at === 'string'
                     ? existing.created_at
-                    : null,
-              };
-            };
-
-            const loadPersistedCommitMetadata = async (
-              seq: number
-            ): Promise<{
-              commitActorId: string | null;
-              commitCreatedAt: string | null;
-            }> => {
-              const persisted = await (
-                syncTrx.selectFrom('sync_commits') as SelectQueryBuilder<
-                  SyncCoreDb,
-                  'sync_commits',
-                  EmptySelection
-                >
-              )
-                .selectAll()
-                .where('commit_seq', '=', seq)
-                .where('partition_id', '=', partitionId)
-                .executeTakeFirst();
-
-              return {
-                commitActorId:
-                  typeof persisted?.actor_id === 'string'
-                    ? persisted.actor_id
-                    : null,
-                commitCreatedAt:
-                  typeof persisted?.created_at === 'string'
-                    ? persisted.created_at
                     : null,
               };
             };
@@ -720,9 +692,6 @@ export async function pushCommit<
                   .execute(trx);
               }
 
-              const commitMetadata =
-                await loadPersistedCommitMetadata(commitSeq);
-
               return {
                 response: appliedResponse,
                 affectedTables,
@@ -735,7 +704,8 @@ export async function pushCommit<
                   row_version: c.row_version,
                   scopes: c.scopes,
                 })),
-                ...commitMetadata,
+                commitActorId: actorId,
+                commitCreatedAt,
               };
             } catch (err) {
               // Roll back app writes but keep the commit row.
@@ -776,15 +746,13 @@ export async function pushCommit<
                 .where('commit_seq', '=', commitSeq)
                 .execute();
 
-              const commitMetadata =
-                await loadPersistedCommitMetadata(commitSeq);
-
               return {
                 response: err.response,
                 affectedTables: [],
                 scopeKeys: [],
                 emittedChanges: [],
-                ...commitMetadata,
+                commitActorId: actorId,
+                commitCreatedAt,
               };
             }
           })

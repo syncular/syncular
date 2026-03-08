@@ -502,32 +502,12 @@
         "@syncular/config": "workspace:*",
       },
     },
-    "packages/server-storage-filesystem": {
-      "name": "@syncular/server-storage-filesystem",
-      "version": "0.0.0",
-      "dependencies": {
-        "@syncular/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "@syncular/server": "workspace:*",
-      },
-    },
-    "packages/server-storage-s3": {
-      "name": "@syncular/server-storage-s3",
-      "version": "0.0.0",
-      "dependencies": {
-        "@syncular/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-      },
-    },
     "packages/syncular": {
       "name": "syncular",
       "version": "0.0.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
+        "@syncular/client-plugin-blob": "workspace:*",
         "@syncular/client-plugin-encryption": "workspace:*",
         "@syncular/client-plugin-offline-auth": "workspace:*",
         "@syncular/client-plugin-offline-auth-react": "workspace:*",
@@ -653,6 +633,43 @@
       "peerDependencies": {
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
+      },
+    },
+    "plugins/blob/client": {
+      "name": "@syncular/client-plugin-blob",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "kysely": "*",
+        "kysely-bun-sqlite": "^0.4.0",
+      },
+      "peerDependencies": {
+        "kysely": "*",
+      },
+    },
+    "plugins/blob/server-storage-filesystem": {
+      "name": "@syncular/server-storage-filesystem",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "@syncular/server": "workspace:*",
+      },
+    },
+    "plugins/blob/server-storage-s3": {
+      "name": "@syncular/server-storage-s3",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
       },
     },
     "plugins/encryption/client": {
@@ -1975,6 +1992,8 @@
 
     "@syncular/client": ["@syncular/client@workspace:packages/client"],
 
+    "@syncular/client-plugin-blob": ["@syncular/client-plugin-blob@workspace:plugins/blob/client"],
+
     "@syncular/client-plugin-encryption": ["@syncular/client-plugin-encryption@workspace:plugins/encryption/client"],
 
     "@syncular/client-plugin-offline-auth": ["@syncular/client-plugin-offline-auth@workspace:plugins/offline-auth/client"],
@@ -2037,9 +2056,9 @@
 
     "@syncular/server-service-worker": ["@syncular/server-service-worker@workspace:packages/server-service-worker"],
 
-    "@syncular/server-storage-filesystem": ["@syncular/server-storage-filesystem@workspace:packages/server-storage-filesystem"],
+    "@syncular/server-storage-filesystem": ["@syncular/server-storage-filesystem@workspace:plugins/blob/server-storage-filesystem"],
 
-    "@syncular/server-storage-s3": ["@syncular/server-storage-s3@workspace:packages/server-storage-s3"],
+    "@syncular/server-storage-s3": ["@syncular/server-storage-s3@workspace:plugins/blob/server-storage-s3"],
 
     "@syncular/testkit": ["@syncular/testkit@workspace:packages/testkit"],
 

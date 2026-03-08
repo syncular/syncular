@@ -21,6 +21,7 @@
     "typescript"
   ],
   "private": false,
+  "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },

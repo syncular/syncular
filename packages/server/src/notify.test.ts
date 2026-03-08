@@ -4,7 +4,11 @@ import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
-import { EXTERNAL_CLIENT_ID, notifyExternalDataChange } from './notify';
+import {
+  EXTERNAL_CLIENT_ID,
+  notifyExternalDataChange,
+  notifyExternalRowChanges,
+} from './notify';
 import { pull } from './pull';
 import type { SyncCoreDb } from './schema';
 
@@ -516,5 +520,123 @@ describe('pull re-bootstrap after external data change', () => {
 
     expect(tasksSub.bootstrap).toBe(false);
     expect(codesSub.bootstrap).toBe(true);
+  });
+});
+
+describe('notifyExternalRowChanges', () => {
+  let db: ReturnType<typeof createBunSqliteDialect<TestDb>>;
+
+  beforeEach(async () => {
+    db = await setupDb();
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+  });
+
+  it('writes incremental sync_changes for external row updates', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't1',
+        user_id: 'u1',
+        title: 'Original',
+        server_version: 1,
+      })
+      .execute();
+
+    const tasksHandler = createServerHandler<TestDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const handlers = createServerHandlerCollection<TestDb>([tasksHandler]);
+
+    const firstPull = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'client-1',
+        limitCommits: 10,
+        limitSnapshotRows: 100,
+        maxSnapshotPages: 10,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    const cursorAfterBootstrap =
+      firstPull.response.subscriptions[0]?.nextCursor ?? -1;
+
+    await db
+      .updateTable('tasks')
+      .set({
+        title: 'Updated externally',
+        server_version: 2,
+      })
+      .where('id', '=', 't1')
+      .execute();
+
+    const result = await notifyExternalRowChanges({
+      db,
+      dialect,
+      changes: [
+        {
+          table: 'tasks',
+          rowId: 't1',
+          op: 'upsert',
+          rowJson: {
+            id: 't1',
+            user_id: 'u1',
+            title: 'Updated externally',
+            server_version: 2,
+          },
+          rowVersion: 2,
+          scopes: { user_id: 'u1' },
+        },
+      ],
+    });
+
+    expect(result.changeCount).toBe(1);
+    expect(result.tables).toEqual(['tasks']);
+
+    const incrementalPull = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'client-1',
+        limitCommits: 10,
+        limitSnapshotRows: 100,
+        maxSnapshotPages: 10,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: cursorAfterBootstrap,
+          },
+        ],
+      },
+    });
+
+    const sub = incrementalPull.response.subscriptions[0]!;
+    expect(sub.bootstrap).toBe(false);
+    expect(sub.commits?.length).toBe(1);
+    expect(sub.commits?.[0]?.changes?.[0]?.row_id).toBe('t1');
+    expect(sub.commits?.[0]?.changes?.[0]?.row_version).toBe(2);
+    expect((sub.commits?.[0]?.changes?.[0]?.row_json as { title: string }).title).toBe(
+      'Updated externally'
+    );
   });
 });

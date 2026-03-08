@@ -17,6 +17,7 @@ import {
   ScopeValuesSchema,
   SyncCombinedRequestSchema,
   SyncCombinedResponseSchema,
+  SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
 } from '@syncular/core';
 import type {
@@ -880,8 +881,8 @@ export function createSyncRoutes<
   };
 
   type PushRequestBody = Omit<
-    z.infer<typeof SyncPushRequestSchema>,
-    'clientId'
+    z.infer<typeof SyncPushCommitRequestSchema>,
+    never
   >;
 
   type PushExecutionContext = {
@@ -894,11 +895,86 @@ export function createSyncRoutes<
     syncPath: 'http-combined' | 'ws-push';
   };
 
+  type ExecutedPushCommit = Awaited<ReturnType<typeof pushCommit>>;
+
+  function notifyRealtimeForAppliedPushes(
+    ctx: PushExecutionContext,
+    pushedCommits: ExecutedPushCommit[]
+  ): void {
+    if (!wsConnectionManager && !realtimeBroadcaster) {
+      return;
+    }
+
+    let latestCommitSeq = 0;
+    let latestActorId = ctx.auth.actorId;
+    let latestCreatedAt: string | undefined;
+    const scopeKeys = new Set<string>();
+    const emittedChanges: ExecutedPushCommit['emittedChanges'] = [];
+
+    for (const pushed of pushedCommits) {
+      if (
+        pushed.response.ok !== true ||
+        pushed.response.status !== 'applied' ||
+        typeof pushed.response.commitSeq !== 'number'
+      ) {
+        continue;
+      }
+
+      latestCommitSeq = Math.max(latestCommitSeq, pushed.response.commitSeq);
+      latestActorId = pushed.commitActorId ?? latestActorId;
+      latestCreatedAt = pushed.commitCreatedAt ?? latestCreatedAt;
+      for (const scopeKey of applyPartitionToScopeKeys(
+        ctx.partitionId,
+        pushed.scopeKeys
+      )) {
+        scopeKeys.add(scopeKey);
+      }
+      emittedChanges.push(...pushed.emittedChanges);
+    }
+
+    if (latestCommitSeq <= 0 || scopeKeys.size === 0) {
+      return;
+    }
+
+    const combinedScopeKeys = Array.from(scopeKeys);
+
+    if (wsConnectionManager) {
+      wsConnectionManager.notifyScopeKeys(combinedScopeKeys, latestCommitSeq, {
+        excludeClientIds: [ctx.clientId],
+        changes: emittedChanges,
+        actorId: latestActorId,
+        createdAt: latestCreatedAt,
+      });
+    }
+
+    if (realtimeBroadcaster) {
+      realtimeBroadcaster
+        .publish({
+          type: 'commit',
+          commitSeq: latestCommitSeq,
+          partitionId: ctx.partitionId,
+          scopeKeys: combinedScopeKeys,
+          sourceInstanceId: instanceId,
+        })
+        .catch((error) => {
+          logAsyncFailureOnce('sync.realtime.broadcast_publish_failed', {
+            event: 'sync.realtime.broadcast_publish_failed',
+            userId: ctx.auth.actorId,
+            clientId: ctx.clientId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+  }
+
   async function executePushCommitWithSideEffects(
     ctx: PushExecutionContext,
     pushBody: PushRequestBody,
-    execOptions: { countConflictsMetric?: boolean } = {}
-  ): Promise<Awaited<ReturnType<typeof pushCommit>>> {
+    execOptions: {
+      countConflictsMetric?: boolean;
+      deferRealtimeNotifications?: boolean;
+    } = {}
+  ): Promise<ExecutedPushCommit> {
     const timer = createSyncTimer();
     const pushOps = pushBody.operations ?? [];
 
@@ -990,48 +1066,8 @@ export function createSyncRoutes<
       }
     }
 
-    if (
-      wsConnectionManager &&
-      pushed.response.ok === true &&
-      pushed.response.status === 'applied' &&
-      typeof pushed.response.commitSeq === 'number'
-    ) {
-      const scopeKeys = applyPartitionToScopeKeys(
-        ctx.partitionId,
-        pushed.scopeKeys
-      );
-
-      if (scopeKeys.length > 0) {
-        wsConnectionManager.notifyScopeKeys(
-          scopeKeys,
-          pushed.response.commitSeq,
-          {
-            excludeClientIds: [ctx.clientId],
-            changes: pushed.emittedChanges,
-            actorId: pushed.commitActorId ?? ctx.auth.actorId,
-            createdAt: pushed.commitCreatedAt ?? new Date().toISOString(),
-          }
-        );
-
-        if (realtimeBroadcaster) {
-          realtimeBroadcaster
-            .publish({
-              type: 'commit',
-              commitSeq: pushed.response.commitSeq,
-              partitionId: ctx.partitionId,
-              scopeKeys,
-              sourceInstanceId: instanceId,
-            })
-            .catch((error) => {
-              logAsyncFailureOnce('sync.realtime.broadcast_publish_failed', {
-                event: 'sync.realtime.broadcast_publish_failed',
-                userId: ctx.auth.actorId,
-                clientId: ctx.clientId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-        }
-      }
+    if (execOptions.deferRealtimeNotifications !== true) {
+      notifyRealtimeForAppliedPushes(ctx, [pushed]);
     }
 
     if (
@@ -1465,36 +1501,75 @@ export function createSyncRoutes<
 
       let pushResponse:
         | undefined
-        | Awaited<ReturnType<typeof pushCommit>>['response'];
+        | {
+            ok: true;
+            commits: Array<
+              Awaited<ReturnType<typeof pushCommit>>['response'] & {
+                clientCommitId: string;
+              }
+            >;
+          };
       let pullResponse: undefined | PullResult['response'];
 
       // --- Push phase ---
       if (body.push) {
-        const pushBody = body.push;
-        const pushOps = pushBody.operations ?? [];
-        if (pushOps.length > maxOperationsPerPush) {
-          return c.json(
+        const pushBodies = body.push.commits ?? [];
+        const pushedCommits: NonNullable<typeof pushResponse>['commits'] = [];
+        const executedPushes: ExecutedPushCommit[] = [];
+        for (const pushBody of pushBodies) {
+          const pushOps = pushBody.operations ?? [];
+          if (pushOps.length > maxOperationsPerPush) {
+            return c.json(
+              {
+                error: 'TOO_MANY_OPERATIONS',
+                message: `Maximum ${maxOperationsPerPush} operations per push`,
+              },
+              400
+            );
+          }
+
+          const pushed = await executePushCommitWithSideEffects(
             {
-              error: 'TOO_MANY_OPERATIONS',
-              message: `Maximum ${maxOperationsPerPush} operations per push`,
+              auth,
+              clientId,
+              partitionId,
+              requestId,
+              traceContext,
+              transportPath,
+              syncPath: 'http-combined',
             },
-            400
+            pushBody,
+            {
+              deferRealtimeNotifications: pushBodies.length > 1,
+            }
+          );
+
+          executedPushes.push(pushed);
+          pushedCommits.push({
+            clientCommitId: pushBody.clientCommitId,
+            ...pushed.response,
+          });
+        }
+
+        if (pushBodies.length > 1) {
+          notifyRealtimeForAppliedPushes(
+            {
+              auth,
+              clientId,
+              partitionId,
+              requestId,
+              traceContext,
+              transportPath,
+              syncPath: 'http-combined',
+            },
+            executedPushes
           );
         }
-        const pushed = await executePushCommitWithSideEffects(
-          {
-            auth,
-            clientId,
-            partitionId,
-            requestId,
-            traceContext,
-            transportPath,
-            syncPath: 'http-combined',
-          },
-          pushBody
-        );
 
-        pushResponse = pushed.response;
+        pushResponse = {
+          ok: true,
+          commits: pushedCommits,
+        };
       }
 
       // --- Pull phase ---

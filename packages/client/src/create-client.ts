@@ -148,9 +148,6 @@ interface CreateClientOptions<DB extends SyncClientDb> {
     dataChangeDebounceMsWhenReconnecting?: number | false;
   };
 
-  /** Optional: Local blob storage adapter */
-  blobStorage?: import('./client').ClientBlobStorage;
-
   /** Optional: Sync plugins */
   plugins?: import('./plugins').SyncClientPlugin[];
 
@@ -222,7 +219,6 @@ export async function createClient<DB extends SyncClientDb>(
     transport: customTransport,
     getHeaders,
     sync = {},
-    blobStorage,
     plugins,
     stateId,
     codecs,
@@ -313,7 +309,6 @@ export async function createClient<DB extends SyncClientDb>(
     clientId,
     actorId,
     subscriptions,
-    blobStorage,
     plugins,
     stateId,
     codecs,
