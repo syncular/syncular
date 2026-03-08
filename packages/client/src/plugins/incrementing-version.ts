@@ -75,18 +75,47 @@ export function createIncrementingVersionPlugin(
       _ctx: SyncClientPluginContext,
       request: SyncPushRequest
     ): SyncPushRequest {
+      const nextExpectedBaseVersionByRowForRequest = new Map<string, number>();
       const operations = request.operations.map((op) => {
-        if (typeof op.base_version !== 'number') return op;
-
         const key = makeRowKey(op);
-        const nextExpected = nextExpectedBaseVersionByRow.get(key);
-        if (typeof nextExpected !== 'number') return op;
+        const nextExpected =
+          nextExpectedBaseVersionByRowForRequest.get(key) ??
+          nextExpectedBaseVersionByRow.get(key);
 
-        if (nextExpected > op.base_version) {
-          return { ...op, base_version: nextExpected };
+        const baseVersion =
+          typeof op.base_version === 'number' &&
+          typeof nextExpected === 'number' &&
+          nextExpected > op.base_version
+            ? nextExpected
+            : op.base_version;
+
+        const rewrittenOperation =
+          baseVersion === op.base_version
+            ? op
+            : { ...op, base_version: baseVersion };
+
+        if (op.op === 'delete') {
+          nextExpectedBaseVersionByRowForRequest.delete(key);
+          return rewrittenOperation;
         }
 
-        return op;
+        if (typeof baseVersion === 'number') {
+          touchLru(
+            nextExpectedBaseVersionByRowForRequest,
+            key,
+            baseVersion + 1,
+            maxTrackedRows
+          );
+          return rewrittenOperation;
+        }
+
+        touchLru(
+          nextExpectedBaseVersionByRowForRequest,
+          key,
+          1,
+          maxTrackedRows
+        );
+        return rewrittenOperation;
       });
 
       return { ...request, operations };
