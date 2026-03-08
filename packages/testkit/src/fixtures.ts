@@ -17,6 +17,7 @@ import {
   syncOnce,
   syncPullOnce,
   syncPushOnce,
+  withDefaultClientPlugins,
 } from '@syncular/client';
 import {
   createDatabase,
@@ -776,7 +777,7 @@ export async function createEngineTestClient(
     subscriptions,
     pollIntervalMs: options.pollIntervalMs ?? 999999,
     realtimeEnabled: options.realtimeEnabled ?? false,
-    plugins: options.plugins,
+    plugins: withDefaultClientPlugins(options.plugins),
   });
 
   return {

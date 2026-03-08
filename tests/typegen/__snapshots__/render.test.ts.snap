@@ -971,18 +971,20 @@ export interface operations {
                 "application/json": {
                     clientId: string;
                     push?: {
-                        clientCommitId: string;
-                        operations: {
-                            table: string;
-                            row_id: string;
-                            /** @enum {string} */
-                            op: "upsert" | "delete";
-                            payload: {
-                                [key: string]: unknown;
-                            } | null;
-                            base_version?: number | null;
+                        commits: {
+                            clientCommitId: string;
+                            operations: {
+                                table: string;
+                                row_id: string;
+                                /** @enum {string} */
+                                op: "upsert" | "delete";
+                                payload: {
+                                    [key: string]: unknown;
+                                } | null;
+                                base_version?: number | null;
+                            }[];
+                            schemaVersion: number;
                         }[];
-                        schemaVersion: number;
                     };
                     pull?: {
                         limitCommits: number;
@@ -1023,28 +1025,33 @@ export interface operations {
                         push?: {
                             /** @constant */
                             ok: true;
-                            /** @enum {string} */
-                            status: "applied" | "cached" | "rejected";
-                            commitSeq?: number;
-                            results: ({
-                                opIndex: number;
+                            commits: {
                                 /** @constant */
-                                status: "applied";
-                            } | {
-                                opIndex: number;
-                                /** @constant */
-                                status: "conflict";
-                                message: string;
-                                server_version: number;
-                                server_row: unknown;
-                            } | {
-                                opIndex: number;
-                                /** @constant */
-                                status: "error";
-                                error: string;
-                                code?: string;
-                                retriable?: boolean;
-                            })[];
+                                ok: true;
+                                /** @enum {string} */
+                                status: "applied" | "cached" | "rejected";
+                                commitSeq?: number;
+                                results: ({
+                                    opIndex: number;
+                                    /** @constant */
+                                    status: "applied";
+                                } | {
+                                    opIndex: number;
+                                    /** @constant */
+                                    status: "conflict";
+                                    message: string;
+                                    server_version: number;
+                                    server_row: unknown;
+                                } | {
+                                    opIndex: number;
+                                    /** @constant */
+                                    status: "error";
+                                    error: string;
+                                    code?: string;
+                                    retriable?: boolean;
+                                })[];
+                                clientCommitId: string;
+                            }[];
                         };
                         pull?: {
                             /** @constant */
@@ -1130,7 +1137,9 @@ export interface operations {
     };
     getSyncSnapshotChunksByChunkId: {
         parameters: {
-            query?: never;
+            query?: {
+                scopes?: string;
+            };
             header?: never;
             path: {
                 chunkId: string;

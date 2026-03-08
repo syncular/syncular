@@ -25,7 +25,11 @@ import {
   markOutboxCommitPending,
   type OutboxCommit,
 } from './outbox';
-import type { SyncClientPluginContext } from './plugins/types';
+import { INCREMENTING_VERSION_PLUGIN_KIND } from './plugins/incrementing-version';
+import type {
+  SyncClientPlugin,
+  SyncClientPluginContext,
+} from './plugins/types';
 import {
   applyPullResponse,
   buildPullRequest,
@@ -152,6 +156,73 @@ interface PreparedPushCommit {
   request: SyncPushRequest;
 }
 
+function hasIncrementingVersionPlugin(
+  plugins: readonly SyncClientPlugin[]
+): boolean {
+  return plugins.some(
+    (plugin) =>
+      plugin.kind === INCREMENTING_VERSION_PLUGIN_KIND ||
+      plugin.name === INCREMENTING_VERSION_PLUGIN_KIND
+  );
+}
+
+function makeSequentialRowKey(
+  operation: Pick<SyncPushRequest['operations'][number], 'table' | 'row_id'>
+): string {
+  return `${operation.table}\u001f${operation.row_id}`;
+}
+
+function advanceSequentialBaseVersionsInBatch(
+  preparedCommits: PreparedPushCommit[]
+): PreparedPushCommit[] {
+  const nextExpectedBaseVersionByRow = new Map<string, number>();
+
+  return preparedCommits.map((preparedCommit) => {
+    let requestChanged = false;
+    const operations = preparedCommit.request.operations.map((operation) => {
+      const key = makeSequentialRowKey(operation);
+      const nextExpected = nextExpectedBaseVersionByRow.get(key);
+      const baseVersion =
+        typeof operation.base_version === 'number' &&
+        typeof nextExpected === 'number' &&
+        nextExpected > operation.base_version
+          ? nextExpected
+          : operation.base_version;
+
+      const rewrittenOperation =
+        baseVersion === operation.base_version
+          ? operation
+          : { ...operation, base_version: baseVersion };
+
+      if (rewrittenOperation !== operation) {
+        requestChanged = true;
+      }
+
+      if (operation.op === 'delete') {
+        nextExpectedBaseVersionByRow.delete(key);
+        return rewrittenOperation;
+      }
+
+      if (typeof baseVersion === 'number') {
+        nextExpectedBaseVersionByRow.set(key, baseVersion + 1);
+        return rewrittenOperation;
+      }
+
+      nextExpectedBaseVersionByRow.set(key, 1);
+      return rewrittenOperation;
+    });
+
+    if (!requestChanged) return preparedCommit;
+    return {
+      ...preparedCommit,
+      request: {
+        ...preparedCommit.request,
+        operations,
+      },
+    };
+  });
+}
+
 async function preparePushCommits(
   outboxCommits: OutboxCommit[],
   options: SyncPushOnceOptions
@@ -172,7 +243,11 @@ async function preparePushCommits(
     prepared.push({ outboxCommit, request });
   }
 
-  return prepared;
+  if (!hasIncrementingVersionPlugin(plugins)) {
+    return prepared;
+  }
+
+  return advanceSequentialBaseVersionsInBatch(prepared);
 }
 
 async function finalizePushCommit<DB extends SyncClientDb>(
@@ -602,6 +677,10 @@ async function syncOnceCombined<DB extends SyncClientDb>(
             })()),
           ]
         : [];
+    if (hasIncrementingVersionPlugin(plugins)) {
+      combinedPushCommits =
+        advanceSequentialBaseVersionsInBatch(combinedPushCommits);
+    }
 
     try {
       combined = await transport.sync({
