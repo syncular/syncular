@@ -39,9 +39,9 @@ Authorization happens at two points:
 <Mermaid
   chart={`
 flowchart LR
-  Request["Client requests<br>{ table: tasks, scopes: { project_id: 'A' } }"] --> Resolve["resolveScopes(ctx)<br>{ user_id: ['123'], project_id: ['A', 'B'] }"]
-  Resolve --> Effective["Effective scopes<br>{ project_id: 'A' }"]
-  Effective --> Result["Only project A data is returned"]
+  Request["Requested scope<br/>project A"] --> Resolve["Allowed scopes<br/>projects A and B"]
+  Resolve --> Effective["Effective scope<br/>project A"]
+  Effective --> Result["Pull returns<br/>project A rows only"]
 `}
   caption="Pull authorization is an explicit intersection between requested scopes and the actor's allowed scopes."
 />

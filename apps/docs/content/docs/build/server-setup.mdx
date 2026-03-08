@@ -98,11 +98,11 @@ How this works:
 <Mermaid
   chart={`
 flowchart LR
-  Requested["1. Client subscription<br>{ table: tasks, scopes: { user_id: '123' } }"] --> Allowed["2. resolveScopes(ctx)<br>{ user_id: ['123'] }"]
-  Allowed --> Effective["3. Effective scopes<br>requested ∩ allowed"]
-  Effective --> Pull["4. Pull returns matching rows only"]
-  Push["5. Push operation"] --> Extract["Scopes extracted from row data"]
-  Extract --> Tagged["Tagged on emitted changes"]
+  Requested["1. Requested scope<br/>user 123"] --> Allowed["2. Allowed scope<br/>user 123"]
+  Allowed --> Effective["3. Effective scope<br/>requested ∩ allowed"]
+  Effective --> Pull["4. Pull returns<br/>matching rows"]
+  Push["5. Push writes row"] --> Extract["Scopes extracted<br/>from row data"]
+  Extract --> Tagged["6. Change tagged<br/>for later pulls"]
 `}
   caption="Handlers derive allowed scopes on pull and attach stored scopes automatically on push."
 />
