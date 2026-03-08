@@ -160,14 +160,16 @@ describe('syncOnce', () => {
   });
 
   it('marks outbox as acked on status: applied', async () => {
-    const { id } = await enqueueOutboxCommit(db, { operations: validOps });
+    const { id, clientCommitId } = await enqueueOutboxCommit(db, {
+      operations: validOps,
+    });
     const transport = createMockTransport({
       pushResponse: {
         ok: true,
         commits: [
           {
             ok: true,
-            clientCommitId: 'commit-1',
+            clientCommitId,
             status: 'applied',
             commitSeq: 42,
             results: [{ opIndex: 0, status: 'applied' }],
@@ -192,14 +194,16 @@ describe('syncOnce', () => {
   });
 
   it('marks outbox as failed on non-retriable rejection', async () => {
-    const { id } = await enqueueOutboxCommit(db, { operations: validOps });
+    const { id, clientCommitId } = await enqueueOutboxCommit(db, {
+      operations: validOps,
+    });
     const transport = createMockTransport({
       pushResponse: {
         ok: true,
         commits: [
           {
             ok: true,
-            clientCommitId: 'commit-1',
+            clientCommitId,
             status: 'rejected',
             results: [
               {
@@ -231,14 +235,16 @@ describe('syncOnce', () => {
   });
 
   it('marks outbox as pending on retriable error', async () => {
-    const { id } = await enqueueOutboxCommit(db, { operations: validOps });
+    const { id, clientCommitId } = await enqueueOutboxCommit(db, {
+      operations: validOps,
+    });
     const transport = createMockTransport({
       pushResponse: {
         ok: true,
         commits: [
           {
             ok: true,
-            clientCommitId: 'commit-1',
+            clientCommitId,
             status: 'rejected',
             results: [
               {

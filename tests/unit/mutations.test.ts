@@ -522,7 +522,7 @@ describe('mutations API', () => {
     it('throws on push rejection', async () => {
       const commit = createPushCommit({
         transport: {
-          async sync() {
+          async sync(request) {
             return {
               ok: true as const,
               push: {
@@ -530,7 +530,9 @@ describe('mutations API', () => {
                 commits: [
                   {
                     ok: true as const,
-                    clientCommitId: 'test-client-commit',
+                    clientCommitId:
+                      request.push?.commits[0]?.clientCommitId ??
+                      'test-client-commit',
                     status: 'rejected' as const,
                     results: [
                       {
