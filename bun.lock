@@ -641,6 +641,7 @@
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
+        "@syncular/transport-http": "workspace:*",
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
