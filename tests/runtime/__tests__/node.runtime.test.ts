@@ -32,6 +32,7 @@ import {
   waitForJsonPortFromStdout,
 } from '@syncular/testkit';
 import { getNativeFetch } from '../shared/utils';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 const _fetch = getNativeFetch();
 
@@ -251,16 +252,12 @@ describe('Node.js runtime (better-sqlite3)', () => {
         actorId: userId,
         body: {
           clientId,
-          push: {
-            clientCommitId: `node-commit-1-${RUN}`,
-            operations: [
-              createProjectScopedTaskUpsertOperation({
-                taskId,
-                title: 'Node Task',
-              }),
-            ],
-            schemaVersion: 1,
-          },
+          push: createSingleCommitPush(`node-commit-1-${RUN}`, [
+            createProjectScopedTaskUpsertOperation({
+              taskId,
+              title: 'Node Task',
+            }),
+          ]),
           pull: {
             limitCommits: 50,
             subscriptions: [
@@ -275,7 +272,7 @@ describe('Node.js runtime (better-sqlite3)', () => {
     );
 
     expect(pushRes.status).toBe(200);
-    expect(pushJson.push?.status).toBe('applied');
+    expect(getSinglePushStatus(pushJson.push)).toBe('applied');
 
     // Verify task appears in pull response
     const taskRow = subscriptionChangeRow(
@@ -300,17 +297,13 @@ describe('Node.js runtime (better-sqlite3)', () => {
       actorId: userId,
       body: {
         clientId: `node-client-a-${RUN}`,
-        push: {
-          clientCommitId: `node-2c-commit-${RUN}`,
-          operations: [
-            createProjectScopedTaskUpsertOperation({
-              taskId,
-              title: 'Synced Task',
-              completed: 1,
-            }),
-          ],
-          schemaVersion: 1,
-        },
+        push: createSingleCommitPush(`node-2c-commit-${RUN}`, [
+          createProjectScopedTaskUpsertOperation({
+            taskId,
+            title: 'Synced Task',
+            completed: 1,
+          }),
+        ]),
       },
     });
 

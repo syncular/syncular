@@ -19,6 +19,13 @@
     "wrangler"
   ],
   "ignoreBinaries": ["act", "k6", "maestro"],
+  "ignoreIssues": {
+    "plugins/blob/client/src/index.ts": ["exports", "types"],
+    "plugins/blob/client/src/migrate.ts": ["exports"],
+    "plugins/blob/client/src/types.ts": ["exports", "types"],
+    "plugins/blob/server-storage-filesystem/src/index.ts": ["types"],
+    "plugins/blob/server-storage-s3/src/index.ts": ["types"]
+  },
   "workspaces": {
     ".": {
       "entry": ["scripts/*.ts"]
@@ -52,6 +59,15 @@
       "includeEntryExports": false
     },
     "plugins/offline-auth/react": {
+      "includeEntryExports": false
+    },
+    "plugins/blob/client": {
+      "includeEntryExports": false
+    },
+    "plugins/blob/server-storage-filesystem": {
+      "includeEntryExports": false
+    },
+    "plugins/blob/server-storage-s3": {
       "includeEntryExports": false
     },
     "packages/console": {

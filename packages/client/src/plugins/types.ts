@@ -15,7 +15,9 @@ export interface SyncClientPluginContext {
   clientId: string;
 }
 
-export interface SyncClientFeatureRegistry {}
+export interface SyncClientFeatureRegistry {
+  [key: string]: unknown;
+}
 
 export interface SyncClientPluginLifecycleContext<
   DB extends SyncClientDb = SyncClientDb,

@@ -35,6 +35,13 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./blob": {
+      "bun": "./src/blob.ts",
+      "import": {
+        "types": "./dist/blob.d.ts",
+        "default": "./dist/blob.js"
+      }
     }
   },
   "scripts": {

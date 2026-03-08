@@ -19,7 +19,12 @@ import {
   ensureClientSyncSchema,
   type SyncClientDb,
 } from '@syncular/client';
-import { codecs, createDatabase } from '@syncular/core';
+import {
+  codecs,
+  createDatabase,
+  type SyncCombinedRequest,
+  type SyncCombinedResponse,
+} from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { type Kysely, sql } from 'kysely';
 
@@ -33,6 +38,28 @@ interface TestDbTasks {
 
 interface TestDb extends SyncClientDb {
   tasks: TestDbTasks;
+}
+
+function createAppliedPushResponse(
+  request: SyncCombinedRequest
+): SyncCombinedResponse {
+  return {
+    ok: true,
+    push: request.push
+      ? {
+          ok: true,
+          commits: request.push.commits.map((commit) => ({
+            ok: true as const,
+            clientCommitId: commit.clientCommitId,
+            status: 'applied' as const,
+            results: commit.operations.map((_, i) => ({
+              opIndex: i,
+              status: 'applied' as const,
+            })),
+          })),
+        }
+      : undefined,
+  };
 }
 
 describe('mutations API', () => {
@@ -464,19 +491,9 @@ describe('mutations API', () => {
         transport: {
           async sync(request) {
             if (request.push) {
-              const ops = request.push.operations;
+              const ops = request.push.commits[0]!.operations;
               pushedRequest = { operations: ops };
-              return {
-                ok: true as const,
-                push: {
-                  ok: true,
-                  status: 'applied' as const,
-                  results: ops.map((_, i) => ({
-                    opIndex: i,
-                    status: 'applied' as const,
-                  })),
-                },
-              };
+              return createAppliedPushResponse(request);
             }
             return { ok: true as const };
           },
@@ -510,14 +527,20 @@ describe('mutations API', () => {
               ok: true as const,
               push: {
                 ok: true,
-                status: 'rejected' as const,
-                results: [
+                commits: [
                   {
-                    opIndex: 0,
-                    status: 'conflict' as const,
-                    message: 'Version conflict',
-                    server_version: 1,
-                    server_row: null,
+                    ok: true as const,
+                    clientCommitId: 'test-client-commit',
+                    status: 'rejected' as const,
+                    results: [
+                      {
+                        opIndex: 0,
+                        status: 'conflict' as const,
+                        message: 'Version conflict',
+                        server_version: 1,
+                        server_row: null,
+                      },
+                    ],
                   },
                 ],
               },
@@ -547,7 +570,17 @@ describe('mutations API', () => {
           async sync() {
             return {
               ok: true as const,
-              push: { ok: true, status: 'applied' as const, results: [] },
+              push: {
+                ok: true,
+                commits: [
+                  {
+                    ok: true as const,
+                    clientCommitId: 'empty-commit',
+                    status: 'applied' as const,
+                    results: [],
+                  },
+                ],
+              },
             };
           },
           async fetchSnapshotChunk() {
@@ -572,17 +605,7 @@ describe('mutations API', () => {
         transport: {
           async sync(request) {
             if (request.push) {
-              return {
-                ok: true as const,
-                push: {
-                  ok: true,
-                  status: 'applied' as const,
-                  results: request.push.operations.map((_, i) => ({
-                    opIndex: i,
-                    status: 'applied' as const,
-                  })),
-                },
-              };
+              return createAppliedPushResponse(request);
             }
             return { ok: true as const };
           },
@@ -613,17 +636,7 @@ describe('mutations API', () => {
         transport: {
           async sync(request) {
             if (request.push) {
-              return {
-                ok: true as const,
-                push: {
-                  ok: true,
-                  status: 'applied' as const,
-                  results: request.push.operations.map((_, i) => ({
-                    opIndex: i,
-                    status: 'applied' as const,
-                  })),
-                },
-              };
+              return createAppliedPushResponse(request);
             }
             return { ok: true as const };
           },
@@ -998,17 +1011,7 @@ describe('mutations API', () => {
           async sync(request) {
             if (request.push) {
               callOrder.push('transport');
-              return {
-                ok: true as const,
-                push: {
-                  ok: true,
-                  status: 'applied' as const,
-                  results: request.push.operations.map((_, i) => ({
-                    opIndex: i,
-                    status: 'applied' as const,
-                  })),
-                },
-              };
+              return createAppliedPushResponse(request);
             }
             return { ok: true as const };
           },

@@ -16,7 +16,11 @@ import {
   syncPullOnce,
   syncPushOnce,
 } from '@syncular/client';
-import { createDatabase } from '@syncular/core';
+import {
+  createDatabase,
+  type SyncOperation,
+  type SyncPushBatchResponse,
+} from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { createLibsqlDialect } from '@syncular/dialect-libsql';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
@@ -50,6 +54,28 @@ import { installSilentSyncTelemetry } from './telemetry';
 
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
+
+function createSingleCommitPush(
+  clientCommitId: string,
+  operations: SyncOperation[],
+  schemaVersion = 1
+) {
+  return {
+    commits: [
+      {
+        clientCommitId,
+        operations,
+        schemaVersion,
+      },
+    ],
+  };
+}
+
+function getSinglePushStatus(
+  push: SyncPushBatchResponse | undefined
+): SyncPushBatchResponse['commits'][number]['status'] | undefined {
+  return push?.commits[0]?.status;
+}
 
 async function resolveGitCommitSha(): Promise<string | null> {
   const proc = Bun.spawn(['git', 'rev-parse', 'HEAD'], {
@@ -330,26 +356,22 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
       for (let i = 1; i <= totalCommits; i++) {
         const combined = await writerClient.transport.sync({
           clientId: writerClient.clientId,
-          push: {
-            clientCommitId: `rebootstrap-seed-${i}`,
-            schemaVersion: 1,
-            operations: [
-              {
-                table: 'tasks',
-                row_id: `rebootstrap-task-${i}`,
-                op: 'upsert',
-                payload: {
-                  title: `Rebootstrap Task ${i}`,
-                  completed: i % 2,
-                },
-                base_version: null,
+          push: createSingleCommitPush(`rebootstrap-seed-${i}`, [
+            {
+              table: 'tasks',
+              row_id: `rebootstrap-task-${i}`,
+              op: 'upsert',
+              payload: {
+                title: `Rebootstrap Task ${i}`,
+                completed: i % 2,
               },
-            ],
-          },
+              base_version: null,
+            },
+          ]),
         });
-        if (combined.push?.status !== 'applied') {
+        if (getSinglePushStatus(combined.push) !== 'applied') {
           throw new Error(
-            `Unexpected seed push status: ${combined.push?.status ?? 'missing'}`
+            `Unexpected seed push status: ${getSinglePushStatus(combined.push) ?? 'missing'}`
           );
         }
       }
@@ -542,26 +564,22 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
           const rowId = `maintenance-task-${nextCommit}`;
           const combined = await writer.transport.sync({
             clientId: writer.clientId,
-            push: {
-              clientCommitId: commitId,
-              schemaVersion: 1,
-              operations: [
-                {
-                  table: 'tasks',
-                  row_id: rowId,
-                  op: 'upsert',
-                  payload: {
-                    title: `Maintenance Task ${nextCommit}`,
-                    completed: nextCommit % 2,
-                  },
-                  base_version: null,
+            push: createSingleCommitPush(commitId, [
+              {
+                table: 'tasks',
+                row_id: rowId,
+                op: 'upsert',
+                payload: {
+                  title: `Maintenance Task ${nextCommit}`,
+                  completed: nextCommit % 2,
                 },
-              ],
-            },
+                base_version: null,
+              },
+            ]),
           });
-          if (combined.push?.status !== 'applied') {
+          if (getSinglePushStatus(combined.push) !== 'applied') {
             throw new Error(
-              `Unexpected maintenance push status: ${combined.push?.status ?? 'missing'}`
+              `Unexpected maintenance push status: ${getSinglePushStatus(combined.push) ?? 'missing'}`
             );
           }
           nextCommit += 1;
@@ -683,25 +701,26 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
             const commitId = `reconnect-${batchIndex}-${i}`;
             const rowId = `reconnect-task-${batchIndex}-${i}`;
 
-            await writerClient.transport.sync({
+            const combined = await writerClient.transport.sync({
               clientId: writerClient.clientId,
-              push: {
-                clientCommitId: commitId,
-                schemaVersion: 1,
-                operations: [
-                  {
-                    table: 'tasks',
-                    row_id: rowId,
-                    op: 'upsert',
-                    payload: {
-                      title: `Reconnect Task ${batchIndex}-${i}`,
-                      completed: 0,
-                    },
-                    base_version: null,
+              push: createSingleCommitPush(commitId, [
+                {
+                  table: 'tasks',
+                  row_id: rowId,
+                  op: 'upsert',
+                  payload: {
+                    title: `Reconnect Task ${batchIndex}-${i}`,
+                    completed: 0,
                   },
-                ],
-              },
+                  base_version: null,
+                },
+              ]),
             });
+            if (getSinglePushStatus(combined.push) !== 'applied') {
+              throw new Error(
+                `Unexpected reconnect benchmark push status: ${getSinglePushStatus(combined.push) ?? 'missing'}`
+              );
+            }
           }
 
           await syncPullOnce(
@@ -764,26 +783,22 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
             for (let i = 0; i < 20; i += 1) {
               const combined = await writerClient.transport.sync({
                 clientId: writerClient.clientId,
-                push: {
-                  clientCommitId: `storm-${burstIndex}-${i}`,
-                  schemaVersion: 1,
-                  operations: [
-                    {
-                      table: 'tasks',
-                      row_id: `storm-task-${burstIndex}-${i}`,
-                      op: 'upsert',
-                      payload: {
-                        title: `Storm Task ${burstIndex}-${i}`,
-                        completed: (burst + i) % 2,
-                      },
-                      base_version: null,
+                push: createSingleCommitPush(`storm-${burstIndex}-${i}`, [
+                  {
+                    table: 'tasks',
+                    row_id: `storm-task-${burstIndex}-${i}`,
+                    op: 'upsert',
+                    payload: {
+                      title: `Storm Task ${burstIndex}-${i}`,
+                      completed: (burst + i) % 2,
                     },
-                  ],
-                },
+                    base_version: null,
+                  },
+                ]),
               });
-              if (combined.push?.status !== 'applied') {
+              if (getSinglePushStatus(combined.push) !== 'applied') {
                 throw new Error(
-                  `Unexpected reconnect storm push status: ${combined.push?.status ?? 'missing'}`
+                  `Unexpected reconnect storm push status: ${getSinglePushStatus(combined.push) ?? 'missing'}`
                 );
               }
             }
@@ -856,31 +871,27 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
               writers.map((writer, writerIndex) =>
                 writer.transport.sync({
                   clientId: writer.clientId,
-                  push: {
-                    clientCommitId: `pglite-contention-${round}-${writerIndex + 1}`,
-                    schemaVersion: 1,
-                    operations: Array.from(
-                      { length: opsPerWriter },
-                      (_, opIndex) => ({
-                        table: 'tasks',
-                        row_id: `pglite-contention-task-${round}-${writerIndex + 1}-${opIndex + 1}`,
-                        op: 'upsert' as const,
-                        payload: {
-                          title: `Pglite contention ${round}-${writerIndex + 1}-${opIndex + 1}`,
-                          completed: (round + opIndex) % 2,
-                        },
-                        base_version: null,
-                      })
-                    ),
-                  },
+                  push: createSingleCommitPush(
+                    `pglite-contention-${round}-${writerIndex + 1}`,
+                    Array.from({ length: opsPerWriter }, (_, opIndex) => ({
+                      table: 'tasks',
+                      row_id: `pglite-contention-task-${round}-${writerIndex + 1}-${opIndex + 1}`,
+                      op: 'upsert' as const,
+                      payload: {
+                        title: `Pglite contention ${round}-${writerIndex + 1}-${opIndex + 1}`,
+                        completed: (round + opIndex) % 2,
+                      },
+                      base_version: null,
+                    }))
+                  ),
                 })
               )
             );
 
             for (const response of responses) {
-              if (response.push?.status !== 'applied') {
+              if (getSinglePushStatus(response.push) !== 'applied') {
                 throw new Error(
-                  `Unexpected pglite contention push status: ${response.push?.status ?? 'missing'}`
+                  `Unexpected pglite contention push status: ${getSinglePushStatus(response.push) ?? 'missing'}`
                 );
               }
             }
@@ -1015,10 +1026,9 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
             for (let i = 0; i < 80; i += 1) {
               const combined = await writerTransport.sync({
                 clientId: writer.clientId,
-                push: {
-                  clientCommitId: `${metricName}-${batchIndex}-${i}`,
-                  schemaVersion: 1,
-                  operations: [
+                push: createSingleCommitPush(
+                  `${metricName}-${batchIndex}-${i}`,
+                  [
                     {
                       table: 'tasks',
                       row_id: `${metricName}-task-${batchIndex}-${i}`,
@@ -1030,12 +1040,12 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
                       },
                       base_version: null,
                     },
-                  ],
-                },
+                  ]
+                ),
               });
-              if (combined.push?.status !== 'applied') {
+              if (getSinglePushStatus(combined.push) !== 'applied') {
                 throw new Error(
-                  `Unexpected transport push status: ${combined.push?.status ?? 'missing'}`
+                  `Unexpected transport push status: ${getSinglePushStatus(combined.push) ?? 'missing'}`
                 );
               }
             }

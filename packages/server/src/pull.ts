@@ -786,7 +786,8 @@ export async function pull<
                 );
                 if (
                   activeBundle.pageCount > 0 &&
-                  activeBundle.rowFrameByteLength + rowFrames.length > bundleMaxBytes
+                  activeBundle.rowFrameByteLength + rowFrames.length >
+                    bundleMaxBytes
                 ) {
                   await flushSnapshotBundle(activeBundle);
                   const bundleHeader = encodeSnapshotRows([]);

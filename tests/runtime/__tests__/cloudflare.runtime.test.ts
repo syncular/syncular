@@ -26,6 +26,7 @@ import {
   shutdown,
   waitForHealthy,
 } from '../shared/utils';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 const _fetch = getNativeFetch();
 
@@ -215,17 +216,15 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
         userId,
         createSyncCombinedRequest({
           clientId,
-          push: {
-            clientCommitId: `commit-1-${RUN}`,
-            operations: [createTaskOperation(taskId, 'CF Test Task')],
-            schemaVersion: 1,
-          },
+          push: createSingleCommitPush(`commit-1-${RUN}`, [
+            createTaskOperation(taskId, 'CF Test Task'),
+          ]),
         })
       );
 
       expect(pushRes.status).toBe(200);
       expect(pushJson.ok).toBe(true);
-      expect(pushJson.push?.status).toBe('applied');
+      expect(getSinglePushStatus(pushJson.push)).toBe('applied');
 
       const { response: pullRes, json: pullJson } = await postWorkerSync(
         workerUrl,
@@ -291,16 +290,14 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
       userId,
       createSyncCombinedRequest({
         clientId: clientA,
-        push: {
-          clientCommitId: `multi-commit-1-${RUN}`,
-          operations: [createTaskOperation(taskId, 'Multi-client Task')],
-          schemaVersion: 1,
-        },
+        push: createSingleCommitPush(`multi-commit-1-${RUN}`, [
+          createTaskOperation(taskId, 'Multi-client Task'),
+        ]),
       })
     );
 
     expect(pushRes.status).toBe(200);
-    expect(pushJson.push?.status).toBe('applied');
+    expect(getSinglePushStatus(pushJson.push)).toBe('applied');
 
     const { response: pullRes, json: pullJson } = await postWorkerSync(
       workerUrl,
@@ -350,16 +347,12 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
           userId,
           createSyncCombinedRequest({
             clientId: pushClientId,
-            push: {
-              clientCommitId: `ws-notify-commit-1-${RUN}`,
-              operations: [
-                createTaskOperation(
-                  `cf-ws-notify-task-1-${RUN}`,
-                  'WS Notify Task'
-                ),
-              ],
-              schemaVersion: 1,
-            },
+            push: createSingleCommitPush(`ws-notify-commit-1-${RUN}`, [
+              createTaskOperation(
+                `cf-ws-notify-task-1-${RUN}`,
+                'WS Notify Task'
+              ),
+            ]),
             pull: {
               limitCommits: 50,
               subscriptions: [createTasksSubscription(userId)],
@@ -572,16 +565,12 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
             userId,
             createSyncCombinedRequest({
               clientId: pushClientId,
-              push: {
-                clientCommitId: `ws-recon-commit-${RUN}`,
-                operations: [
-                  createTaskOperation(
-                    `cf-ws-recon-task-${RUN}`,
-                    'WS Reconnect Task'
-                  ),
-                ],
-                schemaVersion: 1,
-              },
+              push: createSingleCommitPush(`ws-recon-commit-${RUN}`, [
+                createTaskOperation(
+                  `cf-ws-recon-task-${RUN}`,
+                  'WS Reconnect Task'
+                ),
+              ]),
               pull: {
                 limitCommits: 50,
                 subscriptions: [createTasksSubscription(userId)],

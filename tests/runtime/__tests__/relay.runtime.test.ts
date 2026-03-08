@@ -40,6 +40,7 @@ import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import { getNativeFetch } from '../shared/utils';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 const _fetch = getNativeFetch();
 
@@ -200,22 +201,18 @@ describe('Relay runtime', () => {
         actorId: userId,
         body: {
           clientId: `main-direct-client-${RUN}`,
-          push: {
-            clientCommitId: `main-commit-1-${RUN}`,
-            operations: [
-              createProjectScopedTaskUpsertOperation({
-                taskId,
-                title: 'Main Server Task',
-              }),
-            ],
-            schemaVersion: 1,
-          },
+          push: createSingleCommitPush(`main-commit-1-${RUN}`, [
+            createProjectScopedTaskUpsertOperation({
+              taskId,
+              title: 'Main Server Task',
+            }),
+          ]),
         },
       }
     );
 
     expect(pushRes.status).toBe(200);
-    expect(pushJson.push?.status).toBe('applied');
+    expect(getSinglePushStatus(pushJson.push)).toBe('applied');
 
     // Relay pulls from main
     await relay.pullOnce();
@@ -320,16 +317,12 @@ describe('Relay runtime', () => {
       actorId: userId,
       body: {
         clientId: `main-rt-client-${RUN}`,
-        push: {
-          clientCommitId: `main-rt-commit-b-${RUN}`,
-          operations: [
-            createProjectScopedTaskUpsertOperation({
-              taskId: taskB,
-              title: 'RT Task B (from main)',
-            }),
-          ],
-          schemaVersion: 1,
-        },
+        push: createSingleCommitPush(`main-rt-commit-b-${RUN}`, [
+          createProjectScopedTaskUpsertOperation({
+            taskId: taskB,
+            title: 'RT Task B (from main)',
+          }),
+        ]),
       },
     });
 

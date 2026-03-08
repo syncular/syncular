@@ -36,7 +36,7 @@ export type ResolveAuthRetry = (
   options?: SyncTransportOptions
 ) => Promise<boolean>;
 
-export class ApiResponseError extends Error {
+class ApiResponseError extends Error {
   constructor(
     message: string,
     public readonly error?: unknown

@@ -10,6 +10,7 @@ import {
   recordClientCursor,
 } from '@syncular/server';
 import type { ScenarioContext } from '../harness/types';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 export async function runCompactionScenario(
   ctx: ScenarioContext
@@ -24,22 +25,17 @@ export async function runCompactionScenario(
   ) => {
     const combined = await client.transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: rowId,
-            op: 'upsert',
-            payload: { title, completed: 0, project_id: 'p1' },
-            base_version: null,
-          },
-        ],
-      },
+      push: createSingleCommitPush(clientCommitId, [
+        {
+          table: 'tasks',
+          row_id: rowId,
+          op: 'upsert',
+          payload: { title, completed: 0, project_id: 'p1' },
+          base_version: null,
+        },
+      ]),
     });
-    const res = combined.push!;
-    expect(res.status).toBe('applied');
+    expect(getSinglePushStatus(combined.push)).toBe('applied');
   };
 
   await pushTask('c1', 't1', 'A');
@@ -96,22 +92,17 @@ export async function runCompactionPullScenario(
   const pushTask = async (clientCommitId: string, title: string) => {
     const combined = await client.transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: 't1',
-            op: 'upsert',
-            payload: { title, completed: 0, project_id: 'p1' },
-            base_version: null,
-          },
-        ],
-      },
+      push: createSingleCommitPush(clientCommitId, [
+        {
+          table: 'tasks',
+          row_id: 't1',
+          op: 'upsert',
+          payload: { title, completed: 0, project_id: 'p1' },
+          base_version: null,
+        },
+      ]),
     });
-    const res = combined.push!;
-    expect(res.status).toBe('applied');
+    expect(getSinglePushStatus(combined.push)).toBe('applied');
   };
 
   await pushTask('c1', 'A');
@@ -180,22 +171,17 @@ export async function runPruneByAgeScenario(
   ) => {
     const combined = await client.transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: rowId,
-            op: 'upsert',
-            payload: { title, completed: 0, project_id: 'p1' },
-            base_version: null,
-          },
-        ],
-      },
+      push: createSingleCommitPush(clientCommitId, [
+        {
+          table: 'tasks',
+          row_id: rowId,
+          op: 'upsert',
+          payload: { title, completed: 0, project_id: 'p1' },
+          base_version: null,
+        },
+      ]),
     });
-    const res = combined.push!;
-    expect(res.status).toBe('applied');
+    expect(getSinglePushStatus(combined.push)).toBe('applied');
   };
 
   await pushTask('c1', 't1', 'A');
@@ -277,25 +263,21 @@ export async function runCompactionPruneRebootstrapWindowScenario(
     const rowSuffix = String(((i - 1) % hotRowCount) + 1).padStart(3, '0');
     const combined = await writer.transport.sync({
       clientId: writer.clientId,
-      push: {
-        clientCommitId: `window-c${suffix}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: `window-task-${rowSuffix}`,
-            op: 'upsert',
-            payload: {
-              title: `Window Task ${suffix}`,
-              completed: i % 2,
-              project_id: 'p1',
-            },
-            base_version: null,
+      push: createSingleCommitPush(`window-c${suffix}`, [
+        {
+          table: 'tasks',
+          row_id: `window-task-${rowSuffix}`,
+          op: 'upsert',
+          payload: {
+            title: `Window Task ${suffix}`,
+            completed: i % 2,
+            project_id: 'p1',
           },
-        ],
-      },
+          base_version: null,
+        },
+      ]),
     });
-    expect(combined.push?.status).toBe('applied');
+    expect(getSinglePushStatus(combined.push)).toBe('applied');
   }
 
   // Force the written commits outside the full-history window.

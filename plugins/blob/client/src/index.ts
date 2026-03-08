@@ -1,8 +1,7 @@
+import type { SyncClientDb, SyncClientPlugin } from '@syncular/client';
 import type { SyncTransport } from '@syncular/core';
-import type {
-  SyncClientDb,
-  SyncClientPlugin,
-} from '@syncular/client';
+import { ensureHttpTransportBlobs } from '@syncular/transport-http/blob';
+import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import { ensureClientBlobSchema } from './migrate';
 import type { BlobClient, ClientBlobStorage } from './types';
@@ -22,22 +21,19 @@ declare module '@syncular/client' {
   }
 }
 
-declare module 'syncular/client' {
-  interface SyncClientFeatureRegistry {
-    blobs: BlobClient;
-  }
-}
-
 export function createBlobPlugin(options: BlobPluginOptions): SyncClientPlugin {
   return {
     kind: BLOB_PLUGIN_KIND,
     name: BLOB_PLUGIN_KIND,
     setup(ctx) {
-      if (!ctx.transport.blobs) {
+      const blobs =
+        ctx.transport.blobs ?? ensureHttpTransportBlobs(ctx.transport);
+      if (!blobs) {
         throw new Error(
           'Blob plugin requires a transport with blob support enabled'
         );
       }
+      ctx.transport.blobs = blobs;
 
       ctx.defineFeature(
         'blobs',
@@ -55,8 +51,8 @@ export function createBlobPlugin(options: BlobPluginOptions): SyncClientPlugin {
   };
 }
 
-function createBlobClient(args: {
-  db: import('kysely').Kysely<SyncClientDb>;
+function createBlobClient<DB extends SyncClientDb>(args: {
+  db: Kysely<DB>;
   transport: SyncTransport;
   storage: ClientBlobStorage;
   emit: (event: string, payload: object) => void;

@@ -45,12 +45,12 @@
   },
   "dependencies": {
     "@syncular/client": "workspace:*",
-    "@syncular/core": "workspace:*"
+    "@syncular/core": "workspace:*",
+    "@syncular/transport-http": "workspace:*"
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
-    "kysely": "*",
-    "kysely-bun-sqlite": "^0.4.0"
+    "kysely": "*"
   },
   "peerDependencies": {
     "kysely": "*"

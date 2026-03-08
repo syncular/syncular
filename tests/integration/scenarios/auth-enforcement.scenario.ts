@@ -11,6 +11,7 @@ import {
 import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { ScenarioContext } from '../harness/types';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
   | typeof globalThis.fetch
@@ -182,19 +183,15 @@ export async function runPushToUnauthorizedScope(
 
   const combined = await attackerTransport.sync({
     clientId: 'attacker-client',
-    push: {
-      clientCommitId: 'attack-1',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 'attacker-task',
-          op: 'upsert',
-          payload: { title: 'Attacker Task', completed: 0, project_id: 'p1' },
-          base_version: null,
-        },
-      ],
-    },
+    push: createSingleCommitPush('attack-1', [
+      {
+        table: 'tasks',
+        row_id: 'attacker-task',
+        op: 'upsert',
+        payload: { title: 'Attacker Task', completed: 0, project_id: 'p1' },
+        base_version: null,
+      },
+    ]),
   });
   expect(combined.push!.ok).toBe(true);
 
@@ -422,25 +419,21 @@ export async function runReconnectStaleScopeRevocation(
 
   const pushed = await reconnectTransport.sync({
     clientId: client.clientId,
-    push: {
-      clientCommitId: 'other-user-reconnect-commit',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 'u2-after-reconnect',
-          op: 'upsert',
-          payload: {
-            title: 'U2 After Reconnect',
-            completed: 0,
-            project_id: 'p1',
-          },
-          base_version: null,
+    push: createSingleCommitPush('other-user-reconnect-commit', [
+      {
+        table: 'tasks',
+        row_id: 'u2-after-reconnect',
+        op: 'upsert',
+        payload: {
+          title: 'U2 After Reconnect',
+          completed: 0,
+          project_id: 'p1',
         },
-      ],
-    },
+        base_version: null,
+      },
+    ]),
   });
-  expect(pushed.push?.status).toBe('applied');
+  expect(getSinglePushStatus(pushed.push)).toBe('applied');
 
   await syncPullOnce(client.db, reconnectTransport, client.handlers, {
     clientId: client.clientId,
@@ -540,25 +533,21 @@ export async function runReconnectScopeChangeStormScenario(
 
     const pushResult = await transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId: `scope-storm-c${i + 1}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: `scope-storm-${actorId}-${i + 1}`,
-            op: 'upsert',
-            payload: {
-              title: `Scope Storm ${actorId} ${i + 1}`,
-              completed: i % 2,
-              project_id: 'p1',
-            },
-            base_version: null,
+      push: createSingleCommitPush(`scope-storm-c${i + 1}`, [
+        {
+          table: 'tasks',
+          row_id: `scope-storm-${actorId}-${i + 1}`,
+          op: 'upsert',
+          payload: {
+            title: `Scope Storm ${actorId} ${i + 1}`,
+            completed: i % 2,
+            project_id: 'p1',
           },
-        ],
-      },
+          base_version: null,
+        },
+      ]),
     });
-    expect(pushResult.push?.status).toBe('applied');
+    expect(getSinglePushStatus(pushResult.push)).toBe('applied');
 
     await syncPullOnce(client.db, transport, client.handlers, {
       clientId: client.clientId,
@@ -641,25 +630,21 @@ export async function runPartitionIsolationHighChurnScenario(
     for (let i = 1; i <= commitsPerTenant; i += 1) {
       const pushResult = await writer.transport.sync({
         clientId: writer.clientId,
-        push: {
-          clientCommitId: `${prefix}-tenant-c${i}`,
-          schemaVersion: 1,
-          operations: [
-            {
-              table: 'tasks',
-              row_id: `${prefix}-tenant-task-${i}`,
-              op: 'upsert',
-              payload: {
-                title: `Tenant ${prefix.toUpperCase()} Task ${i}`,
-                completed: i % 2,
-                project_id: 'p1',
-              },
-              base_version: null,
+        push: createSingleCommitPush(`${prefix}-tenant-c${i}`, [
+          {
+            table: 'tasks',
+            row_id: `${prefix}-tenant-task-${i}`,
+            op: 'upsert',
+            payload: {
+              title: `Tenant ${prefix.toUpperCase()} Task ${i}`,
+              completed: i % 2,
+              project_id: 'p1',
             },
-          ],
-        },
+            base_version: null,
+          },
+        ]),
       });
-      expect(pushResult.push?.status).toBe('applied');
+      expect(getSinglePushStatus(pushResult.push)).toBe('applied');
 
       if (i % 4 === 0) {
         await syncPullOnce(writer.db, writer.transport, writer.handlers, {

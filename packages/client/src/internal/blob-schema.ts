@@ -11,7 +11,7 @@ export interface SyncBlobCacheTable {
   last_accessed_at: number;
 }
 
-export type BlobUploadStatus =
+type BlobUploadStatus =
   | 'pending'
   | 'uploading'
   | 'uploaded'

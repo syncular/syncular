@@ -27,7 +27,7 @@ import {
   type SyncCombinedRequest,
   type SyncCombinedResponse,
   type SyncPullResponse,
-  type SyncPushResponse,
+  type SyncPushBatchResponse,
   type SyncTransport,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
@@ -57,7 +57,7 @@ const validOps = [
 const handlers = createClientHandlerCollection<SyncClientDb>([]);
 
 function createMockTransport(opts?: {
-  pushResponse?: SyncPushResponse;
+  pushResponse?: SyncPushBatchResponse;
   pullResponse?: SyncPullResponse;
   syncImpl?: (request: SyncCombinedRequest) => Promise<SyncCombinedResponse>;
 }): SyncTransport & {
@@ -90,11 +90,15 @@ function createMockTransport(opts?: {
         push: request.push
           ? (opts?.pushResponse ?? {
               ok: true,
-              status: 'applied',
-              commitSeq: 1,
-              results: request.push.operations.map((_: unknown, i: number) => ({
-                opIndex: i,
+              commits: request.push.commits.map((commit) => ({
+                ok: true as const,
+                clientCommitId: commit.clientCommitId,
                 status: 'applied' as const,
+                commitSeq: 1,
+                results: commit.operations.map((_: unknown, i: number) => ({
+                  opIndex: i,
+                  status: 'applied' as const,
+                })),
               })),
             })
           : undefined,
@@ -128,7 +132,7 @@ describe('syncOnce', () => {
     // First call: combined push+pull. No more outbox commits, so no additional push calls.
     expect(transport.calls.length).toBe(1);
     expect(transport.calls[0]!.push).toBeTruthy();
-    expect(transport.calls[0]!.push!.operations).toEqual(validOps);
+    expect(transport.calls[0]!.push!.commits[0]!.operations).toEqual(validOps);
   });
 
   it('returns pullResponse from transport', async () => {
@@ -160,9 +164,15 @@ describe('syncOnce', () => {
     const transport = createMockTransport({
       pushResponse: {
         ok: true,
-        status: 'applied',
-        commitSeq: 42,
-        results: [{ opIndex: 0, status: 'applied' }],
+        commits: [
+          {
+            ok: true,
+            clientCommitId: 'commit-1',
+            status: 'applied',
+            commitSeq: 42,
+            results: [{ opIndex: 0, status: 'applied' }],
+          },
+        ],
       },
     });
 
@@ -186,14 +196,20 @@ describe('syncOnce', () => {
     const transport = createMockTransport({
       pushResponse: {
         ok: true,
-        status: 'rejected',
-        results: [
+        commits: [
           {
-            opIndex: 0,
-            status: 'conflict',
-            message: 'Version mismatch',
-            server_version: 2,
-            server_row: { title: 'Server version' },
+            ok: true,
+            clientCommitId: 'commit-1',
+            status: 'rejected',
+            results: [
+              {
+                opIndex: 0,
+                status: 'conflict',
+                message: 'Version mismatch',
+                server_version: 2,
+                server_row: { title: 'Server version' },
+              },
+            ],
           },
         ],
       },
@@ -219,13 +235,19 @@ describe('syncOnce', () => {
     const transport = createMockTransport({
       pushResponse: {
         ok: true,
-        status: 'rejected',
-        results: [
+        commits: [
           {
-            opIndex: 0,
-            status: 'error',
-            error: 'Temporary failure',
-            retriable: true,
+            ok: true,
+            clientCommitId: 'commit-1',
+            status: 'rejected',
+            results: [
+              {
+                opIndex: 0,
+                status: 'error',
+                error: 'Temporary failure',
+                retriable: true,
+              },
+            ],
           },
         ],
       },

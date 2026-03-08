@@ -17,7 +17,7 @@ import {
   ScopeValuesSchema,
   SyncCombinedRequestSchema,
   SyncCombinedResponseSchema,
-  SyncPushCommitRequestSchema,
+  type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
 } from '@syncular/core';
 import type {

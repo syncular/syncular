@@ -5,6 +5,7 @@
 import { expect } from 'bun:test';
 import { syncPullOnce } from '@syncular/client';
 import type { ScenarioContext } from '../harness/types';
+import { createSingleCommitPush } from './push-helpers';
 
 export async function runExtremeLoadScenario(
   ctx: ScenarioContext
@@ -21,10 +22,9 @@ export async function runExtremeLoadScenario(
   for (let batch = 0; batch < 100; batch++) {
     await client.transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId: `load-${batch}`,
-        schemaVersion: 1,
-        operations: Array.from({ length: 100 }, (_, i) => ({
+      push: createSingleCommitPush(
+        `load-${batch}`,
+        Array.from({ length: 100 }, (_, i) => ({
           table: 'tasks',
           row_id: `task-${batch * 100 + i}`,
           op: 'upsert' as const,
@@ -33,8 +33,8 @@ export async function runExtremeLoadScenario(
             completed: 0,
             project_id: 'p1',
           },
-        })),
-      },
+        }))
+      ),
     });
   }
 
@@ -93,22 +93,18 @@ export async function runParallelPushScenario(
       for (let j = 0; j < 100; j++) {
         await client.transport.sync({
           clientId: client.clientId,
-          push: {
-            clientCommitId: `c-${i}-${j}`,
-            schemaVersion: 1,
-            operations: [
-              {
-                table: 'tasks',
-                row_id: `t-${i}-${j}`,
-                op: 'upsert' as const,
-                payload: {
-                  title: `Task ${i}-${j}`,
-                  completed: 0,
-                  project_id: `p${client.actorId}`,
-                },
+          push: createSingleCommitPush(`c-${i}-${j}`, [
+            {
+              table: 'tasks',
+              row_id: `t-${i}-${j}`,
+              op: 'upsert' as const,
+              payload: {
+                title: `Task ${i}-${j}`,
+                completed: 0,
+                project_id: `p${client.actorId}`,
               },
-            ],
-          },
+            },
+          ]),
         });
       }
     })
@@ -143,17 +139,17 @@ export async function runIdempotencyScenario(
   for (let i = 0; i < 100; i++) {
     const combined = await client.transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId: commitId,
-        schemaVersion: 1,
-        operations: [operation],
-      },
+      push: createSingleCommitPush(commitId, [operation]),
     });
     results.push(combined.push!);
   }
 
-  const applied = results.filter((r) => r.status === 'applied').length;
-  const cached = results.filter((r) => r.status === 'cached').length;
+  const applied = results.filter(
+    (r) => r.commits[0]?.status === 'applied'
+  ).length;
+  const cached = results.filter(
+    (r) => r.commits[0]?.status === 'cached'
+  ).length;
 
   expect(applied).toBe(1);
   expect(cached).toBe(99);

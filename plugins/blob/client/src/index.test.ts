@@ -1,18 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import {
-  createDatabase,
-  type SyncTransport,
-} from '@syncular/core';
+import { createDatabase, type SyncTransport } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
-import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
-import {
-  Client,
-  type SyncClientDb,
-} from '../../../../packages/client/src';
+import { Client, type SyncClientDb } from '../../../../packages/client/src';
 import type { ClientHandlerCollection } from '../../../../packages/client/src/handlers/collection';
 import { ensureClientSyncSchema } from '../../../../packages/client/src/migrate';
-import { createBlobPlugin, ensureClientBlobSchema, type ClientBlobStorage } from './index';
+import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
+import { createHttpTransport } from '../../../../packages/transport-http/src';
+import {
+  type ClientBlobStorage,
+  createBlobPlugin,
+  ensureClientBlobSchema,
+} from './index';
 
 interface TasksTable {
   id: string;
@@ -163,6 +162,32 @@ describe('blob client plugin', () => {
 
   it('attaches client.blobs through plugin setup', () => {
     expect(client.blobs).toBeDefined();
+  });
+
+  it('attaches blob transport support for the standard HTTP transport', async () => {
+    const transport = createHttpTransport({
+      baseUrl: 'https://example.invalid',
+      fetch: async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+    });
+
+    const httpClient = new Client<TestDb>({
+      db,
+      transport,
+      tableHandlers: [],
+      clientId: 'client-http',
+      actorId: 'u1',
+      subscriptions: [],
+      plugins: [createBlobPlugin({ storage: createMemoryBlobStorage() })],
+    });
+
+    expect(httpClient.blobs).toBeDefined();
+    expect(transport.blobs).toBeDefined();
+
+    httpClient.destroy();
   });
 
   it('requeues stale uploading rows and uploads them on the next queue run', async () => {

@@ -119,6 +119,13 @@ export interface CreateServerHandlerOptions<
   snapshotChunkTtlMs?: number;
 
   /**
+   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
+   * Larger values reduce chunk/request overhead for large bootstraps at the
+   * cost of higher transient memory and chunk sizes.
+   */
+  snapshotBundleMaxBytes?: number;
+
+  /**
    * Resolve allowed scope values for the current actor.
    * Called per request to determine what the actor can access.
    *

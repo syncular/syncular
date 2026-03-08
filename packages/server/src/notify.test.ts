@@ -635,8 +635,8 @@ describe('notifyExternalRowChanges', () => {
     expect(sub.commits?.length).toBe(1);
     expect(sub.commits?.[0]?.changes?.[0]?.row_id).toBe('t1');
     expect(sub.commits?.[0]?.changes?.[0]?.row_version).toBe(2);
-    expect((sub.commits?.[0]?.changes?.[0]?.row_json as { title: string }).title).toBe(
-      'Updated externally'
-    );
+    expect(
+      (sub.commits?.[0]?.changes?.[0]?.row_json as { title: string }).title
+    ).toBe('Updated externally');
   });
 });

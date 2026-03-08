@@ -1230,7 +1230,10 @@ describe('SyncEngine WS inline apply', () => {
     }
     updateState.call(engine, { isRetrying: true });
 
-    const triggerSyncInBackground = Reflect.get(engine, 'triggerSyncInBackground');
+    const triggerSyncInBackground = Reflect.get(
+      engine,
+      'triggerSyncInBackground'
+    );
     if (typeof triggerSyncInBackground !== 'function') {
       throw new Error('Expected triggerSyncInBackground to be callable');
     }
@@ -1272,7 +1275,10 @@ describe('SyncEngine WS inline apply', () => {
     }
     updateState.call(engine, { isRetrying: true });
 
-    const triggerSyncInBackground = Reflect.get(engine, 'triggerSyncInBackground');
+    const triggerSyncInBackground = Reflect.get(
+      engine,
+      'triggerSyncInBackground'
+    );
     if (typeof triggerSyncInBackground !== 'function') {
       throw new Error('Expected triggerSyncInBackground to be callable');
     }

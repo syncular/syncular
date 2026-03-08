@@ -19,8 +19,15 @@ interface ItemsTable {
   name: string;
 }
 
+interface ScopedItemsTable {
+  id: string;
+  project_id: string;
+  name: string;
+}
+
 interface TestDb extends SyncClientDb {
   items: ItemsTable;
+  scoped_items: ScopedItemsTable;
 }
 
 function createStreamFromBytes(
@@ -1047,5 +1054,195 @@ describe('applyPullResponse chunk streaming', () => {
         createdAt: '2026-02-28T12:00:00.000Z',
       },
     ]);
+  });
+
+  it('clears stale rows during same-scope bootstrap by default', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+    };
+
+    await db.schema
+      .createTable('scoped_items')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('name', 'text', (col) => col.notNull())
+      .execute();
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'scoped_items',
+        scopes: ['project:{project_id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'scoped-sub',
+          table: 'scoped_items',
+          scopes: { project_id: 'p1' },
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const firstState = await buildPullRequest(db, options);
+    await applyPullResponse(db, transport, handlers, options, firstState, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'scoped-sub',
+          status: 'active',
+          scopes: { project_id: 'p1' },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [],
+          snapshots: [
+            {
+              table: 'scoped_items',
+              rows: [
+                { id: 'p1-a', project_id: 'p1', name: 'A' },
+                { id: 'p1-b', project_id: 'p1', name: 'B' },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const secondState = await buildPullRequest(db, options);
+    await applyPullResponse(db, transport, handlers, options, secondState, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'scoped-sub',
+          status: 'active',
+          scopes: { project_id: 'p1' },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 2,
+          commits: [],
+          snapshots: [
+            {
+              table: 'scoped_items',
+              rows: [{ id: 'p1-a', project_id: 'p1', name: 'A' }],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const rows = await db
+      .selectFrom('scoped_items')
+      .select(['id'])
+      .orderBy('id', 'asc')
+      .execute();
+    expect(rows.map((row) => row.id)).toEqual(['p1-a']);
+  });
+
+  it('clears previously authorized rows when bootstrap scopes narrow', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+    };
+
+    await db.schema
+      .createTable('scoped_items')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('name', 'text', (col) => col.notNull())
+      .execute();
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'scoped_items',
+        scopes: ['project:{project_id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'scoped-sub',
+          table: 'scoped_items',
+          scopes: { project_id: ['p1', 'p2'] },
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const firstState = await buildPullRequest(db, options);
+    await applyPullResponse(db, transport, handlers, options, firstState, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'scoped-sub',
+          status: 'active',
+          scopes: { project_id: ['p1', 'p2'] },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [],
+          snapshots: [
+            {
+              table: 'scoped_items',
+              rows: [
+                { id: 'p1-a', project_id: 'p1', name: 'A' },
+                { id: 'p2-a', project_id: 'p2', name: 'B' },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const secondState = await buildPullRequest(db, options);
+    await applyPullResponse(db, transport, handlers, options, secondState, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'scoped-sub',
+          status: 'active',
+          scopes: { project_id: 'p2' },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 2,
+          commits: [],
+          snapshots: [
+            {
+              table: 'scoped_items',
+              rows: [{ id: 'p2-a', project_id: 'p2', name: 'B' }],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const rows = await db
+      .selectFrom('scoped_items')
+      .select(['id'])
+      .orderBy('id', 'asc')
+      .execute();
+    expect(rows.map((row) => row.id)).toEqual(['p2-a']);
   });
 });
