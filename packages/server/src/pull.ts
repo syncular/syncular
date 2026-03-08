@@ -41,7 +41,7 @@ import {
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve';
 
 const defaultScopeCache = createMemoryScopeCache();
-const MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
+const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
 
 function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
@@ -419,6 +419,7 @@ async function readLatestExternalCommitByTable<DB extends SyncCoreDb>(
     .select((eb) => eb.fn.max('tc.commit_seq').as('latest_commit_seq'))
     .where('tc.partition_id', '=', args.partitionId)
     .where('cm.client_id', '=', EXTERNAL_CLIENT_ID)
+    .where('cm.change_count', '=', 0)
     .where('tc.commit_seq', '>', args.afterCursor)
     .where('tc.table', 'in', tableNames)
     .groupBy('tc.table')
@@ -778,10 +779,14 @@ export async function pull<
                   );
 
                 const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
+                const bundleMaxBytes = Math.max(
+                  1,
+                  tableHandler.snapshotBundleMaxBytes ??
+                    DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES
+                );
                 if (
                   activeBundle.pageCount > 0 &&
-                  activeBundle.rowFrameByteLength + rowFrames.length >
-                    MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES
+                  activeBundle.rowFrameByteLength + rowFrames.length > bundleMaxBytes
                 ) {
                   await flushSnapshotBundle(activeBundle);
                   const bundleHeader = encodeSnapshotRows([]);

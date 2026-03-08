@@ -4,7 +4,6 @@
 
 export * from '@syncular/core';
 
-export * from './blobs';
 export * from './client';
 export * from './conflicts';
 export * from './create-client';

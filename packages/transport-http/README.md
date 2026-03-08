@@ -1,6 +1,6 @@
 # @syncular/transport-http
 
-HTTP transport for Syncular using a typed OpenAPI client. Used by `@syncular/client` to push and pull commits, and to upload/download blobs.
+HTTP transport for Syncular using a typed OpenAPI client. Used by `@syncular/client` for push/pull sync, and by optional features like `@syncular/client-plugin-blob` for blob upload/download flows.
 
 ## Install
 

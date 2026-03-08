@@ -134,15 +134,27 @@ export class ForwardEngine<DB extends RelayDatabase = RelayDatabase> {
       const combined = await this.transport.sync({
         clientId: next.client_id,
         push: {
-          clientCommitId: next.client_commit_id,
-          operations: next.operations,
-          schemaVersion: next.schema_version,
+          commits: [
+            {
+              clientCommitId: next.client_commit_id,
+              operations: next.operations,
+              schemaVersion: next.schema_version,
+            },
+          ],
         },
       });
-      if (!combined.push) {
+      const batchResponse = combined.push?.commits.find(
+        (commit) => commit.clientCommitId === next.client_commit_id
+      );
+      if (!batchResponse) {
         throw new Error('Server returned no push response');
       }
-      response = combined.push;
+      response = {
+        ok: true,
+        status: batchResponse.status,
+        commitSeq: batchResponse.commitSeq,
+        results: batchResponse.results,
+      };
     } catch (err) {
       // Network error - mark as pending for retry
       await this.markPending(next.id, String(err));

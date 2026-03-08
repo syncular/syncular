@@ -1,14 +1,14 @@
 {
-  "name": "@syncular/server-storage-filesystem",
+  "name": "@syncular/server-storage-s3",
   "version": "0.0.0",
-  "description": "Filesystem blob storage adapter for Syncular server",
+  "description": "S3-compatible blob storage adapter for Syncular server",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {
     "type": "git",
     "url": "https://github.com/syncular/syncular.git",
-    "directory": "packages/server-storage-filesystem"
+    "directory": "plugins/blob/server-storage-s3"
   },
   "bugs": {
     "url": "https://github.com/syncular/syncular/issues"
@@ -18,7 +18,7 @@
     "offline-first",
     "blob",
     "storage",
-    "filesystem"
+    "s3"
   ],
   "private": false,
   "publishConfig": {
@@ -44,8 +44,7 @@
     "@syncular/core": "workspace:*"
   },
   "devDependencies": {
-    "@syncular/config": "workspace:*",
-    "@syncular/server": "workspace:*"
+    "@syncular/config": "workspace:*"
   },
   "files": [
     "dist",

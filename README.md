@@ -152,7 +152,8 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
 | `@syncular/server-hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
 | `@syncular/server-cloudflare` | Cloudflare adapter for Workers and Durable Objects |
-| `@syncular/client` | Client sync engine (outbox, conflicts, plugins, blobs) |
+| `@syncular/client` | Client sync engine (outbox, conflicts, plugins, realtime, push/pull) |
+| `@syncular/client-plugin-blob` | Optional client blob storage plugin (`client.blobs`, local cache, upload queue) |
 | `@syncular/client-react` | React bindings, typed hooks, queries, mutations, presence |
 | `@syncular/transport-http` | HTTP push/pull transport |
 | `@syncular/transport-ws` | WebSocket wake-up and presence transport |
@@ -161,7 +162,7 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/migrations` | Versioned migrations with checksum tracking |
 | `@syncular/typegen` | Generate database types from migrations |
 
-Need more? Optional packages cover runtime dialects, storage adapters, relay, Yjs, encryption, offline auth, observability, and test tooling. See the [Installation guide](https://syncular.dev/docs/introduction/installation) for the full matrix.
+Need more? Optional packages cover blob storage adapters, runtime dialects, relay, Yjs, encryption, offline auth, observability, and test tooling. See the [Installation guide](https://syncular.dev/docs/introduction/installation) for the full matrix.
 
 ## Run locally
 

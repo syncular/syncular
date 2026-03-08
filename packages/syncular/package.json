@@ -20,6 +20,7 @@
     "database",
     "typescript"
   ],
+  "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },
@@ -94,6 +95,13 @@
       "import": {
         "types": "./dist/client-plugin-encryption.d.ts",
         "default": "./dist/client-plugin-encryption.js"
+      }
+    },
+    "./client-plugin-blob": {
+      "bun": "./src/client-plugin-blob.ts",
+      "import": {
+        "types": "./dist/client-plugin-blob.d.ts",
+        "default": "./dist/client-plugin-blob.js"
       }
     },
     "./client-plugin-yjs": {
@@ -313,6 +321,7 @@
   ],
   "dependencies": {
     "@syncular/client": "workspace:*",
+    "@syncular/client-plugin-blob": "workspace:*",
     "@syncular/client-plugin-offline-auth": "workspace:*",
     "@syncular/client-plugin-offline-auth-react": "workspace:*",
     "@syncular/client-plugin-encryption": "workspace:*",

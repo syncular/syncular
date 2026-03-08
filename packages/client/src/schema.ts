@@ -5,7 +5,7 @@
  */
 
 import type { Generated, Kysely } from 'kysely';
-import type { SyncBlobClientDb } from './blobs/types';
+import type { SyncInternalBlobClientDb } from './internal/blob-schema';
 
 /**
  * Database executor type that both Kysely and Transaction satisfy.
@@ -70,7 +70,7 @@ export interface SyncOutboxCommitsTable {
   schema_version: Generated<number>;
 }
 
-export interface SyncClientDb extends SyncBlobClientDb {
+export interface SyncClientDb extends SyncInternalBlobClientDb {
   sync_subscription_state: SyncSubscriptionStateTable;
   sync_outbox_commits: SyncOutboxCommitsTable;
   sync_conflicts: SyncConflictsTable;

@@ -3,6 +3,7 @@
  */
 
 import type {
+  SyncCombinedResponse,
   SyncPushRequest,
   SyncPushResponse,
   SyncTransport,
@@ -85,6 +86,23 @@ function buildPushResult(args: {
   };
 }
 
+function getSingleCombinedPushResponse(
+  combined: SyncCombinedResponse,
+  clientCommitId: string
+): SyncPushResponse | null {
+  const response = combined.push?.commits.find(
+    (commit) => commit.clientCommitId === clientCommitId
+  );
+  if (!response) return null;
+
+  return {
+    ok: true,
+    status: response.status,
+    commitSeq: response.commitSeq,
+    results: response.results,
+  };
+}
+
 export async function syncPushOnce<DB extends SyncClientDb>(
   db: Kysely<DB>,
   transport: SyncTransport,
@@ -139,15 +157,23 @@ export async function syncPushOnce<DB extends SyncClientDb>(
       const combined = await transport.sync({
         clientId: requestToSend.clientId,
         push: {
-          clientCommitId: requestToSend.clientCommitId,
-          operations: requestToSend.operations,
-          schemaVersion: requestToSend.schemaVersion,
+          commits: [
+            {
+              clientCommitId: requestToSend.clientCommitId,
+              operations: requestToSend.operations,
+              schemaVersion: requestToSend.schemaVersion,
+            },
+          ],
         },
       });
-      if (!combined.push) {
+      const combinedPushResponse = getSingleCombinedPushResponse(
+        combined,
+        requestToSend.clientCommitId
+      );
+      if (!combinedPushResponse) {
         throw new Error('Server returned no push response');
       }
-      res = combined.push;
+      res = combinedPushResponse;
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
