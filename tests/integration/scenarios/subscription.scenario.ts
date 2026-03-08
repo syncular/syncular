@@ -12,6 +12,7 @@ import {
 import { computePruneWatermarkCommitSeq, pruneSync } from '@syncular/server';
 import { createHttpTransport } from '@syncular/transport-http';
 import type { ScenarioContext } from '../harness/types';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 export async function runSubscriptionScenario(
   ctx: ScenarioContext
@@ -104,19 +105,15 @@ export async function runSubscriptionScenario(
 
   await u2Transport.sync({
     clientId: 'client-u2',
-    push: {
-      clientCommitId: 'commit-u2-1',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 't2',
-          op: 'upsert',
-          payload: { title: 'Nope', completed: 0, project_id: 'p1' },
-          base_version: null,
-        },
-      ],
-    },
+    push: createSingleCommitPush('commit-u2-1', [
+      {
+        table: 'tasks',
+        row_id: 't2',
+        op: 'upsert',
+        payload: { title: 'Nope', completed: 0, project_id: 'p1' },
+        base_version: null,
+      },
+    ]),
   });
 
   // Pull should NOT receive u2's changes
@@ -331,23 +328,19 @@ export async function runSubscriptionReshapeScenario(
 
   await client.transport.sync({
     clientId: client.clientId,
-    push: {
-      clientCommitId: 'reshape-p3-write',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 'reshape-p3-new',
-          op: 'upsert',
-          payload: {
-            title: 'P3 New',
-            completed: 0,
-            project_id: 'p3',
-          },
-          base_version: null,
+    push: createSingleCommitPush('reshape-p3-write', [
+      {
+        table: 'tasks',
+        row_id: 'reshape-p3-new',
+        op: 'upsert',
+        payload: {
+          title: 'P3 New',
+          completed: 0,
+          project_id: 'p3',
         },
-      ],
-    },
+        base_version: null,
+      },
+    ]),
   });
 
   await syncPullOnce(client.db, client.transport, client.handlers, {
@@ -406,47 +399,43 @@ export async function runSubscriptionReshapeStressScenario(
 
     const pushResult = await writer.transport.sync({
       clientId: writer.clientId,
-      push: {
-        clientCommitId: `reshape-stress-c${phaseIndex}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: `reshape-stress-p1-${phaseIndex}`,
-            op: 'upsert',
-            payload: {
-              title: `Reshape Stress P1 ${phaseIndex}`,
-              completed: 0,
-              project_id: 'p1',
-            },
-            base_version: null,
+      push: createSingleCommitPush(`reshape-stress-c${phaseIndex}`, [
+        {
+          table: 'tasks',
+          row_id: `reshape-stress-p1-${phaseIndex}`,
+          op: 'upsert',
+          payload: {
+            title: `Reshape Stress P1 ${phaseIndex}`,
+            completed: 0,
+            project_id: 'p1',
           },
-          {
-            table: 'tasks',
-            row_id: `reshape-stress-p2-${phaseIndex}`,
-            op: 'upsert',
-            payload: {
-              title: `Reshape Stress P2 ${phaseIndex}`,
-              completed: 0,
-              project_id: 'p2',
-            },
-            base_version: null,
+          base_version: null,
+        },
+        {
+          table: 'tasks',
+          row_id: `reshape-stress-p2-${phaseIndex}`,
+          op: 'upsert',
+          payload: {
+            title: `Reshape Stress P2 ${phaseIndex}`,
+            completed: 0,
+            project_id: 'p2',
           },
-          {
-            table: 'tasks',
-            row_id: `reshape-stress-p3-${phaseIndex}`,
-            op: 'upsert',
-            payload: {
-              title: `Reshape Stress P3 ${phaseIndex}`,
-              completed: 0,
-              project_id: 'p3',
-            },
-            base_version: null,
+          base_version: null,
+        },
+        {
+          table: 'tasks',
+          row_id: `reshape-stress-p3-${phaseIndex}`,
+          op: 'upsert',
+          payload: {
+            title: `Reshape Stress P3 ${phaseIndex}`,
+            completed: 0,
+            project_id: 'p3',
           },
-        ],
-      },
+          base_version: null,
+        },
+      ]),
     });
-    expect(pushResult.push?.status).toBe('applied');
+    expect(getSinglePushStatus(pushResult.push)).toBe('applied');
 
     const pullResult = await syncPullOnce(
       client.db,
@@ -512,19 +501,15 @@ export async function runDedupeScenario(ctx: ScenarioContext): Promise<void> {
   for (let i = 1; i <= 3; i++) {
     await client.transport.sync({
       clientId: client.clientId,
-      push: {
-        clientCommitId: `hot-${i}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: 't1',
-            op: 'upsert',
-            payload: { title: `v${i}`, completed: 0, project_id: 'p1' },
-            base_version: null,
-          },
-        ],
-      },
+      push: createSingleCommitPush(`hot-${i}`, [
+        {
+          table: 'tasks',
+          row_id: 't1',
+          op: 'upsert',
+          payload: { title: `v${i}`, completed: 0, project_id: 'p1' },
+          base_version: null,
+        },
+      ]),
     });
   }
 
@@ -590,19 +575,15 @@ export async function runForcedBootstrapAfterPruneScenario(
   for (let i = 1; i <= 10; i++) {
     await fastClient.transport.sync({
       clientId: fastClient.clientId,
-      push: {
-        clientCommitId: `c${i}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: `t${i}`,
-            op: 'upsert',
-            payload: { title: `Task ${i}`, completed: 0, project_id: 'p1' },
-            base_version: null,
-          },
-        ],
-      },
+      push: createSingleCommitPush(`c${i}`, [
+        {
+          table: 'tasks',
+          row_id: `t${i}`,
+          op: 'upsert',
+          payload: { title: `Task ${i}`, completed: 0, project_id: 'p1' },
+          base_version: null,
+        },
+      ]),
     });
   }
 
@@ -693,19 +674,15 @@ export async function runCursorAheadScenario(
   for (let i = 1; i <= 3; i++) {
     await client.transport.sync({
       clientId: 'client-fast',
-      push: {
-        clientCommitId: `c${i}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: `t${i}`,
-            op: 'upsert',
-            payload: { title: `Task ${i}`, completed: 0, project_id: 'p1' },
-            base_version: null,
-          },
-        ],
-      },
+      push: createSingleCommitPush(`c${i}`, [
+        {
+          table: 'tasks',
+          row_id: `t${i}`,
+          op: 'upsert',
+          payload: { title: `Task ${i}`, completed: 0, project_id: 'p1' },
+          base_version: null,
+        },
+      ]),
     });
   }
 
@@ -738,19 +715,15 @@ export async function runCursorAheadScenario(
   // After cursor correction, incremental pulls must work
   await client.transport.sync({
     clientId: 'client-fast',
-    push: {
-      clientCommitId: 'c4',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 't4',
-          op: 'upsert',
-          payload: { title: 'Task 4', completed: 0, project_id: 'p1' },
-          base_version: null,
-        },
-      ],
-    },
+    push: createSingleCommitPush('c4', [
+      {
+        table: 'tasks',
+        row_id: 't4',
+        op: 'upsert',
+        payload: { title: 'Task 4', completed: 0, project_id: 'p1' },
+        base_version: null,
+      },
+    ]),
   });
 
   const inc = await syncPullOnce(client.db, client.transport, client.handlers, {

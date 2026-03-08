@@ -15,6 +15,7 @@ import { withFaults } from '@syncular/testkit';
 import { createHttpTransport } from '@syncular/transport-http';
 import { createWebSocketTransport } from '@syncular/transport-ws';
 import type { ScenarioContext } from '../harness/types';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 const nativeFetch = (globalThis as Record<string, unknown>).__nativeFetch as
   | typeof globalThis.fetch
@@ -212,69 +213,57 @@ export async function runTransportPathParityScenario(
 
   const directPush = await directTransport.sync({
     clientId: directClient.clientId,
-    push: {
-      clientCommitId: 'direct-path-commit',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 'path-direct-task',
-          op: 'upsert',
-          payload: {
-            title: 'Direct path task',
-            completed: 0,
-            project_id: 'p1',
-          },
-          base_version: null,
+    push: createSingleCommitPush('direct-path-commit', [
+      {
+        table: 'tasks',
+        row_id: 'path-direct-task',
+        op: 'upsert',
+        payload: {
+          title: 'Direct path task',
+          completed: 0,
+          project_id: 'p1',
         },
-      ],
-    },
+        base_version: null,
+      },
+    ]),
   });
-  expect(directPush.push?.status).toBe('applied');
+  expect(getSinglePushStatus(directPush.push)).toBe('applied');
 
   const relayPush = await relayTransport.sync({
     clientId: relayClient.clientId,
-    push: {
-      clientCommitId: 'relay-path-commit',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 'path-relay-task',
-          op: 'upsert',
-          payload: {
-            title: 'Relay path task',
-            completed: 1,
-            project_id: 'p1',
-          },
-          base_version: null,
+    push: createSingleCommitPush('relay-path-commit', [
+      {
+        table: 'tasks',
+        row_id: 'path-relay-task',
+        op: 'upsert',
+        payload: {
+          title: 'Relay path task',
+          completed: 1,
+          project_id: 'p1',
         },
-      ],
-    },
+        base_version: null,
+      },
+    ]),
   });
-  expect(relayPush.push?.status).toBe('applied');
+  expect(getSinglePushStatus(relayPush.push)).toBe('applied');
 
   const wsPush = await wsTransport.sync({
     clientId: wsClient.clientId,
-    push: {
-      clientCommitId: 'ws-path-commit',
-      schemaVersion: 1,
-      operations: [
-        {
-          table: 'tasks',
-          row_id: 'path-ws-task',
-          op: 'upsert',
-          payload: {
-            title: 'WS path task',
-            completed: 0,
-            project_id: 'p1',
-          },
-          base_version: null,
+    push: createSingleCommitPush('ws-path-commit', [
+      {
+        table: 'tasks',
+        row_id: 'path-ws-task',
+        op: 'upsert',
+        payload: {
+          title: 'WS path task',
+          completed: 0,
+          project_id: 'p1',
         },
-      ],
-    },
+        base_version: null,
+      },
+    ]),
   });
-  expect(wsPush.push?.status).toBe('applied');
+  expect(getSinglePushStatus(wsPush.push)).toBe('applied');
 
   await syncPullOnce(directClient.db, directTransport, directClient.handlers, {
     clientId: directClient.clientId,
@@ -344,25 +333,21 @@ export async function runReconnectStormCursorScenario(
     for (let i = 1; i <= totalCommits; i++) {
       const pushResult = await writer.transport.sync({
         clientId: writer.clientId,
-        push: {
-          clientCommitId: `storm-c${i}`,
-          schemaVersion: 1,
-          operations: [
-            {
-              table: 'tasks',
-              row_id: `storm-task-${i}`,
-              op: 'upsert',
-              payload: {
-                title: `Storm Task ${i}`,
-                completed: i % 2,
-                project_id: 'p1',
-              },
-              base_version: null,
+        push: createSingleCommitPush(`storm-c${i}`, [
+          {
+            table: 'tasks',
+            row_id: `storm-task-${i}`,
+            op: 'upsert',
+            payload: {
+              title: `Storm Task ${i}`,
+              completed: i % 2,
+              project_id: 'p1',
             },
-          ],
-        },
+            base_version: null,
+          },
+        ]),
       });
-      expect(pushResult.push?.status).toBe('applied');
+      expect(getSinglePushStatus(pushResult.push)).toBe('applied');
 
       if (i % 3 === 0) {
         await Bun.sleep(2);
@@ -498,25 +483,21 @@ export async function runRelayDuplicateOutOfOrderScenario(
   for (let version = 1; version <= 3; version += 1) {
     const write = await writer.transport.sync({
       clientId: writer.clientId,
-      push: {
-        clientCommitId: `relay-ooo-c${version}`,
-        schemaVersion: 1,
-        operations: [
-          {
-            table: 'tasks',
-            row_id: 'relay-ooo-row',
-            op: 'upsert',
-            payload: {
-              title: `Relay Version ${version}`,
-              completed: version % 2,
-              project_id: 'p1',
-            },
-            base_version: version === 1 ? null : version - 1,
+      push: createSingleCommitPush(`relay-ooo-c${version}`, [
+        {
+          table: 'tasks',
+          row_id: 'relay-ooo-row',
+          op: 'upsert',
+          payload: {
+            title: `Relay Version ${version}`,
+            completed: version % 2,
+            project_id: 'p1',
           },
-        ],
-      },
+          base_version: version === 1 ? null : version - 1,
+        },
+      ]),
     });
-    expect(write.push?.status).toBe('applied');
+    expect(getSinglePushStatus(write.push)).toBe('applied');
   }
 
   const stalePullState = await buildPullRequest(reader.db, {
@@ -677,25 +658,21 @@ export async function runMaintenanceChurnScenario(
     for (let i = 1; i <= totalCommits; i++) {
       const pushResult = await writer.transport.sync({
         clientId: writer.clientId,
-        push: {
-          clientCommitId: `maintenance-c${i}`,
-          schemaVersion: 1,
-          operations: [
-            {
-              table: 'tasks',
-              row_id: `maintenance-task-${i}`,
-              op: 'upsert',
-              payload: {
-                title: `Maintenance Task ${i}`,
-                completed: i % 2,
-                project_id: 'p1',
-              },
-              base_version: null,
+        push: createSingleCommitPush(`maintenance-c${i}`, [
+          {
+            table: 'tasks',
+            row_id: `maintenance-task-${i}`,
+            op: 'upsert',
+            payload: {
+              title: `Maintenance Task ${i}`,
+              completed: i % 2,
+              project_id: 'p1',
             },
-          ],
-        },
+            base_version: null,
+          },
+        ]),
       });
-      expect(pushResult.push?.status).toBe('applied');
+      expect(getSinglePushStatus(pushResult.push)).toBe('applied');
 
       if (i % 4 === 0) {
         await syncPullOnce(reader.db, reader.transport, reader.handlers, {
@@ -865,10 +842,9 @@ export async function runMaintenanceRaceMatrixScenario(
         writeIndex += 1;
         const pushResult = await writer.transport.sync({
           clientId: writer.clientId,
-          push: {
-            clientCommitId: `maintenance-race-${raceCase.name}-c${currentIndex}`,
-            schemaVersion: 1,
-            operations: [
+          push: createSingleCommitPush(
+            `maintenance-race-${raceCase.name}-c${currentIndex}`,
+            [
               {
                 table: 'tasks',
                 row_id: `maintenance-race-task-${currentIndex}`,
@@ -880,10 +856,10 @@ export async function runMaintenanceRaceMatrixScenario(
                 },
                 base_version: null,
               },
-            ],
-          },
+            ]
+          ),
         });
-        expect(pushResult.push?.status).toBe('applied');
+        expect(getSinglePushStatus(pushResult.push)).toBe('applied');
 
         if (i % raceCase.maintenanceEvery === 0) {
           await runMaintenancePass(raceCase.keepNewestCommits);

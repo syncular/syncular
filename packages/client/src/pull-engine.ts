@@ -564,6 +564,53 @@ function parseBootstrapState(
   }
 }
 
+function parseScopeValuesJson(
+  value: string | object | null | undefined
+): ScopeValues {
+  if (!value) return {};
+
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const result: ScopeValues = {};
+    for (const [key, raw] of Object.entries(parsed)) {
+      if (typeof raw === 'string') {
+        result[key] = raw;
+        continue;
+      }
+      if (
+        Array.isArray(raw) &&
+        raw.every((entry) => typeof entry === 'string')
+      ) {
+        result[key] = raw;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function normalizeScopeValuesForCompare(scopes: ScopeValues): string {
+  const normalized = Object.entries(scopes)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, raw]) => [
+      key,
+      Array.isArray(raw) ? [...raw].sort((a, b) => a.localeCompare(b)) : [raw],
+    ]);
+  return JSON.stringify(normalized);
+}
+
+function scopeValuesEqual(left: ScopeValues, right: ScopeValues): boolean {
+  return (
+    normalizeScopeValuesForCompare(left) ===
+    normalizeScopeValuesForCompare(right)
+  );
+}
+
 export interface SyncPullOnceOptions {
   clientId: string;
   actorId?: string;
@@ -836,11 +883,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
       if (sub.status === 'revoked') {
         if (prev?.table) {
           try {
-            const scopes = prev.scopes_json
-              ? typeof prev.scopes_json === 'string'
-                ? JSON.parse(prev.scopes_json)
-                : prev.scopes_json
-              : {};
+            const scopes = parseScopeValuesJson(prev.scopes_json);
             await getClientHandlerOrThrow(handlers, prev.table).clearAll({
               trx,
               scopes,
@@ -857,6 +900,21 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 		        `.execute(trx);
         latestCursorBySubscriptionId.delete(sub.id);
         continue;
+      }
+
+      const nextScopes = sub.scopes ?? def?.scopes ?? {};
+      const previousScopes = parseScopeValuesJson(prev?.scopes_json);
+      const scopesChanged = !scopeValuesEqual(previousScopes, nextScopes);
+
+      if (sub.bootstrap && prev?.table && scopesChanged) {
+        try {
+          await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+            trx,
+            scopes: previousScopes,
+          });
+        } catch {
+          // ignore missing handler
+        }
       }
 
       // Apply snapshots (bootstrap mode)
@@ -922,7 +980,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
       // Use cached JSON serialization to avoid repeated stringification
       const now = Date.now();
       const paramsJson = serializeJsonCached(def?.params ?? {});
-      const scopesJson = serializeJsonCached(sub.scopes ?? def?.scopes ?? {});
+      const scopesJson = serializeJsonCached(nextScopes);
       const bootstrapStateJson = sub.bootstrap
         ? sub.bootstrapState
           ? serializeJsonCached(sub.bootstrapState)

@@ -1797,7 +1797,8 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               stateId: this.config.stateId,
               sha256: this.config.sha256,
               trigger,
-              allowSkipPullOnLocalWsPush: this.state.transportMode === 'realtime',
+              allowSkipPullOnLocalWsPush:
+                this.state.transportMode === 'realtime',
             }
           )
       );

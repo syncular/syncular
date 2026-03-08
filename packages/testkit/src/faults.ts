@@ -1,7 +1,7 @@
 import type {
   SyncCombinedRequest,
   SyncPullResponse,
-  SyncPushResponse,
+  SyncPushBatchResponse,
   SyncTransport,
   SyncTransportOptions,
 } from '@syncular/core';
@@ -270,24 +270,28 @@ function createActivePlan(
 
 export function createMockTransport(options?: {
   pullResponse?: SyncPullResponse;
-  pushResponse?: SyncPushResponse;
+  pushResponse?: SyncPushBatchResponse;
   chunkData?: Uint8Array;
 }): SyncTransport {
   return {
     async sync(request) {
       const result: {
         ok: true;
-        push?: SyncPushResponse;
+        push?: SyncPushBatchResponse;
         pull?: SyncPullResponse;
       } = { ok: true };
 
       if (request.push) {
         result.push = options?.pushResponse ?? {
           ok: true,
-          status: 'applied',
-          results: request.push.operations.map((_, i) => ({
-            opIndex: i,
+          commits: request.push.commits.map((commit) => ({
+            ok: true,
+            clientCommitId: commit.clientCommitId,
             status: 'applied',
+            results: commit.operations.map((_: unknown, i: number) => ({
+              opIndex: i,
+              status: 'applied',
+            })),
           })),
         };
       }

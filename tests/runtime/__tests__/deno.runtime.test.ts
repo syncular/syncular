@@ -25,6 +25,7 @@ import {
   waitForJsonPortFromStdout,
 } from '@syncular/testkit';
 import { getNativeFetch } from '../shared/utils';
+import { createSingleCommitPush, getSinglePushStatus } from './push-helpers';
 
 const _fetch = getNativeFetch();
 
@@ -118,16 +119,12 @@ describe('Deno runtime (node:sqlite)', () => {
         actorId: userId,
         body: {
           clientId,
-          push: {
-            clientCommitId: `deno-commit-1-${RUN}`,
-            operations: [
-              createProjectScopedTaskUpsertOperation({
-                taskId,
-                title: 'Deno Task',
-              }),
-            ],
-            schemaVersion: 1,
-          },
+          push: createSingleCommitPush(`deno-commit-1-${RUN}`, [
+            createProjectScopedTaskUpsertOperation({
+              taskId,
+              title: 'Deno Task',
+            }),
+          ]),
           pull: {
             limitCommits: 50,
             subscriptions: [
@@ -142,7 +139,7 @@ describe('Deno runtime (node:sqlite)', () => {
     );
 
     expect(pushRes.status).toBe(200);
-    expect(pushJson.push?.status).toBe('applied');
+    expect(getSinglePushStatus(pushJson.push)).toBe('applied');
 
     // Verify task appears in pull response
     const taskRow = subscriptionChangeRow(
@@ -167,17 +164,13 @@ describe('Deno runtime (node:sqlite)', () => {
       actorId: userId,
       body: {
         clientId: `deno-client-a-${RUN}`,
-        push: {
-          clientCommitId: `deno-2c-commit-${RUN}`,
-          operations: [
-            createProjectScopedTaskUpsertOperation({
-              taskId,
-              title: 'Synced Task',
-              completed: 1,
-            }),
-          ],
-          schemaVersion: 1,
-        },
+        push: createSingleCommitPush(`deno-2c-commit-${RUN}`, [
+          createProjectScopedTaskUpsertOperation({
+            taskId,
+            title: 'Synced Task',
+            completed: 1,
+          }),
+        ]),
       },
     });
 

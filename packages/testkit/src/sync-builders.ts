@@ -2,7 +2,7 @@ import type {
   SyncCombinedRequest,
   SyncOperation,
   SyncPullRequest,
-  SyncPushRequest,
+  SyncPushBatchRequest,
   SyncSubscriptionRequest,
 } from '@syncular/core';
 
@@ -74,12 +74,16 @@ export interface CreateSyncPushRequestOptions {
 
 export function createSyncPushRequest(
   options: CreateSyncPushRequestOptions
-): SyncPushRequest {
+): SyncPushBatchRequest {
   return {
     clientId: options.clientId,
-    clientCommitId: options.clientCommitId,
-    operations: options.operations,
-    schemaVersion: options.schemaVersion ?? 1,
+    commits: [
+      {
+        clientCommitId: options.clientCommitId,
+        operations: options.operations,
+        schemaVersion: options.schemaVersion ?? 1,
+      },
+    ],
   };
 }
 
@@ -113,7 +117,7 @@ export function createSyncPullRequest(
 
 export interface CreateSyncCombinedRequestOptions {
   clientId: string;
-  push?: Omit<SyncPushRequest, 'clientId'>;
+  push?: Omit<SyncPushBatchRequest, 'clientId'>;
   pull?: Omit<SyncPullRequest, 'clientId'>;
 }
 

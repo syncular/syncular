@@ -8,15 +8,19 @@ function createPushRequest(
   return {
     clientId: 'client-1',
     push: {
-      clientCommitId,
-      schemaVersion: 1,
-      operations: [
+      commits: [
         {
-          table: 'tasks',
-          row_id: `row-${clientCommitId}`,
-          op: 'upsert',
-          payload: { title: clientCommitId, project_id: 'p1' },
-          base_version: null,
+          clientCommitId,
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: `row-${clientCommitId}`,
+              op: 'upsert',
+              payload: { title: clientCommitId, project_id: 'p1' },
+              base_version: null,
+            },
+          ],
         },
       ],
     },
@@ -57,7 +61,7 @@ describe('withFaults', () => {
     ).rejects.toThrow('SIMULATED_ACK_LOSS');
 
     const retry = await wrapped.transport.sync(createPushRequest('push-2'));
-    expect(retry.push?.status).toBe('applied');
+    expect(retry.push?.commits[0]?.status).toBe('applied');
     expect(wrapped.getState()).toEqual({
       pushCount: 2,
       pullCount: 0,
@@ -81,7 +85,7 @@ describe('withFaults', () => {
     const pushResult = await wrapped.transport.sync(
       createPushRequest('push-1')
     );
-    expect(pushResult.push?.status).toBe('applied');
+    expect(pushResult.push?.commits[0]?.status).toBe('applied');
 
     await expect(wrapped.transport.sync(createPullRequest())).rejects.toThrow(
       'SIMULATED_PULL_DROP'

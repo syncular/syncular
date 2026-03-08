@@ -211,7 +211,9 @@ export async function notifyExternalRowChanges<DB extends SyncCoreDb>(
       result_json: null,
       change_count: normalizedChanges.length,
       affected_tables: dialect.arrayToDb(
-        Array.from(new Set(normalizedChanges.map((change) => change.table))).sort()
+        Array.from(
+          new Set(normalizedChanges.map((change) => change.table))
+        ).sort()
       ) as string[],
     };
 

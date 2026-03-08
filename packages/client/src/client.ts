@@ -1042,5 +1042,4 @@ type SyncClientFeatureAccessors = {
   [K in keyof SyncClientFeatureRegistry]: SyncClientFeatureRegistry[K];
 };
 
-export interface Client<DB extends SyncClientDb = SyncClientDb>
-  extends SyncClientFeatureAccessors {}
+export interface Client extends SyncClientFeatureAccessors {}

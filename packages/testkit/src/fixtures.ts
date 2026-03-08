@@ -592,19 +592,31 @@ function createInProcessTransport(
       const result: SyncCombinedResponse = { ok: true };
 
       if (request.push) {
-        const pushed = await pushCommit({
-          db: server.db,
-          dialect: server.dialect,
-          handlers: server.handlers,
-          auth: { actorId },
-          request: {
-            clientId: request.clientId,
-            clientCommitId: request.push.clientCommitId,
-            operations: request.push.operations,
-            schemaVersion: request.push.schemaVersion,
-          },
-        });
-        result.push = pushed.response;
+        const pushedCommits = await Promise.all(
+          request.push.commits.map(async (commit) => {
+            const pushed = await pushCommit({
+              db: server.db,
+              dialect: server.dialect,
+              handlers: server.handlers,
+              auth: { actorId },
+              request: {
+                clientId: request.clientId,
+                clientCommitId: commit.clientCommitId,
+                operations: commit.operations,
+                schemaVersion: commit.schemaVersion,
+              },
+            });
+
+            return {
+              clientCommitId: commit.clientCommitId,
+              ...pushed.response,
+            };
+          })
+        );
+        result.push = {
+          ok: true,
+          commits: pushedCommits,
+        };
       }
 
       if (request.pull) {

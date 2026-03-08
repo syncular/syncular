@@ -1,9 +1,8 @@
 import createClient from 'openapi-fetch';
-import type { operations, paths } from './generated/api';
+import type { paths } from './generated/api';
 import type { ClientOptions } from './shared';
 
 export type SyncClient = ReturnType<typeof createClient<paths>>;
-export type { operations };
 
 /**
  * Create a typed API client for the full Syncular API.

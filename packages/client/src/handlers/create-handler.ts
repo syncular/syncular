@@ -13,9 +13,9 @@ import type {
 } from '@syncular/core';
 import {
   applyCodecsToDbRow,
+  createSingleVariableScopeMetadata,
   createTableColumnCodecsResolver,
   isRecord,
-  normalizeScopes,
 } from '@syncular/core';
 import { sql } from 'kysely';
 import type { SyncClientDb } from '../schema';
@@ -182,7 +182,38 @@ export function createClientHandler<
   const resolveTableCodecs = (row: Record<string, unknown>) =>
     resolveRowCodecs(table, row);
 
-  const scopePatterns = Object.keys(normalizeScopes(scopeDefs));
+  const { scopePatterns, scopeColumnsByVariable } =
+    createSingleVariableScopeMetadata(scopeDefs);
+
+  const clearRowsForScopes = async (
+    ctx: ClientClearContext<DB> | ClientSnapshotHookContext<DB>
+  ): Promise<void> => {
+    const scopeFilters = Object.entries(ctx.scopes).flatMap(
+      ([scopeKey, raw]) => {
+        const column = scopeColumnsByVariable[scopeKey];
+        if (!column) return [];
+        if (Array.isArray(raw)) {
+          const values = raw.filter((value) => value.length > 0);
+          if (values.length === 0) return [];
+          return [
+            sql`${sql.ref(column)} in ${sql`(${sql.join(values.map((value) => sql.val(value)))})`}`,
+          ];
+        }
+        if (raw.length === 0) return [];
+        return [sql`${sql.ref(column)} = ${sql.val(raw)}`];
+      }
+    );
+
+    if (scopeFilters.length === 0) {
+      await sql`delete from ${sql.table(table)}`.execute(ctx.trx);
+      return;
+    }
+
+    await sql`
+      delete from ${sql.table(table)}
+      where ${sql.join(scopeFilters, sql` and `)}
+    `.execute(ctx.trx);
+  };
 
   // Default applySnapshot: upsert all rows
   const defaultApplySnapshot = async (
@@ -300,7 +331,7 @@ export function createClientHandler<
   const defaultClearAll = async (
     ctx: ClientClearContext<DB>
   ): Promise<void> => {
-    await sql`delete from ${sql.table(table)}`.execute(ctx.trx);
+    await clearRowsForScopes(ctx);
   };
 
   return {
@@ -312,7 +343,11 @@ export function createClientHandler<
     applyChange: options.applyChange ?? defaultApplyChange,
     clearAll: options.clearAll ?? defaultClearAll,
 
-    onSnapshotStart: options.onSnapshotStart,
+    onSnapshotStart:
+      options.onSnapshotStart ??
+      (async (ctx) => {
+        await clearRowsForScopes(ctx);
+      }),
     onSnapshotEnd: options.onSnapshotEnd,
   };
 }

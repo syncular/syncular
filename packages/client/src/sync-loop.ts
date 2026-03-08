@@ -19,11 +19,11 @@ import { upsertConflictsForRejectedCommit } from './conflicts';
 import type { PushResultInfo } from './engine/types';
 import type { ClientHandlerCollection } from './handlers/collection';
 import {
-  type OutboxCommit,
   getNextSendableOutboxCommit,
   markOutboxCommitAcked,
   markOutboxCommitFailed,
   markOutboxCommitPending,
+  type OutboxCommit,
 } from './outbox';
 import type { SyncClientPluginContext } from './plugins/types';
 import {
@@ -34,7 +34,7 @@ import {
   type SyncPullRequestState,
   syncPullOnce,
 } from './pull-engine';
-import { type SyncPushOnceOptions, syncPushOnce } from './push-engine';
+import type { SyncPushOnceOptions } from './push-engine';
 import type { SyncClientDb } from './schema';
 
 interface SyncPushUntilSettledOptions extends SyncPushOnceOptions {
@@ -110,7 +110,9 @@ function toSyncPushResponse(
 }
 
 function isRetriablePushResponse(response: SyncPushResponse): boolean {
-  const errorResults = response.results.filter((result) => result.status === 'error');
+  const errorResults = response.results.filter(
+    (result) => result.status === 'error'
+  );
   return (
     errorResults.length > 0 &&
     errorResults.every((result) => result.retriable === true)
@@ -416,7 +418,11 @@ function canSkipPullAfterLocalWsPush(
   if (pushResponse.status !== 'applied' && pushResponse.status !== 'cached') {
     return false;
   }
-  if ((options.plugins ?? []).some((plugin) => typeof plugin.afterPull === 'function')) {
+  if (
+    (options.plugins ?? []).some(
+      (plugin) => typeof plugin.afterPull === 'function'
+    )
+  ) {
     return false;
   }
 
@@ -539,7 +545,11 @@ async function syncOnceCombined<DB extends SyncClientDb>(
       preparedFirstCommit = preparedCommits[0] ?? null;
     } catch (error) {
       const normalizedError = normalizeError(error);
-      await markClaimedOutboxCommitsPending(db, [outbox], normalizedError.message);
+      await markClaimedOutboxCommitsPending(
+        db,
+        [outbox],
+        normalizedError.message
+      );
       throw normalizedError;
     }
   }
@@ -568,30 +578,28 @@ async function syncOnceCombined<DB extends SyncClientDb>(
       preparedFirstCommit && !wsPushResponse
         ? [
             preparedFirstCommit,
-            ...(
-              await (async () => {
-                const additionalOutboxCommits = await claimSendableOutboxCommits(
+            ...(await (async () => {
+              const additionalOutboxCommits = await claimSendableOutboxCommits(
+                db,
+                Math.max(0, (options.maxPushCommits ?? 20) - 1)
+              );
+              if (additionalOutboxCommits.length === 0) return [];
+              try {
+                return await preparePushCommits(additionalOutboxCommits, {
+                  clientId: options.clientId,
+                  actorId: options.actorId,
+                  plugins,
+                });
+              } catch (error) {
+                const normalizedError = normalizeError(error);
+                await markClaimedOutboxCommitsPending(
                   db,
-                  Math.max(0, (options.maxPushCommits ?? 20) - 1)
+                  additionalOutboxCommits,
+                  normalizedError.message
                 );
-                if (additionalOutboxCommits.length === 0) return [];
-                try {
-                  return await preparePushCommits(additionalOutboxCommits, {
-                    clientId: options.clientId,
-                    actorId: options.actorId,
-                    plugins,
-                  });
-                } catch (error) {
-                  const normalizedError = normalizeError(error);
-                  await markClaimedOutboxCommitsPending(
-                    db,
-                    additionalOutboxCommits,
-                    normalizedError.message
-                  );
-                  throw normalizedError;
-                }
-              })()
-            ),
+                throw normalizedError;
+              }
+            })()),
           ]
         : [];
 
@@ -659,7 +667,8 @@ async function syncOnceCombined<DB extends SyncClientDb>(
       if (
         !combined?.push ||
         combinedPushCommits.some(
-          ({ request }) => !responsesByClientCommitId.has(request.clientCommitId)
+          ({ request }) =>
+            !responsesByClientCommitId.has(request.clientCommitId)
         )
       ) {
         await markClaimedOutboxCommitsPending(
