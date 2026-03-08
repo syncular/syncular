@@ -9,6 +9,7 @@ import type {
   SyncIdentityBase,
   SyncPullRequest,
   SyncPullResponse,
+  SyncPushBatchResponse,
   SyncPushRequest,
   SyncPushResponse,
   SyncTransport,
@@ -28,21 +29,28 @@ export function createMockTransport(
 ): SyncTransport {
   return {
     async sync(request) {
-      const result: { ok: true; push?: any; pull?: any } = { ok: true };
+      const result: { ok: true; push?: SyncPushBatchResponse; pull?: any } = {
+        ok: true,
+      };
 
       if (request.push) {
-        options.onPush?.({
-          clientId: request.clientId,
-          ...request.push,
-        } as SyncPushRequest);
+        for (const commit of request.push.commits) {
+          options.onPush?.({
+            clientId: request.clientId,
+            ...commit,
+          } as SyncPushRequest);
+        }
         result.push = {
           ok: true,
-          status: 'applied',
-          results: request.push.operations.map((_, i) => ({
-            opIndex: i,
+          commits: request.push.commits.map((commit) => ({
+            clientCommitId: commit.clientCommitId,
             status: 'applied' as const,
+            results: commit.operations.map((_, i) => ({
+              opIndex: i,
+              status: 'applied' as const,
+            })),
+            ...options.pushResponse,
           })),
-          ...options.pushResponse,
         };
       }
 

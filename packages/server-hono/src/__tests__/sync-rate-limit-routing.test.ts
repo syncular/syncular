@@ -74,20 +74,24 @@ describe('createSyncRoutes rate limit routing', () => {
 
   function pushPayload(clientCommitId: string, rowId: string) {
     return {
-      clientCommitId,
-      schemaVersion: 1,
-      operations: [
+      commits: [
         {
-          table: 'tasks',
-          row_id: rowId,
-          op: 'upsert' as const,
-          base_version: null,
-          payload: {
-            id: rowId,
-            user_id: 'u1',
-            title: `Task ${rowId}`,
-            server_version: 0,
-          },
+          clientCommitId,
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: rowId,
+              op: 'upsert' as const,
+              base_version: null,
+              payload: {
+                id: rowId,
+                user_id: 'u1',
+                title: `Task ${rowId}`,
+                server_version: 0,
+              },
+            },
+          ],
         },
       ],
     };

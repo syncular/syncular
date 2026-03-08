@@ -517,20 +517,24 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'shared-client',
           push: {
-            clientCommitId: 'commit-u1',
-            schemaVersion: 1,
-            operations: [
+            commits: [
               {
-                table: 'tasks',
-                row_id: 'task-shared',
-                op: 'upsert',
-                base_version: null,
-                payload: {
-                  id: 'task-shared',
-                  user_id: 'u1',
-                  title: 'Owned by u1',
-                  server_version: 0,
-                },
+                clientCommitId: 'commit-u1',
+                schemaVersion: 1,
+                operations: [
+                  {
+                    table: 'tasks',
+                    row_id: 'task-shared',
+                    op: 'upsert',
+                    base_version: null,
+                    payload: {
+                      id: 'task-shared',
+                      user_id: 'u1',
+                      title: 'Owned by u1',
+                      server_version: 0,
+                    },
+                  },
+                ],
               },
             ],
           },

@@ -95,20 +95,24 @@ describe('createSyncRoutes audit endpoints', () => {
       body: JSON.stringify({
         clientId: args.clientId,
         push: {
-          clientCommitId: args.clientCommitId,
-          schemaVersion: 1,
-          operations: [
+          commits: [
             {
-              table: 'tasks',
-              row_id: args.rowId,
-              op: 'upsert',
-              base_version: null,
-              payload: {
-                id: args.rowId,
-                user_id: args.actorId,
-                title: args.title,
-                server_version: 0,
-              },
+              clientCommitId: args.clientCommitId,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: args.rowId,
+                  op: 'upsert',
+                  base_version: null,
+                  payload: {
+                    id: args.rowId,
+                    user_id: args.actorId,
+                    title: args.title,
+                    server_version: 0,
+                  },
+                },
+              ],
             },
           ],
         },
@@ -117,11 +121,13 @@ describe('createSyncRoutes audit endpoints', () => {
 
     expect(response.status).toBe(200);
     const json = (await response.json()) as {
-      push?: { commitSeq?: number; status?: string };
+      push?: {
+        commits?: Array<{ commitSeq?: number; status?: string }>;
+      };
     };
-    expect(json.push?.status).toBe('applied');
-    expect(typeof json.push?.commitSeq).toBe('number');
-    return json.push!.commitSeq!;
+    expect(json.push?.commits?.[0]?.status).toBe('applied');
+    expect(typeof json.push?.commits?.[0]?.commitSeq).toBe('number');
+    return json.push!.commits![0]!.commitSeq!;
   }
 
   it('lists commits with pagination and actor filter', async () => {
