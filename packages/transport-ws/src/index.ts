@@ -527,7 +527,7 @@ export function createWebSocketTransport(
     };
   }
 
-  return {
+  const transport: WebSocketTransport = {
     ...httpTransport,
     connect(args, onEvent, onStateChange) {
       currentClientId = args.clientId;
@@ -607,4 +607,14 @@ export function createWebSocketTransport(
       });
     },
   };
+
+  for (const symbol of Object.getOwnPropertySymbols(httpTransport)) {
+    const descriptor = Object.getOwnPropertyDescriptor(httpTransport, symbol);
+    if (!descriptor) {
+      continue;
+    }
+    Object.defineProperty(transport, symbol, descriptor);
+  }
+
+  return transport;
 }

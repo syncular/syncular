@@ -3,6 +3,7 @@ import { gzipSync } from 'node:zlib';
 import {
   createDatabase,
   encodeSnapshotRows,
+  type ScopeValues,
   type SyncPullResponse,
   type SyncTransport,
 } from '@syncular/core';
@@ -42,6 +43,11 @@ function createStreamFromBytes(
       controller.close();
     },
   });
+}
+
+function toScopeValueArray(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 describe('applyPullResponse chunk streaming', () => {
@@ -1056,6 +1062,194 @@ describe('applyPullResponse chunk streaming', () => {
     ]);
   });
 
+  it('uses applyChanges for contiguous same-table incremental changes', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+    };
+
+    let applyChangeCalls = 0;
+    let applyChangesCalls = 0;
+    const baseHandler = createClientHandler<TestDb, 'items'>({
+      table: 'items',
+      scopes: ['items:{id}'],
+    });
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        ...baseHandler,
+        async applyChange(ctx, change) {
+          applyChangeCalls += 1;
+          await baseHandler.applyChange(ctx, change);
+        },
+        async applyChanges(ctx, changes) {
+          applyChangesCalls += 1;
+          if (!baseHandler.applyChanges) {
+            throw new Error('Expected applyChanges to be available');
+          }
+          await baseHandler.applyChanges(ctx, changes);
+        },
+      },
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: false,
+          bootstrapState: null,
+          nextCursor: 9,
+          commits: [
+            {
+              commitSeq: 9,
+              actorId: 'remote-user',
+              createdAt: '2026-03-01T12:00:00.000Z',
+              changes: [
+                {
+                  table: 'items',
+                  row_id: 'item-1',
+                  op: 'upsert',
+                  row_version: 1,
+                  row_json: { id: 'item-1', name: 'One' },
+                  scopes: {},
+                },
+                {
+                  table: 'items',
+                  row_id: 'item-2',
+                  op: 'upsert',
+                  row_version: 1,
+                  row_json: { id: 'item-2', name: 'Two' },
+                  scopes: {},
+                },
+              ],
+            },
+          ],
+          snapshots: [],
+        },
+      ],
+    };
+
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      pullState,
+      response
+    );
+
+    expect(applyChangesCalls).toBe(1);
+    expect(applyChangeCalls).toBe(0);
+  });
+
+  it('flushes batched upserts when the same row appears twice in one commit', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const pullState = await buildPullRequest(db, options);
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: false,
+          bootstrapState: null,
+          nextCursor: 10,
+          commits: [
+            {
+              commitSeq: 10,
+              actorId: 'remote-user',
+              createdAt: '2026-03-01T12:00:00.000Z',
+              changes: [
+                {
+                  table: 'items',
+                  row_id: 'item-1',
+                  op: 'upsert',
+                  row_version: 1,
+                  row_json: { id: 'item-1', name: 'One' },
+                  scopes: {},
+                },
+                {
+                  table: 'items',
+                  row_id: 'item-1',
+                  op: 'upsert',
+                  row_version: 2,
+                  row_json: { id: 'item-1', name: 'Two' },
+                  scopes: {},
+                },
+              ],
+            },
+          ],
+          snapshots: [],
+        },
+      ],
+    };
+
+    await applyPullResponse(
+      db,
+      transport,
+      handlers,
+      options,
+      pullState,
+      response
+    );
+
+    const row = await db
+      .selectFrom('items')
+      .select(['id', 'name'])
+      .where('id', '=', 'item-1')
+      .executeTakeFirstOrThrow();
+
+    expect(row.name).toBe('Two');
+  });
+
   it('clears stale rows during same-scope bootstrap by default', async () => {
     const transport: SyncTransport = {
       async sync() {
@@ -1244,5 +1438,108 @@ describe('applyPullResponse chunk streaming', () => {
       .orderBy('id', 'asc')
       .execute();
     expect(rows.map((row) => row.id)).toEqual(['p2-a']);
+  });
+
+  it('clears only the removed scope slice when bootstrap scopes narrow on one key', async () => {
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+    };
+
+    await db.schema
+      .createTable('tracked_items')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('name', 'text', (col) => col.notNull())
+      .execute();
+
+    const clearedScopes: ScopeValues[] = [];
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'tracked_items',
+        scopes: ['project:{project_id}'],
+        clearAll: async (ctx) => {
+          clearedScopes.push(ctx.scopes);
+          await sql`
+              delete from ${sql.table('tracked_items')}
+              where ${sql.ref('project_id')} in ${sql`(${sql.join(
+                toScopeValueArray(ctx.scopes.project_id).map((value) =>
+                  sql.val(value)
+                )
+              )})`}
+            `.execute(ctx.trx);
+        },
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'tracked-sub',
+          table: 'tracked_items',
+          scopes: { project_id: ['p1', 'p2'] },
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const firstState = await buildPullRequest(db, options);
+    await applyPullResponse(db, transport, handlers, options, firstState, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'tracked-sub',
+          status: 'active',
+          scopes: { project_id: ['p1', 'p2'] },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [],
+          snapshots: [
+            {
+              table: 'tracked_items',
+              rows: [
+                { id: 'p1-a', project_id: 'p1', name: 'A' },
+                { id: 'p2-a', project_id: 'p2', name: 'B' },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    const secondState = await buildPullRequest(db, options);
+    await applyPullResponse(db, transport, handlers, options, secondState, {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'tracked-sub',
+          status: 'active',
+          scopes: { project_id: 'p2' },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 2,
+          commits: [],
+          snapshots: [
+            {
+              table: 'tracked_items',
+              rows: [{ id: 'p2-a', project_id: 'p2', name: 'B' }],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(clearedScopes).toEqual([{ project_id: 'p1' }]);
   });
 });

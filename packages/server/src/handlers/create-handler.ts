@@ -282,6 +282,7 @@ export function createServerHandler<
   const qualifiedVersionRef = `${table}.${versionColumn}`;
   const resolveTableCodecs = (row: Record<string, unknown>) =>
     resolveRowCodecs(table, row);
+  const usePassthroughInbound = !transformInbound && codecs == null;
 
   const { scopePatterns, scopeColumnsByVariable: scopeColumns } =
     createSingleVariableScopeMetadata(scopeDefs);
@@ -335,6 +336,10 @@ export function createServerHandler<
     row: Record<string, unknown>,
     schemaVersion: number | undefined
   ): Updateable<ServerDB[TableName]> => {
+    if (usePassthroughInbound) {
+      return row as Updateable<ServerDB[TableName]>;
+    }
+
     if (transformInbound) {
       return transformInbound(row as Selectable<ClientDB[TableName]>, {
         schemaVersion,
@@ -358,7 +363,7 @@ export function createServerHandler<
     const { ref } = trx.dynamic;
     const scopeValues = ctx.scopeValues;
 
-    const pageSize = Math.max(1, Math.min(10_000, ctx.limit));
+    const pageSize = Math.max(1, ctx.limit);
 
     // Build dynamic WHERE conditions
     const whereConditions: Array<{ column: string; values: string[] }> = [];

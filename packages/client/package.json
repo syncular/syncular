@@ -38,6 +38,78 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./conflicts": {
+      "bun": "./src/conflicts.ts",
+      "browser": "./src/conflicts.ts",
+      "import": {
+        "types": "./dist/conflicts.d.ts",
+        "default": "./dist/conflicts.js"
+      }
+    },
+    "./engine": {
+      "bun": "./src/engine/index.ts",
+      "browser": "./src/engine/index.ts",
+      "import": {
+        "types": "./dist/engine/index.d.ts",
+        "default": "./dist/engine/index.js"
+      }
+    },
+    "./outbox": {
+      "bun": "./src/outbox.ts",
+      "browser": "./src/outbox.ts",
+      "import": {
+        "types": "./dist/outbox.d.ts",
+        "default": "./dist/outbox.js"
+      }
+    },
+    "./proxy": {
+      "bun": "./src/proxy/index.ts",
+      "browser": "./src/proxy/index.ts",
+      "import": {
+        "types": "./dist/proxy/index.d.ts",
+        "default": "./dist/proxy/index.js"
+      }
+    },
+    "./pull-engine": {
+      "bun": "./src/pull-engine.ts",
+      "browser": "./src/pull-engine.ts",
+      "import": {
+        "types": "./dist/pull-engine.d.ts",
+        "default": "./dist/pull-engine.js"
+      }
+    },
+    "./push-engine": {
+      "bun": "./src/push-engine.ts",
+      "browser": "./src/push-engine.ts",
+      "import": {
+        "types": "./dist/push-engine.d.ts",
+        "default": "./dist/push-engine.js"
+      }
+    },
+    "./subscription-state": {
+      "bun": "./src/subscription-state.ts",
+      "browser": "./src/subscription-state.ts",
+      "import": {
+        "types": "./dist/subscription-state.d.ts",
+        "default": "./dist/subscription-state.js"
+      }
+    },
+    "./sync-loop": {
+      "bun": "./src/sync-loop.ts",
+      "browser": "./src/sync-loop.ts",
+      "import": {
+        "types": "./dist/sync-loop.d.ts",
+        "default": "./dist/sync-loop.js"
+      }
+    },
+    "./utils/id": {
+      "bun": "./src/utils/id.ts",
+      "browser": "./src/utils/id.ts",
+      "import": {
+        "types": "./dist/utils/id.d.ts",
+        "default": "./dist/utils/id.js"
+      }
     }
   },
   "scripts": {

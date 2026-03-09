@@ -16,6 +16,7 @@ import {
   pushCommit,
   readSnapshotChunk,
   type SyncCoreDb,
+  type SyncSnapshot,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Kysely } from 'kysely';
@@ -69,6 +70,27 @@ function decodeSnapshotRowsGzip(
     throw new Error('Expected Uint8Array snapshot body in this test');
   }
   return decodeSnapshotRows(gunzipSync(bytes));
+}
+
+async function readSnapshotRows(
+  db: Kysely<ServerDb>,
+  snapshot: SyncSnapshot
+): Promise<unknown[]> {
+  if (snapshot.rows.length > 0) {
+    return snapshot.rows;
+  }
+
+  const chunkRef = snapshot.chunks?.[0];
+  if (!chunkRef) {
+    throw new Error('Expected inline rows or a snapshot chunk');
+  }
+
+  const chunk = await readSnapshotChunk(db, chunkRef.id);
+  if (!chunk) {
+    throw new Error('Expected stored snapshot chunk');
+  }
+
+  return decodeSnapshotRowsGzip(chunk.body);
 }
 
 describe('createServerHandler', () => {
@@ -163,14 +185,8 @@ describe('createServerHandler', () => {
 
     const snapshot = sub.snapshots?.[0];
     expect(snapshot?.table).toBe('tasks');
-
-    const chunkRef = snapshot?.chunks?.[0];
-    expect(chunkRef?.id).toBeTruthy();
-
-    const chunk = await readSnapshotChunk(db, chunkRef!.id);
-    expect(chunk).not.toBeNull();
-
-    const rows = decodeSnapshotRowsGzip(chunk!.body);
+    if (!snapshot) throw new Error('Expected snapshot');
+    const rows = await readSnapshotRows(db, snapshot);
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'u1 task', server_version: 1 },
     ]);
@@ -223,9 +239,8 @@ describe('createServerHandler', () => {
     expect(sub.scopes).toEqual({ catalog_id: 'demo' });
 
     const snapshot = sub.snapshots?.[0];
-    const chunkRef = snapshot?.chunks?.[0];
-    const chunk = await readSnapshotChunk(db, chunkRef!.id);
-    const rows = decodeSnapshotRowsGzip(chunk!.body);
+    if (!snapshot) throw new Error('Expected snapshot');
+    const rows = await readSnapshotRows(db, snapshot);
 
     expect(rows).toEqual([
       { id: 'c1', catalog_id: 'demo', name: 'Demo', server_version: 1 },
@@ -307,11 +322,8 @@ describe('createServerHandler', () => {
     });
 
     const snapshot = pullResult.response.subscriptions[0]?.snapshots?.[0];
-    const chunkRef = snapshot?.chunks?.[0];
-    expect(chunkRef?.id).toBeTruthy();
-
-    const chunk = await readSnapshotChunk(db, chunkRef!.id);
-    const rows = decodeSnapshotRowsGzip(chunk!.body);
+    if (!snapshot) throw new Error('Expected snapshot');
+    const rows = await readSnapshotRows(db, snapshot);
     expect(rows).toEqual([
       {
         id: 'tc1',

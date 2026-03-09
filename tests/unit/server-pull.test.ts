@@ -10,6 +10,7 @@ import {
   pushCommit,
   readSnapshotChunk,
   type SyncCoreDb,
+  type SyncSnapshot,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import type { Kysely } from 'kysely';
@@ -34,6 +35,27 @@ function decodeSnapshotRowsGzip(
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) throw new Error('Expected Uint8Array');
   return decodeSnapshotRows(gunzipSync(bytes));
+}
+
+async function readSnapshotRows(
+  db: Kysely<ServerDb>,
+  snapshot: SyncSnapshot
+): Promise<unknown[]> {
+  if (snapshot.rows.length > 0) {
+    return snapshot.rows;
+  }
+
+  const chunkRef = snapshot.chunks?.[0];
+  if (!chunkRef) {
+    throw new Error('Expected inline rows or a snapshot chunk');
+  }
+
+  const chunk = await readSnapshotChunk(db, chunkRef.id);
+  if (!chunk) {
+    throw new Error('Expected stored snapshot chunk');
+  }
+
+  return decodeSnapshotRowsGzip(chunk.body);
 }
 
 describe('pull', () => {
@@ -163,13 +185,7 @@ describe('pull', () => {
     // Read the snapshot chunk and verify it has data
     const snapshot = sub.snapshots![0]!;
     expect(snapshot.table).toBe('tasks');
-    expect(snapshot.chunks).toBeDefined();
-    expect(snapshot.chunks!.length).toBeGreaterThan(0);
-
-    const chunkRef = snapshot.chunks![0]!;
-    const chunk = await readSnapshotChunk(db, chunkRef.id);
-    expect(chunk).not.toBeNull();
-    const rows = decodeSnapshotRowsGzip(chunk!.body);
+    const rows = await readSnapshotRows(db, snapshot);
     expect(rows.length).toBe(2);
   });
 
@@ -435,9 +451,7 @@ describe('pull', () => {
 
     // Read snapshot data - should only contain u1's task
     const snapshot = sub.snapshots![0]!;
-    const chunkRef = snapshot.chunks![0]!;
-    const chunk = await readSnapshotChunk(db, chunkRef.id);
-    const rows = decodeSnapshotRowsGzip(chunk!.body) as TasksTable[];
+    const rows = (await readSnapshotRows(db, snapshot)) as TasksTable[];
     expect(rows.length).toBe(1);
     expect(rows[0]!.user_id).toBe('u1');
   });

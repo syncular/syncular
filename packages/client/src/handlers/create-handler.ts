@@ -109,6 +109,15 @@ export interface CreateClientHandlerOptions<
   ) => Promise<void>;
 
   /**
+   * Override: Apply multiple changes in order.
+   * Default: batches contiguous compatible deletes/upserts.
+   */
+  applyChanges?: (
+    ctx: ClientHandlerContext<DB>,
+    changes: SyncChange[]
+  ) => Promise<void>;
+
+  /**
    * Override: Clear all data for this table.
    * Default: delete all rows from the table.
    */
@@ -327,6 +336,154 @@ export function createClientHandler<
     `.execute(ctx.trx);
   };
 
+  const defaultApplyChanges = async (
+    ctx: ClientHandlerContext<DB>,
+    changes: SyncChange[]
+  ): Promise<void> => {
+    if (changes.length === 0) return;
+
+    const flushDeleteBatch = async (rowIds: string[]): Promise<void> => {
+      if (rowIds.length === 0) return;
+
+      const maxRowsPerDelete = Math.max(1, MAX_INSERT_BIND_PARAMETERS);
+      for (
+        let startIndex = 0;
+        startIndex < rowIds.length;
+        startIndex += maxRowsPerDelete
+      ) {
+        const batchIds = rowIds.slice(
+          startIndex,
+          startIndex + maxRowsPerDelete
+        );
+        await sql`
+          delete from ${sql.table(table)}
+          where ${sql.ref(primaryKey)} in ${sql`(${sql.join(batchIds.map((rowId) => sql.val(rowId)))})`}
+        `.execute(ctx.trx);
+      }
+    };
+
+    const flushUpsertBatch = async (
+      rows: Array<Record<string, unknown>>,
+      columns: string[]
+    ): Promise<void> => {
+      if (rows.length === 0 || columns.length === 0) return;
+
+      const updateColumns = columns.filter((column) => column !== primaryKey);
+      const onConflict =
+        updateColumns.length === 0
+          ? sql`do nothing`
+          : sql`do update set ${sql.join(
+              updateColumns.map(
+                (column) =>
+                  sql`${sql.ref(column)} = ${sql.ref(`excluded.${column}`)}`
+              ),
+              sql`, `
+            )}`;
+      const maxRowsPerInsert = Math.max(
+        1,
+        Math.floor(MAX_INSERT_BIND_PARAMETERS / columns.length)
+      );
+
+      for (
+        let startIndex = 0;
+        startIndex < rows.length;
+        startIndex += maxRowsPerInsert
+      ) {
+        const batchRows = rows.slice(startIndex, startIndex + maxRowsPerInsert);
+        await sql`
+          insert into ${sql.table(table)} (${sql.join(columns.map((column) => sql.ref(column)))})
+          values ${sql.join(
+            batchRows.map(
+              (row) =>
+                sql`(${sql.join(
+                  columns.map((column) => sql.val(row[column] ?? null)),
+                  sql`, `
+                )})`
+            ),
+            sql`, `
+          )}
+          on conflict (${sql.ref(primaryKey)}) ${onConflict}
+        `.execute(ctx.trx);
+      }
+    };
+
+    const createInsertRow = (
+      change: SyncChange
+    ): { columns: string[]; row: Record<string, unknown> } => {
+      const row = isRecord(change.row_json)
+        ? applyCodecsToDbRow(
+            change.row_json,
+            resolveTableCodecs(change.row_json),
+            codecDialect
+          )
+        : {};
+      const insertRow: Record<string, unknown> = {
+        ...row,
+        [primaryKey]: change.row_id,
+      };
+
+      if (
+        versionColumn &&
+        change.row_version !== null &&
+        change.row_version !== undefined
+      ) {
+        insertRow[versionColumn] = change.row_version;
+      }
+
+      return { columns: Object.keys(insertRow), row: insertRow };
+    };
+
+    let pendingDeletes: string[] = [];
+    let pendingUpserts: Array<Record<string, unknown>> = [];
+    let pendingUpsertColumns: string[] = [];
+    let pendingUpsertColumnsKey = '';
+    let pendingUpsertRowIds = new Set<string>();
+
+    const flushPendingDeletes = async (): Promise<void> => {
+      if (pendingDeletes.length === 0) return;
+      await flushDeleteBatch(pendingDeletes);
+      pendingDeletes = [];
+    };
+
+    const flushPendingUpserts = async (): Promise<void> => {
+      if (pendingUpserts.length === 0) return;
+      await flushUpsertBatch(pendingUpserts, pendingUpsertColumns);
+      pendingUpserts = [];
+      pendingUpsertColumns = [];
+      pendingUpsertColumnsKey = '';
+      pendingUpsertRowIds = new Set<string>();
+    };
+
+    for (const change of changes) {
+      if (change.op === 'delete') {
+        await flushPendingUpserts();
+        pendingDeletes.push(change.row_id);
+        continue;
+      }
+
+      const insertRow = createInsertRow(change);
+      const columnsKey = insertRow.columns.join('\u001f');
+
+      await flushPendingDeletes();
+
+      if (
+        pendingUpserts.length > 0 &&
+        (pendingUpsertColumnsKey !== columnsKey ||
+          pendingUpsertRowIds.has(change.row_id))
+      ) {
+        await flushPendingUpserts();
+      }
+
+      pendingUpsertColumns = insertRow.columns;
+      pendingUpsertColumnsKey = columnsKey;
+      pendingUpserts.push(insertRow.row);
+      pendingUpsertRowIds.add(change.row_id);
+    }
+
+    await flushPendingDeletes();
+    await flushPendingUpserts();
+  };
+
   // Default clearAll: delete all rows from the table
   const defaultClearAll = async (
     ctx: ClientClearContext<DB>
@@ -341,6 +498,7 @@ export function createClientHandler<
 
     applySnapshot: options.applySnapshot ?? defaultApplySnapshot,
     applyChange: options.applyChange ?? defaultApplyChange,
+    applyChanges: options.applyChanges ?? defaultApplyChanges,
     clearAll: options.clearAll ?? defaultClearAll,
 
     onSnapshotStart:

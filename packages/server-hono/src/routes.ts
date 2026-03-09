@@ -19,6 +19,7 @@ import {
   SyncCombinedResponseSchema,
   type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
+  type SyncPushResponse,
 } from '@syncular/core';
 import type {
   ScopeCacheBackend,
@@ -43,6 +44,7 @@ import {
   parseJsonValue,
   pull,
   pushCommit,
+  pushCommitBatch,
   readSnapshotChunk,
   recordClientCursor,
   resolveEffectiveScopesForSubscriptions,
@@ -897,6 +899,16 @@ export function createSyncRoutes<
 
   type ExecutedPushCommit = Awaited<ReturnType<typeof pushCommit>>;
 
+  type PushExecutionSummary = {
+    durationMs: number;
+    outcome: string;
+    commitSeq: number | null;
+    operationCount: number;
+    tables: string[];
+    results: SyncPushResponse['results'];
+    payloadSnapshot: RequestPayloadSnapshot | null;
+  };
+
   function notifyRealtimeForAppliedPushes(
     ctx: PushExecutionContext,
     pushedCommits: ExecutedPushCommit[]
@@ -967,6 +979,201 @@ export function createSyncRoutes<
     }
   }
 
+  function recordPushExecutionSideEffects(
+    ctx: PushExecutionContext,
+    summary: PushExecutionSummary
+  ): void {
+    recordRequestEventInBackground(() => ({
+      partitionId: ctx.partitionId,
+      requestId: ctx.requestId,
+      traceId: ctx.traceContext.traceId,
+      spanId: ctx.traceContext.spanId,
+      eventType: 'push',
+      syncPath: ctx.syncPath,
+      actorId: ctx.auth.actorId,
+      clientId: ctx.clientId,
+      transportPath: ctx.transportPath,
+      statusCode: 200,
+      outcome: summary.outcome,
+      responseStatus: normalizeResponseStatus(200, summary.outcome),
+      durationMs: summary.durationMs,
+      errorCode: firstPushErrorCode(summary.results),
+      commitSeq: summary.commitSeq,
+      operationCount: summary.operationCount,
+      tables: summary.tables,
+      payloadSnapshot: summary.payloadSnapshot,
+    }));
+
+    emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
+      partitionId: ctx.partitionId,
+      requestId: ctx.requestId,
+      traceId: ctx.traceContext.traceId,
+      spanId: ctx.traceContext.spanId,
+      actorId: ctx.auth.actorId,
+      clientId: ctx.clientId,
+      transportPath: ctx.transportPath,
+      syncPath: ctx.syncPath,
+      outcome: summary.outcome,
+      statusCode: 200,
+      durationMs: summary.durationMs,
+      commitSeq: summary.commitSeq,
+      operationCount: summary.operationCount,
+      tables: summary.tables,
+    }));
+  }
+
+  function maybeCountPushConflicts(
+    ctx: PushExecutionContext,
+    results: SyncPushResponse['results'],
+    enabled?: boolean
+  ): void {
+    if (enabled !== true) {
+      return;
+    }
+
+    const detectedConflicts = results.reduce(
+      (count, result) => count + (result.status === 'conflict' ? 1 : 0),
+      0
+    );
+    if (detectedConflicts <= 0) {
+      return;
+    }
+
+    countSyncMetric('sync.conflicts.detected', detectedConflicts, {
+      attributes: {
+        syncPath: ctx.syncPath,
+        transportPath: ctx.transportPath,
+      },
+    });
+  }
+
+  function emitCommitLiveEvents(
+    ctx: PushExecutionContext,
+    pushedCommits: ExecutedPushCommit[]
+  ): void {
+    for (const pushed of pushedCommits) {
+      if (
+        pushed.response.ok !== true ||
+        pushed.response.status !== 'applied' ||
+        typeof pushed.response.commitSeq !== 'number'
+      ) {
+        continue;
+      }
+
+      emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
+        partitionId: ctx.partitionId,
+        commitSeq: pushed.response.commitSeq,
+        actorId: ctx.auth.actorId,
+        clientId: ctx.clientId,
+        affectedTables: pushed.affectedTables,
+      }));
+    }
+  }
+
+  async function executePushCommitBatchWithSideEffects(
+    ctx: PushExecutionContext,
+    pushBodies: PushRequestBody[],
+    execOptions: {
+      countConflictsMetric?: boolean;
+    } = {}
+  ): Promise<ExecutedPushCommit[]> {
+    const timer = createSyncTimer();
+    const totalOperationCount = pushBodies.reduce(
+      (count, pushBody) => count + (pushBody.operations?.length ?? 0),
+      0
+    );
+    const executedPushes = await pushCommitBatch({
+      db: options.db,
+      dialect: options.dialect,
+      handlers: handlerRegistry,
+      plugins: options.plugins,
+      auth: ctx.auth,
+      suppressTelemetry: true,
+      requests: pushBodies.map((pushBody) => ({
+        clientId: ctx.clientId,
+        clientCommitId: pushBody.clientCommitId,
+        operations: pushBody.operations,
+        schemaVersion: pushBody.schemaVersion,
+      })),
+    });
+    const affectedTables = new Set<string>();
+    for (const pushed of executedPushes) {
+      for (const table of pushed.affectedTables) {
+        affectedTables.add(table);
+      }
+    }
+
+    const pushDurationMs = timer();
+    const latestCommitSeq = executedPushes.reduce((latest, pushed) => {
+      if (typeof pushed.response.commitSeq === 'number') {
+        return Math.max(latest, pushed.response.commitSeq);
+      }
+      return latest;
+    }, 0);
+    const aggregateStatus = executedPushes.every(
+      (pushed) => pushed.response.status === 'cached'
+    )
+      ? 'cached'
+      : executedPushes.every(
+            (pushed) =>
+              pushed.response.status === 'applied' ||
+              pushed.response.status === 'cached'
+          )
+        ? 'applied'
+        : 'rejected';
+    const aggregatedResults = executedPushes.flatMap(
+      (pushed) => pushed.response.results
+    );
+
+    logSyncEvent({
+      event: 'sync.push',
+      userId: ctx.auth.actorId,
+      durationMs: pushDurationMs,
+      operationCount: totalOperationCount,
+      status: aggregateStatus,
+      commitSeq: latestCommitSeq > 0 ? latestCommitSeq : undefined,
+    });
+
+    recordPushExecutionSideEffects(ctx, {
+      durationMs: pushDurationMs,
+      outcome: aggregateStatus,
+      commitSeq: latestCommitSeq > 0 ? latestCommitSeq : null,
+      operationCount: totalOperationCount,
+      tables: Array.from(affectedTables),
+      results: aggregatedResults,
+      payloadSnapshot: shouldCaptureRequestPayloadSnapshots
+        ? {
+            request: {
+              clientId: ctx.clientId,
+              commits: pushBodies.map((pushBody) => ({
+                clientCommitId: pushBody.clientCommitId,
+                schemaVersion: pushBody.schemaVersion,
+                operations: pushBody.operations,
+              })),
+            },
+            response: {
+              ok: true,
+              commits: executedPushes.map((pushed, index) => ({
+                clientCommitId: pushBodies[index]?.clientCommitId ?? '',
+                ...pushed.response,
+              })),
+            },
+          }
+        : null,
+    });
+
+    maybeCountPushConflicts(
+      ctx,
+      aggregatedResults,
+      execOptions.countConflictsMetric
+    );
+
+    notifyRealtimeForAppliedPushes(ctx, executedPushes);
+    emitCommitLiveEvents(ctx, executedPushes);
+
+    return executedPushes;
+  }
+
   async function executePushCommitWithSideEffects(
     ctx: PushExecutionContext,
     pushBody: PushRequestBody,
@@ -1003,24 +1210,13 @@ export function createSyncRoutes<
       commitSeq: pushed.response.commitSeq,
     });
 
-    recordRequestEventInBackground(() => ({
-      partitionId: ctx.partitionId,
-      requestId: ctx.requestId,
-      traceId: ctx.traceContext.traceId,
-      spanId: ctx.traceContext.spanId,
-      eventType: 'push',
-      syncPath: ctx.syncPath,
-      actorId: ctx.auth.actorId,
-      clientId: ctx.clientId,
-      transportPath: ctx.transportPath,
-      statusCode: 200,
-      outcome: pushed.response.status,
-      responseStatus: normalizeResponseStatus(200, pushed.response.status),
+    recordPushExecutionSideEffects(ctx, {
       durationMs: pushDurationMs,
-      errorCode: firstPushErrorCode(pushed.response.results),
-      commitSeq: pushed.response.commitSeq,
+      outcome: pushed.response.status,
+      commitSeq: pushed.response.commitSeq ?? null,
       operationCount: pushOps.length,
       tables: pushed.affectedTables,
+      results: pushed.response.results,
       payloadSnapshot: shouldCaptureRequestPayloadSnapshots
         ? {
             request: {
@@ -1032,57 +1228,18 @@ export function createSyncRoutes<
             response: pushed.response,
           }
         : null,
-    }));
+    });
 
-    emitConsoleLiveEvent(consoleLiveEmitter, 'push', () => ({
-      partitionId: ctx.partitionId,
-      requestId: ctx.requestId,
-      traceId: ctx.traceContext.traceId,
-      spanId: ctx.traceContext.spanId,
-      actorId: ctx.auth.actorId,
-      clientId: ctx.clientId,
-      transportPath: ctx.transportPath,
-      syncPath: ctx.syncPath,
-      outcome: pushed.response.status,
-      statusCode: 200,
-      durationMs: pushDurationMs,
-      commitSeq: pushed.response.commitSeq ?? null,
-      operationCount: pushOps.length,
-      tables: pushed.affectedTables,
-    }));
-
-    if (execOptions.countConflictsMetric === true) {
-      const detectedConflicts = pushed.response.results.reduce(
-        (count, result) => count + (result.status === 'conflict' ? 1 : 0),
-        0
-      );
-      if (detectedConflicts > 0) {
-        countSyncMetric('sync.conflicts.detected', detectedConflicts, {
-          attributes: {
-            syncPath: ctx.syncPath,
-            transportPath: ctx.transportPath,
-          },
-        });
-      }
-    }
+    maybeCountPushConflicts(
+      ctx,
+      pushed.response.results,
+      execOptions.countConflictsMetric
+    );
 
     if (execOptions.deferRealtimeNotifications !== true) {
       notifyRealtimeForAppliedPushes(ctx, [pushed]);
     }
-
-    if (
-      pushed.response.ok === true &&
-      pushed.response.status === 'applied' &&
-      typeof pushed.response.commitSeq === 'number'
-    ) {
-      emitConsoleLiveEvent(consoleLiveEmitter, 'commit', () => ({
-        partitionId: ctx.partitionId,
-        commitSeq: pushed.response.commitSeq,
-        actorId: ctx.auth.actorId,
-        clientId: ctx.clientId,
-        affectedTables: pushed.affectedTables,
-      }));
-    }
+    emitCommitLiveEvents(ctx, [pushed]);
 
     return pushed;
   }
@@ -1515,7 +1672,6 @@ export function createSyncRoutes<
       if (body.push) {
         const pushBodies = body.push.commits ?? [];
         const pushedCommits: NonNullable<typeof pushResponse>['commits'] = [];
-        const executedPushes: ExecutedPushCommit[] = [];
         for (const pushBody of pushBodies) {
           const pushOps = pushBody.operations ?? [];
           if (pushOps.length > maxOperationsPerPush) {
@@ -1527,43 +1683,54 @@ export function createSyncRoutes<
               400
             );
           }
+        }
+        const executedPushes =
+          pushBodies.length > 1
+            ? await executePushCommitBatchWithSideEffects(
+                {
+                  auth,
+                  clientId,
+                  partitionId,
+                  requestId,
+                  traceContext,
+                  transportPath,
+                  syncPath: 'http-combined',
+                },
+                pushBodies,
+                {
+                  countConflictsMetric: true,
+                }
+              )
+            : [];
 
-          const pushed = await executePushCommitWithSideEffects(
-            {
-              auth,
-              clientId,
-              partitionId,
-              requestId,
-              traceContext,
-              transportPath,
-              syncPath: 'http-combined',
-            },
-            pushBody,
-            {
-              deferRealtimeNotifications: pushBodies.length > 1,
-            }
-          );
-
-          executedPushes.push(pushed);
+        for (let index = 0; index < pushBodies.length; index += 1) {
+          const pushBody = pushBodies[index];
+          if (!pushBody) continue;
+          const pushed =
+            pushBodies.length > 1
+              ? executedPushes[index]
+              : await executePushCommitWithSideEffects(
+                  {
+                    auth,
+                    clientId,
+                    partitionId,
+                    requestId,
+                    traceContext,
+                    transportPath,
+                    syncPath: 'http-combined',
+                  },
+                  pushBody,
+                  {
+                    countConflictsMetric: true,
+                  }
+                );
+          if (!pushed) {
+            throw new Error('Server returned incomplete batched push result');
+          }
           pushedCommits.push({
             clientCommitId: pushBody.clientCommitId,
             ...pushed.response,
           });
-        }
-
-        if (pushBodies.length > 1) {
-          notifyRealtimeForAppliedPushes(
-            {
-              auth,
-              clientId,
-              partitionId,
-              requestId,
-              traceContext,
-              transportPath,
-              syncPath: 'http-combined',
-            },
-            executedPushes
-          );
         }
 
         pushResponse = {

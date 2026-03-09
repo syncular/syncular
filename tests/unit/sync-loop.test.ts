@@ -421,4 +421,78 @@ describe('syncOnce', () => {
     expect(rows.rows[0]!.status).toBe('pending');
     expect(rows.rows[0]!.error).toBe('Network failure');
   });
+
+  it('skips the immediate pull after a local WS push without mutating cursors', async () => {
+    await sql`
+      insert into ${sql.table('sync_subscription_state')} (
+        ${sql.ref('state_id')},
+        ${sql.ref('subscription_id')},
+        ${sql.ref('table')},
+        ${sql.ref('scopes_json')},
+        ${sql.ref('params_json')},
+        ${sql.ref('cursor')},
+        ${sql.ref('bootstrap_state_json')},
+        ${sql.ref('status')},
+        ${sql.ref('created_at')},
+        ${sql.ref('updated_at')}
+      ) values (
+        ${sql.val('default')},
+        ${sql.val('sub-1')},
+        ${sql.val('tasks')},
+        ${sql.val('{}')},
+        ${sql.val('{}')},
+        ${sql.val(7)},
+        ${sql.val(null)},
+        ${sql.val('active')},
+        ${sql.val(Date.now())},
+        ${sql.val(Date.now())}
+      )
+    `.execute(db);
+    await enqueueOutboxCommit(db, { operations: validOps });
+
+    const transport: SyncTransport & {
+      pushViaWs(request: { clientCommitId: string }): Promise<{
+        ok: true;
+        status: 'applied';
+        commitSeq: number;
+        results: Array<{ opIndex: number; status: 'applied' }>;
+      }>;
+    } = {
+      async sync() {
+        throw new Error(
+          'sync should not be called when local WS push skips pull'
+        );
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+      async pushViaWs(request) {
+        return {
+          ok: true,
+          status: 'applied',
+          commitSeq: 42,
+          results: request.clientCommitId
+            ? [{ opIndex: 0, status: 'applied' }]
+            : [],
+        };
+      },
+    };
+
+    const result = await syncOnce(db, transport, handlers, {
+      ...baseOptions,
+      trigger: 'local',
+      allowSkipPullOnLocalWsPush: true,
+    });
+
+    expect(result.pullRounds).toBe(0);
+
+    const state = await db
+      .selectFrom('sync_subscription_state')
+      .select(['cursor'])
+      .where('state_id', '=', 'default')
+      .where('subscription_id', '=', 'sub-1')
+      .executeTakeFirstOrThrow();
+
+    expect(Number(state.cursor)).toBe(7);
+  });
 });

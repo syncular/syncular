@@ -16,7 +16,6 @@ import type {
   MutationsTx,
   OutboxCommitMeta,
   PushResultInfo,
-  SubscriptionState,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
   SyncClientDb,
@@ -42,15 +41,16 @@ import {
   type OutboxStats,
   type PresenceEntry,
   type QueryContext,
-  resolveConflict as resolveConflictDb,
   type SyncConnectionState,
-  SyncEngine,
   type SyncEngineConfig,
   type SyncEngineState,
   type SyncError,
   type SyncResult,
   type SyncTransportMode,
 } from '@syncular/client';
+import { resolveConflict as resolveConflictDb } from '@syncular/client/conflicts';
+import { SyncEngine } from '@syncular/client/engine';
+import type { SubscriptionState } from '@syncular/client/subscription-state';
 import { type Kysely, sql } from 'kysely';
 import {
   createContext,
