@@ -131,6 +131,61 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(requestCount).toBe(1);
   });
 
+  it('retries sync once on transient network errors', async () => {
+    let requestCount = 0;
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      fetch: async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          throw new TypeError('fetch failed: connect ECONNRESET');
+        }
+
+        return new Response(
+          JSON.stringify({ ok: true, pull: { ok: true, subscriptions: [] } }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        );
+      },
+    });
+
+    const response = await transport.sync({
+      clientId: 'client-1',
+      pull: { limitCommits: 10, subscriptions: [] },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(requestCount).toBe(2);
+  });
+
+  it('does not retry aborted sync requests', async () => {
+    let requestCount = 0;
+    const controller = new AbortController();
+
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      fetch: async () => {
+        requestCount += 1;
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      },
+    });
+
+    await expect(
+      transport.sync(
+        {
+          clientId: 'client-1',
+          pull: { limitCommits: 10, subscriptions: [] },
+        },
+        { signal: controller.signal }
+      )
+    ).rejects.toBeInstanceOf(DOMException);
+
+    expect(requestCount).toBe(1);
+  });
+
   it('retries snapshot chunk fetch on auth error and preserves signal', async () => {
     const controller = new AbortController();
     let requestCount = 0;

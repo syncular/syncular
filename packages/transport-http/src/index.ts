@@ -19,6 +19,7 @@ import {
   bytesToReadableStream,
   type ClientOptions,
   executeWithAuthRetry,
+  executeWithTransientNetworkRetry,
   getErrorMessage,
   resolveSnapshotChunkRequestUrl,
   type SyncTransportPath,
@@ -56,12 +57,16 @@ export function createHttpTransport(
       request: SyncCombinedRequest,
       transportRequestOptions?: SyncTransportOptions
     ): Promise<SyncCombinedResponse> {
-      const { data, error, response } = await executeWithAuthRetry(
-        (signal) => client.sync(request, signal),
-        transportRequestOptions,
-        'sync',
-        resolveAuthRetry
-      );
+      const { data, error, response } = await executeWithTransientNetworkRetry({
+        execute: (signal) =>
+          executeWithAuthRetry(
+            (retrySignal) => client.sync(request, retrySignal),
+            { ...transportRequestOptions, signal },
+            'sync',
+            resolveAuthRetry
+          ),
+        options: transportRequestOptions,
+      });
 
       if (error || !data) {
         throw new SyncTransportError(

@@ -36,6 +36,8 @@ export type ResolveAuthRetry = (
   options?: SyncTransportOptions
 ) => Promise<boolean>;
 
+const TRANSIENT_NETWORK_RETRY_DELAY_MS = 75;
+
 class ApiResponseError extends Error {
   constructor(
     message: string,
@@ -87,6 +89,58 @@ export async function executeWithAuthRetry<T>(
   }
 
   return execute(options?.signal);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+function isTransientNetworkError(error: unknown): boolean {
+  if (isAbortError(error)) return false;
+
+  const message =
+    error instanceof Error
+      ? error.message.toLowerCase()
+      : String(error).toLowerCase();
+
+  return (
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('socket') ||
+    message.includes('econnreset') ||
+    message.includes('econnrefused') ||
+    message.includes('connection refused') ||
+    message.includes('connection reset') ||
+    message.includes('terminated') ||
+    message.includes('eof')
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+export async function executeWithTransientNetworkRetry<T>(args: {
+  execute: (signal?: AbortSignal) => Promise<T>;
+  options?: SyncTransportOptions;
+}): Promise<T> {
+  try {
+    return await args.execute(args.options?.signal);
+  } catch (error) {
+    if (!isTransientNetworkError(error) || args.options?.signal?.aborted) {
+      throw error;
+    }
+
+    await delay(TRANSIENT_NETWORK_RETRY_DELAY_MS);
+
+    if (args.options?.signal?.aborted) {
+      throw error;
+    }
+
+    return args.execute(args.options?.signal);
+  }
 }
 
 export const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';
