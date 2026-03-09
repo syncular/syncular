@@ -522,7 +522,7 @@ jobs:
         run: bunx playwright install --with-deps chromium
 
       - name: Run demo smoke scenario (${{ matrix.scenario.name }})
-        run: bun --cwd tests/runtime test ${{ matrix.scenario.file }}
+        run: bun test tests/runtime/${{ matrix.scenario.file }}
 
   runtime-cloudflare:
     runs-on: blacksmith-4vcpu-ubuntu-2404
