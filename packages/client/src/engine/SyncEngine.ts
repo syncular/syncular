@@ -1260,6 +1260,25 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
   }
 
+  private shouldRefreshOutboxStatsAfterSuccessfulSync(args: {
+    pushedCommits: number;
+  }): boolean {
+    return args.pushedCommits > 0 || this.state.pendingCount > 0;
+  }
+
+  private shouldEmitConflictNotificationsAfterSuccessfulSync(args: {
+    pushResults: PushResultInfo[];
+  }): boolean {
+    if (this.emittedConflictIds.size > 0) {
+      return true;
+    }
+
+    return args.pushResults.some(
+      (pushResult) =>
+        pushResult.status === 'rejected' || pushResult.status === 'retriable'
+    );
+  }
+
   private async resolveResetTargets(
     options: SyncResetOptions
   ): Promise<SubscriptionState[]> {
@@ -1846,15 +1865,27 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         this.emitDataChange(changedTables, { source: 'remote' });
       }
       this.handleBootstrapLifecycle(result.pullResponse);
-      await this.emitNewConflictsSafe('sync success');
+      if (
+        this.shouldEmitConflictNotificationsAfterSuccessfulSync({
+          pushResults: result.pushResults,
+        })
+      ) {
+        await this.emitNewConflictsSafe('sync success');
+      }
 
       // Refresh outbox stats (fire-and-forget — don't block sync:complete)
-      this.refreshOutboxStats().catch((error) => {
-        console.warn(
-          '[SyncEngine] Failed to refresh outbox stats after sync:',
-          error
-        );
-      });
+      if (
+        this.shouldRefreshOutboxStatsAfterSuccessfulSync({
+          pushedCommits: result.pushedCommits,
+        })
+      ) {
+        this.refreshOutboxStats().catch((error) => {
+          console.warn(
+            '[SyncEngine] Failed to refresh outbox stats after sync:',
+            error
+          );
+        });
+      }
 
       const durationMs = Math.max(0, Date.now() - startedAtMs);
       countSyncMetric('sync.client.sync.results', 1, {
@@ -2202,12 +2233,18 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     });
     this.emit('sync:live', { timestamp: Date.now() });
 
-    this.refreshOutboxStats().catch((error) => {
-      console.warn(
-        '[SyncEngine] Failed to refresh outbox stats after WS apply:',
-        error
-      );
-    });
+    if (
+      this.shouldRefreshOutboxStatsAfterSuccessfulSync({
+        pushedCommits: 0,
+      })
+    ) {
+      this.refreshOutboxStats().catch((error) => {
+        console.warn(
+          '[SyncEngine] Failed to refresh outbox stats after WS apply:',
+          error
+        );
+      });
+    }
   }
 
   private timestampCounter = 0;

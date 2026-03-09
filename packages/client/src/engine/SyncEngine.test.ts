@@ -686,6 +686,51 @@ describe('SyncEngine WS inline apply', () => {
     expect(state.isRetrying).toBe(false);
   });
 
+  it('skips outbox and conflict refresh after a read-only successful sync', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport: noopTransport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-readonly-sync',
+      subscriptions: [],
+      stateId: 'default',
+      pollIntervalMs: 60_000,
+    });
+
+    let outboxRefreshes = 0;
+    let conflictChecks = 0;
+    Reflect.set(engine, 'refreshOutboxStats', async () => {
+      outboxRefreshes += 1;
+      return {
+        pending: 0,
+        sending: 0,
+        failed: 0,
+        acked: 0,
+        total: 0,
+      };
+    });
+    Reflect.set(engine, 'emitNewConflictsSafe', async () => {
+      conflictChecks += 1;
+    });
+
+    await engine.start();
+
+    expect(outboxRefreshes).toBe(0);
+    expect(conflictChecks).toBe(0);
+
+    engine.destroy();
+  });
+
   it('classifies 429 sync failures as retryable and schedules exponential backoff', async () => {
     let syncAttempts = 0;
     const rateLimitedTransport: SyncTransport = {
