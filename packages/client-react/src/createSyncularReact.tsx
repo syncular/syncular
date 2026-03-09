@@ -69,14 +69,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function shallowEqualRecords(
-  left: Record<string, unknown>,
-  right: Record<string, unknown>
-): boolean {
+function defaultSelectorEquality<T>(left: T, right: T): boolean {
+  return Object.is(left, right);
+}
+
+function shallowEqualObjects<T extends object>(left: T, right: T): boolean {
   if (left === right) return true;
 
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
+  const leftKeys = Object.keys(left) as Array<keyof T & string>;
+  const rightKeys = Object.keys(right) as Array<keyof T & string>;
   if (leftKeys.length !== rightKeys.length) return false;
 
   for (const key of leftKeys) {
@@ -85,6 +86,13 @@ function shallowEqualRecords(
   }
 
   return true;
+}
+
+function shallowEqualRecords(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>
+): boolean {
+  return shallowEqualObjects(left, right);
 }
 
 function shallowEqualQueryValues(left: unknown, right: unknown): boolean {
@@ -370,6 +378,11 @@ export interface UseSyncConnectionResult {
 
 export interface UseTransportHealthResult {
   health: TransportHealth;
+}
+
+export interface SyncSelectorSnapshot {
+  state: Readonly<SyncEngineState>;
+  transportHealth: Readonly<TransportHealth>;
 }
 
 export interface UseSyncProgressOptions {
@@ -866,16 +879,67 @@ export function createSyncularReact<
     return useSyncContext().engine;
   }
 
-  function useEngineStateSnapshot(): SyncEngineState {
+  function useSyncSelector<TResult>(
+    selector: (snapshot: SyncSelectorSnapshot) => TResult,
+    isEqual: (
+      previous: TResult,
+      next: TResult
+    ) => boolean = defaultSelectorEquality
+  ): TResult {
     const engine = useEngine();
+    const selectorRef = useRef(selector);
+    selectorRef.current = selector;
+    const isEqualRef = useRef(isEqual);
+    isEqualRef.current = isEqual;
+    const cacheRef = useRef<{
+      state: Readonly<SyncEngineState>;
+      transportHealth: Readonly<TransportHealth>;
+      selected: TResult;
+    } | null>(null);
+
+    const getSelectedSnapshot = useCallback(() => {
+      const state = engine.getState();
+      const transportHealth = engine.getTransportHealth();
+      const cached = cacheRef.current;
+
+      if (
+        cached &&
+        cached.state === state &&
+        cached.transportHealth === transportHealth
+      ) {
+        return cached.selected;
+      }
+
+      const nextSelected = selectorRef.current({ state, transportHealth });
+      if (cached && isEqualRef.current(cached.selected, nextSelected)) {
+        cacheRef.current = {
+          state,
+          transportHealth,
+          selected: cached.selected,
+        };
+        return cached.selected;
+      }
+
+      cacheRef.current = { state, transportHealth, selected: nextSelected };
+      return nextSelected;
+    }, [engine]);
+
     const subscribe = useCallback(
       (callback: () => void) => {
-        return engine.subscribe(callback);
+        return engine.subscribeSelector(getSelectedSnapshot, callback);
       },
-      [engine]
+      [engine, getSelectedSnapshot]
     );
-    const getSnapshot = useCallback(() => engine.getState(), [engine]);
-    return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+    return useSyncExternalStore(
+      subscribe,
+      getSelectedSnapshot,
+      getSelectedSnapshot
+    );
+  }
+
+  function useEngineStateSnapshot(): SyncEngineState {
+    return useSyncSelector(({ state }) => state);
   }
 
   function useSyncEngine(): UseSyncEngineResult {
@@ -954,7 +1018,19 @@ export function createSyncularReact<
 
   function useSyncStatus(options: UseSyncStatusOptions = {}): SyncStatus {
     const { staleAfterMs } = options;
-    const state = useEngineStateSnapshot();
+    const snapshot = useSyncSelector(
+      ({ state }) => ({
+        enabled: state.enabled,
+        connectionState: state.connectionState,
+        isSyncing: state.isSyncing,
+        lastSyncAt: state.lastSyncAt,
+        pendingCount: state.pendingCount,
+        error: state.error,
+        isRetrying: state.isRetrying,
+        retryCount: state.retryCount,
+      }),
+      shallowEqualObjects
+    );
 
     const [staleClock, setStaleClock] = useState<number>(Date.now());
 
@@ -975,69 +1051,59 @@ export function createSyncularReact<
     return useMemo<SyncStatus>(() => {
       const now = staleAfterMs !== undefined ? staleClock : Date.now();
       const lastSyncAgeMs =
-        state.lastSyncAt === null ? null : Math.max(0, now - state.lastSyncAt);
+        snapshot.lastSyncAt === null
+          ? null
+          : Math.max(0, now - snapshot.lastSyncAt);
       const isStale =
         staleAfterMs !== undefined && staleAfterMs > 0
-          ? state.lastSyncAt === null || (lastSyncAgeMs ?? 0) > staleAfterMs
+          ? snapshot.lastSyncAt === null || (lastSyncAgeMs ?? 0) > staleAfterMs
           : false;
 
       return {
-        enabled: state.enabled,
-        isOnline: state.connectionState === 'connected',
-        isSyncing: state.isSyncing,
-        lastSyncAt: state.lastSyncAt,
+        enabled: snapshot.enabled,
+        isOnline: snapshot.connectionState === 'connected',
+        isSyncing: snapshot.isSyncing,
+        lastSyncAt: snapshot.lastSyncAt,
         lastSyncAgeMs,
         isStale,
-        pendingCount: state.pendingCount,
-        error: state.error,
-        isRetrying: state.isRetrying,
-        retryCount: state.retryCount,
+        pendingCount: snapshot.pendingCount,
+        error: snapshot.error,
+        isRetrying: snapshot.isRetrying,
+        retryCount: snapshot.retryCount,
       };
-    }, [state, staleAfterMs, staleClock]);
+    }, [snapshot, staleAfterMs, staleClock]);
   }
 
   function useSyncConnection(): UseSyncConnectionResult {
     const engine = useEngine();
-    const engineState = useEngineStateSnapshot();
+    const snapshot = useSyncSelector(
+      ({ state }) => ({
+        state: state.connectionState,
+        mode: state.transportMode,
+        isConnected: state.connectionState === 'connected',
+        isReconnecting: state.connectionState === 'reconnecting',
+      }),
+      shallowEqualObjects
+    );
 
     const reconnect = useCallback(() => engine.reconnect(), [engine]);
     const disconnect = useCallback(() => engine.disconnect(), [engine]);
 
     return useMemo(
       () => ({
-        state: engineState.connectionState,
-        mode: engineState.transportMode,
-        isConnected: engineState.connectionState === 'connected',
-        isReconnecting: engineState.connectionState === 'reconnecting',
+        state: snapshot.state,
+        mode: snapshot.mode,
+        isConnected: snapshot.isConnected,
+        isReconnecting: snapshot.isReconnecting,
         reconnect,
         disconnect,
       }),
-      [
-        engineState.connectionState,
-        engineState.transportMode,
-        reconnect,
-        disconnect,
-      ]
+      [snapshot, reconnect, disconnect]
     );
   }
 
   function useTransportHealth(): UseTransportHealthResult {
-    const engine = useEngine();
-
-    const getSnapshot = useCallback(
-      () => engine.getTransportHealth(),
-      [engine]
-    );
-    const health = useSyncExternalStore(
-      useCallback(
-        (callback) => {
-          return engine.subscribeSelector(getSnapshot, callback);
-        },
-        [engine, getSnapshot]
-      ),
-      getSnapshot,
-      getSnapshot
-    );
+    const health = useSyncSelector(({ transportHealth }) => transportHealth);
 
     return useMemo(() => ({ health }), [health]);
   }
@@ -2335,6 +2401,7 @@ export function createSyncularReact<
     SyncProvider,
     useSyncContext,
     useEngine,
+    useSyncSelector,
     useSyncEngine,
     useSyncStatus,
     useSyncConnection,

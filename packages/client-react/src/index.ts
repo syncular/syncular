@@ -16,6 +16,7 @@ export type {
   OutboxCommit,
   SyncContextValue,
   SyncProviderProps,
+  SyncSelectorSnapshot,
   SyncStatus,
   UseConflictsResult,
   UseMutationOptions,
