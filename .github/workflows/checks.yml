@@ -587,7 +587,7 @@ jobs:
   maestro-ios:
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.expo == 'true'
-    runs-on: macos-latest
+    runs-on: macos-14
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
