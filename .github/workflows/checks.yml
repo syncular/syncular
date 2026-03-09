@@ -626,7 +626,7 @@ jobs:
             python3 -c 'import json,subprocess; runtimes=[runtime for runtime in json.loads(subprocess.check_output(["xcrun","simctl","list","runtimes","available","-j"], text=True))["runtimes"] if runtime.get("isAvailable") and runtime.get("platform") == "iOS"]; runtimes.sort(key=lambda runtime: tuple(int(part) for part in runtime["version"].split(".")), reverse=True); print(runtimes[0]["identifier"])'
           )"
           export IOS_DEVICE_TYPE_ID="$(
-            python3 -c 'import json,subprocess; device_types={device_type["identifier"]: device_type for device_type in json.loads(subprocess.check_output(["xcrun","simctl","list","devicetypes","available","-j"], text=True))["devicetypes"]}; preferred=["com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro","com.apple.CoreSimulator.SimDeviceType.iPhone-16","com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro","com.apple.CoreSimulator.SimDeviceType.iPhone-15"]; print(next((identifier for identifier in preferred if identifier in device_types), next(iter(device_types))))'
+            python3 -c 'import json,subprocess; device_types={device_type["identifier"]: device_type for device_type in json.loads(subprocess.check_output(["xcrun","simctl","list","devicetypes","-j"], text=True))["devicetypes"]}; preferred=["com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro","com.apple.CoreSimulator.SimDeviceType.iPhone-16","com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro","com.apple.CoreSimulator.SimDeviceType.iPhone-15"]; print(next((identifier for identifier in preferred if identifier in device_types), next(iter(device_types))))'
           )"
           export IOS_SIMULATOR_UDID="$(
             xcrun simctl create "Syncular Expo Tests" "$IOS_DEVICE_TYPE_ID" "$IOS_RUNTIME_ID"
