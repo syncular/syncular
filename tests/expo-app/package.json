@@ -11,7 +11,7 @@
     "web": "expo start --web",
     "tsgo": "tsgo --noEmit",
     "start:dev-client": "expo start --dev-client --localhost",
-    "ios:build": "expo run:ios --no-install --no-bundler --no-build-cache --device \"iPhone 16\"",
+    "ios:build": "expo run:ios --no-bundler --no-build-cache --device \"iPhone 16\"",
     "maestro:test": "maestro test ./maestro"
   },
   "dependencies": {
