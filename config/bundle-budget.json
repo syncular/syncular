@@ -1,0 +1,11 @@
+{
+  "target": {
+    "label": "@syncular/client canonical browser client",
+    "entrypoint": "./packages/client/src/index.ts",
+    "namedImports": ["createClient", "createClientHandler"],
+    "baselineRawKb": 829.84,
+    "baselineGzipKb": 238.32,
+    "maxRawKb": 845,
+    "maxGzipKb": 245
+  }
+}
