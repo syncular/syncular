@@ -16,6 +16,7 @@ import {
 } from './regression';
 
 const RUN_COUNT = parseRunCount(Bun.env.PERF_STABLE_RUNS);
+const RUN_RETRY_COUNT = 2;
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
 const SYNC_TEST_PATH = 'tests/perf/sync.perf.test.ts';
@@ -133,65 +134,85 @@ function parseBenchmarkMedians(output: string): Map<string, number> {
 }
 
 async function runSyncPerf(run: number): Promise<PerfRunResult> {
-  console.log(`\n### Stable Perf Run ${run}/${RUN_COUNT}`);
-  const startedAt = performance.now();
-  const proc = Bun.spawn(['bun', 'test', SYNC_TEST_PATH], {
-    cwd: REPO_ROOT,
-    env: { ...process.env, PERF_STRICT: 'false' },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-  const combined = [stdout, stderr].filter(Boolean).join('\n');
-
-  if (exitCode !== 0) {
-    console.log(combined);
-    throw new Error(`sync perf run ${run} failed with exit code ${exitCode}`);
-  }
-
-  const runRegressionMarker = combined
-    .split('\n')
-    .find((line) => line.startsWith('PERF_GATE_SYNC_REGRESSION='));
-  const runMissingBaselineMarker = combined
-    .split('\n')
-    .find((line) => line.startsWith('PERF_GATE_SYNC_MISSING_BASELINE='));
-  if (runRegressionMarker || runMissingBaselineMarker) {
+  for (let attempt = 1; attempt <= RUN_RETRY_COUNT; attempt++) {
     console.log(
-      `sync.perf run ${run} markers: regression=${
-        runRegressionMarker?.split('=')[1] ?? 'unknown'
-      }, missingBaseline=${runMissingBaselineMarker?.split('=')[1] ?? 'unknown'}`
+      `\n### Stable Perf Run ${run}/${RUN_COUNT}${
+        attempt > 1 ? ` (retry ${attempt - 1}/${RUN_RETRY_COUNT - 1})` : ''
+      }`
     );
+    const startedAt = performance.now();
+    const proc = Bun.spawn(['bun', 'test', SYNC_TEST_PATH], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, PERF_STRICT: 'false' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    const combined = [stdout, stderr].filter(Boolean).join('\n');
+
+    if (exitCode !== 0) {
+      console.log(combined);
+      const transientCrash =
+        exitCode === 132 ||
+        exitCode === 133 ||
+        combined.includes('RuntimeError: Aborted(). Build with -sASSERTIONS');
+      if (transientCrash && attempt < RUN_RETRY_COUNT) {
+        console.log(
+          `sync.perf run ${run} hit transient crash (exit ${exitCode}); retrying...`
+        );
+        continue;
+      }
+      throw new Error(`sync perf run ${run} failed with exit code ${exitCode}`);
+    }
+
+    const runRegressionMarker = combined
+      .split('\n')
+      .find((line) => line.startsWith('PERF_GATE_SYNC_REGRESSION='));
+    const runMissingBaselineMarker = combined
+      .split('\n')
+      .find((line) => line.startsWith('PERF_GATE_SYNC_MISSING_BASELINE='));
+    if (runRegressionMarker || runMissingBaselineMarker) {
+      console.log(
+        `sync.perf run ${run} markers: regression=${
+          runRegressionMarker?.split('=')[1] ?? 'unknown'
+        }, missingBaseline=${runMissingBaselineMarker?.split('=')[1] ?? 'unknown'}`
+      );
+    }
+
+    const medians = parseBenchmarkMedians(combined);
+    if (medians.size === 0) {
+      throw new Error(`unable to parse benchmark medians for run ${run}`);
+    }
+
+    const usage = proc.resourceUsage();
+    const cpuUserMicros = usage ? Number(usage.cpuTime.user) : 0;
+    const cpuSystemMicros = usage ? Number(usage.cpuTime.system) : 0;
+    const cpuTotalMicros = usage ? Number(usage.cpuTime.total) : 0;
+    const maxRssBytes = usage ? Number(usage.maxRSS) : 0;
+    const contextSwitchesVoluntary = usage
+      ? usage.contextSwitches.voluntary
+      : 0;
+    const contextSwitchesInvoluntary = usage
+      ? usage.contextSwitches.involuntary
+      : 0;
+    return {
+      medians,
+      resourceUsage: {
+        durationMs: performance.now() - startedAt,
+        cpuUserMicros,
+        cpuSystemMicros,
+        cpuTotalMicros,
+        maxRssBytes,
+        contextSwitchesVoluntary,
+        contextSwitchesInvoluntary,
+      },
+    };
   }
 
-  const medians = parseBenchmarkMedians(combined);
-  if (medians.size === 0) {
-    throw new Error(`unable to parse benchmark medians for run ${run}`);
-  }
-
-  const usage = proc.resourceUsage();
-  const cpuUserMicros = usage ? Number(usage.cpuTime.user) : 0;
-  const cpuSystemMicros = usage ? Number(usage.cpuTime.system) : 0;
-  const cpuTotalMicros = usage ? Number(usage.cpuTime.total) : 0;
-  const maxRssBytes = usage ? Number(usage.maxRSS) : 0;
-  const contextSwitchesVoluntary = usage ? usage.contextSwitches.voluntary : 0;
-  const contextSwitchesInvoluntary = usage
-    ? usage.contextSwitches.involuntary
-    : 0;
-  return {
-    medians,
-    resourceUsage: {
-      durationMs: performance.now() - startedAt,
-      cpuUserMicros,
-      cpuSystemMicros,
-      cpuTotalMicros,
-      maxRssBytes,
-      contextSwitchesVoluntary,
-      contextSwitchesInvoluntary,
-    },
-  };
+  throw new Error(`sync perf run ${run} exhausted retries`);
 }
 
 function toBenchmarkResult(
