@@ -57,16 +57,23 @@ defineDemoSmokeScenario({
         timeoutMs: 240_000,
         title: mirroredTitle,
       });
+      secondPageErrors.assertNone('demo multi-tab smoke test');
+      secondPageErrors.detach();
+      await secondPage.close();
+
+      await page.bringToFront();
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForSplitScreenClientsReady(page);
       await waitForTaskInBothPanes({
         page,
         timeoutMs: 240_000,
         title: mirroredTitle,
       });
-
-      secondPageErrors.assertNone('demo multi-tab smoke test');
     } finally {
       secondPageErrors.detach();
-      await secondPage.close();
+      if (!secondPage.isClosed()) {
+        await secondPage.close();
+      }
     }
   },
 });
