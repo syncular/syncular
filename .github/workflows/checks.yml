@@ -494,10 +494,26 @@ jobs:
         run: bun test:runtime:browser
 
   demo-smoke:
+    name: demo-smoke / ${{ matrix.scenario.name }}
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.demo == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 20
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        scenario:
+          - name: todo-mirror
+            file: __tests__/demo-smoke/todo-mirror.smoke.test.ts
+          - name: reload
+            file: __tests__/demo-smoke/reload.smoke.test.ts
+          - name: multi-tab
+            file: __tests__/demo-smoke/multi-tab.smoke.test.ts
+          - name: media
+            file: __tests__/demo-smoke/media.smoke.test.ts
+          - name: toggle-latency
+            file: __tests__/demo-smoke/toggle-latency.smoke.test.ts
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-environment
@@ -505,8 +521,8 @@ jobs:
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
 
-      - name: Run demo split-screen smoke test
-        run: bun test:runtime:demo
+      - name: Run demo smoke scenario (${{ matrix.scenario.name }})
+        run: bun --cwd tests/runtime test ${{ matrix.scenario.file }}
 
   runtime-cloudflare:
     runs-on: blacksmith-4vcpu-ubuntu-2404
