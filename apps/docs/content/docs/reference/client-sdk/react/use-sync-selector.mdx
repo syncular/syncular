@@ -1,0 +1,170 @@
+---
+title: useSyncSelector
+description: Subscribe to fine-grained sync engine state with custom equality
+---
+
+`useSyncSelector` lets React components subscribe to only the part of the sync engine snapshot they care about. It is the lowest-level reactive primitive for engine state in `@syncular/client-react`.
+
+Use it when:
+
+- You need one small field such as `pendingCount` or `retryCount`
+- You want a custom derived value from engine state
+- You want custom equality logic to suppress rerenders for derived objects
+
+For local database queries, keep using [`useSyncQuery`](/docs/reference/client-sdk/react/use-sync-query).
+
+## Basic Usage
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncSelector } = createSyncularReact<AppDb>();
+
+function PendingBadge() {
+  const pendingCount = useSyncSelector(({ state }) => state.pendingCount);
+
+  if (pendingCount === 0) return null;
+  return <span>{pendingCount} pending</span>;
+}
+```
+
+## Signature
+
+```tsx
+interface SyncSelectorSnapshot {
+  state: Readonly<SyncEngineState>;
+  transportHealth: Readonly<TransportHealth>;
+}
+
+function useSyncSelector<TResult>(
+  selector: (snapshot: SyncSelectorSnapshot) => TResult,
+  isEqual?: (previous: TResult, next: TResult) => boolean
+): TResult;
+```
+
+The selector receives:
+
+- `state` for the current `SyncEngineState`
+- `transportHealth` for realtime or polling fallback health
+
+## Selecting Derived State
+
+```tsx
+const summary = useSyncSelector(({ state }) => ({
+  isBusy: state.isSyncing || state.pendingCount > 0,
+  retryCount: state.retryCount,
+}));
+```
+
+If the selector returns a new object each time, pass a custom equality function to keep stable results when the derived values did not change.
+
+## Custom Equality
+
+```tsx
+const summary = useSyncSelector(
+  ({ state }) => ({
+    pendingCount: state.pendingCount,
+    hasPending: state.pendingCount > 0,
+  }),
+  (previous, next) =>
+    previous.pendingCount === next.pendingCount &&
+    previous.hasPending === next.hasPending
+);
+```
+
+## Example: Jotai Bridge
+
+If you want app-wide composition with a popular state library, Jotai is a good fit. Keep Syncular as the source of truth for sync state, then bridge a narrowed selector result into one atom and derive smaller atoms from there.
+
+```tsx
+import { atom, useAtomValue, useSetAtom } from 'jotai';
+import { useEffect } from 'react';
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncSelector } = createSyncularReact<AppDb>();
+
+const syncStatusAtom = atom({
+  isOnline: false,
+  isSyncing: false,
+  pendingCount: 0,
+  retryCount: 0,
+});
+
+export const pendingCountAtom = atom((get) => get(syncStatusAtom).pendingCount);
+export const isSyncingAtom = atom((get) => get(syncStatusAtom).isSyncing);
+
+function SyncularJotaiBridge() {
+  const setSyncStatus = useSetAtom(syncStatusAtom);
+  const syncStatus = useSyncSelector(
+    ({ state }) => ({
+      isOnline: state.connectionState === 'connected',
+      isSyncing: state.isSyncing,
+      pendingCount: state.pendingCount,
+      retryCount: state.retryCount,
+    }),
+    (previous, next) =>
+      previous.isOnline === next.isOnline &&
+      previous.isSyncing === next.isSyncing &&
+      previous.pendingCount === next.pendingCount &&
+      previous.retryCount === next.retryCount
+  );
+
+  useEffect(() => {
+    setSyncStatus(syncStatus);
+  }, [syncStatus, setSyncStatus]);
+
+  return null;
+}
+
+function SyncStatusBadge() {
+  const pendingCount = useAtomValue(pendingCountAtom);
+  const isSyncing = useAtomValue(isSyncingAtom);
+
+  if (!isSyncing && pendingCount === 0) return null;
+
+  return (
+    <span>
+      {isSyncing ? 'Syncing' : 'Idle'}
+      {pendingCount > 0 ? ` (${pendingCount} pending)` : null}
+    </span>
+  );
+}
+
+function App() {
+  return (
+    <>
+      <SyncularJotaiBridge />
+      <SyncStatusBadge />
+    </>
+  );
+}
+```
+
+This keeps the hot subscription close to Syncular and lets Jotai handle the rest of your app state graph. Components that read `pendingCountAtom` will not rerender when only `retryCount` changes.
+
+## Transport Health
+
+`useSyncSelector` can also subscribe to transport-level fallback state:
+
+```tsx
+const fallbackReason = useSyncSelector(
+  ({ transportHealth }) => transportHealth.fallbackReason
+);
+```
+
+This is the same underlying data exposed by [`useTransportHealth`](/docs/reference/client-sdk/react/hooks-reference#usetransporthealth), but `useSyncSelector` is better when you only need one field.
+
+## Choosing The Right Hook
+
+- Use `useSyncQuery` for reactive reads from the local database
+- Use `useSyncStatus` for a prebuilt sync status object
+- Use `useSyncConnection` for a prebuilt connection snapshot
+- Use `useTransportHealth` for the full transport fallback payload
+- Use `useSyncSelector` when you want the smallest possible engine subscription
+
+## Next Steps
+
+- [useSyncQuery](/docs/reference/client-sdk/react/use-sync-query) - Reactive local queries
+- [Hooks Reference](/docs/reference/client-sdk/react/hooks-reference) - All React hooks

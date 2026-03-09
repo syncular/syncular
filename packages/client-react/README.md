@@ -1,6 +1,6 @@
 # @syncular/client-react
 
-React bindings for the Syncular client. Provides a typed `SyncProvider` and hooks like `useSyncQuery`, `useMutations`, and presence helpers.
+React bindings for the Syncular client. Provides a typed `SyncProvider` and hooks like `useSyncQuery`, `useSyncSelector`, `useMutations`, and presence helpers.
 
 ## Install
 

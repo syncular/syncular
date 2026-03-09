@@ -32,7 +32,9 @@ const {
   useSyncInspector,
   useMutations,
   useSyncQuery,
+  useSyncSelector,
   useSyncStatus,
+  useTransportHealth,
 } = createSyncularReact<SyncClientDb>();
 
 describe('React Hooks', () => {
@@ -189,6 +191,38 @@ describe('React Hooks', () => {
         expect(result.current.status.isStale).toBe(true);
       });
     });
+
+    it('does not rerender when only transport health changes', () => {
+      let renderCount = 0;
+
+      const { result } = renderHook(
+        () => {
+          renderCount += 1;
+          return {
+            status: useSyncStatus(),
+            engine: useEngine(),
+          };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      const updateTransportHealth = Reflect.get(
+        result.current.engine,
+        'updateTransportHealth'
+      );
+      if (typeof updateTransportHealth !== 'function') {
+        throw new Error('Expected engine.updateTransportHealth to be callable');
+      }
+
+      act(() => {
+        updateTransportHealth.call(result.current.engine, {
+          connected: true,
+          lastSuccessfulPollAt: Date.now(),
+        });
+      });
+
+      expect(renderCount).toBe(1);
+    });
   });
 
   describe('useSyncConnection', () => {
@@ -212,9 +246,142 @@ describe('React Hooks', () => {
       expect(typeof result.current.disconnect).toBe('function');
     });
 
+    it('does not rerender when unrelated engine state changes', () => {
+      let renderCount = 0;
+
+      const { result } = renderHook(
+        () => {
+          renderCount += 1;
+          return {
+            connection: useSyncConnection(),
+            engine: useEngine(),
+          };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      const updateState = Reflect.get(result.current.engine, 'updateState');
+      if (typeof updateState !== 'function') {
+        throw new Error('Expected engine.updateState to be callable');
+      }
+
+      act(() => {
+        updateState.call(result.current.engine, { pendingCount: 5 });
+      });
+
+      expect(renderCount).toBe(1);
+    });
+
     // Note: Connection lifecycle tests are covered in integration tests
     // The SyncEngine.test.ts tests the engine directly
     // These hook tests verify the React binding works
+  });
+
+  describe('useTransportHealth', () => {
+    it('does not rerender when only sync state changes', () => {
+      let renderCount = 0;
+
+      const { result } = renderHook(
+        () => {
+          renderCount += 1;
+          return {
+            transport: useTransportHealth(),
+            engine: useEngine(),
+          };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      const updateState = Reflect.get(result.current.engine, 'updateState');
+      if (typeof updateState !== 'function') {
+        throw new Error('Expected engine.updateState to be callable');
+      }
+
+      act(() => {
+        updateState.call(result.current.engine, { pendingCount: 2 });
+      });
+
+      expect(renderCount).toBe(1);
+    });
+  });
+
+  describe('useSyncSelector', () => {
+    it('subscribes only to the selected slice', () => {
+      let renderCount = 0;
+
+      const { result } = renderHook(
+        () => {
+          renderCount += 1;
+          return {
+            pendingCount: useSyncSelector(({ state }) => state.pendingCount),
+            engine: useEngine(),
+          };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      const updateState = Reflect.get(result.current.engine, 'updateState');
+      if (typeof updateState !== 'function') {
+        throw new Error('Expected engine.updateState to be callable');
+      }
+
+      act(() => {
+        updateState.call(result.current.engine, { isSyncing: true });
+      });
+
+      expect(renderCount).toBe(1);
+
+      act(() => {
+        updateState.call(result.current.engine, { pendingCount: 3 });
+      });
+
+      expect(renderCount).toBe(2);
+      expect(result.current.pendingCount).toBe(3);
+    });
+
+    it('supports custom equality for derived objects', () => {
+      let renderCount = 0;
+
+      const { result } = renderHook(
+        () => {
+          renderCount += 1;
+          return {
+            snapshot: useSyncSelector(
+              ({ state }) => ({
+                pendingCount: state.pendingCount,
+                hasPending: state.pendingCount > 0,
+              }),
+              (previous, next) =>
+                previous.pendingCount === next.pendingCount &&
+                previous.hasPending === next.hasPending
+            ),
+            engine: useEngine(),
+          };
+        },
+        { wrapper: createWrapper() }
+      );
+
+      const updateState = Reflect.get(result.current.engine, 'updateState');
+      if (typeof updateState !== 'function') {
+        throw new Error('Expected engine.updateState to be callable');
+      }
+
+      act(() => {
+        updateState.call(result.current.engine, { retryCount: 1 });
+      });
+
+      expect(renderCount).toBe(1);
+
+      act(() => {
+        updateState.call(result.current.engine, { pendingCount: 1 });
+      });
+
+      expect(renderCount).toBe(2);
+      expect(result.current.snapshot).toEqual({
+        pendingCount: 1,
+        hasPending: true,
+      });
+    });
   });
 
   describe('useSyncQuery', () => {

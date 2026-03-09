@@ -1,4 +1,4 @@
 {
   "title": "React SDK",
-  "pages": ["overview", "sync-provider", "use-sync-query", "use-mutations", "hooks-reference"]
+  "pages": ["overview", "sync-provider", "use-sync-query", "use-sync-selector", "use-mutations", "hooks-reference"]
 }

@@ -5,6 +5,26 @@ description: Complete reference for all React hooks
 
 Complete reference for all React hooks in `@syncular/client-react`.
 
+## useSyncSelector
+
+Subscribe to a selected slice of engine state with custom equality.
+
+Use this when you want finer control than `useSyncStatus`, `useSyncConnection`, or `useTransportHealth`, or when a component should react to only one small part of the engine snapshot.
+
+```tsx
+import { createSyncularReact } from '@syncular/client-react';
+import type { AppDb } from './db-types';
+
+const { useSyncSelector } = createSyncularReact<AppDb>();
+
+function PendingBadge() {
+  const pendingCount = useSyncSelector(({ state }) => state.pendingCount);
+
+  if (pendingCount === 0) return null;
+  return <span>{pendingCount} pending</span>;
+}
+```
+
 ## useSyncStatus
 
 Monitor sync status.
@@ -114,6 +134,8 @@ function ConnectionStatus() {
 ## useTransportHealth
 
 Monitor transport mode + fallback details.
+
+`useTransportHealth` is a specialized selector hook for realtime fallback state. If you need a different transport-derived slice, use `useSyncSelector`.
 
 ```tsx
 import { createSyncularReact } from '@syncular/client-react';

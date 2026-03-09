@@ -10,6 +10,7 @@ The `@syncular/client-react` package provides React hooks and components for Syn
 - How to install and configure the React SDK
 - Setting up `SyncProvider` with transport and subscriptions
 - Querying synced data reactively with `useSyncQuery`
+- Subscribing to fine-grained engine state with `useSyncSelector`
 - Making mutations from React components
 - All available hooks at a glance
 
@@ -81,6 +82,7 @@ function TaskList() {
 | Hook | Description |
 |------|-------------|
 | `useSyncQuery` | Query local data with reactive updates |
+| `useSyncSelector` | Subscribe to selected engine state with custom equality |
 | `useMutations` | Make changes that sync |
 | `useMutation` | Single-table mutations |
 | `useSyncStatus` | Monitor sync status |
@@ -101,4 +103,5 @@ function TaskList() {
 
 - [SyncProvider](/docs/reference/client-sdk/react/sync-provider) - Provider configuration
 - [useSyncQuery](/docs/reference/client-sdk/react/use-sync-query) - Querying data
+- [useSyncSelector](/docs/reference/client-sdk/react/use-sync-selector) - Fine-grained engine subscriptions
 - [useMutations](/docs/reference/client-sdk/react/use-mutations) - Making changes
