@@ -1667,6 +1667,8 @@ export function createSyncRoutes<
             >;
           };
       let pullResponse: undefined | PullResult['response'];
+      const exposeBenchPullTimings =
+        c.req.header('x-syncular-bench-timings') === '1';
 
       // --- Push phase ---
       if (body.push) {
@@ -1927,6 +1929,13 @@ export function createSyncRoutes<
             clientCursor: pullResult.clientCursor,
           };
         });
+
+        if (exposeBenchPullTimings && pullResult.bootstrapTimings) {
+          c.header(
+            'x-syncular-bench-pull-timings',
+            JSON.stringify(pullResult.bootstrapTimings)
+          );
+        }
 
         pullResponse = pullResult.response;
       }

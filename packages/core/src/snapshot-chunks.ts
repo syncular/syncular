@@ -12,6 +12,8 @@ export type SyncSnapshotChunkCompression =
 const SNAPSHOT_ROW_FRAME_MAGIC = new Uint8Array([0x53, 0x52, 0x46, 0x31]); // "SRF1"
 const FRAME_LENGTH_BYTES = 4;
 const MAX_FRAME_BYTE_LENGTH = 0xffff_ffff;
+const snapshotRowFrameEncoder = new TextEncoder();
+const snapshotRowFrameDecoder = new TextDecoder();
 
 function normalizeRowJson(row: unknown): string {
   const serialized = JSON.stringify(row);
@@ -22,12 +24,11 @@ function normalizeRowJson(row: unknown): string {
  * Encode rows as framed JSON bytes without the format header.
  */
 export function encodeSnapshotRowFrames(rows: readonly unknown[]): Uint8Array {
-  const encoder = new TextEncoder();
   const payloads: Uint8Array[] = [];
   let totalByteLength = 0;
 
   for (const row of rows) {
-    const payload = encoder.encode(normalizeRowJson(row));
+    const payload = snapshotRowFrameEncoder.encode(normalizeRowJson(row));
     if (payload.length > MAX_FRAME_BYTE_LENGTH) {
       throw new Error(
         `Snapshot row payload exceeds ${MAX_FRAME_BYTE_LENGTH} bytes`
@@ -87,7 +88,6 @@ export function decodeSnapshotRows(bytes: Uint8Array): unknown[] {
   }
 
   const rows: unknown[] = [];
-  const decoder = new TextDecoder();
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
   let offset = SNAPSHOT_ROW_FRAME_MAGIC.length;
 
@@ -105,7 +105,7 @@ export function decodeSnapshotRows(bytes: Uint8Array): unknown[] {
 
     const payload = bytes.subarray(offset, offset + payloadLength);
     offset += payloadLength;
-    rows.push(JSON.parse(decoder.decode(payload)));
+    rows.push(JSON.parse(snapshotRowFrameDecoder.decode(payload)));
   }
 
   return rows;
