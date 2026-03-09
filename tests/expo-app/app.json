@@ -2,6 +2,7 @@
   "expo": {
     "name": "Syncular Expo Tests",
     "slug": "syncular-expo-tests",
+    "scheme": "syncular-expo-tests",
     "version": "0.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -25,6 +26,7 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": ["expo-dev-client"]
   }
 }

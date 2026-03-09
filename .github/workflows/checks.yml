@@ -603,9 +603,13 @@ jobs:
         run: |
           bun run start:dev-client > metro.log 2>&1 &
           echo $! > metro.pid
-          for i in {1..60}; do
-            if nc -z 127.0.0.1 8081; then
+          for i in {1..120}; do
+            if grep -Eq "Waiting on .*8081" metro.log; then
               exit 0
+            fi
+            if ! kill -0 "$(cat metro.pid)" 2>/dev/null; then
+              cat metro.log
+              exit 1
             fi
             sleep 1
           done
