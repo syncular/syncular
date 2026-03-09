@@ -44,6 +44,34 @@ const defaultScopeCache = createMemoryScopeCache();
 const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
 const MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 4 * 1024 * 1024;
 const DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES = 256 * 1024;
+const EMPTY_SNAPSHOT_ROW_FRAMES = encodeSnapshotRows([]);
+
+interface PullBootstrapTimings {
+  snapshotQueryMs: number;
+  rowFrameEncodeMs: number;
+  chunkCacheLookupMs: number;
+  chunkGzipMs: number;
+  chunkHashMs: number;
+  chunkPersistMs: number;
+}
+
+interface SnapshotChunkEncodeResult {
+  body: Uint8Array;
+  sha256: string;
+  gzipMs: number;
+  hashMs: number;
+}
+
+function createPullBootstrapTimings(): PullBootstrapTimings {
+  return {
+    snapshotQueryMs: 0,
+    rowFrameEncodeMs: 0,
+    chunkCacheLookupMs: 0,
+    chunkGzipMs: 0,
+    chunkHashMs: 0,
+    chunkPersistMs: 0,
+  };
+}
 
 function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
@@ -88,6 +116,39 @@ function bufferSourceToUint8Array(chunk: BufferSource): Uint8Array {
   return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 }
 
+async function streamToBytes(
+  stream: ReadableStream<BufferSource>
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const bytes = bufferSourceToUint8Array(value);
+      if (bytes.length === 0) continue;
+      chunks.push(bytes);
+      total += bytes.length;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (chunks.length === 0) return new Uint8Array();
+  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
+
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
 function bufferSourceStreamToUint8ArrayStream(
   stream: ReadableStream<BufferSource>
 ): ReadableStream<Uint8Array> {
@@ -116,8 +177,6 @@ function bufferSourceStreamToUint8ArrayStream(
 let nodeCryptoModulePromise: Promise<
   typeof import('node:crypto') | null
 > | null = null;
-let nodeZlibModulePromise: Promise<typeof import('node:zlib') | null> | null =
-  null;
 
 async function getNodeCryptoModule(): Promise<
   typeof import('node:crypto') | null
@@ -128,61 +187,53 @@ async function getNodeCryptoModule(): Promise<
   return nodeCryptoModulePromise;
 }
 
-async function getNodeZlibModule(): Promise<typeof import('node:zlib') | null> {
-  if (!nodeZlibModulePromise) {
-    nodeZlibModulePromise = import('node:zlib').catch(() => null);
-  }
-  return nodeZlibModulePromise;
-}
-
-async function sha256HexFromBytes(bytes: Uint8Array): Promise<string> {
+async function sha256HexFromByteChunks(
+  chunks: readonly Uint8Array[]
+): Promise<string> {
   const nodeCrypto = await getNodeCryptoModule();
   if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
     const hasher = nodeCrypto.createHash('sha256');
-    hasher.update(bytes);
+    for (const chunk of chunks) {
+      if (chunk.length === 0) continue;
+      hasher.update(chunk);
+    }
     return hasher.digest('hex');
   }
 
-  return sha256Hex(bytes);
+  return sha256Hex(concatByteChunks(chunks));
 }
 
-async function gzipSnapshotChunkBytes(
-  payload: Uint8Array
+async function gzipByteChunks(
+  chunks: readonly Uint8Array[]
 ): Promise<Uint8Array> {
-  const nodeZlib = await getNodeZlibModule();
-  if (nodeZlib) {
-    return await new Promise<Uint8Array>((resolve, reject) => {
-      nodeZlib.gzip(
-        payload,
-        {
-          level: 1,
-        },
-        (error, compressed) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          resolve(new Uint8Array(compressed));
-        }
-      );
-    });
+  if (typeof CompressionStream !== 'undefined') {
+    const stream = byteChunksToStream(chunks).pipeThrough(
+      new CompressionStream('gzip')
+    );
+    return streamToBytes(stream);
   }
 
-  return gzipBytes(payload);
+  return gzipBytes(concatByteChunks(chunks));
 }
 
 async function encodeCompressedSnapshotChunk(
   chunks: readonly Uint8Array[]
-): Promise<{
-  body: Uint8Array;
-  sha256: string;
-}> {
-  const payload = concatByteChunks(chunks);
-  const [body, sha256] = await Promise.all([
-    gzipSnapshotChunkBytes(payload),
-    sha256HexFromBytes(payload),
+): Promise<SnapshotChunkEncodeResult> {
+  const gzipStartedAt = Date.now();
+  const gzipPromise = gzipByteChunks(chunks).then((body) => ({
+    body,
+    gzipMs: Math.max(0, Date.now() - gzipStartedAt),
+  }));
+  const hashStartedAt = Date.now();
+  const hashPromise = sha256HexFromByteChunks(chunks).then((sha256) => ({
+    sha256,
+    hashMs: Math.max(0, Date.now() - hashStartedAt),
+  }));
+  const [{ body, gzipMs }, { sha256, hashMs }] = await Promise.all([
+    gzipPromise,
+    hashPromise,
   ]);
-  return { body, sha256 };
+  return { body, sha256, gzipMs, hashMs };
 }
 
 async function encodeCompressedSnapshotChunkToStream(
@@ -191,6 +242,8 @@ async function encodeCompressedSnapshotChunkToStream(
   stream: ReadableStream<Uint8Array>;
   byteLength: number;
   sha256: string;
+  gzipMs: number;
+  hashMs: number;
 }> {
   const encoded = await encodeCompressedSnapshotChunk(chunks);
   return {
@@ -199,6 +252,8 @@ async function encodeCompressedSnapshotChunkToStream(
     ),
     byteLength: encoded.body.length,
     sha256: encoded.sha256,
+    gzipMs: encoded.gzipMs,
+    hashMs: encoded.hashMs,
   };
 }
 
@@ -237,6 +292,8 @@ export interface PullResult {
   effectiveScopes: ScopeValues;
   /** Minimum nextCursor across active subscriptions (for pruning cursor tracking). */
   clientCursor: number;
+  /** Internal bootstrap timing breakdown used for benchmark-gated diagnostics. */
+  bootstrapTimings?: PullBootstrapTimings;
 }
 
 interface PendingExternalChunkWrite {
@@ -511,6 +568,7 @@ export async function pull<
         );
         const dedupeRows = request.dedupeRows === true;
         const pendingExternalChunkWrites: PendingExternalChunkWrite[] = [];
+        const bootstrapTimings = createPullBootstrapTimings();
 
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
@@ -684,6 +742,7 @@ export async function pull<
                   limitSnapshotRows * bundle.pageCount
                 );
 
+                const cacheLookupStartedAt = Date.now();
                 const cached = await readSnapshotChunkRefByPageKey(trx, {
                   partitionId,
                   scopeKey: cacheKey,
@@ -695,6 +754,10 @@ export async function pull<
                   compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                   nowIso,
                 });
+                bootstrapTimings.chunkCacheLookupMs += Math.max(
+                  0,
+                  Date.now() - cacheLookupStartedAt
+                );
 
                 let chunkRef = cached;
                 if (!chunkRef) {
@@ -729,7 +792,10 @@ export async function pull<
                   const encodedChunk = await encodeCompressedSnapshotChunk(
                     bundle.rowFrameParts
                   );
+                  bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
+                  bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
                   const chunkId = randomId();
+                  const chunkPersistStartedAt = Date.now();
                   chunkRef = await insertSnapshotChunk(trx, {
                     chunkId,
                     partitionId,
@@ -744,6 +810,10 @@ export async function pull<
                     body: encodedChunk.body,
                     expiresAt,
                   });
+                  bootstrapTimings.chunkPersistMs += Math.max(
+                    0,
+                    Date.now() - chunkPersistStartedAt
+                  );
                 }
 
                 snapshots.push({
@@ -784,7 +854,7 @@ export async function pull<
                   if (activeBundle) {
                     await flushSnapshotBundle(activeBundle);
                   }
-                  const bundleHeader = encodeSnapshotRows([]);
+                  const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
                   activeBundle = {
                     table: nextTableName,
                     startCursor: nextState.rowCursor,
@@ -799,6 +869,7 @@ export async function pull<
                   };
                 }
 
+                const snapshotQueryStartedAt = Date.now();
                 const page: { rows: unknown[]; nextCursor: string | null } =
                   await tableHandler.snapshot(
                     {
@@ -811,8 +882,17 @@ export async function pull<
                     },
                     sub.params
                   );
+                bootstrapTimings.snapshotQueryMs += Math.max(
+                  0,
+                  Date.now() - snapshotQueryStartedAt
+                );
 
+                const rowFrameEncodeStartedAt = Date.now();
                 const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
+                bootstrapTimings.rowFrameEncodeMs += Math.max(
+                  0,
+                  Date.now() - rowFrameEncodeStartedAt
+                );
                 const bundleMaxBytes = resolveSnapshotBundleMaxBytes({
                   configuredMaxBytes: tableHandler.snapshotBundleMaxBytes,
                   pageRowCount: page.rows?.length ?? 0,
@@ -824,7 +904,7 @@ export async function pull<
                     bundleMaxBytes
                 ) {
                   await flushSnapshotBundle(activeBundle);
-                  const bundleHeader = encodeSnapshotRows([]);
+                  const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
                   activeBundle = {
                     table: nextTableName,
                     startCursor: nextState.rowCursor,
@@ -1092,6 +1172,7 @@ export async function pull<
             pendingExternalChunkWrites,
             4,
             async (pending) => {
+              const cacheLookupStartedAt = Date.now();
               let chunkRef = await readSnapshotChunkRefByPageKey(db, {
                 partitionId: pending.cacheLookup.partitionId,
                 scopeKey: pending.cacheLookup.scopeKey,
@@ -1102,6 +1183,10 @@ export async function pull<
                 encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
                 compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
               });
+              bootstrapTimings.chunkCacheLookupMs += Math.max(
+                0,
+                Date.now() - cacheLookupStartedAt
+              );
 
               if (!chunkRef) {
                 if (chunkStorage.storeChunkStream) {
@@ -1109,9 +1194,14 @@ export async function pull<
                     stream: bodyStream,
                     byteLength,
                     sha256,
+                    gzipMs,
+                    hashMs,
                   } = await encodeCompressedSnapshotChunkToStream(
                     pending.rowFrameParts
                   );
+                  bootstrapTimings.chunkGzipMs += gzipMs;
+                  bootstrapTimings.chunkHashMs += hashMs;
+                  const chunkPersistStartedAt = Date.now();
                   chunkRef = await chunkStorage.storeChunkStream({
                     partitionId: pending.cacheLookup.partitionId,
                     scopeKey: pending.cacheLookup.scopeKey,
@@ -1126,10 +1216,17 @@ export async function pull<
                     bodyStream,
                     expiresAt: pending.expiresAt,
                   });
+                  bootstrapTimings.chunkPersistMs += Math.max(
+                    0,
+                    Date.now() - chunkPersistStartedAt
+                  );
                 } else {
                   const encodedChunk = await encodeCompressedSnapshotChunk(
                     pending.rowFrameParts
                   );
+                  bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
+                  bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
+                  const chunkPersistStartedAt = Date.now();
                   chunkRef = await chunkStorage.storeChunk({
                     partitionId: pending.cacheLookup.partitionId,
                     scopeKey: pending.cacheLookup.scopeKey,
@@ -1143,6 +1240,10 @@ export async function pull<
                     body: encodedChunk.body,
                     expiresAt: pending.expiresAt,
                   });
+                  bootstrapTimings.chunkPersistMs += Math.max(
+                    0,
+                    Date.now() - chunkPersistStartedAt
+                  );
                 }
               }
 
@@ -1160,6 +1261,14 @@ export async function pull<
         span.setAttribute('commit_count', stats.commitCount);
         span.setAttribute('change_count', stats.changeCount);
         span.setAttribute('snapshot_page_count', stats.snapshotPageCount);
+        span.setAttributes({
+          bootstrap_snapshot_query_ms: bootstrapTimings.snapshotQueryMs,
+          bootstrap_row_frame_encode_ms: bootstrapTimings.rowFrameEncodeMs,
+          bootstrap_chunk_cache_lookup_ms: bootstrapTimings.chunkCacheLookupMs,
+          bootstrap_chunk_gzip_ms: bootstrapTimings.chunkGzipMs,
+          bootstrap_chunk_hash_ms: bootstrapTimings.chunkHashMs,
+          bootstrap_chunk_persist_ms: bootstrapTimings.chunkPersistMs,
+        });
         span.setStatus('ok');
 
         recordPullMetrics({
@@ -1169,7 +1278,10 @@ export async function pull<
           stats,
         });
 
-        return result;
+        return {
+          ...result,
+          bootstrapTimings,
+        };
       } catch (error) {
         const durationMs = Math.max(0, Date.now() - startedAtMs);
 
