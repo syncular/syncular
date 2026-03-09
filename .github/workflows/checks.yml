@@ -619,9 +619,24 @@ jobs:
           cat metro.log
           exit 1
 
+      - name: Create iOS simulator
+        run: |
+          xcrun simctl delete unavailable || true
+          export IOS_RUNTIME_ID="$(
+            python3 -c 'import json,subprocess; runtimes=[runtime for runtime in json.loads(subprocess.check_output(["xcrun","simctl","list","runtimes","available","-j"], text=True))["runtimes"] if runtime.get("isAvailable") and runtime.get("platform") == "iOS"]; runtimes.sort(key=lambda runtime: tuple(int(part) for part in runtime["version"].split(".")), reverse=True); print(runtimes[0]["identifier"])'
+          )"
+          export IOS_DEVICE_TYPE_ID="$(
+            python3 -c 'import json,subprocess; device_types={device_type["identifier"]: device_type for device_type in json.loads(subprocess.check_output(["xcrun","simctl","list","devicetypes","available","-j"], text=True))["devicetypes"]}; preferred=["com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro","com.apple.CoreSimulator.SimDeviceType.iPhone-16","com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro","com.apple.CoreSimulator.SimDeviceType.iPhone-15"]; print(next((identifier for identifier in preferred if identifier in device_types), next(iter(device_types))))'
+          )"
+          export IOS_SIMULATOR_UDID="$(
+            xcrun simctl create "Syncular Expo Tests" "$IOS_DEVICE_TYPE_ID" "$IOS_RUNTIME_ID"
+          )"
+          xcrun simctl boot "$IOS_SIMULATOR_UDID"
+          echo "IOS_SIMULATOR_UDID=$IOS_SIMULATOR_UDID" >> "$GITHUB_ENV"
+
       - name: Build + install iOS app
         working-directory: tests/expo-app
-        run: bun run ios:build
+        run: IOS_SIMULATOR_DEVICE="$IOS_SIMULATOR_UDID" bun run ios:build
 
       - name: Run Maestro flows
         working-directory: tests/expo-app
@@ -635,3 +650,7 @@ jobs:
             kill "$(cat metro.pid)" || true
           fi
           cat metro.log || true
+          if [ -n "${IOS_SIMULATOR_UDID:-}" ]; then
+            xcrun simctl shutdown "$IOS_SIMULATOR_UDID" || true
+            xcrun simctl delete "$IOS_SIMULATOR_UDID" || true
+          fi
