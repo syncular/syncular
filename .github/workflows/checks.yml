@@ -475,7 +475,7 @@ jobs:
 
   runtime-browser:
     needs: changes
-    if: needs.changes.outputs.runtime == 'true' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.runtime == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     strategy:
@@ -495,7 +495,7 @@ jobs:
 
   demo-smoke:
     needs: changes
-    if: needs.changes.outputs.demo == 'true' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.demo == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
@@ -574,7 +574,7 @@ jobs:
 
   runtime-electron:
     needs: changes
-    if: needs.changes.outputs.runtime_electron == 'true' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.runtime_electron == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
@@ -586,7 +586,7 @@ jobs:
 
   maestro-ios:
     needs: changes
-    if: needs.changes.outputs.expo == 'true' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.expo == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
