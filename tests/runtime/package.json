@@ -7,7 +7,7 @@
     "tsgo": "tsgo --noEmit",
     "test": "bun test __tests__",
     "test:browser": "bun test __tests__/browser.runtime.test.ts",
-    "test:demo": "bun test __tests__/demo.split-screen.smoke.test.ts",
+    "test:demo": "bun test __tests__/demo-smoke",
     "test:cloudflare": "SYNCULAR_TEST_RUN_CLOUDFLARE=true bun test __tests__/cloudflare.runtime.test.ts",
     "test:d1": "SYNCULAR_TEST_RUN_D1=true bun test __tests__/d1.runtime.test.ts",
     "measure:demo-latency": "bun run scripts/demo-sync-latency.ts",
