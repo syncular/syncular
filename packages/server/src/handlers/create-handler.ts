@@ -286,6 +286,7 @@ export function createServerHandler<
 
   const { scopePatterns, scopeColumnsByVariable: scopeColumns } =
     createSingleVariableScopeMetadata(scopeDefs);
+  const scopeColumnEntries = Object.entries(scopeColumns);
 
   // Default extractScopes from scope columns
   const defaultExtractScopes = (row: Record<string, unknown>): StoredScopes => {
@@ -365,27 +366,27 @@ export function createServerHandler<
 
     const pageSize = Math.max(1, ctx.limit);
 
-    // Build dynamic WHERE conditions
-    const whereConditions: Array<{ column: string; values: string[] }> = [];
-    for (const [varName, columnName] of Object.entries(scopeColumns)) {
-      const values = scopeValues[varName];
-      if (values === undefined) continue;
-      const normalized = Array.isArray(values) ? values : [values];
-      if (normalized.length === 0) continue;
-      whereConditions.push({ column: columnName, values: normalized });
-    }
-
-    let q = trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+    let q = trx.selectFrom(table) as SelectQueryBuilder<
       ServerDB,
       keyof ServerDB & string,
       Record<string, unknown>
     >;
 
-    for (const cond of whereConditions) {
-      if (cond.values.length === 1) {
-        q = q.where(ref<string>(cond.column), '=', cond.values[0]);
+    q = q.selectAll() as SelectQueryBuilder<
+      ServerDB,
+      keyof ServerDB & string,
+      Record<string, unknown>
+    >;
+
+    for (const [varName, columnName] of scopeColumnEntries) {
+      const values = scopeValues[varName];
+      if (values === undefined) continue;
+      const normalized = Array.isArray(values) ? values : [values];
+      if (normalized.length === 0) continue;
+      if (normalized.length === 1) {
+        q = q.where(ref<string>(columnName), '=', normalized[0]);
       } else {
-        q = q.where(ref<string>(cond.column), 'in', cond.values);
+        q = q.where(ref<string>(columnName), 'in', normalized);
       }
     }
 
@@ -409,7 +410,6 @@ export function createServerHandler<
           | undefined)
       : null;
 
-    // Transform outbound if provided
     const outputRows = pageRows.map((r) =>
       applyOutboundTransform(r as Selectable<ServerDB[TableName]>)
     );
