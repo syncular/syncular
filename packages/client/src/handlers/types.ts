@@ -104,6 +104,17 @@ export interface ClientTableHandler<
   applyChange(ctx: ClientHandlerContext<DB>, change: SyncChange): Promise<void>;
 
   /**
+   * Apply multiple changes in order.
+   *
+   * Implementations may internally batch SQL work, but they must preserve the
+   * same observable semantics as sequential `applyChange()` calls.
+   */
+  applyChanges?(
+    ctx: ClientHandlerContext<DB>,
+    changes: SyncChange[]
+  ): Promise<void>;
+
+  /**
    * Optional: Called when a snapshot begins (isFirstPage = true).
    * Use this for marking existing rows as stale before applying snapshot.
    */

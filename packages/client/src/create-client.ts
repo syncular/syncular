@@ -16,7 +16,6 @@ import type {
   SyncTransport,
 } from '@syncular/core';
 import { collectScopeVars, normalizeSyncBaseUrl } from '@syncular/core';
-import { createHttpTransport } from '@syncular/transport-http';
 import type { Kysely } from 'kysely';
 import { Client } from './client';
 import { createClientHandlerCollection } from './handlers/collection';
@@ -249,6 +248,7 @@ export async function createClient<DB extends SyncClientDb>(
   // Create transport from URL if not provided
   let transport = customTransport;
   if (!transport && url) {
+    const { createHttpTransport } = await import('@syncular/transport-http');
     transport = createHttpTransport({
       baseUrl: normalizeSyncBaseUrl(url),
       getHeaders,

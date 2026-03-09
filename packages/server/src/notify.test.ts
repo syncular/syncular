@@ -322,6 +322,8 @@ describe('pull re-bootstrap after external data change', () => {
     const rebootSub = rebootstrapPull.response.subscriptions[0]!;
     expect(rebootSub.bootstrap).toBe(true);
     expect(rebootSub.snapshots?.length).toBeGreaterThan(0);
+    expect(rebootSub.snapshots?.[0]?.rows).toHaveLength(1);
+    expect(rebootSub.snapshots?.[0]?.chunks).toBeUndefined();
   });
 
   it('does not force re-bootstrap for unaffected tables', async () => {

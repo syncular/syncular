@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 import {
   createDatabase,
   decodeSnapshotRows,
@@ -13,6 +13,7 @@ import {
   pull,
   readSnapshotChunk,
   type SyncCoreDb,
+  type SyncSnapshot,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 
@@ -59,11 +60,25 @@ function decodeSnapshotRowsGzip(
   return decodeSnapshotRows(gunzipSync(bytes));
 }
 
-function expectUint8ArrayBody(
-  body: Uint8Array | ReadableStream<Uint8Array>
-): Uint8Array {
-  if (body instanceof Uint8Array) return body;
-  throw new Error('Expected Uint8Array snapshot body in this test');
+async function readSnapshotRows(
+  db: ReturnType<typeof createDatabase<ServerDb>>,
+  snapshot: SyncSnapshot
+): Promise<unknown[]> {
+  if (snapshot.rows.length > 0) {
+    return snapshot.rows;
+  }
+
+  const chunkId = snapshot.chunks?.[0]?.id;
+  if (!chunkId) {
+    throw new Error('Expected inline rows or a snapshot chunk');
+  }
+
+  const chunk = await readSnapshotChunk(db, chunkId);
+  if (!chunk) {
+    throw new Error('Expected stored snapshot chunk');
+  }
+
+  return decodeSnapshotRowsGzip(chunk.body);
 }
 
 describe('pull bootstrap behavior', () => {
@@ -185,10 +200,10 @@ describe('pull bootstrap behavior', () => {
         throw new Error('Expected stored snapshot chunks');
       }
 
-      expect(decodeSnapshotRowsGzip(projectChunk.body)).toEqual([
+      expect(await readSnapshotRows(db, subscription.snapshots?.[0]!)).toEqual([
         { id: 'p1', user_id: 'u1', name: 'Project 1', server_version: 1 },
       ]);
-      expect(decodeSnapshotRowsGzip(taskChunk.body)).toEqual([
+      expect(await readSnapshotRows(db, subscription.snapshots?.[1]!)).toEqual([
         {
           id: 't1',
           user_id: 'u1',
@@ -356,12 +371,7 @@ describe('pull bootstrap behavior', () => {
       const chunk = await readSnapshotChunk(db, chunkId);
       if (!chunk) throw new Error('Expected stored snapshot chunk');
 
-      const bodyBytes = expectUint8ArrayBody(chunk.body);
-      const decompressed = gunzipSync(bodyBytes);
-      const normalized = new Uint8Array(gzipSync(decompressed));
-
-      expect(Buffer.from(bodyBytes).equals(Buffer.from(normalized))).toBe(true);
-      expect(decodeSnapshotRowsGzip(bodyBytes)).toEqual([
+      expect(decodeSnapshotRowsGzip(chunk.body)).toEqual([
         {
           id: 't1',
           user_id: 'u1',

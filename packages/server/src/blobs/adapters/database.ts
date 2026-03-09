@@ -205,6 +205,8 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
   const { db, baseUrl, tokenSigner } = options;
   const resolvePartitionId = (partitionId?: string): string =>
     partitionId ?? 'default';
+  const normalizeBlobSizeValue = (value: number | string): number =>
+    typeof value === 'number' ? value : Number(value);
 
   return {
     name: 'database',
@@ -281,7 +283,7 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
       options?: { partitionId?: string }
     ): Promise<{ size: number; mimeType?: string } | null> {
       const partitionId = resolvePartitionId(options?.partitionId);
-      const rowResult = await sql<{ size: number; mime_type: string }>`
+      const rowResult = await sql<{ size: number | string; mime_type: string }>`
         select size, mime_type
         from ${sql.table('sync_blobs')}
         where partition_id = ${partitionId} and hash = ${hash}
@@ -292,7 +294,7 @@ export function createDatabaseBlobStorageAdapter<DB extends SyncBlobsDb>(
       if (!row) return null;
 
       return {
-        size: row.size,
+        size: normalizeBlobSizeValue(row.size),
         mimeType: row.mime_type,
       };
     },
@@ -376,7 +378,7 @@ export async function readBlobFromDatabase<DB extends SyncBlobsDb>(
   const rowResult = await sql<{
     body: Uint8Array;
     mime_type: string;
-    size: number;
+    size: number | string;
   }>`
     select body, mime_type, size
     from ${sql.table('sync_blobs')}
@@ -390,6 +392,6 @@ export async function readBlobFromDatabase<DB extends SyncBlobsDb>(
   return {
     body: row.body,
     mimeType: row.mime_type,
-    size: row.size,
+    size: typeof row.size === 'number' ? row.size : Number(row.size),
   };
 }

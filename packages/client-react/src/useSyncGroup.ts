@@ -1,6 +1,5 @@
 import type {
   SyncClientDb,
-  SyncEngine,
   SyncProgress,
   SyncRepairOptions,
   SyncResetOptions,
@@ -9,6 +8,7 @@ import type {
   SyncTransportMode,
   TransportHealth,
 } from '@syncular/client';
+import type { SyncEngine } from '@syncular/client/engine';
 import { useCallback, useMemo, useSyncExternalStore } from 'react';
 
 export interface SyncGroupChannel<DB extends SyncClientDb = SyncClientDb> {

@@ -42,6 +42,8 @@ import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve'
 
 const defaultScopeCache = createMemoryScopeCache();
 const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
+const MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 4 * 1024 * 1024;
+const DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES = 256 * 1024;
 
 function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
@@ -86,39 +88,6 @@ function bufferSourceToUint8Array(chunk: BufferSource): Uint8Array {
   return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 }
 
-async function streamToBytes(
-  stream: ReadableStream<BufferSource>
-): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const bytes = bufferSourceToUint8Array(value);
-      if (bytes.length === 0) continue;
-      chunks.push(bytes);
-      total += bytes.length;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (chunks.length === 0) return new Uint8Array();
-  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
-}
-
 function bufferSourceStreamToUint8ArrayStream(
   stream: ReadableStream<BufferSource>
 ): ReadableStream<Uint8Array> {
@@ -147,6 +116,8 @@ function bufferSourceStreamToUint8ArrayStream(
 let nodeCryptoModulePromise: Promise<
   typeof import('node:crypto') | null
 > | null = null;
+let nodeZlibModulePromise: Promise<typeof import('node:zlib') | null> | null =
+  null;
 
 async function getNodeCryptoModule(): Promise<
   typeof import('node:crypto') | null
@@ -157,55 +128,104 @@ async function getNodeCryptoModule(): Promise<
   return nodeCryptoModulePromise;
 }
 
-async function sha256HexFromByteChunks(
-  chunks: readonly Uint8Array[]
-): Promise<string> {
+async function getNodeZlibModule(): Promise<typeof import('node:zlib') | null> {
+  if (!nodeZlibModulePromise) {
+    nodeZlibModulePromise = import('node:zlib').catch(() => null);
+  }
+  return nodeZlibModulePromise;
+}
+
+async function sha256HexFromBytes(bytes: Uint8Array): Promise<string> {
   const nodeCrypto = await getNodeCryptoModule();
   if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
     const hasher = nodeCrypto.createHash('sha256');
-    for (const chunk of chunks) {
-      if (chunk.length === 0) continue;
-      hasher.update(chunk);
-    }
+    hasher.update(bytes);
     return hasher.digest('hex');
   }
 
-  return sha256Hex(concatByteChunks(chunks));
+  return sha256Hex(bytes);
 }
 
-async function gzipByteChunks(
-  chunks: readonly Uint8Array[]
+async function gzipSnapshotChunkBytes(
+  payload: Uint8Array
 ): Promise<Uint8Array> {
-  if (typeof CompressionStream !== 'undefined') {
-    const stream = byteChunksToStream(chunks).pipeThrough(
-      new CompressionStream('gzip')
-    );
-    return streamToBytes(stream);
+  const nodeZlib = await getNodeZlibModule();
+  if (nodeZlib) {
+    return await new Promise<Uint8Array>((resolve, reject) => {
+      nodeZlib.gzip(
+        payload,
+        {
+          level: 1,
+        },
+        (error, compressed) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(new Uint8Array(compressed));
+        }
+      );
+    });
   }
 
-  return gzipBytes(concatByteChunks(chunks));
+  return gzipBytes(payload);
 }
 
-async function gzipByteChunksToStream(chunks: readonly Uint8Array[]): Promise<{
-  stream: ReadableStream<Uint8Array>;
-  byteLength?: number;
+async function encodeCompressedSnapshotChunk(
+  chunks: readonly Uint8Array[]
+): Promise<{
+  body: Uint8Array;
+  sha256: string;
 }> {
-  if (typeof CompressionStream !== 'undefined') {
-    const source = byteChunksToStream(chunks).pipeThrough(
-      new CompressionStream('gzip')
-    );
-    return {
-      stream: bufferSourceStreamToUint8ArrayStream(source),
-    };
-  }
+  const payload = concatByteChunks(chunks);
+  const [body, sha256] = await Promise.all([
+    gzipSnapshotChunkBytes(payload),
+    sha256HexFromBytes(payload),
+  ]);
+  return { body, sha256 };
+}
 
-  const compressed = await gzipBytes(concatByteChunks(chunks));
+async function encodeCompressedSnapshotChunkToStream(
+  chunks: readonly Uint8Array[]
+): Promise<{
+  stream: ReadableStream<Uint8Array>;
+  byteLength: number;
+  sha256: string;
+}> {
+  const encoded = await encodeCompressedSnapshotChunk(chunks);
   return {
     stream: bufferSourceStreamToUint8ArrayStream(
-      byteChunksToStream([compressed])
+      byteChunksToStream([encoded.body])
     ),
-    byteLength: compressed.length,
+    byteLength: encoded.body.length,
+    sha256: encoded.sha256,
   };
+}
+
+function resolveSnapshotBundleMaxBytes(args: {
+  configuredMaxBytes?: number;
+  pageRowCount: number;
+  pageRowFrameBytes: number;
+}): number {
+  if (
+    typeof args.configuredMaxBytes === 'number' &&
+    Number.isFinite(args.configuredMaxBytes) &&
+    args.configuredMaxBytes > 0
+  ) {
+    return Math.max(1, args.configuredMaxBytes);
+  }
+
+  if (args.pageRowCount <= 0 || args.pageRowFrameBytes <= 0) {
+    return DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES;
+  }
+
+  return Math.max(
+    DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES,
+    Math.min(
+      MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES,
+      args.pageRowFrameBytes
+    )
+  );
 }
 
 export interface PullResult {
@@ -481,7 +501,7 @@ export async function pull<
           request.limitSnapshotRows,
           1000,
           1,
-          5000
+          20000
         );
         const maxSnapshotPages = sanitizeLimit(
           request.maxSnapshotPages,
@@ -582,6 +602,11 @@ export async function pull<
                 args.handlers,
                 sub.table
               ).map((handler) => handler.table);
+              const preferInlineBootstrapSnapshot =
+                cursor >= 0 ||
+                sub.bootstrapState != null ||
+                (latestExternalCommitForTable !== undefined &&
+                  latestExternalCommitForTable > cursor);
 
               const initState: SyncBootstrapState = {
                 asOfCommitSeq: maxCommitSeq,
@@ -637,11 +662,22 @@ export async function pull<
                 ttlMs: number;
                 rowFrameByteLength: number;
                 rowFrameParts: Uint8Array[];
+                inlineRows: unknown[] | null;
               }
 
               const flushSnapshotBundle = async (
                 bundle: SnapshotBundle
               ): Promise<void> => {
+                if (bundle.inlineRows) {
+                  snapshots.push({
+                    table: bundle.table,
+                    rows: bundle.inlineRows,
+                    isFirstPage: bundle.isFirstPage,
+                    isLastPage: bundle.isLastPage,
+                  });
+                  return;
+                }
+
                 const nowIso = new Date().toISOString();
                 const bundleRowLimit = Math.max(
                   1,
@@ -690,10 +726,7 @@ export async function pull<
                     });
                     return;
                   }
-                  const sha256 = await sha256HexFromByteChunks(
-                    bundle.rowFrameParts
-                  );
-                  const compressedBody = await gzipByteChunks(
+                  const encodedChunk = await encodeCompressedSnapshotChunk(
                     bundle.rowFrameParts
                   );
                   const chunkId = randomId();
@@ -707,8 +740,8 @@ export async function pull<
                     rowLimit: bundleRowLimit,
                     encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
                     compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                    sha256,
-                    body: compressedBody,
+                    sha256: encodedChunk.sha256,
+                    body: encodedChunk.body,
                     expiresAt,
                   });
                 }
@@ -762,6 +795,7 @@ export async function pull<
                       tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
                     rowFrameByteLength: bundleHeader.length,
                     rowFrameParts: [bundleHeader],
+                    inlineRows: null,
                   };
                 }
 
@@ -779,11 +813,11 @@ export async function pull<
                   );
 
                 const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
-                const bundleMaxBytes = Math.max(
-                  1,
-                  tableHandler.snapshotBundleMaxBytes ??
-                    DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES
-                );
+                const bundleMaxBytes = resolveSnapshotBundleMaxBytes({
+                  configuredMaxBytes: tableHandler.snapshotBundleMaxBytes,
+                  pageRowCount: page.rows?.length ?? 0,
+                  pageRowFrameBytes: rowFrames.length,
+                });
                 if (
                   activeBundle.pageCount > 0 &&
                   activeBundle.rowFrameByteLength + rowFrames.length >
@@ -801,7 +835,19 @@ export async function pull<
                       tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
                     rowFrameByteLength: bundleHeader.length,
                     rowFrameParts: [bundleHeader],
+                    inlineRows: null,
                   };
+                }
+
+                if (
+                  preferInlineBootstrapSnapshot &&
+                  activeBundle.pageCount === 0 &&
+                  page.nextCursor == null &&
+                  rowFrames.length <= DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES
+                ) {
+                  activeBundle.inlineRows = page.rows ?? [];
+                } else {
+                  activeBundle.inlineRows = null;
                 }
                 activeBundle.rowFrameParts.push(rowFrames);
                 activeBundle.rowFrameByteLength += rowFrames.length;
@@ -1058,12 +1104,14 @@ export async function pull<
               });
 
               if (!chunkRef) {
-                const sha256 = await sha256HexFromByteChunks(
-                  pending.rowFrameParts
-                );
                 if (chunkStorage.storeChunkStream) {
-                  const { stream: bodyStream, byteLength } =
-                    await gzipByteChunksToStream(pending.rowFrameParts);
+                  const {
+                    stream: bodyStream,
+                    byteLength,
+                    sha256,
+                  } = await encodeCompressedSnapshotChunkToStream(
+                    pending.rowFrameParts
+                  );
                   chunkRef = await chunkStorage.storeChunkStream({
                     partitionId: pending.cacheLookup.partitionId,
                     scopeKey: pending.cacheLookup.scopeKey,
@@ -1079,7 +1127,7 @@ export async function pull<
                     expiresAt: pending.expiresAt,
                   });
                 } else {
-                  const compressedBody = await gzipByteChunks(
+                  const encodedChunk = await encodeCompressedSnapshotChunk(
                     pending.rowFrameParts
                   );
                   chunkRef = await chunkStorage.storeChunk({
@@ -1091,8 +1139,8 @@ export async function pull<
                     rowLimit: pending.cacheLookup.rowLimit,
                     encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
                     compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                    sha256,
-                    body: compressedBody,
+                    sha256: encodedChunk.sha256,
+                    body: encodedChunk.body,
                     expiresAt: pending.expiresAt,
                   });
                 }

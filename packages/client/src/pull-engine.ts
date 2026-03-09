@@ -5,6 +5,7 @@
 import type {
   ScopeValues,
   SyncBootstrapState,
+  SyncChange,
   SyncPullRequest,
   SyncPullResponse,
   SyncPullSubscriptionResponse,
@@ -339,12 +340,12 @@ async function materializeSnapshotChunkRows(
 ): Promise<unknown[]> {
   const rawStream = await fetchSnapshotChunkStream(transport, request);
   const decodedStream = await maybeGunzipStream(rawStream);
-  let rowStream = decodedStream;
+  let streamForDecode = decodedStream;
   let chunkHashPromise: Promise<string> | null = null;
 
   if (expectedHash) {
-    const [hashStream, streamForRows] = decodedStream.tee();
-    rowStream = streamForRows;
+    const [hashStream, decodeStream] = decodedStream.tee();
+    streamForDecode = decodeStream;
     chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
       computeSha256Hex(bytes, sha256Override)
     );
@@ -355,7 +356,7 @@ async function materializeSnapshotChunkRows(
 
   try {
     for await (const batch of decodeSnapshotRowStreamBatches(
-      rowStream,
+      streamForDecode,
       SNAPSHOT_APPLY_BATCH_ROWS
     )) {
       rows.push(...batch);
@@ -462,19 +463,19 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
       scopeValues,
     });
     const decodedStream = await maybeGunzipStream(rawStream);
-    let applyStream = decodedStream;
+    let streamForDecode = decodedStream;
     let chunkHashPromise: Promise<string> | null = null;
 
     if (chunk.sha256) {
-      const [hashStream, streamForApply] = decodedStream.tee();
-      applyStream = streamForApply;
+      const [hashStream, decodeStream] = decodedStream.tee();
+      streamForDecode = decodeStream;
       chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
         computeSha256Hex(bytes, sha256Override)
       );
     }
 
     const rowBatchIterator = decodeSnapshotRowStreamBatches(
-      applyStream,
+      streamForDecode,
       SNAPSHOT_APPLY_BATCH_ROWS
     );
 
@@ -609,6 +610,69 @@ function scopeValuesEqual(left: ScopeValues, right: ScopeValues): boolean {
     normalizeScopeValuesForCompare(left) ===
     normalizeScopeValuesForCompare(right)
   );
+}
+
+function toScopeArray(value: string | string[]): string[] {
+  return Array.isArray(value) ? value : [value];
+}
+
+function toScopeValue(values: string[]): string | string[] {
+  return values.length === 1 ? values[0]! : values;
+}
+
+function resolveBootstrapClearScopes(
+  previous: ScopeValues,
+  next: ScopeValues
+): ScopeValues | 'none' | null {
+  const previousKeys = Object.keys(previous).sort();
+  const nextKeys = Object.keys(next).sort();
+
+  for (const nextKey of nextKeys) {
+    if (!previousKeys.includes(nextKey)) {
+      return null;
+    }
+  }
+
+  let changedKey: string | null = null;
+  const narrowed: ScopeValues = {};
+
+  for (const key of previousKeys) {
+    const previousRaw = previous[key];
+    if (!previousRaw) continue;
+
+    const previousValues = toScopeArray(previousRaw);
+    const nextRaw = next[key];
+    const nextValues = nextRaw ? toScopeArray(nextRaw) : [];
+    const previousSet = new Set(previousValues);
+    const nextSet = new Set(nextValues);
+    const removedValues = previousValues.filter((value) => !nextSet.has(value));
+    const addedValues = nextValues.filter((value) => !previousSet.has(value));
+
+    if (removedValues.length === 0 && addedValues.length === 0) {
+      narrowed[key] = previousRaw;
+      continue;
+    }
+
+    if (addedValues.length > 0) {
+      return null;
+    }
+
+    if (changedKey !== null) {
+      return null;
+    }
+
+    changedKey = key;
+    if (removedValues.length === 0) {
+      return 'none';
+    }
+    narrowed[key] = toScopeValue(removedValues);
+  }
+
+  if (changedKey === null) {
+    return 'none';
+  }
+
+  return narrowed;
 }
 
 export interface SyncPullOnceOptions {
@@ -750,6 +814,51 @@ export function createFollowupPullState(
     existingById: nextExistingById,
     stateId: pullState.stateId,
   };
+}
+
+export async function applyIncrementalCommitChanges<DB extends SyncClientDb>(
+  handlers: ClientHandlerCollection<DB>,
+  trx: Transaction<DB>,
+  args: {
+    changes: SyncChange[];
+    commitSeq?: number | null;
+    actorId?: string | null;
+    createdAt?: string | null;
+  }
+): Promise<void> {
+  const ctx = {
+    trx,
+    commitSeq: args.commitSeq ?? null,
+    actorId: args.actorId ?? null,
+    createdAt: args.createdAt ?? null,
+  };
+
+  for (let index = 0; index < args.changes.length; ) {
+    const firstChange = args.changes[index];
+    if (!firstChange) break;
+
+    const handler = getClientHandlerOrThrow(handlers, firstChange.table);
+    const contiguousTableChanges: SyncChange[] = [firstChange];
+    index += 1;
+
+    while (index < args.changes.length) {
+      const nextChange = args.changes[index];
+      if (!nextChange || nextChange.table !== firstChange.table) {
+        break;
+      }
+      contiguousTableChanges.push(nextChange);
+      index += 1;
+    }
+
+    if (handler.applyChanges && contiguousTableChanges.length > 1) {
+      await handler.applyChanges(ctx, contiguousTableChanges);
+      continue;
+    }
+
+    for (const change of contiguousTableChanges) {
+      await handler.applyChange(ctx, change);
+    }
+  }
 }
 
 /**
@@ -908,10 +1017,16 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 
       if (sub.bootstrap && prev?.table && scopesChanged) {
         try {
-          await getClientHandlerOrThrow(handlers, prev.table).clearAll({
-            trx,
-            scopes: previousScopes,
-          });
+          const clearScopes = resolveBootstrapClearScopes(
+            previousScopes,
+            nextScopes
+          );
+          if (clearScopes !== 'none') {
+            await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+              trx,
+              scopes: clearScopes ?? previousScopes,
+            });
+          }
         } catch {
           // ignore missing handler
         }
@@ -958,21 +1073,12 @@ export async function applyPullResponse<DB extends SyncClientDb>(
       } else {
         // Apply incremental changes
         for (const commit of sub.commits) {
-          const commitSeq = commit.commitSeq ?? null;
-          const actorId = commit.actorId ?? null;
-          const createdAt = commit.createdAt ?? null;
-          for (const change of commit.changes) {
-            const handler = getClientHandlerOrThrow(handlers, change.table);
-            await handler.applyChange(
-              {
-                trx,
-                commitSeq,
-                actorId,
-                createdAt,
-              },
-              change
-            );
-          }
+          await applyIncrementalCommitChanges(handlers, trx, {
+            changes: commit.changes,
+            commitSeq: commit.commitSeq ?? null,
+            actorId: commit.actorId ?? null,
+            createdAt: commit.createdAt ?? null,
+          });
         }
       }
 

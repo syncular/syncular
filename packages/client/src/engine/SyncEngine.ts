@@ -27,6 +27,7 @@ import type {
   SyncClientPluginContext,
   SyncClientWsDeliveryArgs,
 } from '../plugins/types';
+import { applyIncrementalCommitChanges } from '../pull-engine';
 import { syncPushOnce } from '../push-engine';
 import type {
   ConflictResultStatus,
@@ -2028,16 +2029,14 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               `Missing client table handler for WS change table "${change.table}"`
             );
           }
-          await handler.applyChange(
-            {
-              trx,
-              commitSeq,
-              actorId,
-              createdAt,
-            },
-            change
-          );
         }
+
+        await applyIncrementalCommitChanges(this.config.handlers, trx, {
+          changes,
+          commitSeq,
+          actorId,
+          createdAt,
+        });
 
         // Update subscription cursors
         const stateId = this.config.stateId ?? 'default';

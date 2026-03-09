@@ -7,6 +7,7 @@ import type { ClientHandlerCollection } from '../../../../packages/client/src/ha
 import { ensureClientSyncSchema } from '../../../../packages/client/src/migrate';
 import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
 import { createHttpTransport } from '../../../../packages/transport-http/src';
+import { createWebSocketTransport } from '../../../../packages/transport-ws/src';
 import {
   type ClientBlobStorage,
   createBlobPlugin,
@@ -188,6 +189,33 @@ describe('blob client plugin', () => {
     expect(transport.blobs).toBeDefined();
 
     httpClient.destroy();
+  });
+
+  it('attaches blob transport support for the standard WebSocket transport', async () => {
+    const transport = createWebSocketTransport({
+      baseUrl: 'https://example.invalid',
+      fetch: async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      WebSocketImpl: WebSocket,
+    });
+
+    const wsClient = new Client<TestDb>({
+      db,
+      transport,
+      tableHandlers: [],
+      clientId: 'client-ws',
+      actorId: 'u1',
+      subscriptions: [],
+      plugins: [createBlobPlugin({ storage: createMemoryBlobStorage() })],
+    });
+
+    expect(wsClient.blobs).toBeDefined();
+    expect(transport.blobs).toBeDefined();
+
+    wsClient.destroy();
   });
 
   it('requeues stale uploading rows and uploads them on the next queue run', async () => {

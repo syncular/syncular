@@ -117,6 +117,10 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
     return partitionId ?? 'default';
   }
 
+  function normalizeBlobSizeValue(value: number | string): number {
+    return typeof value === 'number' ? value : Number(value);
+  }
+
   function toStoragePartitionOptions(partitionId: string): {
     partitionId?: string;
   } {
@@ -318,7 +322,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       // Check upload record exists
       const uploadResult = await sql<{
         hash: string;
-        size: number;
+        size: number | string;
         mime_type: string;
         status: 'pending' | 'complete';
         actor_id: string;
@@ -343,12 +347,13 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       }
 
       if (upload.status === 'complete') {
+        const uploadSize = normalizeBlobSizeValue(upload.size);
         // Already complete - return metadata
         return {
           ok: true,
           metadata: {
             hash: upload.hash,
-            size: upload.size,
+            size: uploadSize,
             mimeType: upload.mime_type,
             createdAt: upload.created_at,
             uploadComplete: true,
@@ -363,12 +368,13 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       }
 
       // Optionally verify size matches
+      const uploadSize = normalizeBlobSizeValue(upload.size);
       if (adapter.getMetadata) {
         const meta = await adapter.getMetadata(hash, storagePartitionOptions);
-        if (meta && meta.size !== upload.size) {
+        if (meta && meta.size !== uploadSize) {
           return {
             ok: false,
-            error: `Size mismatch: expected ${upload.size}, got ${meta.size}`,
+            error: `Size mismatch: expected ${uploadSize}, got ${meta.size}`,
           };
         }
       }
@@ -385,7 +391,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
         ok: true,
         metadata: {
           hash: upload.hash,
-          size: upload.size,
+          size: uploadSize,
           mimeType: upload.mime_type,
           createdAt: upload.created_at,
           uploadComplete: true,
@@ -411,7 +417,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       // Get upload record (must be complete)
       const uploadResult = await sql<{
         hash: string;
-        size: number;
+        size: number | string;
         mime_type: string;
         status: 'pending' | 'complete';
         created_at: string;
@@ -445,7 +451,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
         expiresAt,
         metadata: {
           hash: upload.hash,
-          size: upload.size,
+          size: normalizeBlobSizeValue(upload.size),
           mimeType: upload.mime_type,
           createdAt: upload.created_at,
           uploadComplete: true,
@@ -468,7 +474,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       const uploadResult = await sql<{
         partition_id: string;
         hash: string;
-        size: number;
+        size: number | string;
         mime_type: string;
         status: 'pending' | 'complete';
         actor_id: string;
@@ -499,7 +505,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       return {
         partitionId: upload.partition_id,
         hash: upload.hash,
-        size: upload.size,
+        size: normalizeBlobSizeValue(upload.size),
         mimeType: upload.mime_type,
         status: upload.status,
         actorId: upload.actor_id,
@@ -524,7 +530,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
 
       const uploadResult = await sql<{
         hash: string;
-        size: number;
+        size: number | string;
         mime_type: string;
         status: 'pending' | 'complete';
         created_at: string;
@@ -544,7 +550,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
 
       return {
         hash: upload.hash,
-        size: upload.size,
+        size: normalizeBlobSizeValue(upload.size),
         mimeType: upload.mime_type,
         createdAt: upload.created_at,
         uploadComplete: true,

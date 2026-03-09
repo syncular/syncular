@@ -6,6 +6,7 @@ import {
   createServerHandlerCollection,
   ensureSyncSchema,
   pushCommit,
+  pushCommitBatch,
   type SyncCoreDb,
   type SyncServerPushPlugin,
 } from '@syncular/server';
@@ -853,5 +854,142 @@ describe('pushCommit', () => {
     expect(result.response.status).toBe('applied');
     expect(batchApplyCalls).toBe(0);
     expect(singleApplyCalls).toBe(3);
+  });
+
+  it('applies multiple commits through pushCommitBatch', async () => {
+    const handlers = makeHandlers();
+
+    const results = await pushCommitBatch({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      requests: [
+        {
+          clientId: 'c1',
+          clientCommitId: 'batch-commit-1',
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: 'batched-task-1',
+              op: 'upsert',
+              payload: { user_id: 'u1', title: 'Batch 1' },
+              base_version: null,
+            },
+          ],
+        },
+        {
+          clientId: 'c1',
+          clientCommitId: 'batch-commit-2',
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: 'batched-task-2',
+              op: 'upsert',
+              payload: { user_id: 'u1', title: 'Batch 2' },
+              base_version: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results[0]?.response.status).toBe('applied');
+    expect(results[1]?.response.status).toBe('applied');
+
+    const rows = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .orderBy('id')
+      .execute();
+    expect(rows.map((row) => row.id)).toEqual([
+      'batched-task-1',
+      'batched-task-2',
+    ]);
+  });
+
+  it('continues through rejected commits in pushCommitBatch', async () => {
+    const guardedHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      authorize: async (_ctx, op) => {
+        if (op.op !== 'upsert') return true;
+        return op.row_id === 'blocked-task'
+          ? { error: 'BLOCKED', code: 'BLOCKED' }
+          : true;
+      },
+    });
+    const handlers = createServerHandlerCollection<ServerDb>([guardedHandler]);
+
+    const results = await pushCommitBatch({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      requests: [
+        {
+          clientId: 'c1',
+          clientCommitId: 'batch-ok-1',
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: 'allowed-task-1',
+              op: 'upsert',
+              payload: { user_id: 'u1', title: 'Allowed 1' },
+              base_version: null,
+            },
+          ],
+        },
+        {
+          clientId: 'c1',
+          clientCommitId: 'batch-reject',
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: 'blocked-task',
+              op: 'upsert',
+              payload: { user_id: 'u1', title: 'Blocked' },
+              base_version: null,
+            },
+          ],
+        },
+        {
+          clientId: 'c1',
+          clientCommitId: 'batch-ok-2',
+          schemaVersion: 1,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: 'allowed-task-2',
+              op: 'upsert',
+              payload: { user_id: 'u1', title: 'Allowed 2' },
+              base_version: null,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(results.map((result) => result.response.status)).toEqual([
+      'applied',
+      'rejected',
+      'applied',
+    ]);
+
+    const rows = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .orderBy('id')
+      .execute();
+    expect(rows.map((row) => row.id)).toEqual([
+      'allowed-task-1',
+      'allowed-task-2',
+    ]);
   });
 });
