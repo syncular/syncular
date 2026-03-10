@@ -7,7 +7,11 @@ import {
   createServerHandlerCollection,
 } from '../handlers';
 import type { SyncCoreDb } from '../schema';
-import { createDatabaseScopeCache, createDefaultScopeCacheKey } from './cache';
+import {
+  createDatabaseScopeCache,
+  createDefaultScopeCacheKey,
+  createMemoryScopeCache,
+} from './cache';
 import { resolveEffectiveScopesForSubscriptions } from './resolve';
 
 interface TasksTable {
@@ -143,6 +147,72 @@ describe('resolveEffectiveScopesForSubscriptions cache behavior', () => {
     expect(cacheSetCalls).toBe(1);
     expect(resolved).toHaveLength(2);
     expect(resolved.every((entry) => entry.status === 'active')).toBe(true);
+  });
+
+  it('dedupes concurrent resolveScopes calls through shared memory cache', async () => {
+    let resolveCalls = 0;
+    let releaseLoad: (() => void) | null = null;
+    const loadReleased = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    let firstLoadStarted = false;
+    let markFirstLoadStarted: (() => void) | null = null;
+    const firstLoadStartedPromise = new Promise<void>((resolve) => {
+      markFirstLoadStarted = resolve;
+    });
+
+    const handler = createServerHandler<TestDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => {
+        resolveCalls += 1;
+        if (!firstLoadStarted) {
+          firstLoadStarted = true;
+          if (!markFirstLoadStarted) {
+            throw new Error('Missing first-load start resolver');
+          }
+          markFirstLoadStarted();
+          await loadReleased;
+        }
+        return { user_id: [ctx.actorId] };
+      },
+    });
+    const handlers = createServerHandlerCollection<TestDb>([handler]);
+    const scopeCache = createMemoryScopeCache();
+
+    const firstResolve = resolveEffectiveScopesForSubscriptions({
+      db,
+      auth: { actorId: 'u1' },
+      handlers,
+      scopeCache,
+      subscriptions: [
+        { id: 'sub-1', table: 'tasks', scopes: { user_id: 'u1' }, cursor: -1 },
+      ],
+    });
+    await firstLoadStartedPromise;
+    const secondResolve = resolveEffectiveScopesForSubscriptions({
+      db,
+      auth: { actorId: 'u1' },
+      handlers,
+      scopeCache,
+      subscriptions: [
+        { id: 'sub-2', table: 'tasks', scopes: { user_id: 'u1' }, cursor: -1 },
+      ],
+    });
+
+    if (!releaseLoad) {
+      throw new Error('Missing load-release resolver');
+    }
+    releaseLoad();
+
+    const [firstResult, secondResult] = await Promise.all([
+      firstResolve,
+      secondResolve,
+    ]);
+
+    expect(resolveCalls).toBe(1);
+    expect(firstResult[0]?.status).toBe('active');
+    expect(secondResult[0]?.status).toBe('active');
   });
 
   it('roundtrips values through database scope cache', async () => {

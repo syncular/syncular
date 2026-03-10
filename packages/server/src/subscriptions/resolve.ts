@@ -177,72 +177,99 @@ export async function resolveEffectiveScopesForSubscriptions<
     if (requestScopeCache.has(scopeCacheKey)) {
       allowed = requestScopeCache.get(scopeCacheKey) ?? null;
     } else {
-      allowed = null;
-      let sharedCacheHit = false;
+      let resolveFailed = false;
 
-      if (args.scopeCache) {
+      const loadAllowedScopes = async (): Promise<ScopeValues> => {
         try {
-          const cachedAllowed = await args.scopeCache.get({
-            db: args.db,
-            auth: args.auth,
-            table: sub.table,
-            cacheKey: scopeCacheKey,
-          });
-          if (cachedAllowed !== null) {
-            allowed = cachedAllowed;
-            sharedCacheHit = true;
-          }
-        } catch (cacheErr) {
-          console.error(
-            `[scopeCache.get] Failed for table ${sub.table}, subscription ${sub.id}:`,
-            cacheErr
-          );
-        }
-      }
-
-      if (!sharedCacheHit) {
-        try {
-          allowed = await handler.resolveScopes({
+          return await handler.resolveScopes({
             db: args.db,
             actorId: args.auth.actorId,
             auth: args.auth,
           });
         } catch (resolveErr) {
-          // Scope resolution failed - mark subscription as revoked
-          // rather than failing the entire pull
+          resolveFailed = true;
           console.error(
             `[resolveScopes] Failed for table ${sub.table}, subscription ${sub.id}:`,
             resolveErr
           );
-          requestScopeCache.set(scopeCacheKey, null);
-          out.push({
-            id: sub.id,
-            table: sub.table,
-            scopes: {},
-            params: sub.params,
-            cursor: sub.cursor,
-            bootstrapState: sub.bootstrapState ?? null,
-            status: 'revoked',
-          });
-          continue;
+          throw resolveErr;
         }
+      };
 
-        if (args.scopeCache && allowed !== null) {
+      if (args.scopeCache?.getOrResolve) {
+        try {
+          allowed = await args.scopeCache.getOrResolve({
+            db: args.db,
+            auth: args.auth,
+            table: sub.table,
+            cacheKey: scopeCacheKey,
+            load: loadAllowedScopes,
+          });
+        } catch {
+          allowed = null;
+        }
+      } else {
+        allowed = null;
+        let sharedCacheHit = false;
+
+        if (args.scopeCache) {
           try {
-            await args.scopeCache.set({
+            const cachedAllowed = await args.scopeCache.get({
               db: args.db,
               auth: args.auth,
               table: sub.table,
               cacheKey: scopeCacheKey,
-              scopes: allowed,
             });
+            if (cachedAllowed !== null) {
+              allowed = cachedAllowed;
+              sharedCacheHit = true;
+            }
           } catch (cacheErr) {
             console.error(
-              `[scopeCache.set] Failed for table ${sub.table}, subscription ${sub.id}:`,
+              `[scopeCache.get] Failed for table ${sub.table}, subscription ${sub.id}:`,
               cacheErr
             );
           }
         }
+
+        if (!sharedCacheHit) {
+          try {
+            allowed = await loadAllowedScopes();
+          } catch {
+            allowed = null;
+          }
+
+          if (args.scopeCache && allowed !== null) {
+            try {
+              await args.scopeCache.set({
+                db: args.db,
+                auth: args.auth,
+                table: sub.table,
+                cacheKey: scopeCacheKey,
+                scopes: allowed,
+              });
+            } catch (cacheErr) {
+              console.error(
+                `[scopeCache.set] Failed for table ${sub.table}, subscription ${sub.id}:`,
+                cacheErr
+              );
+            }
+          }
+        }
+      }
+
+      if (resolveFailed) {
+        requestScopeCache.set(scopeCacheKey, null);
+        out.push({
+          id: sub.id,
+          table: sub.table,
+          scopes: {},
+          params: sub.params,
+          cursor: sub.cursor,
+          bootstrapState: sub.bootstrapState ?? null,
+          status: 'revoked',
+        });
+        continue;
       }
 
       requestScopeCache.set(scopeCacheKey, allowed);
