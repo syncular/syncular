@@ -1,5 +1,7 @@
 import {
+  bytesToReadableStream,
   captureSyncException,
+  concatByteChunks,
   countSyncMetric,
   distributionSyncMetric,
   encodeSnapshotRowFrames,
@@ -79,107 +81,6 @@ function createPullBootstrapTimings(): PullBootstrapTimings {
   };
 }
 
-function concatByteChunks(chunks: readonly Uint8Array[]): Uint8Array {
-  if (chunks.length === 1) {
-    return chunks[0] ?? new Uint8Array();
-  }
-
-  let total = 0;
-  for (const chunk of chunks) {
-    total += chunk.length;
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
-}
-
-function byteChunksToStream(
-  chunks: readonly Uint8Array[]
-): ReadableStream<BufferSource> {
-  return new ReadableStream<BufferSource>({
-    start(controller) {
-      for (const chunk of chunks) {
-        if (chunk.length === 0) continue;
-        controller.enqueue(chunk.slice());
-      }
-      controller.close();
-    },
-  });
-}
-
-function bufferSourceToUint8Array(chunk: BufferSource): Uint8Array {
-  if (chunk instanceof Uint8Array) {
-    return chunk;
-  }
-  if (chunk instanceof ArrayBuffer) {
-    return new Uint8Array(chunk);
-  }
-  return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-}
-
-async function streamToBytes(
-  stream: ReadableStream<BufferSource>
-): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      const bytes = bufferSourceToUint8Array(value);
-      if (bytes.length === 0) continue;
-      chunks.push(bytes);
-      total += bytes.length;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  if (chunks.length === 0) return new Uint8Array();
-  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return merged;
-}
-
-function bufferSourceStreamToUint8ArrayStream(
-  stream: ReadableStream<BufferSource>
-): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const reader = stream.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          const bytes = bufferSourceToUint8Array(value);
-          if (bytes.length === 0) continue;
-          controller.enqueue(bytes);
-        }
-        controller.close();
-      } catch (err) {
-        controller.error(err);
-      } finally {
-        reader.releaseLock();
-      }
-    },
-  });
-}
-
 let nodeCryptoModulePromise: Promise<
   typeof import('node:crypto') | null
 > | null = null;
@@ -212,13 +113,6 @@ async function sha256HexFromByteChunks(
 async function gzipByteChunks(
   chunks: readonly Uint8Array[]
 ): Promise<Uint8Array> {
-  if (typeof CompressionStream !== 'undefined') {
-    const stream = byteChunksToStream(chunks).pipeThrough(
-      new CompressionStream('gzip')
-    );
-    return streamToBytes(stream);
-  }
-
   return gzipBytes(concatByteChunks(chunks));
 }
 
@@ -253,9 +147,7 @@ async function encodeCompressedSnapshotChunkToStream(
 }> {
   const encoded = await encodeCompressedSnapshotChunk(chunks);
   return {
-    stream: bufferSourceStreamToUint8ArrayStream(
-      byteChunksToStream([encoded.body])
-    ),
+    stream: bytesToReadableStream(encoded.body),
     byteLength: encoded.body.length,
     sha256: encoded.sha256,
     gzipMs: encoded.gzipMs,

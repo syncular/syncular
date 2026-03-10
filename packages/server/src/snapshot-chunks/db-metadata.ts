@@ -7,7 +7,9 @@
 
 import {
   type BlobStorageAdapter,
+  bytesToReadableStream,
   randomId,
+  readAllBytesFromStream,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   type SyncSnapshotChunkCompression,
@@ -114,43 +116,6 @@ export function createDbMetadataChunkStorage(
       `${metadata.encoding}:${metadata.compression}:${metadata.sha256}`
     );
     return `sha256:${digest}`;
-  }
-
-  function bytesToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(bytes);
-        controller.close();
-      },
-    });
-  }
-
-  async function streamToBytes(
-    stream: ReadableStream<Uint8Array>
-  ): Promise<Uint8Array> {
-    const reader = stream.getReader();
-    try {
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        chunks.push(value);
-        total += value.length;
-      }
-
-      const out = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        out.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return out;
-    } finally {
-      reader.releaseLock();
-    }
   }
 
   async function streamByteLength(
@@ -323,7 +288,7 @@ export function createDbMetadataChunkStorage(
 
     if (blobAdapter.get) {
       const bytes = await blobAdapter.get(blobHash);
-      return bytes ? bytesToStream(bytes) : null;
+      return bytes ? bytesToReadableStream(bytes) : null;
     }
 
     throw new Error(
@@ -357,7 +322,7 @@ export function createDbMetadataChunkStorage(
             contentLength: body.length,
           });
         } else if (blobAdapter.putStream) {
-          await blobAdapter.putStream(blobHash, bytesToStream(body), {
+          await blobAdapter.putStream(blobHash, bytesToReadableStream(body), {
             disableChecksum: true,
             byteLength: body.length,
             contentLength: body.length,
@@ -429,7 +394,7 @@ export function createDbMetadataChunkStorage(
           ]);
           observedByteLength = countedByteLength;
         } else if (blobAdapter.put) {
-          const body = await streamToBytes(bodyStream);
+          const body = await readAllBytesFromStream(bodyStream);
           await blobAdapter.put(blobHash, body);
           observedByteLength = body.length;
         } else {
@@ -490,7 +455,7 @@ export function createDbMetadataChunkStorage(
     async readChunk(chunkId: string): Promise<Uint8Array | null> {
       const stream = await readChunkStreamById(chunkId);
       if (!stream) return null;
-      return streamToBytes(stream);
+      return readAllBytesFromStream(stream);
     },
 
     async readChunkStream(

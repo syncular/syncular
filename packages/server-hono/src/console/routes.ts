@@ -15,7 +15,7 @@
  * - DELETE /clients/:id   - Evict client
  */
 
-import { logSyncEvent } from '@syncular/core';
+import { logSyncEvent, sha256Hex } from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   coerceNumber,
@@ -3817,11 +3817,7 @@ function generateSecretKey(keyType: ApiKeyType): string {
 }
 
 async function hashApiKey(secretKey: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(secretKey);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = new Uint8Array(hashBuffer);
-  return Array.from(hashArray, (b) => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(secretKey);
 }
 
 /**

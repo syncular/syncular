@@ -9,14 +9,14 @@
  * - GET /blobs/:hash/download - Direct download (for database adapter)
  */
 
-import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   BlobUploadCompleteResponseSchema,
   BlobUploadInitRequestSchema,
   BlobUploadInitResponseSchema,
+  createIncrementalSha256,
   ErrorResponseSchema,
   parseBlobHash,
+  sha256Hex,
 } from '@syncular/core';
 import type {
   BlobManager,
@@ -446,7 +446,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         const storagePartitionOptions = { partitionId: payload.partitionId };
 
         const streamingUpload = blobManager.adapter.putStream
-          ? createValidatedUploadStream(c.req.raw, {
+          ? await createValidatedUploadStream(c.req.raw, {
               expectedSize: uploadRecord.size,
               maxSize: maxUploadSize,
             })
@@ -687,36 +687,19 @@ async function deleteUploadedBlobBestEffort(
   }
 }
 
-interface IncrementalSha256 {
-  update(chunk: Uint8Array): void;
-  digestHex(): string;
-}
-
-function createIncrementalSha256(): IncrementalSha256 {
-  const hasher = sha256.create();
-  return {
-    update(chunk) {
-      hasher.update(chunk);
-    },
-    digestHex() {
-      return bytesToHex(hasher.digest());
-    },
-  };
-}
-
 interface ValidatedUploadStream {
   stream: ReadableStream<Uint8Array>;
   hashHex: Promise<string>;
 }
 
-function createValidatedUploadStream(
+async function createValidatedUploadStream(
   request: Request,
   args: { expectedSize: number; maxSize: number }
-): ValidatedUploadStream | null {
+): Promise<ValidatedUploadStream | null> {
   const body = request.body;
   if (!body) return null;
 
-  const hasher = createIncrementalSha256();
+  const hasher = await createIncrementalSha256();
   const reader = body.getReader();
 
   let resolveHash: ((hashHex: string) => void) | null = null;
@@ -735,12 +718,6 @@ function createValidatedUploadStream(
     rejectHash?.(error);
   };
 
-  const complete = (): void => {
-    if (finalized) return;
-    finalized = true;
-    resolveHash?.(hasher.digestHex());
-  };
-
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
@@ -755,7 +732,21 @@ function createValidatedUploadStream(
             controller.error(sizeError);
             return;
           }
-          complete();
+          if (!finalized) {
+            try {
+              const hash = await hasher.digestHex();
+              finalized = true;
+              resolveHash?.(hash);
+            } catch (err) {
+              const hashError =
+                err instanceof Error
+                  ? err
+                  : new Error('Failed to finalize upload body hash');
+              fail(hashError);
+              controller.error(hashError);
+              return;
+            }
+          }
           controller.close();
           return;
         }
@@ -850,11 +841,5 @@ async function readRequestBodyWithLimit(
 }
 
 async function computeSha256Hash(data: Uint8Array): Promise<string> {
-  // Create a new ArrayBuffer copy to satisfy TypeScript's strict typing
-  const buffer = new Uint8Array(data).buffer as ArrayBuffer;
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-  const hashArray = new Uint8Array(hashBuffer);
-  return Array.from(hashArray)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  return sha256Hex(data);
 }
