@@ -36,7 +36,7 @@ export type ResolveAuthRetry = (
   options?: SyncTransportOptions
 ) => Promise<boolean>;
 
-const TRANSIENT_NETWORK_RETRY_DELAY_MS = 75;
+const TRANSIENT_NETWORK_RETRY_DELAYS_MS = [75, 150, 300] as const;
 
 class ApiResponseError extends Error {
   constructor(
@@ -126,21 +126,35 @@ export async function executeWithTransientNetworkRetry<T>(args: {
   execute: (signal?: AbortSignal) => Promise<T>;
   options?: SyncTransportOptions;
 }): Promise<T> {
-  try {
-    return await args.execute(args.options?.signal);
-  } catch (error) {
-    if (!isTransientNetworkError(error) || args.options?.signal?.aborted) {
-      throw error;
+  let lastError: unknown;
+
+  for (
+    let attemptIndex = 0;
+    attemptIndex <= TRANSIENT_NETWORK_RETRY_DELAYS_MS.length;
+    attemptIndex += 1
+  ) {
+    try {
+      return await args.execute(args.options?.signal);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientNetworkError(error) || args.options?.signal?.aborted) {
+        throw error;
+      }
+
+      const delayMs = TRANSIENT_NETWORK_RETRY_DELAYS_MS[attemptIndex];
+      if (delayMs === undefined) {
+        throw error;
+      }
+
+      await delay(delayMs);
+
+      if (args.options?.signal?.aborted) {
+        throw error;
+      }
     }
-
-    await delay(TRANSIENT_NETWORK_RETRY_DELAY_MS);
-
-    if (args.options?.signal?.aborted) {
-      throw error;
-    }
-
-    return args.execute(args.options?.signal);
   }
+
+  throw lastError;
 }
 
 export const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';

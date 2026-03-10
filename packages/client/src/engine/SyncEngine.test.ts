@@ -908,6 +908,94 @@ describe('SyncEngine WS inline apply', () => {
     }
   });
 
+  it('uses deterministic jitter for realtime reconnect sync and catchup scheduling', () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const delays: number[] = [];
+    const timeoutHandles: Array<ReturnType<typeof setTimeout>> = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    const patchedSetTimeout: typeof globalThis.setTimeout = (
+      _handler,
+      timeout,
+      ..._args
+    ) => {
+      const delayMs = typeof timeout === 'number' ? timeout : 0;
+      delays.push(delayMs);
+      const handle = originalSetTimeout(() => {}, 60_000);
+      timeoutHandles.push(handle);
+      return handle;
+    };
+    globalThis.setTimeout = patchedSetTimeout;
+
+    try {
+      const engineA = new SyncEngine<TestDb>({
+        db,
+        transport: noopTransport,
+        handlers,
+        actorId: 'u1',
+        clientId: 'client-reconnect-jitter',
+        subscriptions: [],
+        stateId: 'default',
+      });
+      const engineB = new SyncEngine<TestDb>({
+        db,
+        transport: noopTransport,
+        handlers,
+        actorId: 'u1',
+        clientId: 'client-reconnect-jitter',
+        subscriptions: [],
+        stateId: 'default',
+      });
+
+      const scheduleReconnectSyncA = Reflect.get(
+        engineA,
+        'scheduleRealtimeReconnectSync'
+      );
+      const scheduleReconnectCatchupA = Reflect.get(
+        engineA,
+        'scheduleRealtimeReconnectCatchupSync'
+      );
+      const scheduleReconnectSyncB = Reflect.get(
+        engineB,
+        'scheduleRealtimeReconnectSync'
+      );
+
+      if (
+        typeof scheduleReconnectSyncA !== 'function' ||
+        typeof scheduleReconnectCatchupA !== 'function' ||
+        typeof scheduleReconnectSyncB !== 'function'
+      ) {
+        throw new Error('Expected reconnect scheduling helpers to be callable');
+      }
+
+      scheduleReconnectSyncA.call(engineA);
+      scheduleReconnectCatchupA.call(engineA);
+      scheduleReconnectSyncB.call(engineB);
+
+      expect(delays.length).toBe(3);
+      expect(delays[0]).toBeGreaterThanOrEqual(0);
+      expect(delays[0]).toBeLessThanOrEqual(250);
+      expect(delays[1]).toBeGreaterThanOrEqual(500);
+      expect(delays[1]).toBeLessThanOrEqual(750);
+      expect(delays[2]).toBe(delays[0]);
+
+      engineA.destroy();
+      engineB.destroy();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      for (const handle of timeoutHandles) {
+        clearTimeout(handle);
+      }
+    }
+  });
+
   it('keeps push failures retryable on 503 and preserves pending outbox state', async () => {
     let sawPushRequest = false;
     const unavailablePushTransport: SyncTransport = {
