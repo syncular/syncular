@@ -37,6 +37,11 @@ export interface ScopeCacheBackend {
   get<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
     args: ScopeCacheContext<DB, Auth>
   ): Promise<ScopeValues | null>;
+  getOrResolve?<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
+    args: ScopeCacheContext<DB, Auth> & {
+      load: () => Promise<ScopeValues | null>;
+    }
+  ): Promise<ScopeValues | null>;
   set<DB extends SyncCoreDb, Auth extends SyncServerAuth>(
     args: ScopeCacheSetContext<DB, Auth>
   ): Promise<void>;
@@ -117,6 +122,10 @@ export function createMemoryScopeCache(
     options?.maxEntries ?? DEFAULT_MEMORY_SCOPE_CACHE_MAX_ENTRIES;
   const now = options?.now ?? Date.now;
   const buckets = new WeakMap<object, Map<string, MemoryScopeCacheEntry>>();
+  const inflightByDb = new WeakMap<
+    object,
+    Map<string, Promise<ScopeValues | null>>
+  >();
 
   function getBucket(db: object): Map<string, MemoryScopeCacheEntry> {
     const existing = buckets.get(db);
@@ -125,6 +134,18 @@ export function createMemoryScopeCache(
     }
     const created = new Map<string, MemoryScopeCacheEntry>();
     buckets.set(db, created);
+    return created;
+  }
+
+  function getInflightBucket(
+    db: object
+  ): Map<string, Promise<ScopeValues | null>> {
+    const existing = inflightByDb.get(db);
+    if (existing) {
+      return existing;
+    }
+    const created = new Map<string, Promise<ScopeValues | null>>();
+    inflightByDb.set(db, created);
     return created;
   }
 
@@ -154,6 +175,43 @@ export function createMemoryScopeCache(
       }
 
       return cloneScopeValues(entry.scopes);
+    },
+    async getOrResolve(args) {
+      const cached = await this.get(args);
+      if (cached !== null) {
+        return cached;
+      }
+
+      const inflightBucket = getInflightBucket(args.db);
+      const inflight = inflightBucket.get(args.cacheKey);
+      if (inflight) {
+        const resolved = await inflight;
+        return resolved ? cloneScopeValues(resolved) : null;
+      }
+
+      const pending = args
+        .load()
+        .then(async (resolved) => {
+          if (resolved !== null && ttlMs > 0) {
+            const bucket = getBucket(args.db);
+            if (bucket.has(args.cacheKey)) {
+              bucket.delete(args.cacheKey);
+            }
+            bucket.set(args.cacheKey, {
+              scopes: cloneScopeValues(resolved),
+              expiresAt: now() + ttlMs,
+            });
+            evictOldest(bucket);
+          }
+          return resolved;
+        })
+        .finally(() => {
+          inflightBucket.delete(args.cacheKey);
+        });
+
+      inflightBucket.set(args.cacheKey, pending);
+      const resolved = await pending;
+      return resolved ? cloneScopeValues(resolved) : null;
     },
     async set(args) {
       const bucket = getBucket(args.db);
