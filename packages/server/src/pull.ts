@@ -20,7 +20,11 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import type { DbExecutor, ServerSyncDialect } from './dialect/types';
+import type {
+  DbExecutor,
+  IncrementalPullRow,
+  ServerSyncDialect,
+} from './dialect/types';
 import {
   getServerBootstrapOrderFor,
   type ServerHandlerCollection,
@@ -45,6 +49,8 @@ const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
 const MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 4 * 1024 * 1024;
 const DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES = 256 * 1024;
 const EMPTY_SNAPSHOT_ROW_FRAMES = encodeSnapshotRows([]);
+const MAX_PULL_TRANSACTION_RETRIES = 2;
+const PULL_TRANSACTION_RETRY_DELAY_MS = 15;
 
 interface PullBootstrapTimings {
   snapshotQueryMs: number;
@@ -348,6 +354,20 @@ function sanitizeLimit(
   return Math.max(min, Math.min(max, value));
 }
 
+function isSerializablePullError(error: Error): boolean {
+  const withCode = error as Error & { code?: string };
+  return (
+    withCode.code === '40001' ||
+    error.message.toLowerCase().includes('could not serialize access')
+  );
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 /**
  * Merge all scope values into a flat ScopeValues for cursor tracking.
  */
@@ -567,9 +587,6 @@ export async function pull<
           50
         );
         const dedupeRows = request.dedupeRows === true;
-        const pendingExternalChunkWrites: PendingExternalChunkWrite[] = [];
-        const bootstrapTimings = createPullBootstrapTimings();
-
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
           db,
@@ -579,709 +596,769 @@ export async function pull<
           scopeCache: args.scopeCache ?? defaultScopeCache,
         });
 
-        const result = await dialect.executeInTransaction(db, async (trx) => {
-          await dialect.setRepeatableRead(trx);
+        for (
+          let attemptIndex = 0;
+          attemptIndex < MAX_PULL_TRANSACTION_RETRIES;
+          attemptIndex += 1
+        ) {
+          const pendingExternalChunkWrites: PendingExternalChunkWrite[] = [];
+          const bootstrapTimings = createPullBootstrapTimings();
 
-          const maxCommitSeq = await dialect.readMaxCommitSeq(trx, {
-            partitionId,
-          });
-          const minCommitSeq = await dialect.readMinCommitSeq(trx, {
-            partitionId,
-          });
+          try {
+            const result = await dialect.executeInTransaction(
+              db,
+              async (trx) => {
+                await dialect.setRepeatableRead(trx);
 
-          const subResponses: SyncPullSubscriptionResponse[] = [];
-          const activeSubscriptions: { scopes: ScopeValues }[] = [];
-          const nextCursors: number[] = [];
-
-          // Detect external data changes (synthetic commits from notifyExternalDataChange)
-          // Compute minimum cursor across all active subscriptions to scope the query.
-          let minSubCursor = Number.MAX_SAFE_INTEGER;
-          const activeTables = new Set<string>();
-          for (const sub of resolved) {
-            if (
-              sub.status === 'revoked' ||
-              Object.keys(sub.scopes).length === 0
-            )
-              continue;
-            activeTables.add(sub.table);
-            const cursor = Math.max(-1, sub.cursor ?? -1);
-            if (cursor >= 0 && cursor < minSubCursor) {
-              minSubCursor = cursor;
-            }
-          }
-
-          const maxExternalCommitByTable =
-            minSubCursor < Number.MAX_SAFE_INTEGER && minSubCursor >= 0
-              ? await readLatestExternalCommitByTable(trx, {
+                const maxCommitSeq = await dialect.readMaxCommitSeq(trx, {
                   partitionId,
-                  afterCursor: minSubCursor,
-                  tables: Array.from(activeTables),
-                })
-              : new Map<string, number>();
-
-          for (const sub of resolved) {
-            const cursor = Math.max(-1, sub.cursor ?? -1);
-            // Validate table handler exists (throws if not registered)
-            if (!args.handlers.byTable.has(sub.table)) {
-              throw new Error(`Unknown table: ${sub.table}`);
-            }
-
-            if (
-              sub.status === 'revoked' ||
-              Object.keys(sub.scopes).length === 0
-            ) {
-              subResponses.push({
-                id: sub.id,
-                status: 'revoked',
-                scopes: {},
-                bootstrap: false,
-                nextCursor: cursor,
-                commits: [],
-              });
-              continue;
-            }
-
-            const effectiveScopes = sub.scopes;
-            activeSubscriptions.push({ scopes: effectiveScopes });
-            const latestExternalCommitForTable = maxExternalCommitByTable.get(
-              sub.table
-            );
-
-            const needsBootstrap =
-              sub.bootstrapState != null ||
-              cursor < 0 ||
-              cursor > maxCommitSeq ||
-              (minCommitSeq > 0 && cursor < minCommitSeq - 1) ||
-              (latestExternalCommitForTable !== undefined &&
-                latestExternalCommitForTable > cursor);
-
-            if (needsBootstrap) {
-              const tables = getServerBootstrapOrderFor(
-                args.handlers,
-                sub.table
-              ).map((handler) => handler.table);
-              const preferInlineBootstrapSnapshot =
-                cursor >= 0 ||
-                sub.bootstrapState != null ||
-                (latestExternalCommitForTable !== undefined &&
-                  latestExternalCommitForTable > cursor);
-
-              const initState: SyncBootstrapState = {
-                asOfCommitSeq: maxCommitSeq,
-                tables,
-                tableIndex: 0,
-                rowCursor: null,
-              };
-
-              const requestedState = sub.bootstrapState ?? null;
-              const state =
-                requestedState &&
-                typeof requestedState.asOfCommitSeq === 'number' &&
-                Array.isArray(requestedState.tables) &&
-                typeof requestedState.tableIndex === 'number'
-                  ? (requestedState as SyncBootstrapState)
-                  : initState;
-
-              // If the bootstrap state's asOfCommitSeq is no longer catch-up-able, restart bootstrap.
-              const effectiveState =
-                state.asOfCommitSeq < minCommitSeq - 1 ? initState : state;
-
-              const tableName =
-                effectiveState.tables[effectiveState.tableIndex];
-
-              // No tables (or ran past the end): treat bootstrap as complete.
-              if (!tableName) {
-                subResponses.push({
-                  id: sub.id,
-                  status: 'active',
-                  scopes: effectiveScopes,
-                  bootstrap: true,
-                  bootstrapState: null,
-                  nextCursor: effectiveState.asOfCommitSeq,
-                  commits: [],
-                  snapshots: [],
                 });
-                nextCursors.push(effectiveState.asOfCommitSeq);
-                continue;
-              }
+                const minCommitSeq = await dialect.readMinCommitSeq(trx, {
+                  partitionId,
+                });
 
-              const snapshots: SyncSnapshot[] = [];
-              let nextState: SyncBootstrapState | null = effectiveState;
-              const cacheKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
-                effectiveScopes
-              )}`;
+                const subResponses: SyncPullSubscriptionResponse[] = [];
+                const activeSubscriptions: { scopes: ScopeValues }[] = [];
+                const nextCursors: number[] = [];
 
-              interface SnapshotBundle {
-                table: string;
-                startCursor: string | null;
-                isFirstPage: boolean;
-                isLastPage: boolean;
-                pageCount: number;
-                ttlMs: number;
-                rowFrameByteLength: number;
-                rowFrameParts: Uint8Array[];
-                inlineRows: unknown[] | null;
-              }
-
-              const flushSnapshotBundle = async (
-                bundle: SnapshotBundle
-              ): Promise<void> => {
-                if (bundle.inlineRows) {
-                  snapshots.push({
-                    table: bundle.table,
-                    rows: bundle.inlineRows,
-                    isFirstPage: bundle.isFirstPage,
-                    isLastPage: bundle.isLastPage,
-                  });
-                  return;
+                // Detect external data changes (synthetic commits from notifyExternalDataChange)
+                // Compute minimum cursor across all active subscriptions to scope the query.
+                let minSubCursor = Number.MAX_SAFE_INTEGER;
+                const activeTables = new Set<string>();
+                for (const sub of resolved) {
+                  if (
+                    sub.status === 'revoked' ||
+                    Object.keys(sub.scopes).length === 0
+                  )
+                    continue;
+                  activeTables.add(sub.table);
+                  const cursor = Math.max(-1, sub.cursor ?? -1);
+                  if (cursor >= 0 && cursor < minSubCursor) {
+                    minSubCursor = cursor;
+                  }
                 }
 
-                const nowIso = new Date().toISOString();
-                const bundleRowLimit = Math.max(
-                  1,
-                  limitSnapshotRows * bundle.pageCount
-                );
+                const maxExternalCommitByTable =
+                  minSubCursor < Number.MAX_SAFE_INTEGER && minSubCursor >= 0
+                    ? await readLatestExternalCommitByTable(trx, {
+                        partitionId,
+                        afterCursor: minSubCursor,
+                        tables: Array.from(activeTables),
+                      })
+                    : new Map<string, number>();
 
-                const cacheLookupStartedAt = Date.now();
-                const cached = await readSnapshotChunkRefByPageKey(trx, {
-                  partitionId,
-                  scopeKey: cacheKey,
-                  scope: bundle.table,
-                  asOfCommitSeq: effectiveState.asOfCommitSeq,
-                  rowCursor: bundle.startCursor,
-                  rowLimit: bundleRowLimit,
-                  encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                  compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                  nowIso,
-                });
-                bootstrapTimings.chunkCacheLookupMs += Math.max(
-                  0,
-                  Date.now() - cacheLookupStartedAt
-                );
+                for (const sub of resolved) {
+                  const cursor = Math.max(-1, sub.cursor ?? -1);
+                  // Validate table handler exists (throws if not registered)
+                  if (!args.handlers.byTable.has(sub.table)) {
+                    throw new Error(`Unknown table: ${sub.table}`);
+                  }
 
-                let chunkRef = cached;
-                if (!chunkRef) {
-                  const expiresAt = new Date(
-                    Date.now() + Math.max(1000, bundle.ttlMs)
-                  ).toISOString();
+                  if (
+                    sub.status === 'revoked' ||
+                    Object.keys(sub.scopes).length === 0
+                  ) {
+                    subResponses.push({
+                      id: sub.id,
+                      status: 'revoked',
+                      scopes: {},
+                      bootstrap: false,
+                      nextCursor: cursor,
+                      commits: [],
+                    });
+                    continue;
+                  }
 
-                  if (args.chunkStorage) {
-                    const snapshot: SyncSnapshot = {
-                      table: bundle.table,
-                      rows: [],
-                      chunks: [],
-                      isFirstPage: bundle.isFirstPage,
-                      isLastPage: bundle.isLastPage,
+                  const effectiveScopes = sub.scopes;
+                  activeSubscriptions.push({ scopes: effectiveScopes });
+                  const latestExternalCommitForTable =
+                    maxExternalCommitByTable.get(sub.table);
+
+                  const needsBootstrap =
+                    sub.bootstrapState != null ||
+                    cursor < 0 ||
+                    cursor > maxCommitSeq ||
+                    (minCommitSeq > 0 && cursor < minCommitSeq - 1) ||
+                    (latestExternalCommitForTable !== undefined &&
+                      latestExternalCommitForTable > cursor);
+
+                  if (needsBootstrap) {
+                    const tables = getServerBootstrapOrderFor(
+                      args.handlers,
+                      sub.table
+                    ).map((handler) => handler.table);
+                    const preferInlineBootstrapSnapshot =
+                      cursor >= 0 ||
+                      sub.bootstrapState != null ||
+                      (latestExternalCommitForTable !== undefined &&
+                        latestExternalCommitForTable > cursor);
+
+                    const initState: SyncBootstrapState = {
+                      asOfCommitSeq: maxCommitSeq,
+                      tables,
+                      tableIndex: 0,
+                      rowCursor: null,
                     };
-                    snapshots.push(snapshot);
-                    pendingExternalChunkWrites.push({
-                      snapshot,
-                      cacheLookup: {
+
+                    const requestedState = sub.bootstrapState ?? null;
+                    const state =
+                      requestedState &&
+                      typeof requestedState.asOfCommitSeq === 'number' &&
+                      Array.isArray(requestedState.tables) &&
+                      typeof requestedState.tableIndex === 'number'
+                        ? (requestedState as SyncBootstrapState)
+                        : initState;
+
+                    // If the bootstrap state's asOfCommitSeq is no longer catch-up-able, restart bootstrap.
+                    const effectiveState =
+                      state.asOfCommitSeq < minCommitSeq - 1
+                        ? initState
+                        : state;
+
+                    const tableName =
+                      effectiveState.tables[effectiveState.tableIndex];
+
+                    // No tables (or ran past the end): treat bootstrap as complete.
+                    if (!tableName) {
+                      subResponses.push({
+                        id: sub.id,
+                        status: 'active',
+                        scopes: effectiveScopes,
+                        bootstrap: true,
+                        bootstrapState: null,
+                        nextCursor: effectiveState.asOfCommitSeq,
+                        commits: [],
+                        snapshots: [],
+                      });
+                      nextCursors.push(effectiveState.asOfCommitSeq);
+                      continue;
+                    }
+
+                    const snapshots: SyncSnapshot[] = [];
+                    let nextState: SyncBootstrapState | null = effectiveState;
+                    const cacheKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
+                      effectiveScopes
+                    )}`;
+
+                    interface SnapshotBundle {
+                      table: string;
+                      startCursor: string | null;
+                      isFirstPage: boolean;
+                      isLastPage: boolean;
+                      pageCount: number;
+                      ttlMs: number;
+                      rowFrameByteLength: number;
+                      rowFrameParts: Uint8Array[];
+                      inlineRows: unknown[] | null;
+                    }
+
+                    const flushSnapshotBundle = async (
+                      bundle: SnapshotBundle
+                    ): Promise<void> => {
+                      if (bundle.inlineRows) {
+                        snapshots.push({
+                          table: bundle.table,
+                          rows: bundle.inlineRows,
+                          isFirstPage: bundle.isFirstPage,
+                          isLastPage: bundle.isLastPage,
+                        });
+                        return;
+                      }
+
+                      const nowIso = new Date().toISOString();
+                      const bundleRowLimit = Math.max(
+                        1,
+                        limitSnapshotRows * bundle.pageCount
+                      );
+
+                      const cacheLookupStartedAt = Date.now();
+                      const cached = await readSnapshotChunkRefByPageKey(trx, {
                         partitionId,
                         scopeKey: cacheKey,
                         scope: bundle.table,
                         asOfCommitSeq: effectiveState.asOfCommitSeq,
                         rowCursor: bundle.startCursor,
                         rowLimit: bundleRowLimit,
-                      },
-                      rowFrameParts: [...bundle.rowFrameParts],
-                      expiresAt,
+                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                        nowIso,
+                      });
+                      bootstrapTimings.chunkCacheLookupMs += Math.max(
+                        0,
+                        Date.now() - cacheLookupStartedAt
+                      );
+
+                      let chunkRef = cached;
+                      if (!chunkRef) {
+                        const expiresAt = new Date(
+                          Date.now() + Math.max(1000, bundle.ttlMs)
+                        ).toISOString();
+
+                        if (args.chunkStorage) {
+                          const snapshot: SyncSnapshot = {
+                            table: bundle.table,
+                            rows: [],
+                            chunks: [],
+                            isFirstPage: bundle.isFirstPage,
+                            isLastPage: bundle.isLastPage,
+                          };
+                          snapshots.push(snapshot);
+                          pendingExternalChunkWrites.push({
+                            snapshot,
+                            cacheLookup: {
+                              partitionId,
+                              scopeKey: cacheKey,
+                              scope: bundle.table,
+                              asOfCommitSeq: effectiveState.asOfCommitSeq,
+                              rowCursor: bundle.startCursor,
+                              rowLimit: bundleRowLimit,
+                            },
+                            rowFrameParts: [...bundle.rowFrameParts],
+                            expiresAt,
+                          });
+                          return;
+                        }
+                        const encodedChunk =
+                          await encodeCompressedSnapshotChunk(
+                            bundle.rowFrameParts
+                          );
+                        bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
+                        bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
+                        const chunkId = randomId();
+                        const chunkPersistStartedAt = Date.now();
+                        chunkRef = await insertSnapshotChunk(trx, {
+                          chunkId,
+                          partitionId,
+                          scopeKey: cacheKey,
+                          scope: bundle.table,
+                          asOfCommitSeq: effectiveState.asOfCommitSeq,
+                          rowCursor: bundle.startCursor,
+                          rowLimit: bundleRowLimit,
+                          encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                          compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                          sha256: encodedChunk.sha256,
+                          body: encodedChunk.body,
+                          expiresAt,
+                        });
+                        bootstrapTimings.chunkPersistMs += Math.max(
+                          0,
+                          Date.now() - chunkPersistStartedAt
+                        );
+                      }
+
+                      snapshots.push({
+                        table: bundle.table,
+                        rows: [],
+                        chunks: [chunkRef],
+                        isFirstPage: bundle.isFirstPage,
+                        isLastPage: bundle.isLastPage,
+                      });
+                    };
+
+                    let activeBundle: SnapshotBundle | null = null;
+
+                    for (
+                      let pageIndex = 0;
+                      pageIndex < maxSnapshotPages;
+                      pageIndex++
+                    ) {
+                      if (!nextState) break;
+
+                      const nextTableName: string | undefined =
+                        nextState.tables[nextState.tableIndex];
+                      if (!nextTableName) {
+                        if (activeBundle) {
+                          activeBundle.isLastPage = true;
+                          await flushSnapshotBundle(activeBundle);
+                          activeBundle = null;
+                        }
+                        nextState = null;
+                        break;
+                      }
+
+                      const tableHandler =
+                        args.handlers.byTable.get(nextTableName);
+                      if (!tableHandler) {
+                        throw new Error(`Unknown table: ${nextTableName}`);
+                      }
+                      if (
+                        !activeBundle ||
+                        activeBundle.table !== nextTableName
+                      ) {
+                        if (activeBundle) {
+                          await flushSnapshotBundle(activeBundle);
+                        }
+                        const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
+                        activeBundle = {
+                          table: nextTableName,
+                          startCursor: nextState.rowCursor,
+                          isFirstPage: nextState.rowCursor == null,
+                          isLastPage: false,
+                          pageCount: 0,
+                          ttlMs:
+                            tableHandler.snapshotChunkTtlMs ??
+                            24 * 60 * 60 * 1000,
+                          rowFrameByteLength: bundleHeader.length,
+                          rowFrameParts: [bundleHeader],
+                          inlineRows: null,
+                        };
+                      }
+
+                      const snapshotQueryStartedAt = Date.now();
+                      const page: {
+                        rows: unknown[];
+                        nextCursor: string | null;
+                      } = await tableHandler.snapshot(
+                        {
+                          db: trx,
+                          actorId: args.auth.actorId,
+                          auth: args.auth,
+                          scopeValues: effectiveScopes,
+                          cursor: nextState.rowCursor,
+                          limit: limitSnapshotRows,
+                        },
+                        sub.params
+                      );
+                      bootstrapTimings.snapshotQueryMs += Math.max(
+                        0,
+                        Date.now() - snapshotQueryStartedAt
+                      );
+
+                      const rowFrameEncodeStartedAt = Date.now();
+                      const rowFrames = encodeSnapshotRowFrames(
+                        page.rows ?? []
+                      );
+                      bootstrapTimings.rowFrameEncodeMs += Math.max(
+                        0,
+                        Date.now() - rowFrameEncodeStartedAt
+                      );
+                      const bundleMaxBytes = resolveSnapshotBundleMaxBytes({
+                        configuredMaxBytes: tableHandler.snapshotBundleMaxBytes,
+                        pageRowCount: page.rows?.length ?? 0,
+                        pageRowFrameBytes: rowFrames.length,
+                      });
+                      if (
+                        activeBundle.pageCount > 0 &&
+                        activeBundle.rowFrameByteLength + rowFrames.length >
+                          bundleMaxBytes
+                      ) {
+                        await flushSnapshotBundle(activeBundle);
+                        const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
+                        activeBundle = {
+                          table: nextTableName,
+                          startCursor: nextState.rowCursor,
+                          isFirstPage: nextState.rowCursor == null,
+                          isLastPage: false,
+                          pageCount: 0,
+                          ttlMs:
+                            tableHandler.snapshotChunkTtlMs ??
+                            24 * 60 * 60 * 1000,
+                          rowFrameByteLength: bundleHeader.length,
+                          rowFrameParts: [bundleHeader],
+                          inlineRows: null,
+                        };
+                      }
+
+                      if (
+                        preferInlineBootstrapSnapshot &&
+                        activeBundle.pageCount === 0 &&
+                        page.nextCursor == null &&
+                        rowFrames.length <=
+                          DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES
+                      ) {
+                        activeBundle.inlineRows = page.rows ?? [];
+                      } else {
+                        activeBundle.inlineRows = null;
+                      }
+                      activeBundle.rowFrameParts.push(rowFrames);
+                      activeBundle.rowFrameByteLength += rowFrames.length;
+                      activeBundle.pageCount += 1;
+
+                      if (page.nextCursor != null) {
+                        nextState = {
+                          ...nextState,
+                          rowCursor: page.nextCursor,
+                        };
+                        continue;
+                      }
+
+                      activeBundle.isLastPage = true;
+                      await flushSnapshotBundle(activeBundle);
+                      activeBundle = null;
+
+                      if (nextState.tableIndex + 1 < nextState.tables.length) {
+                        nextState = {
+                          ...nextState,
+                          tableIndex: nextState.tableIndex + 1,
+                          rowCursor: null,
+                        };
+                        continue;
+                      }
+
+                      nextState = null;
+                      break;
+                    }
+
+                    if (activeBundle) {
+                      await flushSnapshotBundle(activeBundle);
+                    }
+
+                    subResponses.push({
+                      id: sub.id,
+                      status: 'active',
+                      scopes: effectiveScopes,
+                      bootstrap: true,
+                      bootstrapState: nextState,
+                      nextCursor: effectiveState.asOfCommitSeq,
+                      commits: [],
+                      snapshots,
                     });
-                    return;
+                    nextCursors.push(effectiveState.asOfCommitSeq);
+                    continue;
                   }
-                  const encodedChunk = await encodeCompressedSnapshotChunk(
-                    bundle.rowFrameParts
-                  );
-                  bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
-                  bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
-                  const chunkId = randomId();
-                  const chunkPersistStartedAt = Date.now();
-                  chunkRef = await insertSnapshotChunk(trx, {
-                    chunkId,
-                    partitionId,
-                    scopeKey: cacheKey,
-                    scope: bundle.table,
-                    asOfCommitSeq: effectiveState.asOfCommitSeq,
-                    rowCursor: bundle.startCursor,
-                    rowLimit: bundleRowLimit,
-                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                    sha256: encodedChunk.sha256,
-                    body: encodedChunk.body,
-                    expiresAt,
-                  });
-                  bootstrapTimings.chunkPersistMs += Math.max(
-                    0,
-                    Date.now() - chunkPersistStartedAt
-                  );
-                }
 
-                snapshots.push({
-                  table: bundle.table,
-                  rows: [],
-                  chunks: [chunkRef],
-                  isFirstPage: bundle.isFirstPage,
-                  isLastPage: bundle.isLastPage,
-                });
-              };
+                  // Incremental pull for this subscription. The dialect row query
+                  // carries the scanned commit-window max when matching rows exist,
+                  // so we only need a separate commit-window scan when the row query
+                  // returns no matches at all.
+                  const incrementalRows: IncrementalPullRow[] = [];
+                  let maxScannedCommitSeq = cursor;
 
-              let activeBundle: SnapshotBundle | null = null;
-
-              for (
-                let pageIndex = 0;
-                pageIndex < maxSnapshotPages;
-                pageIndex++
-              ) {
-                if (!nextState) break;
-
-                const nextTableName: string | undefined =
-                  nextState.tables[nextState.tableIndex];
-                if (!nextTableName) {
-                  if (activeBundle) {
-                    activeBundle.isLastPage = true;
-                    await flushSnapshotBundle(activeBundle);
-                    activeBundle = null;
-                  }
-                  nextState = null;
-                  break;
-                }
-
-                const tableHandler = args.handlers.byTable.get(nextTableName);
-                if (!tableHandler) {
-                  throw new Error(`Unknown table: ${nextTableName}`);
-                }
-                if (!activeBundle || activeBundle.table !== nextTableName) {
-                  if (activeBundle) {
-                    await flushSnapshotBundle(activeBundle);
-                  }
-                  const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
-                  activeBundle = {
-                    table: nextTableName,
-                    startCursor: nextState.rowCursor,
-                    isFirstPage: nextState.rowCursor == null,
-                    isLastPage: false,
-                    pageCount: 0,
-                    ttlMs:
-                      tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
-                    rowFrameByteLength: bundleHeader.length,
-                    rowFrameParts: [bundleHeader],
-                    inlineRows: null,
-                  };
-                }
-
-                const snapshotQueryStartedAt = Date.now();
-                const page: { rows: unknown[]; nextCursor: string | null } =
-                  await tableHandler.snapshot(
+                  for await (const row of dialect.iterateIncrementalPullRows(
+                    trx,
                     {
-                      db: trx,
-                      actorId: args.auth.actorId,
-                      auth: args.auth,
-                      scopeValues: effectiveScopes,
-                      cursor: nextState.rowCursor,
-                      limit: limitSnapshotRows,
-                    },
-                    sub.params
-                  );
-                bootstrapTimings.snapshotQueryMs += Math.max(
-                  0,
-                  Date.now() - snapshotQueryStartedAt
-                );
+                      partitionId,
+                      table: sub.table,
+                      scopes: effectiveScopes,
+                      cursor,
+                      limitCommits,
+                    }
+                  )) {
+                    incrementalRows.push(row);
+                    maxScannedCommitSeq = Math.max(
+                      maxScannedCommitSeq,
+                      row.scanned_max_commit_seq ?? row.commit_seq
+                    );
+                  }
 
-                const rowFrameEncodeStartedAt = Date.now();
-                const rowFrames = encodeSnapshotRowFrames(page.rows ?? []);
-                bootstrapTimings.rowFrameEncodeMs += Math.max(
-                  0,
-                  Date.now() - rowFrameEncodeStartedAt
-                );
-                const bundleMaxBytes = resolveSnapshotBundleMaxBytes({
-                  configuredMaxBytes: tableHandler.snapshotBundleMaxBytes,
-                  pageRowCount: page.rows?.length ?? 0,
-                  pageRowFrameBytes: rowFrames.length,
-                });
-                if (
-                  activeBundle.pageCount > 0 &&
-                  activeBundle.rowFrameByteLength + rowFrames.length >
-                    bundleMaxBytes
-                ) {
-                  await flushSnapshotBundle(activeBundle);
-                  const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
-                  activeBundle = {
-                    table: nextTableName,
-                    startCursor: nextState.rowCursor,
-                    isFirstPage: nextState.rowCursor == null,
-                    isLastPage: false,
-                    pageCount: 0,
-                    ttlMs:
-                      tableHandler.snapshotChunkTtlMs ?? 24 * 60 * 60 * 1000,
-                    rowFrameByteLength: bundleHeader.length,
-                    rowFrameParts: [bundleHeader],
-                    inlineRows: null,
-                  };
-                }
+                  if (incrementalRows.length === 0) {
+                    const scannedCommitSeqs =
+                      await dialect.readCommitSeqsForPull(trx, {
+                        partitionId,
+                        cursor,
+                        limitCommits,
+                        tables: [sub.table],
+                      });
+                    maxScannedCommitSeq =
+                      scannedCommitSeqs.length > 0
+                        ? scannedCommitSeqs[scannedCommitSeqs.length - 1]!
+                        : cursor;
 
-                if (
-                  preferInlineBootstrapSnapshot &&
-                  activeBundle.pageCount === 0 &&
-                  page.nextCursor == null &&
-                  rowFrames.length <= DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES
-                ) {
-                  activeBundle.inlineRows = page.rows ?? [];
-                } else {
-                  activeBundle.inlineRows = null;
-                }
-                activeBundle.rowFrameParts.push(rowFrames);
-                activeBundle.rowFrameByteLength += rowFrames.length;
-                activeBundle.pageCount += 1;
+                    if (scannedCommitSeqs.length === 0) {
+                      subResponses.push({
+                        id: sub.id,
+                        status: 'active',
+                        scopes: effectiveScopes,
+                        bootstrap: false,
+                        nextCursor: cursor,
+                        commits: [],
+                      });
+                      nextCursors.push(cursor);
+                      continue;
+                    }
+                  }
 
-                if (page.nextCursor != null) {
-                  nextState = { ...nextState, rowCursor: page.nextCursor };
-                  continue;
-                }
+                  let nextCursor = cursor;
 
-                activeBundle.isLastPage = true;
-                await flushSnapshotBundle(activeBundle);
-                activeBundle = null;
+                  if (dedupeRows) {
+                    const latestByRowKey = new Map<
+                      string,
+                      {
+                        commitSeq: number;
+                        createdAt: string;
+                        actorId: string;
+                        change: SyncChange;
+                      }
+                    >();
 
-                if (nextState.tableIndex + 1 < nextState.tables.length) {
-                  nextState = {
-                    ...nextState,
-                    tableIndex: nextState.tableIndex + 1,
-                    rowCursor: null,
-                  };
-                  continue;
-                }
+                    for (const r of incrementalRows) {
+                      nextCursor = Math.max(nextCursor, r.commit_seq);
+                      const rowKey = `${r.table}\u0000${r.row_id}`;
+                      const change: SyncChange = {
+                        table: r.table,
+                        row_id: r.row_id,
+                        op: r.op,
+                        row_json: r.row_json,
+                        row_version: r.row_version,
+                        scopes: r.scopes,
+                      };
 
-                nextState = null;
-                break;
-              }
+                      // Move row keys to insertion tail so Map iteration yields
+                      // "latest change wins" order without a full array sort.
+                      if (latestByRowKey.has(rowKey)) {
+                        latestByRowKey.delete(rowKey);
+                      }
+                      latestByRowKey.set(rowKey, {
+                        commitSeq: r.commit_seq,
+                        createdAt: r.created_at,
+                        actorId: r.actor_id,
+                        change,
+                      });
+                    }
 
-              if (activeBundle) {
-                await flushSnapshotBundle(activeBundle);
-              }
+                    nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
 
-              subResponses.push({
-                id: sub.id,
-                status: 'active',
-                scopes: effectiveScopes,
-                bootstrap: true,
-                bootstrapState: nextState,
-                nextCursor: effectiveState.asOfCommitSeq,
-                commits: [],
-                snapshots,
-              });
-              nextCursors.push(effectiveState.asOfCommitSeq);
-              continue;
-            }
+                    if (latestByRowKey.size === 0) {
+                      subResponses.push({
+                        id: sub.id,
+                        status: 'active',
+                        scopes: effectiveScopes,
+                        bootstrap: false,
+                        nextCursor,
+                        commits: [],
+                      });
+                      nextCursors.push(nextCursor);
+                      continue;
+                    }
 
-            // Incremental pull for this subscription
-            // Read the commit window for this table up-front so the subscription cursor
-            // can advance past commits that don't match the requested scopes.
-            const scannedCommitSeqs = await dialect.readCommitSeqsForPull(trx, {
-              partitionId,
-              cursor,
-              limitCommits,
-              tables: [sub.table],
-            });
-            const maxScannedCommitSeq =
-              scannedCommitSeqs.length > 0
-                ? scannedCommitSeqs[scannedCommitSeqs.length - 1]!
-                : cursor;
+                    const commits: SyncCommit[] = [];
+                    for (const item of latestByRowKey.values()) {
+                      const lastCommit = commits[commits.length - 1];
+                      if (
+                        !lastCommit ||
+                        lastCommit.commitSeq !== item.commitSeq
+                      ) {
+                        commits.push({
+                          commitSeq: item.commitSeq,
+                          createdAt: item.createdAt,
+                          actorId: item.actorId,
+                          changes: [item.change],
+                        });
+                        continue;
+                      }
+                      lastCommit.changes.push(item.change);
+                    }
 
-            if (scannedCommitSeqs.length === 0) {
-              subResponses.push({
-                id: sub.id,
-                status: 'active',
-                scopes: effectiveScopes,
-                bootstrap: false,
-                nextCursor: cursor,
-                commits: [],
-              });
-              nextCursors.push(cursor);
-              continue;
-            }
+                    subResponses.push({
+                      id: sub.id,
+                      status: 'active',
+                      scopes: effectiveScopes,
+                      bootstrap: false,
+                      nextCursor,
+                      commits,
+                    });
+                    nextCursors.push(nextCursor);
+                    continue;
+                  }
 
-            let nextCursor = cursor;
+                  const commitsBySeq = new Map<number, SyncCommit>();
+                  const commitSeqs: number[] = [];
 
-            if (dedupeRows) {
-              const latestByRowKey = new Map<
-                string,
-                {
-                  commitSeq: number;
-                  createdAt: string;
-                  actorId: string;
-                  change: SyncChange;
-                }
-              >();
+                  for (const r of incrementalRows) {
+                    nextCursor = Math.max(nextCursor, r.commit_seq);
+                    const seq = r.commit_seq;
+                    let commit = commitsBySeq.get(seq);
+                    if (!commit) {
+                      commit = {
+                        commitSeq: seq,
+                        createdAt: r.created_at,
+                        actorId: r.actor_id,
+                        changes: [],
+                      };
+                      commitsBySeq.set(seq, commit);
+                      commitSeqs.push(seq);
+                    }
 
-              for await (const r of dialect.iterateIncrementalPullRows(trx, {
-                partitionId,
-                table: sub.table,
-                scopes: effectiveScopes,
-                cursor,
-                limitCommits,
-              })) {
-                nextCursor = Math.max(nextCursor, r.commit_seq);
-                const rowKey = `${r.table}\u0000${r.row_id}`;
-                const change: SyncChange = {
-                  table: r.table,
-                  row_id: r.row_id,
-                  op: r.op,
-                  row_json: r.row_json,
-                  row_version: r.row_version,
-                  scopes: r.scopes,
-                };
+                    const change: SyncChange = {
+                      table: r.table,
+                      row_id: r.row_id,
+                      op: r.op,
+                      row_json: r.row_json,
+                      row_version: r.row_version,
+                      scopes: r.scopes,
+                    };
+                    commit.changes.push(change);
+                  }
 
-                // Move row keys to insertion tail so Map iteration yields
-                // "latest change wins" order without a full array sort.
-                if (latestByRowKey.has(rowKey)) {
-                  latestByRowKey.delete(rowKey);
-                }
-                latestByRowKey.set(rowKey, {
-                  commitSeq: r.commit_seq,
-                  createdAt: r.created_at,
-                  actorId: r.actor_id,
-                  change,
-                });
-              }
+                  nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
 
-              nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
+                  if (commitSeqs.length === 0) {
+                    subResponses.push({
+                      id: sub.id,
+                      status: 'active',
+                      scopes: effectiveScopes,
+                      bootstrap: false,
+                      nextCursor,
+                      commits: [],
+                    });
+                    nextCursors.push(nextCursor);
+                    continue;
+                  }
 
-              if (latestByRowKey.size === 0) {
-                subResponses.push({
-                  id: sub.id,
-                  status: 'active',
-                  scopes: effectiveScopes,
-                  bootstrap: false,
-                  nextCursor,
-                  commits: [],
-                });
-                nextCursors.push(nextCursor);
-                continue;
-              }
+                  const commits: SyncCommit[] = commitSeqs
+                    .map((seq) => commitsBySeq.get(seq))
+                    .filter((c): c is SyncCommit => !!c)
+                    .filter((c) => c.changes.length > 0);
 
-              const commits: SyncCommit[] = [];
-              for (const item of latestByRowKey.values()) {
-                const lastCommit = commits[commits.length - 1];
-                if (!lastCommit || lastCommit.commitSeq !== item.commitSeq) {
-                  commits.push({
-                    commitSeq: item.commitSeq,
-                    createdAt: item.createdAt,
-                    actorId: item.actorId,
-                    changes: [item.change],
+                  subResponses.push({
+                    id: sub.id,
+                    status: 'active',
+                    scopes: effectiveScopes,
+                    bootstrap: false,
+                    nextCursor,
+                    commits,
                   });
-                  continue;
+                  nextCursors.push(nextCursor);
                 }
-                lastCommit.changes.push(item.change);
-              }
 
-              subResponses.push({
-                id: sub.id,
-                status: 'active',
-                scopes: effectiveScopes,
-                bootstrap: false,
-                nextCursor,
-                commits,
-              });
-              nextCursors.push(nextCursor);
-              continue;
-            }
+                const effectiveScopes = mergeScopes(activeSubscriptions);
+                const clientCursor =
+                  nextCursors.length > 0
+                    ? Math.min(...nextCursors)
+                    : maxCommitSeq;
 
-            const commitsBySeq = new Map<number, SyncCommit>();
-            const commitSeqs: number[] = [];
-
-            for await (const r of dialect.iterateIncrementalPullRows(trx, {
-              partitionId,
-              table: sub.table,
-              scopes: effectiveScopes,
-              cursor,
-              limitCommits,
-            })) {
-              nextCursor = Math.max(nextCursor, r.commit_seq);
-              const seq = r.commit_seq;
-              let commit = commitsBySeq.get(seq);
-              if (!commit) {
-                commit = {
-                  commitSeq: seq,
-                  createdAt: r.created_at,
-                  actorId: r.actor_id,
-                  changes: [],
+                return {
+                  response: {
+                    ok: true as const,
+                    subscriptions: subResponses,
+                  },
+                  effectiveScopes,
+                  clientCursor,
                 };
-                commitsBySeq.set(seq, commit);
-                commitSeqs.push(seq);
               }
+            );
 
-              const change: SyncChange = {
-                table: r.table,
-                row_id: r.row_id,
-                op: r.op,
-                row_json: r.row_json,
-                row_version: r.row_version,
-                scopes: r.scopes,
-              };
-              commit.changes.push(change);
-            }
+            const chunkStorage = args.chunkStorage;
+            if (chunkStorage && pendingExternalChunkWrites.length > 0) {
+              await runWithConcurrency(
+                pendingExternalChunkWrites,
+                4,
+                async (pending) => {
+                  const cacheLookupStartedAt = Date.now();
+                  let chunkRef = await readSnapshotChunkRefByPageKey(db, {
+                    partitionId: pending.cacheLookup.partitionId,
+                    scopeKey: pending.cacheLookup.scopeKey,
+                    scope: pending.cacheLookup.scope,
+                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                    rowCursor: pending.cacheLookup.rowCursor,
+                    rowLimit: pending.cacheLookup.rowLimit,
+                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                  });
+                  bootstrapTimings.chunkCacheLookupMs += Math.max(
+                    0,
+                    Date.now() - cacheLookupStartedAt
+                  );
 
-            nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
+                  if (!chunkRef) {
+                    if (chunkStorage.storeChunkStream) {
+                      const {
+                        stream: bodyStream,
+                        byteLength,
+                        sha256,
+                        gzipMs,
+                        hashMs,
+                      } = await encodeCompressedSnapshotChunkToStream(
+                        pending.rowFrameParts
+                      );
+                      bootstrapTimings.chunkGzipMs += gzipMs;
+                      bootstrapTimings.chunkHashMs += hashMs;
+                      const chunkPersistStartedAt = Date.now();
+                      chunkRef = await chunkStorage.storeChunkStream({
+                        partitionId: pending.cacheLookup.partitionId,
+                        scopeKey: pending.cacheLookup.scopeKey,
+                        scope: pending.cacheLookup.scope,
+                        asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                        rowCursor: pending.cacheLookup.rowCursor,
+                        rowLimit: pending.cacheLookup.rowLimit,
+                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                        sha256,
+                        byteLength,
+                        bodyStream,
+                        expiresAt: pending.expiresAt,
+                      });
+                      bootstrapTimings.chunkPersistMs += Math.max(
+                        0,
+                        Date.now() - chunkPersistStartedAt
+                      );
+                    } else {
+                      const encodedChunk = await encodeCompressedSnapshotChunk(
+                        pending.rowFrameParts
+                      );
+                      bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
+                      bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
+                      const chunkPersistStartedAt = Date.now();
+                      chunkRef = await chunkStorage.storeChunk({
+                        partitionId: pending.cacheLookup.partitionId,
+                        scopeKey: pending.cacheLookup.scopeKey,
+                        scope: pending.cacheLookup.scope,
+                        asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                        rowCursor: pending.cacheLookup.rowCursor,
+                        rowLimit: pending.cacheLookup.rowLimit,
+                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                        sha256: encodedChunk.sha256,
+                        body: encodedChunk.body,
+                        expiresAt: pending.expiresAt,
+                      });
+                      bootstrapTimings.chunkPersistMs += Math.max(
+                        0,
+                        Date.now() - chunkPersistStartedAt
+                      );
+                    }
+                  }
 
-            if (commitSeqs.length === 0) {
-              subResponses.push({
-                id: sub.id,
-                status: 'active',
-                scopes: effectiveScopes,
-                bootstrap: false,
-                nextCursor,
-                commits: [],
-              });
-              nextCursors.push(nextCursor);
-              continue;
-            }
-
-            const commits: SyncCommit[] = commitSeqs
-              .map((seq) => commitsBySeq.get(seq))
-              .filter((c): c is SyncCommit => !!c)
-              .filter((c) => c.changes.length > 0);
-
-            subResponses.push({
-              id: sub.id,
-              status: 'active',
-              scopes: effectiveScopes,
-              bootstrap: false,
-              nextCursor,
-              commits,
-            });
-            nextCursors.push(nextCursor);
-          }
-
-          const effectiveScopes = mergeScopes(activeSubscriptions);
-          const clientCursor =
-            nextCursors.length > 0 ? Math.min(...nextCursors) : maxCommitSeq;
-
-          return {
-            response: {
-              ok: true as const,
-              subscriptions: subResponses,
-            },
-            effectiveScopes,
-            clientCursor,
-          };
-        });
-
-        const chunkStorage = args.chunkStorage;
-        if (chunkStorage && pendingExternalChunkWrites.length > 0) {
-          await runWithConcurrency(
-            pendingExternalChunkWrites,
-            4,
-            async (pending) => {
-              const cacheLookupStartedAt = Date.now();
-              let chunkRef = await readSnapshotChunkRefByPageKey(db, {
-                partitionId: pending.cacheLookup.partitionId,
-                scopeKey: pending.cacheLookup.scopeKey,
-                scope: pending.cacheLookup.scope,
-                asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                rowCursor: pending.cacheLookup.rowCursor,
-                rowLimit: pending.cacheLookup.rowLimit,
-                encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-              });
-              bootstrapTimings.chunkCacheLookupMs += Math.max(
-                0,
-                Date.now() - cacheLookupStartedAt
+                  pending.snapshot.chunks = [chunkRef];
+                }
               );
-
-              if (!chunkRef) {
-                if (chunkStorage.storeChunkStream) {
-                  const {
-                    stream: bodyStream,
-                    byteLength,
-                    sha256,
-                    gzipMs,
-                    hashMs,
-                  } = await encodeCompressedSnapshotChunkToStream(
-                    pending.rowFrameParts
-                  );
-                  bootstrapTimings.chunkGzipMs += gzipMs;
-                  bootstrapTimings.chunkHashMs += hashMs;
-                  const chunkPersistStartedAt = Date.now();
-                  chunkRef = await chunkStorage.storeChunkStream({
-                    partitionId: pending.cacheLookup.partitionId,
-                    scopeKey: pending.cacheLookup.scopeKey,
-                    scope: pending.cacheLookup.scope,
-                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                    rowCursor: pending.cacheLookup.rowCursor,
-                    rowLimit: pending.cacheLookup.rowLimit,
-                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                    sha256,
-                    byteLength,
-                    bodyStream,
-                    expiresAt: pending.expiresAt,
-                  });
-                  bootstrapTimings.chunkPersistMs += Math.max(
-                    0,
-                    Date.now() - chunkPersistStartedAt
-                  );
-                } else {
-                  const encodedChunk = await encodeCompressedSnapshotChunk(
-                    pending.rowFrameParts
-                  );
-                  bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
-                  bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
-                  const chunkPersistStartedAt = Date.now();
-                  chunkRef = await chunkStorage.storeChunk({
-                    partitionId: pending.cacheLookup.partitionId,
-                    scopeKey: pending.cacheLookup.scopeKey,
-                    scope: pending.cacheLookup.scope,
-                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                    rowCursor: pending.cacheLookup.rowCursor,
-                    rowLimit: pending.cacheLookup.rowLimit,
-                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                    sha256: encodedChunk.sha256,
-                    body: encodedChunk.body,
-                    expiresAt: pending.expiresAt,
-                  });
-                  bootstrapTimings.chunkPersistMs += Math.max(
-                    0,
-                    Date.now() - chunkPersistStartedAt
-                  );
-                }
-              }
-
-              pending.snapshot.chunks = [chunkRef];
             }
-          );
+
+            const durationMs = Math.max(0, Date.now() - startedAtMs);
+            const stats = summarizePullResponse(result.response);
+
+            span.setAttribute('status', 'ok');
+            span.setAttribute('duration_ms', durationMs);
+            span.setAttribute('subscription_count', stats.subscriptionCount);
+            span.setAttribute('commit_count', stats.commitCount);
+            span.setAttribute('change_count', stats.changeCount);
+            span.setAttribute('snapshot_page_count', stats.snapshotPageCount);
+            span.setAttributes({
+              bootstrap_snapshot_query_ms: bootstrapTimings.snapshotQueryMs,
+              bootstrap_row_frame_encode_ms: bootstrapTimings.rowFrameEncodeMs,
+              bootstrap_chunk_cache_lookup_ms:
+                bootstrapTimings.chunkCacheLookupMs,
+              bootstrap_chunk_gzip_ms: bootstrapTimings.chunkGzipMs,
+              bootstrap_chunk_hash_ms: bootstrapTimings.chunkHashMs,
+              bootstrap_chunk_persist_ms: bootstrapTimings.chunkPersistMs,
+            });
+            span.setStatus('ok');
+
+            recordPullMetrics({
+              status: 'ok',
+              dedupeRows,
+              durationMs,
+              stats,
+            });
+
+            return {
+              ...result,
+              bootstrapTimings,
+            };
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              attemptIndex < MAX_PULL_TRANSACTION_RETRIES - 1 &&
+              isSerializablePullError(error)
+            ) {
+              await delay(PULL_TRANSACTION_RETRY_DELAY_MS * (attemptIndex + 1));
+              continue;
+            }
+            throw error;
+          }
         }
 
-        const durationMs = Math.max(0, Date.now() - startedAtMs);
-        const stats = summarizePullResponse(result.response);
-
-        span.setAttribute('status', 'ok');
-        span.setAttribute('duration_ms', durationMs);
-        span.setAttribute('subscription_count', stats.subscriptionCount);
-        span.setAttribute('commit_count', stats.commitCount);
-        span.setAttribute('change_count', stats.changeCount);
-        span.setAttribute('snapshot_page_count', stats.snapshotPageCount);
-        span.setAttributes({
-          bootstrap_snapshot_query_ms: bootstrapTimings.snapshotQueryMs,
-          bootstrap_row_frame_encode_ms: bootstrapTimings.rowFrameEncodeMs,
-          bootstrap_chunk_cache_lookup_ms: bootstrapTimings.chunkCacheLookupMs,
-          bootstrap_chunk_gzip_ms: bootstrapTimings.chunkGzipMs,
-          bootstrap_chunk_hash_ms: bootstrapTimings.chunkHashMs,
-          bootstrap_chunk_persist_ms: bootstrapTimings.chunkPersistMs,
-        });
-        span.setStatus('ok');
-
-        recordPullMetrics({
-          status: 'ok',
-          dedupeRows,
-          durationMs,
-          stats,
-        });
-
-        return {
-          ...result,
-          bootstrapTimings,
-        };
+        throw new Error('Pull transaction retry loop exhausted unexpectedly');
       } catch (error) {
         const durationMs = Math.max(0, Date.now() - startedAtMs);
 

@@ -486,6 +486,8 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       .filter((n): n is number => n !== null);
 
     if (commitSeqs.length === 0) return [];
+    const scannedMaxCommitSeq =
+      commitSeqs[commitSeqs.length - 1] ?? args.cursor;
 
     const commitSeqsIn = sql.join(
       commitSeqs.map((seq) => sql`${seq}`),
@@ -528,6 +530,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
 
     return changesRes.rows.map((row) => ({
       commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      scanned_max_commit_seq: scannedMaxCommitSeq,
       actor_id: row.actor_id,
       created_at: coerceIsoString(row.created_at),
       change_id: coerceNumber(row.change_id) ?? 0,

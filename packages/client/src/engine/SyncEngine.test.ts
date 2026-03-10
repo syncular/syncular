@@ -795,20 +795,109 @@ describe('SyncEngine WS inline apply', () => {
       expect(state.error?.httpStatus).toBe(429);
       expect(state.retryCount).toBe(1);
       expect(state.isRetrying).toBe(true);
-      expect(delays).toEqual([2000]);
+      expect(delays).toEqual([1000]);
 
       await engine.sync();
       state = engine.getState();
       expect(state.retryCount).toBe(2);
       expect(state.isRetrying).toBe(true);
-      expect(delays).toEqual([2000, 4000]);
+      expect(delays).toEqual([1000, 2000]);
 
       await engine.sync();
       state = engine.getState();
       expect(state.retryCount).toBe(3);
       expect(state.isRetrying).toBe(true);
-      expect(delays).toEqual([2000, 4000, 8000]);
+      expect(delays).toEqual([1000, 2000, 4000]);
       expect(syncAttempts).toBe(3);
+
+      engine.destroy();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      for (const handle of timeoutHandles) {
+        clearTimeout(handle);
+      }
+    }
+  });
+
+  it('uses a shorter capped recovery retry delay after a recent successful read-only sync', async () => {
+    let syncAttempts = 0;
+    const delayedFailureTransport: SyncTransport = {
+      async sync() {
+        syncAttempts += 1;
+        if (syncAttempts === 1) {
+          return { ok: true, subscriptions: [] };
+        }
+        throw new SyncTransportError('service unavailable', 503);
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+    };
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const delays: number[] = [];
+    const timeoutHandles: Array<ReturnType<typeof setTimeout>> = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    const patchedSetTimeout: typeof globalThis.setTimeout = (
+      _handler,
+      timeout,
+      ..._args
+    ) => {
+      const delayMs = typeof timeout === 'number' ? timeout : 0;
+      delays.push(delayMs);
+      const handle = originalSetTimeout(() => {}, 60_000);
+      timeoutHandles.push(handle);
+      return handle;
+    };
+    globalThis.setTimeout = patchedSetTimeout;
+
+    try {
+      const engine = new SyncEngine<TestDb>({
+        db,
+        transport: delayedFailureTransport,
+        handlers,
+        actorId: 'u1',
+        clientId: 'client-recovery-retry',
+        subscriptions: [
+          {
+            id: 'sub-1',
+            table: 'tasks',
+            scopes: {},
+          },
+        ],
+        stateId: 'default',
+        pollIntervalMs: 60_000,
+        maxRetries: 5,
+      });
+
+      await engine.start();
+      expect(engine.getState().lastSyncAt).not.toBeNull();
+
+      await engine.sync();
+      let state = engine.getState();
+      expect(state.error?.code).toBe('NETWORK_ERROR');
+      expect(state.retryCount).toBe(1);
+      expect(state.isRetrying).toBe(true);
+
+      await engine.sync();
+      state = engine.getState();
+      expect(state.retryCount).toBe(2);
+
+      await engine.sync();
+      state = engine.getState();
+      expect(state.retryCount).toBe(3);
+
+      await engine.sync();
+      state = engine.getState();
+      expect(state.retryCount).toBe(4);
+      expect(delays).toEqual([250, 500, 1000, 1000]);
 
       engine.destroy();
     } finally {
@@ -1045,7 +1134,7 @@ describe('SyncEngine WS inline apply', () => {
       const state = engine.getState();
       expect(state.retryCount).toBe(0);
       expect(state.isRetrying).toBe(false);
-      expect(delays[0]).toBe(2000);
+      expect(delays[0]).toBe(1000);
       expect(chunkFetchCalls).toBeGreaterThanOrEqual(2);
       expect(syncCalls).toBeGreaterThanOrEqual(2);
 
