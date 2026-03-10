@@ -1,3 +1,4 @@
+export * from './bytes';
 export * from './compression';
 export * from './crypto';
 export * from './id';

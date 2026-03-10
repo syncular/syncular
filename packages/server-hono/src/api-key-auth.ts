@@ -4,6 +4,7 @@
  * Provides utilities for validating API keys in relay/proxy routes.
  */
 
+import { sha256Hex } from '@syncular/core';
 import type { ServerSyncDialect } from '@syncular/server';
 import type { Context } from 'hono';
 import { type Kysely, sql } from 'kysely';
@@ -171,9 +172,5 @@ export function apiKeyAuthMiddleware<DB extends ApiKeyDb>(
 
 // Hash function (same as in routes.ts)
 async function hashApiKey(secretKey: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(secretKey);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = new Uint8Array(hashBuffer);
-  return Array.from(hashArray, (b) => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(secretKey);
 }

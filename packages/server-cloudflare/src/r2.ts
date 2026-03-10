@@ -346,31 +346,11 @@ export function createR2BlobStorageAdapter(
     return undefined;
   }
 
-  async function streamToBytes(
+  async function readAllBytesFromStream(
     stream: ReadableStream<Uint8Array>
   ): Promise<Uint8Array> {
-    const reader = stream.getReader();
-    try {
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        chunks.push(value);
-        total += value.length;
-      }
-
-      const output = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        output.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return output;
-    } finally {
-      reader.releaseLock();
-    }
+    const body = await new Response(stream).arrayBuffer();
+    return new Uint8Array(body);
   }
 
   async function putStreamInternal(
@@ -397,7 +377,7 @@ export function createR2BlobStorageAdapter(
         return;
       }
 
-      const bufferedBody = await streamToBytes(stream);
+      const bufferedBody = await readAllBytesFromStream(stream);
       if (bufferedBody.byteLength !== contentLength) {
         throw new Error(
           `Blob content length mismatch: expected ${contentLength}, got ${bufferedBody.byteLength}`
@@ -410,7 +390,7 @@ export function createR2BlobStorageAdapter(
       return;
     }
 
-    const bufferedBody = await streamToBytes(stream);
+    const bufferedBody = await readAllBytesFromStream(stream);
     await bucket.put(key, bufferedBody, {
       httpMetadata: {
         contentType: mimeType,
@@ -533,28 +513,7 @@ export function createR2BlobStorageAdapter(
     ): Promise<Uint8Array | null> {
       const stream = await getStreamInternal(hash, options);
       if (!stream) return null;
-
-      const reader = stream.getReader();
-      try {
-        const chunks: Uint8Array[] = [];
-        let total = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          chunks.push(value);
-          total += value.length;
-        }
-        const out = new Uint8Array(total);
-        let offset = 0;
-        for (const chunk of chunks) {
-          out.set(chunk, offset);
-          offset += chunk.length;
-        }
-        return out;
-      } finally {
-        reader.releaseLock();
-      }
+      return readAllBytesFromStream(stream);
     },
 
     async getStream(

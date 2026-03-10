@@ -1,68 +1,52 @@
-function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
+import { bytesToReadableStream, readAllBytesFromStream } from './bytes';
+import { getBunRuntime, usesNodeRuntimeModules } from './internal-runtime';
 
-async function streamToBytes(
-  stream: ReadableStream<Uint8Array>
-): Promise<Uint8Array> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+let nodeZlibModulePromise: Promise<typeof import('node:zlib') | null> | null =
+  null;
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      chunks.push(value);
-      total += value.length;
-    }
-  } finally {
-    reader.releaseLock();
+async function getNodeZlibModule(): Promise<typeof import('node:zlib') | null> {
+  if (!usesNodeRuntimeModules()) {
+    return null;
   }
-
-  if (chunks.length === 0) return new Uint8Array();
-  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.length;
+  if (!nodeZlibModulePromise) {
+    nodeZlibModulePromise = import('node:zlib').catch(() => null);
   }
-  return merged;
+  return nodeZlibModulePromise;
 }
 
 /**
- * Gzip-compress a byte array using CompressionStream when available,
- * with node:zlib fallback for Node/Bun runtimes.
+ * Gzip-compress a byte array using the fastest native implementation available
+ * in the current runtime.
  */
 export async function gzipBytes(payload: Uint8Array): Promise<Uint8Array> {
-  if (typeof CompressionStream !== 'undefined') {
-    const stream = bytesToReadableStream(payload).pipeThrough(
-      new CompressionStream('gzip') as unknown as TransformStream<
-        Uint8Array,
-        Uint8Array
-      >
-    );
-    return streamToBytes(stream);
+  const bun = getBunRuntime();
+  if (bun?.gzipSync) {
+    return bun.gzipSync(payload);
   }
 
-  const nodeZlib = await import('node:zlib');
-  return await new Promise<Uint8Array>((resolve, reject) => {
-    nodeZlib.gzip(payload, (error, compressed) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(new Uint8Array(compressed));
+  const nodeZlib = await getNodeZlibModule();
+  if (nodeZlib?.gzip) {
+    return await new Promise<Uint8Array>((resolve, reject) => {
+      nodeZlib.gzip(payload, (error, compressed) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(new Uint8Array(compressed));
+      });
     });
-  });
+  }
+
+  if (typeof CompressionStream !== 'undefined') {
+    const stream = bytesToReadableStream(payload).pipeThrough(
+      new CompressionStream('gzip') as TransformStream<Uint8Array, Uint8Array>
+    );
+    return readAllBytesFromStream(stream);
+  }
+
+  throw new Error(
+    'Failed to gzip bytes, no compression implementation available'
+  );
 }
 
 /**
@@ -73,11 +57,15 @@ export async function gzipBytesToStream(payload: Uint8Array): Promise<{
   stream: ReadableStream<Uint8Array>;
   byteLength?: number;
 }> {
-  if (typeof CompressionStream !== 'undefined') {
+  const bun = getBunRuntime();
+  const nodeZlib = await getNodeZlibModule();
+
+  if (!bun?.gzipSync && !nodeZlib && typeof CompressionStream !== 'undefined') {
     const source = bytesToReadableStream(payload);
-    const gzipStream = new CompressionStream(
-      'gzip'
-    ) as unknown as TransformStream<Uint8Array, Uint8Array>;
+    const gzipStream = new CompressionStream('gzip') as TransformStream<
+      Uint8Array,
+      Uint8Array
+    >;
     return {
       stream: source.pipeThrough(gzipStream),
     };
