@@ -131,14 +131,14 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(requestCount).toBe(1);
   });
 
-  it('retries sync once on transient network errors', async () => {
+  it('retries sync on transient network errors before succeeding', async () => {
     let requestCount = 0;
 
     const transport = createHttpTransport({
       baseUrl: 'http://localhost',
       fetch: async () => {
         requestCount += 1;
-        if (requestCount === 1) {
+        if (requestCount <= 3) {
           throw new TypeError('fetch failed: connect ECONNRESET');
         }
 
@@ -158,7 +158,7 @@ describe('createHttpTransport SyncTransportOptions', () => {
     });
 
     expect(response.ok).toBe(true);
-    expect(requestCount).toBe(2);
+    expect(requestCount).toBe(4);
   });
 
   it('does not retry aborted sync requests', async () => {

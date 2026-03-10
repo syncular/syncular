@@ -79,6 +79,7 @@ const RECOVERY_RETRY_DELAY_MS = 250;
 const MAX_RECOVERY_RETRY_DELAY_MS = 1000;
 const RECOVERY_RETRY_WINDOW_MS = 120000;
 const REALTIME_RECONNECT_CATCHUP_DELAY_MS = 500;
+const REALTIME_RECONNECT_SYNC_JITTER_MS = 250;
 const DEFAULT_AWAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_INSPECTOR_EVENT_LIMIT = 100;
 const MAX_INSPECTOR_EVENT_LIMIT = 500;
@@ -96,6 +97,20 @@ function calculateRecoveryRetryDelay(attemptIndex: number): number {
     RECOVERY_RETRY_DELAY_MS * EXPONENTIAL_FACTOR ** attemptIndex,
     MAX_RECOVERY_RETRY_DELAY_MS
   );
+}
+
+function calculateDeterministicClientJitter(
+  clientId: string,
+  maxJitterMs: number
+): number {
+  if (maxJitterMs <= 0 || clientId.length === 0) return 0;
+
+  let hash = 0;
+  for (let index = 0; index < clientId.length; index += 1) {
+    hash = (hash * 31 + clientId.charCodeAt(index)) >>> 0;
+  }
+
+  return hash % (maxJitterMs + 1);
 }
 
 function isRealtimeTransport(
@@ -320,6 +335,8 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   private syncRequestedWhileRunning = false;
   private retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private realtimeCatchupTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private realtimeReconnectSyncTimeoutId: ReturnType<typeof setTimeout> | null =
+    null;
   private dataChangeDebounceTimeoutId: ReturnType<typeof setTimeout> | null =
     null;
   private pendingDataChangeScopes = new Set<string>();
@@ -1714,6 +1731,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       clearTimeout(this.realtimeCatchupTimeoutId);
       this.realtimeCatchupTimeoutId = null;
     }
+    if (this.realtimeReconnectSyncTimeoutId) {
+      clearTimeout(this.realtimeReconnectSyncTimeoutId);
+      this.realtimeReconnectSyncTimeoutId = null;
+    }
   }
 
   /**
@@ -2544,9 +2565,14 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               fallbackReason: null,
             });
             this.stopFallbackPolling();
-            this.triggerSyncInBackground(undefined, 'realtime connected state');
             if (wasConnectedBefore) {
+              this.scheduleRealtimeReconnectSync();
               this.scheduleRealtimeReconnectCatchupSync();
+            } else {
+              this.triggerSyncInBackground(
+                undefined,
+                'realtime connected state'
+              );
             }
             break;
           }
@@ -2575,6 +2601,10 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       clearTimeout(this.realtimeCatchupTimeoutId);
       this.realtimeCatchupTimeoutId = null;
     }
+    if (this.realtimeReconnectSyncTimeoutId) {
+      clearTimeout(this.realtimeReconnectSyncTimeoutId);
+      this.realtimeReconnectSyncTimeoutId = null;
+    }
     if (this.realtimePresenceUnsub) {
       this.realtimePresenceUnsub();
       this.realtimePresenceUnsub = null;
@@ -2595,6 +2625,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       clearTimeout(this.realtimeCatchupTimeoutId);
     }
 
+    const jitterMs = calculateDeterministicClientJitter(
+      this.config.clientId ?? '',
+      REALTIME_RECONNECT_SYNC_JITTER_MS
+    );
+
     this.realtimeCatchupTimeoutId = setTimeout(() => {
       this.realtimeCatchupTimeoutId = null;
 
@@ -2602,7 +2637,27 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       if (this.state.connectionState !== 'connected') return;
 
       this.triggerSyncInBackground(undefined, 'realtime reconnect catchup');
-    }, REALTIME_RECONNECT_CATCHUP_DELAY_MS);
+    }, REALTIME_RECONNECT_CATCHUP_DELAY_MS + jitterMs);
+  }
+
+  private scheduleRealtimeReconnectSync(): void {
+    if (this.realtimeReconnectSyncTimeoutId) {
+      clearTimeout(this.realtimeReconnectSyncTimeoutId);
+    }
+
+    const jitterMs = calculateDeterministicClientJitter(
+      this.config.clientId ?? '',
+      REALTIME_RECONNECT_SYNC_JITTER_MS
+    );
+
+    this.realtimeReconnectSyncTimeoutId = setTimeout(() => {
+      this.realtimeReconnectSyncTimeoutId = null;
+
+      if (this.isDestroyed || !this.isEnabled()) return;
+      if (this.state.connectionState !== 'connected') return;
+
+      this.triggerSyncInBackground(undefined, 'realtime connected state');
+    }, jitterMs);
   }
 
   private startFallbackPolling(): void {
