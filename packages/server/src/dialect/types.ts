@@ -33,6 +33,7 @@ export interface IncrementalPullRowsArgs {
 
 export interface IncrementalPullRow {
   commit_seq: number;
+  scanned_max_commit_seq?: number | null;
   actor_id: string;
   created_at: string;
   change_id: number;

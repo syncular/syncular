@@ -294,6 +294,174 @@ describe('pull', () => {
     expect(sub.commits[0]!.commitSeq).toBeLessThan(sub.commits[1]!.commitSeq);
   });
 
+  it('skips the extra commit-window scan when incremental pull returns matching rows', async () => {
+    const handlers = makeHandlers();
+
+    await pushTask(handlers, 'task-1', 'First');
+
+    const bootstrapRes = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 50,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+    const cursor = bootstrapRes.response.subscriptions[0]!.nextCursor;
+
+    await pushTask(handlers, 'task-2', 'Second');
+    await pushTask(handlers, 'task-3', 'Third');
+
+    const countingDialect = createSqliteServerDialect();
+    let readCommitSeqsForPullCalls = 0;
+    const originalReadCommitSeqsForPull =
+      countingDialect.readCommitSeqsForPull.bind(countingDialect);
+    countingDialect.readCommitSeqsForPull = async (executor, args) => {
+      readCommitSeqsForPullCalls += 1;
+      return originalReadCommitSeqsForPull(executor, args);
+    };
+
+    const res = await pull({
+      db,
+      dialect: countingDialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 50,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor,
+          },
+        ],
+      },
+    });
+
+    expect(res.response.subscriptions[0]!.commits.length).toBe(2);
+    expect(readCommitSeqsForPullCalls).toBe(0);
+  });
+
+  it('falls back to the commit-window scan when no incremental rows match scopes', async () => {
+    const handlers = makeHandlers({
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    await pushTask(handlers, 'task-u1', 'User 1 Task', 'u1');
+
+    const bootstrapRes = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 50,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+    const cursor = bootstrapRes.response.subscriptions[0]!.nextCursor;
+
+    await pushTask(handlers, 'task-u2', 'User 2 Task', 'u2', 'c2');
+    const latestCommitSeq = await dialect.readMaxCommitSeq(db);
+
+    const countingDialect = createSqliteServerDialect();
+    let readCommitSeqsForPullCalls = 0;
+    const originalReadCommitSeqsForPull =
+      countingDialect.readCommitSeqsForPull.bind(countingDialect);
+    countingDialect.readCommitSeqsForPull = async (executor, args) => {
+      readCommitSeqsForPullCalls += 1;
+      return originalReadCommitSeqsForPull(executor, args);
+    };
+
+    const res = await pull({
+      db,
+      dialect: countingDialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 50,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor,
+          },
+        ],
+      },
+    });
+
+    const sub = res.response.subscriptions[0]!;
+    expect(sub.commits).toEqual([]);
+    expect(sub.nextCursor).toBe(latestCommitSeq);
+    expect(readCommitSeqsForPullCalls).toBe(1);
+  });
+
+  it('retries a transient serialization failure inside pull', async () => {
+    const handlers = makeHandlers();
+    await pushTask(handlers, 'task-1', 'First');
+
+    const flakyDialect = createSqliteServerDialect();
+    const originalExecuteInTransaction =
+      flakyDialect.executeInTransaction.bind(flakyDialect);
+    let attempts = 0;
+    flakyDialect.executeInTransaction = async (executor, fn) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(
+          new Error('could not serialize access due to concurrent update'),
+          {
+            code: '40001',
+          }
+        );
+      }
+      return originalExecuteInTransaction(executor, fn);
+    };
+
+    const res = await pull({
+      db,
+      dialect: flakyDialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 50,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    expect(attempts).toBe(2);
+    expect(res.response.subscriptions[0]?.bootstrap).toBe(true);
+  });
+
   // -----------------------------------------------------------
   // No new commits
   // -----------------------------------------------------------

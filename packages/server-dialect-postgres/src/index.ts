@@ -468,6 +468,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
 
     const res = await sql<{
       commit_seq: unknown;
+      scanned_max_commit_seq: unknown;
       actor_id: string;
       created_at: unknown;
       change_id: unknown;
@@ -478,27 +479,33 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       row_version: unknown | null;
       scopes: unknown;
     }>`
-      WITH commit_seqs AS (
-        SELECT DISTINCT tc.commit_seq
+      WITH commit_window AS (
+        SELECT tc.commit_seq
         FROM sync_table_commits tc
         JOIN sync_commits cm ON cm.commit_seq = tc.commit_seq
         WHERE tc.partition_id = ${partitionId}
           AND tc."table" = ${args.table}
           AND cm.partition_id = ${partitionId}
           AND tc.commit_seq > ${args.cursor}
-          AND EXISTS (
-            SELECT 1
-            FROM sync_changes c
-            WHERE c.commit_seq = tc.commit_seq
-              AND c.partition_id = ${partitionId}
-              AND c."table" = ${args.table}
-              AND (${scopeFilter})
-          )
         ORDER BY tc.commit_seq ASC
         LIMIT ${limitCommits}
+      ),
+      commit_seqs AS (
+        SELECT cw.commit_seq
+        FROM commit_window cw
+        WHERE EXISTS (
+          SELECT 1
+          FROM sync_changes c
+          WHERE c.commit_seq = cw.commit_seq
+            AND c.partition_id = ${partitionId}
+            AND c."table" = ${args.table}
+            AND (${scopeFilter})
+        )
+        ORDER BY cw.commit_seq ASC
       )
       SELECT
         cm.commit_seq,
+        (SELECT max(commit_seq) FROM commit_window) AS scanned_max_commit_seq,
         cm.actor_id,
         cm.created_at,
         c.change_id,
@@ -520,6 +527,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
 
     return res.rows.map((row) => ({
       commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      scanned_max_commit_seq: coerceNumber(row.scanned_max_commit_seq),
       actor_id: row.actor_id,
       created_at: coerceIsoString(row.created_at),
       change_id: coerceNumber(row.change_id) ?? 0,

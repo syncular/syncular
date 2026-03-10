@@ -75,6 +75,9 @@ const DEFAULT_MAX_RETRIES = 5;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 60000;
 const EXPONENTIAL_FACTOR = 2;
+const RECOVERY_RETRY_DELAY_MS = 250;
+const MAX_RECOVERY_RETRY_DELAY_MS = 1000;
+const RECOVERY_RETRY_WINDOW_MS = 120000;
 const REALTIME_RECONNECT_CATCHUP_DELAY_MS = 500;
 const DEFAULT_AWAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_INSPECTOR_EVENT_LIMIT = 100;
@@ -85,6 +88,13 @@ function calculateRetryDelay(attemptIndex: number): number {
   return Math.min(
     INITIAL_RETRY_DELAY_MS * EXPONENTIAL_FACTOR ** attemptIndex,
     MAX_RETRY_DELAY_MS
+  );
+}
+
+function calculateRecoveryRetryDelay(attemptIndex: number): number {
+  return Math.min(
+    RECOVERY_RETRY_DELAY_MS * EXPONENTIAL_FACTOR ** attemptIndex,
+    MAX_RECOVERY_RETRY_DELAY_MS
   );
 }
 
@@ -1980,7 +1990,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       // Schedule retry if under max retries
       const maxRetries = this.config.maxRetries ?? DEFAULT_MAX_RETRIES;
       if (error.retryable && this.state.retryCount < maxRetries) {
-        this.scheduleRetry();
+        this.scheduleRetry(error);
       }
       this.flushReconnectBatchedDataChangesIfReady();
 
@@ -2338,12 +2348,22 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
   }
 
-  private scheduleRetry(): void {
+  private shouldUseRecoveryRetryDelay(error?: SyncError): boolean {
+    if (!error || error.code !== 'NETWORK_ERROR') return false;
+    if (this.state.pendingCount > 0) return false;
+    if (this.state.lastSyncAt === null) return false;
+    return Date.now() - this.state.lastSyncAt <= RECOVERY_RETRY_WINDOW_MS;
+  }
+
+  private scheduleRetry(error?: SyncError): void {
     if (this.retryTimeoutId) {
       clearTimeout(this.retryTimeoutId);
     }
 
-    const delay = calculateRetryDelay(this.state.retryCount);
+    const attemptIndex = Math.max(0, this.state.retryCount - 1);
+    const delay = this.shouldUseRecoveryRetryDelay(error)
+      ? calculateRecoveryRetryDelay(attemptIndex)
+      : calculateRetryDelay(attemptIndex);
     if (this.state.pendingCount > 0) {
       countSyncMetric('sync.outbox.retry_count', 1, {
         attributes: {
