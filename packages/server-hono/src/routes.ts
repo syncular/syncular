@@ -2083,7 +2083,6 @@ export function createSyncRoutes<
         status: 200,
         headers: {
           'Content-Type': 'application/octet-stream',
-          'Content-Encoding': 'gzip',
           'Content-Length': String(chunk.byteLength),
           ETag: etag,
           'Cache-Control': 'private, max-age=0',
