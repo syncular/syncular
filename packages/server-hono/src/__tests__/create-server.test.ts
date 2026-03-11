@@ -10,7 +10,10 @@ import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { Hono } from 'hono';
 import { defineWebSocketHelper, WSContext, type WSEvents } from 'hono/ws';
 import { type Kysely, sql } from 'kysely';
-import { createSyncServer } from '../create-server';
+import {
+  createSyncServer,
+  resolveDefaultWebSocketAllowedOrigins,
+} from '../create-server';
 import { getSyncWebSocketConnectionManager } from '../routes';
 import {
   createWebSocketConnectionOwnerKey,
@@ -469,6 +472,45 @@ describe('createSyncServer console configuration', () => {
     expect(await response.json()).toEqual({
       error: 'FORBIDDEN_ORIGIN',
     });
+  });
+
+  it('accepts simple sync CORS allowlists without a custom resolver', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        cors: {
+          allowedOrigins: ['https://allowed.syncular.test'],
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const allowedPreflight = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://allowed.syncular.test',
+          'Access-Control-Request-Method': 'POST',
+        },
+      })
+    );
+    expect(allowedPreflight.status).toBe(204);
+    expect(allowedPreflight.headers.has('Access-Control-Allow-Origin')).toBe(
+      true
+    );
+  });
+
+  it('defaults websocket allowedOrigins from sync CORS allowlists', async () => {
+    expect(
+      resolveDefaultWebSocketAllowedOrigins({
+        cors: {
+          allowedOrigins: ['https://allowed.syncular.test'],
+        },
+      })
+    ).toEqual(['https://allowed.syncular.test']);
   });
 
   it('allows same-origin realtime websocket upgrades when allowedOrigins is unset', async () => {

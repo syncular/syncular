@@ -812,3 +812,14 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
 export function createPostgresServerDialect(): PostgresServerSyncDialect {
   return new PostgresServerSyncDialect();
 }
+
+/**
+ * Explicit server-side dialect alias for Neon-backed Postgres runtimes.
+ *
+ * Neon uses the same SQL family and sync schema behavior as Postgres, but this
+ * helper makes the runtime/provider intent visible in app code and host
+ * integrations.
+ */
+export function createNeonServerDialect(): PostgresServerSyncDialect {
+  return createPostgresServerDialect();
+}

@@ -128,6 +128,32 @@ export interface SyncWebSocketConfig {
 
 export interface SyncRoutesConfigWithRateLimit {
   /**
+   * Optional browser CORS handling for sync routes.
+   * When configured, sync route responses and preflights include matching
+   * CORS headers directly from the generated sync app.
+   */
+  cors?: {
+    /**
+     * Simple exact-match origin allowlist.
+     * Use `'*'` to allow all origins.
+     * When omitted, provide `resolveOrigin` for custom logic.
+     */
+    allowedOrigins?: string[] | '*';
+    /**
+     * Advanced origin resolver for dynamic CORS decisions.
+     * When both `allowedOrigins` and `resolveOrigin` are provided,
+     * `resolveOrigin` takes precedence.
+     */
+    resolveOrigin?: (
+      origin: string | undefined,
+      context: Context
+    ) => string | null | Promise<string | null>;
+    allowCredentials?: boolean;
+    allowHeaders?: string[];
+    allowMethods?: string[];
+    maxAgeSeconds?: number;
+  };
+  /**
    * Max commits per pull request.
    * Default: 100
    */
@@ -316,12 +342,93 @@ type TraceContext = {
   spanId: string | null;
 };
 
+const DEFAULT_SYNC_CORS_ALLOW_HEADERS = [
+  'Content-Type',
+  'Authorization',
+  'x-syncular-publishable-key',
+  'x-syncular-transport-path',
+  'x-syncular-client-id',
+  'sentry-trace',
+  'baggage',
+  'traceparent',
+  'tracestate',
+];
+
+const DEFAULT_SYNC_CORS_ALLOW_METHODS = [
+  'GET',
+  'POST',
+  'PUT',
+  'DELETE',
+  'OPTIONS',
+];
+
+function applySyncCorsHeaders(args: {
+  headers: Headers;
+  allowedOrigin: string;
+  allowCredentials: boolean;
+  allowHeaders: string[];
+  allowMethods: string[];
+  maxAgeSeconds: number;
+}): void {
+  args.headers.set('Access-Control-Allow-Origin', args.allowedOrigin);
+  args.headers.set(
+    'Access-Control-Allow-Headers',
+    args.allowHeaders.join(', ')
+  );
+  args.headers.set(
+    'Access-Control-Allow-Methods',
+    args.allowMethods.join(', ')
+  );
+  args.headers.set('Access-Control-Max-Age', String(args.maxAgeSeconds));
+  if (args.allowedOrigin !== '*') {
+    args.headers.append('Vary', 'Origin');
+    if (args.allowCredentials) {
+      args.headers.set('Access-Control-Allow-Credentials', 'true');
+    }
+  }
+}
+
+function createSyncCorsOriginDeniedResponse(origin: string): Response {
+  return Response.json(
+    {
+      error: 'CORS_ORIGIN_NOT_ALLOWED',
+      message: `Origin ${origin} is not allowed for sync access.`,
+    },
+    { status: 403 }
+  );
+}
+
+async function resolveSyncCorsOrigin(args: {
+  config: NonNullable<SyncRoutesConfigWithRateLimit['cors']>;
+  origin: string | undefined;
+  context: Context;
+}): Promise<string | null> {
+  const { config, origin, context } = args;
+  if (typeof config.resolveOrigin === 'function') {
+    return config.resolveOrigin(origin, context);
+  }
+  if (config.allowedOrigins === '*') {
+    return '*';
+  }
+  if (Array.isArray(config.allowedOrigins)) {
+    if (!origin) {
+      return null;
+    }
+    return config.allowedOrigins.includes(origin) ? origin : null;
+  }
+  return null;
+}
+
 function createOpaqueId(prefix: string): string {
   const randomPart =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${prefix}-${randomPart}`;
+}
+
+function readOriginHeader(c: Context): string | undefined {
+  return c.req.raw.headers.get('origin') ?? c.req.header('origin');
 }
 
 function readRequestId(c: Context): string {
@@ -574,6 +681,7 @@ export function createSyncRoutes<
   F extends SqlFamily = SqlFamily,
 >(options: CreateSyncRoutesOptions<DB, Auth, F>): Hono {
   const routes = new Hono();
+  const config = options.sync ?? {};
   routes.onError((error, c) => {
     captureSyncException(error, {
       event: 'sync.route.unhandled',
@@ -582,8 +690,53 @@ export function createSyncRoutes<
     });
     return c.text('Internal Server Error', 500);
   });
+  const corsConfig = config.cors;
+  if (corsConfig) {
+    routes.use('*', async (c, next) => {
+      const origin = readOriginHeader(c);
+      const allowedOrigin = await resolveSyncCorsOrigin({
+        config: corsConfig,
+        origin,
+        context: c,
+      });
+
+      if (origin && !allowedOrigin) {
+        return createSyncCorsOriginDeniedResponse(origin);
+      }
+
+      const resolvedOrigin = allowedOrigin ?? '*';
+      const allowHeaders =
+        corsConfig.allowHeaders ?? DEFAULT_SYNC_CORS_ALLOW_HEADERS;
+      const allowMethods =
+        corsConfig.allowMethods ?? DEFAULT_SYNC_CORS_ALLOW_METHODS;
+      const maxAgeSeconds = corsConfig.maxAgeSeconds ?? 86_400;
+
+      if (c.req.method === 'OPTIONS') {
+        const headers = new Headers();
+        applySyncCorsHeaders({
+          headers,
+          allowedOrigin: resolvedOrigin,
+          allowCredentials: corsConfig.allowCredentials ?? false,
+          allowHeaders,
+          allowMethods,
+          maxAgeSeconds,
+        });
+        return new Response(null, { status: 204, headers });
+      }
+
+      await next();
+      applySyncCorsHeaders({
+        headers: c.res.headers,
+        allowedOrigin: resolvedOrigin,
+        allowCredentials: corsConfig.allowCredentials ?? false,
+        allowHeaders,
+        allowMethods,
+        maxAgeSeconds,
+      });
+      return c.res;
+    });
+  }
   const handlerRegistry = createServerHandlerCollection(options.handlers);
-  const config = options.sync ?? {};
   const maxPullLimitCommits = config.maxPullLimitCommits ?? 100;
   const maxSubscriptionsPerPull = config.maxSubscriptionsPerPull ?? 200;
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 5000;
@@ -2105,6 +2258,10 @@ export function createSyncRoutes<
       const auth = await getAuth(c);
       if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
       if (!isWebSocketOriginAllowed(c, websocketConfig.allowedOrigins)) {
+        const origin = readOriginHeader(c);
+        if (origin && corsConfig) {
+          return createSyncCorsOriginDeniedResponse(origin);
+        }
         return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
       }
       const partitionId = auth.partitionId ?? 'default';

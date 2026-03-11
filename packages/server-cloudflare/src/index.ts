@@ -13,7 +13,7 @@
  *
  * Dialect is user-provided:
  * - D1 + SQLite: `@syncular/dialect-d1` + `@syncular/server-dialect-sqlite`
- * - Neon + Postgres: `@syncular/dialect-neon` + `@syncular/server-dialect-postgres`
+ * - Neon + Postgres: `@syncular/dialect-neon` + `createNeonServerDialect()` from `@syncular/server-dialect-postgres`
  */
 
 export * from './durable-object';
