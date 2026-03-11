@@ -2,7 +2,9 @@
 
 Neon serverless Postgres Kysely dialect (HTTP).
 
-Useful for stateless serverless/edge environments. Pair with `@syncular/server-dialect-postgres` when running a Syncular server on Postgres.
+Useful for stateless serverless/edge environments. Pair with
+`createNeonServerDialect()` from `@syncular/server-dialect-postgres` when
+running a Syncular server on Neon-backed Postgres.
 
 ## Install
 

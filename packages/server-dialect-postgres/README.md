@@ -3,6 +3,8 @@
 PostgreSQL dialect for the Syncular server sync schema and query patterns (commit log, change log, scopes, snapshot chunks, console tables).
 
 Use this when your server is backed by Postgres.
+For Neon-backed runtimes, use `createNeonServerDialect()` to make that intent
+explicit in your server code while keeping the same sync SQL behavior.
 
 ## Install
 
@@ -14,10 +16,16 @@ npm install @syncular/server-dialect-postgres
 
 ```ts
 import { ensureSyncSchema } from '@syncular/server';
-import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+import {
+  createNeonServerDialect,
+  createPostgresServerDialect,
+} from '@syncular/server-dialect-postgres';
 
 const dialect = createPostgresServerDialect();
 await ensureSyncSchema(db, dialect);
+
+const neonDialect = createNeonServerDialect();
+await ensureSyncSchema(neonDb, neonDialect);
 ```
 
 ## Documentation

@@ -137,7 +137,7 @@ Mix and match any client dialect with any server dialect. The sync protocol is t
 
 | Dialect / runtime | Use case | Package |
 |---|---|---|
-| Postgres | Production (Node, Bun, …) | `@syncular/server-dialect-postgres` |
+| Postgres / Neon | Production (Node, Bun, Workers, …) | `@syncular/server-dialect-postgres` |
 | SQLite | Dev / testing | `@syncular/server-dialect-sqlite` |
 | Cloudflare Worker + D1 | Cloudflare Workers (HTTP only) | `@syncular/server-cloudflare` |
 | Cloudflare Durable Object + D1 | Cloudflare Workers + WebSocket realtime | `@syncular/server-cloudflare` |

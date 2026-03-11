@@ -48,7 +48,7 @@ export function isWebSocketOriginAllowed(
 ): boolean {
   return isRequestOriginAllowed({
     requestUrl: c.req.url,
-    originHeader: c.req.header('origin'),
+    originHeader: c.req.raw.headers.get('origin') ?? c.req.header('origin'),
     allowedOrigins,
   });
 }

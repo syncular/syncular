@@ -80,6 +80,12 @@ export interface SyncServerResult {
   consoleEventEmitter?: ConsoleEventEmitter;
 }
 
+export function resolveDefaultWebSocketAllowedOrigins(
+  routes: SyncRoutesConfigWithRateLimit | undefined
+): string[] | '*' | undefined {
+  return routes?.websocket?.allowedOrigins ?? routes?.cors?.allowedOrigins;
+}
+
 /**
  * Create a simplified sync server with sync and optional console routes.
  *
@@ -148,6 +154,8 @@ export function createSyncServer<
           throw error;
         })
       : undefined;
+  const defaultWebSocketAllowedOrigins =
+    resolveDefaultWebSocketAllowedOrigins(routes);
 
   // Create sync routes
   const syncRoutes = createSyncRoutes({
@@ -166,6 +174,7 @@ export function createSyncServer<
       websocket: upgradeWebSocket
         ? {
             ...routes?.websocket,
+            allowedOrigins: defaultWebSocketAllowedOrigins,
             enabled: true,
             upgradeWebSocket,
           }
@@ -198,7 +207,7 @@ export function createSyncServer<
         maxMessageBytes: routes?.websocket?.maxMessageBytes,
         maxMessagesPerWindow: routes?.websocket?.maxMessagesPerWindow,
         messageRateWindowMs: routes?.websocket?.messageRateWindowMs,
-        allowedOrigins: routes?.websocket?.allowedOrigins,
+        allowedOrigins: defaultWebSocketAllowedOrigins,
       },
     }),
   });
