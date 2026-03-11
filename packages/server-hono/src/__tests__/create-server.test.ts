@@ -501,6 +501,9 @@ describe('createSyncServer console configuration', () => {
     expect(allowedPreflight.headers.has('Access-Control-Allow-Origin')).toBe(
       true
     );
+    expect(
+      allowedPreflight.headers.get('Access-Control-Allow-Headers')
+    ).toContain('x-syncular-snapshot-scopes');
   });
 
   it('defaults websocket allowedOrigins from sync CORS allowlists', async () => {

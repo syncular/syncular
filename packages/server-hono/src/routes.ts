@@ -346,6 +346,7 @@ const DEFAULT_SYNC_CORS_ALLOW_HEADERS = [
   'Content-Type',
   'Authorization',
   'x-syncular-publishable-key',
+  SNAPSHOT_SCOPES_HEADER,
   'x-syncular-transport-path',
   'x-syncular-client-id',
   'sentry-trace',
