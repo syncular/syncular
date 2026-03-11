@@ -13,11 +13,11 @@
   "overrides": {
     "wrangler": "^4.69.0",
     "@cloudflare/workers-types": "^4.20260304.0",
-    "hono": "4.12.5",
+    "hono": "4.12.7",
     "@tootallnate/once": "3.0.1",
     "kysely": "0.28.11",
     "minimatch": "^10.2.4",
-    "tar": "^7.5.10",
+    "tar": "^7.5.11",
     "rollup": "^4.59.0",
     "js-yaml": "^4.1.1",
     "react": "^19.2.0",
