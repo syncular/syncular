@@ -345,6 +345,7 @@ type TraceContext = {
 const DEFAULT_SYNC_CORS_ALLOW_HEADERS = [
   'Content-Type',
   'Authorization',
+  'Cache-Control',
   'x-syncular-publishable-key',
   SNAPSHOT_SCOPES_HEADER,
   'x-syncular-transport-path',
