@@ -30,6 +30,23 @@ function readSearchParamFromFetchArgs(
 }
 
 describe('createHttpTransport SyncTransportOptions', () => {
+  it('exposes explicit transport capabilities and merges overrides', () => {
+    const transport = createHttpTransport({
+      baseUrl: 'http://localhost',
+      capabilities: {
+        snapshotChunkReadMode: 'bytes',
+        preferMaterializedSnapshots: true,
+      },
+    });
+
+    expect(transport.capabilities?.snapshotChunkReadMode).toBe('bytes');
+    expect(transport.capabilities?.preferMaterializedSnapshots).toBe(true);
+    expect(transport.capabilities?.gzipDecompressionMode).toBeDefined();
+    expect(transport.capabilities?.preferredBootstrapApplyMode).toBe(
+      'per-subscription'
+    );
+  });
+
   it('forwards AbortSignal to sync requests', async () => {
     const controller = new AbortController();
     let capturedSignal: AbortSignal | null = null;

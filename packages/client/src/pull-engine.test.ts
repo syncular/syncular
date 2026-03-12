@@ -546,7 +546,7 @@ describe('applyPullResponse chunk streaming', () => {
     );
   });
 
-  it('can commit bootstrap subscriptions independently', async () => {
+  it('can commit bootstrap subscriptions independently via transport capabilities', async () => {
     await db.schema
       .createTable('scoped_items')
       .addColumn('id', 'text', (col) => col.primaryKey())
@@ -565,6 +565,9 @@ describe('applyPullResponse chunk streaming', () => {
     }));
 
     const transport: SyncTransport = {
+      capabilities: {
+        preferredBootstrapApplyMode: 'per-subscription',
+      },
       async sync() {
         return {};
       },
@@ -608,7 +611,6 @@ describe('applyPullResponse chunk streaming', () => {
         },
       ],
       stateId: 'default',
-      bootstrapApplyMode: 'per-subscription' as const,
     };
 
     const pullState = await buildPullRequest(db, options);

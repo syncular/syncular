@@ -7,8 +7,10 @@
  */
 
 import type {
+  SyncBootstrapApplyMode,
   SyncCombinedRequest,
   SyncCombinedResponse,
+  SyncTransportCapabilities,
   SyncTransport,
   SyncTransportOptions,
 } from '@syncular/core';
@@ -44,12 +46,57 @@ export type {
 export { createApiClient } from './api-client';
 export type { operations } from './generated/api';
 
-function shouldUseResponseBodyStream(response: Response): boolean {
+function detectDefaultTransportCapabilities(): SyncTransportCapabilities {
+  const isReactNative =
+    typeof navigator !== 'undefined' && navigator?.product === 'ReactNative';
+  const snapshotChunkReadMode = isReactNative ? 'bytes' : 'stream';
+  const gzipDecompressionMode =
+    !isReactNative && typeof DecompressionStream !== 'undefined'
+      ? 'stream'
+      : 'buffered';
+  const preferredBootstrapApplyMode: SyncBootstrapApplyMode =
+    snapshotChunkReadMode === 'bytes' || gzipDecompressionMode === 'buffered'
+      ? 'per-subscription'
+      : 'single-transaction';
+
+  return {
+    snapshotChunkReadMode,
+    gzipDecompressionMode,
+    preferredBootstrapApplyMode,
+  };
+}
+
+function mergeTransportCapabilities(
+  overrides?: Partial<SyncTransportCapabilities>
+): SyncTransportCapabilities {
+  const defaults = detectDefaultTransportCapabilities();
+  const merged = {
+    ...defaults,
+    ...overrides,
+  };
+
+  if (overrides?.preferredBootstrapApplyMode) {
+    return merged;
+  }
+
+  const preferredBootstrapApplyMode: SyncBootstrapApplyMode =
+    merged.snapshotChunkReadMode === 'bytes' ||
+    merged.gzipDecompressionMode === 'buffered'
+      ? 'per-subscription'
+      : 'single-transaction';
+
+  return {
+    ...merged,
+    preferredBootstrapApplyMode,
+  };
+}
+
+function shouldUseResponseBodyStream(
+  response: Response,
+  capabilities: SyncTransportCapabilities
+): boolean {
   if (!response.body) return false;
-  if (
-    typeof navigator !== 'undefined' &&
-    navigator?.product === 'ReactNative'
-  ) {
+  if (capabilities.snapshotChunkReadMode === 'bytes') {
     return false;
   }
   return (
@@ -65,8 +112,13 @@ export function createHttpTransport(
   const resolveAuthRetry = createTransportAuthRetryResolver(clientOrOptions);
   const transportOptions =
     'baseUrl' in clientOrOptions ? clientOrOptions : undefined;
+  const capabilities =
+    'baseUrl' in clientOrOptions
+      ? mergeTransportCapabilities(clientOrOptions.capabilities)
+      : mergeTransportCapabilities();
 
   const transport: SyncTransport = {
+    capabilities,
     async sync(
       request: SyncCombinedRequest,
       transportRequestOptions?: SyncTransportOptions
@@ -259,7 +311,7 @@ export function createHttpTransport(
         );
       }
 
-      if (!shouldUseResponseBodyStream(response)) {
+      if (!shouldUseResponseBodyStream(response, capabilities)) {
         const bytes = new Uint8Array(await response.arrayBuffer());
         return bytesToReadableStream(bytes);
       }

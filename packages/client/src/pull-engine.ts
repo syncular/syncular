@@ -7,6 +7,7 @@ import {
   decodeSnapshotRows,
   gunzipBytes,
   readAllBytesFromStream as readAllBytesFromCoreStream,
+  type SyncBootstrapApplyMode,
   type ScopeValues,
   type SyncBootstrapState,
   type SyncChange,
@@ -15,6 +16,7 @@ import {
   type SyncPullSubscriptionResponse,
   type SyncSnapshot,
   type SyncSubscriptionRequest,
+  type SyncTransportCapabilities,
   type SyncTransport,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
@@ -88,14 +90,6 @@ function toOwnedUint8Array(chunk: Uint8Array): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(out);
   bytes.set(chunk);
   return bytes;
-}
-
-function shouldMaterializeChunkedSnapshots(): boolean {
-  return (
-    (typeof navigator !== 'undefined' && navigator.product === 'ReactNative') ||
-    typeof (globalThis as { nativeCallSyncHook?: unknown })
-      .nativeCallSyncHook === 'function'
-  );
 }
 
 async function maybeGunzipStream(
@@ -340,7 +334,10 @@ async function materializeSnapshotChunkRows(
   expectedHash: string | undefined,
   sha256Override?: (bytes: Uint8Array) => Promise<string>
 ): Promise<unknown[]> {
-  if (shouldMaterializeChunkedSnapshots() && transport.fetchSnapshotChunk) {
+  if (
+    transport.capabilities?.snapshotChunkReadMode === 'bytes' &&
+    transport.fetchSnapshotChunk
+  ) {
     let bytes = await transport.fetchSnapshotChunk(request);
     if (isGzipBytes(bytes)) {
       bytes = await gunzipBytes(bytes);
@@ -717,7 +714,7 @@ export interface SyncPullOnceOptions {
    * later large bootstrap table from hiding already-applied tables behind one
    * long-running transaction.
    */
-  bootstrapApplyMode?: 'auto' | 'single-transaction' | 'per-subscription';
+  bootstrapApplyMode?: 'auto' | SyncBootstrapApplyMode;
   /**
    * Custom SHA-256 hash function for snapshot chunk integrity verification.
    * Provide this on platforms where `crypto.subtle` is unavailable (e.g. React Native).
@@ -725,8 +722,6 @@ export interface SyncPullOnceOptions {
    */
   sha256?: (bytes: Uint8Array) => Promise<string>;
 }
-
-type BootstrapApplyMode = 'single-transaction' | 'per-subscription';
 
 export interface SyncPullRequestState {
   request: SyncPullRequest;
@@ -913,11 +908,11 @@ export async function applyPullResponse<DB extends SyncClientDb>(
   const plugins = options.plugins ?? [];
   const requiresMaterializedSnapshots =
     plugins.some((plugin) => !!plugin.afterPull) ||
-    shouldMaterializeChunkedSnapshots();
+    transport.capabilities?.preferMaterializedSnapshots === true;
   const bootstrapApplyMode = resolveBootstrapApplyMode(
     options,
     rawResponse,
-    requiresMaterializedSnapshots
+    transport.capabilities
   );
 
   let responseToApply = requiresMaterializedSnapshots
@@ -982,8 +977,8 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 function resolveBootstrapApplyMode(
   options: SyncPullOnceOptions,
   response: SyncPullResponse,
-  requiresMaterializedSnapshots: boolean
-): BootstrapApplyMode {
+  capabilities?: SyncTransportCapabilities
+): SyncBootstrapApplyMode {
   const mode = options.bootstrapApplyMode ?? 'auto';
   if (mode === 'single-transaction' || mode === 'per-subscription') {
     return mode;
@@ -991,9 +986,16 @@ function resolveBootstrapApplyMode(
   if (!response.subscriptions.some((sub) => sub.bootstrap)) {
     return 'single-transaction';
   }
-  return requiresMaterializedSnapshots
-    ? 'per-subscription'
-    : 'single-transaction';
+  if (capabilities?.preferredBootstrapApplyMode) {
+    return capabilities.preferredBootstrapApplyMode;
+  }
+  if (
+    capabilities?.snapshotChunkReadMode === 'bytes' ||
+    capabilities?.gzipDecompressionMode === 'buffered'
+  ) {
+    return 'per-subscription';
+  }
+  return 'single-transaction';
 }
 
 async function removeUndesiredSubscriptions<DB extends SyncClientDb>(

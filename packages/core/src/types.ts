@@ -135,6 +135,42 @@ export interface SyncTransportOptions {
   signal?: AbortSignal;
 }
 
+export type SyncSnapshotChunkReadMode = 'stream' | 'bytes';
+
+export type SyncGzipDecompressionMode = 'stream' | 'buffered';
+
+export type SyncBootstrapApplyMode =
+  | 'single-transaction'
+  | 'per-subscription';
+
+/**
+ * Declares transport/runtime capabilities that affect how the client should
+ * fetch, decode, and apply bootstrap snapshots.
+ */
+export interface SyncTransportCapabilities {
+  /**
+   * Preferred snapshot chunk download mode for this runtime.
+   * - `stream`: consume the response body as a stream when available
+   * - `bytes`: buffer the whole response body before decode/apply
+   */
+  snapshotChunkReadMode?: SyncSnapshotChunkReadMode;
+  /**
+   * Preferred gzip decode mode for this runtime.
+   * - `stream`: use `DecompressionStream`
+   * - `buffered`: gunzip a materialized byte buffer
+   */
+  gzipDecompressionMode?: SyncGzipDecompressionMode;
+  /**
+   * Hint that chunked bootstrap snapshots should be materialized into rows
+   * before plugin/app consumption.
+   */
+  preferMaterializedSnapshots?: boolean;
+  /**
+   * Preferred default transaction strategy for bootstrap apply.
+   */
+  preferredBootstrapApplyMode?: SyncBootstrapApplyMode;
+}
+
 /**
  * Blob transport operations (optional extension to SyncTransport).
  * When present, enables blob upload/download through the same transport.
@@ -174,6 +210,10 @@ export interface SyncTransportBlobs {
  * Transport interface for sync operations.
  */
 export interface SyncTransport {
+  /**
+   * Optional runtime/transport capabilities.
+   */
+  capabilities?: SyncTransportCapabilities;
   /**
    * Combined push+pull in a single round-trip.
    */
