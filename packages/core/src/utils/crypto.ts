@@ -32,12 +32,20 @@ function importNodeModule(specifier: string): Promise<unknown> {
   ) as Promise<unknown>;
 }
 
+function tryImportNodeModule(specifier: string): Promise<unknown> {
+  try {
+    return importNodeModule(specifier);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
 async function getNodeCryptoModule(): Promise<NodeCryptoModule | null> {
   if (!usesNodeRuntimeModules()) {
     return null;
   }
   if (!nodeCryptoModulePromise) {
-    nodeCryptoModulePromise = importNodeModule('node:crypto')
+    nodeCryptoModulePromise = tryImportNodeModule('node:crypto')
       .then((module) => module as NodeCryptoModule)
       .catch(() => null);
   }

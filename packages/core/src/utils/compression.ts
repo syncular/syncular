@@ -12,12 +12,20 @@ function importNodeModule(specifier: string): Promise<unknown> {
   ) as Promise<unknown>;
 }
 
+function tryImportNodeModule(specifier: string): Promise<unknown> {
+  try {
+    return importNodeModule(specifier);
+  } catch {
+    return Promise.resolve(null);
+  }
+}
+
 async function getNodeZlibModule(): Promise<NodeZlibModule | null> {
   if (!usesNodeRuntimeModules()) {
     return null;
   }
   if (!nodeZlibModulePromise) {
-    nodeZlibModulePromise = importNodeModule('node:zlib')
+    nodeZlibModulePromise = tryImportNodeModule('node:zlib')
       .then((module) => module as NodeZlibModule)
       .catch(() => null);
   }
