@@ -162,6 +162,113 @@ describe('applyPullResponse chunk streaming', () => {
     expect(streamFetchCount).toBe(1);
   });
 
+  it('applies gzip-compressed chunk streams without DecompressionStream', async () => {
+    const rows = Array.from({ length: 128 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const encoded = encodeSnapshotRows(rows);
+    const compressed = new Uint8Array(gzipSync(encoded));
+
+    const originalDecompressionStream = globalThis.DecompressionStream;
+    Object.defineProperty(globalThis, 'DecompressionStream', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      let streamFetchCount = 0;
+      const transport: SyncTransport = {
+        async sync() {
+          return {};
+        },
+        async fetchSnapshotChunk() {
+          throw new Error('fetchSnapshotChunk should not be used');
+        },
+        async fetchSnapshotChunkStream() {
+          streamFetchCount += 1;
+          return createStreamFromBytes(compressed, 73);
+        },
+      };
+
+      const handlers: ClientHandlerCollection<TestDb> = [
+        createClientHandler({
+          table: 'items',
+          scopes: ['items:{id}'],
+        }),
+      ];
+
+      const options = {
+        clientId: 'client-1',
+        subscriptions: [
+          {
+            id: 'items-sub',
+            table: 'items',
+            scopes: {},
+          },
+        ],
+        stateId: 'default',
+      };
+
+      const pullState = await buildPullRequest(db, options);
+
+      const response: SyncPullResponse = {
+        ok: true,
+        subscriptions: [
+          {
+            id: 'items-sub',
+            status: 'active',
+            scopes: {},
+            bootstrap: true,
+            bootstrapState: null,
+            nextCursor: 1,
+            commits: [],
+            snapshots: [
+              {
+                table: 'items',
+                rows: [],
+                chunks: [
+                  {
+                    id: 'chunk-1',
+                    byteLength: compressed.length,
+                    sha256: '',
+                    encoding: 'json-row-frame-v1',
+                    compression: 'gzip',
+                  },
+                ],
+                isFirstPage: true,
+                isLastPage: true,
+              },
+            ],
+          },
+        ],
+      };
+
+      await applyPullResponse(
+        db,
+        transport,
+        handlers,
+        options,
+        pullState,
+        response
+      );
+
+      const countResult = await sql<{ count: number }>`
+        select count(*) as count
+        from ${sql.table('items')}
+      `.execute(db);
+      expect(Number(countResult.rows[0]?.count ?? 0)).toBe(rows.length);
+      expect(streamFetchCount).toBe(1);
+    } finally {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: originalDecompressionStream,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
   it('materializes chunked bootstrap snapshots for afterPull plugins via streaming transport', async () => {
     const firstRows = Array.from({ length: 1200 }, (_, index) => ({
       id: `${index + 1}`,
@@ -437,6 +544,144 @@ describe('applyPullResponse chunk streaming', () => {
     expect(Number(countAfterRetry.rows[0]?.count ?? 0)).toBe(
       firstRows.length + secondRows.length
     );
+  });
+
+  it('can commit bootstrap subscriptions independently', async () => {
+    await db.schema
+      .createTable('scoped_items')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('name', 'text', (col) => col.notNull())
+      .execute();
+
+    const itemsRows = Array.from({ length: 3 }, (_, index) => ({
+      id: `${index + 1}`,
+      name: `Item ${index + 1}`,
+    }));
+    const scopedRows = Array.from({ length: 2 }, (_, index) => ({
+      id: `scoped-${index + 1}`,
+      project_id: 'alpha',
+      name: `Scoped ${index + 1}`,
+    }));
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+      {
+        table: 'scoped_items',
+        scopePatterns: ['scoped_items:{project}'],
+        async applySnapshot() {
+          throw new Error('scoped bootstrap failed');
+        },
+        async clearAll() {
+          return;
+        },
+        async applyChange() {
+          return;
+        },
+      },
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+        {
+          id: 'scoped-sub',
+          table: 'scoped_items',
+          scopes: { project: 'alpha' },
+        },
+      ],
+      stateId: 'default',
+      bootstrapApplyMode: 'per-subscription' as const,
+    };
+
+    const pullState = await buildPullRequest(db, options);
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 3,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: itemsRows,
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+        {
+          id: 'scoped-sub',
+          status: 'active',
+          scopes: { project: 'alpha' },
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 3,
+          commits: [],
+          snapshots: [
+            {
+              table: 'scoped_items',
+              rows: scopedRows,
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    await expect(
+      applyPullResponse(db, transport, handlers, options, pullState, response)
+    ).rejects.toThrow('scoped bootstrap failed');
+
+    const itemCount = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('items')}
+    `.execute(db);
+    expect(Number(itemCount.rows[0]?.count ?? 0)).toBe(itemsRows.length);
+
+    const scopedCount = await sql<{ count: number }>`
+      select count(*) as count
+      from ${sql.table('scoped_items')}
+    `.execute(db);
+    expect(Number(scopedCount.rows[0]?.count ?? 0)).toBe(0);
+
+    const stateRows = await db
+      .selectFrom('sync_subscription_state')
+      .select(['subscription_id', 'cursor'])
+      .where('state_id', '=', 'default')
+      .orderBy('subscription_id')
+      .execute();
+
+    expect(stateRows).toEqual([
+      {
+        subscription_id: 'items-sub',
+        cursor: 3,
+      },
+    ]);
   });
 
   it('verifies sha256 integrity for streamed chunk snapshots', async () => {

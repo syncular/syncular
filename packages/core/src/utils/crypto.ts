@@ -2,6 +2,7 @@ import { concatByteChunks } from './bytes';
 import { getBunRuntime, usesNodeRuntimeModules } from './internal-runtime';
 
 const textEncoder = new TextEncoder();
+type NodeCryptoModule = typeof import('node:crypto');
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -23,18 +24,22 @@ function toDigestBufferSource(payload: Uint8Array): Uint8Array<ArrayBuffer> {
   return owned;
 }
 
-let nodeCryptoModulePromise: Promise<
-  typeof import('node:crypto') | null
-> | null = null;
+let nodeCryptoModulePromise: Promise<NodeCryptoModule | null> | null = null;
 
-async function getNodeCryptoModule(): Promise<
-  typeof import('node:crypto') | null
-> {
+function importNodeModule(specifier: string): Promise<unknown> {
+  return new Function('specifier', 'return import(specifier);')(
+    specifier
+  ) as Promise<unknown>;
+}
+
+async function getNodeCryptoModule(): Promise<NodeCryptoModule | null> {
   if (!usesNodeRuntimeModules()) {
     return null;
   }
   if (!nodeCryptoModulePromise) {
-    nodeCryptoModulePromise = import('node:crypto').catch(() => null);
+    nodeCryptoModulePromise = importNodeModule('node:crypto')
+      .then((module) => module as NodeCryptoModule)
+      .catch(() => null);
   }
   return nodeCryptoModulePromise;
 }

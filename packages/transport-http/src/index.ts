@@ -44,6 +44,20 @@ export type {
 export { createApiClient } from './api-client';
 export type { operations } from './generated/api';
 
+function shouldUseResponseBodyStream(response: Response): boolean {
+  if (!response.body) return false;
+  if (
+    typeof navigator !== 'undefined' &&
+    navigator?.product === 'ReactNative'
+  ) {
+    return false;
+  }
+  return (
+    typeof (response.body as ReadableStream<Uint8Array>).getReader ===
+    'function'
+  );
+}
+
 export function createHttpTransport(
   clientOrOptions: SyncClient | ClientOptions
 ): SyncTransport {
@@ -245,7 +259,7 @@ export function createHttpTransport(
         );
       }
 
-      if (!response.body) {
+      if (!shouldUseResponseBodyStream(response)) {
         const bytes = new Uint8Array(await response.arrayBuffer());
         return bytesToReadableStream(bytes);
       }
