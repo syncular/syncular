@@ -5,6 +5,7 @@
  */
 
 import type {
+  SyncBootstrapState,
   SyncPullResponse,
   SyncPushRequest,
   SyncPushResponse,
@@ -100,6 +101,44 @@ export interface SyncProgress {
   channelPhase: SyncChannelPhase;
   progressPercent: number;
   subscriptions: SubscriptionProgress[];
+}
+
+export type SyncBootstrapSubscriptionPhase =
+  | SubscriptionProgressPhase
+  | 'pending';
+
+export interface SyncBootstrapSubscriptionStatus {
+  stateId: string;
+  id: string;
+  table?: string;
+  expected: boolean;
+  ready: boolean;
+  status: SubscriptionState['status'] | null;
+  phase: SyncBootstrapSubscriptionPhase;
+  progressPercent: number;
+  cursor: number | null;
+  bootstrapState: SyncBootstrapState | null;
+  startedAt?: number;
+  completedAt?: number;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+}
+
+export interface SyncBootstrapStatus {
+  stateId: string;
+  channelPhase: SyncChannelPhase;
+  progressPercent: number;
+  isBootstrapping: boolean;
+  isReady: boolean;
+  expectedSubscriptionIds: string[];
+  readySubscriptionIds: string[];
+  pendingSubscriptionIds: string[];
+  subscriptions: SyncBootstrapSubscriptionStatus[];
+}
+
+export interface SyncBootstrapStatusOptions {
+  stateId?: string;
+  subscriptionIds?: string[];
 }
 
 /**

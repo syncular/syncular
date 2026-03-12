@@ -32,6 +32,8 @@ export type {
   UseQueryResult,
   UseResolveConflictOptions,
   UseResolveConflictResult,
+  UseSyncBootstrapStateOptions,
+  UseSyncBootstrapStateResult,
   UseSyncConnectionResult,
   UseSyncEngineResult,
   UseSyncInspectorOptions,

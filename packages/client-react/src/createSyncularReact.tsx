@@ -18,6 +18,8 @@ import type {
   PushResultInfo,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
+  SyncBootstrapStatus,
+  SyncBootstrapStatusOptions,
   SyncClientDb,
   SyncClientPlugin,
   SyncDiagnostics,
@@ -335,6 +337,9 @@ export interface UseSyncEngineResult {
     subscriptionId: string,
     options?: { stateId?: string }
   ) => Promise<SubscriptionState | null>;
+  getBootstrapStatus: (
+    options?: SyncBootstrapStatusOptions
+  ) => Promise<SyncBootstrapStatus>;
   reset: (options: SyncResetOptions) => Promise<SyncResetResult>;
   repair: (options: SyncRepairOptions) => Promise<SyncResetResult>;
   awaitPhase: (
@@ -395,6 +400,22 @@ export interface UseSyncProgressOptions {
 
 export interface UseSyncProgressResult {
   progress: SyncProgress | null;
+  isLoading: boolean;
+  error: Error | null;
+  refresh: () => Promise<void>;
+}
+
+export interface UseSyncBootstrapStateOptions
+  extends SyncBootstrapStatusOptions {
+  /**
+   * Polling interval while bootstrapping.
+   * Set to 0 to disable interval refresh.
+   */
+  pollIntervalMs?: number;
+}
+
+export interface UseSyncBootstrapStateResult {
+  bootstrap: SyncBootstrapStatus | null;
   isLoading: boolean;
   error: Error | null;
   refresh: () => Promise<void>;
@@ -977,6 +998,11 @@ export function createSyncularReact<
         engine.getSubscriptionState(subscriptionId, options),
       [engine]
     );
+    const getBootstrapStatus = useCallback(
+      (options?: SyncBootstrapStatusOptions) =>
+        engine.getBootstrapStatus(options),
+      [engine]
+    );
     const reset = useCallback(
       (options: SyncResetOptions) => engine.reset(options),
       [engine]
@@ -1009,6 +1035,7 @@ export function createSyncularReact<
       getInspectorSnapshot,
       listSubscriptionStates,
       getSubscriptionState,
+      getBootstrapStatus,
       reset,
       repair,
       awaitPhase,
@@ -1257,6 +1284,39 @@ export function createSyncularReact<
         refresh,
       }),
       [progress, isLoading, error, refresh]
+    );
+  }
+
+  function useSyncBootstrapState(
+    options: UseSyncBootstrapStateOptions = {}
+  ): UseSyncBootstrapStateResult {
+    const engine = useEngine();
+    const { pollIntervalMs = 500, stateId, subscriptionIds } = options;
+    const {
+      value: bootstrap,
+      isLoading,
+      error,
+      refresh,
+    } = useAsyncEngineResource<SyncBootstrapStatus | null>({
+      initialValue: null,
+      load: () =>
+        engine.getBootstrapStatus({
+          stateId,
+          subscriptionIds,
+        }),
+      refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
+      pollIntervalMs,
+      shouldPoll: (value) => value?.isBootstrapping === true,
+    });
+
+    return useMemo(
+      () => ({
+        bootstrap,
+        isLoading,
+        error,
+        refresh,
+      }),
+      [bootstrap, isLoading, error, refresh]
     );
   }
 
@@ -2407,6 +2467,7 @@ export function createSyncularReact<
     useSyncConnection,
     useTransportHealth,
     useSyncProgress,
+    useSyncBootstrapState,
     useSyncInspector,
     useSyncSubscriptions,
     useSyncSubscription,
