@@ -182,7 +182,23 @@ jobs:
       - uses: ./.github/actions/setup-environment
 
       - name: Run full integration matrix
-        run: bun run test:integration:full
+        run: |
+          set +e
+          bun run test:integration:full
+          exit_code=$?
+          set -e
+
+          if [ "$exit_code" -eq 0 ]; then
+            exit 0
+          fi
+
+          if [ "$exit_code" -eq 132 ] || [ "$exit_code" -eq 133 ]; then
+            echo "Bun crashed with exit code $exit_code; retrying once..."
+            bun run test:integration:full
+            exit $?
+          fi
+
+          exit "$exit_code"
 
   load-smoke-pr:
     needs: changes
