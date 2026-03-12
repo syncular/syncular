@@ -1,15 +1,25 @@
+import { gunzipSync as gunzipSyncFflate } from 'fflate';
 import { bytesToReadableStream, readAllBytesFromStream } from './bytes';
 import { getBunRuntime, usesNodeRuntimeModules } from './internal-runtime';
 
-let nodeZlibModulePromise: Promise<typeof import('node:zlib') | null> | null =
-  null;
+type NodeZlibModule = typeof import('node:zlib');
 
-async function getNodeZlibModule(): Promise<typeof import('node:zlib') | null> {
+let nodeZlibModulePromise: Promise<NodeZlibModule | null> | null = null;
+
+function importNodeModule(specifier: string): Promise<unknown> {
+  return new Function('specifier', 'return import(specifier);')(
+    specifier
+  ) as Promise<unknown>;
+}
+
+async function getNodeZlibModule(): Promise<NodeZlibModule | null> {
   if (!usesNodeRuntimeModules()) {
     return null;
   }
   if (!nodeZlibModulePromise) {
-    nodeZlibModulePromise = import('node:zlib').catch(() => null);
+    nodeZlibModulePromise = importNodeModule('node:zlib')
+      .then((module) => module as NodeZlibModule)
+      .catch(() => null);
   }
   return nodeZlibModulePromise;
 }
@@ -47,6 +57,46 @@ export async function gzipBytes(payload: Uint8Array): Promise<Uint8Array> {
   throw new Error(
     'Failed to gzip bytes, no compression implementation available'
   );
+}
+
+/**
+ * Gzip-decompress a byte array using the fastest implementation available in
+ * the current runtime, with a pure-JS fallback for runtimes like Expo/Hermes.
+ */
+export async function gunzipBytes(payload: Uint8Array): Promise<Uint8Array> {
+  const bun = getBunRuntime();
+  if (bun?.gunzipSync) {
+    return bun.gunzipSync(payload);
+  }
+
+  const nodeZlib = await getNodeZlibModule();
+  if (nodeZlib?.gunzip) {
+    return await new Promise<Uint8Array>((resolve, reject) => {
+      nodeZlib.gunzip(payload, (error, decompressed) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(new Uint8Array(decompressed));
+      });
+    });
+  }
+
+  if (typeof DecompressionStream !== 'undefined') {
+    const stream = bytesToReadableStream(payload).pipeThrough(
+      new DecompressionStream('gzip') as TransformStream<Uint8Array, Uint8Array>
+    );
+    return readAllBytesFromStream(stream);
+  }
+
+  try {
+    return gunzipSyncFflate(payload);
+  } catch (error) {
+    throw new Error(
+      'Failed to gunzip bytes, no decompression implementation available',
+      { cause: error }
+    );
+  }
 }
 
 /**

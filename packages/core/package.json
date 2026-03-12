@@ -54,5 +54,8 @@
   "files": [
     "dist",
     "src"
-  ]
+  ],
+  "dependencies": {
+    "fflate": "^0.8.2"
+  }
 }

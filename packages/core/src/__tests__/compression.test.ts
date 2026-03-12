@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
-import { gzipBytes, gzipBytesToStream } from '../utils';
+import { gunzipBytes, gzipBytes, gzipBytesToStream } from '../utils';
 
 async function readStream(
   stream: ReadableStream<Uint8Array>
@@ -36,6 +36,17 @@ describe('gzipBytes', () => {
     );
     const compressed = await gzipBytes(payload);
     const decompressed = new Uint8Array(gunzipSync(compressed));
+    expect(decompressed).toEqual(payload);
+  });
+});
+
+describe('gunzipBytes', () => {
+  it('decompresses gzip-compressed bytes', async () => {
+    const payload = new TextEncoder().encode(
+      'syncular decompression test '.repeat(64)
+    );
+    const compressed = await gzipBytes(payload);
+    const decompressed = await gunzipBytes(compressed);
     expect(decompressed).toEqual(payload);
   });
 });

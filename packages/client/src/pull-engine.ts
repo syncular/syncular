@@ -2,16 +2,20 @@
  * @syncular/client - Sync pull engine
  */
 
-import type {
-  ScopeValues,
-  SyncBootstrapState,
-  SyncChange,
-  SyncPullRequest,
-  SyncPullResponse,
-  SyncPullSubscriptionResponse,
-  SyncSnapshot,
-  SyncSubscriptionRequest,
-  SyncTransport,
+import {
+  bytesToReadableStream,
+  decodeSnapshotRows,
+  gunzipBytes,
+  readAllBytesFromStream as readAllBytesFromCoreStream,
+  type ScopeValues,
+  type SyncBootstrapState,
+  type SyncChange,
+  type SyncPullRequest,
+  type SyncPullResponse,
+  type SyncPullSubscriptionResponse,
+  type SyncSnapshot,
+  type SyncSubscriptionRequest,
+  type SyncTransport,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
 import {
@@ -55,15 +59,6 @@ function isGzipBytes(bytes: Uint8Array): boolean {
   return bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
 }
 
-function bytesToReadableStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
 function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
   if (chunks.length === 1) {
     return chunks[0] ?? new Uint8Array();
@@ -93,6 +88,14 @@ function toOwnedUint8Array(chunk: Uint8Array): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(out);
   bytes.set(chunk);
   return bytes;
+}
+
+function shouldMaterializeChunkedSnapshots(): boolean {
+  return (
+    (typeof navigator !== 'undefined' && navigator.product === 'ReactNative') ||
+    typeof (globalThis as { nativeCallSyncHook?: unknown })
+      .nativeCallSyncHook === 'function'
+  );
 }
 
 async function maybeGunzipStream(
@@ -141,9 +144,8 @@ async function maybeGunzipStream(
     return replayStream.pipeThrough(new DecompressionStream('gzip'));
   }
 
-  throw new Error(
-    'Snapshot chunk appears gzip-compressed but gzip decompression is not available in this runtime'
-  );
+  const compressedBytes = await readAllBytesFromCoreStream(replayStream);
+  return bytesToReadableStream(await gunzipBytes(compressedBytes));
 }
 
 async function* decodeSnapshotRowStreamBatches(
@@ -338,6 +340,22 @@ async function materializeSnapshotChunkRows(
   expectedHash: string | undefined,
   sha256Override?: (bytes: Uint8Array) => Promise<string>
 ): Promise<unknown[]> {
+  if (shouldMaterializeChunkedSnapshots() && transport.fetchSnapshotChunk) {
+    let bytes = await transport.fetchSnapshotChunk(request);
+    if (isGzipBytes(bytes)) {
+      bytes = await gunzipBytes(bytes);
+    }
+    if (expectedHash) {
+      const actualHash = await computeSha256Hex(bytes, sha256Override);
+      if (actualHash !== expectedHash) {
+        throw new Error(
+          `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
+        );
+      }
+    }
+    return decodeSnapshotRows(bytes);
+  }
+
   const rawStream = await fetchSnapshotChunkStream(transport, request);
   const decodedStream = await maybeGunzipStream(rawStream);
   let streamForDecode = decodedStream;
@@ -690,12 +708,25 @@ export interface SyncPullOnceOptions {
   dedupeRows?: boolean;
   stateId?: string;
   /**
+   * Controls how bootstrap snapshot results are committed to the local DB.
+   * - `single-transaction`: all subscriptions in one DB transaction
+   * - `per-subscription`: each subscription in its own DB transaction
+   * - `auto`: choose a sensible runtime-specific default
+   *
+   * `per-subscription` makes early subscriptions visible sooner and prevents a
+   * later large bootstrap table from hiding already-applied tables behind one
+   * long-running transaction.
+   */
+  bootstrapApplyMode?: 'auto' | 'single-transaction' | 'per-subscription';
+  /**
    * Custom SHA-256 hash function for snapshot chunk integrity verification.
    * Provide this on platforms where `crypto.subtle` is unavailable (e.g. React Native).
    * Must return the hex-encoded hash string.
    */
   sha256?: (bytes: Uint8Array) => Promise<string>;
 }
+
+type BootstrapApplyMode = 'single-transaction' | 'per-subscription';
 
 export interface SyncPullRequestState {
   request: SyncPullRequest;
@@ -880,8 +911,13 @@ export async function applyPullResponse<DB extends SyncClientDb>(
     clientId: options.clientId,
   };
   const plugins = options.plugins ?? [];
-  const requiresMaterializedSnapshots = plugins.some(
-    (plugin) => !!plugin.afterPull
+  const requiresMaterializedSnapshots =
+    plugins.some((plugin) => !!plugin.afterPull) ||
+    shouldMaterializeChunkedSnapshots();
+  const bootstrapApplyMode = resolveBootstrapApplyMode(
+    options,
+    rawResponse,
+    requiresMaterializedSnapshots
   );
 
   let responseToApply = requiresMaterializedSnapshots
@@ -895,248 +931,315 @@ export async function applyPullResponse<DB extends SyncClientDb>(
     });
   }
 
+  const subsById = new Map<string, (typeof options.subscriptions)[number]>();
+  for (const s of options.subscriptions ?? []) subsById.set(s.id, s);
+
   await db.transaction().execute(async (trx) => {
-    const desiredIds = new Set((options.subscriptions ?? []).map((s) => s.id));
-
-    // Remove local data for subscriptions that are no longer desired.
-    for (const row of existing) {
-      if (desiredIds.has(row.subscription_id)) continue;
-
-      // Clear data for this table matching the subscription's scopes
-      if (row.table) {
-        try {
-          const scopes = row.scopes_json
-            ? typeof row.scopes_json === 'string'
-              ? JSON.parse(row.scopes_json)
-              : row.scopes_json
-            : {};
-          await getClientHandlerOrThrow(handlers, row.table).clearAll({
-            trx,
-            scopes,
-          });
-        } catch {
-          // ignore missing table handler
-        }
-      }
-
-      await sql`
-	        delete from ${sql.table('sync_subscription_state')}
-	        where ${sql.ref('state_id')} = ${sql.val(stateId)}
-	          and ${sql.ref('subscription_id')} = ${sql.val(row.subscription_id)}
-	      `.execute(trx);
-    }
-
-    const subsById = new Map<string, (typeof options.subscriptions)[number]>();
-    for (const s of options.subscriptions ?? []) subsById.set(s.id, s);
-    const latestStateRows = await sql<{
-      subscription_id: string;
-      cursor: number | string | null;
-    }>`
-      select
-        ${sql.ref('subscription_id')} as subscription_id,
-        ${sql.ref('cursor')} as cursor
-      from ${sql.table('sync_subscription_state')}
-      where ${sql.ref('state_id')} = ${sql.val(stateId)}
-    `.execute(trx);
-    const latestCursorBySubscriptionId = new Map<string, number | null>();
-    for (const row of latestStateRows.rows) {
-      const raw = row.cursor;
-      const cursor =
-        typeof raw === 'number'
-          ? raw
-          : raw === null || raw === undefined
-            ? null
-            : Number(raw);
-      latestCursorBySubscriptionId.set(row.subscription_id, cursor);
-    }
-
-    for (const sub of responseToApply.subscriptions) {
-      const def = subsById.get(sub.id);
-      const prev = existingById.get(sub.id);
-      const prevCursorRaw = prev?.cursor;
-      const prevCursor =
-        typeof prevCursorRaw === 'number'
-          ? prevCursorRaw
-          : prevCursorRaw === null || prevCursorRaw === undefined
-            ? null
-            : Number(prevCursorRaw);
-      const latestCursorRaw = latestCursorBySubscriptionId.get(sub.id);
-      const latestCursor =
-        typeof latestCursorRaw === 'number'
-          ? latestCursorRaw
-          : latestCursorRaw === null || latestCursorRaw === undefined
-            ? null
-            : Number(latestCursorRaw);
-      const effectiveCursor =
-        prevCursor !== null &&
-        Number.isFinite(prevCursor) &&
-        latestCursor !== null &&
-        Number.isFinite(latestCursor)
-          ? Math.max(prevCursor, latestCursor)
-          : prevCursor !== null && Number.isFinite(prevCursor)
-            ? prevCursor
-            : latestCursor !== null && Number.isFinite(latestCursor)
-              ? latestCursor
-              : null;
-      const staleIncrementalResponse =
-        !sub.bootstrap &&
-        effectiveCursor !== null &&
-        sub.nextCursor < effectiveCursor;
-
-      // Guard against out-of-order duplicate pull responses from older requests.
-      if (staleIncrementalResponse) {
-        continue;
-      }
-
-      // Revoked: clear data and drop the subscription row.
-      if (sub.status === 'revoked') {
-        if (prev?.table) {
-          try {
-            const scopes = parseScopeValuesJson(prev.scopes_json);
-            await getClientHandlerOrThrow(handlers, prev.table).clearAll({
-              trx,
-              scopes,
-            });
-          } catch {
-            // ignore missing handler
-          }
-        }
-
-        await sql`
-		          delete from ${sql.table('sync_subscription_state')}
-		          where ${sql.ref('state_id')} = ${sql.val(stateId)}
-		            and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
-		        `.execute(trx);
-        latestCursorBySubscriptionId.delete(sub.id);
-        continue;
-      }
-
-      const nextScopes = sub.scopes ?? def?.scopes ?? {};
-      const previousScopes = parseScopeValuesJson(prev?.scopes_json);
-      const scopesChanged = !scopeValuesEqual(previousScopes, nextScopes);
-
-      if (sub.bootstrap && prev?.table && scopesChanged) {
-        try {
-          const clearScopes = resolveBootstrapClearScopes(
-            previousScopes,
-            nextScopes
-          );
-          if (clearScopes !== 'none') {
-            await getClientHandlerOrThrow(handlers, prev.table).clearAll({
-              trx,
-              scopes: clearScopes ?? previousScopes,
-            });
-          }
-        } catch {
-          // ignore missing handler
-        }
-      }
-
-      // Apply snapshots (bootstrap mode)
-      if (sub.bootstrap) {
-        for (const snapshot of sub.snapshots ?? []) {
-          const handler = getClientHandlerOrThrow(handlers, snapshot.table);
-          const hasChunkRefs =
-            Array.isArray(snapshot.chunks) && snapshot.chunks.length > 0;
-
-          // Call onSnapshotStart hook when starting a new snapshot
-          if (snapshot.isFirstPage && handler.onSnapshotStart) {
-            await handler.onSnapshotStart({
-              trx,
-              table: snapshot.table,
-              scopes: sub.scopes,
-            });
-          }
-
-          if (hasChunkRefs) {
-            await applyChunkedSnapshot(
-              transport,
-              handler,
-              trx,
-              snapshot,
-              sub.scopes,
-              options.sha256
-            );
-          } else {
-            await handler.applySnapshot({ trx }, snapshot);
-          }
-
-          // Call onSnapshotEnd hook when snapshot is complete
-          if (snapshot.isLastPage && handler.onSnapshotEnd) {
-            await handler.onSnapshotEnd({
-              trx,
-              table: snapshot.table,
-              scopes: sub.scopes,
-            });
-          }
-        }
-      } else {
-        // Apply incremental changes
-        for (const commit of sub.commits) {
-          await applyIncrementalCommitChanges(handlers, trx, {
-            changes: commit.changes,
-            commitSeq: commit.commitSeq ?? null,
-            actorId: commit.actorId ?? null,
-            createdAt: commit.createdAt ?? null,
-          });
-        }
-      }
-
-      // Persist subscription cursor + metadata.
-      // Use cached JSON serialization to avoid repeated stringification
-      const now = Date.now();
-      const paramsJson = serializeJsonCached(def?.params ?? {});
-      const scopesJson = serializeJsonCached(nextScopes);
-      const bootstrapStateJson = sub.bootstrap
-        ? sub.bootstrapState
-          ? serializeJsonCached(sub.bootstrapState)
-          : null
-        : null;
-
-      const table = def?.table ?? 'unknown';
-      await sql`
-		        insert into ${sql.table('sync_subscription_state')} (
-	          ${sql.join([
-              sql.ref('state_id'),
-              sql.ref('subscription_id'),
-              sql.ref('table'),
-              sql.ref('scopes_json'),
-              sql.ref('params_json'),
-              sql.ref('cursor'),
-              sql.ref('bootstrap_state_json'),
-              sql.ref('status'),
-              sql.ref('created_at'),
-              sql.ref('updated_at'),
-            ])}
-	        ) values (
-	          ${sql.join([
-              sql.val(stateId),
-              sql.val(sub.id),
-              sql.val(table),
-              sql.val(scopesJson),
-              sql.val(paramsJson),
-              sql.val(sub.nextCursor),
-              sql.val(bootstrapStateJson),
-              sql.val('active'),
-              sql.val(now),
-              sql.val(now),
-            ])}
-	        )
-	        on conflict (${sql.join([sql.ref('state_id'), sql.ref('subscription_id')])})
-	        do update set
-	          ${sql.ref('table')} = ${sql.val(table)},
-	          ${sql.ref('scopes_json')} = ${sql.val(scopesJson)},
-	          ${sql.ref('params_json')} = ${sql.val(paramsJson)},
-	          ${sql.ref('cursor')} = ${sql.val(sub.nextCursor)},
-	          ${sql.ref('bootstrap_state_json')} = ${sql.val(bootstrapStateJson)},
-		          ${sql.ref('status')} = ${sql.val('active')},
-		          ${sql.ref('updated_at')} = ${sql.val(now)}
-		      `.execute(trx);
-      latestCursorBySubscriptionId.set(sub.id, sub.nextCursor);
-    }
+    await removeUndesiredSubscriptions(
+      trx,
+      handlers,
+      existing,
+      options.subscriptions ?? [],
+      stateId
+    );
   });
 
+  if (bootstrapApplyMode === 'per-subscription') {
+    for (const sub of responseToApply.subscriptions) {
+      await db.transaction().execute(async (trx) => {
+        await applySubscriptionResponse({
+          trx,
+          handlers,
+          transport,
+          options,
+          stateId,
+          existingById,
+          subsById,
+          sub,
+        });
+      });
+    }
+  } else {
+    await db.transaction().execute(async (trx) => {
+      for (const sub of responseToApply.subscriptions) {
+        await applySubscriptionResponse({
+          trx,
+          handlers,
+          transport,
+          options,
+          stateId,
+          existingById,
+          subsById,
+          sub,
+        });
+      }
+    });
+  }
+
   return responseToApply;
+}
+
+function resolveBootstrapApplyMode(
+  options: SyncPullOnceOptions,
+  response: SyncPullResponse,
+  requiresMaterializedSnapshots: boolean
+): BootstrapApplyMode {
+  const mode = options.bootstrapApplyMode ?? 'auto';
+  if (mode === 'single-transaction' || mode === 'per-subscription') {
+    return mode;
+  }
+  if (!response.subscriptions.some((sub) => sub.bootstrap)) {
+    return 'single-transaction';
+  }
+  return requiresMaterializedSnapshots
+    ? 'per-subscription'
+    : 'single-transaction';
+}
+
+async function removeUndesiredSubscriptions<DB extends SyncClientDb>(
+  trx: Transaction<DB>,
+  handlers: ClientHandlerCollection<DB>,
+  existing: SyncSubscriptionStateTable[],
+  desiredSubscriptions: Array<Omit<SyncSubscriptionRequest, 'cursor'>>,
+  stateId: string
+): Promise<void> {
+  const desiredIds = new Set(
+    desiredSubscriptions.map((subscription) => subscription.id)
+  );
+
+  for (const row of existing) {
+    if (desiredIds.has(row.subscription_id)) continue;
+
+    if (row.table) {
+      try {
+        const scopes = row.scopes_json
+          ? typeof row.scopes_json === 'string'
+            ? JSON.parse(row.scopes_json)
+            : row.scopes_json
+          : {};
+        await getClientHandlerOrThrow(handlers, row.table).clearAll({
+          trx,
+          scopes,
+        });
+      } catch {
+        // ignore missing table handler
+      }
+    }
+
+    await sql`
+      delete from ${sql.table('sync_subscription_state')}
+      where ${sql.ref('state_id')} = ${sql.val(stateId)}
+        and ${sql.ref('subscription_id')} = ${sql.val(row.subscription_id)}
+    `.execute(trx);
+  }
+}
+
+async function readLatestSubscriptionCursor<DB extends SyncClientDb>(
+  trx: Transaction<DB>,
+  stateId: string,
+  subscriptionId: string
+): Promise<number | null> {
+  const result = await sql<{ cursor: number | string | null }>`
+    select ${sql.ref('cursor')} as cursor
+    from ${sql.table('sync_subscription_state')}
+    where ${sql.ref('state_id')} = ${sql.val(stateId)}
+      and ${sql.ref('subscription_id')} = ${sql.val(subscriptionId)}
+    limit 1
+  `.execute(trx);
+  const raw = result.rows[0]?.cursor;
+  return typeof raw === 'number'
+    ? raw
+    : raw === null || raw === undefined
+      ? null
+      : Number(raw);
+}
+
+async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
+  trx: Transaction<DB>;
+  handlers: ClientHandlerCollection<DB>;
+  transport: SyncTransport;
+  options: SyncPullOnceOptions;
+  stateId: string;
+  existingById: Map<string, SyncSubscriptionStateTable>;
+  subsById: Map<string, Omit<SyncSubscriptionRequest, 'cursor'> | undefined>;
+  sub: SyncPullSubscriptionResponse;
+}): Promise<void> {
+  const {
+    trx,
+    handlers,
+    transport,
+    options,
+    stateId,
+    existingById,
+    subsById,
+    sub,
+  } = args;
+  const def = subsById.get(sub.id);
+  const prev = existingById.get(sub.id);
+  const prevCursorRaw = prev?.cursor;
+  const prevCursor =
+    typeof prevCursorRaw === 'number'
+      ? prevCursorRaw
+      : prevCursorRaw === null || prevCursorRaw === undefined
+        ? null
+        : Number(prevCursorRaw);
+  const latestCursor = await readLatestSubscriptionCursor(trx, stateId, sub.id);
+  const effectiveCursor =
+    prevCursor !== null &&
+    Number.isFinite(prevCursor) &&
+    latestCursor !== null &&
+    Number.isFinite(latestCursor)
+      ? Math.max(prevCursor, latestCursor)
+      : prevCursor !== null && Number.isFinite(prevCursor)
+        ? prevCursor
+        : latestCursor !== null && Number.isFinite(latestCursor)
+          ? latestCursor
+          : null;
+  const staleIncrementalResponse =
+    !sub.bootstrap &&
+    effectiveCursor !== null &&
+    sub.nextCursor < effectiveCursor;
+
+  if (staleIncrementalResponse) {
+    return;
+  }
+
+  if (sub.status === 'revoked') {
+    if (prev?.table) {
+      try {
+        const scopes = parseScopeValuesJson(prev.scopes_json);
+        await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+          trx,
+          scopes,
+        });
+      } catch {
+        // ignore missing handler
+      }
+    }
+
+    await sql`
+      delete from ${sql.table('sync_subscription_state')}
+      where ${sql.ref('state_id')} = ${sql.val(stateId)}
+        and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
+    `.execute(trx);
+    return;
+  }
+
+  const nextScopes = sub.scopes ?? def?.scopes ?? {};
+  const previousScopes = parseScopeValuesJson(prev?.scopes_json);
+  const scopesChanged = !scopeValuesEqual(previousScopes, nextScopes);
+
+  if (sub.bootstrap && prev?.table && scopesChanged) {
+    try {
+      const clearScopes = resolveBootstrapClearScopes(
+        previousScopes,
+        nextScopes
+      );
+      if (clearScopes !== 'none') {
+        await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+          trx,
+          scopes: clearScopes ?? previousScopes,
+        });
+      }
+    } catch {
+      // ignore missing handler
+    }
+  }
+
+  if (sub.bootstrap) {
+    for (const snapshot of sub.snapshots ?? []) {
+      const handler = getClientHandlerOrThrow(handlers, snapshot.table);
+      const hasChunkRefs =
+        Array.isArray(snapshot.chunks) && snapshot.chunks.length > 0;
+
+      if (snapshot.isFirstPage && handler.onSnapshotStart) {
+        await handler.onSnapshotStart({
+          trx,
+          table: snapshot.table,
+          scopes: sub.scopes,
+        });
+      }
+
+      if (hasChunkRefs) {
+        await applyChunkedSnapshot(
+          transport,
+          handler,
+          trx,
+          snapshot,
+          sub.scopes,
+          options.sha256
+        );
+      } else {
+        await handler.applySnapshot({ trx }, snapshot);
+      }
+
+      if (snapshot.isLastPage && handler.onSnapshotEnd) {
+        await handler.onSnapshotEnd({
+          trx,
+          table: snapshot.table,
+          scopes: sub.scopes,
+        });
+      }
+    }
+  } else {
+    for (const commit of sub.commits) {
+      await applyIncrementalCommitChanges(handlers, trx, {
+        changes: commit.changes,
+        commitSeq: commit.commitSeq ?? null,
+        actorId: commit.actorId ?? null,
+        createdAt: commit.createdAt ?? null,
+      });
+    }
+  }
+
+  const now = Date.now();
+  const paramsJson = serializeJsonCached(def?.params ?? {});
+  const scopesJson = serializeJsonCached(nextScopes);
+  const bootstrapStateJson = sub.bootstrap
+    ? sub.bootstrapState
+      ? serializeJsonCached(sub.bootstrapState)
+      : null
+    : null;
+  const table = def?.table ?? 'unknown';
+
+  await sql`
+    insert into ${sql.table('sync_subscription_state')} (
+      ${sql.join([
+        sql.ref('state_id'),
+        sql.ref('subscription_id'),
+        sql.ref('table'),
+        sql.ref('scopes_json'),
+        sql.ref('params_json'),
+        sql.ref('cursor'),
+        sql.ref('bootstrap_state_json'),
+        sql.ref('status'),
+        sql.ref('created_at'),
+        sql.ref('updated_at'),
+      ])}
+    ) values (
+      ${sql.join([
+        sql.val(stateId),
+        sql.val(sub.id),
+        sql.val(table),
+        sql.val(scopesJson),
+        sql.val(paramsJson),
+        sql.val(sub.nextCursor),
+        sql.val(bootstrapStateJson),
+        sql.val('active'),
+        sql.val(now),
+        sql.val(now),
+      ])}
+    )
+    on conflict (${sql.join([sql.ref('state_id'), sql.ref('subscription_id')])})
+    do update set
+      ${sql.ref('table')} = ${sql.val(table)},
+      ${sql.ref('scopes_json')} = ${sql.val(scopesJson)},
+      ${sql.ref('params_json')} = ${sql.val(paramsJson)},
+      ${sql.ref('cursor')} = ${sql.val(sub.nextCursor)},
+      ${sql.ref('bootstrap_state_json')} = ${sql.val(bootstrapStateJson)},
+      ${sql.ref('status')} = ${sql.val('active')},
+      ${sql.ref('updated_at')} = ${sql.val(now)}
+  `.execute(trx);
 }
 
 export async function syncPullOnce<DB extends SyncClientDb>(
