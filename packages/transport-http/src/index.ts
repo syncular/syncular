@@ -10,8 +10,8 @@ import type {
   SyncBootstrapApplyMode,
   SyncCombinedRequest,
   SyncCombinedResponse,
-  SyncTransportCapabilities,
   SyncTransport,
+  SyncTransportCapabilities,
   SyncTransportOptions,
 } from '@syncular/core';
 import { SyncTransportError } from '@syncular/core';
