@@ -3,6 +3,7 @@ import type {
   SyncAuthErrorContext,
   SyncAuthLifecycle,
   SyncAuthOperation,
+  SyncTransportCapabilities,
   SyncTransportOptions,
 } from '@syncular/core';
 import { resolveUrlFromBase } from '@syncular/core';
@@ -23,6 +24,11 @@ export interface ClientOptions {
    * Defaults to 'direct'.
    */
   transportPath?: SyncTransportPath;
+  /**
+   * Explicit runtime capabilities override.
+   * Use this to avoid environment sniffing in runtimes like React Native.
+   */
+  capabilities?: Partial<SyncTransportCapabilities>;
 }
 
 export type ApiResult<T> = {
