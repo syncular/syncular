@@ -139,9 +139,7 @@ export type SyncSnapshotChunkReadMode = 'stream' | 'bytes';
 
 export type SyncGzipDecompressionMode = 'stream' | 'buffered';
 
-export type SyncBootstrapApplyMode =
-  | 'single-transaction'
-  | 'per-subscription';
+export type SyncBootstrapApplyMode = 'single-transaction' | 'per-subscription';
 
 /**
  * Declares transport/runtime capabilities that affect how the client should

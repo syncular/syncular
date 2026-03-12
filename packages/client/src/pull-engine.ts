@@ -7,8 +7,8 @@ import {
   decodeSnapshotRows,
   gunzipBytes,
   readAllBytesFromStream as readAllBytesFromCoreStream,
-  type SyncBootstrapApplyMode,
   type ScopeValues,
+  type SyncBootstrapApplyMode,
   type SyncBootstrapState,
   type SyncChange,
   type SyncPullRequest,
@@ -16,8 +16,8 @@ import {
   type SyncPullSubscriptionResponse,
   type SyncSnapshot,
   type SyncSubscriptionRequest,
-  type SyncTransportCapabilities,
   type SyncTransport,
+  type SyncTransportCapabilities,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
 import {
