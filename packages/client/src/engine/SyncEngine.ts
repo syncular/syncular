@@ -50,6 +50,9 @@ import type {
   SubscriptionProgress,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
+  SyncBootstrapStatus,
+  SyncBootstrapStatusOptions,
+  SyncBootstrapSubscriptionPhase,
   SyncConnectionState,
   SyncDiagnostics,
   SyncEngineConfig,
@@ -657,6 +660,117 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       channelPhase,
       progressPercent,
       subscriptions: progress,
+    };
+  }
+
+  /**
+   * Get bootstrap readiness for expected subscriptions in this state profile.
+   */
+  async getBootstrapStatus(
+    options: SyncBootstrapStatusOptions = {}
+  ): Promise<SyncBootstrapStatus> {
+    const stateId = options.stateId ?? this.getStateId();
+    const explicitIds = options.subscriptionIds ?? [];
+    const explicitIdSet = new Set(explicitIds);
+    const configured = this.config.subscriptions.filter(
+      (sub) => explicitIdSet.size === 0 || explicitIdSet.has(sub.id)
+    );
+    const configuredById = new Map(configured.map((sub) => [sub.id, sub]));
+
+    const subscriptionStates = await this.listSubscriptionStates({ stateId });
+    const filteredStates =
+      explicitIdSet.size === 0
+        ? subscriptionStates
+        : subscriptionStates.filter((sub) =>
+            explicitIdSet.has(sub.subscriptionId)
+          );
+    const statesById = new Map(
+      filteredStates.map((sub) => [sub.subscriptionId, sub])
+    );
+    const progressById = new Map(
+      filteredStates.map((sub) => {
+        const progress = this.mapSubscriptionToProgress(sub);
+        return [progress.id, progress] as const;
+      })
+    );
+
+    const orderedIds = new Set<string>();
+    for (const sub of configured) orderedIds.add(sub.id);
+    for (const id of explicitIds) orderedIds.add(id);
+    for (const sub of filteredStates) orderedIds.add(sub.subscriptionId);
+
+    const subscriptions = Array.from(orderedIds).map((id) => {
+      const configuredSub = configuredById.get(id);
+      const state = statesById.get(id);
+      const progress = progressById.get(id);
+      const expected = configuredSub !== undefined || explicitIdSet.has(id);
+      const phase: SyncBootstrapSubscriptionPhase =
+        progress?.phase ??
+        (expected
+          ? 'pending'
+          : state?.status === 'revoked'
+            ? 'error'
+            : state?.bootstrapState
+              ? 'bootstrapping'
+              : state && state.cursor >= 0
+                ? 'live'
+                : 'pending');
+      const ready =
+        expected &&
+        state?.status === 'active' &&
+        state.bootstrapState === null &&
+        state.cursor >= 0;
+
+      return {
+        stateId,
+        id,
+        table: configuredSub?.table ?? state?.table,
+        expected,
+        ready,
+        status: state?.status ?? null,
+        phase,
+        progressPercent: ready ? 100 : (progress?.progressPercent ?? 0),
+        cursor: state?.cursor ?? null,
+        bootstrapState: state?.bootstrapState ?? null,
+        startedAt: progress?.startedAt,
+        completedAt: progress?.completedAt,
+        lastErrorCode: progress?.lastErrorCode,
+        lastErrorMessage: progress?.lastErrorMessage,
+      };
+    });
+
+    const expectedSubscriptions = subscriptions.filter((sub) => sub.expected);
+    const readySubscriptionIds = expectedSubscriptions
+      .filter((sub) => sub.ready)
+      .map((sub) => sub.id);
+    const pendingSubscriptionIds = expectedSubscriptions
+      .filter((sub) => !sub.ready)
+      .map((sub) => sub.id);
+    const channelPhase = this.resolveChannelPhase(
+      filteredStates.map((sub) => this.mapSubscriptionToProgress(sub))
+    );
+    const progressPercent =
+      expectedSubscriptions.length === 0
+        ? pendingSubscriptionIds.length === 0
+          ? 100
+          : 0
+        : Math.round(
+            expectedSubscriptions.reduce(
+              (sum, sub) => sum + sub.progressPercent,
+              0
+            ) / expectedSubscriptions.length
+          );
+
+    return {
+      stateId,
+      channelPhase,
+      progressPercent,
+      isBootstrapping: pendingSubscriptionIds.length > 0,
+      isReady: pendingSubscriptionIds.length === 0,
+      expectedSubscriptionIds: expectedSubscriptions.map((sub) => sub.id),
+      readySubscriptionIds,
+      pendingSubscriptionIds,
+      subscriptions,
     };
   }
 

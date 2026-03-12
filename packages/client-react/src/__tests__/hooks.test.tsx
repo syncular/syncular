@@ -6,7 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
-import type { SyncClientDb } from '@syncular/client';
+import { type SyncClientDb, upsertSubscriptionState } from '@syncular/client';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
@@ -28,6 +28,7 @@ const {
   usePresenceWithJoin,
   useResolveConflict,
   useSyncConnection,
+  useSyncBootstrapState,
   useSyncEngine,
   useSyncInspector,
   useMutations,
@@ -127,6 +128,109 @@ describe('React Hooks', () => {
       expect(snapshot?.version).toBe(1);
       expect(Array.isArray(snapshot?.recentEvents)).toBe(true);
       expect(snapshot?.recentEvents.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('useSyncBootstrapState', () => {
+    it('exposes expected, ready, and pending bootstrap subscriptions', async () => {
+      const transport = createMockTransport();
+      const handlers = createMockHandlerRegistry();
+      const sync = createMockSync({
+        handlers,
+        subscriptions: [
+          { id: 'catalog-meta', table: 'catalog_meta' },
+          { id: 'catalog-codes', table: 'codes' },
+        ],
+      });
+
+      const Wrapper = ({ children }: { children: ReactNode }) => (
+        <SyncProvider
+          db={db}
+          transport={transport}
+          sync={sync}
+          identity={{ actorId: 'test-actor' }}
+          clientId="test-client"
+          pollIntervalMs={999999}
+          autoStart={false}
+        >
+          {children}
+        </SyncProvider>
+      );
+
+      const { result } = renderHook(
+        () => useSyncBootstrapState({ pollIntervalMs: 0 }),
+        { wrapper: Wrapper }
+      );
+
+      await act(async () => {
+        await upsertSubscriptionState(db, {
+          subscriptionId: 'catalog-meta',
+          table: 'catalog_meta',
+          scopes: {},
+          cursor: 12,
+          bootstrapState: null,
+          status: 'active',
+        });
+        await upsertSubscriptionState(db, {
+          subscriptionId: 'catalog-codes',
+          table: 'codes',
+          scopes: {},
+          cursor: -1,
+          bootstrapState: {
+            asOfCommitSeq: 42,
+            tables: ['codes'],
+            tableIndex: 0,
+            rowCursor: null,
+          },
+          status: 'active',
+        });
+        await result.current.refresh();
+      });
+
+      expect(result.current.bootstrap?.expectedSubscriptionIds).toEqual([
+        'catalog-meta',
+        'catalog-codes',
+      ]);
+      expect(result.current.bootstrap?.readySubscriptionIds).toEqual([
+        'catalog-meta',
+      ]);
+      expect(result.current.bootstrap?.pendingSubscriptionIds).toEqual([
+        'catalog-codes',
+      ]);
+      expect(result.current.bootstrap?.isBootstrapping).toBe(true);
+      expect(result.current.bootstrap?.isReady).toBe(false);
+      expect(result.current.bootstrap?.subscriptions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: 'catalog-meta',
+            expected: true,
+            ready: true,
+            phase: 'live',
+          }),
+          expect.objectContaining({
+            id: 'catalog-codes',
+            expected: true,
+            ready: false,
+            phase: 'bootstrapping',
+          }),
+        ])
+      );
+
+      await act(async () => {
+        await upsertSubscriptionState(db, {
+          subscriptionId: 'catalog-codes',
+          table: 'codes',
+          scopes: {},
+          cursor: 99,
+          bootstrapState: null,
+          status: 'active',
+        });
+        await result.current.refresh();
+      });
+
+      expect(result.current.bootstrap?.pendingSubscriptionIds).toEqual([]);
+      expect(result.current.bootstrap?.isReady).toBe(true);
+      expect(result.current.bootstrap?.progressPercent).toBe(100);
     });
   });
 
