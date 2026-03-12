@@ -105,6 +105,13 @@ function shouldUseResponseBodyStream(
   );
 }
 
+export const REACT_NATIVE_TRANSPORT_CAPABILITIES: SyncTransportCapabilities = {
+  snapshotChunkReadMode: 'bytes',
+  gzipDecompressionMode: 'buffered',
+  preferredBootstrapApplyMode: 'per-subscription',
+  preferMaterializedSnapshots: true,
+};
+
 export function createHttpTransport(
   clientOrOptions: SyncClient | ClientOptions
 ): SyncTransport {
@@ -328,4 +335,20 @@ export function createHttpTransport(
   });
 
   return transport;
+}
+
+export function createReactNativeHttpTransport(
+  clientOrOptions: SyncClient | ClientOptions
+): SyncTransport {
+  if (!('baseUrl' in clientOrOptions)) {
+    return createHttpTransport(clientOrOptions);
+  }
+
+  return createHttpTransport({
+    ...clientOrOptions,
+    capabilities: {
+      ...REACT_NATIVE_TRANSPORT_CAPABILITIES,
+      ...clientOrOptions.capabilities,
+    },
+  });
 }

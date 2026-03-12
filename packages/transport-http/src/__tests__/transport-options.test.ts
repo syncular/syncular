@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { createApiClient, createHttpTransport } from '../index';
+import {
+  createApiClient,
+  createHttpTransport,
+  createReactNativeHttpTransport,
+} from '../index';
 
 function readHeaderFromFetchArgs(
   input: RequestInfo | URL,
@@ -45,6 +49,19 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(transport.capabilities?.preferredBootstrapApplyMode).toBe(
       'per-subscription'
     );
+  });
+
+  it('provides a React Native / Expo transport preset', () => {
+    const transport = createReactNativeHttpTransport({
+      baseUrl: 'http://localhost',
+    });
+
+    expect(transport.capabilities).toMatchObject({
+      snapshotChunkReadMode: 'bytes',
+      gzipDecompressionMode: 'buffered',
+      preferredBootstrapApplyMode: 'per-subscription',
+      preferMaterializedSnapshots: true,
+    });
   });
 
   it('forwards AbortSignal to sync requests', async () => {

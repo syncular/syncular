@@ -26,6 +26,27 @@ const transport = createHttpTransport({
 });
 ```
 
+## React Native / Expo
+
+Use the built-in React Native preset instead of manually tuning transport
+capabilities for Hermes / Expo:
+
+```ts
+import { createReactNativeHttpTransport } from '@syncular/transport-http';
+
+const transport = createReactNativeHttpTransport({
+  baseUrl: 'https://api.example.com',
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+});
+```
+
+This preset enables:
+
+- byte-based snapshot chunk fetches instead of `ReadableStream`
+- buffered gzip decompression fallback
+- per-subscription bootstrap commits
+- materialized snapshot application preferred for mobile runtimes
+
 ## Documentation
 
 - How sync works (push/pull): https://syncular.dev/docs/introduction/architecture

@@ -67,6 +67,10 @@ npm install @syncular/server @syncular/server-hono @syncular/server-dialect-post
 npm install @syncular/client @syncular/client-react @syncular/transport-http @syncular/dialect-wa-sqlite kysely
 ```
 
+React Native / Expo clients should use the `createReactNativeHttpTransport(...)`
+preset from `@syncular/transport-http` so snapshot fetch, gzip handling, and
+bootstrap apply strategy are tuned for Hermes-style runtimes.
+
 See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/introduction/installation) for the package/runtime matrix, and [Build](https://syncular.dev/docs/build) for the implementation path.
 
 ## How it works
