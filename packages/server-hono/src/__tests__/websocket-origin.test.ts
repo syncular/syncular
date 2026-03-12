@@ -56,7 +56,8 @@ describe('websocket origin policy', () => {
   it('supports wildcard ports for loopback origins', () => {
     expect(
       isRequestOriginAllowed({
-        requestUrl: 'https://space.syncular.space/api/sync/realtime?clientId=client-1',
+        requestUrl:
+          'https://space.syncular.space/api/sync/realtime?clientId=client-1',
         originHeader: 'http://localhost:5180',
         allowedOrigins: ['http://localhost:*'],
       })
@@ -64,7 +65,8 @@ describe('websocket origin policy', () => {
 
     expect(
       isRequestOriginAllowed({
-        requestUrl: 'https://space.syncular.space/api/sync/realtime?clientId=client-1',
+        requestUrl:
+          'https://space.syncular.space/api/sync/realtime?clientId=client-1',
         originHeader: 'http://127.0.0.1:5174',
         allowedOrigins: ['http://127.0.0.1:*'],
       })
@@ -74,7 +76,8 @@ describe('websocket origin policy', () => {
   it('supports wildcard subdomain origin patterns', () => {
     expect(
       isRequestOriginAllowed({
-        requestUrl: 'https://space.syncular.space/api/sync/realtime?clientId=client-1',
+        requestUrl:
+          'https://space.syncular.space/api/sync/realtime?clientId=client-1',
         originHeader: 'https://preview-123.pages.dev',
         allowedOrigins: ['https://*.pages.dev'],
       })
@@ -82,7 +85,8 @@ describe('websocket origin policy', () => {
 
     expect(
       isRequestOriginAllowed({
-        requestUrl: 'https://space.syncular.space/api/sync/realtime?clientId=client-1',
+        requestUrl:
+          'https://space.syncular.space/api/sync/realtime?clientId=client-1',
         originHeader: 'https://pages.dev',
         allowedOrigins: ['https://*.pages.dev'],
       })
