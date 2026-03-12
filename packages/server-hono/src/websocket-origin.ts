@@ -12,10 +12,7 @@ function defaultPortForProtocol(protocol: string): string {
   return protocol === 'https:' ? '443' : '80';
 }
 
-function matchesWildcardOriginPattern(
-  origin: URL,
-  pattern: string
-): boolean {
+function matchesWildcardOriginPattern(origin: URL, pattern: string): boolean {
   const match = pattern.match(
     /^(https?):\/\/(\*\.)?(\[[^\]]+\]|[^/:]+)(?::(\*|\d+))?$/i
   );
