@@ -16,6 +16,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -76,13 +77,10 @@ const publishedPackages: PublishedPackageFixture[] = [
   },
 ];
 
-const publishedExternalPackages = [
-  'hono',
-  'kysely',
-  'openapi-fetch',
-  'react',
-  'zod',
-];
+interface RuntimePackageManifest {
+  dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+}
 
 function packagePath(root: string, packageName: string): string {
   return path.join(root, ...packageName.split('/'));
@@ -126,6 +124,31 @@ async function packWorkspacePackage(args: {
     throw new Error(`No tarball created for ${packageDir}`);
   }
   return path.join(destinationDir, tarballName);
+}
+
+async function collectPublishedExternalPackages(): Promise<string[]> {
+  const externalPackages = new Set<string>();
+
+  for (const fixture of publishedPackages) {
+    const manifestText = await readFile(
+      path.join(fixture.dir, 'package.json'),
+      'utf8'
+    );
+    const manifest = JSON.parse(manifestText) as RuntimePackageManifest;
+    const packageNames = [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ];
+
+    for (const packageName of packageNames) {
+      if (packageName.startsWith('@syncular/')) {
+        continue;
+      }
+      externalPackages.add(packageName);
+    }
+  }
+
+  return [...externalPackages].sort();
 }
 
 async function extractPackedPackage(args: {
@@ -179,6 +202,8 @@ async function createPackedWorkspaceProject(): Promise<string> {
       packageName: fixture.name,
     });
   }
+
+  const publishedExternalPackages = await collectPublishedExternalPackages();
 
   for (const packageName of publishedExternalPackages) {
     await linkInstalledPackage({ projectRoot, packageName });
