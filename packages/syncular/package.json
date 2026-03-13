@@ -26,8 +26,8 @@
   },
   "type": "module",
   "scripts": {
-    "tsgo": "tsgo --noEmit",
-    "build": "tsgo",
+    "tsgo": "tsgo --noEmit && tsgo --noEmit -p migrations/tsconfig.json",
+    "build": "tsgo && tsgo -p migrations/tsconfig.json",
     "release": "bunx syncular-publish"
   },
   "exports": {
@@ -196,10 +196,10 @@
       }
     },
     "./migrations": {
-      "bun": "./src/migrations.ts",
+      "bun": "./migrations/src/index.ts",
       "import": {
-        "types": "./dist/migrations.d.ts",
-        "default": "./dist/migrations.js"
+        "types": "./migrations/dist/index.d.ts",
+        "default": "./migrations/dist/index.js"
       }
     },
     "./typegen": {
@@ -324,7 +324,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "migrations"
   ],
   "dependencies": {
     "@syncular/client": "workspace:*",
