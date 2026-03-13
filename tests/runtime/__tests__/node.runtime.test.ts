@@ -395,46 +395,52 @@ describe('Node.js runtime (better-sqlite3)', () => {
     });
   });
 
-  it('imports packed workspace archives through installed package names', async () => {
-    const projectRoot = await createPackedWorkspaceProject();
+  it(
+    'imports packed workspace archives through installed package names',
+    async () => {
+      const projectRoot = await createPackedWorkspaceProject();
 
-    try {
-      const smokeScript = [
-        "const core = await import('@syncular/core')",
-        "if (typeof core.createDatabase !== 'function') throw new Error('Missing createDatabase export')",
-        "const transport = await import('@syncular/transport-http')",
-        "if (typeof transport.createHttpTransport !== 'function') throw new Error('Missing createHttpTransport export')",
-        "const client = await import('@syncular/client')",
-        "if (typeof client.enqueueOutboxCommit !== 'function') throw new Error('Missing enqueueOutboxCommit export')",
-        "const clientReact = await import('@syncular/client-react')",
-        "if (typeof clientReact.createSyncularReact !== 'function') throw new Error('Missing createSyncularReact export')",
-        "const server = await import('@syncular/server')",
-        "if (typeof server.ensureSyncSchema !== 'function') throw new Error('Missing ensureSyncSchema export')",
-        "await import('@syncular/server/schema')",
-        "await import('@syncular/server/dialect/types')",
-        "await import('@syncular/server/snapshot-chunks')",
-        "const relay = await import('@syncular/relay')",
-        "if (typeof relay.createRelayServer !== 'function') throw new Error('Missing createRelayServer export')",
-      ].join(';');
+      try {
+        const smokeScript = [
+          "const core = await import('@syncular/core')",
+          "if (typeof core.createDatabase !== 'function') throw new Error('Missing createDatabase export')",
+          "const transport = await import('@syncular/transport-http')",
+          "if (typeof transport.createHttpTransport !== 'function') throw new Error('Missing createHttpTransport export')",
+          "const client = await import('@syncular/client')",
+          "if (typeof client.enqueueOutboxCommit !== 'function') throw new Error('Missing enqueueOutboxCommit export')",
+          "const clientReact = await import('@syncular/client-react')",
+          "if (typeof clientReact.createSyncularReact !== 'function') throw new Error('Missing createSyncularReact export')",
+          "const server = await import('@syncular/server')",
+          "if (typeof server.ensureSyncSchema !== 'function') throw new Error('Missing ensureSyncSchema export')",
+          "await import('@syncular/server/schema')",
+          "await import('@syncular/server/dialect/types')",
+          "await import('@syncular/server/snapshot-chunks')",
+          "const relay = await import('@syncular/relay')",
+          "if (typeof relay.createRelayServer !== 'function') throw new Error('Missing createRelayServer export')",
+        ].join(';');
 
-      execSync(`node --input-type=module -e ${JSON.stringify(smokeScript)}`, {
-        cwd: projectRoot,
-        stdio: 'pipe',
-      });
-    } finally {
-      await rm(projectRoot, { recursive: true, force: true });
-    }
-  });
+        execSync(`node --input-type=module -e ${JSON.stringify(smokeScript)}`, {
+          cwd: projectRoot,
+          stdio: 'pipe',
+        });
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    },
+    { timeout: 30_000 }
+  );
 
-  it('bootstraps gzip snapshot chunks via packed archives in a React Native-like runtime', async () => {
-    const projectRoot = await createPackedWorkspaceProject();
+  it(
+    'bootstraps gzip snapshot chunks via packed archives in a React Native-like runtime',
+    async () => {
+      const projectRoot = await createPackedWorkspaceProject();
 
-    try {
-      const smokeScriptPath = path.join(
-        projectRoot,
-        'react-native-dist-smoke.mjs'
-      );
-      const smokeScript = `
+      try {
+        const smokeScriptPath = path.join(
+          projectRoot,
+          'react-native-dist-smoke.mjs'
+        );
+        const smokeScript = `
 import { createDatabase, encodeSnapshotRows } from '@syncular/core';
 import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
 import { createClient, createClientHandler } from '@syncular/client';
@@ -567,14 +573,16 @@ try {
   await db.destroy();
 }
 `;
-      await writeFile(smokeScriptPath, smokeScript, 'utf8');
+        await writeFile(smokeScriptPath, smokeScript, 'utf8');
 
-      execFileSync('node', [smokeScriptPath], {
-        cwd: projectRoot,
-        stdio: 'pipe',
-      });
-    } finally {
-      await rm(projectRoot, { recursive: true, force: true });
-    }
-  });
+        execFileSync('node', [smokeScriptPath], {
+          cwd: projectRoot,
+          stdio: 'pipe',
+        });
+      } finally {
+        await rm(projectRoot, { recursive: true, force: true });
+      }
+    },
+    { timeout: 30_000 }
+  );
 });

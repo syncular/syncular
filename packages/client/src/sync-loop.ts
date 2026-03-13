@@ -459,6 +459,21 @@ function needsAnotherPull(
   return totalCommits >= limitCommits;
 }
 
+function hasNewlyEligibleBootstrapSubscriptions(
+  currentPullState: SyncPullRequestState,
+  nextPullState: SyncPullRequestState
+): boolean {
+  const currentIds = new Set(
+    (currentPullState.request.subscriptions ?? []).map((subscription) => {
+      return subscription.id;
+    })
+  );
+
+  return (nextPullState.request.subscriptions ?? []).some((subscription) => {
+    return !currentIds.has(subscription.id);
+  });
+}
+
 function mergePullResponse(
   targetBySubId: Map<string, SyncPullSubscriptionResponse>,
   res: SyncPullResponse
@@ -545,8 +560,14 @@ async function syncPullUntilSettled<DB extends SyncClientDb>(
     const res = await syncPullOnce(db, transport, handlers, options, pullState);
     mergePullResponse(aggregatedBySubId, res);
 
-    if (!needsAnotherPull(res, pullState.request.limitCommits)) break;
-    pullState = createFollowupPullState(pullState, res);
+    const nextPullState = createFollowupPullState(pullState, res);
+    if (
+      !needsAnotherPull(res, pullState.request.limitCommits) &&
+      !hasNewlyEligibleBootstrapSubscriptions(pullState, nextPullState)
+    ) {
+      break;
+    }
+    pullState = nextPullState;
   }
 
   return {
@@ -868,14 +889,18 @@ async function syncOnceCombined<DB extends SyncClientDb>(
     pullRounds = 1;
 
     // Continue pulling if more data
-    if (needsAnotherPull(pullResponse, pullState.request.limitCommits)) {
+    const nextPullState = createFollowupPullState(pullState, pullResponse);
+    if (
+      needsAnotherPull(pullResponse, pullState.request.limitCommits) ||
+      hasNewlyEligibleBootstrapSubscriptions(pullState, nextPullState)
+    ) {
       const aggregatedBySubId = new Map<string, SyncPullSubscriptionResponse>();
       mergePullResponse(aggregatedBySubId, pullResponse);
 
       const more = await syncPullUntilSettled(db, transport, handlers, {
         ...pullOpts,
         maxRounds: (options.maxPullRounds ?? 20) - 1,
-        initialPullState: createFollowupPullState(pullState, pullResponse),
+        initialPullState: nextPullState,
       });
       pullRounds += more.rounds;
       mergePullResponse(aggregatedBySubId, more.response);

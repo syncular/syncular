@@ -1291,7 +1291,12 @@ export function createSyncularReact<
     options: UseSyncBootstrapStateOptions = {}
   ): UseSyncBootstrapStateResult {
     const engine = useEngine();
-    const { pollIntervalMs = 500, stateId, subscriptionIds } = options;
+    const {
+      pollIntervalMs = 500,
+      stateId,
+      subscriptionIds,
+      maxPhase,
+    } = options;
     const {
       value: bootstrap,
       isLoading,
@@ -1303,6 +1308,7 @@ export function createSyncularReact<
         engine.getBootstrapStatus({
           stateId,
           subscriptionIds,
+          maxPhase,
         }),
       refreshOn: SYNC_SUBSCRIPTION_REFRESH_EVENTS,
       pollIntervalMs,

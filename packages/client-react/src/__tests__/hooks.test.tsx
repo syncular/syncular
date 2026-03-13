@@ -305,6 +305,72 @@ describe('React Hooks', () => {
         }),
       ]);
     });
+
+    it('can include later phases when maxPhase is set explicitly', async () => {
+      const transport = createMockTransport();
+      const handlers = createMockHandlerRegistry();
+      const sync = createMockSync({
+        handlers,
+        subscriptions: [
+          { id: 'catalog-meta', table: 'catalog_meta', bootstrapPhase: 0 },
+          { id: 'catalog-relations', table: 'codes', bootstrapPhase: 1 },
+        ],
+      });
+
+      const Wrapper = ({ children }: { children: ReactNode }) => (
+        <SyncProvider
+          db={db}
+          transport={transport}
+          sync={sync}
+          identity={{ actorId: 'test-actor' }}
+          clientId="test-client"
+          pollIntervalMs={999999}
+          autoStart={false}
+        >
+          {children}
+        </SyncProvider>
+      );
+
+      const { result } = renderHook(
+        () => useSyncBootstrapState({ pollIntervalMs: 0, maxPhase: 'all' }),
+        { wrapper: Wrapper }
+      );
+
+      await act(async () => {
+        await upsertSubscriptionState(db, {
+          subscriptionId: 'catalog-meta',
+          table: 'catalog_meta',
+          scopes: {},
+          cursor: 12,
+          bootstrapState: null,
+          status: 'active',
+        });
+        await upsertSubscriptionState(db, {
+          subscriptionId: 'catalog-relations',
+          table: 'codes',
+          scopes: {},
+          cursor: -1,
+          bootstrapState: {
+            asOfCommitSeq: 42,
+            tables: ['codes'],
+            tableIndex: 0,
+            rowCursor: null,
+          },
+          status: 'active',
+        });
+        await result.current.refresh();
+      });
+
+      expect(result.current.bootstrap?.selectedMaxPhase).toBe('all');
+      expect(result.current.bootstrap?.isReady).toBe(false);
+      expect(result.current.bootstrap?.expectedSubscriptionIds).toEqual([
+        'catalog-meta',
+        'catalog-relations',
+      ]);
+      expect(result.current.bootstrap?.pendingSubscriptionIds).toEqual([
+        'catalog-relations',
+      ]);
+    });
   });
 
   describe('useSyncStatus', () => {

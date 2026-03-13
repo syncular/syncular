@@ -924,6 +924,150 @@ describe('SyncEngine WS inline apply', () => {
     expect(state.error?.retryable).toBe(false);
   });
 
+  it('pulls newly eligible bootstrap phases in the same sync cycle', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const syncRequests: string[][] = [];
+    const transport: SyncTransport = {
+      async sync(request) {
+        const ids = request.pull?.subscriptions.map((subscription) => {
+          return subscription.id;
+        }) ?? ['unexpected'];
+        syncRequests.push(ids);
+
+        if (syncRequests.length === 1) {
+          expect(ids).toEqual(['catalog-meta', 'catalog-codes']);
+          return {
+            pull: {
+              ok: true,
+              subscriptions: [
+                {
+                  id: 'catalog-meta',
+                  status: 'active',
+                  scopes: {},
+                  bootstrap: false,
+                  nextCursor: 1,
+                  commits: [],
+                  snapshots: [],
+                },
+                {
+                  id: 'catalog-codes',
+                  status: 'active',
+                  scopes: {},
+                  bootstrap: false,
+                  nextCursor: 1,
+                  commits: [],
+                  snapshots: [],
+                },
+              ],
+            },
+          };
+        }
+
+        expect(ids).toEqual([
+          'catalog-meta',
+          'catalog-codes',
+          'catalog-relations',
+        ]);
+        return {
+          pull: {
+            ok: true,
+            subscriptions: [
+              {
+                id: 'catalog-meta',
+                status: 'active',
+                scopes: {},
+                bootstrap: false,
+                nextCursor: 1,
+                commits: [],
+                snapshots: [],
+              },
+              {
+                id: 'catalog-codes',
+                status: 'active',
+                scopes: {},
+                bootstrap: false,
+                nextCursor: 1,
+                commits: [],
+                snapshots: [],
+              },
+              {
+                id: 'catalog-relations',
+                status: 'active',
+                scopes: {},
+                bootstrap: false,
+                nextCursor: 1,
+                commits: [],
+                snapshots: [],
+              },
+            ],
+          },
+        };
+      },
+      async fetchSnapshotChunk() {
+        return new Uint8Array();
+      },
+    };
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport,
+      handlers,
+      actorId: 'catalog-public',
+      clientId: 'client-bootstrap-phases',
+      subscriptions: [
+        {
+          id: 'catalog-meta',
+          table: 'tasks',
+          scopes: {},
+          bootstrapPhase: 0,
+        },
+        {
+          id: 'catalog-codes',
+          table: 'tasks',
+          scopes: {},
+          bootstrapPhase: 0,
+        },
+        {
+          id: 'catalog-relations',
+          table: 'tasks',
+          scopes: {},
+          bootstrapPhase: 1,
+        },
+      ],
+      stateId: 'default',
+      pollIntervalMs: 60_000,
+    });
+
+    await engine.start();
+    engine.stop();
+
+    expect(syncRequests).toEqual([
+      ['catalog-meta', 'catalog-codes'],
+      ['catalog-meta', 'catalog-codes', 'catalog-relations'],
+    ]);
+
+    const relationState = await db
+      .selectFrom('sync_subscription_state')
+      .select(['subscription_id', 'status', 'cursor'])
+      .where('state_id', '=', 'default')
+      .where('subscription_id', '=', 'catalog-relations')
+      .executeTakeFirst();
+
+    expect(relationState).toEqual({
+      subscription_id: 'catalog-relations',
+      status: 'active',
+      cursor: 1,
+    });
+  });
+
   it('skips outbox and conflict refresh after a read-only successful sync', async () => {
     const handlers: ClientHandlerCollection<TestDb> = [
       {
