@@ -260,8 +260,18 @@ async function getSyncPushContext(
     const payload = await request.clone().json();
     if (!isRecord(payload)) return null;
     if (!isRecord(payload.push)) return null;
-    if (!Array.isArray(payload.push.operations)) return null;
-    if (payload.push.operations.length === 0) return null;
+    const push = payload.push;
+    const hasLegacyOperations =
+      Array.isArray(push.operations) && push.operations.length > 0;
+    const hasBatchOperations =
+      Array.isArray(push.commits) &&
+      push.commits.some(
+        (commit) =>
+          isRecord(commit) &&
+          Array.isArray(commit.operations) &&
+          commit.operations.length > 0
+      );
+    if (!hasLegacyOperations && !hasBatchOperations) return null;
 
     const sourceClientId =
       typeof payload.clientId === 'string' && payload.clientId.length > 0
@@ -283,10 +293,33 @@ async function getAppliedCommitCursor(
     const payload = await response.clone().json();
     if (!isRecord(payload)) return undefined;
     if (!isRecord(payload.push)) return undefined;
-    if (payload.push.status !== 'applied') return undefined;
+    const push = payload.push;
+    if (Array.isArray(push.commits)) {
+      const commitSeqs = push.commits
+        .map((commit) => {
+          if (!isRecord(commit)) return null;
+          if (
+            commit.status !== 'applied' &&
+            commit.status !== 'cached' &&
+            commit.status !== 'rejected'
+          ) {
+            return null;
+          }
+          return typeof commit.commitSeq === 'number' ? commit.commitSeq : null;
+        })
+        .filter((commitSeq): commitSeq is number => commitSeq !== null);
+      if (commitSeqs.length > 0) {
+        return Math.max(...commitSeqs);
+      }
+      return undefined;
+    }
 
-    if (typeof payload.push.commitSeq === 'number') {
-      return payload.push.commitSeq;
+    if (push.status !== 'applied' && push.status !== 'cached') {
+      return undefined;
+    }
+
+    if (typeof push.commitSeq === 'number') {
+      return push.commitSeq;
     }
 
     return undefined;
@@ -520,6 +553,7 @@ export function attachServiceWorkerServer(
 
 export interface ConfigureServiceWorkerServerOptions {
   scriptPath: string;
+  scriptVersion?: string;
   healthPath?: string;
   healthCheck?: (response: Response) => boolean | Promise<boolean>;
   enabled?: boolean;
@@ -547,30 +581,46 @@ export async function unregisterServiceWorkerRegistrations(
   }
 
   const registrations = await navigator.serviceWorker.getRegistrations();
+  const targetPathname = new URL(scriptPath, window.location.origin).pathname;
   const unregisterTasks = registrations
     .filter((registration) => {
       const scriptUrl =
         registration.active?.scriptURL ??
         registration.waiting?.scriptURL ??
         registration.installing?.scriptURL;
-      return scriptUrl?.includes(scriptPath) === true;
+      if (!scriptUrl) return false;
+      try {
+        return new URL(scriptUrl).pathname === targetPathname;
+      } catch {
+        return scriptUrl.includes(targetPathname);
+      }
     })
     .map((registration) => registration.unregister());
 
   await Promise.all(unregisterTasks);
 }
 
-function waitForControllerChange(timeoutMs: number): Promise<void> {
-  if (
-    typeof navigator === 'undefined' ||
-    !('serviceWorker' in navigator) ||
-    navigator.serviceWorker.controller
-  ) {
+function waitForControllerChange(
+  timeoutMs: number,
+  previousController: ServiceWorker | null
+): Promise<void> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return Promise.resolve();
+  }
+
+  const hasChanged = () =>
+    navigator.serviceWorker.controller !== null &&
+    navigator.serviceWorker.controller !== previousController;
+
+  if (hasChanged()) {
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
     const onControllerChange = () => {
+      if (!hasChanged()) {
+        return;
+      }
       clearTimeout(timeoutId);
       navigator.serviceWorker.removeEventListener(
         'controllerchange',
@@ -592,6 +642,18 @@ function waitForControllerChange(timeoutMs: number): Promise<void> {
       onControllerChange
     );
   });
+}
+
+function versionServiceWorkerScriptPath(
+  scriptPath: string,
+  version: string | undefined
+): string {
+  const trimmedVersion = version?.trim();
+  if (!trimmedVersion) return scriptPath;
+
+  const scriptUrl = new URL(scriptPath, window.location.origin);
+  scriptUrl.searchParams.set('v', trimmedVersion);
+  return `${scriptUrl.pathname}${scriptUrl.search}`;
 }
 
 async function waitForHealth(args: {
@@ -663,14 +725,39 @@ export async function configureServiceWorkerServer(
   }
 
   try {
-    await navigator.serviceWorker.register(options.scriptPath, {
-      scope: options.scope,
-      type: options.type ?? 'module',
-      updateViaCache: options.updateViaCache ?? 'none',
-    });
+    const previousController = navigator.serviceWorker.controller ?? null;
+    const versionedScriptPath = versionServiceWorkerScriptPath(
+      options.scriptPath,
+      options.scriptVersion
+    );
+
+    const registration = await navigator.serviceWorker.register(
+      versionedScriptPath,
+      {
+        scope: options.scope,
+        type: options.type ?? 'module',
+        updateViaCache: options.updateViaCache ?? 'none',
+      }
+    );
+
+    try {
+      await registration.update();
+    } catch {
+      // best-effort refresh; continue to health check even if the browser declines
+    }
 
     await navigator.serviceWorker.ready;
-    await waitForControllerChange(options.controllerTimeoutMs ?? 5_000);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (
+      previousController === null ||
+      registration.installing ||
+      registration.waiting
+    ) {
+      await waitForControllerChange(
+        options.controllerTimeoutMs ?? 5_000,
+        previousController
+      );
+    }
 
     const healthy = await waitForHealth({
       path: options.healthPath ?? '/api/health',
