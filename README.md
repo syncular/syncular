@@ -75,6 +75,9 @@ If startup-critical data should bootstrap before large background tables, assign
 `bootstrapPhase` on client subscriptions. Lower phases bootstrap first, while
 later phases stay deferred until earlier phases are ready.
 
+For pull/apply diagnostics, enable `traceEnabled: true` on the client and
+inspect the emitted `sync:trace` events or inspector snapshot.
+
 See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/introduction/installation) for the package/runtime matrix, and [Build](https://syncular.dev/docs/build) for the implementation path.
 
 ## How it works

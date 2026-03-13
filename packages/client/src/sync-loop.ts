@@ -15,7 +15,11 @@ import type {
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { upsertConflictsForRejectedCommit } from './conflicts';
-import type { PushResultInfo, SyncClientSubscription } from './engine/types';
+import type {
+  PushResultInfo,
+  SyncClientSubscription,
+  SyncTraceEvent,
+} from './engine/types';
 import type { ClientHandlerCollection } from './handlers/collection';
 import {
   getNextSendableOutboxCommit,
@@ -481,6 +485,16 @@ function mergePullResponse(
   }
 }
 
+function emitTrace(
+  onTrace: SyncOnceOptions['onTrace'] | SyncPullOnceOptions['onTrace'],
+  event: Omit<SyncTraceEvent, 'timestamp'>
+): void {
+  onTrace?.({
+    timestamp: Date.now(),
+    ...event,
+  });
+}
+
 function canSkipPullAfterLocalWsPush(
   pullState: SyncPullRequestState,
   pushResponse: SyncPushResponse | null,
@@ -564,6 +578,8 @@ export interface SyncOnceOptions {
   allowSkipPullOnLocalWsPush?: boolean;
   /** Custom SHA-256 hash function (for platforms without crypto.subtle) */
   sha256?: (bytes: Uint8Array) => Promise<string>;
+  /** Optional structured tracing hook for pull/apply lifecycle diagnostics. */
+  onTrace?: (event: SyncTraceEvent) => void;
 }
 
 export interface SyncOnceResult {
@@ -599,6 +615,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
     dedupeRows: options.dedupeRows,
     stateId: options.stateId,
     sha256: options.sha256,
+    onTrace: options.onTrace,
   };
 
   // Build pull request (reads subscription state)
@@ -681,6 +698,15 @@ async function syncOnceCombined<DB extends SyncClientDb>(
         advanceSequentialBaseVersionsInBatch(combinedPushCommits);
     }
 
+    const pullSubscriptionIds = pullState.request.subscriptions.map(
+      (subscription) => subscription.id
+    );
+    emitTrace(options.onTrace, {
+      stage: 'pull:start',
+      stateId: pullOpts.stateId,
+      subscriptionIds: pullSubscriptionIds,
+      subscriptionCount: pullSubscriptionIds.length,
+    });
     try {
       combined = await transport.sync({
         clientId,
@@ -703,7 +729,31 @@ async function syncOnceCombined<DB extends SyncClientDb>(
           subscriptions: pullState.request.subscriptions,
         },
       });
+      const pullSubscriptions = combined.pull?.subscriptions ?? [];
+      emitTrace(options.onTrace, {
+        stage: 'pull:response',
+        stateId: pullOpts.stateId,
+        subscriptionIds: pullSubscriptions.map(
+          (subscription) => subscription.id
+        ),
+        subscriptionCount: pullSubscriptions.length,
+        commitCount: pullSubscriptions.reduce(
+          (sum, subscription) => sum + (subscription.commits?.length ?? 0),
+          0
+        ),
+        snapshotCount: pullSubscriptions.reduce(
+          (sum, subscription) => sum + (subscription.snapshots?.length ?? 0),
+          0
+        ),
+      });
     } catch (err) {
+      emitTrace(options.onTrace, {
+        stage: 'pull:error',
+        stateId: pullOpts.stateId,
+        subscriptionIds: pullSubscriptionIds,
+        subscriptionCount: pullSubscriptionIds.length,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
       if (combinedPushCommits.length > 0) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         await markClaimedOutboxCommitsPending(

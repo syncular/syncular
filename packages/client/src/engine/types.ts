@@ -169,6 +169,42 @@ export interface SyncBootstrapStatusOptions {
   maxPhase?: number | 'all';
 }
 
+export type SyncTraceStage =
+  | 'pull:start'
+  | 'pull:response'
+  | 'pull:error'
+  | 'apply:transaction:start'
+  | 'apply:transaction:complete'
+  | 'apply:transaction:error'
+  | 'apply:subscription:start'
+  | 'apply:subscription:complete'
+  | 'apply:subscription:error'
+  | 'apply:chunk-materialize:start'
+  | 'apply:chunk-materialize:complete'
+  | 'apply:chunk-materialize:error';
+
+export interface SyncTraceEvent {
+  stage: SyncTraceStage;
+  timestamp: number;
+  stateId?: string;
+  subscriptionId?: string;
+  table?: string;
+  bootstrap?: boolean;
+  activeBootstrapPhase?: number | null;
+  transactionMode?: 'single-transaction' | 'per-subscription';
+  subscriptionIds?: string[];
+  subscriptionCount?: number;
+  commitCount?: number;
+  snapshotCount?: number;
+  chunkCount?: number;
+  chunkId?: string;
+  chunkIndex?: number;
+  rowCount?: number;
+  nextCursor?: number | null;
+  durationMs?: number;
+  errorMessage?: string;
+}
+
 /**
  * Sync error with context
  */
@@ -205,6 +241,7 @@ export type SyncEventType =
   | 'state:change'
   | 'sync:start'
   | 'sync:complete'
+  | 'sync:trace'
   | 'sync:live'
   | 'sync:error'
   | 'push:result'
@@ -251,6 +288,7 @@ export interface SyncEventPayloads {
     pullRounds: number;
     pullResponse: SyncPullResponse;
   };
+  'sync:trace': SyncTraceEvent;
   'sync:live': { timestamp: number };
   'sync:error': SyncError;
   'push:result': PushResultInfo;
@@ -372,6 +410,8 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   plugins?: SyncClientPlugin[];
   /** Custom SHA-256 hash function (for platforms without crypto.subtle, e.g. React Native) */
   sha256?: (bytes: Uint8Array) => Promise<string>;
+  /** Emit structured pull/apply tracing events to the event stream and inspector buffer. */
+  traceEnabled?: boolean;
 }
 
 /**
