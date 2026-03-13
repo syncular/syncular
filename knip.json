@@ -11,6 +11,7 @@
   "typescript": true,
   "ignore": [
     "**/generated/**",
+    "**/.wrangler/**",
     "types/**",
     "apps/console/build.ts",
     "apps/demo/build.ts",
