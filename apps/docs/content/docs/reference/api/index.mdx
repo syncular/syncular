@@ -94,6 +94,18 @@ import { createOpenAPIHandler } from '@syncular/server-hono';
 app.get('/openapi.json', createOpenAPIHandler(app, { title: 'Syncular API' }));
 ```
 
+If you also want a Scalar reference page, use the paired helper:
+
+```ts
+import { createOpenAPIDocsRoutes } from '@syncular/server-hono';
+
+app.route('/', createOpenAPIDocsRoutes(app, { title: 'Syncular API' }));
+```
+
+This serves both:
+- `/openapi.json`
+- `/spec`
+
 ### Regenerating OpenAPI
 
 To regenerate the OpenAPI specification:

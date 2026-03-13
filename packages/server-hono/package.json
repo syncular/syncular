@@ -59,6 +59,7 @@
     "release": "bunx syncular-publish"
   },
   "dependencies": {
+    "@scalar/hono-api-reference": "^0.10.2",
     "@hono/standard-validator": "^0.2.2",
     "@standard-community/standard-json": "^0.3.5",
     "@standard-community/standard-openapi": "^0.2.9",

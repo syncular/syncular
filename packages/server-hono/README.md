@@ -56,6 +56,32 @@ Use a function origin only when you need dynamic policy logic.
 When `routes.websocket.allowedOrigins` is unset, realtime websocket upgrades
 inherit static `routes.cors` origins automatically.
 
+## OpenAPI and Scalar
+
+Serve a generated OpenAPI document:
+
+```ts
+import { Hono } from 'hono';
+import { createOpenAPIHandler } from '@syncular/server-hono';
+
+const app = new Hono();
+app.get('/openapi.json', createOpenAPIHandler(app, { title: 'Syncular API' }));
+```
+
+Or mount both the OpenAPI document and a Scalar reference page:
+
+```ts
+import { Hono } from 'hono';
+import { createOpenAPIDocsRoutes } from '@syncular/server-hono';
+
+const app = new Hono();
+app.route('/', createOpenAPIDocsRoutes(app, { title: 'Syncular API' }));
+```
+
+That serves:
+- `/openapi.json`
+- `/spec`
+
 ## Links
 
 - GitHub: https://github.com/syncular/syncular
