@@ -11,7 +11,11 @@ npm install @syncular/migrations
 ## Usage
 
 ```ts
-import { defineMigrations, runMigrations } from '@syncular/migrations';
+import {
+  createMigrationTrackingTableName,
+  defineMigrations,
+  runMigrations,
+} from '@syncular/migrations';
 
 export const migrations = defineMigrations({
   v1: async (db) => {
@@ -22,8 +26,16 @@ export const migrations = defineMigrations({
   },
 });
 
-await runMigrations({ db, migrations });
+await runMigrations({
+  db,
+  migrations,
+  trackingTable: createMigrationTrackingTableName(['my_app', 'client']),
+});
 ```
+
+Use `createMigrationTrackingTableName(...)` whenever you want a custom table.
+It keeps names lowercase, predictable, and consistently suffixed with
+`migration_state`.
 
 ## Documentation
 

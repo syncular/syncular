@@ -9,7 +9,10 @@
  */
 
 import { createD1Dialect } from '@syncular/dialect-d1';
-import { runMigrations } from '@syncular/migrations';
+import {
+  createMigrationTrackingTableName,
+  runMigrations,
+} from '@syncular/migrations';
 import {
   attachCloudflareSentryTraceHeaders,
   captureCloudflareSentryMessage,
@@ -55,6 +58,7 @@ interface ServerDb extends SyncCoreDb, SyncBlobDb, ClientDb {}
 const RUNTIME_BOOTSTRAP_STATE_TABLE = 'sync_runtime_bootstrap_state';
 const RUNTIME_BOOTSTRAP_STATE_KEY = 'demo-cf-runtime';
 const RUNTIME_BOOTSTRAP_SCHEMA_VERSION = 1;
+const SERVER_TRACKING_TABLE = createMigrationTrackingTableName(['server']);
 const RUNTIME_REQUIRED_TABLES = [
   'sync_commits',
   'sync_table_commits',
@@ -199,7 +203,7 @@ class SyncDOBase extends SyncDurableObject<Env> {
         await runMigrations({
           db,
           migrations: serverMigrations,
-          trackingTable: 'sync_server_migration_state',
+          trackingTable: SERVER_TRACKING_TABLE,
         });
       })().catch((error) => {
         SyncDOBase.runtimeBootstrapPromise = null;

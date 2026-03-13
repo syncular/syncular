@@ -18,6 +18,8 @@ import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   clearAppliedMigrations,
+  createMigrationTrackingTableName,
+  DEFAULT_MIGRATION_TRACKING_TABLE,
   defineMigrations,
   getAppliedMigrations,
   getMigrationChecksum,
@@ -187,6 +189,55 @@ describe('migrations', () => {
       const checksum2 = getMigrationChecksum(migrations2.migrations[0]!);
 
       expect(checksum1).not.toBe(checksum2);
+    });
+  });
+
+  describe('migration tracking table naming', () => {
+    it('returns the default tracking table when no scope is provided', () => {
+      expect(createMigrationTrackingTableName()).toBe(
+        DEFAULT_MIGRATION_TRACKING_TABLE
+      );
+    });
+
+    it('builds normalized snake_case table names with the migration_state suffix', () => {
+      expect(createMigrationTrackingTableName('Server Runtime')).toBe(
+        'sync_server_runtime_migration_state'
+      );
+      expect(
+        createMigrationTrackingTableName(['Diego', 'Spaces', 'Runtime'])
+      ).toBe('sync_diego_spaces_runtime_migration_state');
+    });
+
+    it('supports suffix segments for environment or revision markers', () => {
+      expect(
+        createMigrationTrackingTableName(['spaces', 'billing'], {
+          suffix: ['prod', 'v2'],
+        })
+      ).toBe('sync_spaces_billing_migration_state_prod_v2');
+    });
+
+    it('allows overriding or omitting the namespace prefix', () => {
+      expect(
+        createMigrationTrackingTableName(['demo', 'client'], {
+          namespace: 'spaces',
+        })
+      ).toBe('spaces_demo_client_migration_state');
+      expect(
+        createMigrationTrackingTableName(['runtime'], {
+          namespace: null,
+        })
+      ).toBe('runtime_migration_state');
+    });
+
+    it('drops empty segments and collapses invalid characters', () => {
+      expect(
+        createMigrationTrackingTableName(
+          ['  Diego  ', '', 'runtime---worker', false, null, 'v1'],
+          {
+            suffix: ['prod///blue'],
+          }
+        )
+      ).toBe('sync_diego_runtime_worker_v1_migration_state_prod_blue');
     });
   });
 

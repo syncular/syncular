@@ -1,5 +1,8 @@
 import { createWaSqliteMainThreadDialect } from '@syncular/dialect-wa-sqlite';
-import { runMigrations } from '@syncular/migrations';
+import {
+  createMigrationTrackingTableName,
+  runMigrations,
+} from '@syncular/migrations';
 import {
   createDatabase,
   createDatabaseBlobStorageAdapter,
@@ -32,6 +35,7 @@ const CONSOLE_TOKEN = 'demo-token';
 const BLOB_SECRET = 'demo-blob-secret';
 const DB_FILE = 'syncular-demo-sw-server.sqlite';
 const SW_SERVER_SCRIPT_PATH = '/__demo/sw-server.js';
+const SERVER_TRACKING_TABLE = createMigrationTrackingTableName(['server']);
 
 let appPromise: Promise<Hono> | null = null;
 
@@ -64,7 +68,7 @@ async function createServiceWorkerDb(): Promise<{
   await runMigrations({
     db,
     migrations: serverMigrations,
-    trackingTable: 'sync_server_migration_state',
+    trackingTable: SERVER_TRACKING_TABLE,
   });
 
   return { db, dialect };
