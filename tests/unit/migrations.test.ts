@@ -193,6 +193,14 @@ describe('migrations', () => {
   });
 
   describe('migration tracking table naming', () => {
+    it('is re-exported through the syncular facade package entrypoint', async () => {
+      const facade = await import('../../packages/syncular/src/migrations');
+      expect(typeof facade.createMigrationTrackingTableName).toBe('function');
+      expect(facade.createMigrationTrackingTableName('server')).toBe(
+        'sync_server_migration_state'
+      );
+    });
+
     it('returns the default tracking table when no scope is provided', () => {
       expect(createMigrationTrackingTableName()).toBe(
         DEFAULT_MIGRATION_TRACKING_TABLE
