@@ -211,6 +211,9 @@ export function defineMigrations<
     const down = isMigrationDefinitionObject(definition)
       ? definition.down
       : undefined;
+    const compatibleChecksums = isMigrationDefinitionObject(definition)
+      ? (definition.compatibleChecksums ?? [])
+      : [];
     if (typeof up !== 'function') {
       throw new Error(
         `Invalid migration "${key}": expected an async function or { up, down? } object.`
@@ -221,12 +224,26 @@ export function defineMigrations<
         `Invalid migration "${key}": "down" must be a function when provided.`
       );
     }
+    if (
+      !Array.isArray(compatibleChecksums) ||
+      compatibleChecksums.some(
+        (checksum) =>
+          typeof checksum !== 'string' || checksum.trim().length === 0
+      )
+    ) {
+      throw new Error(
+        `Invalid migration "${key}": "compatibleChecksums" must be an array of non-empty strings when provided.`
+      );
+    }
 
     migrations.push({
       version,
       name: key,
       up,
       down,
+      compatibleChecksums: [
+        ...new Set(compatibleChecksums.map((v) => v.trim())),
+      ],
     });
   }
 
@@ -259,4 +276,18 @@ export function getMigrationChecksum<DB>(
   migration: ParsedMigration<DB>
 ): string {
   return computeChecksum(migration.up);
+}
+
+/**
+ * Get the accepted checksums for a migration, including the current checksum.
+ */
+export function getCompatibleMigrationChecksums<DB>(
+  migration: ParsedMigration<DB>
+): string[] {
+  return [
+    ...new Set([
+      getMigrationChecksum(migration),
+      ...migration.compatibleChecksums,
+    ]),
+  ];
 }
