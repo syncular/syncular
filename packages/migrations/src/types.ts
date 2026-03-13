@@ -17,6 +17,11 @@ export interface ReversibleMigrationDefinition<DB = unknown> {
   up: MigrationFn<DB>;
   /** Revert schema/data changes for this version. */
   down?: MigrationFn<DB>;
+  /**
+   * Historical checksums that should still be accepted for previously-applied
+   * copies of this migration.
+   */
+  compatibleChecksums?: string[];
 }
 
 /**
@@ -45,6 +50,8 @@ export interface ParsedMigration<DB = unknown> {
   up: MigrationFn<DB>;
   /** Optional down migration function. */
   down?: MigrationFn<DB>;
+  /** Historical checksums that remain valid for already-applied copies. */
+  compatibleChecksums: string[];
 }
 
 /**
