@@ -17,6 +17,12 @@ export interface ClientHandlerContext<DB> {
   /** Database transaction */
   trx: Transaction<DB>;
   /**
+   * Yields control back to the runtime scheduler between large apply batches.
+   * Useful on React Native / Hermes where long bootstrap writes can otherwise
+   * monopolize the JS thread.
+   */
+  yieldToMainThread?: () => Promise<void>;
+  /**
    * Commit metadata for server-delivered changes.
    * Undefined for local optimistic changes.
    */

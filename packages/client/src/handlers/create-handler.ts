@@ -278,6 +278,7 @@ export function createClientHandler<
         )}
         on conflict (${sql.ref(primaryKey)}) ${onConflict}
       `.execute(ctx.trx);
+      await ctx.yieldToMainThread?.();
     }
   };
 
@@ -359,6 +360,7 @@ export function createClientHandler<
           delete from ${sql.table(table)}
           where ${sql.ref(primaryKey)} in ${sql`(${sql.join(batchIds.map((rowId) => sql.val(rowId)))})`}
         `.execute(ctx.trx);
+        await ctx.yieldToMainThread?.();
       }
     };
 
@@ -404,6 +406,7 @@ export function createClientHandler<
           )}
           on conflict (${sql.ref(primaryKey)}) ${onConflict}
         `.execute(ctx.trx);
+        await ctx.yieldToMainThread?.();
       }
     };
 

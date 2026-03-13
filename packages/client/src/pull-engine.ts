@@ -639,6 +639,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
   snapshot: SyncSnapshot,
   scopeValues: ScopeValues,
   sha256Override?: (bytes: Uint8Array) => Promise<string>,
+  yieldToMainThread?: () => Promise<void>,
   trace?: {
     stateId: string;
     subscriptionId: string;
@@ -647,7 +648,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
 ): Promise<void> {
   const chunks = snapshot.chunks ?? [];
   if (chunks.length === 0) {
-    await handler.applySnapshot({ trx }, snapshot);
+    await handler.applySnapshot({ trx, yieldToMainThread }, snapshot);
     return;
   }
 
@@ -713,7 +714,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
             // eslint-disable-next-line no-await-in-loop
             try {
               await handler.applySnapshot(
-                { trx },
+                { trx, yieldToMainThread },
                 {
                   ...snapshot,
                   rows: pendingBatch,
@@ -745,7 +746,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
           // eslint-disable-next-line no-await-in-loop
           try {
             await handler.applySnapshot(
-              { trx },
+              { trx, yieldToMainThread },
               {
                 ...snapshot,
                 rows: pendingBatch,
@@ -1046,6 +1047,13 @@ export interface SyncPullOnceOptions {
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
+  /**
+   * Yield delay between heavy bootstrap apply batches.
+   * - `0`: yield on the next macrotask
+   * - `false`: disable yielding
+   * - omitted: use transport/runtime defaults
+   */
+  snapshotApplyYieldMs?: number | false;
   dedupeRows?: boolean;
   stateId?: string;
   /**
@@ -1085,6 +1093,26 @@ function emitTrace(
     timestamp: Date.now(),
     ...event,
   });
+}
+
+function resolveSnapshotApplyYieldToMainThread(
+  options: SyncPullOnceOptions,
+  capabilities?: SyncTransportCapabilities
+): (() => Promise<void>) | undefined {
+  const configuredDelay =
+    options.snapshotApplyYieldMs ??
+    capabilities?.preferredSnapshotApplyYieldMs ??
+    false;
+
+  if (configuredDelay === false) {
+    return undefined;
+  }
+
+  const delay = Math.max(0, Math.trunc(configuredDelay));
+  return () =>
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, delay);
+    });
 }
 
 function countSubscriptionRows(
@@ -1247,10 +1275,12 @@ export async function applyIncrementalCommitChanges<DB extends SyncClientDb>(
     commitSeq?: number | null;
     actorId?: string | null;
     createdAt?: string | null;
+    yieldToMainThread?: () => Promise<void>;
   }
 ): Promise<void> {
   const ctx = {
     trx,
+    yieldToMainThread: args.yieldToMainThread,
     commitSeq: args.commitSeq ?? null,
     actorId: args.actorId ?? null,
     createdAt: args.createdAt ?? null,
@@ -1311,6 +1341,10 @@ export async function applyPullResponse<DB extends SyncClientDb>(
     rawResponse,
     transport.capabilities
   );
+  const yieldToMainThread = resolveSnapshotApplyYieldToMainThread(
+    options,
+    transport.capabilities
+  );
 
   let responseToApply = requiresMaterializedSnapshots
     ? await materializeChunkedSnapshots(
@@ -1365,6 +1399,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
             existingById,
             subsById,
             sub,
+            yieldToMainThread,
           });
         });
         emitTrace(options.onTrace, {
@@ -1409,6 +1444,7 @@ export async function applyPullResponse<DB extends SyncClientDb>(
             existingById,
             subsById,
             sub,
+            yieldToMainThread,
           });
         }
       });
@@ -1528,6 +1564,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
   existingById: Map<string, SyncSubscriptionStateTable>;
   subsById: Map<string, SyncClientSubscription | undefined>;
   sub: SyncPullSubscriptionResponse;
+  yieldToMainThread?: () => Promise<void>;
 }): Promise<void> {
   const {
     trx,
@@ -1538,6 +1575,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
     existingById,
     subsById,
     sub,
+    yieldToMainThread,
   } = args;
   const def = subsById.get(sub.id);
   const prev = existingById.get(sub.id);
@@ -1603,6 +1641,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
           const scopes = parseScopeValuesJson(prev.scopes_json);
           await getClientHandlerOrThrow(handlers, prev.table).clearAll({
             trx,
+            yieldToMainThread,
             scopes,
           });
         } catch {
@@ -1644,6 +1683,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
         if (clearScopes !== 'none') {
           await getClientHandlerOrThrow(handlers, prev.table).clearAll({
             trx,
+            yieldToMainThread,
             scopes: clearScopes ?? previousScopes,
           });
         }
@@ -1662,6 +1702,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
           try {
             await handler.onSnapshotStart({
               trx,
+              yieldToMainThread,
               table: snapshot.table,
               scopes: sub.scopes,
             });
@@ -1687,6 +1728,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
             snapshot,
             sub.scopes,
             options.sha256,
+            yieldToMainThread,
             {
               stateId,
               subscriptionId: sub.id,
@@ -1695,7 +1737,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
           );
         } else {
           try {
-            await handler.applySnapshot({ trx }, snapshot);
+            await handler.applySnapshot({ trx, yieldToMainThread }, snapshot);
           } catch (error) {
             throw wrapSyncClientStageError(
               error,
@@ -1714,6 +1756,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
           try {
             await handler.onSnapshotEnd({
               trx,
+              yieldToMainThread,
               table: snapshot.table,
               scopes: sub.scopes,
             });
@@ -1739,6 +1782,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
             commitSeq: commit.commitSeq ?? null,
             actorId: commit.actorId ?? null,
             createdAt: commit.createdAt ?? null,
+            yieldToMainThread,
           });
         } catch (error) {
           throw wrapSyncClientStageError(

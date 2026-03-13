@@ -589,6 +589,7 @@ export interface SyncOnceOptions {
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
+  snapshotApplyYieldMs?: number | false;
   dedupeRows?: boolean;
   stateId?: string;
   maxPushCommits?: number;
@@ -633,6 +634,7 @@ async function syncOnceCombined<DB extends SyncClientDb>(
     limitCommits: options.limitCommits,
     limitSnapshotRows: options.limitSnapshotRows,
     maxSnapshotPages: options.maxSnapshotPages,
+    snapshotApplyYieldMs: options.snapshotApplyYieldMs,
     dedupeRows: options.dedupeRows,
     stateId: options.stateId,
     sha256: options.sha256,

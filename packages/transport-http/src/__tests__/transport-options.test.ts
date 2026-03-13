@@ -49,6 +49,7 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(transport.capabilities?.preferredBootstrapApplyMode).toBe(
       'per-subscription'
     );
+    expect(transport.capabilities?.preferredSnapshotApplyYieldMs).toBe(0);
   });
 
   it('provides a React Native / Expo transport preset', () => {
@@ -60,6 +61,7 @@ describe('createHttpTransport SyncTransportOptions', () => {
       snapshotChunkReadMode: 'bytes',
       gzipDecompressionMode: 'buffered',
       preferredBootstrapApplyMode: 'per-subscription',
+      preferredSnapshotApplyYieldMs: 0,
       preferMaterializedSnapshots: true,
     });
   });

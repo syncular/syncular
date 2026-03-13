@@ -371,6 +371,13 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   limitSnapshotRows?: number;
   /** Bootstrap snapshot pages per pull */
   maxSnapshotPages?: number;
+  /**
+   * Yield delay between large bootstrap apply batches.
+   * - `0`: yield on the next macrotask
+   * - `false`: disable yielding
+   * - omitted: use transport/runtime defaults
+   */
+  snapshotApplyYieldMs?: number | false;
   /** Deduplicate rows in pull responses on the server */
   dedupeRows?: boolean;
   /** Optional state row id (multi-profile support) */
