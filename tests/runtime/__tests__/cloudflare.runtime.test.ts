@@ -23,7 +23,7 @@ import {
 import {
   getNativeFetch,
   pickFreePort,
-  resolveWorkspaceBinary,
+  resolveWorkspaceCommand,
   shutdown,
   waitForHealthy,
 } from '../shared/utils';
@@ -150,7 +150,7 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
     if (!isEnabled()) return;
 
     const workerPort = await pickFreePort();
-    const wranglerBin = resolveWorkspaceBinary('wrangler');
+    const wrangler = resolveWorkspaceCommand('wrangler');
     const configPath = path.resolve(
       import.meta.dir,
       '../apps/cloudflare/wrangler.toml'
@@ -158,7 +158,8 @@ describe('Cloudflare Worker + Durable Object runtime', () => {
 
     wranglerProc = Bun.spawn(
       [
-        wranglerBin,
+        wrangler.cmd,
+        ...wrangler.prefixArgs,
         'dev',
         '--local',
         '--ip',

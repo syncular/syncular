@@ -14,7 +14,7 @@ import type { IntegrationServer } from '../../integration/harness/types';
 import {
   getNativeFetch,
   pickFreePort,
-  resolveWorkspaceBinary,
+  resolveWorkspaceCommand,
   shutdown,
   waitForHealthy,
 } from '../shared/utils';
@@ -39,7 +39,7 @@ describe('D1 runtime (Cloudflare Workers)', () => {
 
     // Start wrangler dev
     const workerPort = await pickFreePort();
-    const wranglerBin = resolveWorkspaceBinary('wrangler');
+    const wrangler = resolveWorkspaceCommand('wrangler');
     const configPath = path.resolve(
       import.meta.dir,
       '../apps/d1/wrangler.toml'
@@ -48,7 +48,8 @@ describe('D1 runtime (Cloudflare Workers)', () => {
 
     wranglerProc = Bun.spawn(
       [
-        wranglerBin,
+        wrangler.cmd,
+        ...wrangler.prefixArgs,
         'dev',
         '--local',
         '--persist-to',

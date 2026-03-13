@@ -78,3 +78,19 @@ export function resolveWorkspaceBinary(name: string): string {
   if (fromPath) return fromPath;
   return path.resolve(import.meta.dir, '../../../node_modules/.bin', name);
 }
+
+export function resolveWorkspaceCommand(name: string): {
+  cmd: string;
+  prefixArgs: string[];
+} {
+  const binary = Bun.which(name);
+  if (binary) {
+    return { cmd: binary, prefixArgs: [] };
+  }
+
+  const bunBinary = Bun.which('bun') ?? process.execPath;
+  return {
+    cmd: bunBinary,
+    prefixArgs: ['x', name],
+  };
+}
