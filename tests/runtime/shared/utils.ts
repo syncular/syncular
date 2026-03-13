@@ -3,6 +3,7 @@
  */
 
 import net from 'node:net';
+import path from 'node:path';
 
 /**
  * Get the native fetch function (saved before happy-dom replaces it).
@@ -70,4 +71,10 @@ export async function shutdown(
   } catch {
     // ignore
   }
+}
+
+export function resolveWorkspaceBinary(name: string): string {
+  const fromPath = Bun.which(name);
+  if (fromPath) return fromPath;
+  return path.resolve(import.meta.dir, '../../../node_modules/.bin', name);
 }
