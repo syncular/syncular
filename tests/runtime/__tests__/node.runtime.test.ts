@@ -430,7 +430,10 @@ describe('Node.js runtime (better-sqlite3)', () => {
     const projectRoot = await createPackedWorkspaceProject();
 
     try {
-      const smokeScriptPath = path.join(projectRoot, 'react-native-dist-smoke.mjs');
+      const smokeScriptPath = path.join(
+        projectRoot,
+        'react-native-dist-smoke.mjs'
+      );
       const smokeScript = `
 import { createDatabase, encodeSnapshotRows } from '@syncular/core';
 import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
