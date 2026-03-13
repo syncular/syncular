@@ -8,6 +8,7 @@
       "!.ignore",
       "!**/.source",
       "!**/.next",
+      "!**/.wrangler",
       "!**/build",
       "!**/generated.ts",
       "!**/generated"

@@ -7,11 +7,11 @@ import type {
   SyncIdentityBase,
 } from '@syncular/core';
 import { registerTableOrThrow } from '@syncular/core';
+import type { SyncClientSubscription } from './engine/types';
 import {
   type CreateClientHandlerOptions,
   createClientHandler,
 } from './handlers/create-handler';
-import type { SyncClientSubscription } from './engine/types';
 import type { ClientTableHandler } from './handlers/types';
 import type { SyncClientDb } from './schema';
 
@@ -141,9 +141,7 @@ export function defineClientSync<
       );
       return sync;
     },
-    subscriptions(
-      identity: Identity
-    ): SyncClientSubscription[] {
+    subscriptions(identity: Identity): SyncClientSubscription[] {
       const resolved: SyncClientSubscription[] = [];
       for (const [table, subscribe] of subscriptionsByTable.entries()) {
         if (!subscribe) continue;

@@ -767,9 +767,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
             )
           : 0);
     const blockingSubscriptions = expectedSubscriptions.filter((sub) =>
-      selectedMaxPhase === 'all'
-        ? true
-        : sub.bootstrapPhase <= selectedMaxPhase
+      selectedMaxPhase === 'all' ? true : sub.bootstrapPhase <= selectedMaxPhase
     );
     const readySubscriptionIds = blockingSubscriptions
       .filter((sub) => sub.ready)
@@ -792,30 +790,36 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
             ) / blockingSubscriptions.length
           );
     const phases = Array.from(
-      expectedSubscriptions.reduce((acc, sub) => {
-        const current = acc.get(sub.bootstrapPhase) ?? {
-          phase: sub.bootstrapPhase,
-          expectedSubscriptionIds: [] as string[],
-          readySubscriptionIds: [] as string[],
-          pendingSubscriptionIds: [] as string[],
-          progressPercent: 0,
-        };
-        current.expectedSubscriptionIds.push(sub.id);
-        if (sub.ready) {
-          current.readySubscriptionIds.push(sub.id);
-        } else {
-          current.pendingSubscriptionIds.push(sub.id);
-        }
-        current.progressPercent += sub.progressPercent;
-        acc.set(sub.bootstrapPhase, current);
-        return acc;
-      }, new Map<number, {
-        phase: number;
-        expectedSubscriptionIds: string[];
-        readySubscriptionIds: string[];
-        pendingSubscriptionIds: string[];
-        progressPercent: number;
-      }>())
+      expectedSubscriptions.reduce(
+        (acc, sub) => {
+          const current = acc.get(sub.bootstrapPhase) ?? {
+            phase: sub.bootstrapPhase,
+            expectedSubscriptionIds: [] as string[],
+            readySubscriptionIds: [] as string[],
+            pendingSubscriptionIds: [] as string[],
+            progressPercent: 0,
+          };
+          current.expectedSubscriptionIds.push(sub.id);
+          if (sub.ready) {
+            current.readySubscriptionIds.push(sub.id);
+          } else {
+            current.pendingSubscriptionIds.push(sub.id);
+          }
+          current.progressPercent += sub.progressPercent;
+          acc.set(sub.bootstrapPhase, current);
+          return acc;
+        },
+        new Map<
+          number,
+          {
+            phase: number;
+            expectedSubscriptionIds: string[];
+            readySubscriptionIds: string[];
+            pendingSubscriptionIds: string[];
+            progressPercent: number;
+          }
+        >()
+      )
     )
       .sort(([left], [right]) => left - right)
       .map(([, phase]) => ({
@@ -3065,9 +3069,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
   /**
    * Update subscriptions dynamically
    */
-  updateSubscriptions(
-    subscriptions: SyncClientSubscription[]
-  ): void {
+  updateSubscriptions(subscriptions: SyncClientSubscription[]): void {
     this.config.subscriptions = subscriptions;
     // Trigger a sync to apply new subscriptions
     this.triggerSyncInBackground(undefined, 'subscription update');
