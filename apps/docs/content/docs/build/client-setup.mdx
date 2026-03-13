@@ -109,6 +109,20 @@ const transport = createHttpTransport({
 });
 ```
 
+For Expo / React Native, prefer the runtime preset:
+
+```typescript
+import { createReactNativeHttpTransport } from '@syncular/transport-http';
+
+const transport = createReactNativeHttpTransport({
+  baseUrl: API_BASE,
+  getHeaders: () => ({ Authorization: `Bearer ${token}` }),
+});
+```
+
+That preset enables byte-oriented snapshot fetches, gzip fallback, and
+per-subscription bootstrap commits for Hermes / Expo runtimes.
+
 Transport operations also accept per-call options:
 - `signal` to cancel an in-flight request
 - `authLifecycle` to provide `onAuthExpired`, `refreshToken`, and `retryWithFreshToken`
@@ -182,6 +196,20 @@ const transport = createWebSocketTransport({
 
 </Step>
 </Steps>
+
+## React Native / Expo checklist
+
+For mobile clients, the known-good path is:
+
+- `@syncular/dialect-expo-sqlite` or `@syncular/dialect-react-native-nitro-sqlite`
+- `createReactNativeHttpTransport(...)`
+- `bootstrapPhase` on heavy subscriptions so startup is not blocked by relation
+  tables or large secondary datasets
+- `useSyncBootstrapState()` for startup gating instead of querying sync tables
+  manually
+
+If mobile startup stays blank for too long, the first thing to check is whether
+one large phase-0 subscription is still bootstrapping.
 
 ## Important: keep critical props stable
 

@@ -27,6 +27,87 @@ const db = createDatabase({
 await ensureClientSyncSchema(db);
 ```
 
+## Known-good mobile sync setup
+
+Use the React Native HTTP transport preset instead of manually tuning
+transport capabilities:
+
+```ts
+import { createReactNativeHttpTransport } from '@syncular/transport-http';
+
+const transport = createReactNativeHttpTransport({
+  baseUrl: 'https://api.example.com',
+  getHeaders: async () => ({ Authorization: `Bearer ${token}` }),
+});
+```
+
+That preset enables the runtime behavior mobile apps usually need:
+
+- byte-based snapshot chunk fetches instead of streaming assumptions
+- buffered gzip fallback when `DecompressionStream` is unavailable
+- per-subscription bootstrap commits so one heavy subscription does not block
+  lighter ones
+- materialized snapshot application preferred for Hermes / Expo runtimes
+
+## Recommended bootstrap pattern
+
+Large mobile datasets should not all block first render.
+
+Use `bootstrapPhase` on subscriptions:
+
+- phase `0`: the minimum data needed to render initial UI
+- phase `1+`: larger or relation-heavy datasets that can load afterward
+
+Example:
+
+```ts
+sync.addHandler({
+  table: 'catalog_meta',
+  scopes: ['public'],
+  subscribe: () => ({
+    id: 'catalog-meta',
+    table: 'catalog_meta',
+    scopes: {},
+    bootstrapPhase: 0,
+  }),
+});
+
+sync.addHandler({
+  table: 'code_relations',
+  scopes: ['public'],
+  subscribe: () => ({
+    id: 'catalog-relations',
+    table: 'code_relations',
+    scopes: {},
+    bootstrapPhase: 1,
+  }),
+});
+```
+
+In React, use `useSyncBootstrapState()` from `@syncular/client-react` instead
+of reading sync tables directly:
+
+```tsx
+const bootstrap = useSyncBootstrapState();
+
+if (bootstrap.pendingBlocking.length > 0) {
+  return <LoadingScreen />;
+}
+```
+
+This keeps startup gating tied to the actual active bootstrap phase instead of
+guessing from local SQLite state.
+
+## Practical guidance
+
+- Prefer `expo-sqlite` unless you already need a different native SQLite stack.
+- Keep the initial mobile bootstrap small; move relation-heavy tables into later
+  phases.
+- Treat the local SQLite DB as the source of truth for reads. Sync should fill
+  it in the background.
+- If you test local mobile clients against a remote server, make sure the server
+  CORS/origin policy explicitly allows loopback or device origins.
+
 ## Next steps
 
 - [Client Setup](/docs/build/client-setup)
