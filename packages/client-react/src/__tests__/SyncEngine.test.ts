@@ -858,6 +858,130 @@ describe('SyncEngine', () => {
       const progress = await awaiting;
       expect(progress.channelPhase).not.toBe('error');
     });
+
+    it('awaitBootstrapComplete only blocks on the lowest configured phase by default', async () => {
+      const engine = createEngine({
+        subscriptions: [
+          { id: 'catalog-meta', table: 'tasks', bootstrapPhase: 0 },
+          { id: 'catalog-relations', table: 'tasks', bootstrapPhase: 1 },
+        ],
+      });
+      await engine.start();
+
+      const now = Date.now();
+      await db
+        .insertInto('sync_subscription_state')
+        .values([
+          {
+            state_id: 'default',
+            subscription_id: 'catalog-meta',
+            table: 'tasks',
+            scopes_json: '{}',
+            params_json: '{}',
+            cursor: 5,
+            bootstrap_state_json: null,
+            status: 'active',
+            created_at: now,
+            updated_at: now,
+          },
+          {
+            state_id: 'default',
+            subscription_id: 'catalog-relations',
+            table: 'tasks',
+            scopes_json: '{}',
+            params_json: '{}',
+            cursor: -1,
+            bootstrap_state_json: JSON.stringify({
+              asOfCommitSeq: 0,
+              tables: ['tasks'],
+              tableIndex: 0,
+              rowCursor: null,
+            }),
+            status: 'active',
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .execute();
+
+      const progress = await engine.awaitBootstrapComplete({ timeoutMs: 200 });
+      expect(progress.channelPhase).not.toBe('error');
+    });
+  });
+
+  describe('bootstrap phases', () => {
+    it('reports blocking and deferred bootstrap phases separately', async () => {
+      const engine = createEngine({
+        subscriptions: [
+          { id: 'catalog-meta', table: 'tasks', bootstrapPhase: 0 },
+          { id: 'catalog-relations', table: 'tasks', bootstrapPhase: 1 },
+        ],
+      });
+      await engine.start();
+
+      const now = Date.now();
+      await db
+        .insertInto('sync_subscription_state')
+        .values([
+          {
+            state_id: 'default',
+            subscription_id: 'catalog-meta',
+            table: 'tasks',
+            scopes_json: '{}',
+            params_json: '{}',
+            cursor: 10,
+            bootstrap_state_json: null,
+            status: 'active',
+            created_at: now,
+            updated_at: now,
+          },
+          {
+            state_id: 'default',
+            subscription_id: 'catalog-relations',
+            table: 'tasks',
+            scopes_json: '{}',
+            params_json: '{}',
+            cursor: -1,
+            bootstrap_state_json: JSON.stringify({
+              asOfCommitSeq: 0,
+              tables: ['tasks'],
+              tableIndex: 0,
+              rowCursor: null,
+            }),
+            status: 'active',
+            created_at: now,
+            updated_at: now,
+          },
+        ])
+        .execute();
+
+      const blocking = await engine.getBootstrapStatus();
+      expect(blocking.selectedMaxPhase).toBe(0);
+      expect(blocking.activePhase).toBe(1);
+      expect(blocking.isReady).toBe(true);
+      expect(blocking.expectedSubscriptionIds).toEqual(['catalog-meta']);
+      expect(blocking.pendingSubscriptionIds).toEqual([]);
+      expect(blocking.phases).toEqual([
+        expect.objectContaining({
+          phase: 0,
+          isReady: true,
+          expectedSubscriptionIds: ['catalog-meta'],
+        }),
+        expect.objectContaining({
+          phase: 1,
+          isReady: false,
+          pendingSubscriptionIds: ['catalog-relations'],
+        }),
+      ]);
+
+      const full = await engine.getBootstrapStatus({ maxPhase: 'all' });
+      expect(full.isReady).toBe(false);
+      expect(full.expectedSubscriptionIds).toEqual([
+        'catalog-meta',
+        'catalog-relations',
+      ]);
+      expect(full.pendingSubscriptionIds).toEqual(['catalog-relations']);
+    });
   });
 
   describe('event subscriptions', () => {

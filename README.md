@@ -71,6 +71,10 @@ React Native / Expo clients should use the `createReactNativeHttpTransport(...)`
 preset from `@syncular/transport-http` so snapshot fetch, gzip handling, and
 bootstrap apply strategy are tuned for Hermes-style runtimes.
 
+If startup-critical data should bootstrap before large background tables, assign
+`bootstrapPhase` on client subscriptions. Lower phases bootstrap first, while
+later phases stay deferred until earlier phases are ready.
+
 See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/introduction/installation) for the package/runtime matrix, and [Build](https://syncular.dev/docs/build) for the implementation path.
 
 ## How it works

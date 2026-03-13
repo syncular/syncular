@@ -23,6 +23,9 @@ import type {
   OutboxStats,
   PresenceEntry,
   PushResultInfo,
+  SyncClientSubscription,
+  SyncBootstrapStatus,
+  SyncBootstrapStatusOptions,
   SubscriptionProgress,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
@@ -74,12 +77,7 @@ export interface ClientOptions<DB extends SyncClientDb> {
   actorId: string;
 
   /** Subscriptions to sync */
-  subscriptions: Array<{
-    id: string;
-    table: string;
-    scopes?: Record<string, string | string[]>;
-    params?: Record<string, unknown>;
-  }>;
+  subscriptions: SyncClientSubscription[];
 
   /** Optional: Sync plugins */
   plugins?: SyncClientPlugin[];
@@ -424,21 +422,15 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
    * Update subscriptions.
    */
   updateSubscriptions(
-    subscriptions: Array<{
-      id: string;
-      table: string;
-      scopes?: Record<string, string | string[]>;
-      params?: Record<string, unknown>;
-    }>
+    subscriptions: SyncClientSubscription[]
   ): void {
     this.options.subscriptions = subscriptions;
     if (this.engine) {
       this.engine.updateSubscriptions(
-        subscriptions.map((s) => ({
-          id: s.id,
-          table: s.table,
-          scopes: s.scopes ?? {},
-          params: s.params ?? {},
+        subscriptions.map((subscription) => ({
+          ...subscription,
+          scopes: subscription.scopes ?? {},
+          params: subscription.params ?? {},
         }))
       );
     }
@@ -447,17 +439,14 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
   /**
    * Get current subscriptions.
    */
-  getSubscriptions(): Array<{
-    id: string;
-    table: string;
-    scopes: Record<string, string | string[]>;
-    params: Record<string, unknown>;
-  }> {
+  getSubscriptions(): SyncClientSubscription[] {
     return this.options.subscriptions.map((s) => ({
       id: s.id,
       table: s.table,
       scopes: s.scopes ?? {},
       params: s.params ?? {},
+      bootstrapState: s.bootstrapState,
+      bootstrapPhase: s.bootstrapPhase,
     }));
   }
 
@@ -522,6 +511,16 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
   async getProgress(): Promise<SyncProgress | null> {
     if (!this.engine) return null;
     return this.engine.getProgress();
+  }
+
+  /**
+   * Get bootstrap readiness for the configured blocking phase or a selected subset.
+   */
+  async getBootstrapStatus(
+    options?: SyncBootstrapStatusOptions
+  ): Promise<SyncBootstrapStatus | null> {
+    if (!this.engine) return null;
+    return this.engine.getBootstrapStatus(options);
   }
 
   /**

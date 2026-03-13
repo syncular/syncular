@@ -107,6 +107,20 @@ export type SyncBootstrapSubscriptionPhase =
   | SubscriptionProgressPhase
   | 'pending';
 
+export interface SyncClientSubscription
+  extends Omit<SyncSubscriptionRequest, 'cursor'> {
+  /**
+   * Local-only bootstrap phase for staged startup.
+   *
+   * Lower phases bootstrap first. Higher phases are deferred until all lower
+   * phases are ready, but once a higher-phase subscription is already ready it
+   * continues to participate in normal pull requests.
+   *
+   * Defaults to `0`.
+   */
+  bootstrapPhase?: number;
+}
+
 export interface SyncBootstrapSubscriptionStatus {
   stateId: string;
   id: string;
@@ -122,6 +136,16 @@ export interface SyncBootstrapSubscriptionStatus {
   completedAt?: number;
   lastErrorCode?: string;
   lastErrorMessage?: string;
+  bootstrapPhase: number;
+}
+
+export interface SyncBootstrapPhaseStatus {
+  phase: number;
+  expectedSubscriptionIds: string[];
+  readySubscriptionIds: string[];
+  pendingSubscriptionIds: string[];
+  isReady: boolean;
+  progressPercent: number;
 }
 
 export interface SyncBootstrapStatus {
@@ -134,11 +158,15 @@ export interface SyncBootstrapStatus {
   readySubscriptionIds: string[];
   pendingSubscriptionIds: string[];
   subscriptions: SyncBootstrapSubscriptionStatus[];
+  activePhase: number | null;
+  selectedMaxPhase: number | 'all';
+  phases: SyncBootstrapPhaseStatus[];
 }
 
 export interface SyncBootstrapStatusOptions {
   stateId?: string;
   subscriptionIds?: string[];
+  maxPhase?: number | 'all';
 }
 
 /**
@@ -287,7 +315,7 @@ export interface SyncEngineConfig<DB extends SyncClientDb = SyncClientDb> {
   /** Stable device/app installation id */
   clientId: string | null | undefined;
   /** Subscriptions for partial sync */
-  subscriptions: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions: SyncClientSubscription[];
   /** Pull limit (commit count per request) */
   limitCommits?: number;
   /** Bootstrap snapshot rows per page */
@@ -469,6 +497,7 @@ export interface SyncAwaitBootstrapOptions {
   timeoutMs?: number;
   stateId?: string;
   subscriptionId?: string;
+  maxPhase?: number | 'all';
 }
 
 export interface SyncDiagnostics {
