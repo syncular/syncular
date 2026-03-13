@@ -2,9 +2,11 @@
 
 Neon serverless Postgres Kysely dialect (HTTP).
 
-Useful for stateless serverless/edge environments. Pair with
-`createNeonServerDialect()` from `@syncular/server-dialect-postgres` when
-running a Syncular server on Neon-backed Postgres.
+Useful for stateless serverless and edge environments.
+
+This package is the Kysely runtime dialect. When you are running a Syncular
+server on Neon-backed Postgres, pair it with `createNeonServerDialect()` from
+`@syncular/server-dialect-postgres` (or `syncular/server-dialect-neon`).
 
 ## Install
 
@@ -22,6 +24,15 @@ const db = createDatabase<MyDb>({
   dialect: createNeonDialect({ connectionString: process.env.DATABASE_URL! }),
   family: 'postgres',
 });
+```
+
+### Server pairing
+
+```ts
+import { ensureSyncSchema } from '@syncular/server';
+import { createNeonServerDialect } from '@syncular/server-dialect-postgres';
+
+await ensureSyncSchema(db, createNeonServerDialect());
 ```
 
 ## Documentation

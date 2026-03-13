@@ -20,6 +20,22 @@ import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 const dialect = createPostgresServerDialect();
 ```
 
+### Neon-backed Postgres
+
+```typescript
+import { createNeonServerDialect } from '@syncular/server-dialect-postgres';
+
+const dialect = createNeonServerDialect();
+```
+
+If you prefer umbrella imports:
+
+```typescript
+import { createNeonServerDialect } from 'syncular/server-dialect-neon';
+
+const dialect = createNeonServerDialect();
+```
+
 ### SQLite
 
 ```typescript
@@ -51,6 +67,11 @@ These packages provide the `dialect` adapter. Use `createDatabase` from `@syncul
 | `kysely` + `pg` | Node.js | `new Kysely({ dialect: new PostgresDialect({ pool }) })` |
 | `@syncular/dialect-neon` | Serverless / Edge | `createDatabase({ dialect: createNeonDialect({ connectionString: '...' }), family: 'postgres' })` |
 | `@syncular/dialect-pglite` | Browser | `createDatabase({ dialect: createPgliteDialect({ dataDir: 'idb://app' }), family: 'postgres' })` |
+
+For a Syncular server on Neon, the intended pairing is:
+
+- runtime dialect: `@syncular/dialect-neon`
+- server dialect: `createNeonServerDialect()`
 
 ## Migrations
 

@@ -2,9 +2,14 @@
 
 Umbrella package that re-exports the `@syncular/*` packages under a single import namespace.
 
-If you prefer, you can write imports like `syncular/client` instead of `@syncular/client`. Both are supported.
+If you prefer, you can write imports like `syncular/client` instead of
+`@syncular/client`. Both are supported.
 
-For plugins, use explicit umbrella subpaths (for example `syncular/client-plugin-yjs`).
+For plugins and runtime-specific helpers, use explicit umbrella subpaths. Examples:
+
+- `syncular/client-plugin-yjs`
+- `syncular/dialect-neon`
+- `syncular/server-dialect-neon`
 
 ## Install
 

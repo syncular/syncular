@@ -167,6 +167,13 @@
         "default": "./dist/server-dialect-postgres.js"
       }
     },
+    "./server-dialect-neon": {
+      "bun": "./src/server-dialect-neon.ts",
+      "import": {
+        "types": "./dist/server-dialect-neon.d.ts",
+        "default": "./dist/server-dialect-neon.js"
+      }
+    },
     "./transport-http": {
       "bun": "./src/transport-http.ts",
       "import": {
