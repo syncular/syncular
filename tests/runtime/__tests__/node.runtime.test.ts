@@ -56,6 +56,10 @@ const publishedPackages: PublishedPackageFixture[] = [
     dir: path.join(REPO_ROOT, 'packages/core'),
   },
   {
+    name: '@syncular/dialect-better-sqlite3',
+    dir: path.join(REPO_ROOT, 'packages/dialect-better-sqlite3'),
+  },
+  {
     name: '@syncular/transport-http',
     dir: path.join(REPO_ROOT, 'packages/transport-http'),
   },
@@ -414,6 +418,155 @@ describe('Node.js runtime (better-sqlite3)', () => {
       ].join(';');
 
       execSync(`node --input-type=module -e ${JSON.stringify(smokeScript)}`, {
+        cwd: projectRoot,
+        stdio: 'pipe',
+      });
+    } finally {
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('bootstraps gzip snapshot chunks via packed archives in a React Native-like runtime', async () => {
+    const projectRoot = await createPackedWorkspaceProject();
+
+    try {
+      const smokeScriptPath = path.join(projectRoot, 'react-native-dist-smoke.mjs');
+      const smokeScript = `
+import { createDatabase, encodeSnapshotRows } from '@syncular/core';
+import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
+import { createClient, createClientHandler } from '@syncular/client';
+import { createReactNativeHttpTransport } from '@syncular/transport-http';
+import { gzipSync } from 'node:zlib';
+
+Object.defineProperty(globalThis, 'navigator', {
+  value: { product: 'ReactNative' },
+  configurable: true,
+});
+Object.defineProperty(globalThis, 'DecompressionStream', {
+  value: undefined,
+  configurable: true,
+  writable: true,
+});
+
+const rows = Array.from({ length: 128 }, (_, index) => ({
+  id: String(index + 1),
+  user_id: 'rn-user',
+  title: \`Item \${index + 1}\`,
+  server_version: index + 1,
+}));
+const compressed = new Uint8Array(gzipSync(encodeSnapshotRows(rows)));
+const requests = [];
+
+const transport = createReactNativeHttpTransport({
+  baseUrl: 'http://syncular.test/api',
+  fetch: async (input, init) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    const url = new URL(request.url);
+    requests.push(\`\${request.method} \${url.pathname}\`);
+
+    if (request.method === 'POST' && url.pathname === '/api/sync') {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          pull: {
+            ok: true,
+            subscriptions: [
+              {
+                id: 'items',
+                status: 'active',
+                scopes: { user_id: 'rn-user' },
+                bootstrap: true,
+                bootstrapState: null,
+                nextCursor: 1,
+                commits: [],
+                snapshots: [
+                  {
+                    table: 'items',
+                    rows: [],
+                    chunks: [
+                      {
+                        id: 'chunk-1',
+                        byteLength: compressed.length,
+                        sha256: '',
+                        encoding: 'json-row-frame-v1',
+                        compression: 'gzip',
+                      },
+                    ],
+                    isFirstPage: true,
+                    isLastPage: true,
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }
+      );
+    }
+
+    if (
+      request.method === 'GET' &&
+      url.pathname === '/api/sync/snapshot-chunks/chunk-1'
+    ) {
+      return new Response(compressed, {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    }
+
+    throw new Error(\`Unexpected request: \${request.method} \${url.pathname}\`);
+  },
+});
+
+const db = createDatabase({
+  dialect: createBetterSqlite3Dialect({ path: ':memory:' }),
+  family: 'sqlite',
+});
+
+await db.schema
+  .createTable('items')
+  .addColumn('id', 'text', (col) => col.primaryKey())
+  .addColumn('user_id', 'text', (col) => col.notNull())
+  .addColumn('title', 'text', (col) => col.notNull())
+  .addColumn('server_version', 'integer', (col) =>
+    col.notNull().defaultTo(0)
+  )
+  .execute();
+
+const { client, destroy } = await createClient({
+  db,
+  actorId: 'rn-user',
+  clientId: 'rn-client',
+  transport,
+  handlers: [createClientHandler({ table: 'items', scopes: ['items:{user_id}'] })],
+  sync: { realtime: false },
+});
+
+try {
+  await client.awaitBootstrapComplete({ timeoutMs: 5000 });
+  const storedRows = await db.selectFrom('items').selectAll().execute();
+  const count = storedRows.length;
+  if (count !== rows.length) {
+    throw new Error(\`Expected \${rows.length} rows, got \${count}\`);
+  }
+
+  if (!requests.includes('POST /api/sync')) {
+    throw new Error('Combined sync request missing');
+  }
+  if (!requests.includes('GET /api/sync/snapshot-chunks/chunk-1')) {
+    throw new Error('Snapshot chunk download missing');
+  }
+} finally {
+  destroy();
+  await db.destroy();
+}
+`;
+      await writeFile(smokeScriptPath, smokeScript, 'utf8');
+
+      execFileSync('node', [smokeScriptPath], {
         cwd: projectRoot,
         stdio: 'pipe',
       });
