@@ -167,6 +167,11 @@ export interface SyncTransportCapabilities {
    * Preferred default transaction strategy for bootstrap apply.
    */
   preferredBootstrapApplyMode?: SyncBootstrapApplyMode;
+  /**
+   * Preferred scheduler yield delay (ms) between bootstrap snapshot apply
+   * batches. `0` yields on the next macrotask, `false` disables yielding.
+   */
+  preferredSnapshotApplyYieldMs?: number | false;
 }
 
 /**

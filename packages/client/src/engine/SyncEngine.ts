@@ -2172,6 +2172,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               limitCommits: this.config.limitCommits,
               limitSnapshotRows: this.config.limitSnapshotRows,
               maxSnapshotPages: this.config.maxSnapshotPages,
+              snapshotApplyYieldMs: this.config.snapshotApplyYieldMs,
               dedupeRows: this.config.dedupeRows,
               stateId: this.config.stateId,
               sha256: this.config.sha256,

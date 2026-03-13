@@ -63,6 +63,7 @@ function detectDefaultTransportCapabilities(): SyncTransportCapabilities {
     snapshotChunkReadMode,
     gzipDecompressionMode,
     preferredBootstrapApplyMode,
+    preferredSnapshotApplyYieldMs: isReactNative ? 0 : false,
   };
 }
 
@@ -70,12 +71,15 @@ function mergeTransportCapabilities(
   overrides?: Partial<SyncTransportCapabilities>
 ): SyncTransportCapabilities {
   const defaults = detectDefaultTransportCapabilities();
-  const merged = {
+  const merged: SyncTransportCapabilities = {
     ...defaults,
     ...overrides,
   };
 
-  if (overrides?.preferredBootstrapApplyMode) {
+  if (
+    overrides?.preferredBootstrapApplyMode !== undefined &&
+    overrides?.preferredSnapshotApplyYieldMs !== undefined
+  ) {
     return merged;
   }
 
@@ -87,7 +91,14 @@ function mergeTransportCapabilities(
 
   return {
     ...merged,
-    preferredBootstrapApplyMode,
+    preferredBootstrapApplyMode:
+      overrides?.preferredBootstrapApplyMode ?? preferredBootstrapApplyMode,
+    preferredSnapshotApplyYieldMs:
+      overrides?.preferredSnapshotApplyYieldMs ??
+      (merged.snapshotChunkReadMode === 'bytes' ||
+      merged.gzipDecompressionMode === 'buffered'
+        ? 0
+        : false),
   };
 }
 
@@ -109,6 +120,7 @@ export const REACT_NATIVE_TRANSPORT_CAPABILITIES: SyncTransportCapabilities = {
   snapshotChunkReadMode: 'bytes',
   gzipDecompressionMode: 'buffered',
   preferredBootstrapApplyMode: 'per-subscription',
+  preferredSnapshotApplyYieldMs: 0,
   preferMaterializedSnapshots: true,
 };
 

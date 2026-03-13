@@ -277,6 +277,7 @@ export interface SyncProviderProps<
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
+  snapshotApplyYieldMs?: number | false;
   dedupeRows?: boolean;
   stateId?: string;
   pollIntervalMs?: number;
@@ -713,6 +714,7 @@ export function createSyncularReact<
     limitCommits,
     limitSnapshotRows,
     maxSnapshotPages,
+    snapshotApplyYieldMs,
     dedupeRows,
     stateId,
     pollIntervalMs,
@@ -750,6 +752,7 @@ export function createSyncularReact<
         limitCommits,
         limitSnapshotRows,
         maxSnapshotPages,
+        snapshotApplyYieldMs,
         dedupeRows,
         stateId,
         pollIntervalMs,
@@ -778,6 +781,7 @@ export function createSyncularReact<
         limitCommits,
         limitSnapshotRows,
         maxSnapshotPages,
+        snapshotApplyYieldMs,
         dedupeRows,
         stateId,
         pollIntervalMs,
