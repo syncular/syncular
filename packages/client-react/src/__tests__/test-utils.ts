@@ -89,6 +89,7 @@ export function createMockSync<DB extends SyncClientDb = SyncClientDb>(args?: {
     id: string;
     table: string;
     scopes?: Record<string, unknown>;
+    bootstrapPhase?: number;
   }>;
 }): ClientSyncConfig<DB, SyncIdentityBase> {
   const handlers = args?.handlers ?? createMockHandlerRegistry<DB>();

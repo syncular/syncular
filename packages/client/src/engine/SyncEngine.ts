@@ -14,7 +14,6 @@ import {
   type SyncOperation,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
-  type SyncSubscriptionRequest,
   SyncTransportError,
   startSyncSpan,
 } from '@syncular/core';
@@ -53,6 +52,7 @@ import type {
   SyncBootstrapStatus,
   SyncBootstrapStatusOptions,
   SyncBootstrapSubscriptionPhase,
+  SyncClientSubscription,
   SyncConnectionState,
   SyncDiagnostics,
   SyncEngineConfig,
@@ -271,6 +271,11 @@ function serializeInspectorRecord(value: unknown): Record<string, unknown> {
 
 function defaultSelectorEquality<T>(left: T, right: T): boolean {
   return Object.is(left, right);
+}
+
+function normalizeBootstrapPhase(value: number | undefined): number {
+  if (value === undefined) return 0;
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
 function areMetadataRecordsEqual(
@@ -736,30 +741,96 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         completedAt: progress?.completedAt,
         lastErrorCode: progress?.lastErrorCode,
         lastErrorMessage: progress?.lastErrorMessage,
+        bootstrapPhase: normalizeBootstrapPhase(configuredSub?.bootstrapPhase),
       };
     });
 
     const expectedSubscriptions = subscriptions.filter((sub) => sub.expected);
-    const readySubscriptionIds = expectedSubscriptions
+    const activePhase =
+      expectedSubscriptions
+        .filter((sub) => !sub.ready)
+        .reduce<number | null>(
+          (lowest, sub) =>
+            lowest === null || sub.bootstrapPhase < lowest
+              ? sub.bootstrapPhase
+              : lowest,
+          null
+        ) ?? null;
+    const selectedMaxPhase =
+      options.maxPhase ??
+      (explicitIdSet.size > 0
+        ? 'all'
+        : expectedSubscriptions.length > 0
+          ? expectedSubscriptions.reduce(
+              (lowest, sub) => Math.min(lowest, sub.bootstrapPhase),
+              Number.POSITIVE_INFINITY
+            )
+          : 0);
+    const blockingSubscriptions = expectedSubscriptions.filter((sub) =>
+      selectedMaxPhase === 'all'
+        ? true
+        : sub.bootstrapPhase <= selectedMaxPhase
+    );
+    const readySubscriptionIds = blockingSubscriptions
       .filter((sub) => sub.ready)
       .map((sub) => sub.id);
-    const pendingSubscriptionIds = expectedSubscriptions
+    const pendingSubscriptionIds = blockingSubscriptions
       .filter((sub) => !sub.ready)
       .map((sub) => sub.id);
     const channelPhase = this.resolveChannelPhase(
       filteredStates.map((sub) => this.mapSubscriptionToProgress(sub))
     );
     const progressPercent =
-      expectedSubscriptions.length === 0
+      blockingSubscriptions.length === 0
         ? pendingSubscriptionIds.length === 0
           ? 100
           : 0
         : Math.round(
-            expectedSubscriptions.reduce(
+            blockingSubscriptions.reduce(
               (sum, sub) => sum + sub.progressPercent,
               0
-            ) / expectedSubscriptions.length
+            ) / blockingSubscriptions.length
           );
+    const phases = Array.from(
+      expectedSubscriptions.reduce((acc, sub) => {
+        const current = acc.get(sub.bootstrapPhase) ?? {
+          phase: sub.bootstrapPhase,
+          expectedSubscriptionIds: [] as string[],
+          readySubscriptionIds: [] as string[],
+          pendingSubscriptionIds: [] as string[],
+          progressPercent: 0,
+        };
+        current.expectedSubscriptionIds.push(sub.id);
+        if (sub.ready) {
+          current.readySubscriptionIds.push(sub.id);
+        } else {
+          current.pendingSubscriptionIds.push(sub.id);
+        }
+        current.progressPercent += sub.progressPercent;
+        acc.set(sub.bootstrapPhase, current);
+        return acc;
+      }, new Map<number, {
+        phase: number;
+        expectedSubscriptionIds: string[];
+        readySubscriptionIds: string[];
+        pendingSubscriptionIds: string[];
+        progressPercent: number;
+      }>())
+    )
+      .sort(([left], [right]) => left - right)
+      .map(([, phase]) => ({
+        phase: phase.phase,
+        expectedSubscriptionIds: phase.expectedSubscriptionIds,
+        readySubscriptionIds: phase.readySubscriptionIds,
+        pendingSubscriptionIds: phase.pendingSubscriptionIds,
+        isReady: phase.pendingSubscriptionIds.length === 0,
+        progressPercent:
+          phase.expectedSubscriptionIds.length === 0
+            ? 100
+            : Math.round(
+                phase.progressPercent / phase.expectedSubscriptionIds.length
+              ),
+      }));
 
     return {
       stateId,
@@ -767,10 +838,13 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       progressPercent,
       isBootstrapping: pendingSubscriptionIds.length > 0,
       isReady: pendingSubscriptionIds.length === 0,
-      expectedSubscriptionIds: expectedSubscriptions.map((sub) => sub.id),
+      expectedSubscriptionIds: blockingSubscriptions.map((sub) => sub.id),
       readySubscriptionIds,
       pendingSubscriptionIds,
       subscriptions,
+      activePhase,
+      selectedMaxPhase,
+      phases,
     };
   }
 
@@ -826,20 +900,25 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     const deadline = Date.now() + timeoutMs;
 
     while (true) {
-      const states = await this.listSubscriptionStates({ stateId });
-      const relevantStates =
-        options.subscriptionId === undefined
-          ? states
-          : states.filter(
-              (state) => state.subscriptionId === options.subscriptionId
-            );
+      if (options.subscriptionId !== undefined) {
+        const state = await this.getSubscriptionState(options.subscriptionId, {
+          stateId,
+        });
+        const hasPendingBootstrap =
+          state?.status === 'active' && state.bootstrapState !== null;
 
-      const hasPendingBootstrap = relevantStates.some(
-        (state) => state.status === 'active' && state.bootstrapState !== null
-      );
+        if (!hasPendingBootstrap) {
+          return this.getProgress();
+        }
+      } else {
+        const bootstrap = await this.getBootstrapStatus({
+          stateId,
+          maxPhase: options.maxPhase,
+        });
 
-      if (!hasPendingBootstrap) {
-        return this.getProgress();
+        if (bootstrap.isReady) {
+          return this.getProgress();
+        }
       }
 
       if (this.state.error) {
@@ -1953,8 +2032,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               clientId: this.config.clientId!,
               actorId: this.config.actorId ?? undefined,
               plugins: this.config.plugins,
-              subscriptions: this.config
-                .subscriptions as SyncSubscriptionRequest[],
+              subscriptions: this.config.subscriptions,
               limitCommits: this.config.limitCommits,
               limitSnapshotRows: this.config.limitSnapshotRows,
               maxSnapshotPages: this.config.maxSnapshotPages,
@@ -2988,7 +3066,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
    * Update subscriptions dynamically
    */
   updateSubscriptions(
-    subscriptions: Array<Omit<SyncSubscriptionRequest, 'cursor'>>
+    subscriptions: SyncClientSubscription[]
   ): void {
     this.config.subscriptions = subscriptions;
     // Trigger a sync to apply new subscriptions

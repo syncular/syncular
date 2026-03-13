@@ -5,18 +5,18 @@ import type {
   ScopeValue,
   ScopeValuesFromPatterns,
   SyncIdentityBase,
-  SyncSubscriptionRequest,
 } from '@syncular/core';
 import { registerTableOrThrow } from '@syncular/core';
 import {
   type CreateClientHandlerOptions,
   createClientHandler,
 } from './handlers/create-handler';
+import type { SyncClientSubscription } from './engine/types';
 import type { ClientTableHandler } from './handlers/types';
 import type { SyncClientDb } from './schema';
 
 type ClientSyncSubscription<ScopeDefs extends readonly ScopeDefinition[]> =
-  Omit<SyncSubscriptionRequest, 'cursor' | 'table' | 'scopes'> & {
+  Omit<SyncClientSubscription, 'table' | 'scopes'> & {
     table: string;
     scopes?: ScopeValuesFromPatterns<ScopeDefs>;
   };
@@ -51,9 +51,7 @@ export interface ClientSyncConfig<
   Identity extends SyncIdentityBase = SyncIdentityBase,
 > {
   handlers: ClientTableHandler<DB>[];
-  subscriptions(
-    identity: Identity
-  ): Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions(identity: Identity): SyncClientSubscription[];
 }
 
 export interface DefineClientSyncOptions {
@@ -145,8 +143,8 @@ export function defineClientSync<
     },
     subscriptions(
       identity: Identity
-    ): Array<Omit<SyncSubscriptionRequest, 'cursor'>> {
-      const resolved: Array<Omit<SyncSubscriptionRequest, 'cursor'>> = [];
+    ): SyncClientSubscription[] {
+      const resolved: SyncClientSubscription[] = [];
       for (const [table, subscribe] of subscriptionsByTable.entries()) {
         if (!subscribe) continue;
         const value =
@@ -160,6 +158,7 @@ export function defineClientSync<
             scopes: toScopeValues(entry.scopes),
             params: entry.params,
             bootstrapState: entry.bootstrapState,
+            bootstrapPhase: entry.bootstrapPhase,
           });
         }
       }

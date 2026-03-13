@@ -1790,3 +1790,121 @@ describe('applyPullResponse chunk streaming', () => {
     expect(clearedScopes).toEqual([{ project_id: 'p1' }]);
   });
 });
+
+describe('buildPullRequest phased bootstrap selection', () => {
+  let db: Kysely<TestDb>;
+
+  beforeEach(async () => {
+    db = createDatabase<TestDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+      family: 'sqlite',
+    });
+    await ensureClientSyncSchema(db);
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+  });
+
+  it('requests only the lowest pending bootstrap phase by default', async () => {
+    const pullState = await buildPullRequest(db, {
+      clientId: 'client-1',
+      stateId: 'default',
+      subscriptions: [
+        { id: 'catalog-meta', table: 'items', bootstrapPhase: 0 },
+        { id: 'catalog-relations', table: 'scoped_items', bootstrapPhase: 1 },
+      ],
+    });
+
+    expect(pullState.request.subscriptions.map((sub) => sub.id)).toEqual([
+      'catalog-meta',
+    ]);
+  });
+
+  it('unlocks later phases once earlier phases are ready', async () => {
+    const now = Date.now();
+
+    await db
+      .insertInto('sync_subscription_state')
+      .values({
+        state_id: 'default',
+        subscription_id: 'catalog-meta',
+        table: 'items',
+        scopes_json: '{}',
+        params_json: '{}',
+        cursor: 12,
+        bootstrap_state_json: null,
+        status: 'active',
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+
+    const pullState = await buildPullRequest(db, {
+      clientId: 'client-1',
+      stateId: 'default',
+      subscriptions: [
+        { id: 'catalog-meta', table: 'items', bootstrapPhase: 0 },
+        { id: 'catalog-relations', table: 'scoped_items', bootstrapPhase: 1 },
+      ],
+    });
+
+    expect(pullState.request.subscriptions.map((sub) => sub.id)).toEqual([
+      'catalog-meta',
+      'catalog-relations',
+    ]);
+  });
+
+  it('keeps already-ready later phases live while earlier phases rebootstrap', async () => {
+    const now = Date.now();
+
+    await db
+      .insertInto('sync_subscription_state')
+      .values([
+        {
+          state_id: 'default',
+          subscription_id: 'catalog-meta',
+          table: 'items',
+          scopes_json: '{}',
+          params_json: '{}',
+          cursor: -1,
+          bootstrap_state_json: JSON.stringify({
+            asOfCommitSeq: 0,
+            tables: ['items'],
+            tableIndex: 0,
+            rowCursor: null,
+          }),
+          status: 'active',
+          created_at: now,
+          updated_at: now,
+        },
+        {
+          state_id: 'default',
+          subscription_id: 'catalog-relations',
+          table: 'scoped_items',
+          scopes_json: '{}',
+          params_json: '{}',
+          cursor: 42,
+          bootstrap_state_json: null,
+          status: 'active',
+          created_at: now,
+          updated_at: now,
+        },
+      ])
+      .execute();
+
+    const pullState = await buildPullRequest(db, {
+      clientId: 'client-1',
+      stateId: 'default',
+      subscriptions: [
+        { id: 'catalog-meta', table: 'items', bootstrapPhase: 0 },
+        { id: 'catalog-relations', table: 'scoped_items', bootstrapPhase: 1 },
+      ],
+    });
+
+    expect(pullState.request.subscriptions.map((sub) => sub.id)).toEqual([
+      'catalog-meta',
+      'catalog-relations',
+    ]);
+  });
+});

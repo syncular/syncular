@@ -11,12 +11,11 @@ import type {
   SyncPushBatchCommitResponse,
   SyncPushRequest,
   SyncPushResponse,
-  SyncSubscriptionRequest,
   SyncTransport,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { upsertConflictsForRejectedCommit } from './conflicts';
-import type { PushResultInfo } from './engine/types';
+import type { PushResultInfo, SyncClientSubscription } from './engine/types';
 import type { ClientHandlerCollection } from './handlers/collection';
 import {
   getNextSendableOutboxCommit,
@@ -551,7 +550,7 @@ export interface SyncOnceOptions {
   clientId: string;
   actorId?: string;
   plugins?: SyncPushOnceOptions['plugins'];
-  subscriptions: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions: SyncClientSubscription[];
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;

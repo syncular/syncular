@@ -15,11 +15,11 @@ import {
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
   type SyncSnapshot,
-  type SyncSubscriptionRequest,
   type SyncTransport,
   type SyncTransportCapabilities,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
+import type { SyncClientSubscription } from './engine/types';
 import {
   type ClientHandlerCollection,
   getClientHandlerOrThrow,
@@ -580,6 +580,66 @@ function parseBootstrapState(
   }
 }
 
+function normalizeBootstrapPhase(value: number | undefined): number {
+  if (value === undefined) return 0;
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function isSubscriptionReady(
+  row: SyncSubscriptionStateTable | undefined
+): boolean {
+  return (
+    row?.status === 'active' &&
+    parseBootstrapState(row.bootstrap_state_json) === null &&
+    row.cursor >= 0
+  );
+}
+
+function isSubscriptionBootstrapping(
+  row: SyncSubscriptionStateTable | undefined
+): boolean {
+  return row?.status === 'active' && parseBootstrapState(row.bootstrap_state_json) !== null;
+}
+
+function resolveActiveBootstrapPhase(
+  subscriptions: readonly SyncClientSubscription[],
+  existingById: ReadonlyMap<string, SyncSubscriptionStateTable>
+): number | null {
+  let lowestPendingPhase: number | null = null;
+
+  for (const subscription of subscriptions) {
+    const phase = normalizeBootstrapPhase(subscription.bootstrapPhase);
+    if (isSubscriptionReady(existingById.get(subscription.id))) {
+      continue;
+    }
+    if (lowestPendingPhase === null || phase < lowestPendingPhase) {
+      lowestPendingPhase = phase;
+    }
+  }
+
+  return lowestPendingPhase;
+}
+
+function selectPullSubscriptions(
+  subscriptions: readonly SyncClientSubscription[],
+  existingById: ReadonlyMap<string, SyncSubscriptionStateTable>
+): SyncClientSubscription[] {
+  const activePhase = resolveActiveBootstrapPhase(subscriptions, existingById);
+  if (activePhase === null) {
+    return [...subscriptions];
+  }
+
+  return subscriptions.filter((subscription) => {
+    const phase = normalizeBootstrapPhase(subscription.bootstrapPhase);
+    const existing = existingById.get(subscription.id);
+
+    if (phase <= activePhase) return true;
+    if (isSubscriptionReady(existing)) return true;
+    if (isSubscriptionBootstrapping(existing)) return true;
+    return false;
+  });
+}
+
 function parseScopeValuesJson(
   value: string | object | null | undefined
 ): ScopeValues {
@@ -698,7 +758,7 @@ export interface SyncPullOnceOptions {
    * Desired subscriptions (client-chosen ids).
    * Cursors are persisted in `sync_subscription_state`.
    */
-  subscriptions: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions: SyncClientSubscription[];
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
@@ -728,6 +788,7 @@ export interface SyncPullRequestState {
   existing: SyncSubscriptionStateTable[];
   existingById: Map<string, SyncSubscriptionStateTable>;
   stateId: string;
+  configuredSubscriptions: SyncClientSubscription[];
 }
 
 /**
@@ -760,13 +821,19 @@ export async function buildPullRequest<DB extends SyncClientDb>(
   const existingById = new Map<string, SyncSubscriptionStateTable>();
   for (const row of existing) existingById.set(row.subscription_id, row);
 
+  const configuredSubscriptions = options.subscriptions ?? [];
+  const selectedSubscriptions = selectPullSubscriptions(
+    configuredSubscriptions,
+    existingById
+  );
+
   const request: SyncPullRequest = {
     clientId: options.clientId,
     limitCommits: options.limitCommits ?? 50,
     limitSnapshotRows: options.limitSnapshotRows ?? 1000,
     maxSnapshotPages: options.maxSnapshotPages ?? 4,
     dedupeRows: options.dedupeRows,
-    subscriptions: (options.subscriptions ?? []).map((sub) => ({
+    subscriptions: selectedSubscriptions.map((sub) => ({
       ...sub,
       cursor: Math.max(-1, existingById.get(sub.id)?.cursor ?? -1),
       bootstrapState: parseBootstrapState(
@@ -775,7 +842,13 @@ export async function buildPullRequest<DB extends SyncClientDb>(
     })),
   };
 
-  return { request, existing, existingById, stateId };
+  return {
+    request,
+    existing,
+    existingById,
+    stateId,
+    configuredSubscriptions,
+  };
 }
 
 export function createFollowupPullState(
@@ -822,9 +895,13 @@ export function createFollowupPullState(
     nextExistingById.set(nextRow.subscription_id, nextRow);
   }
 
+  const nextSelectedSubscriptions = selectPullSubscriptions(
+    pullState.configuredSubscriptions,
+    nextExistingById
+  );
   const nextRequest: SyncPullRequest = {
     ...pullState.request,
-    subscriptions: (pullState.request.subscriptions ?? []).map((sub) => {
+    subscriptions: nextSelectedSubscriptions.map((sub) => {
       const row = nextExistingById.get(sub.id);
       return {
         ...sub,
@@ -839,6 +916,7 @@ export function createFollowupPullState(
     existing: nextExisting,
     existingById: nextExistingById,
     stateId: pullState.stateId,
+    configuredSubscriptions: pullState.configuredSubscriptions,
   };
 }
 
@@ -1002,7 +1080,7 @@ async function removeUndesiredSubscriptions<DB extends SyncClientDb>(
   trx: Transaction<DB>,
   handlers: ClientHandlerCollection<DB>,
   existing: SyncSubscriptionStateTable[],
-  desiredSubscriptions: Array<Omit<SyncSubscriptionRequest, 'cursor'>>,
+  desiredSubscriptions: SyncClientSubscription[],
   stateId: string
 ): Promise<void> {
   const desiredIds = new Set(
@@ -1063,7 +1141,7 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
   options: SyncPullOnceOptions;
   stateId: string;
   existingById: Map<string, SyncSubscriptionStateTable>;
-  subsById: Map<string, Omit<SyncSubscriptionRequest, 'cursor'> | undefined>;
+  subsById: Map<string, SyncClientSubscription | undefined>;
   sub: SyncPullSubscriptionResponse;
 }): Promise<void> {
   const {
