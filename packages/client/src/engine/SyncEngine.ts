@@ -18,6 +18,7 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
+import { type SyncClientFailureStage, SyncClientStageError } from '../errors';
 import { getClientHandler } from '../handlers/collection';
 import { ensureClientSyncSchema } from '../migrate';
 import { withDefaultClientPlugins } from '../plugins';
@@ -132,7 +133,10 @@ function createSyncError(args: {
   cause?: Error;
   retryable?: boolean;
   httpStatus?: number;
+  stage?: SyncError['stage'];
   subscriptionId?: string;
+  chunkId?: string;
+  table?: string;
   stateId?: string;
 }): SyncError {
   return {
@@ -142,7 +146,10 @@ function createSyncError(args: {
     timestamp: Date.now(),
     retryable: args.retryable ?? false,
     httpStatus: args.httpStatus,
+    stage: args.stage,
     subscriptionId: args.subscriptionId,
+    chunkId: args.chunkId,
+    table: args.table,
     stateId: args.stateId,
   };
 }
@@ -153,56 +160,150 @@ function classifySyncFailure(error: unknown): {
   cause: Error;
   retryable: boolean;
   httpStatus?: number;
+  stage?: SyncError['stage'];
+  subscriptionId?: string;
+  chunkId?: string;
+  table?: string;
+  stateId?: string;
 } {
   const cause = error instanceof Error ? error : new Error(String(error));
   const message = cause.message || 'Sync failed';
   const normalized = message.toLowerCase();
 
-  if (cause instanceof SyncTransportError) {
-    if (cause.status === 401 || cause.status === 403) {
+  const classifyTransportFailure = (
+    transportError: SyncTransportError,
+    stage?: SyncClientFailureStage
+  ) => {
+    if (transportError.status === 401 || transportError.status === 403) {
       return {
-        code: 'AUTH_FAILED',
+        code: 'AUTH_FAILED' as const,
         message,
         cause,
         retryable: false,
-        httpStatus: cause.status,
+        httpStatus: transportError.status,
+        stage,
       };
     }
 
     if (
-      cause.status === 404 &&
+      transportError.status === 404 &&
       normalized.includes('snapshot') &&
       normalized.includes('chunk')
     ) {
       return {
-        code: 'SNAPSHOT_CHUNK_NOT_FOUND',
+        code: 'SNAPSHOT_CHUNK_NOT_FOUND' as const,
         message,
         cause,
         retryable: false,
-        httpStatus: cause.status,
+        httpStatus: transportError.status,
+        stage,
       };
     }
 
     if (
-      cause.status !== undefined &&
-      (cause.status >= 500 || cause.status === 408 || cause.status === 429)
+      transportError.status !== undefined &&
+      (transportError.status >= 500 ||
+        transportError.status === 408 ||
+        transportError.status === 429)
+    ) {
+      return {
+        code: 'NETWORK_ERROR' as const,
+        message,
+        cause,
+        retryable: true,
+        httpStatus: transportError.status,
+        stage,
+      };
+    }
+
+    return {
+      code: 'SYNC_ERROR' as const,
+      message,
+      cause,
+      retryable: false,
+      httpStatus: transportError.status,
+      stage,
+    };
+  };
+
+  if (cause instanceof SyncClientStageError) {
+    const stageContext = {
+      stage: cause.stage,
+      subscriptionId: cause.subscriptionId,
+      chunkId: cause.chunkId,
+      table: cause.table,
+      stateId: cause.stateId,
+    };
+    const stageCause = cause.cause instanceof Error ? cause.cause : cause;
+
+    if (stageCause instanceof SyncTransportError) {
+      return {
+        ...classifyTransportFailure(stageCause, cause.stage),
+        ...stageContext,
+      };
+    }
+
+    if (
+      normalized.includes('network') ||
+      normalized.includes('fetch') ||
+      normalized.includes('timeout') ||
+      normalized.includes('offline')
     ) {
       return {
         code: 'NETWORK_ERROR',
         message,
         cause,
         retryable: true,
-        httpStatus: cause.status,
+        ...stageContext,
       };
     }
 
-    return {
-      code: 'SYNC_ERROR',
-      message,
-      cause,
-      retryable: false,
-      httpStatus: cause.status,
-    };
+    switch (cause.stage) {
+      case 'snapshot-gzip-decode':
+        return {
+          code: 'SNAPSHOT_GZIP_DECODE_FAILED',
+          message,
+          cause,
+          retryable: false,
+          ...stageContext,
+        };
+      case 'snapshot-chunk-decode':
+        return {
+          code: 'SNAPSHOT_CHUNK_DECODE_FAILED',
+          message,
+          cause,
+          retryable: false,
+          ...stageContext,
+        };
+      case 'snapshot-integrity':
+        return {
+          code: 'SNAPSHOT_INTEGRITY_FAILED',
+          message,
+          cause,
+          retryable: false,
+          ...stageContext,
+        };
+      case 'snapshot-apply':
+        return {
+          code: 'SNAPSHOT_APPLY_FAILED',
+          message,
+          cause,
+          retryable: false,
+          ...stageContext,
+        };
+      default:
+        return {
+          code: 'SYNC_ERROR',
+          message,
+          cause,
+          retryable: false,
+          ...stageContext,
+        };
+    }
+  }
+
+  if (cause instanceof SyncTransportError) {
+    return classifyTransportFailure(cause, 'pull');
   }
 
   if (
@@ -926,8 +1027,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
       }
 
       if (this.state.error) {
+        const detailSuffix = this.state.error.stage
+          ? ` [stage=${this.state.error.stage}]`
+          : '';
         throw new Error(
-          `[SyncEngine.awaitBootstrapComplete] Failed while waiting for bootstrap completion: ${this.state.error.message}`
+          `[SyncEngine.awaitBootstrapComplete] Failed while waiting for bootstrap completion${detailSuffix}: ${this.state.error.message}`
         );
       }
 
@@ -937,9 +1041,25 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
           options.subscriptionId === undefined
             ? `state "${stateId}"`
             : `subscription "${options.subscriptionId}" in state "${stateId}"`;
+        const bootstrap = await this.getBootstrapStatus({
+          stateId,
+          subscriptionIds:
+            options.subscriptionId === undefined
+              ? undefined
+              : [options.subscriptionId],
+          maxPhase: options.maxPhase,
+        }).catch(() => null);
+        const pendingSummary =
+          bootstrap && bootstrap.pendingSubscriptionIds.length > 0
+            ? ` Pending subscriptions: ${bootstrap.pendingSubscriptionIds.join(', ')}.`
+            : '';
+        const phaseSummary =
+          bootstrap && bootstrap.activePhase !== null
+            ? ` Active phase: ${bootstrap.activePhase}.`
+            : '';
 
         throw new Error(
-          `[SyncEngine.awaitBootstrapComplete] Timed out after ${timeoutMs}ms waiting for ${target}`
+          `[SyncEngine.awaitBootstrapComplete] Timed out after ${timeoutMs}ms waiting for ${target}. Bootstrap is still in progress.${phaseSummary}${pendingSummary}`
         );
       }
 
@@ -2166,7 +2286,11 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
         cause: classified.cause,
         retryable: classified.retryable,
         httpStatus: classified.httpStatus,
-        stateId: this.getStateId(),
+        stage: classified.stage,
+        subscriptionId: classified.subscriptionId,
+        chunkId: classified.chunkId,
+        table: classified.table,
+        stateId: classified.stateId ?? this.getStateId(),
       });
 
       this.updateState({

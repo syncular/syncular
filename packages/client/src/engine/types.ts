@@ -13,6 +13,7 @@ import type {
   SyncTransport,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
+import type { SyncClientFailureStage } from '../errors';
 import type { ClientHandlerCollection } from '../handlers/collection';
 import type { SyncClientPlugin } from '../plugins/types';
 import type { SyncClientDb } from '../schema';
@@ -214,6 +215,10 @@ export interface SyncError {
     | 'NETWORK_ERROR'
     | 'AUTH_FAILED'
     | 'SNAPSHOT_CHUNK_NOT_FOUND'
+    | 'SNAPSHOT_GZIP_DECODE_FAILED'
+    | 'SNAPSHOT_CHUNK_DECODE_FAILED'
+    | 'SNAPSHOT_INTEGRITY_FAILED'
+    | 'SNAPSHOT_APPLY_FAILED'
     | 'MIGRATION_FAILED'
     | 'CONFLICT'
     | 'SYNC_ERROR'
@@ -228,8 +233,14 @@ export interface SyncError {
   retryable: boolean;
   /** HTTP status code when available */
   httpStatus?: number;
+  /** Sync stage where the error originated */
+  stage?: SyncClientFailureStage;
   /** Related subscription id when available */
   subscriptionId?: string;
+  /** Related snapshot chunk id when available */
+  chunkId?: string;
+  /** Related table when available */
+  table?: string;
   /** Related state id when available */
   stateId?: string;
 }

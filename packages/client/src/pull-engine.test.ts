@@ -9,6 +9,7 @@ import {
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
+import { SyncClientStageError } from './errors';
 import type { ClientHandlerCollection } from './handlers/collection';
 import { createClientHandler } from './handlers/create-handler';
 import { ensureClientSyncSchema } from './migrate';
@@ -269,6 +270,277 @@ describe('applyPullResponse chunk streaming', () => {
     }
   });
 
+  it('surfaces gzip decode failures with stage metadata', async () => {
+    const invalidCompressed = new Uint8Array(
+      gzipSync(new TextEncoder().encode('truncated-gzip')).subarray(0, 8)
+    );
+
+    const transport: SyncTransport = {
+      capabilities: {
+        snapshotChunkReadMode: 'bytes',
+        preferMaterializedSnapshots: true,
+      },
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        return invalidCompressed;
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const pullState = await buildPullRequest(db, options);
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: invalidCompressed.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      await applyPullResponse(
+        db,
+        transport,
+        handlers,
+        options,
+        pullState,
+        response
+      );
+      throw new Error('Expected applyPullResponse to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SyncClientStageError);
+      expect((error as SyncClientStageError).stage).toBe(
+        'snapshot-gzip-decode'
+      );
+      expect((error as SyncClientStageError).chunkId).toBe('chunk-1');
+      expect((error as SyncClientStageError).subscriptionId).toBe('items-sub');
+    }
+  });
+
+  it('surfaces snapshot decode failures with stage metadata', async () => {
+    const invalidPayload = new TextEncoder().encode('not-a-row-frame');
+    const compressed = new Uint8Array(gzipSync(invalidPayload));
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream() {
+        return createStreamFromBytes(compressed, 13);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      createClientHandler({
+        table: 'items',
+        scopes: ['items:{id}'],
+      }),
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const pullState = await buildPullRequest(db, options);
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: compressed.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      await applyPullResponse(
+        db,
+        transport,
+        handlers,
+        options,
+        pullState,
+        response
+      );
+      throw new Error('Expected applyPullResponse to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SyncClientStageError);
+      expect((error as SyncClientStageError).stage).toBe(
+        'snapshot-chunk-decode'
+      );
+      expect((error as SyncClientStageError).chunkId).toBe('chunk-1');
+      expect((error as SyncClientStageError).table).toBe('items');
+    }
+  });
+
+  it('surfaces snapshot apply failures with stage metadata', async () => {
+    const rows = [{ id: '1', name: 'Item 1' }];
+    const encoded = encodeSnapshotRows(rows);
+    const compressed = new Uint8Array(gzipSync(encoded));
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {};
+      },
+      async fetchSnapshotChunk() {
+        throw new Error('fetchSnapshotChunk should not be used');
+      },
+      async fetchSnapshotChunkStream() {
+        return createStreamFromBytes(compressed, 17);
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'items',
+        async applySnapshot() {
+          throw new Error('apply failed');
+        },
+        async clearAll() {},
+      },
+    ];
+
+    const options = {
+      clientId: 'client-1',
+      subscriptions: [
+        {
+          id: 'items-sub',
+          table: 'items',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+    };
+
+    const pullState = await buildPullRequest(db, options);
+
+    const response: SyncPullResponse = {
+      ok: true,
+      subscriptions: [
+        {
+          id: 'items-sub',
+          status: 'active',
+          scopes: {},
+          bootstrap: true,
+          bootstrapState: null,
+          nextCursor: 1,
+          commits: [],
+          snapshots: [
+            {
+              table: 'items',
+              rows: [],
+              chunks: [
+                {
+                  id: 'chunk-1',
+                  byteLength: compressed.length,
+                  sha256: '',
+                  encoding: 'json-row-frame-v1',
+                  compression: 'gzip',
+                },
+              ],
+              isFirstPage: true,
+              isLastPage: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      await applyPullResponse(
+        db,
+        transport,
+        handlers,
+        options,
+        pullState,
+        response
+      );
+      throw new Error('Expected applyPullResponse to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SyncClientStageError);
+      expect((error as SyncClientStageError).stage).toBe('snapshot-apply');
+      expect((error as SyncClientStageError).subscriptionId).toBe('items-sub');
+      expect((error as SyncClientStageError).table).toBe('items');
+    }
+  });
+
   it('materializes chunked bootstrap snapshots for afterPull plugins via streaming transport', async () => {
     const firstRows = Array.from({ length: 1200 }, (_, index) => ({
       id: `${index + 1}`,
@@ -501,16 +773,26 @@ describe('applyPullResponse chunk streaming', () => {
     };
 
     const firstPullState = await buildPullRequest(db, options);
-    await expect(
-      applyPullResponse(
+    try {
+      await applyPullResponse(
         db,
         transport,
         handlers,
         options,
         firstPullState,
         response
-      )
-    ).rejects.toThrow('chunk-2 missing');
+      );
+      throw new Error('Expected applyPullResponse to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SyncClientStageError);
+      expect((error as SyncClientStageError).stage).toBe(
+        'snapshot-chunk-fetch'
+      );
+      expect((error as SyncClientStageError).chunkId).toBe('chunk-2');
+      expect((error as SyncClientStageError).cause?.message).toContain(
+        'chunk-2 missing'
+      );
+    }
 
     const countAfterFailure = await sql<{ count: number }>`
       select count(*) as count
@@ -655,9 +937,24 @@ describe('applyPullResponse chunk streaming', () => {
       ],
     };
 
-    await expect(
-      applyPullResponse(db, transport, handlers, options, pullState, response)
-    ).rejects.toThrow('scoped bootstrap failed');
+    try {
+      await applyPullResponse(
+        db,
+        transport,
+        handlers,
+        options,
+        pullState,
+        response
+      );
+      throw new Error('Expected applyPullResponse to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SyncClientStageError);
+      expect((error as SyncClientStageError).stage).toBe('snapshot-apply');
+      expect((error as SyncClientStageError).subscriptionId).toBe('scoped-sub');
+      expect((error as SyncClientStageError).cause?.message).toContain(
+        'scoped bootstrap failed'
+      );
+    }
 
     const itemCount = await sql<{ count: number }>`
       select count(*) as count
