@@ -38,6 +38,7 @@ import type {
   SyncResetOptions,
   SyncResetResult,
   SyncResult,
+  SyncTraceEvent,
   TransportHealth,
 } from './engine/types';
 import type { ClientHandlerCollection } from './handlers/collection';
@@ -81,6 +82,9 @@ export interface ClientOptions<DB extends SyncClientDb> {
 
   /** Optional: Sync plugins */
   plugins?: SyncClientPlugin[];
+
+  /** Optional: Emit structured pull/apply tracing to client events and inspector snapshots. */
+  traceEnabled?: boolean;
 
   /** Optional: Enable realtime transport mode */
   realtimeEnabled?: boolean;
@@ -173,6 +177,7 @@ export interface MigrationInfo {
 type ClientEventType =
   | 'sync:start'
   | 'sync:complete'
+  | 'sync:trace'
   | 'sync:live'
   | 'sync:error'
   | 'push:result'
@@ -191,6 +196,7 @@ type ClientEventType =
 type ClientEventPayloads = {
   'sync:start': { timestamp: number };
   'sync:complete': SyncResult;
+  'sync:trace': SyncTraceEvent;
   'sync:live': { timestamp: number };
   'sync:error': { code: string; message: string };
   'push:result': PushResultInfo;
@@ -359,8 +365,11 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
         table: s.table,
         scopes: s.scopes ?? {},
         params: s.params ?? {},
+        bootstrapState: s.bootstrapState,
+        bootstrapPhase: s.bootstrapPhase,
       })),
       plugins: this.options.plugins,
+      traceEnabled: this.options.traceEnabled,
       realtimeEnabled: this.options.realtimeEnabled,
       pollIntervalMs: this.options.pollIntervalMs,
       dedupeRows: this.options.dedupeRows,
@@ -952,6 +961,10 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
         pullRounds: payload.pullRounds,
         pullResponse: payload.pullResponse,
       });
+    });
+
+    this.engine.on('sync:trace', (payload) => {
+      this.emit('sync:trace', payload);
     });
 
     this.engine.on('sync:live', (payload) => {

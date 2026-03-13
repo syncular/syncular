@@ -21,6 +21,8 @@ npm install @syncular/client
   are ready, while already-ready subscriptions stay live.
 - `client.getBootstrapStatus()` reports both the blocking phase readiness and
   the full per-phase bootstrap summary.
+- `traceEnabled: true` emits structured `sync:trace` events and records them in
+  inspector snapshots for pull/apply diagnostics.
 
 ## Links
 

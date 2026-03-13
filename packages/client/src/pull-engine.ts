@@ -11,6 +11,7 @@ import {
   type SyncBootstrapApplyMode,
   type SyncBootstrapState,
   type SyncChange,
+  type SyncCombinedResponse,
   type SyncPullRequest,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
@@ -19,7 +20,7 @@ import {
   type SyncTransportCapabilities,
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
-import type { SyncClientSubscription } from './engine/types';
+import type { SyncClientSubscription, SyncTraceEvent } from './engine/types';
 import {
   type ClientHandlerCollection,
   getClientHandlerOrThrow,
@@ -332,80 +333,150 @@ async function materializeSnapshotChunkRows(
     scopeValues?: ScopeValues;
   },
   expectedHash: string | undefined,
-  sha256Override?: (bytes: Uint8Array) => Promise<string>
+  sha256Override?: (bytes: Uint8Array) => Promise<string>,
+  trace?: {
+    stateId: string;
+    subscriptionId: string;
+    table: string;
+    chunkIndex: number;
+    onTrace?: SyncPullOnceOptions['onTrace'];
+  }
 ): Promise<unknown[]> {
+  emitTrace(trace?.onTrace, {
+    stage: 'apply:chunk-materialize:start',
+    stateId: trace?.stateId,
+    subscriptionId: trace?.subscriptionId,
+    table: trace?.table,
+    chunkId: request.chunkId,
+    chunkIndex: trace?.chunkIndex,
+  });
+  const startedAt = Date.now();
+
   if (
     transport.capabilities?.snapshotChunkReadMode === 'bytes' &&
     transport.fetchSnapshotChunk
   ) {
-    let bytes = await transport.fetchSnapshotChunk(request);
-    if (isGzipBytes(bytes)) {
-      bytes = await gunzipBytes(bytes);
-    }
-    if (expectedHash) {
-      const actualHash = await computeSha256Hex(bytes, sha256Override);
-      if (actualHash !== expectedHash) {
-        throw new Error(
-          `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
-        );
+    try {
+      let bytes = await transport.fetchSnapshotChunk(request);
+      if (isGzipBytes(bytes)) {
+        bytes = await gunzipBytes(bytes);
       }
+      if (expectedHash) {
+        const actualHash = await computeSha256Hex(bytes, sha256Override);
+        if (actualHash !== expectedHash) {
+          throw new Error(
+            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
+          );
+        }
+      }
+      const rows = decodeSnapshotRows(bytes);
+      emitTrace(trace?.onTrace, {
+        stage: 'apply:chunk-materialize:complete',
+        stateId: trace?.stateId,
+        subscriptionId: trace?.subscriptionId,
+        table: trace?.table,
+        chunkId: request.chunkId,
+        chunkIndex: trace?.chunkIndex,
+        rowCount: rows.length,
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
+      return rows;
+    } catch (error) {
+      emitTrace(trace?.onTrace, {
+        stage: 'apply:chunk-materialize:error',
+        stateId: trace?.stateId,
+        subscriptionId: trace?.subscriptionId,
+        table: trace?.table,
+        chunkId: request.chunkId,
+        chunkIndex: trace?.chunkIndex,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
-    return decodeSnapshotRows(bytes);
   }
-
-  const rawStream = await fetchSnapshotChunkStream(transport, request);
-  const decodedStream = await maybeGunzipStream(rawStream);
-  let streamForDecode = decodedStream;
-  let chunkHashPromise: Promise<string> | null = null;
-
-  if (expectedHash) {
-    const [hashStream, decodeStream] = decodedStream.tee();
-    streamForDecode = decodeStream;
-    chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
-      computeSha256Hex(bytes, sha256Override)
-    );
-  }
-
-  const rows: unknown[] = [];
-  let materializeError: unknown = null;
 
   try {
-    for await (const batch of decodeSnapshotRowStreamBatches(
-      streamForDecode,
-      SNAPSHOT_APPLY_BATCH_ROWS
-    )) {
-      rows.push(...batch);
-    }
-  } catch (error) {
-    materializeError = error;
-  }
+    const rawStream = await fetchSnapshotChunkStream(transport, request);
+    const decodedStream = await maybeGunzipStream(rawStream);
+    let streamForDecode = decodedStream;
+    let chunkHashPromise: Promise<string> | null = null;
 
-  if (chunkHashPromise) {
+    if (expectedHash) {
+      const [hashStream, decodeStream] = decodedStream.tee();
+      streamForDecode = decodeStream;
+      chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
+        computeSha256Hex(bytes, sha256Override)
+      );
+    }
+
+    const rows: unknown[] = [];
+    let materializeError: unknown = null;
+
     try {
-      const actualHash = await chunkHashPromise;
-      if (!materializeError && actualHash !== expectedHash) {
-        materializeError = new Error(
-          `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
-        );
+      for await (const batch of decodeSnapshotRowStreamBatches(
+        streamForDecode,
+        SNAPSHOT_APPLY_BATCH_ROWS
+      )) {
+        rows.push(...batch);
       }
-    } catch (hashError) {
-      if (!materializeError) {
-        materializeError = hashError;
+    } catch (error) {
+      materializeError = error;
+    }
+
+    if (chunkHashPromise) {
+      try {
+        const actualHash = await chunkHashPromise;
+        if (!materializeError && actualHash !== expectedHash) {
+          materializeError = new Error(
+            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
+          );
+        }
+      } catch (hashError) {
+        if (!materializeError) {
+          materializeError = hashError;
+        }
       }
     }
-  }
 
-  if (materializeError) {
-    throw materializeError;
-  }
+    if (materializeError) {
+      throw materializeError;
+    }
 
-  return rows;
+    emitTrace(trace?.onTrace, {
+      stage: 'apply:chunk-materialize:complete',
+      stateId: trace?.stateId,
+      subscriptionId: trace?.subscriptionId,
+      table: trace?.table,
+      chunkId: request.chunkId,
+      chunkIndex: trace?.chunkIndex,
+      rowCount: rows.length,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
+    return rows;
+  } catch (error) {
+    emitTrace(trace?.onTrace, {
+      stage: 'apply:chunk-materialize:error',
+      stateId: trace?.stateId,
+      subscriptionId: trace?.subscriptionId,
+      table: trace?.table,
+      chunkId: request.chunkId,
+      chunkIndex: trace?.chunkIndex,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 async function materializeChunkedSnapshots(
   transport: SyncTransport,
   response: SyncPullResponse,
-  sha256Override?: (bytes: Uint8Array) => Promise<string>
+  sha256Override?: (bytes: Uint8Array) => Promise<string>,
+  trace?: {
+    stateId: string;
+    onTrace?: SyncPullOnceOptions['onTrace'];
+  }
 ): Promise<SyncPullResponse> {
   const subscriptions: SyncPullResponse['subscriptions'] = [];
 
@@ -424,7 +495,9 @@ async function materializeChunkedSnapshots(
       }
 
       const rows: unknown[] = [];
-      for (const chunk of chunks) {
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        const chunk = chunks[chunkIndex];
+        if (!chunk) continue;
         const chunkRows = await materializeSnapshotChunkRows(
           transport,
           {
@@ -432,7 +505,14 @@ async function materializeChunkedSnapshots(
             scopeValues: sub.scopes,
           },
           chunk.sha256,
-          sha256Override
+          sha256Override,
+          {
+            stateId: trace?.stateId ?? 'default',
+            subscriptionId: sub.id,
+            table: snapshot.table,
+            chunkIndex,
+            onTrace: trace?.onTrace,
+          }
         );
         rows.push(...chunkRows);
       }
@@ -459,7 +539,12 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
   trx: Transaction<DB>,
   snapshot: SyncSnapshot,
   scopeValues: ScopeValues,
-  sha256Override?: (bytes: Uint8Array) => Promise<string>
+  sha256Override?: (bytes: Uint8Array) => Promise<string>,
+  trace?: {
+    stateId: string;
+    subscriptionId: string;
+    onTrace?: SyncPullOnceOptions['onTrace'];
+  }
 ): Promise<void> {
   const chunks = snapshot.chunks ?? [];
   if (chunks.length === 0) {
@@ -472,35 +557,65 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
   for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
     const chunk = chunks[chunkIndex];
     if (!chunk) continue;
-
-    const rawStream = await fetchSnapshotChunkStream(transport, {
+    emitTrace(trace?.onTrace, {
+      stage: 'apply:chunk-materialize:start',
+      stateId: trace?.stateId,
+      subscriptionId: trace?.subscriptionId,
+      table: snapshot.table,
       chunkId: chunk.id,
-      scopeValues,
+      chunkIndex,
     });
-    const decodedStream = await maybeGunzipStream(rawStream);
-    let streamForDecode = decodedStream;
-    let chunkHashPromise: Promise<string> | null = null;
-
-    if (chunk.sha256) {
-      const [hashStream, decodeStream] = decodedStream.tee();
-      streamForDecode = decodeStream;
-      chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
-        computeSha256Hex(bytes, sha256Override)
-      );
-    }
-
-    const rowBatchIterator = decodeSnapshotRowStreamBatches(
-      streamForDecode,
-      SNAPSHOT_APPLY_BATCH_ROWS
-    );
-
-    let pendingBatch: unknown[] | null = null;
-    let applyError: unknown = null;
+    const chunkStartedAt = Date.now();
 
     try {
-      // eslint-disable-next-line no-await-in-loop
-      for await (const batch of rowBatchIterator) {
+      const rawStream = await fetchSnapshotChunkStream(transport, {
+        chunkId: chunk.id,
+        scopeValues,
+      });
+      const decodedStream = await maybeGunzipStream(rawStream);
+      let streamForDecode = decodedStream;
+      let chunkHashPromise: Promise<string> | null = null;
+
+      if (chunk.sha256) {
+        const [hashStream, decodeStream] = decodedStream.tee();
+        streamForDecode = decodeStream;
+        chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
+          computeSha256Hex(bytes, sha256Override)
+        );
+      }
+
+      const rowBatchIterator = decodeSnapshotRowStreamBatches(
+        streamForDecode,
+        SNAPSHOT_APPLY_BATCH_ROWS
+      );
+
+      let pendingBatch: unknown[] | null = null;
+      let applyError: unknown = null;
+      let chunkRowCount = 0;
+
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        for await (const batch of rowBatchIterator) {
+          chunkRowCount += batch.length;
+          if (pendingBatch) {
+            // eslint-disable-next-line no-await-in-loop
+            await handler.applySnapshot(
+              { trx },
+              {
+                ...snapshot,
+                rows: pendingBatch,
+                chunks: undefined,
+                isFirstPage: nextIsFirstPage,
+                isLastPage: false,
+              }
+            );
+            nextIsFirstPage = false;
+          }
+          pendingBatch = batch;
+        }
+
         if (pendingBatch) {
+          const isLastChunk = chunkIndex === chunks.length - 1;
           // eslint-disable-next-line no-await-in-loop
           await handler.applySnapshot(
             { trx },
@@ -509,51 +624,57 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
               rows: pendingBatch,
               chunks: undefined,
               isFirstPage: nextIsFirstPage,
-              isLastPage: false,
+              isLastPage: isLastChunk ? snapshot.isLastPage : false,
             }
           );
           nextIsFirstPage = false;
         }
-        pendingBatch = batch;
+      } catch (error) {
+        applyError = error;
       }
 
-      if (pendingBatch) {
-        const isLastChunk = chunkIndex === chunks.length - 1;
-        // eslint-disable-next-line no-await-in-loop
-        await handler.applySnapshot(
-          { trx },
-          {
-            ...snapshot,
-            rows: pendingBatch,
-            chunks: undefined,
-            isFirstPage: nextIsFirstPage,
-            isLastPage: isLastChunk ? snapshot.isLastPage : false,
+      if (chunkHashPromise) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const actualHash = await chunkHashPromise;
+          if (!applyError && actualHash !== chunk.sha256) {
+            applyError = new Error(
+              `Snapshot chunk integrity check failed: expected sha256 ${chunk.sha256}, got ${actualHash}`
+            );
           }
-        );
-        nextIsFirstPage = false;
+        } catch (hashError) {
+          if (!applyError) {
+            applyError = hashError;
+          }
+        }
       }
+
+      if (applyError) {
+        throw applyError;
+      }
+
+      emitTrace(trace?.onTrace, {
+        stage: 'apply:chunk-materialize:complete',
+        stateId: trace?.stateId,
+        subscriptionId: trace?.subscriptionId,
+        table: snapshot.table,
+        chunkId: chunk.id,
+        chunkIndex,
+        rowCount: chunkRowCount,
+        durationMs: Math.max(0, Date.now() - chunkStartedAt),
+      });
     } catch (error) {
-      applyError = error;
-    }
-
-    if (chunkHashPromise) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        const actualHash = await chunkHashPromise;
-        if (!applyError && actualHash !== chunk.sha256) {
-          applyError = new Error(
-            `Snapshot chunk integrity check failed: expected sha256 ${chunk.sha256}, got ${actualHash}`
-          );
-        }
-      } catch (hashError) {
-        if (!applyError) {
-          applyError = hashError;
-        }
-      }
-    }
-
-    if (applyError) {
-      throw applyError;
+      emitTrace(trace?.onTrace, {
+        stage: 'apply:chunk-materialize:error',
+        stateId: trace?.stateId,
+        subscriptionId: trace?.subscriptionId,
+        table: snapshot.table,
+        chunkId: chunk.id,
+        chunkIndex,
+        durationMs: Math.max(0, Date.now() - chunkStartedAt),
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   }
 }
@@ -784,6 +905,8 @@ export interface SyncPullOnceOptions {
    * Must return the hex-encoded hash string.
    */
   sha256?: (bytes: Uint8Array) => Promise<string>;
+  /** Optional structured tracing hook for pull/apply lifecycle diagnostics. */
+  onTrace?: (event: SyncTraceEvent) => void;
 }
 
 export interface SyncPullRequestState {
@@ -792,6 +915,39 @@ export interface SyncPullRequestState {
   existingById: Map<string, SyncSubscriptionStateTable>;
   stateId: string;
   configuredSubscriptions: SyncClientSubscription[];
+}
+
+function emitTrace(
+  onTrace: SyncPullOnceOptions['onTrace'],
+  event: Omit<SyncTraceEvent, 'timestamp'>
+): void {
+  onTrace?.({
+    timestamp: Date.now(),
+    ...event,
+  });
+}
+
+function countSubscriptionRows(
+  subscription: SyncPullSubscriptionResponse
+): number | undefined {
+  if (!subscription.bootstrap) return undefined;
+  const snapshots = subscription.snapshots ?? [];
+  if (snapshots.length === 0) return 0;
+  return snapshots.reduce(
+    (sum, snapshot) => sum + (snapshot.rows?.length ?? 0),
+    0
+  );
+}
+
+function countSubscriptionChunks(
+  subscription: SyncPullSubscriptionResponse
+): number | undefined {
+  if (!subscription.bootstrap) return undefined;
+  const snapshots = subscription.snapshots ?? [];
+  return snapshots.reduce(
+    (sum, snapshot) => sum + (snapshot.chunks?.length ?? 0),
+    0
+  );
 }
 
 /**
@@ -997,7 +1153,15 @@ export async function applyPullResponse<DB extends SyncClientDb>(
   );
 
   let responseToApply = requiresMaterializedSnapshots
-    ? await materializeChunkedSnapshots(transport, rawResponse, options.sha256)
+    ? await materializeChunkedSnapshots(
+        transport,
+        rawResponse,
+        options.sha256,
+        {
+          stateId,
+          onTrace: options.onTrace,
+        }
+      )
     : rawResponse;
   for (const plugin of plugins) {
     if (!plugin.afterPull) continue;
@@ -1022,34 +1186,92 @@ export async function applyPullResponse<DB extends SyncClientDb>(
 
   if (bootstrapApplyMode === 'per-subscription') {
     for (const sub of responseToApply.subscriptions) {
-      await db.transaction().execute(async (trx) => {
-        await applySubscriptionResponse({
-          trx,
-          handlers,
-          transport,
-          options,
-          stateId,
-          existingById,
-          subsById,
-          sub,
-        });
+      emitTrace(options.onTrace, {
+        stage: 'apply:transaction:start',
+        stateId,
+        transactionMode: bootstrapApplyMode,
+        subscriptionIds: [sub.id],
+        subscriptionCount: 1,
       });
+      const transactionStartedAt = Date.now();
+      try {
+        await db.transaction().execute(async (trx) => {
+          await applySubscriptionResponse({
+            trx,
+            handlers,
+            transport,
+            options,
+            stateId,
+            existingById,
+            subsById,
+            sub,
+          });
+        });
+        emitTrace(options.onTrace, {
+          stage: 'apply:transaction:complete',
+          stateId,
+          transactionMode: bootstrapApplyMode,
+          subscriptionIds: [sub.id],
+          subscriptionCount: 1,
+          durationMs: Math.max(0, Date.now() - transactionStartedAt),
+        });
+      } catch (error) {
+        emitTrace(options.onTrace, {
+          stage: 'apply:transaction:error',
+          stateId,
+          transactionMode: bootstrapApplyMode,
+          subscriptionIds: [sub.id],
+          subscriptionCount: 1,
+          durationMs: Math.max(0, Date.now() - transactionStartedAt),
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     }
   } else {
-    await db.transaction().execute(async (trx) => {
-      for (const sub of responseToApply.subscriptions) {
-        await applySubscriptionResponse({
-          trx,
-          handlers,
-          transport,
-          options,
-          stateId,
-          existingById,
-          subsById,
-          sub,
-        });
-      }
+    emitTrace(options.onTrace, {
+      stage: 'apply:transaction:start',
+      stateId,
+      transactionMode: bootstrapApplyMode,
+      subscriptionIds: responseToApply.subscriptions.map((sub) => sub.id),
+      subscriptionCount: responseToApply.subscriptions.length,
     });
+    const transactionStartedAt = Date.now();
+    try {
+      await db.transaction().execute(async (trx) => {
+        for (const sub of responseToApply.subscriptions) {
+          await applySubscriptionResponse({
+            trx,
+            handlers,
+            transport,
+            options,
+            stateId,
+            existingById,
+            subsById,
+            sub,
+          });
+        }
+      });
+      emitTrace(options.onTrace, {
+        stage: 'apply:transaction:complete',
+        stateId,
+        transactionMode: bootstrapApplyMode,
+        subscriptionIds: responseToApply.subscriptions.map((sub) => sub.id),
+        subscriptionCount: responseToApply.subscriptions.length,
+        durationMs: Math.max(0, Date.now() - transactionStartedAt),
+      });
+    } catch (error) {
+      emitTrace(options.onTrace, {
+        stage: 'apply:transaction:error',
+        stateId,
+        transactionMode: bootstrapApplyMode,
+        subscriptionIds: responseToApply.subscriptions.map((sub) => sub.id),
+        subscriptionCount: responseToApply.subscriptions.length,
+        durationMs: Math.max(0, Date.now() - transactionStartedAt),
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   return responseToApply;
@@ -1183,146 +1405,223 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
     effectiveCursor !== null &&
     sub.nextCursor < effectiveCursor;
 
+  const applyStartedAt = Date.now();
+  emitTrace(options.onTrace, {
+    stage: 'apply:subscription:start',
+    stateId,
+    subscriptionId: sub.id,
+    table: def?.table ?? prev?.table,
+    bootstrap: sub.bootstrap,
+    snapshotCount: sub.snapshots?.length ?? 0,
+    commitCount: sub.commits?.length ?? 0,
+    chunkCount: countSubscriptionChunks(sub),
+    rowCount: countSubscriptionRows(sub),
+    nextCursor: sub.nextCursor,
+  });
+
   if (staleIncrementalResponse) {
+    emitTrace(options.onTrace, {
+      stage: 'apply:subscription:complete',
+      stateId,
+      subscriptionId: sub.id,
+      table: def?.table ?? prev?.table,
+      bootstrap: sub.bootstrap,
+      snapshotCount: sub.snapshots?.length ?? 0,
+      commitCount: sub.commits?.length ?? 0,
+      chunkCount: countSubscriptionChunks(sub),
+      rowCount: countSubscriptionRows(sub),
+      nextCursor: sub.nextCursor,
+      durationMs: Math.max(0, Date.now() - applyStartedAt),
+    });
     return;
   }
 
-  if (sub.status === 'revoked') {
-    if (prev?.table) {
+  try {
+    if (sub.status === 'revoked') {
+      if (prev?.table) {
+        try {
+          const scopes = parseScopeValuesJson(prev.scopes_json);
+          await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+            trx,
+            scopes,
+          });
+        } catch {
+          // ignore missing handler
+        }
+      }
+
+      await sql`
+        delete from ${sql.table('sync_subscription_state')}
+        where ${sql.ref('state_id')} = ${sql.val(stateId)}
+          and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
+      `.execute(trx);
+      emitTrace(options.onTrace, {
+        stage: 'apply:subscription:complete',
+        stateId,
+        subscriptionId: sub.id,
+        table: def?.table ?? prev?.table,
+        bootstrap: sub.bootstrap,
+        snapshotCount: sub.snapshots?.length ?? 0,
+        commitCount: sub.commits?.length ?? 0,
+        chunkCount: countSubscriptionChunks(sub),
+        rowCount: countSubscriptionRows(sub),
+        nextCursor: null,
+        durationMs: Math.max(0, Date.now() - applyStartedAt),
+      });
+      return;
+    }
+
+    const nextScopes = sub.scopes ?? def?.scopes ?? {};
+    const previousScopes = parseScopeValuesJson(prev?.scopes_json);
+    const scopesChanged = !scopeValuesEqual(previousScopes, nextScopes);
+
+    if (sub.bootstrap && prev?.table && scopesChanged) {
       try {
-        const scopes = parseScopeValuesJson(prev.scopes_json);
-        await getClientHandlerOrThrow(handlers, prev.table).clearAll({
-          trx,
-          scopes,
-        });
+        const clearScopes = resolveBootstrapClearScopes(
+          previousScopes,
+          nextScopes
+        );
+        if (clearScopes !== 'none') {
+          await getClientHandlerOrThrow(handlers, prev.table).clearAll({
+            trx,
+            scopes: clearScopes ?? previousScopes,
+          });
+        }
       } catch {
         // ignore missing handler
       }
     }
 
+    if (sub.bootstrap) {
+      for (const snapshot of sub.snapshots ?? []) {
+        const handler = getClientHandlerOrThrow(handlers, snapshot.table);
+        const hasChunkRefs =
+          Array.isArray(snapshot.chunks) && snapshot.chunks.length > 0;
+
+        if (snapshot.isFirstPage && handler.onSnapshotStart) {
+          await handler.onSnapshotStart({
+            trx,
+            table: snapshot.table,
+            scopes: sub.scopes,
+          });
+        }
+
+        if (hasChunkRefs) {
+          await applyChunkedSnapshot(
+            transport,
+            handler,
+            trx,
+            snapshot,
+            sub.scopes,
+            options.sha256,
+            {
+              stateId,
+              subscriptionId: sub.id,
+              onTrace: options.onTrace,
+            }
+          );
+        } else {
+          await handler.applySnapshot({ trx }, snapshot);
+        }
+
+        if (snapshot.isLastPage && handler.onSnapshotEnd) {
+          await handler.onSnapshotEnd({
+            trx,
+            table: snapshot.table,
+            scopes: sub.scopes,
+          });
+        }
+      }
+    } else {
+      for (const commit of sub.commits) {
+        await applyIncrementalCommitChanges(handlers, trx, {
+          changes: commit.changes,
+          commitSeq: commit.commitSeq ?? null,
+          actorId: commit.actorId ?? null,
+          createdAt: commit.createdAt ?? null,
+        });
+      }
+    }
+
+    const now = Date.now();
+    const paramsJson = serializeJsonCached(def?.params ?? {});
+    const scopesJson = serializeJsonCached(nextScopes);
+    const bootstrapStateJson = sub.bootstrap
+      ? sub.bootstrapState
+        ? serializeJsonCached(sub.bootstrapState)
+        : null
+      : null;
+    const table = def?.table ?? 'unknown';
+
     await sql`
-      delete from ${sql.table('sync_subscription_state')}
-      where ${sql.ref('state_id')} = ${sql.val(stateId)}
-        and ${sql.ref('subscription_id')} = ${sql.val(sub.id)}
+      insert into ${sql.table('sync_subscription_state')} (
+        ${sql.join([
+          sql.ref('state_id'),
+          sql.ref('subscription_id'),
+          sql.ref('table'),
+          sql.ref('scopes_json'),
+          sql.ref('params_json'),
+          sql.ref('cursor'),
+          sql.ref('bootstrap_state_json'),
+          sql.ref('status'),
+          sql.ref('created_at'),
+          sql.ref('updated_at'),
+        ])}
+      ) values (
+        ${sql.join([
+          sql.val(stateId),
+          sql.val(sub.id),
+          sql.val(table),
+          sql.val(scopesJson),
+          sql.val(paramsJson),
+          sql.val(sub.nextCursor),
+          sql.val(bootstrapStateJson),
+          sql.val('active'),
+          sql.val(now),
+          sql.val(now),
+        ])}
+      )
+      on conflict (${sql.join([sql.ref('state_id'), sql.ref('subscription_id')])})
+      do update set
+        ${sql.ref('table')} = ${sql.val(table)},
+        ${sql.ref('scopes_json')} = ${sql.val(scopesJson)},
+        ${sql.ref('params_json')} = ${sql.val(paramsJson)},
+        ${sql.ref('cursor')} = ${sql.val(sub.nextCursor)},
+        ${sql.ref('bootstrap_state_json')} = ${sql.val(bootstrapStateJson)},
+        ${sql.ref('status')} = ${sql.val('active')},
+        ${sql.ref('updated_at')} = ${sql.val(now)}
     `.execute(trx);
-    return;
+
+    emitTrace(options.onTrace, {
+      stage: 'apply:subscription:complete',
+      stateId,
+      subscriptionId: sub.id,
+      table,
+      bootstrap: sub.bootstrap,
+      snapshotCount: sub.snapshots?.length ?? 0,
+      commitCount: sub.commits?.length ?? 0,
+      chunkCount: countSubscriptionChunks(sub),
+      rowCount: countSubscriptionRows(sub),
+      nextCursor: sub.nextCursor,
+      durationMs: Math.max(0, Date.now() - applyStartedAt),
+    });
+  } catch (error) {
+    emitTrace(options.onTrace, {
+      stage: 'apply:subscription:error',
+      stateId,
+      subscriptionId: sub.id,
+      table: def?.table ?? prev?.table,
+      bootstrap: sub.bootstrap,
+      snapshotCount: sub.snapshots?.length ?? 0,
+      commitCount: sub.commits?.length ?? 0,
+      chunkCount: countSubscriptionChunks(sub),
+      rowCount: countSubscriptionRows(sub),
+      nextCursor: sub.nextCursor,
+      durationMs: Math.max(0, Date.now() - applyStartedAt),
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-
-  const nextScopes = sub.scopes ?? def?.scopes ?? {};
-  const previousScopes = parseScopeValuesJson(prev?.scopes_json);
-  const scopesChanged = !scopeValuesEqual(previousScopes, nextScopes);
-
-  if (sub.bootstrap && prev?.table && scopesChanged) {
-    try {
-      const clearScopes = resolveBootstrapClearScopes(
-        previousScopes,
-        nextScopes
-      );
-      if (clearScopes !== 'none') {
-        await getClientHandlerOrThrow(handlers, prev.table).clearAll({
-          trx,
-          scopes: clearScopes ?? previousScopes,
-        });
-      }
-    } catch {
-      // ignore missing handler
-    }
-  }
-
-  if (sub.bootstrap) {
-    for (const snapshot of sub.snapshots ?? []) {
-      const handler = getClientHandlerOrThrow(handlers, snapshot.table);
-      const hasChunkRefs =
-        Array.isArray(snapshot.chunks) && snapshot.chunks.length > 0;
-
-      if (snapshot.isFirstPage && handler.onSnapshotStart) {
-        await handler.onSnapshotStart({
-          trx,
-          table: snapshot.table,
-          scopes: sub.scopes,
-        });
-      }
-
-      if (hasChunkRefs) {
-        await applyChunkedSnapshot(
-          transport,
-          handler,
-          trx,
-          snapshot,
-          sub.scopes,
-          options.sha256
-        );
-      } else {
-        await handler.applySnapshot({ trx }, snapshot);
-      }
-
-      if (snapshot.isLastPage && handler.onSnapshotEnd) {
-        await handler.onSnapshotEnd({
-          trx,
-          table: snapshot.table,
-          scopes: sub.scopes,
-        });
-      }
-    }
-  } else {
-    for (const commit of sub.commits) {
-      await applyIncrementalCommitChanges(handlers, trx, {
-        changes: commit.changes,
-        commitSeq: commit.commitSeq ?? null,
-        actorId: commit.actorId ?? null,
-        createdAt: commit.createdAt ?? null,
-      });
-    }
-  }
-
-  const now = Date.now();
-  const paramsJson = serializeJsonCached(def?.params ?? {});
-  const scopesJson = serializeJsonCached(nextScopes);
-  const bootstrapStateJson = sub.bootstrap
-    ? sub.bootstrapState
-      ? serializeJsonCached(sub.bootstrapState)
-      : null
-    : null;
-  const table = def?.table ?? 'unknown';
-
-  await sql`
-    insert into ${sql.table('sync_subscription_state')} (
-      ${sql.join([
-        sql.ref('state_id'),
-        sql.ref('subscription_id'),
-        sql.ref('table'),
-        sql.ref('scopes_json'),
-        sql.ref('params_json'),
-        sql.ref('cursor'),
-        sql.ref('bootstrap_state_json'),
-        sql.ref('status'),
-        sql.ref('created_at'),
-        sql.ref('updated_at'),
-      ])}
-    ) values (
-      ${sql.join([
-        sql.val(stateId),
-        sql.val(sub.id),
-        sql.val(table),
-        sql.val(scopesJson),
-        sql.val(paramsJson),
-        sql.val(sub.nextCursor),
-        sql.val(bootstrapStateJson),
-        sql.val('active'),
-        sql.val(now),
-        sql.val(now),
-      ])}
-    )
-    on conflict (${sql.join([sql.ref('state_id'), sql.ref('subscription_id')])})
-    do update set
-      ${sql.ref('table')} = ${sql.val(table)},
-      ${sql.ref('scopes_json')} = ${sql.val(scopesJson)},
-      ${sql.ref('params_json')} = ${sql.val(paramsJson)},
-      ${sql.ref('cursor')} = ${sql.val(sub.nextCursor)},
-      ${sql.ref('bootstrap_state_json')} = ${sql.val(bootstrapStateJson)},
-      ${sql.ref('status')} = ${sql.val('active')},
-      ${sql.ref('updated_at')} = ${sql.val(now)}
-  `.execute(trx);
 }
 
 export async function syncPullOnce<DB extends SyncClientDb>(
@@ -1334,10 +1633,48 @@ export async function syncPullOnce<DB extends SyncClientDb>(
 ): Promise<SyncPullResponse> {
   const pullState = pullStateOverride ?? (await buildPullRequest(db, options));
   const { clientId, ...pullBody } = pullState.request;
-  const combined = await transport.sync({ clientId, pull: pullBody });
+  emitTrace(options.onTrace, {
+    stage: 'pull:start',
+    stateId: pullState.stateId,
+    subscriptionIds: pullState.request.subscriptions.map(
+      (subscription) => subscription.id
+    ),
+    subscriptionCount: pullState.request.subscriptions.length,
+  });
+  let combined: SyncCombinedResponse;
+  try {
+    combined = await transport.sync({ clientId, pull: pullBody });
+  } catch (error) {
+    emitTrace(options.onTrace, {
+      stage: 'pull:error',
+      stateId: pullState.stateId,
+      subscriptionIds: pullState.request.subscriptions.map(
+        (subscription) => subscription.id
+      ),
+      subscriptionCount: pullState.request.subscriptions.length,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
   if (!combined.pull) {
     return { ok: true, subscriptions: [] };
   }
+  emitTrace(options.onTrace, {
+    stage: 'pull:response',
+    stateId: pullState.stateId,
+    subscriptionIds: combined.pull.subscriptions.map(
+      (subscription) => subscription.id
+    ),
+    subscriptionCount: combined.pull.subscriptions.length,
+    commitCount: combined.pull.subscriptions.reduce(
+      (sum, subscription) => sum + (subscription.commits?.length ?? 0),
+      0
+    ),
+    snapshotCount: combined.pull.subscriptions.reduce(
+      (sum, subscription) => sum + (subscription.snapshots?.length ?? 0),
+      0
+    ),
+  });
   return applyPullResponse(
     db,
     transport,

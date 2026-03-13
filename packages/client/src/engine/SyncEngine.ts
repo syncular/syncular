@@ -1751,6 +1751,18 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
     }
   }
 
+  private shouldTrace(): boolean {
+    return (
+      this.config.traceEnabled === true ||
+      (this.listeners.get('sync:trace')?.size ?? 0) > 0
+    );
+  }
+
+  private emitTrace(payload: SyncEventPayloads['sync:trace']): void {
+    if (!this.shouldTrace()) return;
+    this.emit('sync:trace', payload);
+  }
+
   private updateState(partial: Partial<SyncEngineState>): void {
     const nextState = { ...this.state, ...partial };
     const unchanged =
@@ -2043,6 +2055,7 @@ export class SyncEngine<DB extends SyncClientDb = SyncClientDb> {
               dedupeRows: this.config.dedupeRows,
               stateId: this.config.stateId,
               sha256: this.config.sha256,
+              onTrace: (event) => this.emitTrace(event),
               trigger,
               allowSkipPullOnLocalWsPush:
                 this.state.transportMode === 'realtime',

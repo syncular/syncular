@@ -225,6 +225,70 @@ describe('SyncEngine WS inline apply', () => {
     expect(snapshot.diagnostics).toBeDefined();
   });
 
+  it('emits structured pull/apply trace events when tracing is enabled', async () => {
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const transport: SyncTransport = {
+      async sync() {
+        return {
+          pull: {
+            ok: true,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                status: 'active',
+                table: 'tasks',
+                scopes: {},
+                bootstrap: false,
+                commits: [],
+                snapshots: [],
+                nextCursor: 0,
+              },
+            ],
+          },
+        };
+      },
+    };
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-trace',
+      subscriptions: [{ id: 'sub-1', table: 'tasks', scopes: {} }],
+      stateId: 'default',
+      traceEnabled: true,
+    });
+
+    const stages: string[] = [];
+    engine.on('sync:trace', (payload) => {
+      stages.push(payload.stage);
+    });
+
+    await engine.start();
+
+    expect(stages).toContain('pull:start');
+    expect(stages).toContain('pull:response');
+    expect(stages).toContain('apply:transaction:start');
+    expect(stages).toContain('apply:transaction:complete');
+    expect(stages).toContain('apply:subscription:start');
+    expect(stages).toContain('apply:subscription:complete');
+
+    const snapshot = await engine.getInspectorSnapshot({ eventLimit: 50 });
+    const traceEvents = snapshot.recentEvents.filter(
+      (event) => event.event === 'sync:trace'
+    );
+    expect(traceEvents.length).toBeGreaterThan(0);
+  });
+
   it('coalesces rapid data:change emissions when debounce is configured', async () => {
     const handlers: ClientHandlerCollection<TestDb> = [
       {
