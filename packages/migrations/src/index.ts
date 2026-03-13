@@ -1,7 +1,7 @@
 /**
  * @syncular/migrations - Versioned migration system
  *
- * Provides migration definition, tracking, and execution.
+ * Provides migration definition, tracking, naming, and execution.
  */
 
 export * from './define';
