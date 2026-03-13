@@ -23,12 +23,12 @@ import type {
   OutboxStats,
   PresenceEntry,
   PushResultInfo,
-  SyncClientSubscription,
-  SyncBootstrapStatus,
-  SyncBootstrapStatusOptions,
   SubscriptionProgress,
   SyncAwaitBootstrapOptions,
   SyncAwaitPhaseOptions,
+  SyncBootstrapStatus,
+  SyncBootstrapStatusOptions,
+  SyncClientSubscription,
   SyncDiagnostics,
   SyncEngineState,
   SyncInspectorOptions,
@@ -421,9 +421,7 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
   /**
    * Update subscriptions.
    */
-  updateSubscriptions(
-    subscriptions: SyncClientSubscription[]
-  ): void {
+  updateSubscriptions(subscriptions: SyncClientSubscription[]): void {
     this.options.subscriptions = subscriptions;
     if (this.engine) {
       this.engine.updateSubscriptions(

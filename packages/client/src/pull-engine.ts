@@ -598,7 +598,10 @@ function isSubscriptionReady(
 function isSubscriptionBootstrapping(
   row: SyncSubscriptionStateTable | undefined
 ): boolean {
-  return row?.status === 'active' && parseBootstrapState(row.bootstrap_state_json) !== null;
+  return (
+    row?.status === 'active' &&
+    parseBootstrapState(row.bootstrap_state_json) !== null
+  );
 }
 
 function resolveActiveBootstrapPhase(
