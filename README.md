@@ -71,6 +71,10 @@ React Native / Expo clients should use the `createReactNativeHttpTransport(...)`
 preset from `@syncular/transport-http` so snapshot fetch, gzip handling, and
 bootstrap apply strategy are tuned for Hermes-style runtimes.
 
+If your server runtime is Neon-backed, pair `@syncular/dialect-neon` with
+`createNeonServerDialect()` from `@syncular/server-dialect-postgres` (or
+`syncular/server-dialect-neon` when using the umbrella package).
+
 If startup-critical data should bootstrap before large background tables, assign
 `bootstrapPhase` on client subscriptions. Lower phases bootstrap first, while
 later phases stay deferred until earlier phases are ready.
@@ -148,7 +152,8 @@ Mix and match any client dialect with any server dialect. The sync protocol is t
 
 | Dialect / runtime | Use case | Package |
 |---|---|---|
-| Postgres / Neon | Production (Node, Bun, Workers, …) | `@syncular/server-dialect-postgres` |
+| Postgres | Production (Node, Bun, Workers, …) | `@syncular/server-dialect-postgres` |
+| Neon-backed Postgres | Production serverless / edge runtimes | `@syncular/server-dialect-postgres` via `createNeonServerDialect()` |
 | SQLite | Dev / testing | `@syncular/server-dialect-sqlite` |
 | Cloudflare Worker + D1 | Cloudflare Workers (HTTP only) | `@syncular/server-cloudflare` |
 | Cloudflare Durable Object + D1 | Cloudflare Workers + WebSocket realtime | `@syncular/server-cloudflare` |

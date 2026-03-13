@@ -23,13 +23,20 @@ npm install @syncular/client @syncular/client-react @syncular/transport-http
 npm install @syncular/dialect-wa-sqlite kysely
 ```
 
+For Neon-backed server runtimes:
+
+```bash
+npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install @syncular/dialect-neon hono
+```
+
 ## Server packages
 
 | Package | Description |
 |---------|-------------|
 | `@syncular/server` | Core sync engine (push, pull, pruning, compaction) |
 | `@syncular/server-hono` | Hono adapter with HTTP routes, WebSocket, and console |
-| `@syncular/server-dialect-postgres` | Postgres dialect for sync SQL |
+| `@syncular/server-dialect-postgres` | Postgres and Neon-backed Postgres dialect for sync SQL (`createPostgresServerDialect()` / `createNeonServerDialect()`) |
 | `@syncular/server-dialect-sqlite` | SQLite dialect for sync SQL |
 | `@syncular/server-cloudflare` | Cloudflare Workers + Durable Objects adapter |
 
@@ -82,7 +89,7 @@ Choose one based on your runtime:
 - Building for Node scripts? Use **better-sqlite3** (or **sqlite3** if you already use `node-sqlite3`)
 - Building for Electron with DB access in main process? Use **dialect-electron-sqlite**
 - Building for Expo? Use **dialect-expo-sqlite** (or **Nitro SQLite** for non-Expo RN)
-- Deploying on Cloudflare? Use **D1** (client) or **Neon** (Postgres)
+- Deploying on Cloudflare or another edge runtime with Postgres? Use **Neon** plus `createNeonServerDialect()`
 
 ## Optional packages
 
