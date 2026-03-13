@@ -2,7 +2,10 @@
  * @syncular/migrations - Migration runner
  */
 
-import { getMigrationChecksum } from './define';
+import {
+  getCompatibleMigrationChecksums,
+  getMigrationChecksum,
+} from './define';
 import { DEFAULT_MIGRATION_TRACKING_TABLE } from './naming';
 import {
   clearAppliedMigrations,
@@ -133,7 +136,9 @@ export async function runMigrationsToVersion<DB>(
       const hasMismatch = migrations.migrations.some((migration) => {
         const existing = appliedByVersion.get(migration.version);
         if (!existing) return false;
-        return getMigrationChecksum(migration) !== existing.checksum;
+        return !getCompatibleMigrationChecksums(migration).includes(
+          existing.checksum
+        );
       });
 
       if (hasMismatch) {
@@ -155,7 +160,8 @@ export async function runMigrationsToVersion<DB>(
         continue;
       }
       const currentChecksum = getMigrationChecksum(migration);
-      if (currentChecksum !== existing.checksum) {
+      const compatibleChecksums = getCompatibleMigrationChecksums(migration);
+      if (!compatibleChecksums.includes(existing.checksum)) {
         throw new Error(
           `Migration v${migration.version} (${migration.name}) has changed since it was applied. ` +
             `Stored checksum ${existing.checksum} is not compatible with current checksum ${currentChecksum}. ` +
