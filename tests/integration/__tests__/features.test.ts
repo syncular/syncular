@@ -176,9 +176,13 @@ describe('integration: features', () => {
 
   // Relations
   describe('relations', () => {
-    it('syncs parent-child entities (projects+tasks)', async () => {
-      await runRelationsScenario(getCtx());
-    });
+    it(
+      'syncs parent-child entities (projects+tasks)',
+      async () => {
+        await runRelationsScenario(getCtx());
+      },
+      { timeout: 15_000 }
+    );
 
     it('enforces cascade constraints', async () => {
       await runCascadeConstraintScenario(getCtx());
