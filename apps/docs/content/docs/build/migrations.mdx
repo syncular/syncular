@@ -191,7 +191,11 @@ The recommended approach is to use `@syncular/migrations` for tracked, versioned
 
 ```typescript
 import { dropClientSyncSchema, ensureClientSyncSchema } from '@syncular/client';
-import { defineMigrations, runMigrations } from '@syncular/migrations';
+import {
+  createMigrationTrackingTableName,
+  defineMigrations,
+  runMigrations,
+} from '@syncular/migrations';
 
 const clientMigrations = defineMigrations<MyDb>({
   v1: async (db) => {
@@ -215,6 +219,7 @@ async function migrateClientDb(db: Kysely<MyDb>) {
   await runMigrations({
     db,
     migrations: clientMigrations,
+    trackingTable: createMigrationTrackingTableName(['notes', 'client']),
     onChecksumMismatch: 'reset',
     beforeReset: async (db) => {
       await db.schema.dropTable('notes').ifExists().execute();
@@ -224,6 +229,11 @@ async function migrateClientDb(db: Kysely<MyDb>) {
   });
 }
 ```
+
+If you need a custom tracking table, prefer
+`createMigrationTrackingTableName(...)` over hand-written string literals. It
+normalizes names to lowercase snake_case and keeps the `migration_state`
+suffix consistent.
 
 #### Checksum mismatch handling
 

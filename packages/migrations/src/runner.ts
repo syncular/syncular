@@ -3,6 +3,7 @@
  */
 
 import { getMigrationChecksum } from './define';
+import { DEFAULT_MIGRATION_TRACKING_TABLE } from './naming';
 import {
   clearAppliedMigrations,
   ensureTrackingTable,
@@ -17,7 +18,6 @@ import type {
   RunMigrationsToVersionResult,
 } from './types';
 
-const DEFAULT_TRACKING_TABLE = 'sync_migration_state';
 const migrationRunQueues = new Map<string, Promise<void>>();
 
 function toErrorMessage(error: unknown): string {
@@ -98,7 +98,8 @@ export async function runMigrationsToVersion<DB>(
   options: RunMigrationsToVersionOptions<DB>
 ): Promise<RunMigrationsToVersionResult> {
   const { db, migrations, targetVersion } = options;
-  const trackingTable = options.trackingTable ?? DEFAULT_TRACKING_TABLE;
+  const trackingTable =
+    options.trackingTable ?? DEFAULT_MIGRATION_TRACKING_TABLE;
   const onChecksumMismatch = options.onChecksumMismatch ?? 'error';
   const beforeReset = options.beforeReset;
   if (!Number.isInteger(targetVersion) || targetVersion < 0) {
@@ -249,7 +250,7 @@ export async function getSchemaVersion<DB>(
   db: import('kysely').Kysely<DB>,
   trackingTable?: string
 ): Promise<number> {
-  const tableName = trackingTable ?? DEFAULT_TRACKING_TABLE;
+  const tableName = trackingTable ?? DEFAULT_MIGRATION_TRACKING_TABLE;
   const applied = await getAppliedMigrations(db, tableName);
   if (applied.length === 0) return 0;
   return applied[applied.length - 1]!.version;
