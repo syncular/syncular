@@ -147,7 +147,17 @@ export interface ClientState {
   /** Last successful sync timestamp */
   lastSyncAt: number | null;
   /** Current error if any */
-  error: { code: string; message: string } | null;
+  error: {
+    code: string;
+    message: string;
+    stage?: string;
+    retryable?: boolean;
+    httpStatus?: number;
+    subscriptionId?: string;
+    chunkId?: string;
+    table?: string;
+    stateId?: string;
+  } | null;
   /** Outbox statistics */
   outbox: OutboxStats;
 }
@@ -198,7 +208,17 @@ type ClientEventPayloads = {
   'sync:complete': SyncResult;
   'sync:trace': SyncTraceEvent;
   'sync:live': { timestamp: number };
-  'sync:error': { code: string; message: string };
+  'sync:error': {
+    code: string;
+    message: string;
+    stage?: string;
+    retryable?: boolean;
+    httpStatus?: number;
+    subscriptionId?: string;
+    chunkId?: string;
+    table?: string;
+    stateId?: string;
+  };
   'push:result': PushResultInfo;
   'bootstrap:start': {
     timestamp: number;
@@ -498,7 +518,17 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
       connectionState: engineState.connectionState,
       lastSyncAt: engineState.lastSyncAt,
       error: engineState.error
-        ? { code: engineState.error.code, message: engineState.error.message }
+        ? {
+            code: engineState.error.code,
+            message: engineState.error.message,
+            stage: engineState.error.stage,
+            retryable: engineState.error.retryable,
+            httpStatus: engineState.error.httpStatus,
+            subscriptionId: engineState.error.subscriptionId,
+            chunkId: engineState.error.chunkId,
+            table: engineState.error.table,
+            stateId: engineState.error.stateId,
+          }
         : null,
       outbox: this.outboxStats,
     };
@@ -972,7 +1002,17 @@ export class Client<DB extends SyncClientDb = SyncClientDb> {
     });
 
     this.engine.on('sync:error', (error) => {
-      this.emit('sync:error', { code: error.code, message: error.message });
+      this.emit('sync:error', {
+        code: error.code,
+        message: error.message,
+        stage: error.stage,
+        retryable: error.retryable,
+        httpStatus: error.httpStatus,
+        subscriptionId: error.subscriptionId,
+        chunkId: error.chunkId,
+        table: error.table,
+        stateId: error.stateId,
+      });
     });
 
     this.engine.on('push:result', (payload) => {

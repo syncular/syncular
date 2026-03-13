@@ -21,6 +21,7 @@ import {
 } from '@syncular/core';
 import { type Kysely, sql, type Transaction } from 'kysely';
 import type { SyncClientSubscription, SyncTraceEvent } from './engine/types';
+import { SyncClientStageError, wrapSyncClientStageError } from './errors';
 import {
   type ClientHandlerCollection,
   getClientHandlerOrThrow,
@@ -94,7 +95,13 @@ function toOwnedUint8Array(chunk: Uint8Array): Uint8Array<ArrayBuffer> {
 }
 
 async function maybeGunzipStream(
-  stream: ReadableStream<Uint8Array>
+  stream: ReadableStream<Uint8Array>,
+  context?: {
+    stateId?: string;
+    subscriptionId?: string;
+    table?: string;
+    chunkId?: string;
+  }
 ): Promise<ReadableStream<Uint8Array>> {
   const reader = stream.getReader();
   const prefetched: Uint8Array[] = [];
@@ -140,7 +147,20 @@ async function maybeGunzipStream(
   }
 
   const compressedBytes = await readAllBytesFromCoreStream(replayStream);
-  return bytesToReadableStream(await gunzipBytes(compressedBytes));
+  try {
+    return bytesToReadableStream(await gunzipBytes(compressedBytes));
+  } catch (error) {
+    throw wrapSyncClientStageError(
+      error,
+      {
+        stage: 'snapshot-gzip-decode',
+        ...context,
+      },
+      `Failed to gunzip snapshot chunk${
+        context?.chunkId ? ` "${context.chunkId}"` : ''
+      }`
+    );
+  }
 }
 
 async function* decodeSnapshotRowStreamBatches(
@@ -281,13 +301,30 @@ async function fetchSnapshotChunkStream(
   request: {
     chunkId: string;
     scopeValues?: ScopeValues;
+  },
+  context?: {
+    stateId?: string;
+    subscriptionId?: string;
+    table?: string;
   }
 ): Promise<ReadableStream<Uint8Array>> {
-  if (transport.fetchSnapshotChunkStream) {
-    return transport.fetchSnapshotChunkStream(request);
+  try {
+    if (transport.fetchSnapshotChunkStream) {
+      return await transport.fetchSnapshotChunkStream(request);
+    }
+    const bytes = await transport.fetchSnapshotChunk(request);
+    return bytesToReadableStream(bytes);
+  } catch (error) {
+    throw wrapSyncClientStageError(
+      error,
+      {
+        stage: 'snapshot-chunk-fetch',
+        chunkId: request.chunkId,
+        ...context,
+      },
+      `Failed to fetch snapshot chunk "${request.chunkId}"`
+    );
   }
-  const bytes = await transport.fetchSnapshotChunk(request);
-  return bytesToReadableStream(bytes);
 }
 
 async function readAllBytesFromStream(
@@ -359,17 +396,53 @@ async function materializeSnapshotChunkRows(
     try {
       let bytes = await transport.fetchSnapshotChunk(request);
       if (isGzipBytes(bytes)) {
-        bytes = await gunzipBytes(bytes);
+        try {
+          bytes = await gunzipBytes(bytes);
+        } catch (error) {
+          throw wrapSyncClientStageError(
+            error,
+            {
+              stage: 'snapshot-gzip-decode',
+              stateId: trace?.stateId,
+              subscriptionId: trace?.subscriptionId,
+              table: trace?.table,
+              chunkId: request.chunkId,
+            },
+            `Failed to gunzip snapshot chunk "${request.chunkId}"`
+          );
+        }
       }
       if (expectedHash) {
         const actualHash = await computeSha256Hex(bytes, sha256Override);
         if (actualHash !== expectedHash) {
-          throw new Error(
-            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
+          throw new SyncClientStageError(
+            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`,
+            {
+              stage: 'snapshot-integrity',
+              stateId: trace?.stateId,
+              subscriptionId: trace?.subscriptionId,
+              table: trace?.table,
+              chunkId: request.chunkId,
+            }
           );
         }
       }
-      const rows = decodeSnapshotRows(bytes);
+      let rows: unknown[];
+      try {
+        rows = decodeSnapshotRows(bytes);
+      } catch (error) {
+        throw wrapSyncClientStageError(
+          error,
+          {
+            stage: 'snapshot-chunk-decode',
+            stateId: trace?.stateId,
+            subscriptionId: trace?.subscriptionId,
+            table: trace?.table,
+            chunkId: request.chunkId,
+          },
+          `Failed to decode snapshot chunk "${request.chunkId}"`
+        );
+      }
       emitTrace(trace?.onTrace, {
         stage: 'apply:chunk-materialize:complete',
         stateId: trace?.stateId,
@@ -397,8 +470,17 @@ async function materializeSnapshotChunkRows(
   }
 
   try {
-    const rawStream = await fetchSnapshotChunkStream(transport, request);
-    const decodedStream = await maybeGunzipStream(rawStream);
+    const rawStream = await fetchSnapshotChunkStream(transport, request, {
+      stateId: trace?.stateId,
+      subscriptionId: trace?.subscriptionId,
+      table: trace?.table,
+    });
+    const decodedStream = await maybeGunzipStream(rawStream, {
+      stateId: trace?.stateId,
+      subscriptionId: trace?.subscriptionId,
+      table: trace?.table,
+      chunkId: request.chunkId,
+    });
     let streamForDecode = decodedStream;
     let chunkHashPromise: Promise<string> | null = null;
 
@@ -421,15 +503,32 @@ async function materializeSnapshotChunkRows(
         rows.push(...batch);
       }
     } catch (error) {
-      materializeError = error;
+      materializeError = wrapSyncClientStageError(
+        error,
+        {
+          stage: 'snapshot-chunk-decode',
+          stateId: trace?.stateId,
+          subscriptionId: trace?.subscriptionId,
+          table: trace?.table,
+          chunkId: request.chunkId,
+        },
+        `Failed to decode snapshot chunk "${request.chunkId}"`
+      );
     }
 
     if (chunkHashPromise) {
       try {
         const actualHash = await chunkHashPromise;
         if (!materializeError && actualHash !== expectedHash) {
-          materializeError = new Error(
-            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`
+          materializeError = new SyncClientStageError(
+            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`,
+            {
+              stage: 'snapshot-integrity',
+              stateId: trace?.stateId,
+              subscriptionId: trace?.subscriptionId,
+              table: trace?.table,
+              chunkId: request.chunkId,
+            }
           );
         }
       } catch (hashError) {
@@ -568,11 +667,24 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
     const chunkStartedAt = Date.now();
 
     try {
-      const rawStream = await fetchSnapshotChunkStream(transport, {
+      const rawStream = await fetchSnapshotChunkStream(
+        transport,
+        {
+          chunkId: chunk.id,
+          scopeValues,
+        },
+        {
+          stateId: trace?.stateId,
+          subscriptionId: trace?.subscriptionId,
+          table: snapshot.table,
+        }
+      );
+      const decodedStream = await maybeGunzipStream(rawStream, {
+        stateId: trace?.stateId,
+        subscriptionId: trace?.subscriptionId,
+        table: snapshot.table,
         chunkId: chunk.id,
-        scopeValues,
       });
-      const decodedStream = await maybeGunzipStream(rawStream);
       let streamForDecode = decodedStream;
       let chunkHashPromise: Promise<string> | null = null;
 
@@ -599,16 +711,30 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
           chunkRowCount += batch.length;
           if (pendingBatch) {
             // eslint-disable-next-line no-await-in-loop
-            await handler.applySnapshot(
-              { trx },
-              {
-                ...snapshot,
-                rows: pendingBatch,
-                chunks: undefined,
-                isFirstPage: nextIsFirstPage,
-                isLastPage: false,
-              }
-            );
+            try {
+              await handler.applySnapshot(
+                { trx },
+                {
+                  ...snapshot,
+                  rows: pendingBatch,
+                  chunks: undefined,
+                  isFirstPage: nextIsFirstPage,
+                  isLastPage: false,
+                }
+              );
+            } catch (error) {
+              throw wrapSyncClientStageError(
+                error,
+                {
+                  stage: 'snapshot-apply',
+                  stateId: trace?.stateId,
+                  subscriptionId: trace?.subscriptionId,
+                  table: snapshot.table,
+                  chunkId: chunk.id,
+                },
+                `Failed to apply snapshot chunk "${chunk.id}"`
+              );
+            }
             nextIsFirstPage = false;
           }
           pendingBatch = batch;
@@ -617,20 +743,47 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
         if (pendingBatch) {
           const isLastChunk = chunkIndex === chunks.length - 1;
           // eslint-disable-next-line no-await-in-loop
-          await handler.applySnapshot(
-            { trx },
-            {
-              ...snapshot,
-              rows: pendingBatch,
-              chunks: undefined,
-              isFirstPage: nextIsFirstPage,
-              isLastPage: isLastChunk ? snapshot.isLastPage : false,
-            }
-          );
+          try {
+            await handler.applySnapshot(
+              { trx },
+              {
+                ...snapshot,
+                rows: pendingBatch,
+                chunks: undefined,
+                isFirstPage: nextIsFirstPage,
+                isLastPage: isLastChunk ? snapshot.isLastPage : false,
+              }
+            );
+          } catch (error) {
+            throw wrapSyncClientStageError(
+              error,
+              {
+                stage: 'snapshot-apply',
+                stateId: trace?.stateId,
+                subscriptionId: trace?.subscriptionId,
+                table: snapshot.table,
+                chunkId: chunk.id,
+              },
+              `Failed to apply snapshot chunk "${chunk.id}"`
+            );
+          }
           nextIsFirstPage = false;
         }
       } catch (error) {
-        applyError = error;
+        applyError =
+          error instanceof SyncClientStageError
+            ? error
+            : wrapSyncClientStageError(
+                error,
+                {
+                  stage: 'snapshot-chunk-decode',
+                  stateId: trace?.stateId,
+                  subscriptionId: trace?.subscriptionId,
+                  table: snapshot.table,
+                  chunkId: chunk.id,
+                },
+                `Failed to decode snapshot chunk "${chunk.id}"`
+              );
       }
 
       if (chunkHashPromise) {
@@ -638,8 +791,15 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
           // eslint-disable-next-line no-await-in-loop
           const actualHash = await chunkHashPromise;
           if (!applyError && actualHash !== chunk.sha256) {
-            applyError = new Error(
-              `Snapshot chunk integrity check failed: expected sha256 ${chunk.sha256}, got ${actualHash}`
+            applyError = new SyncClientStageError(
+              `Snapshot chunk integrity check failed: expected sha256 ${chunk.sha256}, got ${actualHash}`,
+              {
+                stage: 'snapshot-integrity',
+                stateId: trace?.stateId,
+                subscriptionId: trace?.subscriptionId,
+                table: snapshot.table,
+                chunkId: chunk.id,
+              }
             );
           }
         } catch (hashError) {
@@ -1499,11 +1659,24 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
           Array.isArray(snapshot.chunks) && snapshot.chunks.length > 0;
 
         if (snapshot.isFirstPage && handler.onSnapshotStart) {
-          await handler.onSnapshotStart({
-            trx,
-            table: snapshot.table,
-            scopes: sub.scopes,
-          });
+          try {
+            await handler.onSnapshotStart({
+              trx,
+              table: snapshot.table,
+              scopes: sub.scopes,
+            });
+          } catch (error) {
+            throw wrapSyncClientStageError(
+              error,
+              {
+                stage: 'snapshot-apply',
+                stateId,
+                subscriptionId: sub.id,
+                table: snapshot.table,
+              },
+              `Failed to start snapshot apply for subscription "${sub.id}"`
+            );
+          }
         }
 
         if (hasChunkRefs) {
@@ -1521,25 +1694,64 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
             }
           );
         } else {
-          await handler.applySnapshot({ trx }, snapshot);
+          try {
+            await handler.applySnapshot({ trx }, snapshot);
+          } catch (error) {
+            throw wrapSyncClientStageError(
+              error,
+              {
+                stage: 'snapshot-apply',
+                stateId,
+                subscriptionId: sub.id,
+                table: snapshot.table,
+              },
+              `Failed to apply snapshot for subscription "${sub.id}"`
+            );
+          }
         }
 
         if (snapshot.isLastPage && handler.onSnapshotEnd) {
-          await handler.onSnapshotEnd({
-            trx,
-            table: snapshot.table,
-            scopes: sub.scopes,
-          });
+          try {
+            await handler.onSnapshotEnd({
+              trx,
+              table: snapshot.table,
+              scopes: sub.scopes,
+            });
+          } catch (error) {
+            throw wrapSyncClientStageError(
+              error,
+              {
+                stage: 'snapshot-apply',
+                stateId,
+                subscriptionId: sub.id,
+                table: snapshot.table,
+              },
+              `Failed to finalize snapshot apply for subscription "${sub.id}"`
+            );
+          }
         }
       }
     } else {
       for (const commit of sub.commits) {
-        await applyIncrementalCommitChanges(handlers, trx, {
-          changes: commit.changes,
-          commitSeq: commit.commitSeq ?? null,
-          actorId: commit.actorId ?? null,
-          createdAt: commit.createdAt ?? null,
-        });
+        try {
+          await applyIncrementalCommitChanges(handlers, trx, {
+            changes: commit.changes,
+            commitSeq: commit.commitSeq ?? null,
+            actorId: commit.actorId ?? null,
+            createdAt: commit.createdAt ?? null,
+          });
+        } catch (error) {
+          throw wrapSyncClientStageError(
+            error,
+            {
+              stage: 'snapshot-apply',
+              stateId,
+              subscriptionId: sub.id,
+              table: def?.table ?? prev?.table,
+            },
+            `Failed to apply incremental changes for subscription "${sub.id}"`
+          );
+        }
       }
     }
 

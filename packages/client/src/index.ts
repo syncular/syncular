@@ -8,6 +8,7 @@ export * from './conflicts';
 export * from './create-client';
 export * from './engine';
 export type * from './engine/types';
+export * from './errors';
 export * from './handlers/collection';
 export * from './handlers/create-handler';
 export * from './handlers/types';

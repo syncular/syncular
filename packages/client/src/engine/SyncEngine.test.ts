@@ -745,9 +745,183 @@ describe('SyncEngine WS inline apply', () => {
 
     const state = engine.getState();
     expect(state.error?.code).toBe('SNAPSHOT_CHUNK_NOT_FOUND');
+    expect(state.error?.stage).toBe('pull');
     expect(state.error?.retryable).toBe(false);
     expect(state.retryCount).toBe(1);
     expect(state.isRetrying).toBe(false);
+  });
+
+  it('classifies gzip decode failures with chunk metadata', async () => {
+    const invalidCompressed = new Uint8Array(
+      gzipSync(new TextEncoder().encode('truncated-gzip')).subarray(0, 8)
+    );
+    const transport: SyncTransport = {
+      capabilities: {
+        snapshotChunkReadMode: 'bytes',
+        preferMaterializedSnapshots: true,
+      },
+      async sync() {
+        return {
+          pull: {
+            ok: true,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                status: 'active',
+                scopes: {},
+                bootstrap: true,
+                bootstrapState: null,
+                nextCursor: 1,
+                commits: [],
+                snapshots: [
+                  {
+                    table: 'tasks',
+                    rows: [],
+                    chunks: [
+                      {
+                        id: 'chunk-1',
+                        byteLength: invalidCompressed.length,
+                        sha256: '',
+                        encoding: 'json-row-frame-v1',
+                        compression: 'gzip',
+                      },
+                    ],
+                    isFirstPage: true,
+                    isLastPage: true,
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      },
+      async fetchSnapshotChunk() {
+        return invalidCompressed;
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {},
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-gzip-failure',
+      subscriptions: [
+        {
+          id: 'sub-1',
+          table: 'tasks',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      pollIntervalMs: 60_000,
+      maxRetries: 1,
+    });
+
+    await engine.start();
+    engine.stop();
+
+    const state = engine.getState();
+    expect(state.error?.code).toBe('SNAPSHOT_GZIP_DECODE_FAILED');
+    expect(state.error?.stage).toBe('snapshot-gzip-decode');
+    expect(state.error?.subscriptionId).toBe('sub-1');
+    expect(state.error?.chunkId).toBe('chunk-1');
+    expect(state.error?.table).toBe('tasks');
+    expect(state.error?.retryable).toBe(false);
+  });
+
+  it('classifies snapshot apply failures with stage metadata', async () => {
+    const rows = [{ id: 't2', title: 'new', server_version: 1 }];
+    const encoded = encodeSnapshotRows(rows);
+    const compressed = new Uint8Array(gzipSync(encoded));
+    const transport: SyncTransport = {
+      async sync() {
+        return {
+          pull: {
+            ok: true,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                status: 'active',
+                scopes: {},
+                bootstrap: true,
+                bootstrapState: null,
+                nextCursor: 1,
+                commits: [],
+                snapshots: [
+                  {
+                    table: 'tasks',
+                    rows: [],
+                    chunks: [
+                      {
+                        id: 'chunk-1',
+                        byteLength: compressed.length,
+                        sha256: '',
+                        encoding: 'json-row-frame-v1',
+                        compression: 'gzip',
+                      },
+                    ],
+                    isFirstPage: true,
+                    isLastPage: true,
+                  },
+                ],
+              },
+            ],
+          },
+        };
+      },
+      async fetchSnapshotChunk() {
+        return compressed;
+      },
+    };
+
+    const handlers: ClientHandlerCollection<TestDb> = [
+      {
+        table: 'tasks',
+        async applySnapshot() {
+          throw new Error('forced snapshot apply failure');
+        },
+        async clearAll() {},
+        async applyChange() {},
+      },
+    ];
+
+    const engine = new SyncEngine<TestDb>({
+      db,
+      transport,
+      handlers,
+      actorId: 'u1',
+      clientId: 'client-apply-failure',
+      subscriptions: [
+        {
+          id: 'sub-1',
+          table: 'tasks',
+          scopes: {},
+        },
+      ],
+      stateId: 'default',
+      pollIntervalMs: 60_000,
+      maxRetries: 1,
+    });
+
+    await engine.start();
+    engine.stop();
+
+    const state = engine.getState();
+    expect(state.error?.code).toBe('SNAPSHOT_APPLY_FAILED');
+    expect(state.error?.stage).toBe('snapshot-apply');
+    expect(state.error?.subscriptionId).toBe('sub-1');
+    expect(state.error?.table).toBe('tasks');
+    expect(state.error?.retryable).toBe(false);
   });
 
   it('skips outbox and conflict refresh after a read-only successful sync', async () => {
