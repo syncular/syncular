@@ -22,7 +22,21 @@ npm install @syncular/console
 
 ## Sync CORS
 
-`createSyncRoutes` and `createSyncServer` accept a simple sync-route CORS allowlist:
+`createSyncRoutes` and `createSyncServer` accept a simple Hono-style sync CORS config.
+The common case is just an origin string:
+
+```ts
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  sync,
+  routes: {
+    cors: 'https://app.example.com',
+  },
+});
+```
+
+Or use an object when you need extra exposed/allowed headers:
 
 ```ts
 const { syncRoutes } = createSyncServer({
@@ -31,15 +45,16 @@ const { syncRoutes } = createSyncServer({
   sync,
   routes: {
     cors: {
-      allowedOrigins: ['https://app.example.com'],
+      origin: ['https://app.example.com'],
+      allowHeaders: ['x-custom-header'],
     },
   },
 });
 ```
 
-Use `cors.resolveOrigin` only when you need dynamic policy logic.
+Use a function origin only when you need dynamic policy logic.
 When `routes.websocket.allowedOrigins` is unset, realtime websocket upgrades
-inherit `routes.cors.allowedOrigins`.
+inherit static `routes.cors` origins automatically.
 
 ## Links
 

@@ -29,6 +29,7 @@ import type {
 import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,
+  normalizeSyncCorsConfig,
   type SyncAuthResult,
   type SyncRoutesConfigWithRateLimit,
 } from './routes';
@@ -83,7 +84,10 @@ export interface SyncServerResult {
 export function resolveDefaultWebSocketAllowedOrigins(
   routes: SyncRoutesConfigWithRateLimit | undefined
 ): string[] | '*' | undefined {
-  return routes?.websocket?.allowedOrigins ?? routes?.cors?.allowedOrigins;
+  return (
+    routes?.websocket?.allowedOrigins ??
+    normalizeSyncCorsConfig(routes?.cors)?.staticAllowedOrigins
+  );
 }
 
 /**
