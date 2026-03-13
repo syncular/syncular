@@ -58,6 +58,35 @@ function isAllowedOriginMatch(origin: URL, pattern: string): boolean {
   return matchesWildcardOriginPattern(origin, pattern);
 }
 
+export function resolveAllowedOriginFromPatterns(
+  originHeader: string | null | undefined,
+  allowedOrigins: string | string[] | '*'
+): string | null {
+  if (allowedOrigins === '*') {
+    return '*';
+  }
+
+  const normalizedAllowedOrigins =
+    typeof allowedOrigins === 'string' ? [allowedOrigins] : allowedOrigins;
+
+  if (!originHeader) {
+    return null;
+  }
+
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(originHeader);
+  } catch {
+    return null;
+  }
+
+  return normalizedAllowedOrigins.some((pattern) =>
+    isAllowedOriginMatch(parsedOrigin, pattern)
+  )
+    ? originHeader
+    : null;
+}
+
 export function isRequestOriginAllowed(args: {
   requestUrl: string;
   originHeader?: string | null;
@@ -69,15 +98,8 @@ export function isRequestOriginAllowed(args: {
 
   const origin = args.originHeader;
   if (Array.isArray(args.allowedOrigins)) {
-    if (!origin) return false;
-    let parsedOrigin: URL;
-    try {
-      parsedOrigin = new URL(origin);
-    } catch {
-      return false;
-    }
-    return args.allowedOrigins.some((pattern) =>
-      isAllowedOriginMatch(parsedOrigin, pattern)
+    return (
+      resolveAllowedOriginFromPatterns(origin, args.allowedOrigins) !== null
     );
   }
 

@@ -36,6 +36,12 @@ export {
   createSyncRoutes,
   getSyncRealtimeUnsubscribe,
   getSyncWebSocketConnectionManager,
+  type LegacySyncCorsOptions,
+  type NormalizedSyncCorsConfig,
+  normalizeSyncCorsConfig,
+  type SyncCorsOptions,
+  type SyncCorsOrigin,
+  type SyncCorsOriginResolver,
 } from './routes';
 
 // WebSocket helpers for realtime sync

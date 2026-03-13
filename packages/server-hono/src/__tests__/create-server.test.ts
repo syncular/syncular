@@ -14,7 +14,10 @@ import {
   createSyncServer,
   resolveDefaultWebSocketAllowedOrigins,
 } from '../create-server';
-import { getSyncWebSocketConnectionManager } from '../routes';
+import {
+  getSyncWebSocketConnectionManager,
+  normalizeSyncCorsConfig,
+} from '../routes';
 import {
   createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
@@ -479,24 +482,20 @@ describe('createSyncServer console configuration', () => {
     const server = createSyncServer({
       ...options,
       routes: {
-        cors: {
-          allowedOrigins: ['https://allowed.syncular.test'],
-        },
+        cors: 'https://allowed.syncular.test',
       },
     });
 
     const app = new Hono();
     app.route('/sync', server.syncRoutes);
 
-    const allowedPreflight = await app.request(
-      new Request('http://localhost/sync', {
-        method: 'OPTIONS',
-        headers: {
-          Origin: 'https://allowed.syncular.test',
-          'Access-Control-Request-Method': 'POST',
-        },
-      })
-    );
+    const allowedPreflight = await app.request('http://localhost/sync', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://allowed.syncular.test',
+        'access-control-request-method': 'POST',
+      },
+    });
     expect(allowedPreflight.status).toBe(204);
     expect(allowedPreflight.headers.has('Access-Control-Allow-Origin')).toBe(
       true
@@ -509,11 +508,95 @@ describe('createSyncServer console configuration', () => {
   it('defaults websocket allowedOrigins from sync CORS allowlists', async () => {
     expect(
       resolveDefaultWebSocketAllowedOrigins({
-        cors: {
-          allowedOrigins: ['https://allowed.syncular.test'],
-        },
+        cors: 'https://allowed.syncular.test',
       })
     ).toEqual(['https://allowed.syncular.test']);
+  });
+
+  it('accepts Hono-style CORS options and appends custom headers to defaults', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        cors: {
+          origin: ['https://preview-123.pages.dev'],
+          allowHeaders: ['x-custom-header'],
+          exposeHeaders: ['etag'],
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const allowedPreflight = await app.request('http://localhost/sync', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://preview-123.pages.dev',
+        'access-control-request-method': 'POST',
+      },
+    });
+
+    expect(allowedPreflight.status).toBe(204);
+    expect(
+      allowedPreflight.headers.get('Access-Control-Allow-Headers')
+    ).toContain('x-syncular-client-id');
+    expect(
+      allowedPreflight.headers.get('Access-Control-Allow-Headers')
+    ).toContain('x-custom-header');
+    expect(
+      allowedPreflight.headers.get('Access-Control-Expose-Headers')
+    ).toContain('etag');
+  });
+
+  it('supports wildcard origins in sync CORS allowlists', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        cors: {
+          origin: ['https://*.pages.dev'],
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const allowedPreflight = await app.request('http://localhost/sync', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://preview-123.pages.dev',
+        'access-control-request-method': 'POST',
+      },
+    });
+
+    expect(allowedPreflight.status).toBe(204);
+    expect(allowedPreflight.headers.has('Access-Control-Allow-Origin')).toBe(
+      true
+    );
+  });
+
+  it('resolves exact and wildcard sync CORS origins deterministically', async () => {
+    const exactCors = normalizeSyncCorsConfig('https://allowed.syncular.test');
+    expect(exactCors).not.toBeNull();
+    expect(
+      await exactCors?.resolveOrigin(
+        'https://allowed.syncular.test',
+        {} as never
+      )
+    ).toBe('https://allowed.syncular.test');
+
+    const wildcardCors = normalizeSyncCorsConfig({
+      origin: ['https://*.pages.dev'],
+    });
+    expect(wildcardCors).not.toBeNull();
+    expect(
+      await wildcardCors?.resolveOrigin(
+        'https://preview-123.pages.dev',
+        {} as never
+      )
+    ).toBe('https://preview-123.pages.dev');
   });
 
   it('allows same-origin realtime websocket upgrades when allowedOrigins is unset', async () => {
