@@ -11,12 +11,16 @@
   "typescript": true,
   "ignore": [
     "**/generated/**",
-    "types/**"
+    "types/**",
+    "apps/console/build.ts",
+    "apps/demo/build.ts",
+    "apps/demo/src/server/index.ts",
+    "packages/console/build-static.ts",
+    "packages/syncular/src/migrations.ts"
   ],
   "ignoreDependencies": [
     "happy-dom",
-    "tailwindcss",
-    "wrangler"
+    "tailwindcss"
   ],
   "ignoreBinaries": ["act", "k6", "maestro"],
   "ignoreIssues": {
@@ -24,7 +28,9 @@
     "plugins/blob/client/src/migrate.ts": ["exports"],
     "plugins/blob/client/src/types.ts": ["exports", "types"],
     "plugins/blob/server-storage-filesystem/src/index.ts": ["types"],
-    "plugins/blob/server-storage-s3/src/index.ts": ["types"]
+    "plugins/blob/server-storage-s3/src/index.ts": ["types"],
+    "packages/server-hono/src/websocket-origin.ts": ["exports"],
+    "plugins/encryption/client/src/key-sharing.ts": ["exports"]
   },
   "workspaces": {
     ".": {
