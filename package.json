@@ -11,7 +11,7 @@
     "turbo": "^2.8.11"
   },
   "overrides": {
-    "wrangler": "^4.69.0",
+    "wrangler": "^4.75.0",
     "@cloudflare/workers-types": "^4.20260304.0",
     "hono": "4.12.7",
     "@tootallnate/once": "3.0.1",
@@ -25,7 +25,8 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "zod": "4.3.6",
-    "fast-xml-parser": "^5.4.1"
+    "fast-xml-parser": "^5.5.6",
+    "next": "^16.1.7"
   },
   "packageManager": "bun@1.3.9",
   "private": true,
