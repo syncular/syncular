@@ -43,7 +43,7 @@ interface ColumnReference {
   column: string;
 }
 
-interface QueryResultPlan {
+export interface QueryResultPlan {
   explicit: ColumnReference[];
   selectAllTables: string[];
 }
@@ -335,12 +335,67 @@ function planForDelete(node: DeleteQueryNode): QueryResultPlan | null {
   return collected;
 }
 
-function buildResultPlan(node: RootOperationNode): QueryResultPlan | null {
+export function buildQueryResultPlan(
+  node: RootOperationNode
+): QueryResultPlan | null {
   if (node.kind === 'SelectQueryNode') return planForSelect(node);
   if (node.kind === 'InsertQueryNode') return planForInsert(node);
   if (node.kind === 'UpdateQueryNode') return planForUpdate(node);
   if (node.kind === 'DeleteQueryNode') return planForDelete(node);
   return null;
+}
+
+export function applyQueryResultPlan(args: {
+  row: UnknownRow;
+  plan: QueryResultPlan;
+  resolveTableCodecs: (
+    table: string,
+    row: Record<string, unknown>
+  ) => TableColumnCodecs;
+  dialect: ColumnCodecDialect;
+}): UnknownRow {
+  const { row, plan, resolveTableCodecs, dialect } = args;
+  const source = row as Record<string, unknown>;
+  const target: Record<string, unknown> = { ...source };
+
+  if (plan.selectAllTables.length > 0) {
+    const codecCandidates = new Map<string, AnyColumnCodec>();
+    const ambiguousColumns = new Set<string>();
+
+    for (const table of plan.selectAllTables) {
+      const tableCodecs = resolveTableCodecs(table, source);
+      for (const [column, codec] of Object.entries(tableCodecs)) {
+        if (!(column in source)) continue;
+        const existing = codecCandidates.get(column);
+        if (existing && existing !== codec) {
+          ambiguousColumns.add(column);
+          continue;
+        }
+        codecCandidates.set(column, codec);
+      }
+    }
+
+    for (const [column, codec] of codecCandidates.entries()) {
+      if (ambiguousColumns.has(column)) continue;
+      target[column] = applyCodecFromDbValue(codec, target[column], dialect);
+    }
+  }
+
+  for (const ref of plan.explicit) {
+    if (!(ref.outputKey in source)) continue;
+    const tableCodecs = resolveTableCodecs(ref.table, {
+      [ref.column]: source[ref.outputKey],
+    });
+    const codec = tableCodecs[ref.column];
+    if (!codec) continue;
+    target[ref.outputKey] = applyCodecFromDbValue(
+      codec,
+      target[ref.outputKey],
+      dialect
+    );
+  }
+
+  return target;
 }
 
 class ColumnCodecsTransformer extends OperationNodeTransformer {
@@ -491,7 +546,7 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
     queryId,
   }: PluginTransformQueryArgs): RootOperationNode {
     const transformed = this.#transformer.transformNode(node);
-    const plan = buildResultPlan(transformed);
+    const plan = buildQueryResultPlan(transformed);
     if (plan) {
       this.#resultPlans.set(queryId, plan);
     }
@@ -514,51 +569,12 @@ export class ColumnCodecsPlugin implements KyselyPlugin {
   }
 
   #transformRow(row: UnknownRow, plan: QueryResultPlan): UnknownRow {
-    const source = row as Record<string, unknown>;
-    const target: Record<string, unknown> = { ...source };
-
-    if (plan.selectAllTables.length > 0) {
-      const codecCandidates = new Map<string, AnyColumnCodec>();
-      const ambiguousColumns = new Set<string>();
-
-      for (const table of plan.selectAllTables) {
-        const tableCodecs = this.#resolveTableCodecs(table, source);
-        for (const [column, codec] of Object.entries(tableCodecs)) {
-          if (!(column in source)) continue;
-          const existing = codecCandidates.get(column);
-          if (existing && existing !== codec) {
-            ambiguousColumns.add(column);
-            continue;
-          }
-          codecCandidates.set(column, codec);
-        }
-      }
-
-      for (const [column, codec] of codecCandidates.entries()) {
-        if (ambiguousColumns.has(column)) continue;
-        target[column] = applyCodecFromDbValue(
-          codec,
-          target[column],
-          this.#dialect
-        );
-      }
-    }
-
-    for (const ref of plan.explicit) {
-      if (!(ref.outputKey in source)) continue;
-      const tableCodecs = this.#resolveTableCodecs(ref.table, {
-        [ref.column]: source[ref.outputKey],
-      });
-      const codec = tableCodecs[ref.column];
-      if (!codec) continue;
-      target[ref.outputKey] = applyCodecFromDbValue(
-        codec,
-        target[ref.outputKey],
-        this.#dialect
-      );
-    }
-
-    return target;
+    return applyQueryResultPlan({
+      row,
+      plan,
+      resolveTableCodecs: this.#resolveTableCodecs,
+      dialect: this.#dialect,
+    });
   }
 }
 
