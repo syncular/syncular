@@ -5,6 +5,13 @@
  * base Kysely builder does not leak joined tables into sibling branches.
  */
 
+import {
+  applyCodecsFromDbRow,
+  type ColumnCodecDialect,
+  type ColumnCodecSource,
+  createTableColumnCodecsResolver,
+  type TableColumnCodecs,
+} from '@syncular/core';
 import type { Kysely } from 'kysely';
 import type { FingerprintCollector } from './query/FingerprintCollector';
 import {
@@ -123,6 +130,36 @@ function addTrackedTablesToScopeCollector(
   }
 }
 
+type CodecsResolver = (
+  table: string,
+  row: Record<string, unknown>
+) => TableColumnCodecs;
+
+function decodeRow(
+  row: unknown,
+  table: string,
+  resolveCodecs: CodecsResolver,
+  codecDialect: ColumnCodecDialect
+): unknown {
+  if (!isRecord(row)) return row;
+  return applyCodecsFromDbRow(row, resolveCodecs(table, row), codecDialect);
+}
+
+function decodeRows(
+  rows: unknown,
+  primaryTable: string | null,
+  resolveCodecs: CodecsResolver | undefined,
+  codecDialect: ColumnCodecDialect
+): unknown {
+  if (!resolveCodecs || !primaryTable) return rows;
+  if (Array.isArray(rows)) {
+    return rows.map((row) =>
+      decodeRow(row, primaryTable, resolveCodecs, codecDialect)
+    );
+  }
+  return decodeRow(rows, primaryTable, resolveCodecs, codecDialect);
+}
+
 function createExecuteProxy<B extends ExecutableQuery>(
   builder: B,
   primaryTable: string | null,
@@ -131,16 +168,24 @@ function createExecuteProxy<B extends ExecutableQuery>(
   collector: FingerprintCollector,
   engine: MutationTimestampSource,
   keyField: string,
-  fingerprintMode: FingerprintMode
+  fingerprintMode: FingerprintMode,
+  resolveCodecs: CodecsResolver | undefined,
+  codecDialect: ColumnCodecDialect
 ): B {
   return new Proxy(builder, {
     get(target, prop, receiver) {
       if (prop === 'execute') {
         return async () => {
           const rows = await target.execute();
+          const decoded = decodeRows(
+            rows,
+            primaryTable,
+            resolveCodecs,
+            codecDialect
+          );
           addTrackedTablesToScopeCollector(scopeCollector, trackedTables);
           addFingerprint({
-            rows,
+            rows: decoded,
             primaryTable,
             trackedTables,
             collector,
@@ -148,16 +193,22 @@ function createExecuteProxy<B extends ExecutableQuery>(
             keyField,
             fingerprintMode,
           });
-          return rows;
+          return decoded;
         };
       }
 
       if (prop === 'executeTakeFirst') {
         return async () => {
           const row = await target.executeTakeFirst();
+          const decoded = decodeRows(
+            row,
+            primaryTable,
+            resolveCodecs,
+            codecDialect
+          );
           addTrackedTablesToScopeCollector(scopeCollector, trackedTables);
           addFingerprint({
-            rows: row,
+            rows: decoded,
             primaryTable,
             trackedTables,
             collector,
@@ -165,16 +216,22 @@ function createExecuteProxy<B extends ExecutableQuery>(
             keyField,
             fingerprintMode,
           });
-          return row;
+          return decoded;
         };
       }
 
       if (prop === 'executeTakeFirstOrThrow') {
         return async () => {
           const row = await target.executeTakeFirstOrThrow();
+          const decoded = decodeRows(
+            row,
+            primaryTable,
+            resolveCodecs,
+            codecDialect
+          );
           addTrackedTablesToScopeCollector(scopeCollector, trackedTables);
           addFingerprint({
-            rows: row,
+            rows: decoded,
             primaryTable,
             trackedTables,
             collector,
@@ -182,7 +239,7 @@ function createExecuteProxy<B extends ExecutableQuery>(
             keyField,
             fingerprintMode,
           });
-          return row;
+          return decoded;
         };
       }
 
@@ -217,7 +274,9 @@ function createExecuteProxy<B extends ExecutableQuery>(
           collector,
           engine,
           keyField,
-          fingerprintMode
+          fingerprintMode,
+          resolveCodecs,
+          codecDialect
         );
       };
     },
@@ -230,8 +289,14 @@ function createTrackedSelectFrom<DB extends SyncClientDb>(
   fingerprintCollector: FingerprintCollector,
   engine: MutationTimestampSource,
   keyField = 'id',
-  fingerprintMode: FingerprintMode = 'auto'
+  fingerprintMode: FingerprintMode = 'auto',
+  codecSource?: ColumnCodecSource,
+  codecDialect: ColumnCodecDialect = 'sqlite'
 ): TrackedSelectFrom<DB> {
+  const resolveCodecs = codecSource
+    ? createTableColumnCodecsResolver(codecSource, { dialect: codecDialect })
+    : undefined;
+
   const selectFrom = (...args: SelectFromArgs<DB>) => {
     const trackedTables = new Set<string>(extractTrackedTableNames(args[0]));
     const primaryTable = Array.from(trackedTables)[0] ?? null;
@@ -245,7 +310,9 @@ function createTrackedSelectFrom<DB extends SyncClientDb>(
       fingerprintCollector,
       engine,
       keyField,
-      fingerprintMode
+      fingerprintMode,
+      resolveCodecs,
+      codecDialect
     ) as SelectFromResult<DB>;
   };
 
@@ -262,7 +329,9 @@ export function createQueryContext<DB extends SyncClientDb>(
   fingerprintCollector: FingerprintCollector,
   engine: MutationTimestampSource,
   keyField = 'id',
-  fingerprintMode: FingerprintMode = 'auto'
+  fingerprintMode: FingerprintMode = 'auto',
+  codecSource?: ColumnCodecSource,
+  codecDialect: ColumnCodecDialect = 'sqlite'
 ): QueryContext<DB> {
   return {
     selectFrom: createTrackedSelectFrom(
@@ -271,7 +340,9 @@ export function createQueryContext<DB extends SyncClientDb>(
       fingerprintCollector,
       engine,
       keyField,
-      fingerprintMode
+      fingerprintMode,
+      codecSource,
+      codecDialect
     ),
   };
 }
