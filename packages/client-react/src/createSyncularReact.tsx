@@ -1588,7 +1588,7 @@ export function createSyncularReact<
       transitionUpdates = true,
       onMetrics,
     } = options;
-    const { db } = useSyncContext();
+    const { db, codecs, codecDialect } = useSyncContext();
     const engine = useEngine();
     const watchTablesSet = useMemo(() => new Set(watchTables), [watchTables]);
 
@@ -1672,7 +1672,9 @@ export function createSyncularReact<
             fingerprintCollectorRef.current,
             engine,
             keyField,
-            fingerprintMode
+            fingerprintMode,
+            codecs,
+            codecDialect
           );
 
           const fnResult = queryFnRef.current(ctx);
@@ -1745,6 +1747,8 @@ export function createSyncularReact<
         structuralSharing,
         applyUpdate,
         emitMetrics,
+        codecDialect,
+        codecs,
       ]
     );
 
