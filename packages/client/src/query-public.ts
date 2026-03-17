@@ -6,13 +6,13 @@
  */
 
 import {
-  applyCodecsFromDbRow,
+  applyQueryResultPlan,
+  buildQueryResultPlan,
   type ColumnCodecDialect,
   type ColumnCodecSource,
   createTableColumnCodecsResolver,
-  type TableColumnCodecs,
 } from '@syncular/core';
-import type { Kysely } from 'kysely';
+import type { Kysely, RootOperationNode } from 'kysely';
 import type { FingerprintCollector } from './query/FingerprintCollector';
 import {
   computeRowFingerprint,
@@ -38,6 +38,10 @@ type ExecutableQuery = {
   execute: () => Promise<unknown>;
   executeTakeFirst: () => Promise<unknown>;
   executeTakeFirstOrThrow: () => Promise<unknown>;
+};
+
+type OperationNodeSource = {
+  toOperationNode: () => RootOperationNode;
 };
 
 const JOIN_METHODS = new Set([
@@ -130,34 +134,40 @@ function addTrackedTablesToScopeCollector(
   }
 }
 
-type CodecsResolver = (
-  table: string,
-  row: Record<string, unknown>
-) => TableColumnCodecs;
-
-function decodeRow(
-  row: unknown,
-  table: string,
-  resolveCodecs: CodecsResolver,
-  codecDialect: ColumnCodecDialect
-): unknown {
-  if (!isRecord(row)) return row;
-  return applyCodecsFromDbRow(row, resolveCodecs(table, row), codecDialect);
+function isOperationNodeSource(value: unknown): value is OperationNodeSource {
+  if (!isRecord(value)) return false;
+  return typeof Reflect.get(value, 'toOperationNode') === 'function';
 }
 
 function decodeRows(
   rows: unknown,
-  primaryTable: string | null,
-  resolveCodecs: CodecsResolver | undefined,
+  builder: OperationNodeSource | undefined,
+  resolveCodecs:
+    | ((table: string, row: Record<string, unknown>) => Record<string, unknown>)
+    | undefined,
   codecDialect: ColumnCodecDialect
 ): unknown {
-  if (!resolveCodecs || !primaryTable) return rows;
+  if (!resolveCodecs || !builder) return rows;
+  const plan = buildQueryResultPlan(builder.toOperationNode());
+  if (!plan) return rows;
   if (Array.isArray(rows)) {
-    return rows.map((row) =>
-      decodeRow(row, primaryTable, resolveCodecs, codecDialect)
-    );
+    return rows.map((row) => {
+      if (!isRecord(row)) return row;
+      return applyQueryResultPlan({
+        row,
+        plan,
+        resolveTableCodecs: resolveCodecs,
+        dialect: codecDialect,
+      });
+    });
   }
-  return decodeRow(rows, primaryTable, resolveCodecs, codecDialect);
+  if (!isRecord(rows)) return rows;
+  return applyQueryResultPlan({
+    row: rows,
+    plan,
+    resolveTableCodecs: resolveCodecs,
+    dialect: codecDialect,
+  });
 }
 
 function createExecuteProxy<B extends ExecutableQuery>(
@@ -169,9 +179,13 @@ function createExecuteProxy<B extends ExecutableQuery>(
   engine: MutationTimestampSource,
   keyField: string,
   fingerprintMode: FingerprintMode,
-  resolveCodecs: CodecsResolver | undefined,
+  resolveCodecs:
+    | ((table: string, row: Record<string, unknown>) => Record<string, unknown>)
+    | undefined,
   codecDialect: ColumnCodecDialect
 ): B {
+  const operationNodeSource = isOperationNodeSource(builder) ? builder : undefined;
+
   return new Proxy(builder, {
     get(target, prop, receiver) {
       if (prop === 'execute') {
@@ -179,7 +193,7 @@ function createExecuteProxy<B extends ExecutableQuery>(
           const rows = await target.execute();
           const decoded = decodeRows(
             rows,
-            primaryTable,
+            operationNodeSource,
             resolveCodecs,
             codecDialect
           );
@@ -202,7 +216,7 @@ function createExecuteProxy<B extends ExecutableQuery>(
           const row = await target.executeTakeFirst();
           const decoded = decodeRows(
             row,
-            primaryTable,
+            operationNodeSource,
             resolveCodecs,
             codecDialect
           );
@@ -225,7 +239,7 @@ function createExecuteProxy<B extends ExecutableQuery>(
           const row = await target.executeTakeFirstOrThrow();
           const decoded = decodeRows(
             row,
-            primaryTable,
+            operationNodeSource,
             resolveCodecs,
             codecDialect
           );
