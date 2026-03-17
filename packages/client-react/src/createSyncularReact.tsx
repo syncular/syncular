@@ -10,6 +10,8 @@
 
 import type {
   ClientSyncConfig,
+  ColumnCodecDialect,
+  ColumnCodecSource,
   MutationReceipt,
   MutationsApi,
   MutationsCommitFn,
@@ -263,6 +265,8 @@ export interface SyncContextValue<DB extends SyncClientDb> {
   db: Kysely<DB>;
   transport: SyncTransport;
   handlers: ClientSyncConfig<DB, SyncIdentityBase>['handlers'];
+  codecs?: ColumnCodecSource;
+  codecDialect?: ColumnCodecDialect;
 }
 
 export interface SyncProviderProps<
@@ -311,6 +315,10 @@ export interface SyncProviderProps<
   plugins?: SyncClientPlugin[];
   /** Custom SHA-256 hash function (for platforms without crypto.subtle, e.g. React Native) */
   sha256?: (bytes: Uint8Array) => Promise<string>;
+  /** Optional column codec resolver for serializing/deserializing values in local mutations */
+  codecs?: ColumnCodecSource;
+  /** Dialect used for codec dialect overrides (default: 'sqlite') */
+  codecDialect?: ColumnCodecDialect;
   autoStart?: boolean;
   renderWhileStarting?: boolean;
   children: ReactNode;
@@ -732,6 +740,8 @@ export function createSyncularReact<
     dataChangeDebounceMsWhenReconnecting,
     plugins,
     sha256,
+    codecs,
+    codecDialect,
     autoStart = true,
     renderWhileStarting = true,
     children,
@@ -879,8 +889,10 @@ export function createSyncularReact<
         db,
         transport,
         handlers: sync.handlers,
+        codecs,
+        codecDialect,
       }),
-      [engine, db, transport, sync]
+      [engine, db, transport, sync, codecs, codecDialect]
     );
 
     if (!isReady && renderWhileStarting === false) {
@@ -1902,7 +1914,7 @@ export function createSyncularReact<
       onSuccess,
       onError,
     } = options;
-    const { db } = useSyncContext();
+    const { db, codecs, codecDialect } = useSyncContext();
     const engine = useEngine();
 
     const [isPending, setIsPending] = useState(false);
@@ -1916,8 +1928,10 @@ export function createSyncularReact<
           plugins: engine.getPlugins(),
           actorId: engine.getActorId() ?? undefined,
           clientId: engine.getClientId() ?? undefined,
+          codecs,
+          codecDialect,
         }),
-      [db, engine, versionColumn]
+      [db, engine, versionColumn, codecs, codecDialect]
     );
 
     const enqueue = useCallback(
@@ -2061,7 +2075,7 @@ export function createSyncularReact<
   }
 
   function useMutations(options: UseMutationsOptions = {}): MutationsHook<DB> {
-    const { db } = useSyncContext();
+    const { db, codecs, codecDialect } = useSyncContext();
     const engine = useEngine();
 
     const [isPending, setIsPending] = useState(false);
@@ -2084,8 +2098,10 @@ export function createSyncularReact<
           plugins: engine.getPlugins(),
           actorId: engine.getActorId() ?? undefined,
           clientId: engine.getClientId() ?? undefined,
+          codecs,
+          codecDialect,
         }),
-      [db, engine, versionColumn]
+      [db, engine, versionColumn, codecs, codecDialect]
     );
 
     const commit = useCallback<
