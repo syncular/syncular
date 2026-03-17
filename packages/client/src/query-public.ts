@@ -11,6 +11,7 @@ import {
   type ColumnCodecDialect,
   type ColumnCodecSource,
   createTableColumnCodecsResolver,
+  type TableColumnCodecs,
 } from '@syncular/core';
 import type { Kysely, RootOperationNode } from 'kysely';
 import type { FingerprintCollector } from './query/FingerprintCollector';
@@ -143,7 +144,7 @@ function decodeRows(
   rows: unknown,
   builder: OperationNodeSource | undefined,
   resolveCodecs:
-    | ((table: string, row: Record<string, unknown>) => Record<string, unknown>)
+    | ((table: string, row: Record<string, unknown>) => TableColumnCodecs)
     | undefined,
   codecDialect: ColumnCodecDialect
 ): unknown {
@@ -180,11 +181,13 @@ function createExecuteProxy<B extends ExecutableQuery>(
   keyField: string,
   fingerprintMode: FingerprintMode,
   resolveCodecs:
-    | ((table: string, row: Record<string, unknown>) => Record<string, unknown>)
+    | ((table: string, row: Record<string, unknown>) => TableColumnCodecs)
     | undefined,
   codecDialect: ColumnCodecDialect
 ): B {
-  const operationNodeSource = isOperationNodeSource(builder) ? builder : undefined;
+  const operationNodeSource = isOperationNodeSource(builder)
+    ? builder
+    : undefined;
 
   return new Proxy(builder, {
     get(target, prop, receiver) {
