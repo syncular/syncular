@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { codecs, createDatabase } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
-import { FingerprintCollector, createQueryContext } from './query-public';
+import { createQueryContext, FingerprintCollector } from './query-public';
 import type { SyncClientDb } from './schema';
 
 interface TasksTable {
@@ -29,10 +29,7 @@ const engine = {
 };
 
 function createCodecs() {
-  return (column: {
-    table: string;
-    column: string;
-  }) => {
+  return (column: { table: string; column: string }) => {
     if (column.column === 'enabled') {
       return codecs.numberBoolean();
     }
