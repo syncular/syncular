@@ -113,13 +113,18 @@ const noopMetrics: SyncMetrics = {
   distribution() {},
 };
 
+type DeferredRuntimeGlobals = typeof globalThis & {
+  setImmediate?: (callback: () => void) => void;
+};
+
 function createConsoleLogger(): (event: SyncTelemetryEvent) => void {
+  const runtimeGlobals = globalThis as DeferredRuntimeGlobals;
   const isNode =
     typeof globalThis !== 'undefined' &&
-    typeof globalThis.setImmediate === 'function';
+    typeof runtimeGlobals.setImmediate === 'function';
 
   const defer = isNode
-    ? (fn: () => void) => globalThis.setImmediate(fn)
+    ? (fn: () => void) => runtimeGlobals.setImmediate?.(fn)
     : (fn: () => void) => setTimeout(fn, 0);
 
   return (event: SyncTelemetryEvent) => {

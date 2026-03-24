@@ -22,5 +22,5 @@ const Switch = forwardRef<HTMLButtonElement, SwitchProps>(
 );
 Switch.displayName = 'Switch';
 
-export { Switch };
 export type { SwitchProps };
+export { Switch };

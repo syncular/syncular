@@ -85,4 +85,4 @@ const CodeBlock = forwardRef<HTMLPreElement, ComponentPropsWithoutRef<'pre'>>(
 );
 CodeBlock.displayName = 'CodeBlock';
 
-export { Text, TextMuted, TextCode, TextLabel, CodeBlock };
+export { CodeBlock, Text, TextCode, TextLabel, TextMuted };

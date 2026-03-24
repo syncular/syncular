@@ -36,7 +36,7 @@
     "@syncular/server-hono": "workspace:*",
     "@syncular/testkit": "workspace:*",
     "@syncular/transport-http": "workspace:*",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "hono": "*",
     "kysely": "*"
   }

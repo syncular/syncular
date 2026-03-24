@@ -823,6 +823,13 @@ export function createSyncularReact<
     }));
 
     useEffect(() => {
+      const runtimeGlobals = globalThis as typeof globalThis & {
+        process?: {
+          env?: {
+            NODE_ENV?: string;
+          };
+        };
+      };
       const changedProps: string[] = [];
       if (identity.actorId !== initialProps.actorId)
         changedProps.push('actorId');
@@ -839,7 +846,7 @@ export function createSyncularReact<
           `<SyncProvider key={userId} ...> or <SyncProvider key={identity.actorId + ':' + clientId} ...>`;
 
         console.error(message);
-        if (process.env.NODE_ENV === 'development') {
+        if (runtimeGlobals.process?.env?.NODE_ENV === 'development') {
           console.warn(
             '[SyncProvider] In development, consider using React StrictMode ' +
               'to help detect these issues early.'

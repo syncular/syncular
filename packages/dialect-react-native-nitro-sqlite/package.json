@@ -53,7 +53,7 @@
     "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
     "kysely": "*",
-    "react-native-nitro-sqlite": "^9.4.0"
+    "react-native-nitro-sqlite": "^9.6.0"
   },
   "files": [
     "dist",

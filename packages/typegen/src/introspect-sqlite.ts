@@ -23,7 +23,12 @@ interface SqliteDb {
   close(): void;
 }
 
-const isBun = typeof globalThis.Bun !== 'undefined';
+type BunAwareGlobals = typeof globalThis & {
+  Bun?: object;
+};
+
+const runtimeGlobals = globalThis as BunAwareGlobals;
+const isBun = typeof runtimeGlobals.Bun !== 'undefined';
 
 async function createSqliteDb(): Promise<SqliteDb> {
   if (isBun) {

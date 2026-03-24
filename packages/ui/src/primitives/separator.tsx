@@ -25,5 +25,5 @@ const Separator = forwardRef<HTMLHRElement, SeparatorProps>(
 );
 Separator.displayName = 'Separator';
 
-export { Separator };
 export type { SeparatorProps };
+export { Separator };

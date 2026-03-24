@@ -20,5 +20,5 @@ const Toggle = forwardRef<HTMLButtonElement, ToggleProps>(
 );
 Toggle.displayName = 'Toggle';
 
-export { Toggle };
 export type { ToggleProps };
+export { Toggle };

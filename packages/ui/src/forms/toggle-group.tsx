@@ -17,5 +17,5 @@ const ToggleGroup = forwardRef<HTMLDivElement, ToggleGroupProps>(
 );
 ToggleGroup.displayName = 'ToggleGroup';
 
-export { ToggleGroup };
 export type { ToggleGroupProps };
+export { ToggleGroup };

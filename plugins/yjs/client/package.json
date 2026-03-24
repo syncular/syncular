@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@syncular/client": "workspace:*",
-    "yjs": "^13.6.29"
+    "yjs": "^13.6.30"
   },
   "devDependencies": {
     "@syncular/config": "workspace:*"

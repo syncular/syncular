@@ -1,6 +1,6 @@
 'use client';
 
-import { ExternalLink, Github, Star } from 'lucide-react';
+import { ExternalLink, Star } from 'lucide-react';
 import { forwardRef } from 'react';
 import { cn } from '../lib/cn';
 import { UI_VERSION } from '../version';
@@ -26,6 +26,19 @@ const DEFAULT_TOPIC_LINKS: ObservableUniverseHeaderTopicLink[] = [
   { label: 'Server', href: '/docs/server' },
   { label: 'API', href: '/docs/api' },
 ];
+
+function GitHubMark({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      className={className}
+    >
+      <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.42-4.04-1.42-.55-1.37-1.33-1.73-1.33-1.73-1.09-.74.08-.73.08-.73 1.2.08 1.83 1.22 1.83 1.22 1.08 1.82 2.82 1.3 3.5.99.11-.77.42-1.3.76-1.6-2.67-.3-5.47-1.31-5.47-5.86 0-1.29.47-2.35 1.24-3.18-.12-.3-.54-1.52.12-3.16 0 0 1.01-.32 3.3 1.21a11.6 11.6 0 0 1 6 0c2.28-1.53 3.29-1.2 3.29-1.2.66 1.63.24 2.85.12 3.15.77.83 1.23 1.89 1.23 3.18 0 4.56-2.8 5.55-5.48 5.84.43.37.81 1.09.81 2.21v3.28c0 .32.21.69.82.58A12 12 0 0 0 12 .5Z" />
+    </svg>
+  );
+}
 
 function isExternalHref(href: string): boolean {
   return href.startsWith('http://') || href.startsWith('https://');
@@ -139,7 +152,7 @@ export const ObservableUniverseHeader = forwardRef<
                 formattedStars ? `GitHub (${formattedStars} stars)` : 'GitHub'
               }
             >
-              <Github className="size-3.5" />
+              <GitHubMark className="size-3.5" />
               {formattedStars ? (
                 <span className="font-mono text-[10px] text-neutral-300 inline-flex items-center gap-1">
                   <Star className="size-2.5" />

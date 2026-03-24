@@ -54,5 +54,5 @@ const Checkbox = forwardRef<HTMLElement, CheckboxProps>(
 );
 Checkbox.displayName = 'Checkbox';
 
-export { Checkbox };
 export type { CheckboxProps };
+export { Checkbox };

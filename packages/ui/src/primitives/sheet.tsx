@@ -101,14 +101,14 @@ const SheetDescription = forwardRef<
 ));
 SheetDescription.displayName = 'SheetDescription';
 
+export type { SheetContentProps };
 export {
   Sheet,
-  SheetTrigger,
   SheetContent,
-  sheetContentVariants,
-  SheetHeader,
-  SheetFooter,
-  SheetTitle,
   SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+  sheetContentVariants,
 };
-export type { SheetContentProps };
