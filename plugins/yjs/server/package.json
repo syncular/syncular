@@ -52,7 +52,7 @@
   ],
   "dependencies": {
     "@syncular/server": "workspace:*",
-    "kysely": "^0.28.11",
-    "yjs": "^13.6.29"
+    "kysely": "^0.28.14",
+    "yjs": "^13.6.30"
   }
 }

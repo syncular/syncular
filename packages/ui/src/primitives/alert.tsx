@@ -51,5 +51,5 @@ const AlertDescription = forwardRef<
 ));
 AlertDescription.displayName = 'AlertDescription';
 
-export { Alert, alertVariants, AlertTitle, AlertDescription };
 export type { AlertProps };
+export { Alert, AlertDescription, AlertTitle, alertVariants };

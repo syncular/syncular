@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "$schema": "https://unpkg.com/knip@6/schema.json",
   "includeEntryExports": true,
   "ignoreExportsUsedInFile": false,
   "bun": true,
@@ -12,18 +12,13 @@
   "ignore": [
     "**/generated/**",
     "**/.wrangler/**",
-    "types/**",
-    "apps/console/build.ts",
-    "apps/demo/build.ts",
-    "apps/demo/src/server/index.ts",
-    "packages/console/build-static.ts",
-    "packages/syncular/src/migrations.ts"
+    "types/**"
   ],
   "ignoreDependencies": [
     "happy-dom",
     "tailwindcss"
   ],
-  "ignoreBinaries": ["act", "k6", "maestro"],
+  "ignoreBinaries": ["act", "k6", "maestro", "version"],
   "ignoreIssues": {
     "plugins/blob/client/src/index.ts": ["exports", "types"],
     "plugins/blob/client/src/migrate.ts": ["exports"],
@@ -169,7 +164,6 @@
       "includeEntryExports": false,
       "entry": [
         "src/main.tsx!",
-        "src/cf/index.ts!",
         "src/sw/server.ts!",
         "scripts/*.ts"
       ]

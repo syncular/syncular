@@ -48,5 +48,5 @@ const Spinner = forwardRef<SVGSVGElement, SpinnerProps>(
 );
 Spinner.displayName = 'Spinner';
 
-export { Spinner, spinnerVariants };
 export type { SpinnerProps };
+export { Spinner, spinnerVariants };

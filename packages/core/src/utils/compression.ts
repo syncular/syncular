@@ -2,22 +2,55 @@ import { gunzipSync as gunzipSyncFflate } from 'fflate';
 import { bytesToReadableStream, readAllBytesFromStream } from './bytes';
 import { getBunRuntime, usesNodeRuntimeModules } from './internal-runtime';
 
-type NodeZlibModule = typeof import('node:zlib');
+type CompressionResult = Uint8Array | ArrayBuffer | ArrayLike<number>;
+
+interface NodeZlibModule {
+  gzip(
+    payload: Uint8Array,
+    callback: (error: Error | null, compressed: CompressionResult) => void
+  ): void;
+  gunzip(
+    payload: Uint8Array,
+    callback: (error: Error | null, decompressed: CompressionResult) => void
+  ): void;
+}
 
 let nodeZlibModulePromise: Promise<NodeZlibModule | null> | null = null;
 
-function importNodeModule(specifier: string): Promise<unknown> {
+function importNodeModule(specifier: string): Promise<object> {
   return new Function('specifier', 'return import(specifier);')(
     specifier
-  ) as Promise<unknown>;
+  ) as Promise<object>;
 }
 
-function tryImportNodeModule(specifier: string): Promise<unknown> {
+function tryImportNodeModule(specifier: string): Promise<object | null> {
   try {
     return importNodeModule(specifier);
   } catch {
     return Promise.resolve(null);
   }
+}
+
+function isNodeZlibModule(module: object | null): module is NodeZlibModule {
+  if (!module) {
+    return false;
+  }
+
+  const candidate = module as Partial<NodeZlibModule>;
+  return (
+    typeof candidate.gzip === 'function' &&
+    typeof candidate.gunzip === 'function'
+  );
+}
+
+function toUint8Array(value: CompressionResult): Uint8Array {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  return Uint8Array.from(value);
 }
 
 async function getNodeZlibModule(): Promise<NodeZlibModule | null> {
@@ -26,7 +59,7 @@ async function getNodeZlibModule(): Promise<NodeZlibModule | null> {
   }
   if (!nodeZlibModulePromise) {
     nodeZlibModulePromise = tryImportNodeModule('node:zlib')
-      .then((module) => module as NodeZlibModule)
+      .then((module) => (isNodeZlibModule(module) ? module : null))
       .catch(() => null);
   }
   return nodeZlibModulePromise;
@@ -50,7 +83,7 @@ export async function gzipBytes(payload: Uint8Array): Promise<Uint8Array> {
           reject(error);
           return;
         }
-        resolve(new Uint8Array(compressed));
+        resolve(toUint8Array(compressed));
       });
     });
   }
@@ -85,7 +118,7 @@ export async function gunzipBytes(payload: Uint8Array): Promise<Uint8Array> {
           reject(error);
           return;
         }
-        resolve(new Uint8Array(decompressed));
+        resolve(toUint8Array(decompressed));
       });
     });
   }

@@ -34,8 +34,6 @@ import {
   type HttpTransportSource,
 } from './transport-client';
 
-export { type SyncClient, type ClientOptions, type SyncTransportPath, unwrap };
-
 export type {
   SyncAuthErrorContext,
   SyncAuthLifecycle,
@@ -45,6 +43,7 @@ export type {
 } from '@syncular/core';
 export { createApiClient } from './api-client';
 export type { operations } from './generated/api';
+export { type ClientOptions, type SyncClient, type SyncTransportPath, unwrap };
 
 function detectDefaultTransportCapabilities(): SyncTransportCapabilities {
   const isReactNative =

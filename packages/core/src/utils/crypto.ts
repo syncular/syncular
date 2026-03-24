@@ -2,7 +2,15 @@ import { concatByteChunks } from './bytes';
 import { getBunRuntime, usesNodeRuntimeModules } from './internal-runtime';
 
 const textEncoder = new TextEncoder();
-type NodeCryptoModule = typeof import('node:crypto');
+
+interface NodeHash {
+  update(data: string | Uint8Array): NodeHash;
+  digest(encoding: 'hex'): string;
+}
+
+interface NodeCryptoModule {
+  createHash(algorithm: string): NodeHash;
+}
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -26,18 +34,25 @@ function toDigestBufferSource(payload: Uint8Array): Uint8Array<ArrayBuffer> {
 
 let nodeCryptoModulePromise: Promise<NodeCryptoModule | null> | null = null;
 
-function importNodeModule(specifier: string): Promise<unknown> {
+function importNodeModule(specifier: string): Promise<object> {
   return new Function('specifier', 'return import(specifier);')(
     specifier
-  ) as Promise<unknown>;
+  ) as Promise<object>;
 }
 
-function tryImportNodeModule(specifier: string): Promise<unknown> {
+function tryImportNodeModule(specifier: string): Promise<object | null> {
   try {
     return importNodeModule(specifier);
   } catch {
     return Promise.resolve(null);
   }
+}
+
+function isNodeCryptoModule(module: object | null): module is NodeCryptoModule {
+  if (!module) {
+    return false;
+  }
+  return typeof (module as Partial<NodeCryptoModule>).createHash === 'function';
 }
 
 async function getNodeCryptoModule(): Promise<NodeCryptoModule | null> {
@@ -46,7 +61,7 @@ async function getNodeCryptoModule(): Promise<NodeCryptoModule | null> {
   }
   if (!nodeCryptoModulePromise) {
     nodeCryptoModulePromise = tryImportNodeModule('node:crypto')
-      .then((module) => module as NodeCryptoModule)
+      .then((module) => (isNodeCryptoModule(module) ? module : null))
       .catch(() => null);
   }
   return nodeCryptoModulePromise;

@@ -43,9 +43,9 @@
     "release": "bunx syncular-publish"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.3.15",
+    "@electric-sql/pglite": "^0.4.1",
     "@syncular/migrations": "workspace:*",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.8.0",
     "kysely-bun-sqlite": "^0.4.0",
     "kysely-pglite-dialect": "^1.2.0"
   },

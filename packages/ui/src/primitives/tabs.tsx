@@ -62,5 +62,5 @@ const TabsContent = forwardRef<
 ));
 TabsContent.displayName = 'TabsContent';
 
-export { Tabs, TabsList, TabsTrigger, tabsTriggerVariants, TabsContent };
 export type { TabsTriggerProps };
+export { Tabs, TabsContent, TabsList, TabsTrigger, tabsTriggerVariants };

@@ -50,5 +50,5 @@ const Pagination = forwardRef<HTMLDivElement, PaginationProps>(
 );
 Pagination.displayName = 'Pagination';
 
-export { Pagination };
 export type { PaginationProps };
+export { Pagination };

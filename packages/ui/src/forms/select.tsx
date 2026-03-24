@@ -62,4 +62,4 @@ const SelectItem = forwardRef<
 ));
 SelectItem.displayName = 'SelectItem';
 
-export { Select, SelectTrigger, SelectValue, SelectContent, SelectItem };
+export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue };
