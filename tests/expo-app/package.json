@@ -15,18 +15,18 @@
     "maestro:test": "maestro test ./maestro"
   },
   "dependencies": {
-    "expo": "~55.0.8",
-    "expo-dev-client": "^55.0.18",
+    "expo": "~55.0.11",
+    "expo-dev-client": "^55.0.22",
     "react": "19.2.4",
     "react-native": "0.84.1"
   },
   "devDependencies": {
     "@syncular/dialect-expo-sqlite": "workspace:*",
     "@types/react": "~19.2.14",
-    "expo-sqlite": "^55.0.11",
-    "expo-status-bar": "~55.0.4",
-    "expo-system-ui": "^55.0.10",
-    "expo-updates": "^55.0.15",
+    "expo-sqlite": "^55.0.13",
+    "expo-status-bar": "~55.0.5",
+    "expo-system-ui": "^55.0.13",
+    "expo-updates": "^55.0.18",
     "kysely": "*",
     "typescript": "~6.0.2"
   }

@@ -90,18 +90,15 @@ async function introspectAtVersion<DB = unknown>(
   filterTables?: string[]
 ): Promise<VersionedSchema> {
   const pglite = await PGlite.create();
+  const db = new Kysely<DB>({
+    dialect: new PGliteDialect(pglite),
+  });
 
   try {
-    const db = new Kysely<DB>({
-      dialect: new PGliteDialect(pglite),
-    });
-
     for (const migration of migrations.migrations) {
       if (migration.version > targetVersion) break;
       await migration.up(db);
     }
-
-    await db.destroy();
 
     let tables = await introspectPg(pglite);
 
@@ -115,7 +112,10 @@ async function introspectAtVersion<DB = unknown>(
       tables,
     };
   } finally {
-    await pglite.close();
+    await db.destroy();
+    if (!pglite.closed) {
+      await pglite.close();
+    }
   }
 }
 

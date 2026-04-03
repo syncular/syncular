@@ -43,7 +43,7 @@
     "release": "bunx syncular-publish"
   },
   "dependencies": {
-    "libsql": "^0.5.28"
+    "libsql": "^0.5.29"
   },
   "peerDependencies": {
     "kysely": "^0.28.0"
