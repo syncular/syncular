@@ -71,9 +71,9 @@
     "@syncular/observability-sentry": "workspace:*",
     "@syncular/transport-http": "workspace:*",
     "@syncular/ui": "workspace:*",
-    "@tanstack/react-query": "^5.95.2",
-    "@tanstack/react-router": "^1.168.3",
-    "lucide-react": "^1.0.1"
+    "@tanstack/react-query": "^5.96.2",
+    "@tanstack/react-router": "^1.168.10",
+    "lucide-react": "^1.7.0"
   },
   "peerDependencies": {
     "react": "^19.0.0",
@@ -88,7 +88,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "tailwindcss": "^4.2.2",
-    "vite": "^8.0.2"
+    "vite": "^8.0.3"
   },
   "files": [
     "dist",

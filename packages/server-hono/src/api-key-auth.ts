@@ -49,7 +49,7 @@ export async function validateApiKey<DB extends ApiKeyDb>(
   }
 
   const secretKey = authHeader.slice(7);
-  if (!secretKey || !secretKey.startsWith('sk_')) {
+  if (!secretKey?.startsWith('sk_')) {
     return null;
   }
 
