@@ -947,20 +947,22 @@ describe('migrations', () => {
     it('rejects shorthand migration definitions', () => {
       expect(() =>
         defineMigrations<TestDb>({
-          v1: async (db) => {
+          // @ts-expect-error intentional shorthand migration to verify runtime validation
+          v1: async (db: Kysely<TestDb>) => {
             await db.schema
               .createTable('items')
               .addColumn('id', 'text', (col) => col.primaryKey())
               .addColumn('name', 'text')
               .execute();
           },
-        } as never)
+        })
       ).toThrow(/Shorthand migration functions are not supported/);
     });
 
     it('requires a down migration definition', () => {
       expect(() =>
         defineMigrations<TestDb>({
+          // @ts-expect-error intentional missing down migration to verify runtime validation
           v1: {
             up: async (db) => {
               await db.schema
@@ -970,7 +972,7 @@ describe('migrations', () => {
                 .execute();
             },
           },
-        } as never)
+        })
       ).toThrow(/"down" must be a function/);
     });
 
@@ -978,7 +980,8 @@ describe('migrations', () => {
       expect(() =>
         defineMigrations<TestDb>({
           v1: {
-            checksum: 'legacy' as never,
+            // @ts-expect-error intentional invalid checksum mode to verify runtime validation
+            checksum: 'legacy',
             up: async (_db) => {},
             down: async (_db) => {},
           },
