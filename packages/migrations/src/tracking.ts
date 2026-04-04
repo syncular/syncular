@@ -3,7 +3,21 @@
  */
 
 import { type Kysely, sql } from 'kysely';
+import { LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM } from './checksum';
 import type { MigrationStateRow } from './types';
+
+function isDuplicateColumnError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('duplicate column') ||
+    message.includes('already exists') ||
+    (message.includes('column') && message.includes('exists'))
+  );
+}
 
 /**
  * Ensure the migration tracking table exists.
@@ -19,7 +33,19 @@ export async function ensureTrackingTable<DB>(
     .addColumn('name', 'text', (col) => col.notNull())
     .addColumn('applied_at', 'text', (col) => col.notNull())
     .addColumn('checksum', 'text', (col) => col.notNull())
+    .addColumn('checksum_algorithm', 'text', (col) => col.notNull())
     .execute();
+
+  try {
+    await sql`
+      alter table ${sql.table(tableName)}
+      add column checksum_algorithm text not null default ${sql.raw(`'${LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM}'`)}
+    `.execute(db);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) {
+      throw error;
+    }
+  }
 }
 
 /**
@@ -32,7 +58,7 @@ export async function getAppliedMigrations<DB, TTableName extends string>(
   await ensureTrackingTable(db, tableName);
 
   const result = await sql<MigrationStateRow>`
-    select version, name, applied_at, checksum
+    select version, name, applied_at, checksum, checksum_algorithm
     from ${sql.table(tableName)}
     order by version asc
   `.execute(db);
@@ -51,12 +77,19 @@ export async function recordAppliedMigration<DB, TTableName extends string>(
   await ensureTrackingTable(db, tableName);
 
   await sql`
-    insert into ${sql.table(tableName)} (version, name, applied_at, checksum)
+    insert into ${sql.table(tableName)} (
+      version,
+      name,
+      applied_at,
+      checksum,
+      checksum_algorithm
+    )
     values (
       ${migration.version},
       ${migration.name},
       ${new Date().toISOString()},
-      ${migration.checksum}
+      ${migration.checksum},
+      ${migration.checksum_algorithm}
     )
   `.execute(db);
 }

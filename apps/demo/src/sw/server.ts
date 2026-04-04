@@ -1,5 +1,6 @@
 import { createWaSqliteMainThreadDialect } from '@syncular/dialect-wa-sqlite';
 import {
+  clearAppliedMigrations,
   createMigrationTrackingTableName,
   runMigrations,
 } from '@syncular/migrations';
@@ -26,7 +27,7 @@ import {
   seedCatalog,
 } from '../server/catalog';
 import { serverMigrations } from '../server/migrations';
-import { resetDemoData } from '../server/reset';
+import { dropDemoAppTables, resetDemoData } from '../server/reset';
 import { createDemoRoutes } from '../server/routes';
 
 interface ServerDb extends SyncCoreDb, SyncBlobDb, ClientDb {}
@@ -34,6 +35,7 @@ interface ServerDb extends SyncCoreDb, SyncBlobDb, ClientDb {}
 const CONSOLE_TOKEN = 'demo-token';
 const BLOB_SECRET = 'demo-blob-secret';
 const DB_FILE = 'syncular-demo-sw-server.sqlite';
+const RESET_ALL_PATH = '/api/demo/reset-all';
 const SW_SERVER_SCRIPT_PATH = '/__demo/sw-server.js';
 const SERVER_TRACKING_TABLE = createMigrationTrackingTableName(['server']);
 
@@ -46,7 +48,7 @@ function getWorkerOrigin(): string {
   return location.origin;
 }
 
-async function createServiceWorkerDb(): Promise<{
+async function openServiceWorkerDb(): Promise<{
   db: Kysely<ServerDb>;
   dialect: ReturnType<typeof createSqliteServerDialect>;
 }> {
@@ -63,15 +65,52 @@ async function createServiceWorkerDb(): Promise<{
   });
 
   const dialect = createSqliteServerDialect();
-  await ensureSyncSchema(db, dialect);
-  await ensureBlobStorageSchemaSqlite(db);
+  return { db, dialect };
+}
+
+async function resetServiceWorkerAppState(db: Kysely<ServerDb>): Promise<void> {
+  await resetDemoData(db);
+  await dropDemoAppTables(db);
+}
+
+async function runServerMigrationsWithReset(
+  db: Kysely<ServerDb>
+): Promise<void> {
   await runMigrations({
     db,
     migrations: serverMigrations,
     trackingTable: SERVER_TRACKING_TABLE,
+    onChecksumMismatch: 'reset',
+    beforeReset: async (resetDb) => {
+      await resetServiceWorkerAppState(resetDb);
+    },
   });
+}
+
+async function createServiceWorkerDb(): Promise<{
+  db: Kysely<ServerDb>;
+  dialect: ReturnType<typeof createSqliteServerDialect>;
+}> {
+  const { db, dialect } = await openServiceWorkerDb();
+  await ensureSyncSchema(db, dialect);
+  await ensureBlobStorageSchemaSqlite(db);
+  await runServerMigrationsWithReset(db);
 
   return { db, dialect };
+}
+
+async function forceResetServiceWorkerDb(): Promise<void> {
+  const { db, dialect } = await openServiceWorkerDb();
+
+  try {
+    await ensureSyncSchema(db, dialect);
+    await ensureBlobStorageSchemaSqlite(db);
+    await resetServiceWorkerAppState(db);
+    await clearAppliedMigrations(db, SERVER_TRACKING_TABLE);
+    await runServerMigrationsWithReset(db);
+  } finally {
+    await db.destroy();
+  }
 }
 
 async function createApiApp(): Promise<Hono> {
@@ -150,6 +189,15 @@ async function getApiApp(): Promise<Hono> {
 const serviceWorkerServer = createServiceWorkerServer({
   serviceWorkerScriptPath: SW_SERVER_SCRIPT_PATH,
   handleRequest: async (request) => {
+    const url = new URL(request.url);
+    if (request.method === 'POST' && url.pathname === RESET_ALL_PATH) {
+      await forceResetServiceWorkerDb();
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    }
+
     const app = await getApiApp();
     return await app.fetch(request);
   },

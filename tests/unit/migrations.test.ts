@@ -2,7 +2,7 @@
  * Tests for @syncular/migrations
  *
  * Covers:
- * - Whitespace-resilient checksums (normalizeSource)
+ * - Deterministic SQL-trace checksums
  * - defineMigrations version parsing and sorting
  * - runMigrations basic flow
  * - Checksum mismatch: error mode (default)
@@ -22,12 +22,13 @@ import {
   DEFAULT_MIGRATION_TRACKING_TABLE,
   defineMigrations,
   getAppliedMigrations,
+  getLegacyMigrationChecksum,
   getMigrationChecksum,
   getSchemaVersion,
   runMigrations,
   runMigrationsToVersion,
 } from '@syncular/migrations';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 
 interface TestDb {
   items: { id: string; name: string };
@@ -43,152 +44,245 @@ describe('migrations', () => {
     });
   });
 
-  describe('whitespace-resilient checksums', () => {
-    it('produces the same checksum regardless of whitespace formatting', () => {
+  describe('deterministic checksums', () => {
+    it('produces the same checksum regardless of whitespace formatting', async () => {
       // Two functions with identical logic but different formatting
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
       // Same function but with different whitespace
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
-      const checksum1 = getMigrationChecksum(migrations1.migrations[0]!);
-      const checksum2 = getMigrationChecksum(migrations2.migrations[0]!);
+      const checksum1 = await getMigrationChecksum(
+        migrations1,
+        migrations1.migrations[0]!,
+        'sqlite'
+      );
+      const checksum2 = await getMigrationChecksum(
+        migrations2,
+        migrations2.migrations[0]!,
+        'sqlite'
+      );
 
       expect(checksum1).toBe(checksum2);
     });
 
-    it('produces the same checksum when comments differ', () => {
+    it('produces the same checksum when comments differ', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          // Create items table
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            // Create items table
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          /* Different comment style */
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            /* Different comment style */
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
-      const checksum1 = getMigrationChecksum(migrations1.migrations[0]!);
-      const checksum2 = getMigrationChecksum(migrations2.migrations[0]!);
+      const checksum1 = await getMigrationChecksum(
+        migrations1,
+        migrations1.migrations[0]!,
+        'sqlite'
+      );
+      const checksum2 = await getMigrationChecksum(
+        migrations2,
+        migrations2.migrations[0]!,
+        'sqlite'
+      );
 
       expect(checksum1).toBe(checksum2);
     });
 
-    it('produces different checksums when logic changes', () => {
+    it('produces different checksums when logic changes', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) => col.notNull())
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) => col.notNull())
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
-      const checksum1 = getMigrationChecksum(migrations1.migrations[0]!);
-      const checksum2 = getMigrationChecksum(migrations2.migrations[0]!);
+      const checksum1 = await getMigrationChecksum(
+        migrations1,
+        migrations1.migrations[0]!,
+        'sqlite'
+      );
+      const checksum2 = await getMigrationChecksum(
+        migrations2,
+        migrations2.migrations[0]!,
+        'sqlite'
+      );
 
       expect(checksum1).not.toBe(checksum2);
     });
 
-    it('does not strip // markers inside string literals', () => {
+    it('produces different checksums when string literals differ', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) =>
-              col.defaultTo('https://api.one.example/sync')
-            )
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) =>
+                col.defaultTo('https://api.one.example/sync')
+              )
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) =>
-              col.defaultTo('https://api.two.example/sync')
-            )
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) =>
+                col.defaultTo('https://api.two.example/sync')
+              )
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
-      const checksum1 = getMigrationChecksum(migrations1.migrations[0]!);
-      const checksum2 = getMigrationChecksum(migrations2.migrations[0]!);
+      const checksum1 = await getMigrationChecksum(
+        migrations1,
+        migrations1.migrations[0]!,
+        'sqlite'
+      );
+      const checksum2 = await getMigrationChecksum(
+        migrations2,
+        migrations2.migrations[0]!,
+        'sqlite'
+      );
 
       expect(checksum1).not.toBe(checksum2);
     });
 
-    it('does not strip /* */ markers inside string literals', () => {
+    it('produces different checksums when other string literals differ', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) =>
-              col.defaultTo('tenant/*one*/scope')
-            )
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) =>
+                col.defaultTo('tenant/*one*/scope')
+              )
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) =>
-              col.defaultTo('tenant/*two*/scope')
-            )
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) =>
+                col.defaultTo('tenant/*two*/scope')
+              )
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
-      const checksum1 = getMigrationChecksum(migrations1.migrations[0]!);
-      const checksum2 = getMigrationChecksum(migrations2.migrations[0]!);
+      const checksum1 = await getMigrationChecksum(
+        migrations1,
+        migrations1.migrations[0]!,
+        'sqlite'
+      );
+      const checksum2 = await getMigrationChecksum(
+        migrations2,
+        migrations2.migrations[0]!,
+        'sqlite'
+      );
 
       expect(checksum1).not.toBe(checksum2);
+    });
+
+    it('returns null when checksum validation is disabled', async () => {
+      const migrations = defineMigrations<TestDb>({
+        v1: {
+          checksum: 'disabled',
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .execute();
+          },
+          down: async (_db) => {},
+        },
+      });
+
+      const checksum = await getMigrationChecksum(
+        migrations,
+        migrations.migrations[0]!,
+        'sqlite'
+      );
+
+      expect(checksum).toBeNull();
     });
   });
 
@@ -252,12 +346,15 @@ describe('migrations', () => {
   describe('runMigrations', () => {
     it('applies pending migrations and returns applied versions', async () => {
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -270,16 +367,30 @@ describe('migrations', () => {
       // Table should exist
       const rows = await db.selectFrom('items').selectAll().execute();
       expect(rows).toEqual([]);
+
+      const appliedRows = await getAppliedMigrations(
+        db,
+        'sync_migration_state'
+      );
+      expect(appliedRows).toEqual([
+        expect.objectContaining({
+          version: 1,
+          checksum_algorithm: 'sql_trace_v1',
+        }),
+      ]);
     });
 
     it('skips already-applied migrations on second run', async () => {
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -303,12 +414,15 @@ describe('migrations', () => {
       });
 
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -336,12 +450,15 @@ describe('migrations', () => {
 
     it('throws on checksum mismatch in error mode (default)', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -349,12 +466,15 @@ describe('migrations', () => {
 
       // "Modify" the migration (different function body => different checksum)
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) => col.notNull())
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) => col.notNull())
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -363,14 +483,65 @@ describe('migrations', () => {
       ).rejects.toThrow(/has changed since it was applied/);
     });
 
+    it('upgrades legacy tracking rows and validates them with the legacy algorithm', async () => {
+      const migrations = defineMigrations<TestDb>({
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
+        },
+      });
+
+      await sql`
+        create table sync_migration_state (
+          version integer primary key,
+          name text not null,
+          applied_at text not null,
+          checksum text not null
+        )
+      `.execute(db);
+
+      await sql`
+        insert into sync_migration_state (version, name, applied_at, checksum)
+        values (
+          1,
+          'v1',
+          ${new Date().toISOString()},
+          ${getLegacyMigrationChecksum(migrations.migrations[0]!)}
+        )
+      `.execute(db);
+
+      const result = await runMigrations({ db, migrations });
+
+      expect(result.applied).toEqual([]);
+      const appliedRows = await getAppliedMigrations(
+        db,
+        'sync_migration_state'
+      );
+      expect(appliedRows).toEqual([
+        expect.objectContaining({
+          version: 1,
+          checksum_algorithm: 'legacy_source_v1',
+        }),
+      ]);
+    });
+
     it('resets on checksum mismatch when onChecksumMismatch is "reset"', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -384,12 +555,15 @@ describe('migrations', () => {
 
       // "Modify" the migration
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) => col.notNull())
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) => col.notNull())
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -418,12 +592,15 @@ describe('migrations', () => {
         .execute();
 
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -441,28 +618,33 @@ describe('migrations', () => {
     });
 
     it('calls beforeReset before clearing tracking state', async () => {
-      const callOrder: string[] = [];
+      const stateRowsSeenInBeforeReset: number[] = [];
 
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
       await runMigrations({ db, migrations: migrations1 });
 
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          callOrder.push('migration-v1');
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) => col.notNull())
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) => col.notNull())
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -470,23 +652,27 @@ describe('migrations', () => {
         db,
         migrations: migrations2,
         onChecksumMismatch: 'reset',
-        beforeReset: async () => {
-          callOrder.push('beforeReset');
+        beforeReset: async (db) => {
+          const rows = await getAppliedMigrations(db, 'sync_migration_state');
+          stateRowsSeenInBeforeReset.push(rows.length);
           await db.schema.dropTable('items').ifExists().execute();
         },
       });
 
-      expect(callOrder).toEqual(['beforeReset', 'migration-v1']);
+      expect(stateRowsSeenInBeforeReset).toEqual([1]);
     });
 
     it('does not reset when checksums match even in reset mode', async () => {
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -501,17 +687,68 @@ describe('migrations', () => {
       expect(result.wasReset).toBe(false);
       expect(result.applied).toEqual([]);
     });
+
+    it('skips mismatch checks for disabled checksums', async () => {
+      const migrations1 = defineMigrations<TestDb>({
+        v1: {
+          checksum: 'disabled',
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
+        },
+      });
+
+      await runMigrations({ db, migrations: migrations1 });
+
+      const migrations2 = defineMigrations<TestDb>({
+        v1: {
+          checksum: 'disabled',
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) => col.notNull())
+              .execute();
+          },
+          down: async (_db) => {},
+        },
+      });
+
+      const result = await runMigrations({ db, migrations: migrations2 });
+
+      expect(result.applied).toEqual([]);
+      expect(result.wasReset).toBe(false);
+
+      const appliedRows = await getAppliedMigrations(
+        db,
+        'sync_migration_state'
+      );
+      expect(appliedRows).toEqual([
+        expect.objectContaining({
+          version: 1,
+          checksum_algorithm: 'disabled',
+        }),
+      ]);
+    });
   });
 
   describe('clearAppliedMigrations', () => {
     it('removes all rows from the tracking table', async () => {
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -532,20 +769,28 @@ describe('migrations', () => {
       const applied: number[] = [];
 
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          applied.push(1);
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          checksum: 'disabled',
+          up: async (db) => {
+            applied.push(1);
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
-        v2: async (db) => {
-          applied.push(2);
-          await db.schema
-            .alterTable('items')
-            .addColumn('description', 'text')
-            .execute();
+        v2: {
+          checksum: 'disabled',
+          up: async (db) => {
+            applied.push(2);
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -558,18 +803,24 @@ describe('migrations', () => {
 
     it('resets all versions on checksum mismatch in any version', async () => {
       const migrations1 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
-        v2: async (db) => {
-          await db.schema
-            .alterTable('items')
-            .addColumn('description', 'text')
-            .execute();
+        v2: {
+          up: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -577,18 +828,24 @@ describe('migrations', () => {
 
       // Change v1 but keep v2 the same
       const migrations2 = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text', (col) => col.notNull())
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text', (col) => col.notNull())
+              .execute();
+          },
+          down: async (_db) => {},
         },
-        v2: async (db) => {
-          await db.schema
-            .alterTable('items')
-            .addColumn('description', 'text')
-            .execute();
+        v2: {
+          up: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -687,39 +944,69 @@ describe('migrations', () => {
       expect(applied).toEqual([]);
     });
 
-    it('throws when a required down migration is missing', async () => {
-      const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
-        },
-      });
+    it('rejects shorthand migration definitions', () => {
+      expect(() =>
+        defineMigrations<TestDb>({
+          v1: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+        } as never)
+      ).toThrow(/Shorthand migration functions are not supported/);
+    });
 
-      await runMigrations({ db, migrations });
-      await expect(
-        runMigrationsToVersion({
-          db,
-          migrations,
-          targetVersion: 0,
+    it('requires a down migration definition', () => {
+      expect(() =>
+        defineMigrations<TestDb>({
+          v1: {
+            up: async (db) => {
+              await db.schema
+                .createTable('items')
+                .addColumn('id', 'text', (col) => col.primaryKey())
+                .addColumn('name', 'text')
+                .execute();
+            },
+          },
+        } as never)
+      ).toThrow(/"down" must be a function/);
+    });
+
+    it('rejects unsupported checksum modes', () => {
+      expect(() =>
+        defineMigrations<TestDb>({
+          v1: {
+            checksum: 'legacy' as never,
+            up: async (_db) => {},
+            down: async (_db) => {},
+          },
         })
-      ).rejects.toThrow(/down migration is not defined/);
+      ).toThrow(/"checksum" must be "deterministic" or "disabled"/);
     });
   });
 
   describe('defineMigrations sorting', () => {
     it('sorts out-of-order version keys into ascending order', () => {
       const migrations = defineMigrations<TestDb>({
-        v3: async (_db) => {
-          /* v3 */
+        v3: {
+          up: async (_db) => {
+            /* v3 */
+          },
+          down: async (_db) => {},
         },
-        v1: async (_db) => {
-          /* v1 */
+        v1: {
+          up: async (_db) => {
+            /* v1 */
+          },
+          down: async (_db) => {},
         },
-        v2: async (_db) => {
-          /* v2 */
+        v2: {
+          up: async (_db) => {
+            /* v2 */
+          },
+          down: async (_db) => {},
         },
       });
       expect(migrations.migrations.map((m) => m.version)).toEqual([1, 2, 3]);
@@ -733,6 +1020,7 @@ describe('migrations', () => {
 
       const migrations = defineMigrations<TestDb>({
         v1: {
+          checksum: 'disabled',
           up: async (db) => {
             applied.push(1);
             await db.schema
@@ -746,6 +1034,7 @@ describe('migrations', () => {
           },
         },
         v2: {
+          checksum: 'disabled',
           up: async (db) => {
             applied.push(2);
             await db.schema
@@ -916,18 +1205,24 @@ describe('migrations', () => {
 
     it('returns the correct version after migrations', async () => {
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
-        v2: async (db) => {
-          await db.schema
-            .alterTable('items')
-            .addColumn('description', 'text')
-            .execute();
+        v2: {
+          up: async (db) => {
+            await db.schema
+              .alterTable('items')
+              .addColumn('description', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 
@@ -941,12 +1236,15 @@ describe('migrations', () => {
   describe('custom tracking table', () => {
     it('uses a custom tracking table isolated from the default', async () => {
       const migrations = defineMigrations<TestDb>({
-        v1: async (db) => {
-          await db.schema
-            .createTable('items')
-            .addColumn('id', 'text', (col) => col.primaryKey())
-            .addColumn('name', 'text')
-            .execute();
+        v1: {
+          up: async (db) => {
+            await db.schema
+              .createTable('items')
+              .addColumn('id', 'text', (col) => col.primaryKey())
+              .addColumn('name', 'text')
+              .execute();
+          },
+          down: async (_db) => {},
         },
       });
 

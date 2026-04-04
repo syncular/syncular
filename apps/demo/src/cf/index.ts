@@ -8,6 +8,7 @@
  * - Static Assets for the frontend SPA
  */
 
+import { createDatabase } from '@syncular/core';
 import { createD1Dialect } from '@syncular/dialect-d1';
 import {
   createMigrationTrackingTableName,
@@ -50,7 +51,7 @@ import {
 } from '../server/catalog';
 import { serverMigrations } from '../server/migrations';
 import { resolvePartitionIdFromRequest } from '../server/partition-id';
-import { resetDemoData } from '../server/reset';
+import { dropDemoAppTables, resetDemoData } from '../server/reset';
 import { createDemoRoutes } from '../server/routes';
 
 interface ServerDb extends SyncCoreDb, SyncBlobDb, ClientDb {}
@@ -193,6 +194,11 @@ function resolveDemoCloudflareSentryOptions(env: Env) {
 class SyncDOBase extends SyncDurableObject<Env> {
   private static runtimeBootstrapPromise: Promise<void> | null = null;
 
+  private async resetAppState(db: Kysely<ServerDb>): Promise<void> {
+    await resetDemoData(db);
+    await dropDemoAppTables(db);
+  }
+
   private async ensureRuntimeBootstrap(
     db: Kysely<ServerDb>,
     dialect: ReturnType<typeof createSqliteServerDialect>
@@ -204,6 +210,10 @@ class SyncDOBase extends SyncDurableObject<Env> {
           db,
           migrations: serverMigrations,
           trackingTable: SERVER_TRACKING_TABLE,
+          onChecksumMismatch: 'reset',
+          beforeReset: async (resetDb) => {
+            await this.resetAppState(resetDb);
+          },
         });
       })().catch((error) => {
         SyncDOBase.runtimeBootstrapPromise = null;
