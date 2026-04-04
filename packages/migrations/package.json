@@ -48,10 +48,17 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
     "kysely": "*"
   },
   "files": [
     "dist",
     "src"
-  ]
+  ],
+  "dependencies": {
+    "@electric-sql/pglite": "^0.4.3",
+    "better-sqlite3": "^12.8.0",
+    "kysely-bun-sqlite": "^0.4.0",
+    "kysely-pglite-dialect": "^1.3.1"
+  }
 }

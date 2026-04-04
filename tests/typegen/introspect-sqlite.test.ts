@@ -48,50 +48,56 @@ describe('SQLite introspection', () => {
 
   it('supports migrations that read rows during introspection', async () => {
     const readDuringMigration = defineMigrations({
-      v1: async (db) => {
-        const migrationDb = db as unknown as {
-          insertInto: (table: string) => {
-            values: (row: Record<string, unknown>) => {
-              execute: () => Promise<unknown>;
+      v1: {
+        up: async (db) => {
+          const migrationDb = db as unknown as {
+            insertInto: (table: string) => {
+              values: (row: Record<string, unknown>) => {
+                execute: () => Promise<unknown>;
+              };
             };
-          };
-          selectFrom: (table: string) => {
-            select: (column: string) => {
-              where: (
-                column: string,
-                operator: '=' | '!=' | '<' | '>' | '<=' | '>=',
-                value: unknown
-              ) => {
-                executeTakeFirstOrThrow: () => Promise<{ id: string }>;
+            selectFrom: (table: string) => {
+              select: (column: string) => {
+                where: (
+                  column: string,
+                  operator: '=' | '!=' | '<' | '>' | '<=' | '>=',
+                  value: unknown
+                ) => {
+                  executeTakeFirstOrThrow: () => Promise<{ id: string }>;
+                };
               };
             };
           };
-        };
 
-        await db.schema
-          .createTable('source')
-          .addColumn('id', 'text', (col) => col.primaryKey())
-          .execute();
+          await db.schema
+            .createTable('source')
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .execute();
 
-        await migrationDb
-          .insertInto('source')
-          .values({ id: 'row-1' })
-          .execute();
+          await migrationDb
+            .insertInto('source')
+            .values({ id: 'row-1' })
+            .execute();
 
-        const row = await migrationDb
-          .selectFrom('source')
-          .select('id')
-          .where('id', '=', 'row-1')
-          .executeTakeFirstOrThrow();
+          const row = await migrationDb
+            .selectFrom('source')
+            .select('id')
+            .where('id', '=', 'row-1')
+            .executeTakeFirstOrThrow();
 
-        if (row.id !== 'row-1') {
-          throw new Error('expected to read seeded row');
-        }
+          if (row.id !== 'row-1') {
+            throw new Error('expected to read seeded row');
+          }
 
-        await db.schema
-          .createTable('result')
-          .addColumn('id', 'text', (col) => col.primaryKey())
-          .execute();
+          await db.schema
+            .createTable('result')
+            .addColumn('id', 'text', (col) => col.primaryKey())
+            .execute();
+        },
+        down: async (db) => {
+          await db.schema.dropTable('result').ifExists().execute();
+          await db.schema.dropTable('source').ifExists().execute();
+        },
       },
     });
 
@@ -144,8 +150,13 @@ describe('SQLite introspection', () => {
 
   it('handles empty migrations', async () => {
     const empty = defineMigrations({
-      v1: async (_db) => {
-        // no-op
+      v1: {
+        up: async (_db) => {
+          // no-op
+        },
+        down: async (_db) => {
+          // no-op
+        },
       },
     });
     const schema = await introspectCurrentSchema(empty, 'sqlite');

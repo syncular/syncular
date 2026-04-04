@@ -198,19 +198,31 @@ import {
 } from '@syncular/migrations';
 
 const clientMigrations = defineMigrations<MyDb>({
-  v1: async (db) => {
-    await db.schema
-      .createTable('notes')
-      .addColumn('id', 'text', (col) => col.primaryKey())
-      .addColumn('title', 'text', (col) => col.notNull())
-      .addColumn('server_version', 'integer')
-      .execute();
+  v1: {
+    checksum: 'disabled',
+    up: async (db) => {
+      await db.schema
+        .createTable('notes')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .addColumn('server_version', 'integer')
+        .execute();
+    },
+    down: async (db) => {
+      await db.schema.dropTable('notes').ifExists().execute();
+    },
   },
-  v2: async (db) => {
-    await db.schema
-      .alterTable('notes')
-      .addColumn('pinned', 'integer', (col) => col.defaultTo(0))
-      .execute();
+  v2: {
+    checksum: 'disabled',
+    up: async (db) => {
+      await db.schema
+        .alterTable('notes')
+        .addColumn('pinned', 'integer', (col) => col.defaultTo(0))
+        .execute();
+    },
+    down: async (db) => {
+      await db.schema.alterTable('notes').dropColumn('pinned').execute();
+    },
   },
 });
 
@@ -235,9 +247,16 @@ If you need a custom tracking table, prefer
 normalizes names to lowercase snake_case and keeps the `migration_state`
 suffix consistent.
 
-#### Checksum mismatch handling
+#### Checksum modes
 
-Each migration function is checksummed when first applied. If the function body changes later, `runMigrations` detects the mismatch. You control what happens next:
+Each migration can opt into one of two checksum modes:
+
+| `checksum` | Behavior |
+|-----------|----------|
+| `'deterministic'` (default) | Replays the migration into a scratch in-memory DB that matches the current runtime family and hashes the SQL trace that actually executed. |
+| `'disabled'` | Skips checksum creation and checksum mismatch checks for that migration. Use this for browser/service-worker runtimes or other cases where Syncular cannot reliably create the matching scratch DB. |
+
+For deterministic migrations, `runMigrations` detects when the emitted SQL trace changes after a version has already been applied. You control what happens next:
 
 | `onChecksumMismatch` | Behavior |
 |---------------------|----------|
@@ -246,9 +265,9 @@ Each migration function is checksummed when first applied. If the function body 
 
 The `beforeReset` callback is where you drop your application tables so migrations can recreate them cleanly. The result object includes `wasReset: boolean` so callers can detect when a reset occurred.
 
-#### Whitespace-resilient checksums
+#### Deterministic SQL-trace checksums
 
-Checksums are computed after normalizing the function source: stripping comments and collapsing whitespace. This means reformatting your migration code (changing indentation, adding/removing comments) will not trigger a checksum mismatch. Only actual logic changes trigger it.
+Syncular does not hash `migration.up.toString()`. For `checksum: 'deterministic'`, it replays the migration into a scratch in-memory database and hashes the SQL statements that actually ran. That keeps checksum validation stable across bundling/minification while still validating that the migration can execute against a real database.
 
 ### Using the migrate prop
 

@@ -1,5 +1,8 @@
 export type {
   DefinedMigrations,
+  MigrationChecksumAlgorithm,
+  MigrationChecksumDialect,
+  MigrationChecksumMode,
   MigrationDefinition,
   MigrationFn,
   MigrationRecord,

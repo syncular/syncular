@@ -3,9 +3,15 @@
  */
 
 import {
-  getCompatibleMigrationChecksums,
+  DISABLED_MIGRATION_CHECKSUM,
+  DISABLED_MIGRATION_CHECKSUM_ALGORITHM,
+  getLegacyMigrationChecksum,
   getMigrationChecksum,
-} from './define';
+  getMigrationChecksumAlgorithm,
+  inferMigrationChecksumDialect,
+  LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM,
+  SQL_TRACE_MIGRATION_CHECKSUM_ALGORITHM,
+} from './checksum';
 import { DEFAULT_MIGRATION_TRACKING_TABLE } from './naming';
 import {
   clearAppliedMigrations,
@@ -15,6 +21,10 @@ import {
   removeAppliedMigration,
 } from './tracking';
 import type {
+  DefinedMigrations,
+  MigrationChecksumAlgorithm,
+  MigrationChecksumDialect,
+  ParsedMigration,
   RunMigrationsOptions,
   RunMigrationsResult,
   RunMigrationsToVersionOptions,
@@ -33,6 +43,77 @@ function isAlreadyExistsSchemaError(error: unknown): boolean {
     message.includes('already exists') ||
     (message.includes('relation') && message.includes('exists'))
   );
+}
+
+function isDeterministicMigration<DB>(migration: ParsedMigration<DB>): boolean {
+  return migration.checksum === 'deterministic';
+}
+
+function getDeterministicMigrations<DB>(
+  migrations: DefinedMigrations<DB>
+): ParsedMigration<DB>[] {
+  return migrations.migrations.filter(isDeterministicMigration);
+}
+
+function requireChecksumDialect<DB>(
+  options: RunMigrationsOptions<DB>
+): MigrationChecksumDialect {
+  const dialect = inferMigrationChecksumDialect(options.db);
+
+  if (dialect) {
+    return dialect;
+  }
+
+  throw new Error(
+    'Deterministic migration checksums are not supported for this runtime or dialect. ' +
+      'Set `checksum: "disabled"` on these migrations if they must run without checksum validation.'
+  );
+}
+
+async function getStoredChecksumForMigration<DB>(
+  options: RunMigrationsOptions<DB>,
+  migration: ParsedMigration<DB>,
+  dialect: MigrationChecksumDialect | null
+): Promise<string> {
+  if (migration.checksum === 'disabled') {
+    return DISABLED_MIGRATION_CHECKSUM;
+  }
+
+  const resolvedDialect = dialect ?? requireChecksumDialect(options);
+  const checksum = await getMigrationChecksum(
+    options.migrations,
+    migration,
+    resolvedDialect
+  );
+
+  if (!checksum) {
+    throw new Error(
+      `Migration v${migration.version} (${migration.name}) is configured for deterministic checksums but did not produce one.`
+    );
+  }
+
+  return checksum;
+}
+
+async function getChecksumForAlgorithm<DB>(
+  options: RunMigrationsOptions<DB>,
+  migration: ParsedMigration<DB>,
+  algorithm: MigrationChecksumAlgorithm,
+  dialect: MigrationChecksumDialect | null
+): Promise<string> {
+  if (algorithm === DISABLED_MIGRATION_CHECKSUM_ALGORITHM) {
+    return DISABLED_MIGRATION_CHECKSUM;
+  }
+
+  if (algorithm === LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM) {
+    return getLegacyMigrationChecksum(migration);
+  }
+
+  if (algorithm === SQL_TRACE_MIGRATION_CHECKSUM_ALGORITHM) {
+    return await getStoredChecksumForMigration(options, migration, dialect);
+  }
+
+  throw new Error(`Unsupported migration checksum algorithm: ${algorithm}`);
 }
 
 async function runWithMigrationQueue<T>(
@@ -66,8 +147,14 @@ async function runWithMigrationQueue<T>(
  * import { defineMigrations, runMigrations } from '@syncular/migrations';
  *
  * const migrations = defineMigrations({
- *   v1: async (db) => { ... },
- *   v2: async (db) => { ... },
+ *   v1: {
+ *     up: async (db) => { ... },
+ *     down: async (db) => { ... },
+ *   },
+ *   v2: {
+ *     up: async (db) => { ... },
+ *     down: async (db) => { ... },
+ *   },
  * });
  *
  * const result = await runMigrations({
@@ -130,16 +217,33 @@ export async function runMigrationsToVersion<DB>(
     const revertedVersions: number[] = [];
     let wasReset = false;
     let recoveredFromSchemaConflict = false;
+    const deterministicMigrations = getDeterministicMigrations(migrations);
+    const checksumDialect =
+      deterministicMigrations.length > 0
+        ? requireChecksumDialect(options)
+        : null;
 
     // Check for checksum mismatches up-front when reset mode is enabled
     if (onChecksumMismatch === 'reset' && applied.length > 0) {
-      const hasMismatch = migrations.migrations.some((migration) => {
+      let hasMismatch = false;
+
+      for (const migration of deterministicMigrations) {
         const existing = appliedByVersion.get(migration.version);
-        if (!existing) return false;
-        return !getCompatibleMigrationChecksums(migration).includes(
-          existing.checksum
+        if (!existing) {
+          continue;
+        }
+
+        const currentChecksum = await getChecksumForAlgorithm(
+          options,
+          migration,
+          existing.checksum_algorithm,
+          checksumDialect
         );
-      });
+        if (existing.checksum !== currentChecksum) {
+          hasMismatch = true;
+          break;
+        }
+      }
 
       if (hasMismatch) {
         // Let caller drop application tables first
@@ -159,9 +263,19 @@ export async function runMigrationsToVersion<DB>(
       if (!existing) {
         continue;
       }
-      const currentChecksum = getMigrationChecksum(migration);
-      const compatibleChecksums = getCompatibleMigrationChecksums(migration);
-      if (!compatibleChecksums.includes(existing.checksum)) {
+
+      if (migration.checksum === 'disabled') {
+        continue;
+      }
+
+      const currentChecksum = await getChecksumForAlgorithm(
+        options,
+        migration,
+        existing.checksum_algorithm,
+        checksumDialect
+      );
+
+      if (existing.checksum !== currentChecksum) {
         throw new Error(
           `Migration v${migration.version} (${migration.name}) has changed since it was applied. ` +
             `Stored checksum ${existing.checksum} is not compatible with current checksum ${currentChecksum}. ` +
@@ -209,10 +323,17 @@ export async function runMigrationsToVersion<DB>(
           continue;
         }
 
+        const checksum = await getStoredChecksumForMigration(
+          options,
+          migration,
+          checksumDialect
+        );
+
         await recordAppliedMigration(db, trackingTable, {
           version: migration.version,
           name: migration.name,
-          checksum: getMigrationChecksum(migration),
+          checksum,
+          checksum_algorithm: getMigrationChecksumAlgorithm(migration),
         });
         appliedVersions.push(migration.version);
       }
@@ -228,12 +349,6 @@ export async function runMigrationsToVersion<DB>(
             `Cannot revert migration v${version}: migration is not defined in current migration set.`
           );
         }
-        if (typeof migration.down !== 'function') {
-          throw new Error(
-            `Cannot revert migration v${version} (${migration.name}): down migration is not defined.`
-          );
-        }
-
         await migration.down(db);
         await removeAppliedMigration(db, trackingTable, version);
         revertedVersions.push(version);

@@ -4,8 +4,8 @@
 
 import type {
   DefinedMigrations,
+  MigrationChecksumMode,
   MigrationDefinition,
-  MigrationFn,
   MigrationRecord,
   ParsedMigration,
 } from './types';
@@ -21,149 +21,26 @@ function parseVersionKey(key: string): number | null {
   return Number.isNaN(version) ? null : version;
 }
 
-/**
- * Normalize a function source string for checksum comparison.
- * Strips comments and collapses whitespace so that formatting-only
- * changes don't break checksums.
- */
-function stripCommentsPreservingStrings(source: string): string {
-  let out = '';
-  let i = 0;
-  let mode:
-    | 'code'
-    | 'singleQuote'
-    | 'doubleQuote'
-    | 'template'
-    | 'lineComment'
-    | 'blockComment' = 'code';
-
-  while (i < source.length) {
-    const char = source[i]!;
-    const next = source[i + 1];
-
-    if (mode === 'lineComment') {
-      if (char === '\n') {
-        out += '\n';
-        mode = 'code';
-      }
-      i += 1;
-      continue;
-    }
-
-    if (mode === 'blockComment') {
-      if (char === '*' && next === '/') {
-        i += 2;
-        mode = 'code';
-        continue;
-      }
-      if (char === '\n') {
-        out += '\n';
-      }
-      i += 1;
-      continue;
-    }
-
-    if (mode === 'singleQuote') {
-      out += char;
-      if (char === '\\' && next !== undefined) {
-        out += next;
-        i += 2;
-        continue;
-      }
-      if (char === "'") {
-        mode = 'code';
-      }
-      i += 1;
-      continue;
-    }
-
-    if (mode === 'doubleQuote') {
-      out += char;
-      if (char === '\\' && next !== undefined) {
-        out += next;
-        i += 2;
-        continue;
-      }
-      if (char === '"') {
-        mode = 'code';
-      }
-      i += 1;
-      continue;
-    }
-
-    if (mode === 'template') {
-      out += char;
-      if (char === '\\' && next !== undefined) {
-        out += next;
-        i += 2;
-        continue;
-      }
-      if (char === '`') {
-        mode = 'code';
-      }
-      i += 1;
-      continue;
-    }
-
-    if (char === '/' && next === '/') {
-      mode = 'lineComment';
-      i += 2;
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      mode = 'blockComment';
-      i += 2;
-      continue;
-    }
-    if (char === "'") {
-      mode = 'singleQuote';
-      out += char;
-      i += 1;
-      continue;
-    }
-    if (char === '"') {
-      mode = 'doubleQuote';
-      out += char;
-      i += 1;
-      continue;
-    }
-    if (char === '`') {
-      mode = 'template';
-      out += char;
-      i += 1;
-      continue;
-    }
-
-    out += char;
-    i += 1;
-  }
-
-  return out;
-}
-
-function normalizeSource(source: string): string {
-  return stripCommentsPreservingStrings(source)
-    .replace(/\s+/g, ' ') // collapse whitespace
-    .trim();
-}
-
-/**
- * Compute a simple checksum for a migration function.
- * Used to detect if a migration has changed after being applied.
- */
-function computeChecksum<DB>(fn: MigrationFn<DB>): string {
-  const fnStr = normalizeSource(fn.toString());
-  let hash = 0;
-  for (let i = 0; i < fnStr.length; i++) {
-    hash = (hash * 31 + fnStr.charCodeAt(i)) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
-}
-
 function isMigrationDefinitionObject<DB>(
   value: MigrationDefinition<DB>
-): value is { up: MigrationFn<DB>; down?: MigrationFn<DB> } {
+): value is MigrationDefinition<DB> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeChecksumMode(
+  key: string,
+  checksum: MigrationChecksumMode | undefined
+): MigrationChecksumMode {
+  if (checksum === undefined) {
+    return 'deterministic';
+  }
+  if (checksum === 'deterministic' || checksum === 'disabled') {
+    return checksum;
+  }
+
+  throw new Error(
+    `Invalid migration "${key}": "checksum" must be "deterministic" or "disabled" when provided.`
+  );
 }
 
 /**
@@ -172,16 +49,28 @@ function isMigrationDefinitionObject<DB>(
  * @example
  * ```typescript
  * export const migrations = defineMigrations({
- *   v1: async (db) => {
- *     await db.schema.createTable('tasks')
- *       .addColumn('id', 'text', col => col.primaryKey())
- *       .addColumn('title', 'text', col => col.notNull())
- *       .execute();
+ *   v1: {
+ *     up: async (db) => {
+ *       await db.schema.createTable('tasks')
+ *         .addColumn('id', 'text', col => col.primaryKey())
+ *         .addColumn('title', 'text', col => col.notNull())
+ *         .execute();
+ *     },
+ *     down: async (db) => {
+ *       await db.schema.dropTable('tasks').ifExists().execute();
+ *     },
  *   },
- *   v2: async (db) => {
- *     await db.schema.alterTable('tasks')
- *       .addColumn('priority', 'integer', col => col.defaultTo(0))
- *       .execute();
+ *   v2: {
+ *     up: async (db) => {
+ *       await db.schema.alterTable('tasks')
+ *         .addColumn('priority', 'integer', col => col.defaultTo(0))
+ *         .execute();
+ *     },
+ *     down: async (db) => {
+ *       await db.schema.alterTable('tasks')
+ *         .dropColumn('priority')
+ *         .execute();
+ *     },
  *   },
  * });
  * ```
@@ -205,45 +94,27 @@ export function defineMigrations<
       );
     }
 
-    const up = isMigrationDefinitionObject(definition)
-      ? definition.up
-      : definition;
-    const down = isMigrationDefinitionObject(definition)
-      ? definition.down
-      : undefined;
-    const compatibleChecksums = isMigrationDefinitionObject(definition)
-      ? (definition.compatibleChecksums ?? [])
-      : [];
-    if (typeof up !== 'function') {
+    if (!isMigrationDefinitionObject(definition)) {
       throw new Error(
-        `Invalid migration "${key}": expected an async function or { up, down? } object.`
-      );
-    }
-    if (down !== undefined && typeof down !== 'function') {
-      throw new Error(
-        `Invalid migration "${key}": "down" must be a function when provided.`
-      );
-    }
-    if (
-      !Array.isArray(compatibleChecksums) ||
-      compatibleChecksums.some(
-        (checksum) =>
-          typeof checksum !== 'string' || checksum.trim().length === 0
-      )
-    ) {
-      throw new Error(
-        `Invalid migration "${key}": "compatibleChecksums" must be an array of non-empty strings when provided.`
+        `Invalid migration "${key}": expected a { up, down } object. Shorthand migration functions are not supported.`
       );
     }
 
+    const { up, down } = definition;
+    const checksum = normalizeChecksumMode(key, definition.checksum);
+
+    if (typeof up !== 'function') {
+      throw new Error(`Invalid migration "${key}": "up" must be a function.`);
+    }
+    if (typeof down !== 'function') {
+      throw new Error(`Invalid migration "${key}": "down" must be a function.`);
+    }
     migrations.push({
       version,
       name: key,
       up,
       down,
-      compatibleChecksums: [
-        ...new Set(compatibleChecksums.map((v) => v.trim())),
-      ],
+      checksum,
     });
   }
 
@@ -267,27 +138,4 @@ export function defineMigrations<
       return migrations.find((m) => m.version === version);
     },
   };
-}
-
-/**
- * Get the checksum for a migration.
- */
-export function getMigrationChecksum<DB>(
-  migration: ParsedMigration<DB>
-): string {
-  return computeChecksum(migration.up);
-}
-
-/**
- * Get the accepted checksums for a migration, including the current checksum.
- */
-export function getCompatibleMigrationChecksums<DB>(
-  migration: ParsedMigration<DB>
-): string[] {
-  return [
-    ...new Set([
-      getMigrationChecksum(migration),
-      ...migration.compatibleChecksums,
-    ]),
-  ];
 }

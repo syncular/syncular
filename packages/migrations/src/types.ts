@@ -9,6 +9,15 @@ import type { Kysely } from 'kysely';
  */
 export type MigrationFn<DB = unknown> = (db: Kysely<DB>) => Promise<void>;
 
+export type MigrationChecksumMode = 'deterministic' | 'disabled';
+
+export type MigrationChecksumDialect = 'sqlite' | 'postgres';
+
+export type MigrationChecksumAlgorithm =
+  | 'legacy_source_v1'
+  | 'sql_trace_v1'
+  | 'disabled';
+
 /**
  * A reversible migration definition.
  */
@@ -16,21 +25,14 @@ export interface ReversibleMigrationDefinition<DB = unknown> {
   /** Apply schema/data changes for this version. */
   up: MigrationFn<DB>;
   /** Revert schema/data changes for this version. */
-  down?: MigrationFn<DB>;
-  /**
-   * Historical checksums that should still be accepted for previously-applied
-   * copies of this migration.
-   */
-  compatibleChecksums?: string[];
+  down: MigrationFn<DB>;
+  /** Controls whether this migration participates in checksum validation. */
+  checksum?: MigrationChecksumMode;
 }
 
-/**
- * A migration definition can be a single "up" function or
- * an object with explicit up/down handlers.
- */
+/** A migration definition must explicitly provide both up/down handlers. */
 export type MigrationDefinition<DB = unknown> =
-  | MigrationFn<DB>
-  | ReversibleMigrationDefinition<DB>;
+  ReversibleMigrationDefinition<DB>;
 
 /**
  * Record of versioned migrations keyed by version string (e.g., 'v1', 'v2').
@@ -48,10 +50,10 @@ export interface ParsedMigration<DB = unknown> {
   name: string;
   /** Up migration function. */
   up: MigrationFn<DB>;
-  /** Optional down migration function. */
-  down?: MigrationFn<DB>;
-  /** Historical checksums that remain valid for already-applied copies. */
-  compatibleChecksums: string[];
+  /** Down migration function. */
+  down: MigrationFn<DB>;
+  /** Controls whether this migration participates in checksum validation. */
+  checksum: MigrationChecksumMode;
 }
 
 /**
@@ -74,6 +76,7 @@ export interface MigrationStateRow {
   name: string;
   applied_at: string;
   checksum: string;
+  checksum_algorithm: MigrationChecksumAlgorithm;
 }
 
 /**
