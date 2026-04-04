@@ -5,7 +5,7 @@
  * All visual components come from @syncular/ui/demo.
  */
 
-import type { SyncTransportOptions } from '@syncular/core';
+import { createServiceWorkerWakeTransport } from '@syncular/server-service-worker';
 import {
   CatalogTable,
   DemoHeader,
@@ -15,8 +15,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createSqliteClient } from '../client/db-sqlite';
 import { DEMO_CLIENT_STORES } from '../client/demo-data-reset';
+import { getDemoAuthHeaders } from '../client/demo-identity';
 import {
-  createDemoPollingTransport,
   DEMO_DATA_CHANGE_DEBOUNCE_MS,
   DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_RECONNECTING,
   DEMO_DATA_CHANGE_DEBOUNCE_MS_WHEN_SYNCING,
@@ -27,6 +27,8 @@ import { migrateClientDbWithTimeout } from '../client/migrate';
 import {
   SyncProvider,
   useCachedAsyncValue,
+  useSyncEngine,
+  useSyncProgress,
   useSyncQuery,
   useSyncStatus,
 } from '../client/react';
@@ -44,6 +46,7 @@ const CATALOG_STATE_ID = 'catalog-demo';
 const CATALOG_SUBSCRIPTION_ID = 'catalog-items';
 const CATALOG_SNAPSHOT_ROWS_PER_PAGE = 50_000;
 const CATALOG_MAX_SNAPSHOT_PAGES_PER_PULL = 20;
+const CATALOG_SEED_PROGRESS_STEPS = 20;
 
 /* ---------- Helpers ---------- */
 
@@ -55,6 +58,30 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function describeSyncPhase(phase: string | undefined): string {
+  switch (phase) {
+    case 'starting':
+      return 'starting sync';
+    case 'bootstrapping':
+      return 'downloading snapshot';
+    case 'catching_up':
+      return 'catching up';
+    case 'live':
+      return 'live';
+    case 'error':
+      return 'sync error';
+    default:
+      return 'idle';
+  }
+}
+
+function resolveSeedStepRows(targetRows: number): number {
+  return Math.min(
+    CATALOG_SNAPSHOT_ROWS_PER_PAGE,
+    Math.max(2_000, Math.ceil(targetRows / CATALOG_SEED_PROGRESS_STEPS))
+  );
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -69,8 +96,17 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 /* ---------- Types ---------- */
 
 type ChunkStats = { downloads: number; bytes: number };
+type SeedPhase = 'checking' | 'seeding' | 'syncing' | 'complete' | 'error';
 
-/* ---------- Root tab (owns PGlite lifecycle + SyncProvider) ---------- */
+interface SeedStatus {
+  phase: SeedPhase;
+  targetRows: number;
+  seededRows: number;
+  startedAt: number;
+  errorMessage?: string;
+}
+
+/* ---------- Root tab (owns local SQLite lifecycle + SyncProvider) ---------- */
 
 export function LargeCatalogTab() {
   const [db, dbError] = useCachedAsyncValue(
@@ -94,21 +130,34 @@ export function LargeCatalogTab() {
 
   /* Transport with chunk-tracking wrapper */
   const transport = useKeyedConstant(CATALOG_CLIENT_ID, () => {
-    const base = createDemoPollingTransport(CATALOG_ACTOR_ID);
-    return {
-      ...base,
-      async fetchSnapshotChunk(
-        request: { chunkId: string },
-        transportOptions?: SyncTransportOptions
-      ) {
-        const bytes = await base.fetchSnapshotChunk(request, transportOptions);
-        setChunkStats((prev) => ({
-          downloads: prev.downloads + 1,
-          bytes: prev.bytes + bytes.length,
-        }));
-        return bytes;
-      },
+    const trackChunkDownload = (byteLength: number) => {
+      setChunkStats((prev) => ({
+        downloads: prev.downloads + 1,
+        bytes: prev.bytes + byteLength,
+      }));
     };
+    const countingFetch: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+
+      if (url.includes('/api/sync/snapshot-chunks/')) {
+        const bytes = new Uint8Array(await response.clone().arrayBuffer());
+        trackChunkDownload(bytes.length);
+      }
+
+      return response;
+    };
+
+    return createServiceWorkerWakeTransport({
+      baseUrl: '/api',
+      getHeaders: () => getDemoAuthHeaders(CATALOG_ACTOR_ID),
+      fetch: countingFetch,
+    });
   });
 
   /* Sync handlers (catalog_items only) */
@@ -142,7 +191,7 @@ export function LargeCatalogTab() {
       <InfoPanel
         icon={<span className="text-flow text-sm">...</span>}
         title="Initializing"
-        description="Setting up the local PGlite database for the catalog demo."
+        description="Setting up the local SQLite database for the catalog demo."
       />
     );
   }
@@ -182,16 +231,20 @@ function CatalogContent(props: {
   chunkStats: ChunkStats;
   onResetChunkStats: () => void;
 }) {
+  const { chunkStats, onResetChunkStats } = props;
   const { isSyncing } = useSyncStatus();
+  const { awaitBootstrapComplete } = useSyncEngine();
+  const { progress: syncProgress } = useSyncProgress({ pollIntervalMs: 250 });
   const controls = useDemoClientSyncControls({
     clientKey: DEMO_CLIENT_STORES.catalogSqlite.key,
     onAfterReset: () => {
-      props.onResetChunkStats();
+      onResetChunkStats();
     },
   });
 
   const [serverTotalRows, setServerTotalRows] = useState(0);
   const [serverBusy, setServerBusy] = useState(false);
+  const [seedStatus, setSeedStatus] = useState<SeedStatus | null>(null);
   const [filterInput, setFilterInput] = useState('');
   const debouncedFilter = useDebouncedValue(filterInput, 200).trim();
 
@@ -201,57 +254,44 @@ function CatalogContent(props: {
 
   const refreshServerStatus = useCallback(async () => {
     const res = await fetch('/api/demo/catalog/status');
+    if (!res.ok) {
+      throw new Error(`Failed to load catalog status (${res.status})`);
+    }
     const json = (await res.json()) as { totalRows: number };
     setServerTotalRows(json.totalRows);
     return json.totalRows;
   }, []);
 
-  /* --- Server seeding --- */
-
-  const seedServer = useCallback(
-    async (args: { rows: number; force: boolean }) => {
-      setServerBusy(true);
-      try {
-        let force = args.force;
-        for (;;) {
-          const res = await fetch('/api/demo/catalog/seed', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ rows: args.rows, force }),
-          });
-          const json = (await res.json()) as {
-            totalRows: number;
-            hasMore: boolean;
+  const restartClientAfterSeed = useCallback(() => {
+    void controls
+      .resetLocalData({ reconnect: true, forceReconnect: true })
+      .then(async () => {
+        await awaitBootstrapComplete({
+          stateId: CATALOG_STATE_ID,
+          subscriptionId: CATALOG_SUBSCRIPTION_ID,
+          timeoutMs: 120_000,
+        });
+        setSeedStatus((current) => {
+          if (!current || current.phase !== 'syncing') return current;
+          return {
+            ...current,
+            phase: 'complete',
+            seededRows: Math.max(current.seededRows, serverTotalRows),
           };
-          setServerTotalRows(json.totalRows);
-          if (!json.hasMore) break;
-          force = false;
-        }
-      } finally {
-        setServerBusy(false);
-      }
-    },
-    []
-  );
-
-  /* --- Auto-seed on first load if server is empty --- */
-
-  useEffect(() => {
-    void refreshServerStatus().then((total) => {
-      // Auto-seed 10k rows if server is empty (safe: uses onConflict doNothing)
-      if (total === 0 && !autoSeededRef.current) {
-        autoSeededRef.current = true;
-        void seedServer({ rows: 10_000, force: false });
-      }
-    });
-  }, [refreshServerStatus, seedServer]);
-
-  /* --- Clear server --- */
-
-  const clearServer = useCallback(async () => {
-    await fetch('/api/demo/catalog/clear', { method: 'POST' });
-    refreshServerStatus();
-  }, [refreshServerStatus]);
+        });
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setSeedStatus((current) => {
+          if (!current || current.phase !== 'syncing') return current;
+          return {
+            ...current,
+            phase: 'error',
+            errorMessage: message,
+          };
+        });
+      });
+  }, [awaitBootstrapComplete, controls.resetLocalData, serverTotalRows]);
 
   /* --- Local row count --- */
 
@@ -281,10 +321,179 @@ function CatalogContent(props: {
         .where('state_id', '=', CATALOG_STATE_ID)
         .where('subscription_id', '=', CATALOG_SUBSCRIPTION_ID)
         .executeTakeFirst();
-      return row ?? null;
+      if (!row) return null;
+
+      let rowCursor: string | null = null;
+      if (typeof row.bootstrap_state_json === 'string') {
+        try {
+          const parsed = JSON.parse(row.bootstrap_state_json) as {
+            rowCursor?: string | null;
+          };
+          if (
+            typeof parsed.rowCursor === 'string' ||
+            parsed.rowCursor === null
+          ) {
+            rowCursor = parsed.rowCursor ?? null;
+          }
+        } catch {
+          rowCursor = null;
+        }
+      }
+
+      return {
+        cursor: row.cursor,
+        rowCursor,
+        status: row.status,
+      };
     },
     { deps: [] }
   );
+
+  /* --- Server seeding --- */
+
+  const seedServer = useCallback(
+    async (args: { rows: number; force: boolean }) => {
+      const seedPhase = seedStatus?.phase;
+      const seedWorkflowBusy =
+        seedPhase === 'checking' ||
+        seedPhase === 'seeding' ||
+        seedPhase === 'syncing';
+      if (serverBusy || seedWorkflowBusy) return;
+
+      const targetRows = Math.max(0, Math.floor(args.rows));
+      const stepRows = resolveSeedStepRows(targetRows);
+      const startedAt = Date.now();
+      let currentTotal = args.force ? 0 : serverTotalRows;
+      let shouldForce = args.force;
+
+      onResetChunkStats();
+      setServerBusy(true);
+      if (args.force) {
+        setServerTotalRows(0);
+      }
+      setSeedStatus({
+        phase: 'checking',
+        targetRows,
+        seededRows: currentTotal,
+        startedAt,
+      });
+
+      try {
+        if (!args.force) {
+          currentTotal = await refreshServerStatus();
+        }
+
+        while (currentTotal < targetRows) {
+          setSeedStatus({
+            phase: 'seeding',
+            targetRows,
+            seededRows: currentTotal,
+            startedAt,
+          });
+
+          const requestTargetRows = shouldForce
+            ? Math.min(targetRows, stepRows)
+            : Math.min(targetRows, currentTotal + stepRows);
+          const res = await fetch('/api/demo/catalog/seed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              rows: requestTargetRows,
+              force: shouldForce,
+            }),
+          });
+          if (!res.ok) {
+            const message = (await res.text()).trim();
+            throw new Error(
+              message || `Seed request failed with status ${res.status}`
+            );
+          }
+
+          const json = (await res.json()) as { totalRows?: number };
+          const nextTotal = Number(json.totalRows ?? requestTargetRows);
+          currentTotal = Number.isFinite(nextTotal)
+            ? Math.max(currentTotal, nextTotal)
+            : requestTargetRows;
+          setServerTotalRows(currentTotal);
+          shouldForce = false;
+        }
+
+        setSeedStatus({
+          phase: 'syncing',
+          targetRows,
+          seededRows: currentTotal,
+          startedAt,
+        });
+        restartClientAfterSeed();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setSeedStatus({
+          phase: 'error',
+          targetRows,
+          seededRows: currentTotal,
+          startedAt,
+          errorMessage: message,
+        });
+      } finally {
+        setServerBusy(false);
+      }
+    },
+    [
+      onResetChunkStats,
+      refreshServerStatus,
+      restartClientAfterSeed,
+      seedStatus?.phase,
+      serverBusy,
+      serverTotalRows,
+    ]
+  );
+
+  /* --- Auto-seed on first load if server is empty --- */
+
+  useEffect(() => {
+    void refreshServerStatus().then((total) => {
+      // Auto-seed 10k rows if server is empty (safe: uses onConflict doNothing)
+      if (total === 0 && !autoSeededRef.current) {
+        autoSeededRef.current = true;
+        void seedServer({ rows: 10_000, force: false });
+      }
+    });
+  }, [refreshServerStatus, seedServer]);
+
+  useEffect(() => {
+    if (seedStatus?.phase !== 'syncing') return;
+    if (serverTotalRows <= 0 || localCount < serverTotalRows) return;
+
+    setSeedStatus((current) => {
+      if (!current || current.phase !== 'syncing') return current;
+      return {
+        ...current,
+        phase: 'complete',
+        seededRows: serverTotalRows,
+      };
+    });
+  }, [localCount, seedStatus?.phase, serverTotalRows]);
+
+  useEffect(() => {
+    if (seedStatus?.phase !== 'complete') return;
+
+    const timeoutId = window.setTimeout(() => {
+      setSeedStatus((current) =>
+        current?.phase === 'complete' ? null : current
+      );
+    }, 2_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [seedStatus?.phase]);
+
+  /* --- Clear server --- */
+
+  const clearServer = useCallback(async () => {
+    await fetch('/api/demo/catalog/clear', { method: 'POST' });
+    setSeedStatus(null);
+    onResetChunkStats();
+    await refreshServerStatus();
+  }, [onResetChunkStats, refreshServerStatus]);
 
   /* --- Filtered search --- */
 
@@ -319,6 +528,57 @@ function CatalogContent(props: {
     price: `$${(Number.parseInt(row.id, 10) * 0.99).toFixed(2)}`,
   }));
 
+  const seedWorkflowBusy =
+    seedStatus?.phase === 'checking' ||
+    seedStatus?.phase === 'seeding' ||
+    seedStatus?.phase === 'syncing';
+  const seedProgress =
+    seedStatus && seedStatus.targetRows > 0
+      ? Math.min(
+          100,
+          Math.round((seedStatus.seededRows / seedStatus.targetRows) * 100)
+        )
+      : undefined;
+  const syncPhaseLabel = describeSyncPhase(syncProgress?.channelPhase);
+  const localProgressLabel =
+    serverTotalRows <= 0
+      ? 'Awaiting server data'
+      : `${percentage}% · ${
+          localCount >= serverTotalRows && !isSyncing
+            ? 'live'
+            : seedStatus?.phase === 'syncing' && !isSyncing
+              ? 'starting sync'
+              : syncPhaseLabel
+        }`;
+  const estimatedSnapshotChunks =
+    serverTotalRows > CATALOG_SNAPSHOT_ROWS_PER_PAGE
+      ? Math.ceil(serverTotalRows / CATALOG_SNAPSHOT_ROWS_PER_PAGE)
+      : 0;
+  const chunkDownloadLabel =
+    estimatedSnapshotChunks > 0
+      ? `${Math.min(chunkStats.downloads, estimatedSnapshotChunks)} / ${estimatedSnapshotChunks} chunks`
+      : serverTotalRows > 0
+        ? 'Inline snapshot'
+        : 'No snapshot yet';
+  const localBootstrapLabel =
+    seedStatus?.phase === 'syncing'
+      ? serverTotalRows > 0
+        ? `Bootstrapping locally ${formatNumber(localCount)} / ${formatNumber(serverTotalRows)} rows (${percentage}%)`
+        : `Bootstrapping locally (${syncProgress?.progressPercent ?? 0}%)`
+      : undefined;
+  const serverStatusLabel =
+    seedStatus?.phase === 'checking'
+      ? 'Checking server state...'
+      : seedStatus?.phase === 'seeding'
+        ? `Generating ${formatNumber(seedStatus.seededRows)} / ${formatNumber(seedStatus.targetRows)} rows`
+        : seedStatus?.phase === 'syncing'
+          ? `Server ready · ${formatNumber(seedStatus.seededRows)} rows`
+          : seedStatus?.phase === 'complete'
+            ? `Seeded ${formatNumber(seedStatus.seededRows)} rows`
+            : seedStatus?.phase === 'error'
+              ? `Seed failed: ${seedStatus.errorMessage ?? 'unknown error'}`
+              : undefined;
+
   /* --- Render --- */
 
   const btnClass =
@@ -329,15 +589,15 @@ function CatalogContent(props: {
       <button
         type="button"
         className={btnClass}
-        disabled={serverBusy}
+        disabled={serverBusy || seedWorkflowBusy}
         onClick={() => seedServer({ rows: 1_000_000, force: false })}
       >
-        Seed 1M Rows
+        {seedWorkflowBusy ? 'Seeding...' : 'Seed 1M Rows'}
       </button>
       <button
         type="button"
         className={btnClass}
-        disabled={serverBusy}
+        disabled={serverBusy || seedWorkflowBusy}
         onClick={() => clearServer()}
       >
         Clear
@@ -366,10 +626,19 @@ function CatalogContent(props: {
   );
 
   const tableFooter = (
-    <span className="font-mono text-[10px] text-neutral-600">
-      Bootstrap: {subState?.status ?? 'pending'}
-      {subState?.cursor ? ` | cursor: ${subState.cursor}` : ''}
-    </span>
+    <div className="flex w-full items-center justify-between gap-4 font-mono text-[10px] text-neutral-600">
+      <span>
+        {localBootstrapLabel ??
+          serverStatusLabel ??
+          `Server ready · ${formatNumber(serverTotalRows)} rows`}
+      </span>
+      <span>
+        Sync: {syncPhaseLabel}
+        {subState?.status ? ` · ${subState.status}` : ''}
+        {subState?.rowCursor ? ` · row ${subState.rowCursor}` : ''}
+        {subState?.cursor ? ` · cursor ${subState.cursor}` : ''}
+      </span>
+    </div>
   );
 
   return (
@@ -385,20 +654,43 @@ function CatalogContent(props: {
           label="Server Rows"
           value={formatNumber(serverTotalRows)}
           dotColor="flow"
+          progress={seedProgress}
+          progressColor="flow"
+          progressLabel={serverStatusLabel}
         />
         <MetricCard
           label="Local Rows"
           value={formatNumber(localCount)}
+          subtext={syncPhaseLabel}
           progress={percentage}
           dotColor="healthy"
           dotPulse={isSyncing}
-          progressLabel={`${percentage}%`}
+          progressLabel={localProgressLabel}
         />
         <MetricCard
           label="Snapshot Chunks"
-          value={`${props.chunkStats.downloads}`}
-          subtext={formatBytes(props.chunkStats.bytes)}
+          value={
+            estimatedSnapshotChunks > 0
+              ? `${Math.min(chunkStats.downloads, estimatedSnapshotChunks)} / ${estimatedSnapshotChunks}`
+              : `${chunkStats.downloads}`
+          }
+          subtext={`${formatBytes(chunkStats.bytes)} · ${syncPhaseLabel}`}
           dotColor="syncing"
+          dotPulse={isSyncing}
+          progress={
+            estimatedSnapshotChunks > 0
+              ? Math.min(
+                  100,
+                  Math.round(
+                    (Math.min(chunkStats.downloads, estimatedSnapshotChunks) /
+                      estimatedSnapshotChunks) *
+                      100
+                  )
+                )
+              : undefined
+          }
+          progressColor="syncing"
+          progressLabel={chunkDownloadLabel}
         />
       </div>
 
