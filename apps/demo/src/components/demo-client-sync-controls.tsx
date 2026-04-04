@@ -4,12 +4,7 @@ import {
   type ActiveClientResetOptions,
   registerActiveDemoClientResetter,
 } from '../client/demo-data-reset';
-import { resetClientData } from '../client/migrate';
-import {
-  useSyncConnection,
-  useSyncContext,
-  useSyncEngine,
-} from '../client/react';
+import { useSyncConnection, useSyncEngine } from '../client/react';
 
 interface UseDemoClientSyncControlsOptions {
   clientKey: string;
@@ -18,6 +13,7 @@ interface UseDemoClientSyncControlsOptions {
 
 interface ResetLocalOptions {
   reconnect?: boolean;
+  forceReconnect?: boolean;
 }
 
 interface DemoClientSyncControlsState {
@@ -33,7 +29,6 @@ export function useDemoClientSyncControls(
   options: UseDemoClientSyncControlsOptions
 ): DemoClientSyncControlsState {
   const { clientKey, onAfterReset } = options;
-  const { db } = useSyncContext();
   const engine = useSyncEngine();
   const connection = useSyncConnection();
 
@@ -52,18 +47,25 @@ export function useDemoClientSyncControls(
     async (options?: ResetLocalOptions) => {
       if (isResetting) return;
 
-      const reconnect = options?.reconnect ?? true;
-      const wasOnline = connection.isConnected;
+      const reconnectAfterReset = options?.reconnect ?? true;
+      const forceReconnect = options?.forceReconnect ?? false;
+      const shouldReconnect =
+        reconnectAfterReset &&
+        (forceReconnect || connection.state !== 'disconnected');
 
       setIsResetting(true);
       setResetError(null);
 
       try {
-        engine.disconnect();
-        await resetClientData(db);
+        await engine.reset({
+          scope: 'state',
+          clearSyncedTables: true,
+          clearOutbox: true,
+          clearConflicts: true,
+        });
         await onAfterReset?.();
 
-        if (reconnect && wasOnline) {
+        if (shouldReconnect) {
           await new Promise((resolve) => setTimeout(resolve, 50));
           engine.reconnect();
         }
@@ -75,7 +77,7 @@ export function useDemoClientSyncControls(
         setIsResetting(false);
       }
     },
-    [connection.isConnected, db, engine, isResetting, onAfterReset]
+    [connection.state, engine, isResetting, onAfterReset]
   );
 
   useEffect(

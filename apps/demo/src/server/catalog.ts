@@ -36,8 +36,18 @@ export async function getCatalogRowCount(
   return coerceNumber(row?.count);
 }
 
+async function invalidateCatalogBootstrapCache(
+  db: Kysely<ServerDb>
+): Promise<void> {
+  await db
+    .deleteFrom('sync_snapshot_chunks')
+    .where('scope', '=', 'catalog_items')
+    .execute();
+}
+
 export async function clearCatalog(db: Kysely<ServerDb>): Promise<void> {
   await db.deleteFrom('catalog_items').execute();
+  await invalidateCatalogBootstrapCache(db);
 }
 
 export async function seedCatalog(
@@ -95,6 +105,9 @@ export async function seedCatalog(
   }
 
   const totalRows = await getCatalogRowCount(db);
+  if (totalRows !== existing) {
+    await invalidateCatalogBootstrapCache(db);
+  }
 
   return {
     targetRows,

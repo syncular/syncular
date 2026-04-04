@@ -13,6 +13,7 @@ export const {
   useResolveConflict,
   useSyncContext,
   useSyncEngine,
+  useSyncProgress,
   useSyncStatus,
   useSyncConnection,
   useSyncQuery,
