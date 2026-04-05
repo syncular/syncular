@@ -74,6 +74,10 @@ function hashTrace(entries: string[]): string {
   return hashString(entries.join('\n'));
 }
 
+function quoteTsString(value: string): string {
+  return `'${value.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`;
+}
+
 async function createSqliteTraceDb<DB>(traceEntries: string[]): Promise<{
   db: Kysely<DB>;
   sqliteDb: SqliteDb;
@@ -217,7 +221,7 @@ export function renderMigrationChecksums(
     .sort(([left], [right]) => Number(left) - Number(right))
     .map(
       ([version, checksum]) =>
-        `  ${JSON.stringify(version)}: ${JSON.stringify(checksum)},`
+        `  ${quoteTsString(version)}: ${quoteTsString(checksum)},`
     )
     .join('\n');
 

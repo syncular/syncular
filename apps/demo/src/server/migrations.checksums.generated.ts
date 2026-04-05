@@ -4,7 +4,7 @@
  */
 
 export const migrationChecksums = {
-  "1": "a44e1cc7",
-  "2": "35d6e7cd",
-  "3": "150ac8fb",
+  '1': 'a44e1cc7',
+  '2': '35d6e7cd',
+  '3': '150ac8fb',
 } as const;

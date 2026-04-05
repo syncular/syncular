@@ -7,8 +7,8 @@
 import { dropClientSyncSchema, ensureClientSyncSchema } from '@syncular/client';
 import { runMigrations } from '@syncular/migrations';
 import type { Kysely } from 'kysely';
-import { clientMigrations } from './migrations';
 import { migrationChecksums } from './migrate.checksums.generated';
+import { clientMigrations } from './migrations';
 import type { ClientDb } from './types.generated';
 
 const DEFAULT_CLIENT_MIGRATION_TIMEOUT_MS = 20_000;
