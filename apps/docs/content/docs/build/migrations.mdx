@@ -191,15 +191,35 @@ The recommended approach is to use `@syncular/migrations` for tracked, versioned
 
 ```typescript
 import { dropClientSyncSchema, ensureClientSyncSchema } from '@syncular/client';
-import {
-  createMigrationTrackingTableName,
-  defineMigrations,
-  runMigrations,
-} from '@syncular/migrations';
+import { createMigrationTrackingTableName, runMigrations } from '@syncular/migrations';
+import { clientMigrations } from './client.migrations';
+import { migrationChecksums } from './client.migrations.checksums.generated';
 
-const clientMigrations = defineMigrations<MyDb>({
+async function migrateClientDb(db: Kysely<MyDb>) {
+  await ensureClientSyncSchema(db);
+  await runMigrations({
+    db,
+    migrations: clientMigrations,
+    checksums: migrationChecksums,
+    trackingTable: createMigrationTrackingTableName(['notes', 'client']),
+    onChecksumMismatch: 'reset',
+    beforeReset: async (db) => {
+      await db.schema.dropTable('notes').ifExists().execute();
+      await dropClientSyncSchema(db);
+      await ensureClientSyncSchema(db);
+    },
+  });
+}
+```
+
+Keep the migration definitions themselves in a separate source module so type generation and checksum generation do not depend on their own generated artifacts:
+
+```typescript
+// client.migrations.ts
+import { defineMigrations } from '@syncular/migrations';
+
+export const clientMigrations = defineMigrations<MyDb>({
   v1: {
-    checksum: 'disabled',
     up: async (db) => {
       await db.schema
         .createTable('notes')
@@ -213,7 +233,6 @@ const clientMigrations = defineMigrations<MyDb>({
     },
   },
   v2: {
-    checksum: 'disabled',
     up: async (db) => {
       await db.schema
         .alterTable('notes')
@@ -225,21 +244,6 @@ const clientMigrations = defineMigrations<MyDb>({
     },
   },
 });
-
-async function migrateClientDb(db: Kysely<MyDb>) {
-  await ensureClientSyncSchema(db);
-  await runMigrations({
-    db,
-    migrations: clientMigrations,
-    trackingTable: createMigrationTrackingTableName(['notes', 'client']),
-    onChecksumMismatch: 'reset',
-    beforeReset: async (db) => {
-      await db.schema.dropTable('notes').ifExists().execute();
-      await dropClientSyncSchema(db);
-      await ensureClientSyncSchema(db);
-    },
-  });
-}
 ```
 
 If you need a custom tracking table, prefer
@@ -253,8 +257,8 @@ Each migration can opt into one of two checksum modes:
 
 | `checksum` | Behavior |
 |-----------|----------|
-| `'deterministic'` (default) | Replays the migration into a scratch in-memory DB that matches the current runtime family and hashes the SQL trace that actually executed. |
-| `'disabled'` | Skips checksum creation and checksum mismatch checks for that migration. Use this for browser/service-worker runtimes or other cases where Syncular cannot reliably create the matching scratch DB. |
+| `'deterministic'` (default) | Requires a generated checksum manifest entry for that migration. At runtime, Syncular compares the stored checksum against the generated SQL-trace checksum. |
+| `'disabled'` | Skips checksum creation and checksum mismatch checks for that migration. Use this when build-time replay is not safe or meaningful. |
 
 For deterministic migrations, `runMigrations` detects when the emitted SQL trace changes after a version has already been applied. You control what happens next:
 
@@ -265,9 +269,9 @@ For deterministic migrations, `runMigrations` detects when the emitted SQL trace
 
 The `beforeReset` callback is where you drop your application tables so migrations can recreate them cleanly. The result object includes `wasReset: boolean` so callers can detect when a reset occurred.
 
-#### Deterministic SQL-trace checksums
+#### Generated SQL-trace checksums
 
-Syncular does not hash `migration.up.toString()`. For `checksum: 'deterministic'`, it replays the migration into a scratch in-memory database and hashes the SQL statements that actually ran. That keeps checksum validation stable across bundling/minification while still validating that the migration can execute against a real database.
+Syncular does not hash `migration.up.toString()`. Instead, `@syncular/typegen` replays deterministic migrations into an in-memory database during generation time and writes a checksum manifest next to your migration file. That keeps browser and React Native bundles clean while still validating the SQL that actually runs.
 
 ### Using the migrate prop
 
@@ -394,7 +398,7 @@ This is useful when bootstrap metadata is stale/corrupt and you need a controlle
 
 ## Type Generation with @syncular/typegen
 
-`@syncular/typegen` introspects your migrations and generates TypeScript interfaces for your database:
+`@syncular/typegen` introspects your migrations and generates TypeScript interfaces for your database. It can also generate checksum manifests for deterministic migration validation:
 
 ```bash
 bun install @syncular/typegen
@@ -403,7 +407,10 @@ bun install @syncular/typegen
 ### Usage
 
 ```typescript
-import { generateTypes } from '@syncular/typegen';
+import {
+  generateMigrationChecksums,
+  generateTypes,
+} from '@syncular/typegen';
 import { migrations } from './migrations';
 
 await generateTypes({
@@ -412,6 +419,11 @@ await generateTypes({
   extendsSyncClientDb: true, // Include SyncClientDb base tables
   syncularImportType: 'umbrella', // Optional. Default: 'scoped'
   includeVersionHistory: false, // Only generate types for the latest schema
+});
+
+await generateMigrationChecksums({
+  migrations,
+  output: './src/migrations.checksums.generated.ts',
 });
 ```
 
@@ -429,7 +441,10 @@ Add a script to your `package.json`:
 
 ```typescript
 // scripts/generate-types.ts
-import { generateTypes } from '@syncular/typegen';
+import {
+  generateMigrationChecksums,
+  generateTypes,
+} from '@syncular/typegen';
 import { migrations } from '../src/migrations';
 
 const result = await generateTypes({
@@ -439,9 +454,15 @@ const result = await generateTypes({
   syncularImportType: 'umbrella',
 });
 
+const checksums = await generateMigrationChecksums({
+  migrations,
+  output: './src/migrations.checksums.generated.ts',
+});
+
 console.log(
   `Generated types for ${result.tableCount} tables (version ${result.currentVersion})`
 );
+console.log(`Generated ${checksums.checksumCount} migration checksums`);
 ```
 
 The generated file exports a `DB` interface that you can use with Kysely and Syncular:

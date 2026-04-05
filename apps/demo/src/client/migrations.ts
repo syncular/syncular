@@ -1,16 +1,15 @@
 /**
- * @syncular/demo - Server database migrations
+ * @syncular/demo - Client database migrations
  *
- * Version-tracked migrations for the server schema (Postgres/PGlite).
+ * Version-tracked migrations that define the client schema.
+ * Types and deterministic checksums are generated from these migrations.
  */
 
 import { defineMigrations } from '@syncular/migrations';
-import type { SyncBlobDb, SyncCoreDb } from '@syncular/server';
-import type { ClientDb } from '../client/types.generated';
+import type { ClientDb } from './types.generated';
 
-type ServerMigrationDb = SyncCoreDb & SyncBlobDb & ClientDb;
-
-export const serverMigrations = defineMigrations<ServerMigrationDb>({
+/** @public Used by scripts/generate-types.ts */
+export const clientMigrations = defineMigrations<ClientDb>({
   v1: {
     up: async (db) => {
       // Create tasks table
@@ -21,7 +20,7 @@ export const serverMigrations = defineMigrations<ServerMigrationDb>({
         .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
         .addColumn('user_id', 'text', (col) => col.notNull())
         .addColumn('server_version', 'integer', (col) =>
-          col.notNull().defaultTo(1)
+          col.notNull().defaultTo(0)
         )
         .execute();
 
@@ -41,7 +40,7 @@ export const serverMigrations = defineMigrations<ServerMigrationDb>({
         .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
         .addColumn('owner_id', 'text', (col) => col.notNull())
         .addColumn('server_version', 'integer', (col) =>
-          col.notNull().defaultTo(1)
+          col.notNull().defaultTo(0)
         )
         .execute();
 
@@ -49,12 +48,6 @@ export const serverMigrations = defineMigrations<ServerMigrationDb>({
         .createIndex('idx_shared_tasks_share_id')
         .on('shared_tasks')
         .columns(['share_id'])
-        .execute();
-
-      await db.schema
-        .createIndex('idx_shared_tasks_owner_id')
-        .on('shared_tasks')
-        .columns(['owner_id'])
         .execute();
 
       // Large catalog table (read-only demo; loaded via chunked snapshots)
@@ -73,7 +66,7 @@ export const serverMigrations = defineMigrations<ServerMigrationDb>({
         .addColumn('created_by', 'text', (col) => col.notNull())
         .addColumn('created_at', 'text', (col) => col.notNull())
         .addColumn('server_version', 'integer', (col) =>
-          col.notNull().defaultTo(1)
+          col.notNull().defaultTo(0)
         )
         .execute();
 
@@ -81,12 +74,6 @@ export const serverMigrations = defineMigrations<ServerMigrationDb>({
         .createIndex('idx_patient_notes_patient_id')
         .on('patient_notes')
         .columns(['patient_id'])
-        .execute();
-
-      await db.schema
-        .createIndex('idx_patient_notes_created_by')
-        .on('patient_notes')
-        .columns(['created_by'])
         .execute();
     },
     down: async (db) => {

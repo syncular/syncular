@@ -36,6 +36,7 @@ import {
   TopologyPanel,
   TopologySvgKeyshare,
 } from '@syncular/ui/demo';
+import type { Selectable } from 'kysely';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
@@ -72,6 +73,8 @@ interface KeyData {
   kid: string;
   key: Uint8Array;
 }
+
+type SharedTaskRow = Selectable<SharedTasksTable>;
 
 type MnemonicImportState = 'empty' | 'debouncing' | 'ready' | 'invalid';
 
@@ -173,7 +176,7 @@ function AliceInner({
     setNewTitle('');
   };
 
-  const handleToggle = async (task: SharedTasksTable) => {
+  const handleToggle = async (task: SharedTaskRow) => {
     if (isPending) return;
     const baseVersion =
       task.server_version && task.server_version > 0
@@ -191,7 +194,7 @@ function AliceInner({
     );
   };
 
-  const handleDelete = async (task: SharedTasksTable) => {
+  const handleDelete = async (task: SharedTaskRow) => {
     if (isPending) return;
     await mutate.delete(task.id);
   };

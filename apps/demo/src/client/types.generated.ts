@@ -5,6 +5,8 @@
 
 import type { SyncClientDb } from '@syncular/client';
 
+import type { Generated } from 'kysely';
+
 export interface CatalogItemsTable {
   id: string;
   name: string;
@@ -16,31 +18,31 @@ export interface PatientNotesTable {
   note: string;
   created_by: string;
   created_at: string;
-  server_version?: number;
+  server_version: Generated<number>;
 }
 
 export interface SharedTasksTable {
   id: string;
   share_id: string;
   title: string;
-  completed?: number;
+  completed: Generated<number>;
   owner_id: string;
-  server_version?: number;
+  server_version: Generated<number>;
 }
 
 export interface TasksTable {
   id: string;
   title: string;
-  completed?: number;
+  completed: Generated<number>;
   user_id: string;
-  server_version?: number;
-  image?: string | null;
-  title_yjs_state?: string | null;
+  server_version: Generated<number>;
+  image: string | null;
+  title_yjs_state: string | null;
 }
 
-export type ClientDb = SyncClientDb & {
+export interface ClientDb extends SyncClientDb {
   catalog_items: CatalogItemsTable;
   patient_notes: PatientNotesTable;
   shared_tasks: SharedTasksTable;
   tasks: TasksTable;
-};
+}

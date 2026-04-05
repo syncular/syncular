@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generateTypes } from '@syncular/typegen';
+import {
+  createMigrationChecksums,
+  generateMigrationChecksums,
+  generateTypes,
+} from '@syncular/typegen';
 import {
   multiTableMigrations,
   postgresMigrations,
@@ -190,5 +194,31 @@ describe('generateTypes - PostgreSQL', () => {
     });
 
     expect(result.code).toContain('  tags: string[] | null;'); // text[] → string[]
+  });
+});
+
+describe('generateMigrationChecksums', () => {
+  it('creates deterministic sqlite checksum manifests', async () => {
+    const checksums = await createMigrationChecksums(sqliteMigrations);
+
+    expect(Object.keys(checksums)).toEqual(['1', '2']);
+    expect(typeof checksums['1']).toBe('string');
+    expect(typeof checksums['2']).toBe('string');
+  });
+
+  it('writes checksum manifests to disk', async () => {
+    const output = join(tmpDir, 'sqlite.checksums.generated.ts');
+    const result = await generateMigrationChecksums({
+      migrations: sqliteMigrations,
+      output,
+    });
+
+    expect(result.outputPath).toBe(output);
+    expect(result.currentVersion).toBe(2);
+    expect(result.checksumCount).toBe(2);
+    expect(result.code).toContain('export const migrationChecksums = {');
+    expect(result.code).toContain('"1":');
+    expect(existsSync(output)).toBe(true);
+    expect(readFileSync(output, 'utf-8')).toBe(result.code);
   });
 });

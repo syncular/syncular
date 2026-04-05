@@ -50,6 +50,7 @@ import {
   seedCatalog,
 } from '../server/catalog';
 import { serverMigrations } from '../server/migrations';
+import { migrationChecksums as serverMigrationChecksums } from '../server/migrations.checksums.generated';
 import { resolvePartitionIdFromRequest } from '../server/partition-id';
 import { dropDemoAppTables, resetDemoData } from '../server/reset';
 import { createDemoRoutes } from '../server/routes';
@@ -209,6 +210,7 @@ class SyncDOBase extends SyncDurableObject<Env> {
         await runMigrations({
           db,
           migrations: serverMigrations,
+          checksums: serverMigrationChecksums,
           trackingTable: SERVER_TRACKING_TABLE,
           onChecksumMismatch: 'reset',
           beforeReset: async (resetDb) => {

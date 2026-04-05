@@ -132,3 +132,23 @@ export interface GenerateTypesResult {
   /** Generated TypeScript code */
   code: string;
 }
+
+export interface GenerateMigrationChecksumsOptions<DB = unknown> {
+  /** Defined migrations from defineMigrations() */
+  migrations: DefinedMigrations<DB>;
+  /** Output file path for generated checksums */
+  output: string;
+  /** Database dialect to use for replay (default: 'sqlite') */
+  dialect?: TypegenDialect;
+}
+
+export interface GenerateMigrationChecksumsResult {
+  /** Path to the generated file */
+  outputPath: string;
+  /** Current schema version */
+  currentVersion: number;
+  /** Number of checksums generated */
+  checksumCount: number;
+  /** Generated TypeScript code */
+  code: string;
+}
