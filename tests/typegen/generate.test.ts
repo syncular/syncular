@@ -217,7 +217,7 @@ describe('generateMigrationChecksums', () => {
     expect(result.currentVersion).toBe(2);
     expect(result.checksumCount).toBe(2);
     expect(result.code).toContain('export const migrationChecksums = {');
-    expect(result.code).toContain('"1":');
+    expect(result.code).toContain("'1':");
     expect(existsSync(output)).toBe(true);
     expect(readFileSync(output, 'utf-8')).toBe(result.code);
   });
