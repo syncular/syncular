@@ -27,6 +27,7 @@ import {
   seedCatalog,
 } from '../server/catalog';
 import { serverMigrations } from '../server/migrations';
+import { migrationChecksums as serverMigrationChecksums } from '../server/migrations.checksums.generated';
 import { dropDemoAppTables, resetDemoData } from '../server/reset';
 import { createDemoRoutes } from '../server/routes';
 
@@ -79,6 +80,7 @@ async function runServerMigrationsWithReset(
   await runMigrations({
     db,
     migrations: serverMigrations,
+    checksums: serverMigrationChecksums,
     trackingTable: SERVER_TRACKING_TABLE,
     onChecksumMismatch: 'reset',
     beforeReset: async (resetDb) => {

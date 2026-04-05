@@ -6,11 +6,9 @@ import {
   DISABLED_MIGRATION_CHECKSUM,
   DISABLED_MIGRATION_CHECKSUM_ALGORITHM,
   getLegacyMigrationChecksum,
-  getMigrationChecksum,
   getMigrationChecksumAlgorithm,
-  inferMigrationChecksumDialect,
+  getStoredDeterministicChecksum,
   LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM,
-  SQL_TRACE_MIGRATION_CHECKSUM_ALGORITHM,
 } from './checksum';
 import { DEFAULT_MIGRATION_TRACKING_TABLE } from './naming';
 import {
@@ -23,7 +21,6 @@ import {
 import type {
   DefinedMigrations,
   MigrationChecksumAlgorithm,
-  MigrationChecksumDialect,
   ParsedMigration,
   RunMigrationsOptions,
   RunMigrationsResult,
@@ -55,51 +52,17 @@ function getDeterministicMigrations<DB>(
   return migrations.migrations.filter(isDeterministicMigration);
 }
 
-function requireChecksumDialect<DB>(
-  options: RunMigrationsOptions<DB>
-): MigrationChecksumDialect {
-  const dialect = inferMigrationChecksumDialect(options.db);
-
-  if (dialect) {
-    return dialect;
-  }
-
-  throw new Error(
-    'Deterministic migration checksums are not supported for this runtime or dialect. ' +
-      'Set `checksum: "disabled"` on these migrations if they must run without checksum validation.'
-  );
-}
-
 async function getStoredChecksumForMigration<DB>(
   options: RunMigrationsOptions<DB>,
-  migration: ParsedMigration<DB>,
-  dialect: MigrationChecksumDialect | null
+  migration: ParsedMigration<DB>
 ): Promise<string> {
-  if (migration.checksum === 'disabled') {
-    return DISABLED_MIGRATION_CHECKSUM;
-  }
-
-  const resolvedDialect = dialect ?? requireChecksumDialect(options);
-  const checksum = await getMigrationChecksum(
-    options.migrations,
-    migration,
-    resolvedDialect
-  );
-
-  if (!checksum) {
-    throw new Error(
-      `Migration v${migration.version} (${migration.name}) is configured for deterministic checksums but did not produce one.`
-    );
-  }
-
-  return checksum;
+  return getStoredDeterministicChecksum(migration, options.checksums);
 }
 
 async function getChecksumForAlgorithm<DB>(
   options: RunMigrationsOptions<DB>,
   migration: ParsedMigration<DB>,
-  algorithm: MigrationChecksumAlgorithm,
-  dialect: MigrationChecksumDialect | null
+  algorithm: MigrationChecksumAlgorithm
 ): Promise<string> {
   if (algorithm === DISABLED_MIGRATION_CHECKSUM_ALGORITHM) {
     return DISABLED_MIGRATION_CHECKSUM;
@@ -109,8 +72,8 @@ async function getChecksumForAlgorithm<DB>(
     return getLegacyMigrationChecksum(migration);
   }
 
-  if (algorithm === SQL_TRACE_MIGRATION_CHECKSUM_ALGORITHM) {
-    return await getStoredChecksumForMigration(options, migration, dialect);
+  if (algorithm === 'sql_trace_v1') {
+    return await getStoredChecksumForMigration(options, migration);
   }
 
   throw new Error(`Unsupported migration checksum algorithm: ${algorithm}`);
@@ -218,10 +181,6 @@ export async function runMigrationsToVersion<DB>(
     let wasReset = false;
     let recoveredFromSchemaConflict = false;
     const deterministicMigrations = getDeterministicMigrations(migrations);
-    const checksumDialect =
-      deterministicMigrations.length > 0
-        ? requireChecksumDialect(options)
-        : null;
 
     // Check for checksum mismatches up-front when reset mode is enabled
     if (onChecksumMismatch === 'reset' && applied.length > 0) {
@@ -236,8 +195,7 @@ export async function runMigrationsToVersion<DB>(
         const currentChecksum = await getChecksumForAlgorithm(
           options,
           migration,
-          existing.checksum_algorithm,
-          checksumDialect
+          existing.checksum_algorithm
         );
         if (existing.checksum !== currentChecksum) {
           hasMismatch = true;
@@ -271,8 +229,7 @@ export async function runMigrationsToVersion<DB>(
       const currentChecksum = await getChecksumForAlgorithm(
         options,
         migration,
-        existing.checksum_algorithm,
-        checksumDialect
+        existing.checksum_algorithm
       );
 
       if (existing.checksum !== currentChecksum) {
@@ -325,15 +282,17 @@ export async function runMigrationsToVersion<DB>(
 
         const checksum = await getStoredChecksumForMigration(
           options,
-          migration,
-          checksumDialect
+          migration
         );
 
         await recordAppliedMigration(db, trackingTable, {
           version: migration.version,
           name: migration.name,
           checksum,
-          checksum_algorithm: getMigrationChecksumAlgorithm(migration),
+          checksum_algorithm: getMigrationChecksumAlgorithm(
+            migration,
+            options.checksums
+          ),
         });
         appliedVersions.push(migration.version);
       }

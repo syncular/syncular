@@ -21,6 +21,7 @@ import {
   UploadArea,
 } from '@syncular/ui/demo';
 import { StatusDot } from '@syncular/ui/navigation';
+import type { Selectable } from 'kysely';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPgliteClient } from '../client/db-pglite';
 import { createSqliteClient } from '../client/db-sqlite';
@@ -63,6 +64,8 @@ interface BlobRef {
   size: number;
   mimeType: string;
 }
+
+type TaskRow = Selectable<TasksTable>;
 
 function parseBlobRef(value: unknown): BlobRef | null {
   if (!value) return null;
@@ -183,7 +186,7 @@ function BlobImage({ blobRef }: { blobRef: BlobRef }) {
 // ---------------------------------------------------------------------------
 
 function TaskGallery() {
-  const { data: tasks } = useSyncQuery<TasksTable[]>((ctx) =>
+  const { data: tasks } = useSyncQuery<TaskRow[]>((ctx) =>
     ctx.selectFrom('tasks').where('user_id', '=', userId).selectAll()
   );
 
@@ -192,8 +195,7 @@ function TaskGallery() {
       (tasks ?? [])
         .map((t) => ({ task: t, blob: parseBlobRef(t.image) }))
         .filter(
-          (item): item is { task: TasksTable; blob: BlobRef } =>
-            item.blob !== null
+          (item): item is { task: TaskRow; blob: BlobRef } => item.blob !== null
         ),
     [tasks]
   );

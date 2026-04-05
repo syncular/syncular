@@ -7,6 +7,7 @@
  * 3. Generating TypeScript interfaces
  */
 
+export * from './checksums';
 export * from './generate';
 export * from './introspect';
 export * from './map-types';

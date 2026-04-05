@@ -1,6 +1,6 @@
 # @syncular/migrations
 
-Versioned migration utilities for Syncular apps. Provides `defineMigrations()` and `runMigrations()` with migration tracking and deterministic checksum validation (plus an optional reset strategy for client DBs).
+Versioned migration utilities for Syncular apps. Provides `defineMigrations()` and `runMigrations()` with migration tracking and optional generated checksum validation (plus an optional reset strategy for client DBs).
 
 ## Install
 
@@ -13,13 +13,27 @@ npm install @syncular/migrations
 ```ts
 import {
   createMigrationTrackingTableName,
-  defineMigrations,
   runMigrations,
 } from '@syncular/migrations';
+import { migrations } from './migrations';
+import { migrationChecksums } from './migrations.checksums.generated';
+
+await runMigrations({
+  db,
+  migrations,
+  checksums: migrationChecksums,
+  trackingTable: createMigrationTrackingTableName(['my_app', 'client']),
+});
+```
+
+Define the migrations in a separate source module, for example:
+
+```ts
+// migrations.ts
+import { defineMigrations } from '@syncular/migrations';
 
 export const migrations = defineMigrations({
   v1: {
-    checksum: 'deterministic',
     up: async (db) => {
       await db.schema.createTable('tasks').addColumn('id', 'text').execute();
     },
@@ -28,7 +42,6 @@ export const migrations = defineMigrations({
     },
   },
   v2: {
-    checksum: 'deterministic',
     up: async (db) => {
       await db.schema
         .alterTable('tasks')
@@ -40,26 +53,20 @@ export const migrations = defineMigrations({
     },
   },
 });
-
-await runMigrations({
-  db,
-  migrations,
-  trackingTable: createMigrationTrackingTableName(['my_app', 'client']),
-});
 ```
 
 Use `createMigrationTrackingTableName(...)` whenever you want a custom table.
 It keeps names lowercase, predictable, and consistently suffixed with
 `migration_state`.
 
-Use `checksum: 'deterministic'` for migrations that can be replayed into a
-scratch in-memory database. Syncular hashes the actual SQL trace emitted by the
-migration instead of the JavaScript source, which avoids bundle/minifier drift.
+Use `checksum: 'deterministic'` for migrations that have a generated checksum
+manifest. Generate that manifest with `@syncular/typegen`; `runMigrations`
+compares the stored checksum against the generated SQL-trace checksum at
+runtime.
 
-Use `checksum: 'disabled'` for browser/service-worker or otherwise
-runtime-specific migrations where Syncular cannot safely create the matching
-scratch database. Disabled migrations still track version/application state, but
-they skip checksum creation and mismatch checks.
+Use `checksum: 'disabled'` for migrations that cannot be replayed safely during
+build-time checksum generation. Disabled migrations still track
+version/application state, but they skip checksum creation and mismatch checks.
 
 ## Documentation
 

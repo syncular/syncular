@@ -20,18 +20,43 @@ import {
   clearAppliedMigrations,
   createMigrationTrackingTableName,
   DEFAULT_MIGRATION_TRACKING_TABLE,
+  type DefinedMigrations,
   defineMigrations,
   getAppliedMigrations,
   getLegacyMigrationChecksum,
-  getMigrationChecksum,
   getSchemaVersion,
+  type RunMigrationsOptions,
+  type RunMigrationsToVersionOptions,
   runMigrations,
   runMigrationsToVersion,
 } from '@syncular/migrations';
 import { type Kysely, sql } from 'kysely';
+import { createMigrationChecksums } from '../../packages/typegen/src/checksums';
 
 interface TestDb {
   items: { id: string; name: string };
+}
+
+async function getSqliteChecksums<DB>(migrations: DefinedMigrations<DB>) {
+  return createMigrationChecksums(migrations, 'sqlite');
+}
+
+async function runMigrationsWithSqliteChecksums<DB>(
+  options: RunMigrationsOptions<DB>
+) {
+  return runMigrations({
+    ...options,
+    checksums: await getSqliteChecksums(options.migrations),
+  });
+}
+
+async function runMigrationsToVersionWithSqliteChecksums<DB>(
+  options: RunMigrationsToVersionOptions<DB>
+) {
+  return runMigrationsToVersion({
+    ...options,
+    checksums: await getSqliteChecksums(options.migrations),
+  });
 }
 
 describe('migrations', () => {
@@ -74,18 +99,10 @@ describe('migrations', () => {
         },
       });
 
-      const checksum1 = await getMigrationChecksum(
-        migrations1,
-        migrations1.migrations[0]!,
-        'sqlite'
-      );
-      const checksum2 = await getMigrationChecksum(
-        migrations2,
-        migrations2.migrations[0]!,
-        'sqlite'
-      );
+      const checksum1 = await getSqliteChecksums(migrations1);
+      const checksum2 = await getSqliteChecksums(migrations2);
 
-      expect(checksum1).toBe(checksum2);
+      expect(checksum1['1']).toBe(checksum2['1']);
     });
 
     it('produces the same checksum when comments differ', async () => {
@@ -117,18 +134,10 @@ describe('migrations', () => {
         },
       });
 
-      const checksum1 = await getMigrationChecksum(
-        migrations1,
-        migrations1.migrations[0]!,
-        'sqlite'
-      );
-      const checksum2 = await getMigrationChecksum(
-        migrations2,
-        migrations2.migrations[0]!,
-        'sqlite'
-      );
+      const checksum1 = await getSqliteChecksums(migrations1);
+      const checksum2 = await getSqliteChecksums(migrations2);
 
-      expect(checksum1).toBe(checksum2);
+      expect(checksum1['1']).toBe(checksum2['1']);
     });
 
     it('produces different checksums when logic changes', async () => {
@@ -158,18 +167,10 @@ describe('migrations', () => {
         },
       });
 
-      const checksum1 = await getMigrationChecksum(
-        migrations1,
-        migrations1.migrations[0]!,
-        'sqlite'
-      );
-      const checksum2 = await getMigrationChecksum(
-        migrations2,
-        migrations2.migrations[0]!,
-        'sqlite'
-      );
+      const checksum1 = await getSqliteChecksums(migrations1);
+      const checksum2 = await getSqliteChecksums(migrations2);
 
-      expect(checksum1).not.toBe(checksum2);
+      expect(checksum1['1']).not.toBe(checksum2['1']);
     });
 
     it('produces different checksums when string literals differ', async () => {
@@ -203,18 +204,10 @@ describe('migrations', () => {
         },
       });
 
-      const checksum1 = await getMigrationChecksum(
-        migrations1,
-        migrations1.migrations[0]!,
-        'sqlite'
-      );
-      const checksum2 = await getMigrationChecksum(
-        migrations2,
-        migrations2.migrations[0]!,
-        'sqlite'
-      );
+      const checksum1 = await getSqliteChecksums(migrations1);
+      const checksum2 = await getSqliteChecksums(migrations2);
 
-      expect(checksum1).not.toBe(checksum2);
+      expect(checksum1['1']).not.toBe(checksum2['1']);
     });
 
     it('produces different checksums when other string literals differ', async () => {
@@ -248,21 +241,13 @@ describe('migrations', () => {
         },
       });
 
-      const checksum1 = await getMigrationChecksum(
-        migrations1,
-        migrations1.migrations[0]!,
-        'sqlite'
-      );
-      const checksum2 = await getMigrationChecksum(
-        migrations2,
-        migrations2.migrations[0]!,
-        'sqlite'
-      );
+      const checksum1 = await getSqliteChecksums(migrations1);
+      const checksum2 = await getSqliteChecksums(migrations2);
 
-      expect(checksum1).not.toBe(checksum2);
+      expect(checksum1['1']).not.toBe(checksum2['1']);
     });
 
-    it('returns null when checksum validation is disabled', async () => {
+    it('skips disabled migrations when generating checksums', async () => {
       const migrations = defineMigrations<TestDb>({
         v1: {
           checksum: 'disabled',
@@ -276,13 +261,9 @@ describe('migrations', () => {
         },
       });
 
-      const checksum = await getMigrationChecksum(
-        migrations,
-        migrations.migrations[0]!,
-        'sqlite'
-      );
+      const checksum = await getSqliteChecksums(migrations);
 
-      expect(checksum).toBeNull();
+      expect(checksum).toEqual({});
     });
   });
 
@@ -358,7 +339,7 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrations({ db, migrations });
+      const result = await runMigrationsWithSqliteChecksums({ db, migrations });
 
       expect(result.applied).toEqual([1]);
       expect(result.currentVersion).toBe(1);
@@ -394,10 +375,16 @@ describe('migrations', () => {
         },
       });
 
-      const result1 = await runMigrations({ db, migrations });
+      const result1 = await runMigrationsWithSqliteChecksums({
+        db,
+        migrations,
+      });
       expect(result1.applied).toEqual([1]);
 
-      const result2 = await runMigrations({ db, migrations });
+      const result2 = await runMigrationsWithSqliteChecksums({
+        db,
+        migrations,
+      });
       expect(result2.applied).toEqual([]);
       expect(result2.wasReset).toBe(false);
     });
@@ -428,8 +415,8 @@ describe('migrations', () => {
 
       try {
         const [resultA, resultB] = await Promise.all([
-          runMigrations({ db: dbA, migrations }),
-          runMigrations({ db: dbB, migrations }),
+          runMigrationsWithSqliteChecksums({ db: dbA, migrations }),
+          runMigrationsWithSqliteChecksums({ db: dbB, migrations }),
         ]);
 
         const appliedSets = [resultA.applied, resultB.applied].sort(
@@ -462,7 +449,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations: migrations1 });
+      await runMigrationsWithSqliteChecksums({ db, migrations: migrations1 });
 
       // "Modify" the migration (different function body => different checksum)
       const migrations2 = defineMigrations<TestDb>({
@@ -479,7 +466,7 @@ describe('migrations', () => {
       });
 
       await expect(
-        runMigrations({ db, migrations: migrations2 })
+        runMigrationsWithSqliteChecksums({ db, migrations: migrations2 })
       ).rejects.toThrow(/has changed since it was applied/);
     });
 
@@ -516,7 +503,7 @@ describe('migrations', () => {
         )
       `.execute(db);
 
-      const result = await runMigrations({ db, migrations });
+      const result = await runMigrationsWithSqliteChecksums({ db, migrations });
 
       expect(result.applied).toEqual([]);
       const appliedRows = await getAppliedMigrations(
@@ -545,7 +532,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations: migrations1 });
+      await runMigrationsWithSqliteChecksums({ db, migrations: migrations1 });
 
       // Insert a row to verify reset drops and recreates the table
       await db
@@ -567,7 +554,7 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrations({
+      const result = await runMigrationsWithSqliteChecksums({
         db,
         migrations: migrations2,
         onChecksumMismatch: 'reset',
@@ -604,7 +591,7 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrations({
+      const result = await runMigrationsWithSqliteChecksums({
         db,
         migrations,
         onChecksumMismatch: 'reset',
@@ -633,7 +620,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations: migrations1 });
+      await runMigrationsWithSqliteChecksums({ db, migrations: migrations1 });
 
       const migrations2 = defineMigrations<TestDb>({
         v1: {
@@ -648,7 +635,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({
+      await runMigrationsWithSqliteChecksums({
         db,
         migrations: migrations2,
         onChecksumMismatch: 'reset',
@@ -676,9 +663,9 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations });
+      await runMigrationsWithSqliteChecksums({ db, migrations });
 
-      const result = await runMigrations({
+      const result = await runMigrationsWithSqliteChecksums({
         db,
         migrations,
         onChecksumMismatch: 'reset',
@@ -703,7 +690,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations: migrations1 });
+      await runMigrationsWithSqliteChecksums({ db, migrations: migrations1 });
 
       const migrations2 = defineMigrations<TestDb>({
         v1: {
@@ -719,7 +706,10 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrations({ db, migrations: migrations2 });
+      const result = await runMigrationsWithSqliteChecksums({
+        db,
+        migrations: migrations2,
+      });
 
       expect(result.applied).toEqual([]);
       expect(result.wasReset).toBe(false);
@@ -752,7 +742,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations });
+      await runMigrationsWithSqliteChecksums({ db, migrations });
 
       const before = await getAppliedMigrations(db, 'sync_migration_state');
       expect(before.length).toBe(1);
@@ -794,7 +784,7 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrations({ db, migrations });
+      const result = await runMigrationsWithSqliteChecksums({ db, migrations });
 
       expect(result.applied).toEqual([1, 2]);
       expect(result.currentVersion).toBe(2);
@@ -824,7 +814,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations: migrations1 });
+      await runMigrationsWithSqliteChecksums({ db, migrations: migrations1 });
 
       // Change v1 but keep v2 the same
       const migrations2 = defineMigrations<TestDb>({
@@ -849,7 +839,7 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrations({
+      const result = await runMigrationsWithSqliteChecksums({
         db,
         migrations: migrations2,
         onChecksumMismatch: 'reset',
@@ -878,7 +868,7 @@ describe('migrations', () => {
         },
       });
 
-      const upResult = await runMigrationsToVersion({
+      const upResult = await runMigrationsToVersionWithSqliteChecksums({
         db,
         migrations,
         targetVersion: 1,
@@ -887,7 +877,7 @@ describe('migrations', () => {
       expect(upResult.reverted).toEqual([]);
       expect(upResult.currentVersion).toBe(1);
 
-      const downResult = await runMigrationsToVersion({
+      const downResult = await runMigrationsToVersionWithSqliteChecksums({
         db,
         migrations,
         targetVersion: 0,
@@ -901,6 +891,7 @@ describe('migrations', () => {
       const order: string[] = [];
       const migrations = defineMigrations<TestDb>({
         v1: {
+          checksum: 'disabled',
           up: async (db) => {
             order.push('up-1');
             await db.schema
@@ -915,6 +906,7 @@ describe('migrations', () => {
           },
         },
         v2: {
+          checksum: 'disabled',
           up: async (db) => {
             order.push('up-2');
             await db.schema
@@ -929,10 +921,10 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations });
+      await runMigrationsWithSqliteChecksums({ db, migrations });
       order.length = 0;
 
-      const result = await runMigrationsToVersion({
+      const result = await runMigrationsToVersionWithSqliteChecksums({
         db,
         migrations,
         targetVersion: 0,
@@ -1053,6 +1045,7 @@ describe('migrations', () => {
           },
         },
         v3: {
+          checksum: 'disabled',
           up: async (db) => {
             applied.push(3);
             await db.schema
@@ -1069,7 +1062,7 @@ describe('migrations', () => {
         },
       });
 
-      const result = await runMigrationsToVersion({
+      const result = await runMigrationsToVersionWithSqliteChecksums({
         db,
         migrations,
         targetVersion: 2,
@@ -1133,10 +1126,10 @@ describe('migrations', () => {
       });
 
       // Apply all three
-      await runMigrations({ db, migrations });
+      await runMigrationsWithSqliteChecksums({ db, migrations });
 
       // Revert from v3 down to v1
-      const result = await runMigrationsToVersion({
+      const result = await runMigrationsToVersionWithSqliteChecksums({
         db,
         migrations,
         targetVersion: 1,
@@ -1184,10 +1177,14 @@ describe('migrations', () => {
       });
 
       // Migrate to v2
-      await runMigrationsToVersion({ db, migrations, targetVersion: 2 });
+      await runMigrationsToVersionWithSqliteChecksums({
+        db,
+        migrations,
+        targetVersion: 2,
+      });
 
       // Run to v2 again → no-op
-      const result = await runMigrationsToVersion({
+      const result = await runMigrationsToVersionWithSqliteChecksums({
         db,
         migrations,
         targetVersion: 2,
@@ -1229,7 +1226,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({ db, migrations });
+      await runMigrationsWithSqliteChecksums({ db, migrations });
 
       const version = await getSchemaVersion(db, 'sync_migration_state');
       expect(version).toBe(2);
@@ -1251,7 +1248,7 @@ describe('migrations', () => {
         },
       });
 
-      await runMigrations({
+      await runMigrationsWithSqliteChecksums({
         db,
         migrations,
         trackingTable: 'custom_tracking',

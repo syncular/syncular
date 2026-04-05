@@ -11,12 +11,12 @@ export type MigrationFn<DB = unknown> = (db: Kysely<DB>) => Promise<void>;
 
 export type MigrationChecksumMode = 'deterministic' | 'disabled';
 
-export type MigrationChecksumDialect = 'sqlite' | 'postgres';
-
 export type MigrationChecksumAlgorithm =
   | 'legacy_source_v1'
   | 'sql_trace_v1'
   | 'disabled';
+
+export type MigrationChecksums = Record<string, string>;
 
 /**
  * A reversible migration definition.
@@ -87,6 +87,8 @@ export interface RunMigrationsOptions<DB = unknown> {
   db: Kysely<DB>;
   /** Defined migrations from defineMigrations() */
   migrations: DefinedMigrations<DB>;
+  /** Generated deterministic checksums for this migration set. */
+  checksums?: MigrationChecksums;
   /** Name of the tracking table (default: 'sync_migration_state') */
   trackingTable?: string;
   /** What to do when a migration's checksum doesn't match. Default: 'error' */
