@@ -174,6 +174,63 @@ const tasksHandler = createServerHandler({
 
 ---
 
+## Client and Server Scope Symmetry
+
+For scoped tables, define the same scope shape on the server handler and the
+client handler. The server mapping says where scopes come from when writing the
+commit log. The client mapping says which local column should be used when a
+subscription is removed, revoked, or bootstrapped again.
+
+```typescript
+// shared/scopes.ts
+export const NOTE_SCOPES = [
+  { pattern: 'user:{user_id}', column: 'owner_user_id' },
+] as const;
+```
+
+```typescript
+// server
+createServerHandler({
+  table: 'notes',
+  scopes: NOTE_SCOPES,
+  resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+```typescript
+// client
+createClientHandler({
+  table: 'notes',
+  scopes: NOTE_SCOPES,
+});
+```
+
+If the client subscribes with `{ user_id: 'alice' }`, the local `notes` table
+must either have an `owner_user_id` column or provide custom clearing logic.
+Without a local scope column, Syncular cannot safely clear only Alice's rows
+during bootstrap or revocation.
+
+### Server rows may omit local scope metadata
+
+It is often good API hygiene to hide ownership columns from public row payloads.
+When you do that, keep the local scope column and opt into materialization:
+
+```typescript
+createClientHandler({
+  table: 'notes',
+  scopes: NOTE_SCOPES,
+  materializeScopeColumns: true,
+});
+```
+
+`materializeScopeColumns` fills missing local scope columns from the subscription
+scope during snapshots and from each change's stored scopes during incremental
+pulls. Snapshot materialization requires a single concrete value for each
+missing scope column. If a subscription requests multiple values at once, include
+the scope column in the server snapshot rows or split the subscription by value.
+
+---
+
 ## Effective Scopes: The Intersection Model
 
 When a client pulls data, the server computes **effective scopes** as the intersection of what the client requested (via its [subscription](/docs/concepts/subscriptions)) and what `resolveScopes` allows:

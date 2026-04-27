@@ -31,6 +31,8 @@ export interface ClientHandlerContext<DB> {
   actorId?: string | null;
   /** Commit creation timestamp (ISO string), when available. */
   createdAt?: string | null;
+  /** Scope values for the active subscription, when applying bootstrap rows. */
+  scopes?: ScopeValues;
 }
 
 /**

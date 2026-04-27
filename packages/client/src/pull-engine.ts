@@ -648,7 +648,10 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
 ): Promise<void> {
   const chunks = snapshot.chunks ?? [];
   if (chunks.length === 0) {
-    await handler.applySnapshot({ trx, yieldToMainThread }, snapshot);
+    await handler.applySnapshot(
+      { trx, yieldToMainThread, scopes: scopeValues },
+      snapshot
+    );
     return;
   }
 
@@ -714,7 +717,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
             // eslint-disable-next-line no-await-in-loop
             try {
               await handler.applySnapshot(
-                { trx, yieldToMainThread },
+                { trx, yieldToMainThread, scopes: scopeValues },
                 {
                   ...snapshot,
                   rows: pendingBatch,
@@ -746,7 +749,7 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
           // eslint-disable-next-line no-await-in-loop
           try {
             await handler.applySnapshot(
-              { trx, yieldToMainThread },
+              { trx, yieldToMainThread, scopes: scopeValues },
               {
                 ...snapshot,
                 rows: pendingBatch,
@@ -1737,7 +1740,10 @@ async function applySubscriptionResponse<DB extends SyncClientDb>(args: {
           );
         } else {
           try {
-            await handler.applySnapshot({ trx, yieldToMainThread }, snapshot);
+            await handler.applySnapshot(
+              { trx, yieldToMainThread, scopes: sub.scopes },
+              snapshot
+            );
           } catch (error) {
             throw wrapSyncClientStageError(
               error,

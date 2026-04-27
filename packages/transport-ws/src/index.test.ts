@@ -60,6 +60,16 @@ async function waitForSocket(): Promise<MockWebSocket> {
   throw new Error('Expected a websocket instance to be created');
 }
 
+async function waitForSocketCount(count: number): Promise<MockWebSocket[]> {
+  for (let i = 0; i < 10; i++) {
+    if (MockWebSocket.instances.length >= count) {
+      return MockWebSocket.instances.slice(0, count);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Expected ${count} websocket instances to be created`);
+}
+
 function createDeferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -145,6 +155,35 @@ describe('createWebSocketTransport auth flow', () => {
     expect(socket.sent).toEqual([]);
 
     disconnect();
+  });
+
+  test('closes stale sockets when connect is called again', async () => {
+    clearMockSockets();
+    const transport = createWebSocketTransport({
+      baseUrl: 'http://localhost:3000/api',
+      WebSocketImpl: MockWebSocket as typeof WebSocket,
+      reconnectJitter: 0,
+    });
+
+    const firstDisconnect = transport.connect(
+      { clientId: 'client-single-flight' },
+      () => {}
+    );
+    const firstSocket = await waitForSocket();
+    const secondDisconnect = transport.connect(
+      { clientId: 'client-single-flight' },
+      () => {}
+    );
+    const [, secondSocket] = await waitForSocketCount(2);
+
+    expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
+
+    firstDisconnect();
+    await secondSocket.triggerOpen();
+    expect(transport.getConnectionState()).toBe('connected');
+
+    secondDisconnect();
+    expect(secondSocket.readyState).toBe(MockWebSocket.CLOSED);
   });
 
   test('times out ws push quickly when configured', async () => {
