@@ -146,9 +146,10 @@ Checklist:
 - Confirm the local table has the columns referenced by the client handler's
   scope mapping. For example, `{ pattern: 'user:{user_id}', column:
   'owner_user_id' }` requires a local `owner_user_id` column.
-- If the server hides ownership columns from client row payloads, set
-  `materializeScopeColumns: true` on the client handler or provide a custom
-  `applySnapshot`.
+- If the server hides ownership columns from client row payloads, provide
+  custom `applySnapshot` and `applyChange` handlers that write whatever local
+  metadata your schema requires. The default handler only writes columns present
+  in the row payload.
 - If you intentionally do not store local scope columns, provide custom
   `clearAll` and `onSnapshotStart` handlers so bootstrap/revocation does not
   depend on the default scoped clear.

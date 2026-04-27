@@ -103,17 +103,10 @@ createClientHandler({
 });
 ```
 
-If your server intentionally omits private ownership columns from rows it sends
-to clients, keep the local column and let the default handler populate it from
-the subscription/change scopes:
-
-```typescript
-createClientHandler({
-  table: 'tasks',
-  scopes: [{ pattern: 'user:{user_id}', column: 'owner_user_id' }],
-  materializeScopeColumns: true,
-});
-```
+Rows sent by the server should include the local scope column if the default
+handler needs to write it locally. If you intentionally hide that metadata from
+row payloads, provide custom `applySnapshot` and `applyChange` handlers that
+write whatever local metadata your schema requires.
 
 Only skip local scope columns when you provide custom `clearAll` and
 `onSnapshotStart` handlers. Otherwise Syncular cannot safely distinguish

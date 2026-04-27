@@ -210,24 +210,22 @@ must either have an `owner_user_id` column or provide custom clearing logic.
 Without a local scope column, Syncular cannot safely clear only Alice's rows
 during bootstrap or revocation.
 
-### Server rows may omit local scope metadata
+### Server rows should include local scope metadata
 
-It is often good API hygiene to hide ownership columns from public row payloads.
-When you do that, keep the local scope column and opt into materialization:
+For the default client handler, synced rows should include the local columns
+needed by your client schema. If your local table has `owner_user_id`, the
+server snapshot/change payload should normally include `owner_user_id` too, even
+if your app UI never displays it.
 
 ```typescript
-createClientHandler({
-  table: 'notes',
-  scopes: NOTE_SCOPES,
-  materializeScopeColumns: true,
-});
+// server row payload
+{ id: 'n1', title: 'Roadmap', owner_user_id: 'alice' }
 ```
 
-`materializeScopeColumns` fills missing local scope columns from the subscription
-scope during snapshots and from each change's stored scopes during incremental
-pulls. Snapshot materialization requires a single concrete value for each
-missing scope column. If a subscription requests multiple values at once, include
-the scope column in the server snapshot rows or split the subscription by value.
+If you intentionally hide ownership metadata from row payloads, provide custom
+`applySnapshot` and `applyChange` handlers that write the local columns your
+schema requires. Keep custom clearing explicit too if the default scope-column
+mapping no longer describes the rows in local storage.
 
 ---
 

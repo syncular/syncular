@@ -7,8 +7,6 @@ import type {
   ColumnCodecSource,
   ScopeDefinition,
   ScopeKeysFromDefinitions,
-  ScopeValue,
-  ScopeValues,
   ScopeValuesFromPatterns,
   SyncChange,
   SyncSnapshot,
@@ -91,15 +89,6 @@ export interface CreateClientHandlerOptions<
    * Default: 'sqlite'
    */
   codecDialect?: ColumnCodecDialect;
-
-  /**
-   * Populate missing local scope columns on pulled snapshots and changes.
-   *
-   * Use this when the server intentionally omits private ownership columns
-   * from row payloads, but the local table still needs those columns for
-   * scoped bootstrap clearing and revoked-subscription cleanup.
-   */
-  materializeScopeColumns?: boolean;
 
   /**
    * Override: Apply a snapshot.
@@ -208,55 +197,6 @@ export function createClientHandler<
   const formatScopeKeys = (keys: string[]): string =>
     keys.map((key) => `"${key}"`).join(', ');
 
-  const getMaterializedScopeValue = (
-    scopeKey: string,
-    scopeValue: ScopeValue | undefined,
-    source: 'snapshot' | 'change'
-  ): string | null => {
-    if (scopeValue === undefined) return null;
-    if (typeof scopeValue === 'string') {
-      return scopeValue.length > 0 ? scopeValue : null;
-    }
-
-    const values = scopeValue.filter((value) => value.length > 0);
-    if (values.length === 0) return null;
-    if (values.length === 1) return values[0]!;
-
-    throw new Error(
-      `Cannot materialize scope column for "${table}.${scopeColumnsByVariable[scopeKey] ?? scopeKey}" from ${source} scopes because "${scopeKey}" has multiple values. ` +
-        'Include the local scope column in the server row, split the subscription, or provide a custom applySnapshot/applyChange handler.'
-    );
-  };
-
-  const materializeScopeColumns = (
-    row: Record<string, unknown>,
-    scopes: ScopeValues | undefined,
-    source: 'snapshot' | 'change'
-  ): Record<string, unknown> => {
-    if (!options.materializeScopeColumns || !scopes) return row;
-
-    let next: Record<string, unknown> | null = null;
-    for (const [scopeKey, columnName] of Object.entries(
-      scopeColumnsByVariable
-    )) {
-      if (row[columnName] !== undefined && row[columnName] !== null) {
-        continue;
-      }
-
-      const value = getMaterializedScopeValue(
-        scopeKey,
-        scopes[scopeKey],
-        source
-      );
-      if (value === null) continue;
-
-      next ??= { ...row };
-      next[columnName] = value;
-    }
-
-    return next ?? row;
-  };
-
   const clearRowsForScopes = async (
     ctx: ClientClearContext<DB> | ClientSnapshotHookContext<DB>
   ): Promise<void> => {
@@ -315,14 +255,7 @@ export function createClientHandler<
     const rows: Array<Record<string, unknown>> = [];
     for (const row of snapshot.rows ?? []) {
       if (!isRecord(row)) continue;
-      const materialized = materializeScopeColumns(row, ctx.scopes, 'snapshot');
-      rows.push(
-        applyCodecsToDbRow(
-          materialized,
-          resolveTableCodecs(materialized),
-          codecDialect
-        )
-      );
+      rows.push(applyCodecsToDbRow(row, resolveTableCodecs(row), codecDialect));
     }
 
     if (rows.length === 0) return;
@@ -385,9 +318,7 @@ export function createClientHandler<
       return;
     }
 
-    const row = isRecord(change.row_json)
-      ? materializeScopeColumns(change.row_json, change.scopes, 'change')
-      : {};
+    const row = isRecord(change.row_json) ? change.row_json : {};
     const encodedRow = applyCodecsToDbRow(
       row,
       resolveTableCodecs(row),
@@ -504,9 +435,7 @@ export function createClientHandler<
     const createInsertRow = (
       change: SyncChange
     ): { columns: string[]; row: Record<string, unknown> } => {
-      const row = isRecord(change.row_json)
-        ? materializeScopeColumns(change.row_json, change.scopes, 'change')
-        : {};
+      const row = isRecord(change.row_json) ? change.row_json : {};
       const encodedRow = applyCodecsToDbRow(
         row,
         resolveTableCodecs(row),
