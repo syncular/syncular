@@ -50,10 +50,12 @@ export default createSyncWorker<Env>(async (app, env) => {
   const { syncRoutes, consoleRoutes } = createSyncServer({
     db,
     dialect,
-    handlers: [tasksHandler],
-    authenticate: async (c) => {
-      const userId = c.req.header('x-user-id');
-      return userId ? { actorId: userId } : null;
+    sync: {
+      handlers: [tasksHandler],
+      authenticate: async (request) => {
+        const userId = request.headers.get('x-user-id');
+        return userId ? { actorId: userId } : null;
+      },
     },
   });
 
@@ -110,10 +112,28 @@ export class SyncDO extends SyncDurableObject<Env> {
     const { syncRoutes, consoleRoutes } = createSyncServer({
       db,
       dialect,
-      handlers: [tasksHandler],
-      authenticate: async (c) => {
-        const userId = c.req.header('x-user-id');
-        return userId ? { actorId: userId } : null;
+      sync: {
+        handlers: [tasksHandler],
+        authenticate: async (request) => {
+          const userId = request.headers.get('x-user-id');
+          return userId ? { actorId: userId } : null;
+        },
+      },
+      routes: {
+        cors: {
+          origin: [
+            'https://app.example.com',
+            'http://localhost:5173',
+            'http://localhost:1420',
+          ],
+        },
+        websocket: {
+          allowedOrigins: [
+            'https://app.example.com',
+            'http://localhost:5173',
+            'http://localhost:1420',
+          ],
+        },
       },
       upgradeWebSocket, // Enable WebSocket realtime
     });
@@ -126,6 +146,8 @@ export class SyncDO extends SyncDurableObject<Env> {
 // Worker entry — routes all requests to the DO
 export default createSyncWorkerWithDO<Env>('SYNC_DO');
 ```
+
+Cloudflare Durable Object realtime uses the same Syncular WebSocket origin guard as other Hono deployments. HTTP CORS and WebSocket origins are separate: configuring `routes.cors`, Hono CORS middleware, or Worker CORS responses does not allow cross-origin WebSocket upgrades by itself. Add every browser, local dev, and Tauri origin to `routes.websocket.allowedOrigins`; use `'*'` only for local development or trusted private deployments.
 
 ### wrangler.toml
 
@@ -200,7 +222,9 @@ For blob storage (images, files, etc.), use the R2 adapter with native R2Bucket 
 ```typescript
 import { createDatabase } from '@syncular/core';
 import { createD1Dialect } from '@syncular/dialect-d1';
+import { createBlobManager } from '@syncular/server';
 import { createR2BlobStorageAdapter, createHmacTokenSigner } from '@syncular/server-cloudflare/r2';
+import { createBlobRoutes } from '@syncular/server-hono';
 
 type Env = {
   DB: D1Database;
@@ -216,24 +240,44 @@ export default createSyncWorker<Env>(async (app, env) => {
   const dialect = createSqliteServerDialect();
   await ensureSyncSchema(db, dialect);
 
-  const blobStorage = createR2BlobStorageAdapter({
+  const tokenSigner = createHmacTokenSigner(env.BLOB_SECRET);
+  const blobAdapter = createR2BlobStorageAdapter({
     bucket: env.BLOBS,
     baseUrl: 'https://api.example.com/sync',
-    tokenSigner: createHmacTokenSigner(env.BLOB_SECRET),
+    tokenSigner,
   });
+  const blobManager = createBlobManager({
+    db,
+    adapter: blobAdapter,
+    defaultExpiresIn: 3600,
+    uploadTtlSeconds: 86400,
+  });
+  const authenticate = async (request: Request) => {
+    const userId = request.headers.get('x-user-id');
+    return userId ? { actorId: userId } : null;
+  };
 
   const { syncRoutes, consoleRoutes } = createSyncServer({
     db,
     dialect,
-    handlers: [tasksHandler],
-    blobStorage, // Enable blob support
-    authenticate: async (c) => {
-      const userId = c.req.header('x-user-id');
-      return userId ? { actorId: userId } : null;
+    sync: {
+      handlers: [tasksHandler],
+      authenticate,
+    },
+  });
+  const blobRoutes = createBlobRoutes({
+    blobManager,
+    authenticate: async (c) => authenticate(c.req.raw),
+    tokenSigner,
+    db,
+    canAccessBlob: async ({ actorId, hash, partitionId }) => {
+      // Enforce tenant/ownership permissions here.
+      return checkBlobAccess({ actorId, hash, partitionId });
     },
   });
 
   app.route('/sync', syncRoutes);
+  app.route('/sync', blobRoutes);
   if (consoleRoutes) app.route('/console', consoleRoutes);
 });
 ```

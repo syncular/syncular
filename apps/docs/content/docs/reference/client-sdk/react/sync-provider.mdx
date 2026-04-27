@@ -128,6 +128,32 @@ Disable sync when user is logged out:
 )}
 ```
 
+## Switching Users or Workspaces
+
+`SyncProvider` treats `db`, `transport`, `sync`, `identity.actorId`, and
+`clientId` as immutable for a mounted provider. When a user, workspace, runtime,
+or local database changes, remount the provider with a key that includes those
+values:
+
+```tsx
+const identity = useMemo(() => ({ actorId: userId }), [userId]);
+
+<SyncProvider
+  key={`${workspaceId}:${userId}:${clientId}`}
+  db={workspaceDb}
+  transport={workspaceTransport}
+  sync={sync}
+  identity={identity}
+  clientId={clientId}
+>
+  <App />
+</SyncProvider>
+```
+
+If you see a critical-props warning, the mounted provider is still holding the
+old engine configuration. The fix is to remount with a key, not to mutate the
+existing provider props in place.
+
 ## Next Steps
 
 - [useSyncQuery](/docs/reference/client-sdk/react/use-sync-query) - Querying data

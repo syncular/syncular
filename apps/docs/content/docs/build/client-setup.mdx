@@ -90,6 +90,35 @@ const handlers = [
 ];
 ```
 
+The client scope definitions must describe columns that exist in the local
+table. Syncular uses those mappings to clear only the rows for a removed,
+revoked, or re-bootstrapped subscription. If the server uses
+`user:{user_id}` but your local table stores that value in `owner_user_id`, map
+it explicitly:
+
+```typescript
+createClientHandler({
+  table: 'tasks',
+  scopes: [{ pattern: 'user:{user_id}', column: 'owner_user_id' }],
+});
+```
+
+If your server intentionally omits private ownership columns from rows it sends
+to clients, keep the local column and let the default handler populate it from
+the subscription/change scopes:
+
+```typescript
+createClientHandler({
+  table: 'tasks',
+  scopes: [{ pattern: 'user:{user_id}', column: 'owner_user_id' }],
+  materializeScopeColumns: true,
+});
+```
+
+Only skip local scope columns when you provide custom `clearAll` and
+`onSnapshotStart` handlers. Otherwise Syncular cannot safely distinguish
+"clear this scope" from "clear the whole table".
+
 </Step>
 <Step>
 
@@ -219,6 +248,24 @@ Treat `db`, `transport`, `sync`, `identity.actorId`, and `clientId` as **stable 
 <SyncProvider key={`${identity.actorId}:${clientId}`} ... />
 ```
 
+For multi-workspace apps, include the runtime/workspace identity in that key and
+memoize the identity object you pass to the provider:
+
+```tsx
+const identity = useMemo(() => ({ actorId: userId }), [userId]);
+
+<SyncProvider
+  key={`${workspaceId}:${userId}:${clientId}`}
+  db={db}
+  transport={transport}
+  sync={sync}
+  identity={identity}
+  clientId={clientId}
+>
+  <App />
+</SyncProvider>
+```
+
 ## StrictMode-safe async initialization
 
 When initializing DB clients or other expensive async resources in React, use `useCachedAsyncValue` so duplicate StrictMode mounts do not re-run the same initializer.
@@ -300,7 +347,9 @@ async applyChange(ctx, change) {
 
 ### clearAll
 
-Called when a subscription is removed. Default deletes all rows.
+Called when a subscription is removed or revoked. The default clears by the
+handler's scope mappings when `ctx.scopes` is non-empty. It clears the whole
+table only for global subscriptions with empty scopes.
 
 ```typescript
 async clearAll(ctx) {

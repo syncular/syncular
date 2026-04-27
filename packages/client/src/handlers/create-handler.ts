@@ -7,6 +7,8 @@ import type {
   ColumnCodecSource,
   ScopeDefinition,
   ScopeKeysFromDefinitions,
+  ScopeValue,
+  ScopeValues,
   ScopeValuesFromPatterns,
   SyncChange,
   SyncSnapshot,
@@ -89,6 +91,15 @@ export interface CreateClientHandlerOptions<
    * Default: 'sqlite'
    */
   codecDialect?: ColumnCodecDialect;
+
+  /**
+   * Populate missing local scope columns on pulled snapshots and changes.
+   *
+   * Use this when the server intentionally omits private ownership columns
+   * from row payloads, but the local table still needs those columns for
+   * scoped bootstrap clearing and revoked-subscription cleanup.
+   */
+  materializeScopeColumns?: boolean;
 
   /**
    * Override: Apply a snapshot.
@@ -194,26 +205,98 @@ export function createClientHandler<
   const { scopePatterns, scopeColumnsByVariable } =
     createSingleVariableScopeMetadata(scopeDefs);
 
+  const formatScopeKeys = (keys: string[]): string =>
+    keys.map((key) => `"${key}"`).join(', ');
+
+  const getMaterializedScopeValue = (
+    scopeKey: string,
+    scopeValue: ScopeValue | undefined,
+    source: 'snapshot' | 'change'
+  ): string | null => {
+    if (scopeValue === undefined) return null;
+    if (typeof scopeValue === 'string') {
+      return scopeValue.length > 0 ? scopeValue : null;
+    }
+
+    const values = scopeValue.filter((value) => value.length > 0);
+    if (values.length === 0) return null;
+    if (values.length === 1) return values[0]!;
+
+    throw new Error(
+      `Cannot materialize scope column for "${table}.${scopeColumnsByVariable[scopeKey] ?? scopeKey}" from ${source} scopes because "${scopeKey}" has multiple values. ` +
+        'Include the local scope column in the server row, split the subscription, or provide a custom applySnapshot/applyChange handler.'
+    );
+  };
+
+  const materializeScopeColumns = (
+    row: Record<string, unknown>,
+    scopes: ScopeValues | undefined,
+    source: 'snapshot' | 'change'
+  ): Record<string, unknown> => {
+    if (!options.materializeScopeColumns || !scopes) return row;
+
+    let next: Record<string, unknown> | null = null;
+    for (const [scopeKey, columnName] of Object.entries(
+      scopeColumnsByVariable
+    )) {
+      if (row[columnName] !== undefined && row[columnName] !== null) {
+        continue;
+      }
+
+      const value = getMaterializedScopeValue(
+        scopeKey,
+        scopes[scopeKey],
+        source
+      );
+      if (value === null) continue;
+
+      next ??= { ...row };
+      next[columnName] = value;
+    }
+
+    return next ?? row;
+  };
+
   const clearRowsForScopes = async (
     ctx: ClientClearContext<DB> | ClientSnapshotHookContext<DB>
   ): Promise<void> => {
-    const scopeFilters = Object.entries(ctx.scopes).flatMap(
-      ([scopeKey, raw]) => {
-        const column = scopeColumnsByVariable[scopeKey];
-        if (!column) return [];
-        if (Array.isArray(raw)) {
-          const values = raw.filter((value) => value.length > 0);
-          if (values.length === 0) return [];
-          return [
-            sql`${sql.ref(column)} in ${sql`(${sql.join(values.map((value) => sql.val(value)))})`}`,
-          ];
-        }
-        if (raw.length === 0) return [];
-        return [sql`${sql.ref(column)} = ${sql.val(raw)}`];
-      }
+    const scopeEntries = Object.entries(ctx.scopes);
+    const nonEmptyScopeEntries = scopeEntries.filter(([, raw]) =>
+      Array.isArray(raw)
+        ? raw.some((value) => value.length > 0)
+        : raw.length > 0
     );
+    const unknownScopeKeys = nonEmptyScopeEntries
+      .map(([scopeKey]) => scopeKey)
+      .filter((scopeKey) => !scopeColumnsByVariable[scopeKey]);
+    if (unknownScopeKeys.length > 0) {
+      throw new Error(
+        `Cannot clear scoped rows for "${table}" because the client handler has no local scope column mapping for ${formatScopeKeys(
+          unknownScopeKeys
+        )}. ` +
+          'Add matching client handler scopes, map the scope variable to a local column, or provide custom clearAll/onSnapshotStart handlers.'
+      );
+    }
+
+    const scopeFilters = nonEmptyScopeEntries.flatMap(([scopeKey, raw]) => {
+      const column = scopeColumnsByVariable[scopeKey];
+      if (!column) return [];
+      if (Array.isArray(raw)) {
+        const values = raw.filter((value) => value.length > 0);
+        if (values.length === 0) return [];
+        return [
+          sql`${sql.ref(column)} in ${sql`(${sql.join(values.map((value) => sql.val(value)))})`}`,
+        ];
+      }
+      if (raw.length === 0) return [];
+      return [sql`${sql.ref(column)} = ${sql.val(raw)}`];
+    });
 
     if (scopeFilters.length === 0) {
+      if (scopeEntries.length > 0) {
+        return;
+      }
+
       await sql`delete from ${sql.table(table)}`.execute(ctx.trx);
       return;
     }
@@ -232,7 +315,14 @@ export function createClientHandler<
     const rows: Array<Record<string, unknown>> = [];
     for (const row of snapshot.rows ?? []) {
       if (!isRecord(row)) continue;
-      rows.push(applyCodecsToDbRow(row, resolveTableCodecs(row), codecDialect));
+      const materialized = materializeScopeColumns(row, ctx.scopes, 'snapshot');
+      rows.push(
+        applyCodecsToDbRow(
+          materialized,
+          resolveTableCodecs(materialized),
+          codecDialect
+        )
+      );
     }
 
     if (rows.length === 0) return;
@@ -296,14 +386,15 @@ export function createClientHandler<
     }
 
     const row = isRecord(change.row_json)
-      ? applyCodecsToDbRow(
-          change.row_json,
-          resolveTableCodecs(change.row_json),
-          codecDialect
-        )
+      ? materializeScopeColumns(change.row_json, change.scopes, 'change')
       : {};
+    const encodedRow = applyCodecsToDbRow(
+      row,
+      resolveTableCodecs(row),
+      codecDialect
+    );
     const insertRow: Record<string, unknown> = {
-      ...row,
+      ...encodedRow,
       [primaryKey]: change.row_id,
     };
 
@@ -414,14 +505,15 @@ export function createClientHandler<
       change: SyncChange
     ): { columns: string[]; row: Record<string, unknown> } => {
       const row = isRecord(change.row_json)
-        ? applyCodecsToDbRow(
-            change.row_json,
-            resolveTableCodecs(change.row_json),
-            codecDialect
-          )
+        ? materializeScopeColumns(change.row_json, change.scopes, 'change')
         : {};
+      const encodedRow = applyCodecsToDbRow(
+        row,
+        resolveTableCodecs(row),
+        codecDialect
+      );
       const insertRow: Record<string, unknown> = {
-        ...row,
+        ...encodedRow,
         [primaryKey]: change.row_id,
       };
 

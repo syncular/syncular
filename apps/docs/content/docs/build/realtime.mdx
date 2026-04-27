@@ -58,11 +58,21 @@ const syncRoutes = createSyncRoutes({
       heartbeatIntervalMs: 30000,
       maxConnectionsTotal: 5000,
       maxConnectionsPerClient: 3,
-      allowedOrigins: ['https://app.example.com'],
+      allowedOrigins: [
+        'https://app.example.com',
+        'http://localhost:5173',
+        'http://localhost:1420',
+      ],
     },
   },
 });
 ```
+
+HTTP CORS and WebSocket origins are separate checks. Configuring Hono CORS for
+`/api/*` does not allow cross-origin WebSocket upgrades by itself. If your
+browser, dev server, or Tauri app connects from another origin, add that origin
+to `websocket.allowedOrigins`. Use `'*'` only for local development or trusted
+private deployments.
 
 ### WebSocket Options
 
@@ -99,6 +109,12 @@ const transport = createWebSocketTransport({
 > `@syncular/server-hono` authenticates realtime WebSocket requests during the HTTP upgrade (`authenticate(c)`) and does **not** consume `{ type: 'auth', token }` first-message auth payloads.
 
 When `allowedOrigins` is unset, `@syncular/server-hono` accepts same-origin browser upgrades and origin-less non-browser clients by default. If your app connects from a different origin or relies on cookie auth, set `allowedOrigins` explicitly instead of relying on the default.
+
+The built-in WebSocket transport keeps reconnect attempts single-flight: a newer
+connect/reconnect attempt closes the stale socket before opening another one,
+and stale socket callbacks are ignored. If you write a custom realtime
+transport, use the same pattern with a generation token or abort signal so an
+older connection attempt cannot close a newer socket.
 
 ### Enable in SyncProvider
 

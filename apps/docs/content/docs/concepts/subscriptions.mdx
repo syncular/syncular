@@ -219,7 +219,24 @@ When the user changes (e.g., logout/login), all subscription IDs change and the 
 
 ## Scope-Aware Clearing
 
-When a subscription is removed or revoked, the system clears locally cached data. The default behavior deletes all rows from the table. For tables with mixed-scope data, you can implement custom clearing:
+When a subscription is removed or revoked, the system clears locally cached
+data for that subscription. The default client handler uses the handler's
+`scopes` mapping to build scoped deletes:
+
+```typescript
+createClientHandler({
+  table: 'tasks',
+  scopes: [{ pattern: 'user:{user_id}', column: 'owner_user_id' }],
+});
+```
+
+With that handler, clearing `{ user_id: '123' }` deletes rows where
+`owner_user_id = '123'`. Empty scopes (`{}`) mean a global subscription, so the
+default clears the whole table.
+
+If the handler has no local mapping for a non-empty scope, Syncular throws
+instead of falling back to a whole-table delete. Add a scope mapping or provide
+custom clearing:
 
 ```typescript
 const tasksClientHandler = createClientHandler({
@@ -238,7 +255,9 @@ const tasksClientHandler = createClientHandler({
 });
 ```
 
-> Custom `clearAll` is only needed when a table has rows from multiple subscriptions and you want to clear only the rows belonging to the removed subscription. The default works for most apps.
+Custom `clearAll` is only needed when your local clearing rule is more complex
+than direct scope-column equality, or when you intentionally do not store local
+scope columns.
 
 ---
 

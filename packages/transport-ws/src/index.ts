@@ -255,6 +255,7 @@ export function createWebSocketTransport(
   let isManuallyDisconnected = false;
   let currentClientId: string | null = null;
   let connectNonce = 0;
+  let connectSession = 0;
 
   // Presence state
   const activePresenceScopes = new Map<
@@ -445,6 +446,14 @@ export function createWebSocketTransport(
 
     const nonce = ++connectNonce;
 
+    if (
+      ws ||
+      reconnectTimer ||
+      heartbeatTimer ||
+      pendingPushRequests.size > 0
+    ) {
+      doDisconnect();
+    }
     setConnectionState('connecting');
 
     const url = await buildUrl(currentClientId);
@@ -530,6 +539,7 @@ export function createWebSocketTransport(
   const transport: WebSocketTransport = {
     ...httpTransport,
     connect(args, onEvent, onStateChange) {
+      const session = ++connectSession;
       currentClientId = args.clientId;
       currentEventCallback = onEvent;
       currentStateCallback = onStateChange ?? null;
@@ -538,6 +548,8 @@ export function createWebSocketTransport(
       void doConnect();
 
       return () => {
+        if (session !== connectSession) return;
+        connectSession += 1;
         isManuallyDisconnected = true;
         currentEventCallback = null;
         currentStateCallback = null;

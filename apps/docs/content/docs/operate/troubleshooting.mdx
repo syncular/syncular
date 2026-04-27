@@ -120,12 +120,41 @@ Checklist:
 
 - Confirm the server enabled WebSockets (`sync.websocket.enabled` + `upgradeWebSocket`).
 - Confirm the URL matches your mountpoint (example: `/api/sync/realtime`).
+- Confirm `sync.websocket.allowedOrigins` includes the browser/Tauri origin
+  (`http://localhost:5173`, `http://localhost:1420`, your production app
+  origin, etc.). Hono CORS does not configure Syncular's WebSocket origin
+  guard.
 - In browsers, you cannot send custom headers with WebSocket:
   - Prefer same-origin cookie auth, or
   - Use a short-lived non-sensitive query param token.
 - `@syncular/server-hono` authenticates realtime during HTTP upgrade and does not consume first-message `{ type: 'auth' }` tokens.
+- If the browser reports `WebSocket is closed before the connection is
+  established`, check both server-side 403 origin rejections and client-side
+  connection churn. The built-in transport guards reconnect attempts; custom
+  transports should close stale sockets and ignore stale callbacks.
 
 See: [Realtime](/docs/build/realtime).
+
+## “Rows appear, then disappear after first sync”
+
+This is usually a scoped bootstrap clearing issue.
+
+Checklist:
+
+- Confirm the server handler and client handler use the same scope variables
+  (`user_id`, `project_id`, etc.).
+- Confirm the local table has the columns referenced by the client handler's
+  scope mapping. For example, `{ pattern: 'user:{user_id}', column:
+  'owner_user_id' }` requires a local `owner_user_id` column.
+- If the server hides ownership columns from client row payloads, set
+  `materializeScopeColumns: true` on the client handler or provide a custom
+  `applySnapshot`.
+- If you intentionally do not store local scope columns, provide custom
+  `clearAll` and `onSnapshotStart` handlers so bootstrap/revocation does not
+  depend on the default scoped clear.
+- Use `useSyncInspector()` or `client.getInspectorSnapshot()` to inspect active
+  subscriptions, subscription scopes, recent sync events, transport state, and
+  outbox counts.
 
 ## “Bootstrap is slow / huge”
 

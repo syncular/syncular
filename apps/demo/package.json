@@ -35,7 +35,7 @@
     "@tiptap/extension-collaboration": "^3.22.1",
     "@tiptap/react": "^3.22.1",
     "@tiptap/starter-kit": "^3.22.1",
-    "hono": "^4.12.10",
+    "hono": "^4.12.15",
     "kysely": "^0.28.15",
     "lucide-react": "^1.7.0",
     "react": "^19",
