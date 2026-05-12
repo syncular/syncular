@@ -244,7 +244,12 @@ impl SyncTransport for HttpSyncTransport {
     }
 
     fn connect_realtime(&self) -> Result<RealtimeSocket> {
-        RealtimeSocket::connect(&self.config, &self.auth_headers, self.schema_version)
+        RealtimeSocket::connect(
+            &self.config,
+            &self.auth_headers,
+            self.auth_signer.clone(),
+            self.schema_version,
+        )
     }
 }
 
@@ -478,13 +483,15 @@ impl RealtimeSocket {
     pub fn connect(
         config: &SyncTransportConfig,
         auth_headers: &SyncAuthHeaders,
+        auth_signer: Option<SyncAuthSigner>,
         schema_version: i32,
     ) -> Result<Self> {
         let url = ws_url(&config.base_url, &config.client_id, schema_version)?;
+        let auth_headers = signed_realtime_auth_headers(auth_headers, auth_signer, &url)?;
         let mut request = url
             .into_client_request()
             .map_err(|err| SyncularError::transport(err).context("build websocket request"))?;
-        for (name, value) in effective_auth_headers(auth_headers) {
+        for (name, value) in effective_auth_headers(&auth_headers) {
             let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
                 .map_err(SyncularError::transport)?;
             let value = reqwest::header::HeaderValue::from_str(&value)?;
@@ -649,6 +656,30 @@ fn effective_auth_headers(auth_headers: &SyncAuthHeaders) -> Vec<(String, String
 }
 
 #[cfg(feature = "native")]
+fn signed_realtime_auth_headers(
+    auth_headers: &SyncAuthHeaders,
+    auth_signer: Option<SyncAuthSigner>,
+    url: &str,
+) -> Result<SyncAuthHeaders> {
+    let mut headers = auth_headers.clone();
+    if let Some(signer) = auth_signer {
+        let signed = signer(SyncRequestToSign {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            body: Vec::new(),
+        })
+        .map_err(|err| {
+            SyncularError::message(
+                ErrorKind::Transport,
+                format!("sign websocket request: {err}"),
+            )
+        })?;
+        headers.extend(signed);
+    }
+    Ok(headers)
+}
+
+#[cfg(feature = "native")]
 fn ws_url(base_url: &str, client_id: &str, schema_version: i32) -> Result<String> {
     let mut url = reqwest::Url::parse(base_url).map_err(|err| {
         SyncularError::config(format!("invalid base url for websocket: {base_url}")).context(err)
@@ -719,6 +750,10 @@ fn decode_snapshot_rows(bytes: &[u8]) -> Result<Vec<Value>> {
 #[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     #[test]
     fn effective_auth_headers_are_empty_without_app_headers() {
@@ -738,5 +773,106 @@ mod tests {
             headers,
             vec![("authorization".to_string(), "Bearer token-1".to_string())]
         );
+    }
+
+    #[test]
+    fn realtime_auth_headers_are_signed_for_websocket_get_request() {
+        let captured = Arc::new(Mutex::new(None::<SyncRequestToSign>));
+        let captured_for_signer = Arc::clone(&captured);
+        let signer: SyncAuthSigner = Arc::new(move |request| {
+            *captured_for_signer.lock().expect("capture signer request") = Some(request);
+            Ok(SyncAuthHeaders::from([(
+                "x-signed-realtime".to_string(),
+                "yes".to_string(),
+            )]))
+        });
+
+        let headers = signed_realtime_auth_headers(
+            &SyncAuthHeaders::new(),
+            Some(signer),
+            "wss://api.notsuru.app/sync/realtime?clientId=flutter-shell",
+        )
+        .expect("signed realtime headers");
+
+        assert_eq!(headers["x-signed-realtime"], "yes");
+        let request = captured
+            .lock()
+            .expect("captured request lock")
+            .clone()
+            .expect("request was signed");
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.url,
+            "wss://api.notsuru.app/sync/realtime?clientId=flutter-shell"
+        );
+        assert!(request.body.is_empty());
+    }
+
+    #[test]
+    fn realtime_socket_handshake_uses_auth_signer_and_reads_sync_wakeup() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket test server");
+        let address = listener.local_addr().expect("websocket server address");
+        let (headers_tx, headers_rx) = mpsc::channel::<(String, String)>();
+
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket client");
+            let mut socket = tungstenite::accept_hdr(
+                stream,
+                |request: &tungstenite::handshake::server::Request, response| {
+                    let signed = request
+                        .headers()
+                        .get("x-signed-realtime")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let schema = request
+                        .headers()
+                        .get("x-syncular-schema-version")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    headers_tx
+                        .send((signed, schema))
+                        .expect("send captured websocket headers");
+                    Ok(response)
+                },
+            )
+            .expect("complete websocket handshake");
+            socket
+                .send(Message::Text(
+                    json!({"event": "sync", "data": {"cursor": 42}})
+                        .to_string()
+                        .into(),
+                ))
+                .expect("send realtime sync event");
+            socket.close(None).ok();
+        });
+
+        let signer: SyncAuthSigner = Arc::new(|request| {
+            assert_eq!(request.method, "GET");
+            assert!(request.url.starts_with("ws://127.0.0.1:"));
+            assert!(request.url.contains("/api/sync/realtime?"));
+            assert!(request.body.is_empty());
+            Ok(SyncAuthHeaders::from([(
+                "x-signed-realtime".to_string(),
+                "yes".to_string(),
+            )]))
+        });
+        let config = SyncTransportConfig {
+            base_url: format!("ws://{address}/api/sync"),
+            client_id: "flutter-shell".to_string(),
+            actor_id: "passkey:user-test".to_string(),
+        };
+
+        let mut socket = RealtimeSocket::connect(&config, &SyncAuthHeaders::new(), Some(signer), 7)
+            .expect("connect realtime websocket");
+
+        assert!(matches!(socket.read_event(), Ok(Some(RealtimeEvent::Sync))));
+        let (signed, schema) = headers_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured websocket headers");
+        assert_eq!(signed, "yes");
+        assert_eq!(schema, "7");
+        server.join().expect("websocket test server finished");
     }
 }
