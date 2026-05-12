@@ -32,6 +32,14 @@ jobs:
 
       - uses: ./.github/actions/setup-environment
 
+      - name: Setup Rust for Rust bindings
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Setup wasm-pack for Rust bindings
+        uses: jetli/wasm-pack-action@v0.4.0
+
       - name: Stamp versions
         run: bun scripts/stamp-versions.ts ${{ github.run_number }}
 

@@ -357,6 +357,69 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       db
     );
 
+    // Encrypted CRDT system tables. These are shared by all encrypted CRDT
+    // fields and are exposed through hidden handlers, not app query builders.
+    await db.schema
+      .createTable('sync_crdt_updates')
+      .ifNotExists()
+      .addColumn('seq', 'integer', (col) => col.primaryKey().autoIncrement())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('stream_id', 'text', (col) => col.notNull())
+      .addColumn('app_table', 'text', (col) => col.notNull())
+      .addColumn('row_id', 'text', (col) => col.notNull())
+      .addColumn('field_name', 'text', (col) => col.notNull())
+      .addColumn('update_id', 'text', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('client_id', 'text')
+      .addColumn('key_id', 'text', (col) => col.notNull())
+      .addColumn('ciphertext', 'text', (col) => col.notNull())
+      .addColumn('scopes', 'json', (col) => col.notNull().defaultTo('{}'))
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(nowIso))
+      .execute();
+    await ensurePartitionColumn(db, 'sync_crdt_updates');
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_crdt_updates_update_id
+      ON sync_crdt_updates(partition_id, update_id)`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_stream_seq
+      ON sync_crdt_updates(partition_id, stream_id, seq)`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_scope_table
+      ON sync_crdt_updates(partition_id, app_table, row_id, field_name)`.execute(
+      db
+    );
+
+    await db.schema
+      .createTable('sync_crdt_checkpoints')
+      .ifNotExists()
+      .addColumn('seq', 'integer', (col) => col.primaryKey().autoIncrement())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('stream_id', 'text', (col) => col.notNull())
+      .addColumn('app_table', 'text', (col) => col.notNull())
+      .addColumn('row_id', 'text', (col) => col.notNull())
+      .addColumn('field_name', 'text', (col) => col.notNull())
+      .addColumn('checkpoint_id', 'text', (col) => col.notNull())
+      .addColumn('covers_seq', 'integer', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('client_id', 'text')
+      .addColumn('key_id', 'text', (col) => col.notNull())
+      .addColumn('ciphertext', 'text', (col) => col.notNull())
+      .addColumn('scopes', 'json', (col) => col.notNull().defaultTo('{}'))
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(nowIso))
+      .execute();
+    await ensurePartitionColumn(db, 'sync_crdt_checkpoints');
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_checkpoint_id
+      ON sync_crdt_checkpoints(partition_id, checkpoint_id)`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_stream_covers
+      ON sync_crdt_checkpoints(partition_id, stream_id, covers_seq)`.execute(
+      db
+    );
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_scope_table
+      ON sync_crdt_checkpoints(partition_id, app_table, row_id, field_name)`.execute(
+      db
+    );
+
     // Cleanup orphaned rows
     await sql`
       DELETE FROM sync_table_commits

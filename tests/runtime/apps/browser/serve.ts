@@ -13,6 +13,23 @@ import {
 
 const portArg = process.argv.find((a) => a.startsWith('--port='));
 const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
+const repoRoot = path.resolve(import.meta.dir, '../../../..');
+const rustPackageRoot = path.join(repoRoot, 'rust/bindings/browser');
+const rustPackageWasmDir = path.join(rustPackageRoot, 'dist/wasm');
+
+const rustWasmBuild = Bun.spawnSync(['bun', 'run', 'build:wasm:dev'], {
+  cwd: rustPackageRoot,
+  env: process.env,
+  stdout: 'pipe',
+  stderr: 'pipe',
+});
+
+if (rustWasmBuild.exitCode !== 0) {
+  console.error('Failed to build Syncular Rust WASM client:');
+  console.error(rustWasmBuild.stdout.toString());
+  console.error(rustWasmBuild.stderr.toString());
+  process.exit(1);
+}
 
 // Build the browser entry point
 const entryBuild = await Bun.build({
@@ -24,6 +41,36 @@ const entryBuild = await Bun.build({
 
 if (!entryBuild.success) {
   console.error('Failed to build entry:', entryBuild.logs);
+  process.exit(1);
+}
+
+const rustOwnedWorkerBuild = await Bun.build({
+  entrypoints: [path.join(import.meta.dir, 'rust-owned-worker.ts')],
+  target: 'browser',
+  format: 'esm',
+  conditions: ['bun'],
+});
+
+if (!rustOwnedWorkerBuild.success) {
+  console.error(
+    'Failed to build rust-owned worker:',
+    rustOwnedWorkerBuild.logs
+  );
+  process.exit(1);
+}
+
+const syncularV2WorkerBuild = await Bun.build({
+  entrypoints: [path.join(rustPackageRoot, 'src/worker-entry.ts')],
+  target: 'browser',
+  format: 'esm',
+  conditions: ['bun'],
+});
+
+if (!syncularV2WorkerBuild.success) {
+  console.error(
+    'Failed to build Syncular v2 worker:',
+    syncularV2WorkerBuild.logs
+  );
   process.exit(1);
 }
 
@@ -100,6 +147,24 @@ const server = Bun.serve({
       });
     }
 
+    if (url.pathname === '/rust-owned-worker.js') {
+      return new Response(rustOwnedWorkerBuild.outputs[0], {
+        headers: {
+          ...COOP_COEP_HEADERS,
+          'content-type': 'application/javascript',
+        },
+      });
+    }
+
+    if (url.pathname === '/syncular-v2-worker.js') {
+      return new Response(syncularV2WorkerBuild.outputs[0], {
+        headers: {
+          ...COOP_COEP_HEADERS,
+          'content-type': 'application/javascript',
+        },
+      });
+    }
+
     if (url.pathname === '/wasqlite/wa-sqlite-async.wasm') {
       return new Response(Bun.file(asyncWasmPath), {
         headers: { ...COOP_COEP_HEADERS, 'content-type': 'application/wasm' },
@@ -110,6 +175,27 @@ const server = Bun.serve({
       return new Response(Bun.file(syncWasmPath), {
         headers: { ...COOP_COEP_HEADERS, 'content-type': 'application/wasm' },
       });
+    }
+
+    if (url.pathname === '/wasm/syncular_v2.js') {
+      return new Response(
+        Bun.file(path.join(rustPackageWasmDir, 'syncular_v2.js')),
+        {
+          headers: {
+            ...COOP_COEP_HEADERS,
+            'content-type': 'application/javascript',
+          },
+        }
+      );
+    }
+
+    if (url.pathname === '/wasm/syncular_v2_bg.wasm') {
+      return new Response(
+        Bun.file(path.join(rustPackageWasmDir, 'syncular_v2_bg.wasm')),
+        {
+          headers: { ...COOP_COEP_HEADERS, 'content-type': 'application/wasm' },
+        }
+      );
     }
 
     // Worker chunks

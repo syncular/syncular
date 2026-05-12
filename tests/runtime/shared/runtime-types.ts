@@ -29,12 +29,28 @@ export interface ConformanceDb {
 }
 
 export interface RuntimeClientDb extends SyncClientDb {
+  projects: {
+    id: string;
+    name: string;
+    owner_id: string;
+    archived: number;
+    server_version: number;
+  };
   tasks: {
     id: string;
     title: string;
     completed: number;
     user_id: string;
     project_id: string;
+    server_version: number;
+  };
+  comments: {
+    id: string;
+    task_id: string;
+    project_id: string;
+    body: string;
+    author_id: string;
+    deleted: number;
     server_version: number;
   };
 }

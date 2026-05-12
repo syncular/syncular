@@ -1,0 +1,77 @@
+{
+  "name": "@syncular/client-rust",
+  "version": "0.0.0",
+  "description": "Syncular Rust-owned SQLite browser binding",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "rust/bindings/browser"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "database",
+    "typescript",
+    "rust",
+    "wasm",
+    "sqlite",
+    "kysely"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "browser": "./src/index.ts",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./worker": {
+      "bun": "./src/worker-entry.ts",
+      "browser": "./src/worker-entry.ts",
+      "import": {
+        "types": "./dist/worker-entry.d.ts",
+        "default": "./dist/worker-entry.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test src/*.test.ts",
+    "test:wasm:auth": "bun run build:wasm:dev && bun test src/__tests__/auth-hono.wasm.test.ts",
+    "test:wasm:hono": "bun run build:wasm:dev && bun test src/__tests__/*-hono.wasm.test.ts",
+    "tsgo": "tsgo --noEmit",
+    "build": "bun run build:wasm && tsgo",
+    "build:wasm": "bun scripts/build-syncular-v2-wasm.ts",
+    "build:wasm:dev": "bun scripts/build-syncular-v2-wasm.ts --dev",
+    "benchmark:browser": "bun ../../../tests/runtime/scripts/browser-wasm-vs-js-benchmark.ts",
+    "size:wasm": "bun scripts/size-syncular-v2-wasm.ts",
+    "release": "bunx syncular-publish"
+  },
+  "dependencies": {
+    "@syncular/core": "workspace:*",
+    "kysely": "^0.28.0",
+    "kysely-generic-sqlite": "^1.2.1"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "hono": "^4.12.15"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**"
+  ]
+}

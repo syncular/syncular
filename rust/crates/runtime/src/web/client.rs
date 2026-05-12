@@ -1,0 +1,797 @@
+use crate::client::{SubscriptionSpec, SyncularClientConfig};
+use crate::encrypted_crdt::EncryptedCrdt;
+use crate::encryption::{FieldEncryption, FieldEncryptionContext};
+use crate::error::{ErrorKind, Result, SyncularError};
+use crate::generated;
+use crate::migrations::current_schema_version;
+use crate::protocol::{
+    CombinedRequest, PullRequest, PushBatchRequest, PushCommitRequest, ScopeValues,
+    SubscriptionRequest, SyncCommit, SyncOperation,
+};
+use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
+use crate::transport::web::{
+    AsyncSyncTransport, WebRealtimeSocket, WebSyncTransport, WebSyncTransportConfig,
+};
+use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
+use crate::web_store::{AsyncWebStore, WebMemoryStore, WebSubscriptionState};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+const DEFAULT_STATE_ID: &str = "default";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSyncularClientConfig {
+    pub base_url: String,
+    pub client_id: String,
+    pub actor_id: String,
+    pub project_id: Option<String>,
+}
+
+pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
+    config: WebSyncularClientConfig,
+    transport: T,
+    store: S,
+    subscriptions: Vec<SubscriptionSpec>,
+    field_encryption: Option<FieldEncryption>,
+    encrypted_crdt: Option<EncryptedCrdt>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebSyncResult {
+    pub changed_tables: Vec<String>,
+    pub subscriptions: Vec<WebSubscriptionResult>,
+    pub pushed_commits: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSubscriptionResult {
+    pub id: String,
+    pub table: String,
+    pub status: String,
+    pub scopes: ScopeValues,
+    pub next_cursor: i64,
+    pub snapshot_rows: Vec<Value>,
+    pub commits: Vec<SyncCommit>,
+}
+
+impl WebSyncularClient<WebSyncTransport, WebMemoryStore> {
+    pub fn open(config: WebSyncularClientConfig) -> Self {
+        let transport = WebSyncTransport::new(WebSyncTransportConfig {
+            base_url: config.base_url.clone(),
+            client_id: config.client_id.clone(),
+            actor_id: config.actor_id.clone(),
+        });
+        Self::with_parts(config, transport, WebMemoryStore::new())
+    }
+}
+
+impl<T, S> WebSyncularClient<T, S>
+where
+    T: AsyncSyncTransport<Realtime = WebRealtimeSocket>,
+    S: AsyncWebStore,
+{
+    pub fn with_parts(config: WebSyncularClientConfig, transport: T, store: S) -> Self {
+        let subscriptions = generated::default_subscriptions(&SyncularClientConfig {
+            db_path: DEFAULT_STATE_ID.to_string(),
+            base_url: config.base_url.clone(),
+            client_id: config.client_id.clone(),
+            actor_id: config.actor_id.clone(),
+            project_id: config.project_id.clone(),
+        });
+        Self {
+            config,
+            transport,
+            store,
+            subscriptions,
+            field_encryption: None,
+            encrypted_crdt: None,
+        }
+    }
+
+    pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) {
+        self.subscriptions = subscriptions;
+    }
+
+    pub fn subscriptions(&self) -> &[SubscriptionSpec] {
+        &self.subscriptions
+    }
+
+    pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) {
+        self.field_encryption = encryption;
+    }
+
+    pub fn set_field_encryption_json(&mut self, config_json: &str) -> Result<()> {
+        self.field_encryption = FieldEncryption::from_static_config_json(config_json)?;
+        Ok(())
+    }
+
+    pub fn set_encrypted_crdt(&mut self, encryption: Option<EncryptedCrdt>) {
+        self.encrypted_crdt = encryption;
+    }
+
+    pub fn set_encrypted_crdt_json(&mut self, config_json: &str) -> Result<()> {
+        self.encrypted_crdt = EncryptedCrdt::from_static_config_json(config_json)?;
+        Ok(())
+    }
+
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.transport
+    }
+
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
+    pub async fn sync_pull(&mut self) -> Result<WebSyncResult> {
+        let request = CombinedRequest {
+            client_id: self.config.client_id.clone(),
+            push: None,
+            pull: Some(self.build_pull_request().await?),
+        };
+        let response = self.transport.post_sync(&request).await?;
+        validate_server_schema_version(
+            response.required_schema_version,
+            response.latest_schema_version,
+        )?;
+        if !response.ok {
+            return Err(SyncularError::protocol_message(
+                "combined browser sync response was not ok",
+            ));
+        }
+
+        let Some(pull) = response.pull else {
+            return Ok(WebSyncResult::default());
+        };
+        let pull = self.transform_pull_response(pull)?;
+        if !pull.ok {
+            return Err(SyncularError::protocol_message(
+                "browser pull response was not ok",
+            ));
+        }
+
+        let mut result = WebSyncResult::default();
+        for sub in pull.subscriptions {
+            let previous_state = self.store.subscription_state(&sub.id).await?;
+            let table = self
+                .subscriptions
+                .iter()
+                .find(|candidate| candidate.id == sub.id)
+                .map(|spec| spec.table.clone())
+                .or_else(|| previous_state.as_ref().map(|state| state.table.clone()))
+                .unwrap_or_else(|| sub.id.clone());
+
+            let mut snapshot_rows = Vec::new();
+            if let Some(snapshots) = &sub.snapshots {
+                let mut prepared_snapshots = Vec::new();
+                for snapshot in snapshots {
+                    let mut chunk_rows = Vec::new();
+                    if let Some(chunks) = &snapshot.chunks {
+                        for chunk in chunks {
+                            for row in self
+                                .transport
+                                .fetch_snapshot_chunk_rows(chunk, &sub.scopes)
+                                .await?
+                            {
+                                chunk_rows.push(self.transform_snapshot_row(&snapshot.table, row)?);
+                            }
+                        }
+                    }
+                    if snapshot.is_first_page || !snapshot.rows.is_empty() || !chunk_rows.is_empty()
+                    {
+                        add_changed_table(&mut result.changed_tables, &snapshot.table);
+                    }
+                    prepared_snapshots.push((snapshot.clone(), chunk_rows));
+                }
+
+                for (snapshot, chunk_rows) in prepared_snapshots {
+                    if snapshot.is_first_page {
+                        self.store
+                            .clear_table_for_scopes(&snapshot.table, &sub.scopes)
+                            .await?;
+                    }
+                    snapshot_rows.extend(snapshot.rows.clone());
+                    for row in &snapshot.rows {
+                        self.store.upsert_row(&snapshot.table, row.clone()).await?;
+                    }
+                    for row in chunk_rows {
+                        self.store.upsert_row(&snapshot.table, row.clone()).await?;
+                        snapshot_rows.push(row);
+                    }
+                }
+            }
+            for commit in &sub.commits {
+                for change in &commit.changes {
+                    add_changed_table(&mut result.changed_tables, &change.table);
+                    self.store.apply_change(change.clone()).await?;
+                }
+            }
+
+            if sub.status == "revoked" {
+                if let Some(previous_state) = &previous_state {
+                    self.store
+                        .clear_table_for_scopes(&previous_state.table, &previous_state.scopes)
+                        .await?;
+                    add_changed_table(&mut result.changed_tables, &previous_state.table);
+                }
+                self.store.delete_subscription_state(&sub.id).await?;
+            } else {
+                if let Some(previous_state) = &previous_state {
+                    if previous_state.scopes != sub.scopes {
+                        self.store
+                            .clear_table_for_scopes(&previous_state.table, &previous_state.scopes)
+                            .await?;
+                        add_changed_table(&mut result.changed_tables, &previous_state.table);
+                    }
+                }
+                self.store
+                    .upsert_subscription_state(WebSubscriptionState {
+                        subscription_id: sub.id.clone(),
+                        table: table.clone(),
+                        scopes: sub.scopes.clone(),
+                        cursor: sub.next_cursor,
+                        bootstrap_state: sub.bootstrap_state.clone(),
+                        status: sub.status.clone(),
+                    })
+                    .await?;
+            }
+
+            result.subscriptions.push(WebSubscriptionResult {
+                id: sub.id,
+                table,
+                status: sub.status,
+                scopes: sub.scopes,
+                next_cursor: sub.next_cursor,
+                snapshot_rows,
+                commits: sub.commits,
+            });
+        }
+
+        self.store
+            .notify_tables_changed(&result.changed_tables)
+            .await?;
+        Ok(result)
+    }
+
+    pub async fn sync_pull_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.sync_pull().await?)?)
+    }
+
+    pub async fn sync_push(&mut self) -> Result<WebSyncResult> {
+        let pending = self.prepare_push().await?;
+        if pending.is_empty() {
+            return Ok(WebSyncResult::default());
+        }
+
+        let request = CombinedRequest {
+            client_id: self.config.client_id.clone(),
+            push: self.build_push_request(&pending)?,
+            pull: None,
+        };
+        let response = match self.transport.post_sync(&request).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_server_schema_version(
+            response.required_schema_version,
+            response.latest_schema_version,
+        ) {
+            self.schedule_outbox_retry(&pending, &error).await?;
+            return Err(error);
+        }
+        if !response.ok {
+            let error =
+                SyncularError::protocol_message("combined browser push response was not ok");
+            self.schedule_outbox_retry(&pending, &error).await?;
+            return Err(error);
+        }
+
+        let mut pushed_commits = 0usize;
+        if let Some(push) = response.push {
+            if !push.ok {
+                let error = SyncularError::protocol_message("browser push response was not ok");
+                self.schedule_outbox_retry(&pending, &error).await?;
+                return Err(error);
+            }
+
+            for commit_response in push.commits {
+                let Some(outbox) = pending
+                    .iter()
+                    .find(|row| row.client_commit_id == commit_response.client_commit_id)
+                else {
+                    continue;
+                };
+                let commit_response = self.transform_push_response(outbox, commit_response)?;
+
+                match commit_response.status.as_str() {
+                    "applied" | "cached" => {
+                        self.store
+                            .mark_outbox_acked(&outbox.id, commit_response)
+                            .await?;
+                        pushed_commits += 1;
+                    }
+                    _ => {
+                        for result in &commit_response.results {
+                            if result.status == "conflict" || result.status == "error" {
+                                self.store
+                                    .insert_conflict(outbox.clone(), result.clone())
+                                    .await?;
+                            }
+                        }
+                        self.store
+                            .mark_outbox_failed(&outbox.id, "REJECTED", commit_response)
+                            .await?;
+                    }
+                }
+            }
+        }
+
+        Ok(WebSyncResult {
+            pushed_commits,
+            ..WebSyncResult::default()
+        })
+    }
+
+    pub async fn sync_push_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.sync_push().await?)?)
+    }
+
+    pub async fn recover_sending_outbox_after_sync_error(
+        &mut self,
+        error_message: &str,
+    ) -> Result<()> {
+        let sending = self.store.sending_outbox(20).await?;
+        let error = SyncularError::message(ErrorKind::Transport, error_message);
+        self.schedule_outbox_retry_inner(&sending, &error, true)
+            .await
+    }
+
+    pub async fn sync_once(&mut self) -> Result<WebSyncResult> {
+        let mut result = self.sync_push().await?;
+        let pull_result = self.sync_pull().await?;
+        for table in pull_result.changed_tables {
+            add_changed_table(&mut result.changed_tables, &table);
+        }
+        result.subscriptions = pull_result.subscriptions;
+        Ok(result)
+    }
+
+    pub async fn apply_local_operation_json(
+        &mut self,
+        operation_json: &str,
+        local_row_json: Option<&str>,
+    ) -> Result<String> {
+        let operation: SyncOperation = serde_json::from_str(operation_json)?;
+        let changed_tables = vec![operation.table.clone()];
+        let local_row = local_row_json.map(serde_json::from_str).transpose()?;
+        let client_commit_id = self
+            .store
+            .apply_local_operation(operation, local_row)
+            .await?;
+        self.store.notify_tables_changed(&changed_tables).await?;
+        Ok(client_commit_id)
+    }
+
+    pub async fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>> {
+        self.store.conflict_summaries().await
+    }
+
+    pub async fn conflict_summaries_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.conflict_summaries().await?)?)
+    }
+
+    pub async fn resolve_conflict(&mut self, id: &str, resolution: &str) -> Result<()> {
+        self.store.resolve_conflict(id, resolution).await
+    }
+
+    pub async fn retry_conflict_keep_local(&mut self, id: &str) -> Result<String> {
+        self.store.retry_conflict_keep_local(id).await
+    }
+
+    pub async fn list_table_json(&mut self, table: &str) -> Result<String> {
+        self.store.list_table_json(table).await
+    }
+
+    pub fn connect_realtime(&self) -> Result<WebRealtimeSocket> {
+        self.transport.connect_realtime()
+    }
+
+    pub fn send_push_commit_json(
+        &self,
+        socket: &WebRealtimeSocket,
+        commit_json: &str,
+    ) -> Result<String> {
+        let operation: SyncOperation = serde_json::from_str(commit_json)?;
+        let operations = if let Some(encryption) = &self.field_encryption {
+            encryption.transform_operations_for_push(&self.encryption_context(), vec![operation])?
+        } else {
+            vec![operation]
+        };
+        socket.send_push_commit(crate::protocol::PushCommitRequest {
+            client_commit_id: uuid::Uuid::new_v4().to_string(),
+            operations,
+            schema_version: current_schema_version(),
+        })
+    }
+
+    async fn build_pull_request(&mut self) -> Result<PullRequest> {
+        let mut subscriptions = Vec::new();
+        for spec in &self.subscriptions {
+            let state = self.store.subscription_state(&spec.id).await?;
+            let scopes_changed = state
+                .as_ref()
+                .is_some_and(|state| state.scopes != spec.scopes);
+            subscriptions.push(SubscriptionRequest {
+                id: spec.id.clone(),
+                table: spec.table.clone(),
+                scopes: spec.scopes.clone(),
+                params: spec.params.clone(),
+                cursor: if scopes_changed {
+                    -1
+                } else {
+                    state.as_ref().map(|state| state.cursor).unwrap_or(-1)
+                },
+                bootstrap_state: if scopes_changed {
+                    None
+                } else {
+                    state.and_then(|state| state.bootstrap_state)
+                },
+            });
+        }
+
+        Ok(PullRequest {
+            limit_commits: 50,
+            limit_snapshot_rows: 1000,
+            max_snapshot_pages: 4,
+            dedupe_rows: None,
+            subscriptions,
+        })
+    }
+
+    async fn prepare_push(&mut self) -> Result<Vec<OutboxCommit>> {
+        self.store.requeue_stale_outbox().await?;
+        let pending = self.store.pending_outbox(20).await?;
+        for commit in &pending {
+            validate_outbox_schema_version(commit)?;
+        }
+        for commit in &pending {
+            self.store.mark_outbox_sending(&commit.id).await?;
+        }
+        Ok(pending)
+    }
+
+    fn build_push_request(&self, pending: &[OutboxCommit]) -> Result<Option<PushBatchRequest>> {
+        if pending.is_empty() {
+            return Ok(None);
+        }
+        let ctx = self.encryption_context();
+        Ok(Some(PushBatchRequest {
+            commits: pending
+                .iter()
+                .map(|commit| {
+                    let operations: Vec<SyncOperation> =
+                        serde_json::from_str(&commit.operations_json)?;
+                    let operations = if let Some(encryption) = &self.field_encryption {
+                        encryption.transform_operations_for_push(&ctx, operations)?
+                    } else {
+                        operations
+                    };
+                    Ok(PushCommitRequest {
+                        client_commit_id: commit.client_commit_id.clone(),
+                        operations,
+                        schema_version: commit.schema_version,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        }))
+    }
+
+    fn transform_push_response(
+        &self,
+        outbox: &OutboxCommit,
+        response: crate::protocol::PushCommitResponse,
+    ) -> Result<crate::protocol::PushCommitResponse> {
+        let Some(encryption) = &self.field_encryption else {
+            return Ok(response);
+        };
+        let operations: Vec<SyncOperation> = serde_json::from_str(&outbox.operations_json)?;
+        encryption.transform_push_response(&self.encryption_context(), &operations, response)
+    }
+
+    fn transform_pull_response(
+        &self,
+        response: crate::protocol::PullResponse,
+    ) -> Result<crate::protocol::PullResponse> {
+        let response = if let Some(encryption) = &self.field_encryption {
+            encryption.transform_pull_response(&self.encryption_context(), response)?
+        } else {
+            response
+        };
+        if let Some(encryption) = &self.encrypted_crdt {
+            encryption.transform_pull_response(response)
+        } else {
+            Ok(response)
+        }
+    }
+
+    fn transform_snapshot_row(&self, snapshot_table: &str, row: Value) -> Result<Value> {
+        if let Some(encryption) = &self.field_encryption {
+            encryption.transform_snapshot_row(&self.encryption_context(), snapshot_table, row)
+        } else {
+            Ok(row)
+        }
+    }
+
+    fn encryption_context(&self) -> FieldEncryptionContext {
+        FieldEncryptionContext {
+            actor_id: self.config.actor_id.clone(),
+            client_id: self.config.client_id.clone(),
+        }
+    }
+
+    async fn schedule_outbox_retry(
+        &mut self,
+        pending: &[OutboxCommit],
+        error: &SyncularError,
+    ) -> Result<()> {
+        self.schedule_outbox_retry_inner(pending, error, false)
+            .await
+    }
+
+    async fn schedule_outbox_retry_inner(
+        &mut self,
+        pending: &[OutboxCommit],
+        error: &SyncularError,
+        attempt_already_recorded: bool,
+    ) -> Result<()> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let now = now_ms();
+        let message = error.to_string();
+        let auth_error = is_auth_transport_error(error);
+        for commit in pending {
+            let attempt_count = if attempt_already_recorded {
+                commit.attempt_count
+            } else {
+                commit.attempt_count.saturating_add(1)
+            };
+            let failed = attempt_count >= MAX_SYNC_RETRIES;
+            let next_attempt_at = if failed || auth_error {
+                0
+            } else {
+                next_retry_at(now, attempt_count)
+            };
+            self.store
+                .mark_outbox_retry(&commit.id, &message, next_attempt_at, failed)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+impl<T, S> WebSyncularClient<T, S>
+where
+    T: AsyncSyncTransport<Realtime = WebRealtimeSocket> + SyncAuthHeaderStore,
+    S: AsyncWebStore,
+{
+    pub fn set_auth_headers(&mut self, headers: SyncAuthHeaders) {
+        self.transport.set_auth_headers(headers);
+    }
+}
+
+fn validate_server_schema_version(
+    required_schema_version: Option<i32>,
+    latest_schema_version: Option<i32>,
+) -> Result<()> {
+    let current = current_schema_version();
+
+    if let Some(required) = required_schema_version {
+        if required < 1 {
+            return Err(SyncularError::schema(format!(
+                "server reported invalid required schema version {required}"
+            )));
+        }
+        if required > current {
+            return Err(SyncularError::schema(format!(
+                "server requires schema version {required}, but this client supports {current}"
+            )));
+        }
+    }
+
+    if let Some(latest) = latest_schema_version {
+        if latest < 1 {
+            return Err(SyncularError::schema(format!(
+                "server reported invalid latest schema version {latest}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn add_changed_table(tables: &mut Vec<String>, table: &str) {
+    if !tables.iter().any(|existing| existing == table) {
+        tables.push(table.to_string());
+    }
+}
+
+fn validate_outbox_schema_version(commit: &OutboxCommit) -> Result<()> {
+    if commit.schema_version < 1 {
+        return Err(SyncularError::schema(format!(
+            "web outbox commit {} has invalid schema version {}",
+            commit.client_commit_id, commit.schema_version
+        )));
+    }
+
+    let current = current_schema_version();
+    if commit.schema_version > current {
+        return Err(SyncularError::schema(format!(
+            "web outbox commit {} was created with schema version {}, but this client supports {}",
+            commit.client_commit_id, commit.schema_version, current
+        )));
+    }
+
+    Ok(())
+}
+
+fn is_auth_transport_error(error: &SyncularError) -> bool {
+    if error.kind() != ErrorKind::Transport {
+        return false;
+    }
+    let message = error.message_text();
+    message.contains("HTTP 401") || message.contains("HTTP 403")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{
+        CombinedResponse, PullResponse, SnapshotChunkRef, SubscriptionResponse, SyncSnapshot,
+    };
+    use crate::transport::web::WebRealtimeSocket;
+    use serde_json::{json, Map, Value};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    #[test]
+    fn pull_fetches_snapshot_chunks_before_mutating_store() -> Result<()> {
+        let mut store = WebMemoryStore::new();
+        block_on(store.upsert_row("tasks", task_row("existing-task", "p0")))?;
+        let transport = FailingChunkTransport;
+        let config = WebSyncularClientConfig {
+            base_url: "http://syncular.test/sync".to_string(),
+            client_id: "web-client-chunk-failure".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("p0".to_string()),
+        };
+        let mut client = WebSyncularClient::with_parts(config, transport, store);
+
+        let error = block_on(client.sync_pull()).expect_err("chunk fetch failure");
+        assert_eq!(error.kind(), ErrorKind::Transport);
+
+        let rows: Value =
+            serde_json::from_str(&block_on(client.store_mut().list_table_json("tasks"))?)?;
+        let rows = rows.as_array().expect("task rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "existing-task");
+
+        Ok(())
+    }
+
+    struct FailingChunkTransport;
+
+    impl AsyncSyncTransport for FailingChunkTransport {
+        type Realtime = WebRealtimeSocket;
+
+        fn post_sync<'a>(
+            &'a self,
+            _request: &'a CombinedRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<CombinedResponse>> + 'a>> {
+            Box::pin(async move {
+                Ok(CombinedResponse {
+                    ok: true,
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    push: None,
+                    pull: Some(PullResponse {
+                        ok: true,
+                        subscriptions: vec![SubscriptionResponse {
+                            id: "sub-tasks".to_string(),
+                            status: "active".to_string(),
+                            scopes: scopes(),
+                            bootstrap: true,
+                            bootstrap_state: None,
+                            next_cursor: 1,
+                            commits: Vec::new(),
+                            snapshots: Some(vec![SyncSnapshot {
+                                table: "tasks".to_string(),
+                                rows: vec![task_row("incoming-inline-task", "p0")],
+                                chunks: Some(vec![SnapshotChunkRef {
+                                    id: "missing-chunk".to_string(),
+                                    byte_length: 1,
+                                    sha256: "unused".to_string(),
+                                    encoding: "json-row-frame-v1".to_string(),
+                                    compression: "gzip".to_string(),
+                                }]),
+                                is_first_page: true,
+                                is_last_page: true,
+                            }]),
+                        }],
+                    }),
+                })
+            })
+        }
+
+        fn fetch_snapshot_chunk_rows<'a>(
+            &'a self,
+            _chunk: &'a SnapshotChunkRef,
+            _scopes: &'a ScopeValues,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>> {
+            Box::pin(async move {
+                Err(SyncularError::message(
+                    ErrorKind::Transport,
+                    "chunk fetch failed",
+                ))
+            })
+        }
+
+        fn connect_realtime(&self) -> Result<Self::Realtime> {
+            panic!("realtime not used in this test")
+        }
+    }
+
+    fn task_row(id: &str, project_id: &str) -> Value {
+        json!({
+            "id": id,
+            "title": id,
+            "completed": 0,
+            "user_id": "user-rust",
+            "project_id": project_id,
+            "server_version": 1,
+            "image": null,
+            "title_yjs_state": null
+        })
+    }
+
+    fn scopes() -> ScopeValues {
+        let mut scopes = Map::new();
+        scopes.insert("user_id".to_string(), json!("user-rust"));
+        scopes.insert("project_id".to_string(), json!("p0"));
+        scopes
+    }
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        let waker = noop_waker();
+        let mut context = Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        loop {
+            match Future::poll(future.as_mut(), &mut context) {
+                Poll::Ready(value) => return value,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn noop_waker() -> Waker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(std::ptr::null(), &VTABLE)
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
+    }
+}

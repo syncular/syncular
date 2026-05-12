@@ -1,0 +1,27 @@
+[package]
+name = "syncular-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+default-run = "syncular-client"
+
+[[bin]]
+name = "syncular-client"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli", "native", "boltffi-bindings", "crdt-yjs"]
+boltffi-bindings = ["syncular-runtime/boltffi-bindings"]
+cli = ["dep:clap", "native"]
+crdt-yjs = ["syncular-runtime/crdt-yjs"]
+native = ["syncular-runtime/native"]
+web-transport = ["syncular-runtime/web-transport"]
+web-client = ["syncular-runtime/web-client"]
+web-store = ["syncular-runtime/web-store"]
+web-owned-sqlite = ["syncular-runtime/web-owned-sqlite"]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"], optional = true }
+syncular-runtime = { path = "../runtime", default-features = false }

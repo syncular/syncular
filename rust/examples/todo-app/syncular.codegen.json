@@ -1,0 +1,68 @@
+{
+  "typescriptOutputPath": "generated/typescript/syncular.generated.ts",
+  "typescriptRuntimeImportPath": "../../../../bindings/browser/src",
+  "nativeSwiftOutputPath": "generated/swift/SyncularApp.swift",
+  "nativeKotlinOutputPath": "generated/kotlin/SyncularApp.kt",
+  "nativeAndroidKotlinOutputPath": "generated/kotlin/android/SyncularApp.kt",
+  "nativeAndroidKotlinPackage": "dev.syncular.client.generated",
+  "tables": {
+    "projects": {
+      "subscriptionId": "sub-projects",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "owner_id",
+          "source": "actorId",
+          "required": true
+        }
+      ],
+      "serverVersionColumn": "server_version"
+    },
+    "tasks": {
+      "subscriptionId": "sub-tasks",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "user_id",
+          "source": "actorId",
+          "required": true
+        },
+        {
+          "name": "project_id",
+          "column": "project_id",
+          "source": "projectId",
+          "required": false
+        }
+      ],
+      "serverVersionColumn": "server_version",
+      "blobColumns": ["image"],
+      "crdtYjsFields": [
+        {
+          "field": "title",
+          "stateColumn": "title_yjs_state",
+          "containerKey": "title",
+          "kind": "text"
+        }
+      ]
+    },
+    "comments": {
+      "subscriptionId": "sub-comments",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "author_id",
+          "source": "actorId",
+          "required": true
+        },
+        {
+          "name": "project_id",
+          "column": "project_id",
+          "source": "projectId",
+          "required": false
+        }
+      ],
+      "serverVersionColumn": "server_version",
+      "softDeleteColumn": "deleted"
+    }
+  }
+}

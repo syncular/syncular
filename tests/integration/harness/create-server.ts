@@ -6,6 +6,7 @@
  */
 
 import { createHttpServerFixture } from '@syncular/testkit';
+import { createCommentsServerShape } from '../handlers/comments-server';
 import { projectsServerShape } from '../handlers/projects-server';
 import { createTasksServerShape } from '../handlers/tasks-server';
 import type {
@@ -44,8 +45,23 @@ export async function createIntegrationServer(
           col.notNull().defaultTo(1)
         )
         .execute();
+
+      await db.schema
+        .createTable('comments')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('task_id', 'text', (col) => col.notNull())
+        .addColumn('project_id', 'text', (col) => col.notNull())
+        .addColumn('body', 'text', (col) => col.notNull())
+        .addColumn('author_id', 'text', (col) => col.notNull())
+        .addColumn('deleted', 'integer', (col) => col.notNull().defaultTo(0))
+        .addColumn('server_version', 'integer', (col) =>
+          col.notNull().defaultTo(1)
+        )
+        .execute();
     },
     handlers: [
+      createCommentsServerShape<IntegrationServerDb>(),
       createTasksServerShape<IntegrationServerDb>(),
       projectsServerShape,
     ],

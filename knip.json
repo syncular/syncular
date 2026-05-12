@@ -10,8 +10,8 @@
   "playwright": true,
   "typescript": true,
   "ignore": [
+    ".context/**",
     "**/generated/**",
-    "**/.wrangler/**",
     "types/**"
   ],
   "ignoreDependencies": [
@@ -25,8 +25,12 @@
     "plugins/blob/client/src/types.ts": ["exports", "types"],
     "plugins/blob/server-storage-filesystem/src/index.ts": ["types"],
     "plugins/blob/server-storage-s3/src/index.ts": ["types"],
+    "plugins/encryption/client/src/index.ts": ["types"],
     "packages/server-hono/src/websocket-origin.ts": ["exports"],
-    "plugins/encryption/client/src/key-sharing.ts": ["exports"]
+    "plugins/encryption/client/src/key-sharing.ts": ["exports"],
+    "rust/bindings/browser/src/database.ts": ["duplicates"],
+    "rust/bindings/browser/src/worker-protocol.ts": ["types"],
+    "rust/bindings/browser/src/worker-realtime.ts": ["types"]
   },
   "workspaces": {
     ".": {
@@ -156,6 +160,14 @@
     },
     "packages/dialect-electron-sqlite": {
       "includeEntryExports": false
+    },
+    "rust/bindings/browser": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts",
+        "src/**/__tests__/**/*.ts",
+        "scripts/*.ts"
+      ]
     },
     "packages/ui": {
       "includeEntryExports": false

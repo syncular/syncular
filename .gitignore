@@ -31,3 +31,18 @@ demo/a/
 demo-*.png
 
 **/*.tgz
+
+# Rust build artifacts
+rust/target/
+rust/**/target/
+rust/crates/runtime/generated/
+rust/bindings/kotlin/jniLibs/
+rust/bindings/swift/Syncular.xcframework/
+rust/bindings/swift/Syncular.xcframework.zip
+rust/bindings/swift/headers_staging/
+rust/bindings/swift/ios-simulator-fat/
+rust/bindings/swift/macos-fat/
+rust/bindings/java/native/
+rust/bindings/java/*.dylib
+rust/bindings/java/*.so
+rust/bindings/java/*.dll

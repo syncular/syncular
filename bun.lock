@@ -741,6 +741,19 @@
         "@syncular/config": "workspace:*",
       },
     },
+    "rust/bindings/browser": {
+      "name": "@syncular/client-rust",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/core": "workspace:*",
+        "kysely": "^0.28.0",
+        "kysely-generic-sqlite": "^1.2.1",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "hono": "^4.12.15",
+      },
+    },
     "tests/dialects": {
       "name": "@syncular/tests-dialects",
       "version": "0.0.0",
@@ -2055,6 +2068,8 @@
     "@syncular/client-plugin-yjs": ["@syncular/client-plugin-yjs@workspace:plugins/yjs/client"],
 
     "@syncular/client-react": ["@syncular/client-react@workspace:packages/client-react"],
+
+    "@syncular/client-rust": ["@syncular/client-rust@workspace:rust/bindings/browser"],
 
     "@syncular/config": ["@syncular/config@workspace:config"],
 

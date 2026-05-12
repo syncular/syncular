@@ -1,6 +1,11 @@
 # @syncular/dialect-wa-sqlite
 
-wa-sqlite (WASM) Kysely dialect for browser SQLite.
+wa-sqlite browser dialect for the legacy JavaScript Syncular runtime and
+runtime benchmarks.
+
+Rust-owned SQLite browser work lives in `@syncular/client-rust` under
+`rust/bindings/browser`. Keep Rust client, WASM, and Kysely adapter code there;
+this package stays focused on the wa-sqlite baseline.
 
 ## Install
 
@@ -11,14 +16,19 @@ npm install @syncular/dialect-wa-sqlite
 ## Usage
 
 ```ts
-import { createDatabase } from '@syncular/core';
+import { Kysely } from 'kysely';
 import { createWaSqliteDialect } from '@syncular/dialect-wa-sqlite';
 
-const db = createDatabase<MyDb>({
-  dialect: createWaSqliteDialect({ fileName: 'app.sqlite' }),
-  family: 'sqlite',
+const db = new Kysely<Database>({
+  dialect: createWaSqliteDialect({
+    fileName: 'legacy-js.sqlite',
+    preferOPFS: true,
+  }),
 });
 ```
+
+This package intentionally does not export the Rust-owned SQLite client. Use
+`@syncular/client-rust` for the Rust rewrite.
 
 ## Documentation
 

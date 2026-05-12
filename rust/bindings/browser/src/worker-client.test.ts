@@ -1,0 +1,890 @@
+import { describe, expect, it } from 'bun:test';
+import {
+  SYNCULAR_V2_PACKAGE_NAME,
+  SYNCULAR_V2_PACKAGE_VERSION,
+} from './runtime-contract';
+import type { SyncularV2DiagnosticEvent } from './types';
+import {
+  createSyncularV2WorkerClient,
+  SyncularV2WorkerClient,
+  SyncularV2WorkerError,
+} from './worker-client';
+import {
+  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+  type SyncularV2WorkerEvent,
+  type SyncularV2WorkerOutboundMessage,
+  type SyncularV2WorkerRequest,
+  type SyncularV2WorkerResponse,
+} from './worker-protocol';
+
+describe('Syncular v2 worker client', () => {
+  it('rejects structured worker errors', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const promise = client.executeSql('select 1');
+    const request = worker.messages[0]!;
+    worker.respond({
+      id: request.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'not_open',
+        message: 'not open',
+        details: { method: request.type },
+      },
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      code: 'not_open',
+      message: 'not open',
+      details: { method: 'executeSql' },
+    });
+  });
+
+  it('times out requests and sends best-effort cancel', async () => {
+    const worker = new FakeWorker();
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 1,
+      diagnostics: (event) => diagnostics.push(event),
+    });
+
+    await expect(client.executeSql('select 1')).rejects.toBeInstanceOf(
+      SyncularV2WorkerError
+    );
+    expect(worker.messages.map((message) => message.type)).toEqual([
+      'executeSql',
+      'cancel',
+    ]);
+    expect(worker.messages[1]).toMatchObject({
+      requestId: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+    });
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        level: 'warn',
+        source: 'worker',
+        code: 'worker.request_timeout',
+        details: expect.objectContaining({ requestType: 'executeSql' }),
+      }),
+    ]);
+  });
+
+  it('returns worker runtime information', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const promise = client.runtimeInfo();
+    const request = worker.messages[0]!;
+    expect(request.type).toBe('runtimeInfo');
+    worker.respond({
+      id: request.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        packageName: SYNCULAR_V2_PACKAGE_NAME,
+        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        storage: 'opfsSahPool',
+        workerUrl: 'http://localhost/syncular-v2-worker.js',
+        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
+        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+        rust: {
+          crateName: 'syncular-runtime',
+          crateVersion: '0.1.0',
+          schemaVersion: 1,
+          features: ['web-owned-sqlite'],
+        },
+      },
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      packageName: SYNCULAR_V2_PACKAGE_NAME,
+      workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      storage: 'opfsSahPool',
+      rust: { features: ['web-owned-sqlite'] },
+    });
+  });
+
+  it('reports connection state for UI surfaces', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    expect(client.connectionState()).toMatchObject({
+      closed: false,
+      pendingRequests: 0,
+      realtime: 'disconnected',
+    });
+
+    const runtimePromise = client.runtimeInfo();
+    expect(client.connectionState()).toMatchObject({
+      pendingRequests: 1,
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        packageName: SYNCULAR_V2_PACKAGE_NAME,
+        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
+        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+      },
+    });
+    await runtimePromise;
+    expect(client.connectionState()).toMatchObject({ pendingRequests: 0 });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'realtimeState',
+      state: 'connected',
+    });
+    expect(client.connectionState()).toMatchObject({
+      realtime: 'connected',
+      lastDiagnostic: {
+        source: 'realtime',
+        code: 'realtime.state',
+      },
+    });
+
+    const failed = client.executeSql('select broken');
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker_error',
+        message: 'broken',
+      },
+    });
+    await expect(failed).rejects.toThrow('broken');
+    expect(client.connectionState()).toMatchObject({
+      lastError: {
+        code: 'worker_error',
+        message: 'broken',
+      },
+    });
+  });
+
+  it('falls back to IndexedDB when default OPFS open fails', async () => {
+    const worker = new FakeWorker();
+    const promise = createSyncularV2WorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({
+      type: 'open',
+      config: { storage: 'opfsSahPool' },
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker_error',
+        message: 'Storage: install opfs-sahpool vfs: sync access handle failed',
+      },
+    });
+
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'open',
+      config: { storage: 'indexedDb' },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    const client = await promise;
+    const runtimePromise = client.runtimeInfo();
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        packageName: SYNCULAR_V2_PACKAGE_NAME,
+        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        storage: 'indexedDb',
+        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
+        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+      },
+    });
+    await expect(runtimePromise).resolves.toMatchObject({
+      storage: 'indexedDb',
+      storageFallback: {
+        from: 'opfsSahPool',
+        to: 'indexedDb',
+      },
+    });
+  });
+
+  it('passes fresh auth headers through the worker before sync', async () => {
+    const worker = new FakeWorker();
+    let token = 'token-1';
+    const promise = createSyncularV2WorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      getHeaders: () => ({ authorization: `Bearer ${token}` }),
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer token-1' },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    const client = await promise;
+    token = 'token-2';
+    const syncPromise = client.syncOnce();
+
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer token-2' },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 4);
+    expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        changedTables: [],
+        subscriptions: [],
+        pushedCommits: 0,
+      },
+    });
+
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+
+    await expect(syncPromise).resolves.toEqual({
+      changedTables: [],
+      subscriptions: [],
+      pushedCommits: 0,
+    });
+  });
+
+  it('forwards field encryption config and helper calls', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const setPromise = client.setFieldEncryption({
+      rules: [{ scope: 'tasks', table: 'tasks', fields: ['title'] }],
+      keys: { default: new Uint8Array(32).fill(7) },
+    });
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({
+      type: 'setFieldEncryption',
+      config: {
+        rules: [{ scope: 'tasks', table: 'tasks', fields: ['title'] }],
+        keys: { default: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc' },
+      },
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await expect(setPromise).resolves.toBeUndefined();
+
+    const setCrdtPromise = client.setEncryptedCrdt({
+      keys: { default: new Uint8Array(32).fill(9) },
+    });
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'setEncryptedCrdt',
+      config: {
+        keys: { default: 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk' },
+      },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await expect(setCrdtPromise).resolves.toBeUndefined();
+
+    const helperPromise = client.encryptionHelper('generateSymmetricKey');
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({
+      type: 'encryptionHelper',
+      method: 'generateSymmetricKey',
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: 'abc',
+    });
+    await expect(helperPromise).resolves.toBe('abc');
+  });
+
+  it('retries sync once after auth lifecycle refreshes credentials', async () => {
+    const worker = new FakeWorker();
+    let token = 'expired-token';
+    const expiredStatuses: number[] = [];
+    const retryStatuses: number[] = [];
+    let refreshCount = 0;
+    const promise = createSyncularV2WorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      getHeaders: () => ({ authorization: `Bearer ${token}` }),
+      authLifecycle: {
+        onAuthExpired: ({ status }) => {
+          expiredStatuses.push(status);
+        },
+        refreshToken: async ({ status }) => {
+          refreshCount += 1;
+          expect(status).toBe(401);
+          token = 'fresh-token';
+          return true;
+        },
+        retryWithFreshToken: ({ status, refreshResult }) => {
+          retryStatuses.push(status);
+          return refreshResult;
+        },
+      },
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    const client = await promise;
+
+    const syncPromise = client.syncOnce();
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer expired-token' },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 4);
+    expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker_error',
+        message: 'Transport: browser fetch failed with HTTP 401: expired',
+        details: { status: 401 },
+      },
+    });
+
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer fresh-token' },
+    });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 6);
+    expect(worker.messages[5]).toMatchObject({ type: 'syncOnce' });
+    worker.respond({
+      id: worker.messages[5]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        changedTables: ['tasks'],
+        subscriptions: [],
+        pushedCommits: 0,
+      },
+    });
+
+    await waitForMessages(worker, 7);
+    expect(worker.messages[6]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[6]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+
+    await expect(syncPromise).resolves.toEqual({
+      changedTables: ['tasks'],
+      subscriptions: [],
+      pushedCommits: 0,
+    });
+    expect(expiredStatuses).toEqual([401]);
+    expect(retryStatuses).toEqual([401]);
+    expect(refreshCount).toBe(1);
+  });
+
+  it('starts realtime in the worker with resolved query params', async () => {
+    const worker = new FakeWorker();
+    const promise = createSyncularV2WorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      realtime: {
+        wsUrl: 'wss://example.test/sync/realtime',
+        params: { static: '1' },
+        getParams: ({ clientId }) => ({ token: `token-for-${clientId}` }),
+        initialReconnectDelayMs: 25,
+      },
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({ type: 'open' });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'startRealtime',
+      options: {
+        wsUrl: 'wss://example.test/sync/realtime',
+        params: { static: '1', token: 'token-for-client' },
+        initialReconnectDelayMs: 25,
+      },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await expect(promise).resolves.toBeInstanceOf(SyncularV2WorkerClient);
+  });
+
+  it('restarts active realtime with fresh params after auth headers change', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    let token = 'initial';
+
+    const openPromise = client.open({
+      baseUrl: '/sync',
+      actorId: 'actor',
+      clientId: 'client',
+    });
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await openPromise;
+
+    const realtimeOptions = {
+      wsUrl: 'wss://example.test/sync/realtime',
+      getParams: () => ({ token }),
+    };
+    const startPromise = client.startRealtime(realtimeOptions);
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'startRealtime',
+      options: {
+        wsUrl: 'wss://example.test/sync/realtime',
+        params: { token: 'initial' },
+      },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await startPromise;
+
+    token = 'fresh';
+    const authPromise = client.setAuthHeaders({
+      authorization: 'Bearer fresh',
+    });
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer fresh' },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 4);
+    expect(worker.messages[3]).toMatchObject({
+      type: 'startRealtime',
+      options: {
+        wsUrl: 'wss://example.test/sync/realtime',
+        params: { token: 'fresh' },
+      },
+    });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await expect(authPromise).resolves.toBeUndefined();
+  });
+
+  it('dispatches realtime live-query events from the worker', () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const events: unknown[] = [];
+    client.addLiveQueryListener('query-1', (event) => events.push(event));
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'liveQueryEvents',
+      events: [
+        {
+          queryId: 'query-1',
+          version: 2,
+          rows: [{ id: 'task-1' }],
+        },
+      ],
+    });
+
+    expect(events).toEqual([
+      {
+        queryId: 'query-1',
+        version: 2,
+        rows: [{ id: 'task-1' }],
+      },
+    ]);
+  });
+
+  it('forwards storage compaction options to the worker', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const promise = client.compactStorage({
+      olderThanMs: 60_000,
+      maxBlobCacheBytes: 1024,
+      maxTombstoneServerVersion: 99,
+    });
+    const request = worker.messages[0]!;
+    expect(request).toMatchObject({
+      type: 'compactStorage',
+      options: {
+        olderThanMs: 60_000,
+        maxBlobCacheBytes: 1024,
+        maxTombstoneServerVersion: 99,
+      },
+    });
+    worker.respond({
+      id: request.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        ackedOutboxCommitsDeleted: 1,
+        resolvedConflictsDeleted: 2,
+        failedBlobUploadsDeleted: 0,
+        inactiveSubscriptionStatesDeleted: 0,
+        tombstoneRowsDeleted: 3,
+        blobCacheBytesPruned: 4,
+        encryptedCrdtUpdatesDeleted: 0,
+        encryptedCrdtCheckpointsDeleted: 0,
+      },
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      ackedOutboxCommitsDeleted: 1,
+      tombstoneRowsDeleted: 3,
+      blobCacheBytesPruned: 4,
+    });
+  });
+
+  it('forwards structured worker diagnostics to registered listeners', () => {
+    const worker = new FakeWorker();
+    const initialDiagnostics: SyncularV2DiagnosticEvent[] = [];
+    const additionalDiagnostics: SyncularV2DiagnosticEvent[] = [];
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      diagnostics: (event) => initialDiagnostics.push(event),
+    });
+    const remove = client.addDiagnosticListener((event) =>
+      additionalDiagnostics.push(event)
+    );
+
+    const event = {
+      at: 123,
+      level: 'info' as const,
+      source: 'sync' as const,
+      code: 'sync.syncOnce.completed',
+      message: 'Sync completed',
+      details: { changedTableCount: 1 },
+    };
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'diagnostic',
+      event,
+    });
+    remove();
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'diagnostic',
+      event: { ...event, code: 'sync.syncPull.completed' },
+    });
+
+    expect(initialDiagnostics.map((item) => item.code)).toEqual([
+      'sync.syncOnce.completed',
+      'sync.syncPull.completed',
+    ]);
+    expect(additionalDiagnostics.map((item) => item.code)).toEqual([
+      'sync.syncOnce.completed',
+    ]);
+  });
+
+  it('retries immediate blob storage after auth lifecycle refreshes credentials', async () => {
+    const worker = new FakeWorker();
+    let token = 'expired-token';
+    let refreshCount = 0;
+    const promise = createSyncularV2WorkerClient({
+      worker: worker.asWorker(),
+      requestTimeoutMs: 100,
+      getHeaders: () => ({ authorization: `Bearer ${token}` }),
+      authLifecycle: {
+        refreshToken: ({ operation, status }) => {
+          expect(operation).toBe('blobInitiateUpload');
+          expect(status).toBe(403);
+          refreshCount += 1;
+          token = 'fresh-token';
+          return true;
+        },
+      },
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+    });
+
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    const client = await promise;
+
+    const storePromise = client.storeBlob(new Uint8Array([1, 2, 3]), {
+      mimeType: 'application/test',
+      immediate: true,
+    });
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer expired-token' },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 4);
+    expect(worker.messages[3]).toMatchObject({
+      type: 'storeBlob',
+      data: new Uint8Array([1, 2, 3]),
+      options: { mimeType: 'application/test', immediate: true },
+    });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: 'worker_error',
+        message: 'Transport: browser fetch failed with HTTP 403: expired',
+        details: { status: 403 },
+      },
+    });
+
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer fresh-token' },
+    });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 6);
+    expect(worker.messages[5]).toMatchObject({ type: 'storeBlob' });
+    worker.respond({
+      id: worker.messages[5]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        hash: `sha256:${'0'.repeat(64)}`,
+        size: 3,
+        mimeType: 'application/test',
+      },
+    });
+
+    await expect(storePromise).resolves.toMatchObject({
+      hash: `sha256:${'0'.repeat(64)}`,
+      size: 3,
+      mimeType: 'application/test',
+    });
+    expect(refreshCount).toBe(1);
+  });
+});
+
+class FakeWorker {
+  messages: SyncularV2WorkerRequest[] = [];
+  onmessage:
+    | ((event: MessageEvent<SyncularV2WorkerOutboundMessage>) => void)
+    | null = null;
+  onerror: ((event: ErrorEvent) => void) | null = null;
+  onmessageerror: ((event: MessageEvent) => void) | null = null;
+
+  postMessage(message: SyncularV2WorkerRequest): void {
+    this.messages.push(message);
+  }
+
+  terminate(): void {}
+
+  respond(response: SyncularV2WorkerResponse): void {
+    this.onmessage?.({
+      data: response,
+    } as MessageEvent<SyncularV2WorkerOutboundMessage>);
+  }
+
+  emit(event: SyncularV2WorkerEvent): void {
+    this.onmessage?.({
+      data: event,
+    } as MessageEvent<SyncularV2WorkerOutboundMessage>);
+  }
+
+  asWorker(): Worker {
+    return this as unknown as Worker;
+  }
+}
+
+async function waitForMessages(
+  worker: FakeWorker,
+  count: number
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (worker.messages.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(
+    `expected ${count} worker messages, got ${worker.messages.length}`
+  );
+}

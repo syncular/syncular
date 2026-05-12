@@ -124,6 +124,52 @@ export interface SyncSnapshotChunksTable {
 }
 
 /**
+ * Shared encrypted CRDT update log.
+ *
+ * One physical table stores updates for every encrypted CRDT field. The logical
+ * stream is keyed by partition_id + stream_id, where stream_id is derived from
+ * app_table + row_id + field_name.
+ */
+export interface SyncCrdtUpdatesTable {
+  seq: Generated<number>;
+  partition_id: string;
+  stream_id: string;
+  app_table: string;
+  row_id: string;
+  field_name: string;
+  update_id: string;
+  actor_id: string | null;
+  client_id: string | null;
+  key_id: string;
+  ciphertext: string;
+  scopes: unknown;
+  created_at: Generated<string>;
+}
+
+/**
+ * Shared encrypted CRDT checkpoints.
+ *
+ * Checkpoints contain encrypted full Yjs/Yrs state snapshots and allow old
+ * update-log rows to be garbage-collected after retention rules are satisfied.
+ */
+export interface SyncCrdtCheckpointsTable {
+  seq: Generated<number>;
+  partition_id: string;
+  stream_id: string;
+  app_table: string;
+  row_id: string;
+  field_name: string;
+  checkpoint_id: string;
+  covers_seq: number;
+  actor_id: string | null;
+  client_id: string | null;
+  key_id: string;
+  ciphertext: string;
+  scopes: unknown;
+  created_at: Generated<string>;
+}
+
+/**
  * Index table: which commits affect which tables.
  *
  * Used to efficiently find commit_seq values for a table without scanning
@@ -144,6 +190,8 @@ export interface SyncCoreDb {
   sync_commits: SyncCommitsTable;
   sync_changes: SyncChangesTable;
   sync_client_cursors: SyncClientCursorsTable;
+  sync_crdt_updates: SyncCrdtUpdatesTable;
+  sync_crdt_checkpoints: SyncCrdtCheckpointsTable;
   sync_table_commits: SyncTableCommitsTable;
   sync_snapshot_chunks: SyncSnapshotChunksTable;
 }
