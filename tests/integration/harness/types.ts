@@ -33,6 +33,15 @@ export interface IntegrationServerDb extends SyncCoreDb {
     project_id: string;
     server_version: number;
   };
+  comments: {
+    id: string;
+    task_id: string;
+    project_id: string;
+    body: string;
+    author_id: string;
+    deleted: number;
+    server_version: number;
+  };
 }
 
 export interface IntegrationClientDb extends SyncClientDb {
@@ -48,6 +57,15 @@ export interface IntegrationClientDb extends SyncClientDb {
     completed: number;
     user_id: string;
     project_id: string;
+    server_version: number;
+  };
+  comments: {
+    id: string;
+    task_id: string;
+    project_id: string;
+    body: string;
+    author_id: string;
+    deleted: number;
     server_version: number;
   };
 }

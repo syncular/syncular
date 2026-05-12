@@ -13,6 +13,7 @@ export * from './blobs';
 export * from './clients';
 export * from './compaction';
 export * from './dialect';
+export * from './encrypted-crdt';
 export * from './handlers';
 export * from './helpers';
 export * from './migrate';

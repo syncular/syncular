@@ -1,0 +1,10 @@
+{
+  "name": "@syncular/example-todo-rust",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@syncular/client-rust": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "kysely": "^0.28.0"
+  }
+}

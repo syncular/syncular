@@ -33,8 +33,9 @@ function toDialectConfig(
   options?: WaSqliteOptions
 ): WaSqliteWorkerDialectConfig {
   return {
-    fileName: options?.fileName ?? 'diego.sqlite',
     ...options,
+    fileName: options?.fileName ?? 'diego.sqlite',
+    preferOPFS: options?.preferOPFS ?? true,
   };
 }
 

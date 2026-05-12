@@ -310,6 +310,111 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       ])
       .unique()
       .execute();
+
+    await db.schema
+      .createTable('sync_crdt_updates')
+      .ifNotExists()
+      .addColumn('seq', 'bigserial', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('stream_id', 'text', (col) => col.notNull())
+      .addColumn('app_table', 'text', (col) => col.notNull())
+      .addColumn('row_id', 'text', (col) => col.notNull())
+      .addColumn('field_name', 'text', (col) => col.notNull())
+      .addColumn('update_id', 'text', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('client_id', 'text')
+      .addColumn('key_id', 'text', (col) => col.notNull())
+      .addColumn('ciphertext', 'text', (col) => col.notNull())
+      .addColumn('scopes', 'jsonb', (col) =>
+        col.notNull().defaultTo(sql`'{}'::jsonb`)
+      )
+      .addColumn('created_at', 'timestamptz', (col) =>
+        col.notNull().defaultTo(sql`now()`)
+      )
+      .execute();
+    await sql`ALTER TABLE sync_crdt_updates
+      ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+    await db.schema
+      .createIndex('idx_sync_crdt_updates_update_id')
+      .ifNotExists()
+      .on('sync_crdt_updates')
+      .columns(['partition_id', 'update_id'])
+      .unique()
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_updates_stream_seq')
+      .ifNotExists()
+      .on('sync_crdt_updates')
+      .columns(['partition_id', 'stream_id', 'seq'])
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_updates_scope_table')
+      .ifNotExists()
+      .on('sync_crdt_updates')
+      .columns(['partition_id', 'app_table', 'row_id', 'field_name'])
+      .execute();
+    await this.ensureIndex(
+      db,
+      'idx_sync_crdt_updates_scopes',
+      'CREATE INDEX idx_sync_crdt_updates_scopes ON sync_crdt_updates USING GIN (scopes)'
+    );
+
+    await db.schema
+      .createTable('sync_crdt_checkpoints')
+      .ifNotExists()
+      .addColumn('seq', 'bigserial', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('stream_id', 'text', (col) => col.notNull())
+      .addColumn('app_table', 'text', (col) => col.notNull())
+      .addColumn('row_id', 'text', (col) => col.notNull())
+      .addColumn('field_name', 'text', (col) => col.notNull())
+      .addColumn('checkpoint_id', 'text', (col) => col.notNull())
+      .addColumn('covers_seq', 'bigint', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('client_id', 'text')
+      .addColumn('key_id', 'text', (col) => col.notNull())
+      .addColumn('ciphertext', 'text', (col) => col.notNull())
+      .addColumn('scopes', 'jsonb', (col) =>
+        col.notNull().defaultTo(sql`'{}'::jsonb`)
+      )
+      .addColumn('created_at', 'timestamptz', (col) =>
+        col.notNull().defaultTo(sql`now()`)
+      )
+      .execute();
+    await sql`ALTER TABLE sync_crdt_checkpoints
+      ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+    await db.schema
+      .createIndex('idx_sync_crdt_checkpoints_checkpoint_id')
+      .ifNotExists()
+      .on('sync_crdt_checkpoints')
+      .columns(['partition_id', 'checkpoint_id'])
+      .unique()
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_checkpoints_stream_covers')
+      .ifNotExists()
+      .on('sync_crdt_checkpoints')
+      .columns(['partition_id', 'stream_id', 'covers_seq'])
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_checkpoints_scope_table')
+      .ifNotExists()
+      .on('sync_crdt_checkpoints')
+      .columns(['partition_id', 'app_table', 'row_id', 'field_name'])
+      .execute();
+    await this.ensureIndex(
+      db,
+      'idx_sync_crdt_checkpoints_scopes',
+      'CREATE INDEX idx_sync_crdt_checkpoints_scopes ON sync_crdt_checkpoints USING GIN (scopes)'
+    );
   }
 
   // ===========================================================================
