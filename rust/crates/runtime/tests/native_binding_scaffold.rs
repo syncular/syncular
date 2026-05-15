@@ -221,6 +221,9 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("public struct TaskChangedFields"));
     assert!(swift.contains("public struct SyncularNativeEvent"));
     assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
+    assert!(swift.contains("public let droppedCount: UInt64?"));
+    assert!(swift.contains("public let resyncRequired: Bool"));
+    assert!(swift.contains("public func syncularNativeEventRequiresFullRefresh"));
     assert!(swift.contains("public func syncularDecodeNativeEvent"));
     assert!(swift.contains("public struct SyncularCrdtFieldDescriptor"));
     assert!(swift.contains("func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor"));
@@ -233,6 +236,7 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("client.registerLiveQuery(SyncularLiveQueryRegistration"));
     assert!(swift.contains("rows = try client.query(query, as: rowType)"));
     assert!(swift.contains("public func refreshIfChanged(event: SyncularNativeEvent"));
+    assert!(swift.contains("if syncularNativeEventRequiresFullRefresh(event)"));
     assert!(!swift.contains("func applyLocalOperationJson"));
     assert!(swift.contains("func queryJson(requestJson: String) throws -> String"));
     assert!(!swift.contains("func listTasks()"));
@@ -252,6 +256,9 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("data class TaskChangedFields"));
     assert!(kotlin.contains("data class SyncularNativeEvent"));
     assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
+    assert!(kotlin.contains("val droppedCount: Long? = null"));
+    assert!(kotlin.contains("val resyncRequired: Boolean = false"));
+    assert!(kotlin.contains("fun syncularNativeEventRequiresFullRefresh"));
     assert!(kotlin.contains("fun syncularDecodeNativeEvent(eventJson: String)"));
     assert!(kotlin.contains("data class SyncularCrdtFieldDescriptor"));
     assert!(kotlin.contains("fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor"));
@@ -264,6 +271,7 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("client.registerLiveQuery(SyncularLiveQueryRegistration"));
     assert!(kotlin.contains("rows = client.query(query, decode)"));
     assert!(kotlin.contains("fun refreshIfChanged(event: SyncularNativeEvent"));
+    assert!(kotlin.contains("if (syncularNativeEventRequiresFullRefresh(event))"));
     assert!(!kotlin.contains("fun applyLocalOperationJson"));
     assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
     assert!(!kotlin.contains("fun SyncularNativeJsonClient.listTasks()"));

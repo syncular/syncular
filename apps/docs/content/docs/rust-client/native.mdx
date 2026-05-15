@@ -80,7 +80,34 @@ APIs for work that can block:
 Start the native event stream once, read `nextEventJson()` from a background
 task, and route updates by `eventSeq`, `commandId`, `changedRows`, and query
 ids. The native worker owns backpressure for queued local writes and CRDT
-bursts. During teardown, close the event stream and then call `shutdown()`.
+bursts. If the stream emits `EventsOverflowed`, that subscription is no longer
+trusted and closes after the overflow event. Discard it, start a new event
+stream, trigger sync if appropriate, and force a full live-query/bootstrap
+refresh from SQLite before processing incremental events again. The event
+includes top-level `droppedCount` and `resyncRequired: true`. During teardown,
+close the event stream and then call `shutdown()`.
+
+For realtime apps, start the persistent realtime worker after auth headers are
+available. The runtime owns websocket reconnect/backoff and feeds wakeups into
+the sync worker. BoltFFI hosts call `startRealtimeWorker()` and
+`stopRealtimeWorker()`; C hosts use
+`syncular_native_client_start_realtime_worker(...)` and
+`syncular_native_client_stop_realtime_worker(...)`.
+
+App-specific Rust wrappers can subscribe at the worker layer instead of polling
+or rebuilding their own event hub:
+
+```rust
+let worker = SyncWorker::start(client);
+let events = worker.subscribe_events(256);
+let converter = NativeWorkerEventConverter::new();
+
+while let Some(event) = events.next_event() {
+    for json in converter.convert_json(event)? {
+        // Forward the same NativeEvent JSON shape used by Swift/Kotlin/JS hosts.
+    }
+}
+```
 
 Swift:
 

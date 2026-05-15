@@ -7,12 +7,16 @@ use std::time::{Duration, Instant};
 use diesel::prelude::*;
 use diesel::sql_query;
 use serde_json::{json, Value};
+use syncular_runtime::client::{SyncChangedRow, SyncReport};
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
 use syncular_runtime::error::{ErrorKind, Result};
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
 use syncular_runtime::native::{
-    NativeClientConfig, NativeClientOptions, NativeEventKind, NativeSyncularClient,
+    native_event_json_from_worker_event, native_events_from_worker_event_with_observed_queries,
+    NativeClientConfig, NativeClientOptions, NativeEventKind, NativeObservedQuery,
+    NativeSyncularClient, NativeWorkerEventConverter,
 };
+use syncular_runtime::worker::SyncWorkerEvent;
 use syncular_testkit::{
     todo_app_schema_json, unique_temp_db_path, TestHttpResponse, TestSyncServer,
 };
@@ -393,6 +397,125 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(tasks_json.as_array().map(Vec::len), Some(1));
     assert_eq!(tasks_json[0]["id"], "server-task");
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result<()> {
+    let changed_row = SyncChangedRow {
+        table: "tasks".to_string(),
+        row_id: Some("converter-task".to_string()),
+        operation: "update".to_string(),
+        changed_fields: vec!["title".to_string(), "title_yjs_state".to_string()],
+        crdt_fields: vec!["title_yjs_state".to_string()],
+        commit_id: Some("server-commit".to_string()),
+        commit_seq: Some(42),
+        subscription_id: Some("sub-tasks".to_string()),
+        server_version: Some(7),
+    };
+    let worker_event = SyncWorkerEvent::SyncCompleted {
+        command_id: Some("converter-sync".to_string()),
+        report: SyncReport {
+            changed_tables: vec!["tasks".to_string()],
+            changed_rows: vec![changed_row.clone()],
+            conflicts_changed: false,
+        },
+        outbox_count: 0,
+        conflict_count: 0,
+        duration_ms: 12,
+    };
+
+    let events = native_events_from_worker_event_with_observed_queries(
+        worker_event.clone(),
+        &[NativeObservedQuery {
+            id: "task-list".to_string(),
+            tables: vec!["tasks".to_string()],
+            label: None,
+        }],
+    );
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].event_seq, 1);
+    assert_eq!(events[0].kind, NativeEventKind::SyncCompleted);
+    assert_eq!(events[0].changed_rows, vec![changed_row.clone()]);
+    assert_eq!(events[1].event_seq, 2);
+    assert_eq!(events[1].kind, NativeEventKind::RowsChanged);
+    assert_eq!(events[1].changed_rows, vec![changed_row.clone()]);
+    assert_eq!(
+        events[1]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("source")),
+        Some(&json!("remotePull"))
+    );
+    assert_eq!(events[2].event_seq, 3);
+    assert_eq!(events[2].kind, NativeEventKind::QueriesChanged);
+    assert_eq!(events[2].queries, vec!["task-list".to_string()]);
+    assert_eq!(events[2].changed_rows, vec![changed_row]);
+
+    let converter = NativeWorkerEventConverter::new();
+    let first = converter.convert(worker_event.clone());
+    let second = converter.convert(worker_event.clone());
+    assert_eq!(first[0].event_seq, 1);
+    assert_eq!(second[0].event_seq, 3);
+
+    let json_events = native_event_json_from_worker_event(worker_event)?;
+    let first_json: Value = serde_json::from_str(&json_events[0])?;
+    assert_eq!(first_json["kind"], "SyncCompleted");
+    assert_eq!(first_json["changedRows"][0]["rowId"], "converter-task");
+
+    let overflow_json = native_event_json_from_worker_event(SyncWorkerEvent::EventsOverflowed {
+        dropped_count: 7,
+    })?;
+    let overflow: Value = serde_json::from_str(&overflow_json[0])?;
+    assert_eq!(overflow["kind"], "EventsOverflowed");
+    assert_eq!(overflow["droppedCount"], 7);
+    assert_eq!(overflow["resyncRequired"], true);
+    assert_eq!(overflow["payload_json"]["resyncRequired"], true);
+    Ok(())
+}
+
+#[test]
+fn native_event_stream_overflow_reports_resync_required() -> Result<()> {
+    let path = temp_db_path("syncular-native-event-overflow");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-event-overflow"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+    let events = client.subscribe_events(1);
+
+    apply_task_upsert(&mut client, "overflow-a", "Overflow A")?;
+    apply_task_upsert(&mut client, "overflow-b", "Overflow B")?;
+
+    let event = events
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("overflow event");
+    assert_eq!(event.kind, NativeEventKind::EventsOverflowed);
+    assert_eq!(
+        event
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("resyncRequired")),
+        Some(&json!(true))
+    );
+    assert!(event.dropped_count.unwrap_or_default() >= 2);
+    assert_eq!(event.resync_required, Some(true));
+    assert!(
+        event
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("droppedCount"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            >= 2
+    );
+    assert!(events
+        .next_event_timeout(Duration::from_millis(100))
+        .is_none());
 
     client.close()?;
     let _ = std::fs::remove_file(path);

@@ -174,12 +174,40 @@ resolution, and keep-local retry emit `ConflictsChanged`. C hosts subscribe with
 `syncular_native_client_subscribe_events_json(...)`; BoltFFI hosts use
 `startEventStream(capacity)`, read ordered JSON events with `nextEventJson()`
 from a background task, and close the stream with `closeEventStream()`.
+Rust hosts that wrap `SyncWorker` directly can use the same event source without
+going through `NativeSyncularClient`:
+
+```rust
+use syncular_runtime::native::NativeWorkerEventConverter;
+use syncular_runtime::worker::SyncWorker;
+
+let worker = SyncWorker::start(client);
+let events = worker.subscribe_events(256);
+let converter = NativeWorkerEventConverter::new();
+
+while let Some(worker_event) = events.next_event() {
+    for native_event_json in converter.convert_json(worker_event)? {
+        // Forward the stable NativeEvent JSON shape to the app bridge.
+    }
+}
+```
+
+`subscribe_events` is fan-out: each subscriber receives its own copy of worker
+events. The queue is bounded per subscriber; if a subscriber stops draining,
+Syncular emits `EventsOverflowed` with `droppedCount` and
+`resyncRequired=true`, then closes that overflowing subscription after the
+event is delivered. Generated clients must treat that as event-stream loss:
+discard the subscription, subscribe again, trigger sync if appropriate, and
+refresh live queries from SQLite before trusting incremental events again. The
+worker never blocks sync or local writes on a slow event consumer.
 For generated host wrappers, `app_tables_json` lists generated app tables and
 `query_json(request)` executes read-only SQL/query-builder output against
 declared generated app-table dependencies while rejecting internal tables and
-mutating SQL. `list_table_json(table)` still exists as a low-level debugging and
-compatibility helper, but generated app clients should prefer typed query
-builders that feed `query_json`. `apply_mutation_json(mutation, localRow)`
+mutating SQL. Native `query_json` uses a read-only SQLite connection with a
+bounded prepared-statement cache keyed by SQL, schema version, and declared
+table dependencies. `list_table_json(table)` still exists as a low-level
+debugging and compatibility helper, but generated app clients should prefer
+typed query builders that feed `query_json`. `apply_mutation_json(mutation, localRow)`
 accepts Syncular mutation JSON, applies it locally against a generated app
 table, enqueues it in the outbox, emits `RowsChanged`, and optionally triggers
 sync. `apply_local_operation_json` remains as the compatibility alias for older
@@ -543,19 +571,35 @@ bounded, measured local operations.
 ## Native App Lifecycle
 
 The native bindings are shaped for UI hosts that keep Syncular work off the
-main thread. Open the database during app startup or scene/session activation,
-start or resume the native worker, then use queued methods for local writes,
-explicit sync, conflict commands, CRDT updates, blob file work, snapshot
-refresh, and compaction. Subscribe to the native event stream once and read
+main thread. The production path is a single writer actor: keep the native
+worker hot and use queued methods for local writes, explicit sync, conflict
+commands, CRDT updates, blob file work, snapshot refresh, and compaction. Reads
+go through read-only query execution so UI views do not share the writer
+connection. Open the database during app startup or scene/session activation,
+start or resume the native worker, then subscribe to the native event stream
+once and read
 `nextEventJson()` from a background task, or use the C callback subscription,
 then forward ordered events to the UI model by `event_seq` and `command_id`; do
 not make view code wait synchronously for SQLite/outbox work.
+If a native app has an app-specific Rust worker wrapper, prefer
+`SyncWorker::subscribe_events(capacity)` over rebuilding an event hub in the app
+layer. The worker-level subscription has the same fan-out and backpressure
+semantics as the binding-facing native stream, and `NativeWorkerEventConverter`
+keeps the JSON shape identical to the facade.
 For live views, prefer the generic `changedRows` summaries on `RowsChanged`,
 `QueriesChanged`, `SyncCompleted`, and `LocalWriteCommitted` over reloading
 whole app tables. They are intentionally app-schema deltas, not editor-specific
 events: a bridge can route CRDT-backed field changes to an active editor,
 update list rows for title/preview changes, and handle deletes or conflicts
 without a full bootstrap refresh.
+
+Retry and realtime wakeups are runtime-owned. Retryable sync/blob failures
+persist `next_attempt_at`; the worker arms a delayed wakeup for the next due
+retry instead of requiring app polling. Persistent realtime can be started on
+the native client so websocket `sync` events feed the sync worker directly with
+reconnect/backoff and auth-header refresh support. Binding hosts can call
+`startRealtimeWorker()`/`stopRealtimeWorker()` on the BoltFFI client or the
+equivalent C ABI functions.
 
 Startup can still include SQLite open, migration, schema validation, and native
 library loading. Use the async native open path when that cost would sit on a

@@ -23,10 +23,11 @@ use crate::schema;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, OutboxCommit, OutboxSummary, SubscriptionState,
     SyncStateStore, SyncStore, SyncStoreTx, BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES,
-    MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
+use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{BigInt, Binary, Integer, Text};
@@ -169,6 +170,12 @@ impl From<OutboxSummaryRow> for OutboxSummary {
             schema_version: row.schema_version,
         }
     }
+}
+
+#[derive(QueryableByName)]
+struct NextRetryAtRow {
+    #[diesel(sql_type = diesel::sql_types::Nullable<BigInt>)]
+    next_attempt_at: Option<i64>,
 }
 
 #[derive(QueryableByName)]
@@ -341,15 +348,48 @@ pub struct DieselSqliteTx<'a> {
     app_schema: AppSchema,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SqliteRuntimePragmaReport {
+    pub journal_mode: String,
+    pub foreign_keys: i32,
+    pub busy_timeout: i32,
+    pub synchronous: i32,
+}
+
+#[derive(QueryableByName)]
+struct JournalModePragmaRow {
+    #[diesel(sql_type = Text)]
+    journal_mode: String,
+}
+
+#[derive(QueryableByName)]
+struct ForeignKeysPragmaRow {
+    #[diesel(sql_type = Integer)]
+    foreign_keys: i32,
+}
+
+#[derive(QueryableByName)]
+struct BusyTimeoutPragmaRow {
+    #[diesel(sql_type = Integer)]
+    timeout: i32,
+}
+
+#[derive(QueryableByName)]
+struct SynchronousPragmaRow {
+    #[diesel(sql_type = Integer)]
+    synchronous: i32,
+}
+
 impl DieselSqliteStore {
     pub fn open(path: &str) -> Result<Self> {
         Self::open_with_schema(path, default_app_schema())
     }
 
     pub fn open_with_schema(path: &str, app_schema: AppSchema) -> Result<Self> {
-        let conn = SqliteConnection::establish(path).map_err(|err| {
+        let mut conn = SqliteConnection::establish(path).map_err(|err| {
             SyncularError::storage(err).context(format!("open sqlite database at {path}"))
         })?;
+        apply_sqlite_runtime_pragmas(&mut conn)?;
         let mut store = Self { conn, app_schema };
         store.ensure_schema()?;
         Ok(store)
@@ -417,6 +457,10 @@ impl DieselSqliteStore {
         }
 
         Ok(())
+    }
+
+    pub fn runtime_pragma_report(&mut self) -> Result<SqliteRuntimePragmaReport> {
+        sqlite_runtime_pragma_report(&mut self.conn)
     }
 
     fn ensure_runtime_system_schema(&mut self) -> Result<()> {
@@ -863,6 +907,47 @@ impl DieselSqliteStore {
     }
 }
 
+pub fn apply_sqlite_runtime_pragmas(conn: &mut SqliteConnection) -> Result<()> {
+    conn.batch_execute(&format!(
+        r#"
+        pragma busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};
+        pragma foreign_keys = on;
+        pragma journal_mode = wal;
+        pragma synchronous = normal;
+        "#
+    ))?;
+    Ok(())
+}
+
+fn sqlite_runtime_pragma_report(conn: &mut SqliteConnection) -> Result<SqliteRuntimePragmaReport> {
+    Ok(SqliteRuntimePragmaReport {
+        journal_mode: sql_query("pragma journal_mode")
+            .load::<JournalModePragmaRow>(conn)?
+            .into_iter()
+            .next()
+            .map(|row| row.journal_mode)
+            .unwrap_or_default(),
+        foreign_keys: sql_query("pragma foreign_keys")
+            .load::<ForeignKeysPragmaRow>(conn)?
+            .into_iter()
+            .next()
+            .map(|row| row.foreign_keys)
+            .unwrap_or_default(),
+        busy_timeout: sql_query("pragma busy_timeout")
+            .load::<BusyTimeoutPragmaRow>(conn)?
+            .into_iter()
+            .next()
+            .map(|row| row.timeout)
+            .unwrap_or_default(),
+        synchronous: sql_query("pragma synchronous")
+            .load::<SynchronousPragmaRow>(conn)?
+            .into_iter()
+            .next()
+            .map(|row| row.synchronous)
+            .unwrap_or_default(),
+    })
+}
+
 fn cache_blob(conn: &mut SqliteConnection, blob: &BlobRef, data: &[u8]) -> Result<()> {
     validate_blob_bytes(blob, data)?;
     let now = now_ms();
@@ -1001,6 +1086,36 @@ impl SyncStateStore for DieselSqliteStore {
         .load::<OutboxSummaryRow>(&mut self.conn)?;
 
         Ok(rows.into_iter().map(OutboxSummary::from).collect())
+    }
+
+    fn next_outbox_retry_at(&mut self) -> Result<Option<i64>> {
+        Ok(sql_query(
+            r#"
+            select min(next_attempt_at) as next_attempt_at
+            from sync_outbox_commits
+            where status = 'pending' and attempt_count > 0 and attempt_count < ?1
+            "#,
+        )
+        .bind::<Integer, _>(MAX_SYNC_RETRIES)
+        .load::<NextRetryAtRow>(&mut self.conn)?
+        .into_iter()
+        .next()
+        .and_then(|row| row.next_attempt_at))
+    }
+
+    fn next_blob_upload_retry_at(&mut self) -> Result<Option<i64>> {
+        Ok(sql_query(
+            r#"
+            select min(next_attempt_at) as next_attempt_at
+            from sync_blob_outbox
+            where status = 'pending' and attempt_count > 0 and attempt_count < ?1
+            "#,
+        )
+        .bind::<Integer, _>(MAX_BLOB_UPLOAD_RETRIES)
+        .load::<NextRetryAtRow>(&mut self.conn)?
+        .into_iter()
+        .next()
+        .and_then(|row| row.next_attempt_at))
     }
 
     fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>> {

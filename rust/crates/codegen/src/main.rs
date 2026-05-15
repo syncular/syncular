@@ -5070,9 +5070,11 @@ fn generate_swift_module(
     out.push_str("    public let changedRows: [SyncularChangedRow]\n");
     out.push_str("    public let commandId: String?\n");
     out.push_str("    public let clientCommitId: String?\n");
-    out.push_str("    public let durationMs: UInt64?\n\n");
+    out.push_str("    public let durationMs: UInt64?\n");
+    out.push_str("    public let droppedCount: UInt64?\n");
+    out.push_str("    public let resyncRequired: Bool\n\n");
     out.push_str(
-        "    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil) {\n",
+        "    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, resyncRequired: Bool = false) {\n",
     );
     out.push_str("        self.eventSeq = eventSeq\n");
     out.push_str("        self.kind = kind\n");
@@ -5082,6 +5084,8 @@ fn generate_swift_module(
     out.push_str("        self.commandId = commandId\n");
     out.push_str("        self.clientCommitId = clientCommitId\n");
     out.push_str("        self.durationMs = durationMs\n");
+    out.push_str("        self.droppedCount = droppedCount\n");
+    out.push_str("        self.resyncRequired = resyncRequired\n");
     out.push_str("    }\n\n");
     out.push_str("    private enum CodingKeys: String, CodingKey {\n");
     out.push_str("        case eventSeq = \"event_seq\"\n");
@@ -5092,6 +5096,8 @@ fn generate_swift_module(
     out.push_str("        case commandId = \"command_id\"\n");
     out.push_str("        case clientCommitId = \"client_commit_id\"\n");
     out.push_str("        case durationMs = \"duration_ms\"\n");
+    out.push_str("        case droppedCount\n");
+    out.push_str("        case resyncRequired\n");
     out.push_str("    }\n\n");
     out.push_str("    public init(from decoder: Decoder) throws {\n");
     out.push_str("        let container = try decoder.container(keyedBy: CodingKeys.self)\n");
@@ -5115,12 +5121,21 @@ fn generate_swift_module(
     out.push_str(
         "        durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)\n",
     );
+    out.push_str("        droppedCount = try container.decodeIfPresent(UInt64.self, forKey: .droppedCount)\n");
+    out.push_str("        resyncRequired = (try container.decodeIfPresent(Bool.self, forKey: .resyncRequired)) ?? (kind == \"EventsOverflowed\")\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    out.push_str("    public var eventStreamLost: Bool {\n");
+    out.push_str("        kind == \"EventsOverflowed\" || resyncRequired\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
     out.push_str("public func syncularDecodeNativeEvent(_ eventJson: String) throws -> SyncularNativeEvent {\n");
     out.push_str(
         "    try JSONDecoder().decode(SyncularNativeEvent.self, from: Data(eventJson.utf8))\n",
     );
+    out.push_str("}\n\n");
+    out.push_str("public func syncularNativeEventRequiresFullRefresh(_ event: SyncularNativeEvent) -> Bool {\n");
+    out.push_str("    event.eventStreamLost\n");
     out.push_str("}\n\n");
     push_swift_changed_row_helpers(&mut out, &user_tables);
     out.push_str("public struct SyncularGeneratedOperation: Codable, Equatable {\n");
@@ -5480,6 +5495,9 @@ fn generate_swift_module(
     out.push_str("\n");
     out.push_str("    @discardableResult\n");
     out.push_str("    public func refreshIfChanged(event: SyncularNativeEvent, on client: SyncularNativeJsonClient) throws -> [Row]? {\n");
+    out.push_str("        if syncularNativeEventRequiresFullRefresh(event) {\n");
+    out.push_str("            return try refresh(on: client)\n");
+    out.push_str("        }\n");
     out.push_str(
         "        guard event.kind == \"QueriesChanged\", matches(queryIds: event.queries) else {\n",
     );
@@ -6558,7 +6576,13 @@ fn generate_kotlin_module(
     out.push_str("    val commandId: String? = null,\n");
     out.push_str("    val clientCommitId: String? = null,\n");
     out.push_str("    val durationMs: Long? = null,\n");
-    out.push_str(")\n\n");
+    out.push_str("    val droppedCount: Long? = null,\n");
+    out.push_str("    val resyncRequired: Boolean = false,\n");
+    out.push_str(") {\n");
+    out.push_str(
+        "    val eventStreamLost: Boolean get() = kind == \"EventsOverflowed\" || resyncRequired\n",
+    );
+    out.push_str("}\n\n");
     if has_native_crdt {
         out.push_str("data class SyncularYjsUpdateEnvelope(\n");
         out.push_str("    val updateId: String,\n");
@@ -6706,8 +6730,14 @@ fn generate_kotlin_module(
     out.push_str("        commandId = event[\"command_id\"]?.jsonPrimitive?.content,\n");
     out.push_str("        clientCommitId = event[\"client_commit_id\"]?.jsonPrimitive?.content,\n");
     out.push_str("        durationMs = event[\"duration_ms\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str("        droppedCount = event[\"droppedCount\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str("        resyncRequired = event[\"resyncRequired\"]?.jsonPrimitive?.booleanOrNull ?: (event[\"kind\"]?.jsonPrimitive?.content == \"EventsOverflowed\"),\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
+    out.push_str(
+        "fun syncularNativeEventRequiresFullRefresh(event: SyncularNativeEvent): Boolean =\n",
+    );
+    out.push_str("    event.eventStreamLost\n\n");
     push_kotlin_changed_row_helpers(&mut out, &user_tables);
     if has_native_crdt {
         out.push_str(
@@ -6842,6 +6872,9 @@ fn generate_kotlin_module(
     );
     out.push_str("\n");
     out.push_str("    fun refreshIfChanged(event: SyncularNativeEvent, client: SyncularNativeJsonClient): List<Row>? {\n");
+    out.push_str(
+        "        if (syncularNativeEventRequiresFullRefresh(event)) return refresh(client)\n",
+    );
     out.push_str(
         "        if (event.kind != \"QueriesChanged\" || !matches(event.queries)) return null\n",
     );
@@ -8437,6 +8470,10 @@ mod tests {
         assert!(swift.contains("public struct SyncularNativeEvent"));
         assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
         assert!(swift.contains("public let commandId: String?"));
+        assert!(swift.contains("public let droppedCount: UInt64?"));
+        assert!(swift.contains("public let resyncRequired: Bool"));
+        assert!(swift.contains("public var eventStreamLost: Bool"));
+        assert!(swift.contains("public func syncularNativeEventRequiresFullRefresh"));
         assert!(swift.contains("public struct SyncularFieldEncryptionRule"));
         assert!(swift.contains("public struct SyncularFieldEncryptionConfig"));
         assert!(swift.contains(
@@ -8518,6 +8555,10 @@ mod tests {
         assert!(kotlin.contains("data class SyncularNativeEvent"));
         assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
         assert!(kotlin.contains("val commandId: String? = null"));
+        assert!(kotlin.contains("val droppedCount: Long? = null"));
+        assert!(kotlin.contains("val resyncRequired: Boolean = false"));
+        assert!(kotlin.contains("val eventStreamLost: Boolean"));
+        assert!(kotlin.contains("fun syncularNativeEventRequiresFullRefresh"));
         assert!(kotlin.contains("fun syncularDecodeChangedRow(row: JsonObject)"));
         assert!(kotlin.contains("data class SyncularFieldEncryptionRule"));
         assert!(kotlin.contains(

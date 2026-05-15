@@ -18,11 +18,13 @@ In your app's `Cargo.toml`, point at the local SDK crate:
 diesel = { version = "2.2", features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-syncular-client = { path = "/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/crates/client", default-features = false, features = ["native"] }
+syncular-client = { path = "/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/crates/client", default-features = false, features = ["native", "crdt-yjs"] }
 ```
 
 Use `syncular-client` in app code. It re-exports the runtime and is the
-developer-facing Rust SDK.
+developer-facing Rust SDK. The `native,crdt-yjs` no-default profile is covered
+by Syncular's native checks and is the intended app profile for native clients
+that use CRDT/Yjs fields without enabling the demo CLI or testkit.
 
 ## 2. Create Migrations
 

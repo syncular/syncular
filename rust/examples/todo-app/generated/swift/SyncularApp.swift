@@ -321,8 +321,10 @@ public struct SyncularNativeEvent: Decodable, Equatable {
     public let commandId: String?
     public let clientCommitId: String?
     public let durationMs: UInt64?
+    public let droppedCount: UInt64?
+    public let resyncRequired: Bool
 
-    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil) {
+    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, resyncRequired: Bool = false) {
         self.eventSeq = eventSeq
         self.kind = kind
         self.tables = tables
@@ -331,6 +333,8 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         self.commandId = commandId
         self.clientCommitId = clientCommitId
         self.durationMs = durationMs
+        self.droppedCount = droppedCount
+        self.resyncRequired = resyncRequired
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -342,6 +346,8 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         case commandId = "command_id"
         case clientCommitId = "client_commit_id"
         case durationMs = "duration_ms"
+        case droppedCount
+        case resyncRequired
     }
 
     public init(from decoder: Decoder) throws {
@@ -354,11 +360,21 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         commandId = try container.decodeIfPresent(String.self, forKey: .commandId)
         clientCommitId = try container.decodeIfPresent(String.self, forKey: .clientCommitId)
         durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)
+        droppedCount = try container.decodeIfPresent(UInt64.self, forKey: .droppedCount)
+        resyncRequired = (try container.decodeIfPresent(Bool.self, forKey: .resyncRequired)) ?? (kind == "EventsOverflowed")
+    }
+
+    public var eventStreamLost: Bool {
+        kind == "EventsOverflowed" || resyncRequired
     }
 }
 
 public func syncularDecodeNativeEvent(_ eventJson: String) throws -> SyncularNativeEvent {
     try JSONDecoder().decode(SyncularNativeEvent.self, from: Data(eventJson.utf8))
+}
+
+public func syncularNativeEventRequiresFullRefresh(_ event: SyncularNativeEvent) -> Bool {
+    event.eventStreamLost
 }
 
 public struct CommentChangedFields: Equatable {
@@ -852,6 +868,9 @@ public final class SyncularNativeLiveQuery<Row: Decodable> {
 
     @discardableResult
     public func refreshIfChanged(event: SyncularNativeEvent, on client: SyncularNativeJsonClient) throws -> [Row]? {
+        if syncularNativeEventRequiresFullRefresh(event) {
+            return try refresh(on: client)
+        }
         guard event.kind == "QueriesChanged", matches(queryIds: event.queries) else {
             return nil
         }

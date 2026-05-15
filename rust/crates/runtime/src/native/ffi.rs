@@ -224,6 +224,28 @@ pub extern "C" fn syncular_native_client_sync_worker_running(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_start_realtime_worker(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        with_client(handle, |client| client.start_realtime_worker())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_stop_realtime_worker(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        with_client(handle, |client| client.stop_realtime_worker())
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_set_auth_headers_json(
     handle: *mut SyncularNativeHandle,
     headers_json: *const c_char,

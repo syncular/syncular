@@ -109,6 +109,16 @@ bool syncular_native_client_sync_worker_running(
     char **error_out
 );
 
+bool syncular_native_client_start_realtime_worker(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
+bool syncular_native_client_stop_realtime_worker(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
 bool syncular_native_client_set_auth_headers_json(
     SyncularNativeHandle *handle,
     const char *headers_json,
