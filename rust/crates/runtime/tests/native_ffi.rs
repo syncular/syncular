@@ -1,7 +1,7 @@
 use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::thread;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -16,18 +16,19 @@ use syncular_runtime::native_ffi::{
     syncular_native_client_list_table_json, syncular_native_client_materialize_crdt_field_json,
     syncular_native_client_observed_queries_json, syncular_native_client_open,
     syncular_native_client_open_async, syncular_native_client_open_async_close,
-    syncular_native_client_open_async_command_id, syncular_native_client_open_async_is_finished,
-    syncular_native_client_open_async_poll, syncular_native_client_open_crdt_field_json,
+    syncular_native_client_open_async_command_id, syncular_native_client_open_async_finish_timeout,
+    syncular_native_client_open_async_is_finished, syncular_native_client_open_crdt_field_json,
     syncular_native_client_outbox_summaries_json, syncular_native_client_pause_sync_worker,
-    syncular_native_client_poll_event_json, syncular_native_client_process_blob_upload_queue_json,
-    syncular_native_client_query_json, syncular_native_client_register_query_json,
-    syncular_native_client_resume_sync_worker, syncular_native_client_retrieve_blob_file,
-    syncular_native_client_retry_conflict_keep_local, syncular_native_client_set_auth_headers_json,
-    syncular_native_client_set_encrypted_crdt_json,
+    syncular_native_client_process_blob_upload_queue_json, syncular_native_client_query_json,
+    syncular_native_client_register_query_json, syncular_native_client_resume_sync_worker,
+    syncular_native_client_retrieve_blob_file, syncular_native_client_retry_conflict_keep_local,
+    syncular_native_client_set_auth_headers_json, syncular_native_client_set_encrypted_crdt_json,
     syncular_native_client_set_field_encryption_json, syncular_native_client_store_blob_file_json,
-    syncular_native_client_sync_worker_running, syncular_native_client_trigger_sync,
-    syncular_native_client_unregister_query, syncular_native_encryption_helper_json,
-    syncular_native_runtime_manifest_json, syncular_string_free, SyncularNativeHandle,
+    syncular_native_client_subscribe_events_json, syncular_native_client_sync_worker_running,
+    syncular_native_client_trigger_sync, syncular_native_client_unregister_query,
+    syncular_native_encryption_helper_json, syncular_native_event_subscription_close,
+    syncular_native_runtime_manifest_json, syncular_string_free, SyncularNativeEventSubscription,
+    SyncularNativeHandle,
 };
 use syncular_testkit::{todo_app_schema_json, unique_temp_db_path, unique_temp_file_path};
 
@@ -38,7 +39,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
     assert!(error.is_null());
 
     let manifest: Value = serde_json::from_str(&take_string(manifest_json)).unwrap();
-    assert_eq!(manifest["ffi_abi_version"], 1);
+    assert_eq!(manifest["ffi_abi_version"], 2);
     assert_eq!(manifest["crate_name"], "syncular-runtime");
     assert_eq!(manifest["crate_version"], "0.1.0");
     assert_eq!(manifest["schema_version"], current_schema_version());
@@ -47,7 +48,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
     assert_eq!(manifest["transport_backends"][1], "websocket");
     assert_eq!(manifest["worker_model"], "background-sync-worker");
     assert_eq!(manifest["error_shape"], "native-error-info-v1");
-    assert_eq!(manifest["event_model"], "poll-json-v1");
+    assert_eq!(manifest["event_model"], "native-event-stream-json-v1");
     assert_eq!(manifest["app_tables"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         manifest["app_table_metadata"].as_array().map(Vec::len),
@@ -75,6 +76,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "queued-blob-cache-work",
             "worker-command-queue",
             "ordered-native-events",
+            "native-event-stream",
             "read-only-query-json",
             "outbox-json",
             "conflicts-json",
@@ -115,7 +117,7 @@ fn native_ffi_can_open_client_asynchronously() {
     let _ = syncular_native_client_open_async_is_finished(open_handle, &mut error);
     assert!(error.is_null());
 
-    let handle = syncular_native_client_open_async_poll(open_handle, 5_000, &mut error);
+    let handle = syncular_native_client_open_async_finish_timeout(open_handle, 5_000, &mut error);
     assert!(!handle.is_null());
     assert!(error.is_null());
     assert!(syncular_native_client_open_async_is_finished(
@@ -161,6 +163,7 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     assert!(syncular_native_client_sync_worker_running(
         handle, &mut error
     ));
+    let events = FfiEventStream::subscribe(handle);
 
     let auth_headers = CString::new(
         json!({
@@ -350,8 +353,8 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     assert_eq!(outbox.as_array().map(Vec::len), Some(1));
     assert_eq!(outbox[0]["status"], "pending");
 
-    let local_event_json = syncular_native_client_poll_event_json(handle, 10, &mut error);
-    let local_event: Value = serde_json::from_str(&take_string(local_event_json)).unwrap();
+    let local_event: Value =
+        serde_json::from_str(&events.next_json(Duration::from_secs(1)).unwrap()).unwrap();
     assert_eq!(local_event["kind"], "RowsChanged");
     assert_eq!(local_event["tables"][0], "tasks");
     assert_eq!(local_event["changedRows"][0]["table"], "tasks");
@@ -363,8 +366,8 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     assert_eq!(local_event["queries"].as_array().map(Vec::len), Some(0));
     assert!(error.is_null());
 
-    let query_event_json = syncular_native_client_poll_event_json(handle, 10, &mut error);
-    let query_event: Value = serde_json::from_str(&take_string(query_event_json)).unwrap();
+    let query_event: Value =
+        serde_json::from_str(&events.next_json(Duration::from_secs(1)).unwrap()).unwrap();
     assert_eq!(query_event["kind"], "QueriesChanged");
     assert_eq!(query_event["tables"][0], "tasks");
     assert_eq!(query_event["queries"][0], "ffi-task-list");
@@ -378,13 +381,12 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     ));
     assert!(error.is_null());
 
-    let no_event = syncular_native_client_poll_event_json(handle, 10, &mut error);
-    assert!(no_event.is_null());
+    assert!(events.next_json(Duration::from_millis(10)).is_none());
     assert!(error.is_null());
 
     assert!(syncular_native_client_trigger_sync(handle, &mut error));
-    let event_json = syncular_native_client_poll_event_json(handle, 5000, &mut error);
-    let event: Value = serde_json::from_str(&take_string(event_json)).unwrap();
+    let event: Value =
+        serde_json::from_str(&events.next_json(Duration::from_secs(5)).unwrap()).unwrap();
     assert_eq!(event["kind"], "SyncFailed");
     assert_eq!(event["error"]["kind"], "Transport");
     assert!(event["error"]["message"].as_str().unwrap().len() > 10);
@@ -393,6 +395,7 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
         .unwrap()
         .starts_with("Transport: "));
 
+    events.close();
     assert!(syncular_native_client_close(handle, &mut error));
     assert!(error.is_null());
     let _ = std::fs::remove_file(path);
@@ -407,6 +410,7 @@ fn native_ffi_exposes_generic_crdt_field_methods() {
     let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
     assert!(!handle.is_null());
     assert!(error.is_null());
+    let events = FfiEventStream::subscribe(handle);
 
     let operation = CString::new(
         json!({
@@ -433,7 +437,7 @@ fn native_ffi_exposes_generic_crdt_field_methods() {
     assert!(!take_string(returned_id).is_empty());
     assert!(error.is_null());
 
-    let _ = syncular_native_client_poll_event_json(handle, 10, &mut error);
+    let _ = events.next_json(Duration::from_secs(1));
     assert!(error.is_null());
 
     let request = CString::new(
@@ -490,11 +494,10 @@ fn native_ffi_exposes_generic_crdt_field_methods() {
     let mut saw_crdt_field_changed = false;
     let mut saw_rows_changed = false;
     for _ in 0..3 {
-        let event_json = syncular_native_client_poll_event_json(handle, 10, &mut error);
-        if event_json.is_null() {
+        let Some(event_json) = events.next_json(Duration::from_millis(10)) else {
             break;
-        }
-        let event: Value = serde_json::from_str(&take_string(event_json)).unwrap();
+        };
+        let event: Value = serde_json::from_str(&event_json).unwrap();
         match event["kind"].as_str() {
             Some("CrdtFieldChanged") => {
                 saw_crdt_field_changed = true;
@@ -523,6 +526,7 @@ fn native_ffi_exposes_generic_crdt_field_methods() {
     assert!(saw_crdt_field_changed);
     assert!(saw_rows_changed);
 
+    events.close();
     assert!(syncular_native_client_close(handle, &mut error));
     assert!(error.is_null());
     let _ = std::fs::remove_file(path);
@@ -637,6 +641,7 @@ fn native_ffi_applies_generic_local_operation_json() {
     let config = ffi_config(&path, "native-ffi-generic-operation");
     let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
     assert!(!handle.is_null());
+    let events = FfiEventStream::subscribe(handle);
 
     let operation = CString::new(
         json!({
@@ -668,8 +673,8 @@ fn native_ffi_applies_generic_local_operation_json() {
     assert_eq!(rows.as_array().map(Vec::len), Some(1));
     assert_eq!(rows[0]["id"], "ffi-generic-task");
 
-    let local_event = syncular_native_client_poll_event_json(handle, 10, &mut error);
-    let local_event: Value = serde_json::from_str(&take_string(local_event)).unwrap();
+    let local_event: Value =
+        serde_json::from_str(&events.next_json(Duration::from_secs(1)).unwrap()).unwrap();
     assert_eq!(local_event["kind"], "RowsChanged");
     assert_eq!(local_event["tables"][0], "tasks");
     assert_eq!(local_event["changedRows"][0]["table"], "tasks");
@@ -696,36 +701,28 @@ fn native_ffi_applies_generic_local_operation_json() {
         &mut error,
     );
     assert!(!take_string(commit_id).is_empty());
-    let update_event = syncular_native_client_poll_event_json(handle, 10, &mut error);
-    let update_event: Value = serde_json::from_str(&take_string(update_event)).unwrap();
+    let update_event: Value =
+        serde_json::from_str(&events.next_json(Duration::from_secs(1)).unwrap()).unwrap();
     assert_eq!(update_event["kind"], "RowsChanged");
     assert_eq!(update_event["changedRows"][0]["operation"], "update");
     assert_eq!(update_event["changedRows"][0]["changedFields"][0], "title");
 
+    events.close();
     assert!(syncular_native_client_close(handle, &mut error));
     let _ = std::fs::remove_file(path);
 }
 
 #[test]
-fn native_ffi_event_poll_wait_does_not_hold_handle_lock() {
-    let path = temp_db_path("syncular-native-ffi-event-lock");
+fn native_ffi_event_callback_subscription_does_not_hold_handle_lock() {
+    let path = temp_db_path("syncular-native-ffi-event-callback-lock");
     let mut error = ptr::null_mut();
-    let config = ffi_config(&path, "native-ffi-event-lock");
+    let config = ffi_config(&path, "native-ffi-event-callback-lock");
 
     let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
     assert!(!handle.is_null());
     assert!(error.is_null());
 
-    let handle_addr = handle as usize;
-    let poll_thread = thread::spawn(move || {
-        let handle = handle_addr as *mut SyncularNativeHandle;
-        let mut error = ptr::null_mut();
-        let event = syncular_native_client_poll_event_json(handle, 800, &mut error);
-        assert!(event.is_null());
-        assert!(error.is_null());
-    });
-
-    thread::sleep(Duration::from_millis(75));
+    let events = FfiEventStream::subscribe(handle);
     let started = Instant::now();
     assert!(syncular_native_client_sync_worker_running(
         handle, &mut error
@@ -733,13 +730,74 @@ fn native_ffi_event_poll_wait_does_not_hold_handle_lock() {
     assert!(error.is_null());
     assert!(
         started.elapsed() < Duration::from_millis(250),
-        "poll_event_json_timeout held the native handle lock"
+        "event callback subscription held the native handle lock"
     );
 
-    poll_thread.join().expect("poll thread finished");
+    events.close();
     assert!(syncular_native_client_close(handle, &mut error));
     assert!(error.is_null());
     let _ = std::fs::remove_file(path);
+}
+
+struct FfiEventStream {
+    handle: *mut SyncularNativeEventSubscription,
+    user_data: *mut c_void,
+    rx: Receiver<String>,
+}
+
+impl FfiEventStream {
+    fn subscribe(handle: *mut SyncularNativeHandle) -> Self {
+        let (tx, rx) = mpsc::channel::<String>();
+        let user_data = Box::into_raw(Box::new(tx)) as *mut c_void;
+        let mut error = ptr::null_mut();
+        let subscription = syncular_native_client_subscribe_events_json(
+            handle,
+            256,
+            Some(native_event_callback),
+            Some(native_event_error_callback),
+            user_data,
+            &mut error,
+        );
+        assert!(error.is_null());
+        assert!(!subscription.is_null());
+        Self {
+            handle: subscription,
+            user_data,
+            rx,
+        }
+    }
+
+    fn next_json(&self, timeout: Duration) -> Option<String> {
+        self.rx.recv_timeout(timeout).ok()
+    }
+
+    fn close(self) {
+        let mut error = ptr::null_mut();
+        assert!(syncular_native_event_subscription_close(
+            self.handle,
+            &mut error
+        ));
+        assert!(error.is_null());
+        unsafe {
+            drop(Box::from_raw(self.user_data as *mut Sender<String>));
+        }
+    }
+}
+
+extern "C" fn native_event_callback(event_json: *const c_char, user_data: *mut c_void) {
+    if event_json.is_null() || user_data.is_null() {
+        return;
+    }
+    let event_json = unsafe { CStr::from_ptr(event_json) }
+        .to_str()
+        .expect("event json utf8")
+        .to_string();
+    let tx = unsafe { &*(user_data as *const Sender<String>) };
+    let _ = tx.send(event_json);
+}
+
+extern "C" fn native_event_error_callback(error_json: *const c_char, user_data: *mut c_void) {
+    native_event_callback(error_json, user_data);
 }
 
 fn ffi_config(path: &str, client_id: &str) -> CString {

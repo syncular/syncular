@@ -29,7 +29,7 @@ private func waitForEvent(
     let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1_000.0)
     var seen: [String] = []
     while Date() < deadline {
-        if let eventJson = try client.pollEventJsonTimeout(timeoutMs: 100) {
+        if let eventJson = try client.nextEventJson() {
             let event = try syncularDecodeNativeEvent(eventJson)
             let object = try JSONSerialization.jsonObject(with: Data(eventJson.utf8)) as! [String: Any]
             seen.append("\(event.kind):\(event.commandId ?? "-"):\(eventJson)")
@@ -66,6 +66,7 @@ private enum LifecycleAppSmoke {
             autoSyncLocalWrites: false
         ))
         defer { _ = try? native.shutdown() }
+        expect(try native.startEventStream(capacity: 256), "Swift lifecycle should start native event stream")
 
         try assertSyncularNativeRuntimeManifestJson(try native.runtimeManifestJson())
         expect(try native.setAuthHeadersJson(headersJson: #"{"authorization":"Bearer lifecycle-swift"}"#), "Swift lifecycle app should accept auth headers")

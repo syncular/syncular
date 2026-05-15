@@ -285,7 +285,7 @@ fn native_fixture_opens_with_direct_schema_and_waits_for_events() {
     apply_native_todo_task_upsert(&mut fixture.client, "native-testkit-1", "Native testkit")
         .expect("native upsert");
     let event = syncular_testkit::wait_native_event(
-        &fixture.client,
+        &fixture.events,
         NativeEventKind::RowsChanged,
         Duration::from_secs(1),
     );
@@ -332,7 +332,7 @@ fn disposable_http_sync_server_captures_native_requests() {
 
     fixture.client.trigger_sync().expect("trigger sync");
     let event = syncular_testkit::wait_native_event(
-        &fixture.client,
+        &fixture.events,
         NativeEventKind::SyncCompleted,
         Duration::from_secs(2),
     );
@@ -366,7 +366,7 @@ fn disposable_http_sync_server_covers_auth_expired() {
 
     fixture.client.trigger_sync().expect("trigger sync");
     let event = syncular_testkit::wait_native_event(
-        &fixture.client,
+        &fixture.events,
         NativeEventKind::AuthExpired,
         Duration::from_secs(2),
     );

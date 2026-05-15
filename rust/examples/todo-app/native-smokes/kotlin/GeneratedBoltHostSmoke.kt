@@ -59,10 +59,10 @@ private fun removeSqliteFiles(path: String) {
     }
 }
 
-private fun pollEvents(client: SyncularBoltClient, maxCount: Int = 8): List<SyncularNativeEvent> {
+private fun readEvents(client: SyncularBoltClient, count: Int): List<SyncularNativeEvent> {
     val events = mutableListOf<SyncularNativeEvent>()
-    while (events.size < maxCount) {
-        val eventJson = client.pollEventJsonTimeout(0uL) ?: break
+    while (events.size < count) {
+        val eventJson = client.nextEventJson() ?: break
         events += syncularDecodeNativeEvent(eventJson)
     }
     return events
@@ -88,6 +88,7 @@ fun main(args: Array<String>) {
         expect(raw.openCommandId()?.startsWith("native-open-") == true, "Kotlin host async open should expose command id")
         expect(raw.finishOpenTimeout(5_000uL), "Kotlin host async open should finish")
         expect(raw.isOpenFinished(), "Kotlin host async open should report finished")
+        expect(raw.startEventStream(256uL), "Kotlin host should start native event stream")
         expect(raw.openCommandId() == null, "Kotlin host async open command id should clear after ready")
 
         val manifest = raw.runtimeManifestJson()
@@ -128,7 +129,7 @@ fun main(args: Array<String>) {
         val materializedTitle = client.materializeTaskTitle(rowId = "task-kotlin-bolt")
         expect(materializedTitle.value.jsonPrimitive.content == "Kotlin Bolt CRDT", "Kotlin host CRDT materialize helper should read updated title")
 
-        val events = pollEvents(raw)
+        val events = readEvents(raw, 5)
         expect(events.any { it.kind == "RowsChanged" && it.tables == listOf("tasks") }, "Kotlin host should emit task rows changed")
         expect(events.any { it.kind == "QueriesChanged" && it.queries == listOf("kotlin-bolt-live") }, "Kotlin host should emit live query changed")
         expect(events.any { it.kind == "CrdtFieldChanged" && it.tables.contains("tasks") }, "Kotlin host should emit CRDT field changed")

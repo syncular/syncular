@@ -3,7 +3,7 @@
 
 import Foundation
 
-public let syncularNativeExpectedFfiAbiVersion = 1
+public let syncularNativeExpectedFfiAbiVersion = 2
 public let syncularNativeExpectedCrateVersion = "0.1.0"
 public let syncularNativeGeneratedSchemaVersion = 5
 

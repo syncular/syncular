@@ -5,7 +5,8 @@ use syncular_runtime::app_schema::{AppSchema, AppTableMetadata, EmbeddedMigratio
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{
-    NativeClientConfig, NativeClientOptions, NativeEvent, NativeEventKind, NativeSyncularClient,
+    NativeClientConfig, NativeClientOptions, NativeEvent, NativeEventKind, NativeEventSubscription,
+    NativeSyncularClient,
 };
 
 use crate::temp::TempDbPath;
@@ -38,6 +39,7 @@ impl Default for NativeFixtureOptions {
 pub struct NativeFixture {
     db: TempDbPath,
     pub client: NativeSyncularClient,
+    pub events: NativeEventSubscription,
 }
 
 impl NativeFixture {
@@ -65,7 +67,8 @@ pub fn open_native_client_with_schema_options(
         options.client_options,
         app_schema,
     )?;
-    Ok(NativeFixture { db, client })
+    let events = client.subscribe_events(256);
+    Ok(NativeFixture { db, client, events })
 }
 
 pub fn open_native_client_with_schema_json(schema_json: String) -> Result<NativeFixture> {
@@ -79,7 +82,8 @@ pub fn open_native_client_with_schema_json_options(
     let db = TempDbPath::new(&options.db_prefix);
     let config = native_config_for_db(&db, &options, Some(schema_json));
     let client = NativeSyncularClient::open_native_with_options(config, options.client_options)?;
-    Ok(NativeFixture { db, client })
+    let events = client.subscribe_events(256);
+    Ok(NativeFixture { db, client, events })
 }
 
 pub fn native_config_for_db(
@@ -119,16 +123,16 @@ pub fn todo_app_schema_json() -> String {
 }
 
 pub fn wait_native_event(
-    client: &NativeSyncularClient,
+    events: &NativeEventSubscription,
     kind: NativeEventKind,
     timeout: Duration,
 ) -> NativeEvent {
-    wait_native_event_matching(client, timeout, |event| event.kind == kind)
+    wait_native_event_matching(events, timeout, |event| event.kind == kind)
         .unwrap_or_else(|| panic!("timed out waiting for native event {kind:?}"))
 }
 
 pub fn wait_native_event_matching(
-    client: &NativeSyncularClient,
+    events: &NativeEventSubscription,
     timeout: Duration,
     mut predicate: impl FnMut(&NativeEvent) -> bool,
 ) -> Option<NativeEvent> {
@@ -139,16 +143,19 @@ pub fn wait_native_event_matching(
             return None;
         }
         let remaining = deadline.saturating_duration_since(now);
-        let event = client.poll_event_timeout(remaining.min(Duration::from_millis(100)))?;
+        let event = events.next_event_timeout(remaining)?;
         if predicate(&event) {
             return Some(event);
         }
     }
 }
 
-pub fn drain_native_events(client: &NativeSyncularClient, timeout: Duration) -> Vec<NativeEvent> {
+pub fn drain_native_events(
+    subscription: &NativeEventSubscription,
+    timeout: Duration,
+) -> Vec<NativeEvent> {
     let mut events = Vec::new();
-    while let Some(event) = client.poll_event_timeout(timeout) {
+    while let Some(event) = subscription.next_event_timeout(timeout) {
         events.push(event);
     }
     events

@@ -5,10 +5,10 @@ use crate::crdt_yjs::{
 use crate::encryption::encryption_helpers_json;
 use crate::native::{
     native_runtime_manifest_json, NativeClientConfig, NativeClientOpenTask, NativeClientOptions,
-    NativeSyncularClient,
+    NativeEventSubscription, NativeSyncularClient,
 };
 use boltffi::{data, export};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 static LAST_OPEN_ERROR: Mutex<Option<String>> = Mutex::new(None);
@@ -27,6 +27,7 @@ pub struct SyncularBoltClientConfig {
 
 pub struct SyncularBoltClient {
     inner: Mutex<SyncularBoltClientInner>,
+    events: Mutex<Option<Arc<NativeEventSubscription>>>,
 }
 
 enum SyncularBoltClientInner {
@@ -92,6 +93,7 @@ impl SyncularBoltClient {
         set_last_open_error(None);
         Ok(Self {
             inner: Mutex::new(SyncularBoltClientInner::Opening(task)),
+            events: Mutex::new(None),
         })
     }
 
@@ -192,12 +194,42 @@ impl SyncularBoltClient {
         self.with_client(|client| Ok(client.sync_worker_running()))
     }
 
-    pub fn poll_event_json_timeout(&self, timeout_ms: u64) -> Result<Option<String>, String> {
-        let poller = self.with_client(|client| Ok(client.event_poller()))?;
-        poller
-            .poll_event_json_timeout(Duration::from_millis(timeout_ms))
+    pub fn start_event_stream(&self, capacity: u64) -> Result<bool, String> {
+        let subscription =
+            Arc::new(self.with_client(|client| Ok(client.subscribe_events(capacity as usize)))?);
+        let mut events = self
+            .events
+            .lock()
+            .map_err(|_| "syncular event stream mutex is poisoned".to_string())?;
+        if let Some(previous) = events.replace(subscription) {
+            previous.close();
+        }
+        Ok(true)
+    }
+
+    pub fn next_event_json(&self) -> Result<Option<String>, String> {
+        let subscription = self
+            .events
+            .lock()
+            .map_err(|_| "syncular event stream mutex is poisoned".to_string())?
+            .clone()
+            .ok_or_else(|| "syncular event stream is not started".to_string())?;
+        subscription
+            .next_event_json()
             .transpose()
             .map_err(binding_error)
+    }
+
+    pub fn close_event_stream(&self) -> Result<bool, String> {
+        let subscription = self
+            .events
+            .lock()
+            .map_err(|_| "syncular event stream mutex is poisoned".to_string())?
+            .take();
+        if let Some(subscription) = subscription {
+            subscription.close();
+        }
+        Ok(true)
     }
 
     pub fn apply_local_operation_json(
@@ -443,6 +475,7 @@ impl SyncularBoltClient {
     }
 
     pub fn shutdown(&self) -> Result<bool, String> {
+        let _ = self.close_event_stream();
         self.with_client_mut(|client| client.close().map(|_| true))
     }
 }
@@ -456,6 +489,7 @@ impl SyncularBoltClient {
             .map_err(binding_error)?;
         Ok(Self {
             inner: Mutex::new(SyncularBoltClientInner::Ready(client)),
+            events: Mutex::new(None),
         })
     }
 

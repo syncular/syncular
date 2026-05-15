@@ -207,7 +207,7 @@ private fun waitForEventJson(
 ): Pair<SyncularNativeEvent, String> {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (System.currentTimeMillis() < deadline) {
-        val eventJson = client.pollEventJsonTimeout(timeoutMs = 100uL) ?: continue
+        val eventJson = client.nextEventJson() ?: continue
         val event = syncularDecodeNativeEvent(eventJson)
         if (event.kind == kind && (commandId == null || event.commandId == commandId)) {
             return event to eventJson
@@ -285,6 +285,7 @@ fun main(args: Array<String>) {
 
     try {
         expect(client.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin server sync client should open")
+        expect(client.startEventStream(256uL), "Kotlin server sync client should start native event stream")
 
         val staleAuthorization = info.optionalString("staleAuthorization") ?: "Bearer stale-native"
         configureServerSync(client, info, authorization = staleAuthorization)
@@ -333,6 +334,7 @@ fun main(args: Array<String>) {
         )
         try {
             expect(requiredSchemaClient.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin required-schema client should open")
+            expect(requiredSchemaClient.startEventStream(256uL), "Kotlin required-schema client should start native event stream")
             configureServerSync(requiredSchemaClient, info)
             val requiredSchemaCommandId = requiredSchemaClient.enqueueSyncNow()
             val (requiredSchemaEvent, requiredSchemaJson) = waitForEventJson(
@@ -364,6 +366,7 @@ fun main(args: Array<String>) {
         )
         try {
             expect(latestSchemaClient.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin latest-schema client should open")
+            expect(latestSchemaClient.startEventStream(256uL), "Kotlin latest-schema client should start native event stream")
             configureServerSync(latestSchemaClient, info)
             val latestSchemaCommandId = latestSchemaClient.enqueueSyncNow()
             waitForEvent(latestSchemaClient, kind = "SyncCompleted", commandId = latestSchemaCommandId)
@@ -387,6 +390,7 @@ fun main(args: Array<String>) {
         )
         try {
             expect(ownerFirst.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin owner-conflict first client should open")
+            expect(ownerFirst.startEventStream(256uL), "Kotlin owner-conflict first client should start native event stream")
             configureServerSync(ownerFirst, info)
             val ownerFirstCommandId = ownerFirst.enqueueSyncNow()
             waitForEvent(ownerFirst, kind = "SyncCompleted", commandId = ownerFirstCommandId)
@@ -409,6 +413,7 @@ fun main(args: Array<String>) {
         )
         try {
             expect(ownerSecond.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin owner-conflict second client should open")
+            expect(ownerSecond.startEventStream(256uL), "Kotlin owner-conflict second client should start native event stream")
             configureServerSync(
                 ownerSecond,
                 info,
@@ -632,6 +637,7 @@ fun main(args: Array<String>) {
         )
         try {
             expect(reader.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin server sync reader should open")
+            expect(reader.startEventStream(256uL), "Kotlin server sync reader should start native event stream")
             configureServerSync(reader, info)
             val readerNative = BoltNativeClient(reader)
             val liveQuery = TaskQuery
@@ -712,6 +718,7 @@ fun main(args: Array<String>) {
         )
         try {
             expect(encryptedReader.finishOpenTimeout(timeoutMs = 5_000uL), "Kotlin encrypted server sync reader should open")
+            expect(encryptedReader.startEventStream(256uL), "Kotlin encrypted server sync reader should start native event stream")
             configureServerSync(encryptedReader, info)
             configureFieldEncryption(
                 encryptedReader,

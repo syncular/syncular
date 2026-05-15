@@ -732,8 +732,8 @@ as a long-lived runtime object, not as a per-screen helper:
 - keep SQLite open, migration, schema validation, and native library loading
   away from UI-critical startup paths. Use `SyncularBoltClient(openAsync:)` on
   Swift, `SyncularBoltClient.openAsync(config)` on Kotlin/JVM, or
-  `syncular_native_client_open_async*` from C when app startup needs an async
-  shell state before the native runtime is ready.
+  `syncular_native_client_open_async_finish_timeout(...)` from C when app
+  startup needs an async shell state before the native runtime is ready.
 - prefer queued APIs for writes and bursty work:
   `enqueueMutationJson`, `enqueueSyncNow`, `enqueueSyncWebsocket`, queued CRDT
   text/compaction helpers, queued blob file operations, queued snapshot
@@ -741,9 +741,10 @@ as a long-lived runtime object, not as a per-screen helper:
   and report durability later. Use `enqueueSyncNow` for the normal HTTP path;
   use `enqueueSyncWebsocket` when the server route supports Syncular's
   WebSocket push transport.
-- poll native events from a background task and update UI state by ordered
-  `eventSeq` plus `commandId`. Events include rows/query changes, command
-  completion/failure, sync state, conflicts, CRDT field changes, and blob work.
+- start the native event stream once, read `nextEventJson()` from a background
+  task, and update UI state by ordered `eventSeq` plus `commandId`. Events
+  include rows/query changes, command completion/failure, sync state, conflicts,
+  CRDT field changes, and blob work.
   `RowsChanged`, `QueriesChanged`, `SyncCompleted`, and
   `LocalWriteCommitted` also include `changedRows` when the runtime can derive
   precise row/field deltas. Use those deltas to route active-document CRDT
@@ -756,8 +757,8 @@ as a long-lived runtime object, not as a per-screen helper:
   when opening native clients with injected `appSchemaJson`.
 - when backgrounding, only enqueue sync/blob/compaction work that fits the host
   platform's background execution budget.
-- call the explicit native lifecycle method (`shutdown()` in BoltFFI wrappers)
-  during app teardown and keep polling until completion or the host deadline.
+- close the event stream and call the explicit native lifecycle method
+  (`shutdown()` in BoltFFI wrappers) during app teardown.
 - initialize CRDT-backed text fields empty or with existing Yjs state before
   queued text replacement. The runtime rejects replacing populated legacy
   plaintext without Yjs state to prevent duplicated or blank editor content.

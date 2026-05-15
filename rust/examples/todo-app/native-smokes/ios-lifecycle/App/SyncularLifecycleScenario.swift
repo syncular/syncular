@@ -35,7 +35,7 @@ private func waitForEvent(
     let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1_000.0)
     var seen: [String] = []
     while Date() < deadline {
-        if let eventJson = try client.pollEventJsonTimeout(timeoutMs: 100) {
+        if let eventJson = try client.nextEventJson() {
             let event = try syncularDecodeNativeEvent(eventJson)
             let object = try JSONSerialization.jsonObject(with: Data(eventJson.utf8)) as! [String: Any]
             seen.append("\(event.kind):\(event.commandId ?? "-")")
@@ -74,6 +74,7 @@ enum SyncularIOSLifecycleScenario {
             autoSyncLocalWrites: false
         ))
         defer { _ = try? native.shutdown() }
+        try lifecycleExpect(try native.startEventStream(capacity: 256), "iOS lifecycle should start native event stream")
 
         try assertSyncularNativeRuntimeManifestJson(try native.runtimeManifestJson())
         try lifecycleExpect(

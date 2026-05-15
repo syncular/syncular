@@ -91,7 +91,7 @@ private fun waitForEvent(
     val deadline = System.currentTimeMillis() + timeoutMs
     val seen = mutableListOf<String>()
     while (System.currentTimeMillis() < deadline) {
-        val eventJson = client.pollEventJsonTimeout(100uL) ?: continue
+        val eventJson = client.nextEventJson() ?: continue
         val event = syncularDecodeNativeEvent(eventJson)
         val json = lifecycleJson.parseToJsonElement(eventJson).jsonObject
         seen += "${event.kind}:${event.commandId ?: "-"}"
@@ -129,6 +129,7 @@ object SyncularAndroidLifecycleScenario {
         )
         val client = BoltNativeClient(raw)
         try {
+            expect(raw.startEventStream(256uL), "Android lifecycle should start native event stream")
             val manifest = raw.runtimeManifestJson()
             expect(manifest.contains("\"storage_backend\":\"diesel-sqlite\""), "Android app should expose diesel sqlite manifest")
             expect(raw.setAuthHeadersJson("""{"authorization":"Bearer lifecycle-android"}"""), "Android app should accept auth headers")

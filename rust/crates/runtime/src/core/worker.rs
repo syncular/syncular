@@ -578,6 +578,13 @@ pub struct SyncWorkerEvents {
 }
 
 impl SyncWorkerEvents {
+    pub fn recv_event(&self) -> Option<SyncWorkerEvent> {
+        self.event_rx
+            .lock()
+            .ok()
+            .and_then(|event_rx| event_rx.recv().ok())
+    }
+
     pub fn recv_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
         self.event_rx
             .lock()
