@@ -881,6 +881,7 @@ describe('Syncular v2 worker client', () => {
         {
           queryId: 'query-1',
           version: 2,
+          changedRows: [],
           rows: [{ id: 'task-1' }],
         },
       ],
@@ -890,7 +891,60 @@ describe('Syncular v2 worker client', () => {
       {
         queryId: 'query-1',
         version: 2,
+        changedRows: [],
         rows: [{ id: 'task-1' }],
+      },
+    ]);
+  });
+
+  it('dispatches row-level change events from the worker', () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const events: unknown[] = [];
+    const remove = client.addRowsChangedListener((event) => events.push(event));
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'rowsChanged',
+      source: 'localWrite',
+      changedTables: ['tasks'],
+      changedRows: [
+        {
+          table: 'tasks',
+          rowId: 'task-1',
+          operation: 'insert',
+          changedFields: ['title'],
+          crdtFields: [],
+          commitId: 'commit-1',
+        },
+      ],
+    });
+    remove();
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'rowsChanged',
+      source: 'remotePull',
+      changedTables: ['tasks'],
+      changedRows: [],
+    });
+
+    expect(events).toEqual([
+      {
+        source: 'localWrite',
+        changedTables: ['tasks'],
+        changedRows: [
+          {
+            table: 'tasks',
+            rowId: 'task-1',
+            operation: 'insert',
+            changedFields: ['title'],
+            crdtFields: [],
+            commitId: 'commit-1',
+          },
+        ],
       },
     ]);
   });

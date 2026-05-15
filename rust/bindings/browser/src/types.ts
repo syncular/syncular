@@ -323,8 +323,31 @@ export interface SyncularV2SubscriptionSpec {
   params?: Record<string, unknown>;
 }
 
+export interface SyncularV2ChangedRow {
+  table: string;
+  rowId?: string | null;
+  operation: 'insert' | 'update' | 'delete' | 'compact' | string;
+  changedFields: string[];
+  crdtFields: string[];
+  commitId?: string | null;
+  commitSeq?: number | null;
+  subscriptionId?: string | null;
+  serverVersion?: number | null;
+}
+
+export interface SyncularV2RowsChangedEvent {
+  source: 'localWrite' | 'remotePull' | string;
+  changedTables: string[];
+  changedRows: SyncularV2ChangedRow[];
+}
+
+export type SyncularV2RowsChangedSink = (
+  event: SyncularV2RowsChangedEvent
+) => void;
+
 export interface SyncularV2SyncResult {
   changedTables: string[];
+  changedRows: SyncularV2ChangedRow[];
   subscriptions: SyncularV2SubscriptionResult[];
   pushedCommits: number;
 }
@@ -422,6 +445,7 @@ export interface SyncularV2LiveQueryEvent<
 > {
   queryId: string;
   version: number;
+  changedRows: SyncularV2ChangedRow[];
   rows: Row[];
 }
 
@@ -612,6 +636,7 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   runtimeInfo(): Promise<SyncularV2RuntimeInfo>;
   connectionState(): SyncularV2ConnectionState;
   addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void;
+  addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void;
   addLiveQueryListener(
     queryId: string,
     listener: (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void

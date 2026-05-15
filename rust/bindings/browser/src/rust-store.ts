@@ -6,7 +6,9 @@ import type {
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   SyncularV2AppSchema,
+  SyncularV2ChangedRow,
   SyncularV2ClientConfig,
+  SyncularV2RowsChangedEvent,
   SyncularV2SqlResult,
   SyncularV2Storage,
 } from './types';
@@ -93,6 +95,7 @@ export interface RawSyncularRustOwnedSqlite {
   ): string;
   unsubscribeQuery(id: string): void;
   drainLiveQueryEventsJson(): string;
+  drainRowsChangedEventsJson(): string;
   applyLocalOperationsBatchJson(operationsJson: string): string;
   applyLocalOperationsCommitJson(operationsJson: string): string;
   pendingOutboxJson(limit: number): Promise<string>;
@@ -146,6 +149,7 @@ export interface RustOwnedLiveQueryEvent<
 > {
   queryId: string;
   version: number;
+  changedRows: SyncularV2ChangedRow[];
   rows: Row[];
 }
 
@@ -200,6 +204,10 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<RustOwnedLiveQueryEvent<Row>> {
     return parseJson(this.raw.drainLiveQueryEventsJson());
+  }
+
+  drainRowsChangedEvents(): SyncularV2RowsChangedEvent[] {
+    return parseJson(this.raw.drainRowsChangedEventsJson());
   }
 
   generatedSchemaState(): SyncularRustOwnedSchemaState {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type {
   SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryEvent,
+  SyncularV2SyncResult,
 } from './types';
 import type { SyncularV2WorkerEvent } from './worker-protocol';
 import {
@@ -146,6 +147,7 @@ describe('Syncular v2 worker realtime', () => {
       {
         queryId: 'query-1',
         version: 1,
+        changedRows: [],
         rows: [{ id: 'first' }],
       },
     ]);
@@ -161,6 +163,7 @@ describe('Syncular v2 worker realtime', () => {
       {
         queryId: 'query-1',
         version: 2,
+        changedRows: [],
         rows: [{ id: 'second' }],
       },
     ]);
@@ -247,6 +250,7 @@ describe('Syncular v2 worker realtime', () => {
       {
         queryId: 'query-1',
         version: 1,
+        changedRows: [],
         rows: [{ id: 'stale' }],
       },
     ]);
@@ -267,10 +271,17 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
   #pullResolvers: Array<() => void> = [];
   #drains: Array<Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>> = [];
 
-  syncPull(): Promise<unknown> {
+  syncPull(): Promise<SyncularV2SyncResult> {
     this.syncPulls += 1;
     return new Promise((resolve) => {
-      this.#pullResolvers.push(() => resolve(undefined));
+      this.#pullResolvers.push(() =>
+        resolve({
+          changedTables: [],
+          changedRows: [],
+          subscriptions: [],
+          pushedCommits: 0,
+        })
+      );
     });
   }
 

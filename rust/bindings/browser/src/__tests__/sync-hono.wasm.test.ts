@@ -9,6 +9,7 @@ import type {
   SyncularV2AppSchema,
   SyncularV2Client,
   SyncularV2LiveQueryEvent,
+  SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
 } from '../types';
 import {
@@ -139,6 +140,50 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     expect(refreshCount).toBe(scenario.expectedRefreshCount);
     expect(sync.syncRouteAuthHeaders).toEqual(scenario.expectedAuthHeaders);
+  });
+
+  it('emits row-level change events for local worker writes', async () => {
+    const scenario = syncConformance.duplicatePush;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: scenario.clientId,
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    const events: SyncularV2RowsChangedEvent[] = [];
+    const remove = client.addRowsChangedListener((event) => events.push(event));
+
+    await client.applyLocalOperation(
+      newTaskOperation({
+        id: scenario.task.id,
+        title: scenario.task.title,
+        completed: scenario.task.completed,
+        user_id: ACTOR_A,
+        project_id: scenario.task.project_id,
+      }),
+      {
+        ...scenario.task,
+        user_id: ACTOR_A,
+      }
+    );
+    remove();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.source).toBe('localWrite');
+    expect(events[0]!.changedTables).toEqual(['tasks']);
+    expect(events[0]!.changedRows).toHaveLength(1);
+    const row = events[0]!.changedRows[0]!;
+    expect(row.table).toBe('tasks');
+    expect(row.rowId).toBe(scenario.task.id);
+    expect(row.operation).toBe('insert');
+    expect(row.changedFields).toContain('title');
+    expect(row.changedFields).toContain('user_id');
+    expect(row.crdtFields).toContain('title_yjs_state');
+    expect(typeof row.commitId).toBe('string');
   });
 
   it('surfaces revoked sessions when auth refresh declines retry', async () => {
@@ -455,6 +500,12 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         },
       ],
     });
+    expect(events[0]!.changedRows).toHaveLength(1);
+    expect(events[0]!.changedRows[0]!.table).toBe('tasks');
+    expect(events[0]!.changedRows[0]!.rowId).toBe(scenario.firstTask.id);
+    expect(events[0]!.changedRows[0]!.operation).toBe('insert');
+    expect(events[0]!.changedRows[0]!.changedFields).toContain('title');
+    expect(events[0]!.changedRows[0]!.changedFields).toContain('user_id');
 
     await pushTaskAndPull(clientB, clientA, scenario.secondTask);
     expect(events).toHaveLength(scenario.expectedEventsBeforeUnsubscribe);

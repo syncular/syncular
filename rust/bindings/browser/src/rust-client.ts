@@ -13,6 +13,7 @@ import type {
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2ClientConfig,
+  SyncularV2ChangedRow,
   SyncularV2ConflictSummary,
   SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldCompactionRequest,
@@ -27,6 +28,8 @@ import type {
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
+  SyncularV2RowsChangedEvent,
+  SyncularV2RowsChangedSink,
   SyncularV2RuntimeArtifact,
   SyncularV2RuntimeInfo,
   SyncularV2SchemaState,
@@ -55,6 +58,7 @@ export interface CreateSyncularV2RustClientOptions {
 
 type RawSyncResult = {
   changed_tables?: string[];
+  changed_rows?: SyncularV2ChangedRow[];
   subscriptions?: Array<{
     id: string;
     table: string;
@@ -114,6 +118,8 @@ function loadSyncularV2WasmGlueFromUrl(
 }
 
 export class SyncularV2RustClient {
+  #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
+
   constructor(
     private readonly raw: RawSyncularV2RustClient,
     private readonly runtime: SyncularV2RuntimeInfo
@@ -151,35 +157,45 @@ export class SyncularV2RustClient {
     operation: SyncOperation,
     localRow?: unknown
   ): Promise<string> {
-    return this.raw.applyLocalOperationJson(
+    const commitId = await this.raw.applyLocalOperationJson(
       JSON.stringify(operation),
       localRow == null ? null : JSON.stringify(localRow)
     );
+    this.#drainAndEmitRowsChanged();
+    return commitId;
   }
 
   async applyLocalOperationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]> {
-    return parseJson(
+    const commitIds = parseJson<string[]>(
       await this.raw.applyLocalOperationsBatchJson(JSON.stringify(operations))
     );
+    this.#drainAndEmitRowsChanged();
+    return commitIds;
   }
 
   async applyLocalOperationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string> {
-    return parseJson(
+    const commitId = parseJson<string>(
       await this.raw.applyLocalOperationsCommitJson(JSON.stringify(operations))
     );
+    this.#drainAndEmitRowsChanged();
+    return commitId;
   }
 
   async syncPull(): Promise<SyncularV2SyncResult> {
-    return parseSyncResult(await this.raw.syncPullJson());
+    const result = parseSyncResult(await this.raw.syncPullJson());
+    this.#emitRowsChanged('remotePull', result);
+    return result;
   }
 
   async syncPush(): Promise<SyncularV2SyncResult> {
     try {
-      return parseSyncResult(await this.raw.syncPushJson());
+      const result = parseSyncResult(await this.raw.syncPushJson());
+      this.#emitRowsChanged('localWrite', result);
+      return result;
     } catch (error) {
       this.raw.recoverSyncPushErrorJson(String(error));
       throw error;
@@ -188,7 +204,9 @@ export class SyncularV2RustClient {
 
   async syncOnce(): Promise<SyncularV2SyncResult> {
     try {
-      return parseSyncResult(await this.raw.syncOnceJson());
+      const result = parseSyncResult(await this.raw.syncOnceJson());
+      this.#emitRowsChanged('remotePull', result);
+      return result;
     } catch (error) {
       this.raw.recoverSyncPushErrorJson(String(error));
       throw error;
@@ -245,6 +263,13 @@ export class SyncularV2RustClient {
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<SyncularV2LiveQueryEvent<Row>> {
     return parseJson(this.raw.drainLiveQueryEventsJson());
+  }
+
+  addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void {
+    this.#rowsChangedListeners.add(listener);
+    return () => {
+      this.#rowsChangedListeners.delete(listener);
+    };
   }
 
   async listTable<
@@ -333,15 +358,21 @@ export class SyncularV2RustClient {
   async applyCrdtFieldText(
     request: SyncularV2CrdtFieldTextRequest
   ): Promise<SyncularV2CrdtFieldWriteReceipt> {
-    return parseJson(this.raw.applyCrdtFieldTextJson(JSON.stringify(request)));
+    const receipt = parseJson<SyncularV2CrdtFieldWriteReceipt>(
+      this.raw.applyCrdtFieldTextJson(JSON.stringify(request))
+    );
+    this.#drainAndEmitRowsChanged();
+    return receipt;
   }
 
   async applyCrdtFieldYjsUpdate(
     request: SyncularV2CrdtFieldYjsUpdateRequest
   ): Promise<SyncularV2CrdtFieldWriteReceipt> {
-    return parseJson(
+    const receipt = parseJson<SyncularV2CrdtFieldWriteReceipt>(
       this.raw.applyCrdtFieldYjsUpdateJson(JSON.stringify(request))
     );
+    this.#drainAndEmitRowsChanged();
+    return receipt;
   }
 
   async materializeCrdtField(
@@ -379,6 +410,51 @@ export class SyncularV2RustClient {
     return this.runtime;
   }
 
+  #emitRowsChanged(
+    source: 'localWrite' | 'remotePull',
+    result: SyncularV2SyncResult
+  ): void {
+    if (
+      this.#rowsChangedListeners.size === 0 ||
+      (result.changedTables.length === 0 && result.changedRows.length === 0)
+    ) {
+      return;
+    }
+    for (const listener of this.#rowsChangedListeners) {
+      try {
+        listener({
+          source,
+          changedTables: result.changedTables,
+          changedRows: result.changedRows,
+        });
+      } catch {
+        // Row-change listeners must never break client control flow.
+      }
+    }
+  }
+
+  #drainAndEmitRowsChanged(): void {
+    let events: SyncularV2RowsChangedEvent[];
+    try {
+      events = parseJson(this.raw.drainRowsChangedEventsJson());
+    } catch {
+      return;
+    }
+    if (this.#rowsChangedListeners.size === 0) return;
+    for (const event of events) {
+      if (event.changedTables.length === 0 && event.changedRows.length === 0) {
+        continue;
+      }
+      for (const listener of this.#rowsChangedListeners) {
+        try {
+          listener(event);
+        } catch {
+          // Row-change listeners must never break client control flow.
+        }
+      }
+    }
+  }
+
   close(): void {
     this.raw.close();
   }
@@ -388,6 +464,7 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
   const raw = parseJson<RawSyncResult>(value);
   return {
     changedTables: raw.changed_tables ?? [],
+    changedRows: raw.changed_rows ?? [],
     subscriptions: (raw.subscriptions ?? []).map((subscription) => ({
       id: subscription.id,
       table: subscription.table,

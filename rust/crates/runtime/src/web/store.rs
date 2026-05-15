@@ -1,3 +1,5 @@
+use crate::app_schema::{default_app_schema, AppSchema};
+use crate::client::SyncChangedRow;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
     BootstrapState, OperationResult, PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
@@ -23,6 +25,10 @@ pub struct WebSubscriptionState {
 }
 
 pub trait AsyncWebStore {
+    fn app_schema(&self) -> AppSchema {
+        default_app_schema()
+    }
+
     fn apply_local_operation<'a>(
         &'a mut self,
         operation: SyncOperation,
@@ -125,6 +131,14 @@ pub trait AsyncWebStore {
         self.clear_table_for_scopes(table, scopes)
     }
 
+    fn current_row_json<'a>(
+        &'a mut self,
+        _table: &'a str,
+        _row_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>>> + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn upsert_row<'a>(
         &'a mut self,
         table: &'a str,
@@ -146,6 +160,22 @@ pub trait AsyncWebStore {
         _tables: &'a [String],
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn notify_tables_changed_with_rows<'a>(
+        &'a mut self,
+        tables: &'a [String],
+        _changed_rows: &'a [SyncChangedRow],
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        self.notify_tables_changed(tables)
+    }
+
+    fn notify_local_tables_changed_with_rows<'a>(
+        &'a mut self,
+        tables: &'a [String],
+        changed_rows: &'a [SyncChangedRow],
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        self.notify_tables_changed_with_rows(tables, changed_rows)
     }
 }
 
@@ -521,6 +551,20 @@ impl AsyncWebStore for WebMemoryStore {
         })
     }
 
+    fn current_row_json<'a>(
+        &'a mut self,
+        table: &'a str,
+        row_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>>> + 'a>> {
+        Box::pin(async move {
+            Ok(self
+                .rows
+                .get(table)
+                .and_then(|rows| rows.get(row_id))
+                .cloned())
+        })
+    }
+
     fn upsert_row<'a>(
         &'a mut self,
         table: &'a str,
@@ -565,6 +609,11 @@ impl AsyncWebStore for WebMemoryStore {
         table: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
         Box::pin(async move {
+            if table.starts_with("sync_") {
+                return Err(SyncularError::config(format!(
+                    "internal sync table is not readable through app table API: {table}"
+                )));
+            }
             let rows = self
                 .rows
                 .get(table)

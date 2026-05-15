@@ -16,8 +16,8 @@ import {
 } from './wasm-runtime';
 import type {
   SyncularV2WorkerErrorPayload,
+  SyncularV2WorkerOutboundMessage,
   SyncularV2WorkerRequest,
-  SyncularV2WorkerResponse,
   SyncularV2WorkerRuntimeArtifact,
 } from './worker-protocol';
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
@@ -26,6 +26,7 @@ import { SyncularV2WorkerRealtimeController } from './worker-realtime';
 let client: SyncularV2RustClient | undefined;
 let openedConfig: SyncularV2ClientConfig | undefined;
 let openedRuntime: SyncularV2WorkerRuntimeArtifact | undefined;
+let removeRowsChangedListener: (() => void) | undefined;
 const canceledRequests = new Set<number>();
 const abortControllers = new Map<number, AbortController>();
 const realtime = new SyncularV2WorkerRealtimeController({
@@ -128,6 +129,7 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       {
         const config = resolveSyncularV2ClientConfig(request.config);
         realtime.stop();
+        detachRowsChangedListener();
         client?.close();
         client = undefined;
         openedConfig = undefined;
@@ -141,6 +143,7 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
           wasmGlueUrl: runtime?.wasmGlueUrl,
           wasmUrl: runtime?.wasmUrl,
         });
+        attachRowsChangedListener(client);
         openedConfig = config;
         openedRuntime = runtime;
       }
@@ -244,6 +247,7 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return runtimeInfo();
     case 'close':
       realtime.stop();
+      detachRowsChangedListener();
       client?.close();
       client = undefined;
       openedConfig = undefined;
@@ -288,8 +292,25 @@ function requireClient(): SyncularV2RustClient {
   return client;
 }
 
-function post(response: SyncularV2WorkerResponse): void {
-  self.postMessage(response);
+function attachRowsChangedListener(nextClient: SyncularV2RustClient): void {
+  removeRowsChangedListener = nextClient.addRowsChangedListener((event) => {
+    post({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'rowsChanged',
+      source: event.source,
+      changedTables: event.changedTables,
+      changedRows: event.changedRows,
+    });
+  });
+}
+
+function detachRowsChangedListener(): void {
+  removeRowsChangedListener?.();
+  removeRowsChangedListener = undefined;
+}
+
+function post(message: SyncularV2WorkerOutboundMessage): void {
+  self.postMessage(message);
 }
 
 function createAbortController(
@@ -470,9 +491,14 @@ function syncResultDetails(value: unknown): Record<string, unknown> {
   const changedTables = Array.isArray(result.changedTables)
     ? result.changedTables
     : [];
+  const changedRows = Array.isArray(result.changedRows)
+    ? result.changedRows
+    : [];
   return {
     changedTables,
+    changedRows,
     changedTableCount: changedTables.length,
+    changedRowCount: changedRows.length,
     pushedCommits:
       typeof result.pushedCommits === 'number' ? result.pushedCommits : 0,
   };

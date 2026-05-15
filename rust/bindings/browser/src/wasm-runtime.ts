@@ -84,6 +84,7 @@ export interface RawSyncularV2RustClient {
   ): string;
   unsubscribeQuery(id: string): void;
   drainLiveQueryEventsJson(): string;
+  drainRowsChangedEventsJson(): string;
   close(): void;
 }
 

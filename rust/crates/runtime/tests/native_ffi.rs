@@ -356,7 +356,7 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     assert_eq!(local_event["tables"][0], "tasks");
     assert_eq!(local_event["changedRows"][0]["table"], "tasks");
     assert_eq!(local_event["changedRows"][0]["rowId"], "ffi-task");
-    assert_eq!(local_event["changedRows"][0]["operation"], "upsert");
+    assert_eq!(local_event["changedRows"][0]["operation"], "insert");
     assert!(local_event["changedRows"][0]["changedFields"]
         .as_array()
         .is_some_and(|fields| fields.iter().any(|field| field == "title")));
@@ -674,7 +674,33 @@ fn native_ffi_applies_generic_local_operation_json() {
     assert_eq!(local_event["tables"][0], "tasks");
     assert_eq!(local_event["changedRows"][0]["table"], "tasks");
     assert_eq!(local_event["changedRows"][0]["rowId"], "ffi-generic-task");
-    assert_eq!(local_event["changedRows"][0]["operation"], "upsert");
+    assert_eq!(local_event["changedRows"][0]["operation"], "insert");
+
+    let update = CString::new(
+        json!({
+            "table": "tasks",
+            "row_id": "ffi-generic-task",
+            "op": "upsert",
+            "payload": {
+                "title": "FFI generic task updated"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let commit_id = syncular_native_client_apply_local_operation_json(
+        handle,
+        update.as_ptr(),
+        ptr::null(),
+        &mut error,
+    );
+    assert!(!take_string(commit_id).is_empty());
+    let update_event = syncular_native_client_poll_event_json(handle, 10, &mut error);
+    let update_event: Value = serde_json::from_str(&take_string(update_event)).unwrap();
+    assert_eq!(update_event["kind"], "RowsChanged");
+    assert_eq!(update_event["changedRows"][0]["operation"], "update");
+    assert_eq!(update_event["changedRows"][0]["changedFields"][0], "title");
 
     assert!(syncular_native_client_close(handle, &mut error));
     let _ = std::fs::remove_file(path);

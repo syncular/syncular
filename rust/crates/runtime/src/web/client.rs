@@ -1,4 +1,8 @@
-use crate::client::SubscriptionSpec;
+use crate::app_schema::AppSchema;
+use crate::client::{
+    sync_changed_row_for_change, sync_changed_row_for_local_operation,
+    sync_changed_row_for_snapshot, SubscriptionSpec, SyncChangedRow,
+};
 use crate::encrypted_crdt::EncryptedCrdt;
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
@@ -36,6 +40,7 @@ pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebSyncResult {
     pub changed_tables: Vec<String>,
+    pub changed_rows: Vec<SyncChangedRow>,
     pub subscriptions: Vec<WebSubscriptionResult>,
     pub pushed_commits: usize,
 }
@@ -156,6 +161,7 @@ where
         }
 
         let mut result = WebSyncResult::default();
+        let app_schema = self.store.app_schema();
         for sub in pull.subscriptions {
             let previous_state = self.store.subscription_state(&sub.id).await?;
             let table = self
@@ -200,10 +206,42 @@ where
                     }
                     snapshot_rows.extend(snapshot.rows.clone());
                     for row in &snapshot.rows {
+                        let previous_row = previous_web_snapshot_row(
+                            &mut self.store,
+                            app_schema,
+                            &snapshot.table,
+                            row,
+                        )
+                        .await?;
                         self.store.upsert_row(&snapshot.table, row.clone()).await?;
+                        if let Some(changed_row) = sync_changed_row_for_snapshot(
+                            app_schema,
+                            &snapshot.table,
+                            row,
+                            previous_row.as_ref(),
+                            &sub.id,
+                        ) {
+                            result.changed_rows.push(changed_row);
+                        }
                     }
                     for row in chunk_rows {
+                        let previous_row = previous_web_snapshot_row(
+                            &mut self.store,
+                            app_schema,
+                            &snapshot.table,
+                            &row,
+                        )
+                        .await?;
                         self.store.upsert_row(&snapshot.table, row.clone()).await?;
+                        if let Some(changed_row) = sync_changed_row_for_snapshot(
+                            app_schema,
+                            &snapshot.table,
+                            &row,
+                            previous_row.as_ref(),
+                            &sub.id,
+                        ) {
+                            result.changed_rows.push(changed_row);
+                        }
                         snapshot_rows.push(row);
                     }
                 }
@@ -211,7 +249,20 @@ where
             for commit in &sub.commits {
                 for change in &commit.changes {
                     add_changed_table(&mut result.changed_tables, &change.table);
+                    let previous_row = self
+                        .store
+                        .current_row_json(&change.table, &change.row_id)
+                        .await?;
                     self.store.apply_change(change.clone()).await?;
+                    if let Some(changed_row) = sync_changed_row_for_change(
+                        app_schema,
+                        change,
+                        previous_row.as_ref(),
+                        commit.commit_seq,
+                        &sub.id,
+                    ) {
+                        result.changed_rows.push(changed_row);
+                    }
                 }
             }
 
@@ -256,7 +307,7 @@ where
         }
 
         self.store
-            .notify_tables_changed(&result.changed_tables)
+            .notify_tables_changed_with_rows(&result.changed_tables, &result.changed_rows)
             .await?;
         Ok(result)
     }
@@ -368,6 +419,7 @@ where
         for table in pull_result.changed_tables {
             add_changed_table(&mut result.changed_tables, &table);
         }
+        result.changed_rows = pull_result.changed_rows;
         result.subscriptions = pull_result.subscriptions;
         Ok(result)
     }
@@ -379,12 +431,27 @@ where
     ) -> Result<String> {
         let operation: SyncOperation = serde_json::from_str(operation_json)?;
         let changed_tables = vec![operation.table.clone()];
+        let previous_row = self
+            .store
+            .current_row_json(&operation.table, &operation.row_id)
+            .await?;
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         let client_commit_id = self
             .store
-            .apply_local_operation(operation, local_row)
+            .apply_local_operation(operation.clone(), local_row.clone())
             .await?;
-        self.store.notify_tables_changed(&changed_tables).await?;
+        let changed_rows = sync_changed_row_for_local_operation(
+            self.store.app_schema(),
+            &operation,
+            previous_row.as_ref(),
+            local_row.as_ref(),
+            Some(client_commit_id.clone()),
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
+        self.store
+            .notify_local_tables_changed_with_rows(&changed_tables, &changed_rows)
+            .await?;
         Ok(client_commit_id)
     }
 
@@ -631,6 +698,28 @@ fn add_changed_table(tables: &mut Vec<String>, table: &str) {
     if !tables.iter().any(|existing| existing == table) {
         tables.push(table.to_string());
     }
+}
+
+async fn previous_web_snapshot_row<S>(
+    store: &mut S,
+    app_schema: AppSchema,
+    table: &str,
+    row: &Value,
+) -> Result<Option<Value>>
+where
+    S: AsyncWebStore,
+{
+    let Some(metadata) = app_schema.table_metadata(table) else {
+        return Ok(None);
+    };
+    let Some(row_id) = row
+        .get(metadata.primary_key_column)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(None);
+    };
+    store.current_row_json(table, &row_id).await
 }
 
 fn validate_outbox_schema_version(commit: &OutboxCommit) -> Result<()> {

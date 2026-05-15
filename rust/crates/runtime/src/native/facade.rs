@@ -1,6 +1,6 @@
 use crate::app_schema::{app_schema_from_json, default_app_schema, AppSchema, AppTableMetadata};
 use crate::client::{
-    sync_changed_row_for_operation, CrdtFieldCompactionReceipt, CrdtFieldMaterialization,
+    sync_changed_row_for_local_operation, CrdtFieldCompactionReceipt, CrdtFieldMaterialization,
     CrdtFieldWriteReceipt, SubscriptionSpec, SyncChangedRow, SyncReport, SyncularClient,
     SyncularClientConfig,
 };
@@ -651,12 +651,18 @@ impl NativeSyncularClient {
     ) -> Result<String> {
         let operation: crate::protocol::SyncOperation = serde_json::from_str(operation_json)?;
         let table = operation.table.clone();
+        let previous_row = self
+            .writer
+            .current_row_json(&operation.table, &operation.row_id)?;
+        let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         let client_commit_id = self
             .writer
             .apply_local_operation_json(operation_json, local_row_json)?;
-        let changed_rows = sync_changed_row_for_operation(
+        let changed_rows = sync_changed_row_for_local_operation(
             self.writer.app_schema(),
             &operation,
+            previous_row.as_ref(),
+            local_row.as_ref(),
             Some(client_commit_id.clone()),
         )
         .into_iter()
