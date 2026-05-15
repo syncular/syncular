@@ -519,6 +519,7 @@ class SyncularV2Driver extends BaseSqliteDriver {
     options.onChange(snapshot.rows, {
       queryId: snapshot.id,
       version: Date.now(),
+      changedRows: [],
       rows: snapshot.rows,
       initial: true,
     });

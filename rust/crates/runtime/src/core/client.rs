@@ -262,12 +262,37 @@ pub fn sync_changed_row_for_operation(
     operation: &SyncOperation,
     commit_id: Option<String>,
 ) -> Option<SyncChangedRow> {
+    sync_changed_row_for_local_operation(app_schema, operation, None, None, commit_id)
+}
+
+pub fn sync_changed_row_for_local_operation(
+    app_schema: AppSchema,
+    operation: &SyncOperation,
+    previous_row: Option<&Value>,
+    local_row: Option<&Value>,
+    commit_id: Option<String>,
+) -> Option<SyncChangedRow> {
     let metadata = app_schema.table_metadata(&operation.table)?;
-    let changed_fields = changed_fields_from_payload(metadata, operation.payload.as_ref());
+    let changed_fields = if operation.op == "delete" {
+        Vec::new()
+    } else if let Some(local_row) = local_row {
+        changed_fields_from_row_diff(metadata, previous_row, Some(local_row))
+    } else {
+        changed_fields_from_payload(metadata, operation.payload.as_ref())
+    };
+    let operation_kind = if operation.op == "upsert" {
+        if previous_row.is_some() {
+            "update"
+        } else {
+            "insert"
+        }
+    } else {
+        operation.op.as_str()
+    };
     Some(SyncChangedRow {
         table: operation.table.clone(),
         row_id: Some(operation.row_id.clone()),
-        operation: operation.op.clone(),
+        operation: operation_kind.to_string(),
         crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
         changed_fields,
         commit_id,
@@ -277,7 +302,7 @@ pub fn sync_changed_row_for_operation(
     })
 }
 
-fn sync_changed_row_for_change(
+pub fn sync_changed_row_for_change(
     app_schema: AppSchema,
     change: &SyncChange,
     previous_row: Option<&Value>,
@@ -305,7 +330,7 @@ fn sync_changed_row_for_change(
     })
 }
 
-fn sync_changed_row_for_snapshot(
+pub fn sync_changed_row_for_snapshot(
     app_schema: AppSchema,
     table: &str,
     row: &Value,
@@ -716,6 +741,11 @@ where
 
     pub fn app_schema(&self) -> AppSchema {
         self.app_schema
+    }
+
+    pub fn current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
+        self.store
+            .transaction(|tx| tx.current_row_json(table, row_id))
     }
 
     pub fn subscriptions(&self) -> &[SubscriptionSpec] {

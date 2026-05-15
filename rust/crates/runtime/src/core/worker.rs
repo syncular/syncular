@@ -1,5 +1,6 @@
 use crate::client::{
-    sync_changed_row_for_operation, SubscriptionSpec, SyncChangedRow, SyncReport, SyncularClient,
+    sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow, SyncReport,
+    SyncularClient,
 };
 #[cfg(feature = "native")]
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
@@ -231,6 +232,10 @@ pub trait SyncWorkerClientExt {
         local_row: Option<Value>,
     ) -> Result<String>;
 
+    fn worker_current_row_json(&mut self, _table: &str, _row_id: &str) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
     fn apply_worker_encrypted_crdt_update_json(
         &mut self,
         _request_json: &str,
@@ -351,6 +356,10 @@ where
         let operation_json = serde_json::to_string(&operation)?;
         let local_row_json = local_row.as_ref().map(serde_json::to_string).transpose()?;
         self.apply_local_operation_json(&operation_json, local_row_json.as_deref())
+    }
+
+    fn worker_current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
+        self.current_row_json(table, row_id)
     }
 
     fn apply_worker_encrypted_crdt_update_json(
@@ -550,6 +559,10 @@ where
         let operation_json = serde_json::to_string(&operation)?;
         let local_row_json = local_row.as_ref().map(serde_json::to_string).transpose()?;
         self.apply_local_operation_json(&operation_json, local_row_json.as_deref())
+    }
+
+    fn worker_current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
+        self.current_row_json(table, row_id)
     }
 }
 
@@ -1629,14 +1642,27 @@ where
         .as_ref()
         .map(|operation| operation.table.clone())
         .unwrap_or_else(|| "unknown".to_string());
+    let previous_row = operation.as_ref().and_then(|operation| {
+        client
+            .worker_current_row_json(&operation.table, &operation.row_id)
+            .ok()
+            .flatten()
+    });
+    let local_row = local_row_json
+        .map(serde_json::from_str::<Value>)
+        .transpose()
+        .ok()
+        .flatten();
     match client.apply_worker_local_operation_json(operation_json, local_row_json) {
         Ok(client_commit_id) => {
             let changed_rows = operation
                 .as_ref()
                 .and_then(|operation| {
-                    sync_changed_row_for_operation(
+                    sync_changed_row_for_local_operation(
                         client.app_schema(),
                         operation,
+                        previous_row.as_ref(),
+                        local_row.as_ref(),
                         Some(client_commit_id.clone()),
                     )
                 })

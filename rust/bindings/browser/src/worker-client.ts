@@ -36,6 +36,7 @@ import type {
   SyncularV2LiveQuerySnapshot,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
+  SyncularV2RowsChangedSink,
   SyncularV2RuntimeInfo,
   SyncularV2SchemaState,
   SyncularV2SqlResult,
@@ -162,6 +163,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #lastDiagnostic: SyncularV2DiagnosticEvent | undefined;
   #lastError: { message: string; code?: string } | undefined;
   #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
+  #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
   #liveListeners = new Map<
     string,
     (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
@@ -585,6 +587,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
+  addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void {
+    this.#rowsChangedListeners.add(listener);
+    return () => {
+      this.#rowsChangedListeners.delete(listener);
+    };
+  }
+
   addLiveQueryListener(
     queryId: string,
     listener: (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
@@ -815,6 +824,20 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     if (event.type === 'liveQueryEvents') {
       for (const liveEvent of event.events) {
         this.#liveListeners.get(liveEvent.queryId)?.(liveEvent);
+      }
+      return;
+    }
+    if (event.type === 'rowsChanged') {
+      for (const listener of this.#rowsChangedListeners) {
+        try {
+          listener({
+            source: event.source,
+            changedTables: event.changedTables,
+            changedRows: event.changedRows,
+          });
+        } catch {
+          // Row-change listeners must never break worker event handling.
+        }
       }
       return;
     }

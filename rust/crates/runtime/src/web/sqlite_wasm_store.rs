@@ -2,7 +2,7 @@ use crate::app_schema::{
     app_schema_from_config, checksum, empty_app_schema, split_sql_statements,
     validate_app_schema_runtime_features, AppSchema, AppSchemaJson, AppTableMetadata,
 };
-use crate::client::SubscriptionSpec;
+use crate::client::{sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow};
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, tombstone_table_names,
     StorageCompactionOptions, StorageCompactionReport,
@@ -302,6 +302,7 @@ pub struct SyncularRustOwnedSqlite {
     app_schema: AppSchema,
     live_queries: Vec<LiveQuery>,
     live_events: Vec<LiveQueryEvent>,
+    row_events: Vec<RowsChangedEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -318,7 +319,16 @@ struct LiveQuery {
 struct LiveQueryEvent {
     query_id: String,
     version: i64,
+    changed_rows: Vec<SyncChangedRow>,
     rows: Vec<Value>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RowsChangedEvent {
+    source: String,
+    changed_tables: Vec<String>,
+    changed_rows: Vec<SyncChangedRow>,
 }
 
 #[wasm_bindgen(js_name = SyncularRustOwnedSqliteClient)]
@@ -406,6 +416,7 @@ impl SyncularRustOwnedSqlite {
             app_schema,
             live_queries: Vec::new(),
             live_events: Vec::new(),
+            row_events: Vec::new(),
         };
         store.ensure_internal_migrations()?;
         store.ensure_generated_schema_state()?;
@@ -481,6 +492,14 @@ impl SyncularRustOwnedSqlite {
     #[wasm_bindgen(js_name = drainLiveQueryEventsJson)]
     pub fn drain_live_query_events_json(&mut self) -> std::result::Result<String, JsValue> {
         let events = std::mem::take(&mut self.live_events);
+        serde_json::to_string(&events)
+            .map_err(SyncularError::protocol)
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = drainRowsChangedEventsJson)]
+    pub fn drain_rows_changed_events_json(&mut self) -> std::result::Result<String, JsValue> {
+        let events = std::mem::take(&mut self.row_events);
         serde_json::to_string(&events)
             .map_err(SyncularError::protocol)
             .map_err(error_to_js)
@@ -1196,6 +1215,11 @@ impl SyncularRustOwnedSqliteClient {
     #[wasm_bindgen(js_name = drainLiveQueryEventsJson)]
     pub fn drain_live_query_events_json(&mut self) -> std::result::Result<String, JsValue> {
         self.inner.store_mut().drain_live_query_events_json()
+    }
+
+    #[wasm_bindgen(js_name = drainRowsChangedEventsJson)]
+    pub fn drain_rows_changed_events_json(&mut self) -> std::result::Result<String, JsValue> {
+        self.inner.store_mut().drain_rows_changed_events_json()
     }
 
     #[wasm_bindgen(js_name = applyLocalOperationsBatchJson)]
@@ -2051,6 +2075,7 @@ impl SyncularRustOwnedSqlite {
             serde_json::from_str(operations_json).map_err(SyncularError::protocol)?;
         let mut client_commit_ids = Vec::with_capacity(operations.len());
         let mut changed_tables = Vec::new();
+        let mut changed_rows = Vec::new();
 
         self.exec("BEGIN IMMEDIATE")?;
         let result = (|| {
@@ -2060,6 +2085,16 @@ impl SyncularRustOwnedSqlite {
                 let client_commit_id = Uuid::new_v4().to_string();
                 if !changed_tables.iter().any(|table| table == &operation.table) {
                     changed_tables.push(operation.table.clone());
+                }
+                let previous_row = self.previous_local_operation_row(&operation)?;
+                if let Some(changed_row) = sync_changed_row_for_local_operation(
+                    self.app_schema,
+                    &operation,
+                    previous_row.as_ref(),
+                    local_row.as_ref(),
+                    Some(client_commit_id.clone()),
+                ) {
+                    changed_rows.push(changed_row);
                 }
                 self.apply_local_mutation(&operation, local_row.as_ref())?;
                 self.enqueue_outbox_commit(&client_commit_id, &operation)?;
@@ -2071,7 +2106,7 @@ impl SyncularRustOwnedSqlite {
         match result {
             Ok(()) => {
                 self.exec("COMMIT")?;
-                self.invalidate_live_queries(&changed_tables)?;
+                self.notify_local_tables_changed_with_rows(&changed_tables, &changed_rows)?;
             }
             Err(err) => {
                 let _ = self.exec("ROLLBACK");
@@ -2095,6 +2130,7 @@ impl SyncularRustOwnedSqlite {
         }
         let mut changed_tables = Vec::new();
         let mut sync_operations = Vec::with_capacity(operations.len());
+        let mut changed_rows = Vec::new();
 
         self.exec("BEGIN IMMEDIATE")?;
         let result = (|| {
@@ -2103,6 +2139,16 @@ impl SyncularRustOwnedSqlite {
                     self.transform_local_operation_entry(entry.operation, entry.local_row)?;
                 if !changed_tables.iter().any(|table| table == &operation.table) {
                     changed_tables.push(operation.table.clone());
+                }
+                let previous_row = self.previous_local_operation_row(&operation)?;
+                if let Some(changed_row) = sync_changed_row_for_local_operation(
+                    self.app_schema,
+                    &operation,
+                    previous_row.as_ref(),
+                    local_row.as_ref(),
+                    None,
+                ) {
+                    changed_rows.push(changed_row);
                 }
                 self.apply_local_mutation(&operation, local_row.as_ref())?;
                 sync_operations.push(operation);
@@ -2113,7 +2159,10 @@ impl SyncularRustOwnedSqlite {
         match result {
             Ok(client_commit_id) => {
                 self.exec("COMMIT")?;
-                self.invalidate_live_queries(&changed_tables)?;
+                for row in &mut changed_rows {
+                    row.commit_id = Some(client_commit_id.clone());
+                }
+                self.notify_local_tables_changed_with_rows(&changed_tables, &changed_rows)?;
                 Ok(serde_json::to_string(&client_commit_id)?)
             }
             Err(err) => {
@@ -2129,6 +2178,13 @@ impl SyncularRustOwnedSqlite {
 
     fn current_crdt_field_row(&self, field: &CrdtField) -> Result<Option<Value>> {
         self.current_row_json(field.metadata(), field.table(), field.row_id())
+    }
+
+    fn previous_local_operation_row(&self, operation: &SyncOperation) -> Result<Option<Value>> {
+        let Some(metadata) = self.app_schema.table_metadata(&operation.table) else {
+            return Ok(None);
+        };
+        self.current_row_json(metadata, &operation.table, &operation.row_id)
     }
 
     fn apply_pending_mutation_commit(
@@ -2148,14 +2204,30 @@ impl SyncularRustOwnedSqlite {
         let result = (|| {
             let (operation, local_row) =
                 self.transform_local_operation_entry(operation, local_row)?;
+            let previous_row = self.previous_local_operation_row(&operation)?;
+            let changed_row = sync_changed_row_for_local_operation(
+                self.app_schema,
+                &operation,
+                previous_row.as_ref(),
+                local_row.as_ref(),
+                None,
+            );
             self.apply_local_mutation(&operation, local_row.as_ref())?;
-            self.enqueue_outbox_operations(&[operation])
+            let client_commit_id = self.enqueue_outbox_operations(&[operation])?;
+            Ok((client_commit_id, changed_row))
         })();
 
         match result {
-            Ok(client_commit_id) => {
+            Ok((client_commit_id, changed_row)) => {
                 self.exec("COMMIT")?;
-                self.invalidate_live_queries(&changed_tables)?;
+                let changed_rows = changed_row
+                    .map(|mut row| {
+                        row.commit_id = Some(client_commit_id.clone());
+                        row
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                self.notify_local_tables_changed_with_rows(&changed_tables, &changed_rows)?;
                 Ok(client_commit_id)
             }
             Err(err) => {
@@ -2814,6 +2886,40 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn invalidate_live_queries(&mut self, changed_tables: &[String]) -> Result<()> {
+        self.invalidate_live_queries_with_rows(changed_tables, &[])
+    }
+
+    fn notify_local_tables_changed_with_rows(
+        &mut self,
+        changed_tables: &[String],
+        changed_rows: &[SyncChangedRow],
+    ) -> Result<()> {
+        self.invalidate_live_queries_with_rows(changed_tables, changed_rows)?;
+        self.push_rows_changed_event("localWrite", changed_tables, changed_rows);
+        Ok(())
+    }
+
+    fn push_rows_changed_event(
+        &mut self,
+        source: &str,
+        changed_tables: &[String],
+        changed_rows: &[SyncChangedRow],
+    ) {
+        if changed_tables.is_empty() && changed_rows.is_empty() {
+            return;
+        }
+        self.row_events.push(RowsChangedEvent {
+            source: source.to_string(),
+            changed_tables: changed_tables.to_vec(),
+            changed_rows: changed_rows.to_vec(),
+        });
+    }
+
+    fn invalidate_live_queries_with_rows(
+        &mut self,
+        changed_tables: &[String],
+        changed_rows: &[SyncChangedRow],
+    ) -> Result<()> {
         let changed = changed_tables
             .iter()
             .map(String::as_str)
@@ -2838,6 +2944,7 @@ impl SyncularRustOwnedSqlite {
                 next_events.push(LiveQueryEvent {
                     query_id: self.live_queries[index].id.clone(),
                     version: now_ms(),
+                    changed_rows: changed_rows.to_vec(),
                     rows,
                 });
             }
@@ -2899,6 +3006,10 @@ impl SyncularRustOwnedSqlite {
 }
 
 impl AsyncWebStore for SyncularRustOwnedSqlite {
+    fn app_schema(&self) -> AppSchema {
+        self.app_schema
+    }
+
     fn apply_local_operation<'a>(
         &'a mut self,
         operation: SyncOperation,
@@ -2922,6 +3033,19 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                     Err(err)
                 }
             }
+        })
+    }
+
+    fn current_row_json<'a>(
+        &'a mut self,
+        table: &'a str,
+        row_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Value>>> + 'a>> {
+        Box::pin(async move {
+            let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
+            SyncularRustOwnedSqlite::current_row_json(self, metadata, table, row_id)
         })
     }
 
@@ -3454,8 +3578,12 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 ))
             })?;
             let row_json = if has_yjs_payload(row_json) {
-                let existing_row =
-                    self.current_row_json(metadata, &change.table, &change.row_id)?;
+                let existing_row = SyncularRustOwnedSqlite::current_row_json(
+                    self,
+                    metadata,
+                    &change.table,
+                    &change.row_id,
+                )?;
                 transform_local_row_for_metadata(
                     &change.table,
                     &change.row_id,
@@ -3515,6 +3643,28 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         tables: &'a [String],
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move { self.invalidate_live_queries(tables) })
+    }
+
+    fn notify_tables_changed_with_rows<'a>(
+        &'a mut self,
+        tables: &'a [String],
+        changed_rows: &'a [SyncChangedRow],
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move { self.invalidate_live_queries_with_rows(tables, changed_rows) })
+    }
+
+    fn notify_local_tables_changed_with_rows<'a>(
+        &'a mut self,
+        tables: &'a [String],
+        changed_rows: &'a [SyncChangedRow],
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            SyncularRustOwnedSqlite::notify_local_tables_changed_with_rows(
+                self,
+                tables,
+                changed_rows,
+            )
+        })
     }
 }
 

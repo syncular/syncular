@@ -483,7 +483,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
         local_event.changed_rows[0].row_id.as_deref(),
         Some("generic-task")
     );
-    assert_eq!(local_event.changed_rows[0].operation, "upsert");
+    assert_eq!(local_event.changed_rows[0].operation, "insert");
     assert_eq!(
         local_event.changed_rows[0].changed_fields,
         vec![
@@ -499,6 +499,28 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
             .as_ref()
             .and_then(|payload| payload.get("source")),
         Some(&json!("localWrite"))
+    );
+
+    let update = json!({
+        "table": "tasks",
+        "row_id": "generic-task",
+        "op": "upsert",
+        "payload": {
+            "title": "Generic task updated"
+        },
+        "base_version": 0
+    })
+    .to_string();
+    client.apply_local_operation_json(&update, None)?;
+    let local_event = client
+        .poll_event_timeout(Duration::from_millis(100))
+        .expect("generic update rows changed event");
+    assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
+    assert_eq!(local_event.changed_rows.len(), 1);
+    assert_eq!(local_event.changed_rows[0].operation, "update");
+    assert_eq!(
+        local_event.changed_rows[0].changed_fields,
+        vec!["title".to_string()]
     );
 
     let delete = json!({
@@ -716,7 +738,7 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
         committed.changed_rows[0].row_id.as_deref(),
         Some("queued-task")
     );
-    assert_eq!(committed.changed_rows[0].operation, "upsert");
+    assert_eq!(committed.changed_rows[0].operation, "insert");
     assert!(committed.client_commit_id.is_some());
     assert!(committed.event_seq > 0);
 

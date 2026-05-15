@@ -3,6 +3,7 @@ import type {
   SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
+  SyncularV2SyncResult,
 } from './types';
 import type {
   SyncularV2WorkerEvent,
@@ -11,7 +12,7 @@ import type {
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export interface SyncularV2WorkerRealtimeClient {
-  syncPull(): Promise<unknown>;
+  syncPull(): Promise<SyncularV2SyncResult>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<SyncularV2LiveQueryEvent<Row>>;
@@ -198,8 +199,17 @@ export class SyncularV2WorkerRealtimeController {
 
   async #runSyncPull(): Promise<void> {
     try {
-      await this.controllerOptions.getClient().syncPull();
+      const result = await this.controllerOptions.getClient().syncPull();
       if (this.#stopped) return;
+      if (result.changedTables.length > 0 || result.changedRows.length > 0) {
+        this.controllerOptions.postEvent({
+          protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+          type: 'rowsChanged',
+          source: 'remotePull',
+          changedTables: result.changedTables,
+          changedRows: result.changedRows,
+        });
+      }
       const events = this.controllerOptions
         .getClient()
         .drainLiveQueryEvents<Record<string, unknown>>();

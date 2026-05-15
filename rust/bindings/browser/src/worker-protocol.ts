@@ -18,6 +18,7 @@ import type {
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
+  SyncularV2RowsChangedEvent,
   SyncularV2RuntimeInfo,
   SyncularV2StorageCompactionOptions,
   SyncularV2SubscriptionSpec,
@@ -312,6 +313,10 @@ export type SyncularV2WorkerEvent =
       type: 'liveQueryEvents';
       events: Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>;
     })
+  | (SyncularV2WorkerEventBase &
+      SyncularV2RowsChangedEvent & {
+        type: 'rowsChanged';
+      })
   | (SyncularV2WorkerEventBase & {
       type: 'realtimeState';
       state: SyncularV2RealtimeConnectionState;
