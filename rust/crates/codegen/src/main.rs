@@ -3702,7 +3702,16 @@ fn push_swift_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
         }
         out.push_str("    }\n\n");
         out.push_str("    public func contains(_ column: String) -> Bool {\n");
-        out.push_str("        raw.contains(column)\n");
+        out.push_str("        switch column {\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "        case {}: {}\n",
+                double_quoted_string(&column.name),
+                lower_camel_case(&column.name)
+            ));
+        }
+        out.push_str("        default: false\n");
+        out.push_str("        }\n");
         out.push_str("    }\n");
         out.push_str("}\n\n");
         out.push_str(&format!(
@@ -3764,7 +3773,16 @@ fn push_kotlin_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) 
                 double_quoted_string(&column.name)
             ));
         }
-        out.push_str("\n    fun contains(column: String): Boolean = raw.contains(column)\n");
+        out.push_str("\n    fun contains(column: String): Boolean = when (column) {\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "        {} -> {}\n",
+                double_quoted_string(&column.name),
+                lower_camel_case(&column.name)
+            ));
+        }
+        out.push_str("        else -> false\n");
+        out.push_str("    }\n");
         out.push_str("}\n\n");
         out.push_str(&format!(
             "data class {type_name}ChangedRow(\n    val raw: SyncularChangedRow,\n    val changed: {type_name}ChangedFields = {type_name}ChangedFields(raw.changedFields),\n    val crdt: {type_name}ChangedFields = {type_name}ChangedFields(raw.crdtFields),\n) {{\n"

@@ -1060,6 +1060,10 @@ Progress:
   `crdt.title_yjs_state`/`titleYjsState` instead of open-coded table and column
   strings. Row mutation operations are normalized to `insert`, `update`, and
   `delete`; CRDT compaction remains a field-level CRDT event.
+- Generated row-delta helpers are now exercised in Rust, Swift, and Kotlin
+  generated-client smokes, not only string-checked. The smoke locks the
+  cross-platform contract that unknown columns are retained in the raw event
+  metadata but do not appear as known typed field changes.
 - Generated Swift/Kotlin clients now include typed enqueue helpers for table
   mutations (`enqueueNewTask`, `enqueueTaskPatch`, `enqueueTaskDelete`) on top
   of the schema-agnostic low-level `enqueueMutationJson`.

@@ -261,6 +261,43 @@ private enum GeneratedClientSmoke {
         expect(rows[0].image?.size == jsonInt(blobImage, "size"), "Swift fetch should decode blob ref size")
         expect(rows[0].image?.mimeType == jsonString(blobImage, "mimeType"), "Swift fetch should decode blob ref MIME type")
 
+        let rowDeltaEvent = SyncularNativeEvent(
+            kind: "RowsChanged",
+            changedRows: [
+                SyncularChangedRow(
+                    table: "tasks",
+                    rowId: jsonString(taskInput, "id"),
+                    operation: "update",
+                    changedFields: ["title", "title_yjs_state", "unknown_column"],
+                    crdtFields: ["title_yjs_state"],
+                    commitId: "commit-delta",
+                    commitSeq: 7,
+                    subscriptionId: "sub-tasks",
+                    serverVersion: 11
+                ),
+                SyncularChangedRow(
+                    table: "projects",
+                    rowId: "project-rust",
+                    operation: "delete",
+                    changedFields: ["name"]
+                ),
+            ]
+        )
+        let taskDeltas = taskChangedRows(in: rowDeltaEvent)
+        expect(taskDeltas.count == 1, "Swift changed-row helper should filter task deltas")
+        let taskDelta = taskDeltas[0]
+        expect(taskDelta.rowId == jsonString(taskInput, "id"), "Swift changed-row helper should expose row id")
+        expect(taskDelta.isUpdate && !taskDelta.isInsert, "Swift changed-row helper should expose operation flags")
+        expect(taskDelta.changed.title, "Swift changed fields should include title")
+        expect(taskDelta.changed.titleYjsState, "Swift changed fields should include CRDT state column")
+        expect(!taskDelta.changed.completed, "Swift changed fields should default absent columns to false")
+        expect(taskDelta.changed.contains("title"), "Swift changed fields should support contains")
+        expect(!taskDelta.changed.contains("unknown_column"), "Swift changed fields should ignore unknown columns")
+        expect(taskDelta.crdt.titleYjsState, "Swift CRDT fields should include CRDT state column")
+        expect(taskDelta.raw.commitId == "commit-delta", "Swift changed-row helper should retain raw metadata")
+        expect(projectChangedRows(in: rowDeltaEvent).first?.isDelete == true, "Swift changed-row helper should expose project deletes")
+        expect(commentChangedRows(in: rowDeltaEvent).isEmpty, "Swift changed-row helper should ignore unrelated tables")
+
         let commitId = try client.applyNewTask(NewTask(
             id: jsonString(taskInput, "id"),
             title: jsonString(taskInput, "title"),

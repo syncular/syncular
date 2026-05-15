@@ -207,6 +207,43 @@ fun main(args: Array<String>) {
     expect(rows[0].image?.size == blobImage.longValue("size"), "Kotlin fetch should decode blob ref size")
     expect(rows[0].image?.mimeType == blobImage.str("mimeType"), "Kotlin fetch should decode blob ref MIME type")
 
+    val rowDeltaEvent = SyncularNativeEvent(
+        kind = "RowsChanged",
+        changedRows = listOf(
+            SyncularChangedRow(
+                table = "tasks",
+                rowId = taskInput.str("id"),
+                operation = "update",
+                changedFields = listOf("title", "title_yjs_state", "unknown_column"),
+                crdtFields = listOf("title_yjs_state"),
+                commitId = "commit-delta",
+                commitSeq = 7,
+                subscriptionId = "sub-tasks",
+                serverVersion = 11,
+            ),
+            SyncularChangedRow(
+                table = "projects",
+                rowId = "project-rust",
+                operation = "delete",
+                changedFields = listOf("name"),
+            ),
+        ),
+    )
+    val taskDeltas = taskChangedRows(rowDeltaEvent)
+    expect(taskDeltas.size == 1, "Kotlin changed-row helper should filter task deltas")
+    val taskDelta = taskDeltas[0]
+    expect(taskDelta.rowId == taskInput.str("id"), "Kotlin changed-row helper should expose row id")
+    expect(taskDelta.isUpdate && !taskDelta.isInsert, "Kotlin changed-row helper should expose operation flags")
+    expect(taskDelta.changed.title, "Kotlin changed fields should include title")
+    expect(taskDelta.changed.titleYjsState, "Kotlin changed fields should include CRDT state column")
+    expect(!taskDelta.changed.completed, "Kotlin changed fields should default absent columns to false")
+    expect(taskDelta.changed.contains("title"), "Kotlin changed fields should support contains")
+    expect(!taskDelta.changed.contains("unknown_column"), "Kotlin changed fields should ignore unknown columns")
+    expect(taskDelta.crdt.titleYjsState, "Kotlin CRDT fields should include CRDT state column")
+    expect(taskDelta.raw.commitId == "commit-delta", "Kotlin changed-row helper should retain raw metadata")
+    expect(projectChangedRows(rowDeltaEvent).firstOrNull()?.isDelete == true, "Kotlin changed-row helper should expose project deletes")
+    expect(commentChangedRows(rowDeltaEvent).isEmpty(), "Kotlin changed-row helper should ignore unrelated tables")
+
     val commitId = client.applyNewTask(
         NewTask(
             id = taskInput.str("id"),
