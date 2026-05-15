@@ -358,7 +358,16 @@ data class CommentChangedFields(val raw: Set<String>) {
     val deleted: Boolean = raw.contains("deleted")
     val serverVersion: Boolean = raw.contains("server_version")
 
-    fun contains(column: String): Boolean = raw.contains(column)
+    fun contains(column: String): Boolean = when (column) {
+        "id" -> id
+        "task_id" -> taskId
+        "project_id" -> projectId
+        "body" -> body
+        "author_id" -> authorId
+        "deleted" -> deleted
+        "server_version" -> serverVersion
+        else -> false
+    }
 }
 
 data class CommentChangedRow(
@@ -392,7 +401,14 @@ data class ProjectChangedFields(val raw: Set<String>) {
     val archived: Boolean = raw.contains("archived")
     val serverVersion: Boolean = raw.contains("server_version")
 
-    fun contains(column: String): Boolean = raw.contains(column)
+    fun contains(column: String): Boolean = when (column) {
+        "id" -> id
+        "name" -> name
+        "owner_id" -> ownerId
+        "archived" -> archived
+        "server_version" -> serverVersion
+        else -> false
+    }
 }
 
 data class ProjectChangedRow(
@@ -429,7 +445,17 @@ data class TaskChangedFields(val raw: Set<String>) {
     val image: Boolean = raw.contains("image")
     val titleYjsState: Boolean = raw.contains("title_yjs_state")
 
-    fun contains(column: String): Boolean = raw.contains(column)
+    fun contains(column: String): Boolean = when (column) {
+        "id" -> id
+        "title" -> title
+        "completed" -> completed
+        "user_id" -> userId
+        "project_id" -> projectId
+        "server_version" -> serverVersion
+        "image" -> image
+        "title_yjs_state" -> titleYjsState
+        else -> false
+    }
 }
 
 data class TaskChangedRow(

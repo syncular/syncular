@@ -40,7 +40,9 @@ mod tests {
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
     use syncular_client::app_schema::AppSchema;
-    use syncular_client::client::{SyncReport, SyncularClient, SyncularClientConfig};
+    use syncular_client::client::{
+        SyncChangedRow, SyncReport, SyncularClient, SyncularClientConfig,
+    };
 
     #[test]
     fn generated_rust_schema_builds_diesel_queries() {
@@ -135,6 +137,51 @@ mod tests {
             serde_json::to_value(&delete_operation).expect("delete task operation JSON"),
             conformance["task"]["deleteOperation"]
         );
+    }
+
+    #[test]
+    fn generated_rust_changed_row_helpers_type_generic_deltas() {
+        let rows = vec![
+            SyncChangedRow {
+                table: "tasks".to_string(),
+                row_id: Some("task-native".to_string()),
+                operation: "update".to_string(),
+                changed_fields: vec![
+                    "title".to_string(),
+                    "title_yjs_state".to_string(),
+                    "unknown_column".to_string(),
+                ],
+                crdt_fields: vec!["title_yjs_state".to_string()],
+                commit_id: Some("commit-delta".to_string()),
+                commit_seq: Some(7),
+                subscription_id: Some("sub-tasks".to_string()),
+                server_version: Some(11),
+            },
+            SyncChangedRow {
+                table: "projects".to_string(),
+                row_id: Some("project-rust".to_string()),
+                operation: "delete".to_string(),
+                changed_fields: vec!["name".to_string()],
+                ..SyncChangedRow::default()
+            },
+        ];
+
+        let task_rows = syncular::task_changed_rows(&rows);
+        assert_eq!(task_rows.len(), 1);
+        let task = task_rows[0];
+        assert_eq!(task.row_id(), Some("task-native"));
+        assert!(task.is_update());
+        assert!(!task.is_insert());
+        assert!(task.changed.title);
+        assert!(task.changed.title_yjs_state);
+        assert!(!task.changed.completed);
+        assert!(task.changed.contains("title"));
+        assert!(!task.changed.contains("unknown_column"));
+        assert!(task.crdt.title_yjs_state);
+        assert_eq!(task.raw.commit_id.as_deref(), Some("commit-delta"));
+        assert_eq!(syncular::project_changed_rows(&rows).len(), 1);
+        assert!(syncular::project_changed_rows(&rows)[0].is_delete());
+        assert!(syncular::comment_changed_rows(&rows).is_empty());
     }
 
     #[test]

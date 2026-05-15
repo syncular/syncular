@@ -384,7 +384,16 @@ public struct CommentChangedFields: Equatable {
     }
 
     public func contains(_ column: String) -> Bool {
-        raw.contains(column)
+        switch column {
+        case "id": id
+        case "task_id": taskId
+        case "project_id": projectId
+        case "body": body
+        case "author_id": authorId
+        case "deleted": deleted
+        case "server_version": serverVersion
+        default: false
+        }
     }
 }
 
@@ -434,7 +443,14 @@ public struct ProjectChangedFields: Equatable {
     }
 
     public func contains(_ column: String) -> Bool {
-        raw.contains(column)
+        switch column {
+        case "id": id
+        case "name": name
+        case "owner_id": ownerId
+        case "archived": archived
+        case "server_version": serverVersion
+        default: false
+        }
     }
 }
 
@@ -490,7 +506,17 @@ public struct TaskChangedFields: Equatable {
     }
 
     public func contains(_ column: String) -> Bool {
-        raw.contains(column)
+        switch column {
+        case "id": id
+        case "title": title
+        case "completed": completed
+        case "user_id": userId
+        case "project_id": projectId
+        case "server_version": serverVersion
+        case "image": image
+        case "title_yjs_state": titleYjsState
+        default: false
+        }
     }
 }
 
