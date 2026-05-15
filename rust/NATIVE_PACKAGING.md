@@ -10,6 +10,18 @@ Run from the repo root:
 bash rust/scripts/package-native-bindings.sh --all
 ```
 
+For the local release-readiness gate, prefer the root script:
+
+```bash
+bun run rust:native:release-check
+```
+
+That command builds the Apple package, Android AAR/local Maven package,
+current-host JVM package, Linux x86_64 JVM package, and the generated
+Swift/Kotlin/JVM native smoke. Windows JVM packaging is still a Windows
+host/runner check because BoltFFI `0.24.1` does not cross-package that target
+from macOS.
+
 By default this writes fresh artifacts under `.context/native-packages`:
 
 - `apple/Syncular.xcframework`
@@ -97,6 +109,16 @@ The script also builds a generated Gradle consumer smoke against the local
 Maven repository so the AAR is proven resolvable before release.
 
 Useful targeted commands:
+
+```bash
+bun run rust:native:package:apple
+bun run rust:native:package:android
+bun run rust:native:package:java
+bun run rust:native:package:java:linux
+bun run rust:native:package:java:windows
+```
+
+The equivalent direct script commands are:
 
 ```bash
 bash rust/scripts/package-native-bindings.sh --apple

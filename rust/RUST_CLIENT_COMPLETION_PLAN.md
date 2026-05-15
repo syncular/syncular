@@ -1244,6 +1244,16 @@ Progress:
 - Latest JVM packaging regression check after adding the Windows target command:
   `bun run rust:native:package:java` still passes for the current macOS host
   and writes artifacts under `.context/native-packages`.
+- Added `rust:native:release-check` as the local native release gate. It runs
+  Apple packaging, Android AAR/local Maven packaging, current-host JVM
+  packaging, Linux x86_64 JVM packaging, and the generated native smoke.
+- Latest local native release verification: `bun run rust:native:release-check`
+  passes end to end. The first run hit a transient Linux
+  `cargo rustc --print=native-static-libs` failure, but the direct Linux
+  target and the full aggregate rerun both passed.
+- Added a separate docs section under `apps/docs/content/docs/rust-client` for
+  the Rust-first client so browser/native/testkit/packaging docs do not get
+  mixed into the older JavaScript-oriented client docs.
 
 Done when:
 

@@ -652,6 +652,9 @@ Adjust module paths to match where you put `generated.rs`.
 - Native release packaging is local but repeatable now:
   `bash rust/scripts/package-native-bindings.sh --all` writes fresh Swift,
   Android, Android Maven/AAR, and JVM artifacts to `.context/native-packages`.
+  Use `bun run rust:native:release-check` as the full local native release
+  gate: Apple package, Android AAR/local Maven package, current-host JVM,
+  Linux x86_64 JVM, and the generated native smoke.
   Use `SYNCULAR_NATIVE_PACKAGE_OUT=/path/to/out` when copying artifacts into a
   consuming app. The Android low-level binding is packaged as
   `dev.syncular:syncular-android:<runtime-version>` in the generated local

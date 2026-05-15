@@ -1,0 +1,129 @@
+---
+title: Quick Start
+description: Generate and use the Rust-first Syncular app clients.
+---
+
+# Quick Start
+
+The Rust client is generated from your SQLite migrations and
+`syncular.codegen.json`. The generated files are app code: keep them in your
+app repo so Rust, TypeScript, Swift, and Kotlin tooling can see the types.
+
+## 1. Add migrations
+
+Create Diesel-style migration folders:
+
+```text
+your-app/
+  migrations/
+    0001_initial/
+      up.sql
+```
+
+App tables need one primary key and a server-version column:
+
+```sql
+create table tasks (
+  id text primary key not null,
+  title text not null,
+  completed integer not null default 0,
+  user_id text not null,
+  server_version bigint not null default 0
+);
+```
+
+Keep Syncular internal migrations in the app schema for now. The todo example
+under `rust/examples/todo-app/migrations` is the reference shape.
+
+## 2. Add codegen config
+
+Create `syncular.codegen.json` beside your app manifest:
+
+```json
+{
+  "typescriptOutputPath": "src/generated/syncular.browser.ts",
+  "nativeSwiftOutputPath": "Generated/SyncularApp.swift",
+  "nativeKotlinOutputPath": "generated/SyncularApp.kt",
+  "tables": {
+    "tasks": {
+      "subscriptionId": "sub-tasks",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "user_id",
+          "source": "actorId",
+          "required": true
+        }
+      ],
+      "serverVersionColumn": "server_version"
+    }
+  }
+}
+```
+
+Use `blobColumns`, `crdtYjsFields`, `softDeleteColumn`, and
+`subscriptionParams` when the table needs those features.
+
+## 3. Run codegen
+
+From the Syncular repo root:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /absolute/path/to/your-app
+```
+
+Run the check form in CI:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /absolute/path/to/your-app \
+  --check
+```
+
+## 4. Use the generated client
+
+Reads stay query-builder based. Writes go through generated mutations.
+
+```rust
+let tasks = client.read(
+    schema::tasks::dsl::tasks
+        .filter(schema::tasks::dsl::user_id.eq("user-rust"))
+        .select(diesel_tables::TaskRow::as_select()),
+)?;
+
+let inserted = client
+    .mutations()
+    .tasks()
+    .insert(syncular::NewTask::with_generated_id(
+        "Write through Syncular",
+        "user-rust",
+        None,
+    ))?;
+```
+
+For browser apps, import the generated TypeScript helper and keep reads on
+Kysely:
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'device-1',
+    fileName: 'app.sqlite',
+  },
+});
+
+const rows = await syncular.db
+  .selectFrom('tasks')
+  .select(['id', 'title'])
+  .where('user_id', '=', 'user-1')
+  .execute();
+
+await syncular.mutations.tasks.insert({
+  title: 'Write through Syncular',
+  completed: 0,
+  user_id: 'user-1',
+});
+```

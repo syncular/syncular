@@ -1,0 +1,93 @@
+---
+title: Browser TypeScript
+description: Use Kysely with Rust-owned SQLite in a dedicated browser Worker.
+---
+
+# Browser TypeScript
+
+Browser TypeScript keeps Kysely as the app query builder. The difference from
+the older client path is ownership: SQLite, sync state, outbox, conflicts,
+blobs, CRDT persistence, and encryption live in the Rust WASM Worker.
+
+## Create the database
+
+Generated browser code creates the typed Kysely database and validates runtime
+features against the app schema:
+
+```ts
+import { createSyncularAppDatabase } from './generated/syncular.browser';
+
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'device-1',
+    projectId: 'project-1',
+    fileName: 'app.sqlite',
+  },
+  getHeaders: async () => ({
+    authorization: `Bearer ${await auth.accessToken()}`,
+  }),
+  authLifecycle: {
+    refreshToken: () => auth.refreshAccessToken(),
+  },
+});
+```
+
+## Query with Kysely
+
+Reads are normal Kysely queries:
+
+```ts
+const tasks = await syncular.db
+  .selectFrom('tasks')
+  .select(['id', 'title', 'completed'])
+  .where('project_id', '=', 'project-1')
+  .orderBy('server_version', 'desc')
+  .execute();
+```
+
+## Mutate through Syncular
+
+App-table writes are rejected from public SQL execution. Use generated
+mutations so local rows, outbox, encryption, blobs, CRDT fields, conflicts, and
+sync metadata stay coherent:
+
+```ts
+await syncular.mutations.tasks.insert({
+  title: 'Draft',
+  completed: 0,
+  user_id: 'user-1',
+  project_id: 'project-1',
+});
+
+await syncular.mutations.tasks.update(taskId, {
+  completed: 1,
+});
+```
+
+## Route row deltas
+
+The runtime emits generic `changedRows`; generated helpers turn those into
+typed app-table deltas:
+
+```ts
+import { syncularChangedRows } from './generated/syncular.browser';
+
+const unsubscribe = syncular.client.addRowsChangedListener((event) => {
+  for (const task of syncularChangedRows.tasks(event)) {
+    if (task.isDelete) removeTask(task.rowId);
+    if (task.changed.title || task.changed.completed) refreshTask(task.rowId);
+    if (task.crdt.title_yjs_state) refreshActiveEditor(task.rowId);
+  }
+});
+```
+
+## Runtime artifacts
+
+The package ships runtime artifact metadata. Generated clients declare required
+features from schema metadata, such as blobs, CRDT/Yjs, or E2EE, and the
+browser package selects a compatible WASM artifact.
+
+Use the full artifact for schemas that need blobs, CRDT/Yjs, or field-level
+encryption. The core artifact is for schemas that do not need those features.

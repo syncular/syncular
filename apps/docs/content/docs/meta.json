@@ -5,6 +5,7 @@
     "introduction",
     "concepts",
     "build",
+    "rust-client",
     "testing",
     "operate",
     "reference"

@@ -88,6 +88,7 @@
     "rust:native:package:java": "bash rust/scripts/package-native-bindings.sh --java",
     "rust:native:package:java:linux": "bash rust/scripts/package-native-bindings.sh --java-linux-x86_64",
     "rust:native:package:java:windows": "bash rust/scripts/package-native-bindings.sh --java-windows-x86_64",
+    "rust:native:release-check": "bun run rust:native:package:apple && bun run rust:native:package:android && bun run rust:native:package:java && bun run rust:native:package:java:linux && bun run rust:native-smoke",
     "rust:conformance": "cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --test blob_transport && cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example && bun --cwd rust/bindings/browser test src/generated-app-conformance.test.ts src/__tests__/auth-hono.wasm.test.ts src/__tests__/sync-hono.wasm.test.ts src/__tests__/realtime-hono.wasm.test.ts src/__tests__/blob-hono.wasm.test.ts",
     "rust:conformance:native": "bun run rust:native-smoke",
     "rust:conformance:all": "bun run rust:conformance && bun run rust:conformance:native",
