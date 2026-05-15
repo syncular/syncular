@@ -348,6 +348,113 @@ fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
     )
 }
 
+data class CommentChangedFields(val raw: Set<String>) {
+    constructor(fields: List<String>) : this(fields.toSet())
+    val id: Boolean = raw.contains("id")
+    val taskId: Boolean = raw.contains("task_id")
+    val projectId: Boolean = raw.contains("project_id")
+    val body: Boolean = raw.contains("body")
+    val authorId: Boolean = raw.contains("author_id")
+    val deleted: Boolean = raw.contains("deleted")
+    val serverVersion: Boolean = raw.contains("server_version")
+
+    fun contains(column: String): Boolean = raw.contains(column)
+}
+
+data class CommentChangedRow(
+    val raw: SyncularChangedRow,
+    val changed: CommentChangedFields = CommentChangedFields(raw.changedFields),
+    val crdt: CommentChangedFields = CommentChangedFields(raw.crdtFields),
+) {
+    val rowId: String? get() = raw.rowId
+    val operation: String get() = raw.operation
+    val isInsert: Boolean get() = raw.operation == "insert"
+    val isUpdate: Boolean get() = raw.operation == "update"
+    val isDelete: Boolean get() = raw.operation == "delete"
+
+    companion object {
+        fun from(row: SyncularChangedRow): CommentChangedRow? =
+            if (row.table == "comments") CommentChangedRow(row) else null
+    }
+}
+
+fun commentChangedRows(rows: List<SyncularChangedRow>): List<CommentChangedRow> =
+    rows.mapNotNull { CommentChangedRow.from(it) }
+
+fun commentChangedRows(event: SyncularNativeEvent): List<CommentChangedRow> =
+    commentChangedRows(event.changedRows)
+
+data class ProjectChangedFields(val raw: Set<String>) {
+    constructor(fields: List<String>) : this(fields.toSet())
+    val id: Boolean = raw.contains("id")
+    val name: Boolean = raw.contains("name")
+    val ownerId: Boolean = raw.contains("owner_id")
+    val archived: Boolean = raw.contains("archived")
+    val serverVersion: Boolean = raw.contains("server_version")
+
+    fun contains(column: String): Boolean = raw.contains(column)
+}
+
+data class ProjectChangedRow(
+    val raw: SyncularChangedRow,
+    val changed: ProjectChangedFields = ProjectChangedFields(raw.changedFields),
+    val crdt: ProjectChangedFields = ProjectChangedFields(raw.crdtFields),
+) {
+    val rowId: String? get() = raw.rowId
+    val operation: String get() = raw.operation
+    val isInsert: Boolean get() = raw.operation == "insert"
+    val isUpdate: Boolean get() = raw.operation == "update"
+    val isDelete: Boolean get() = raw.operation == "delete"
+
+    companion object {
+        fun from(row: SyncularChangedRow): ProjectChangedRow? =
+            if (row.table == "projects") ProjectChangedRow(row) else null
+    }
+}
+
+fun projectChangedRows(rows: List<SyncularChangedRow>): List<ProjectChangedRow> =
+    rows.mapNotNull { ProjectChangedRow.from(it) }
+
+fun projectChangedRows(event: SyncularNativeEvent): List<ProjectChangedRow> =
+    projectChangedRows(event.changedRows)
+
+data class TaskChangedFields(val raw: Set<String>) {
+    constructor(fields: List<String>) : this(fields.toSet())
+    val id: Boolean = raw.contains("id")
+    val title: Boolean = raw.contains("title")
+    val completed: Boolean = raw.contains("completed")
+    val userId: Boolean = raw.contains("user_id")
+    val projectId: Boolean = raw.contains("project_id")
+    val serverVersion: Boolean = raw.contains("server_version")
+    val image: Boolean = raw.contains("image")
+    val titleYjsState: Boolean = raw.contains("title_yjs_state")
+
+    fun contains(column: String): Boolean = raw.contains(column)
+}
+
+data class TaskChangedRow(
+    val raw: SyncularChangedRow,
+    val changed: TaskChangedFields = TaskChangedFields(raw.changedFields),
+    val crdt: TaskChangedFields = TaskChangedFields(raw.crdtFields),
+) {
+    val rowId: String? get() = raw.rowId
+    val operation: String get() = raw.operation
+    val isInsert: Boolean get() = raw.operation == "insert"
+    val isUpdate: Boolean get() = raw.operation == "update"
+    val isDelete: Boolean get() = raw.operation == "delete"
+
+    companion object {
+        fun from(row: SyncularChangedRow): TaskChangedRow? =
+            if (row.table == "tasks") TaskChangedRow(row) else null
+    }
+}
+
+fun taskChangedRows(rows: List<SyncularChangedRow>): List<TaskChangedRow> =
+    rows.mapNotNull { TaskChangedRow.from(it) }
+
+fun taskChangedRows(event: SyncularNativeEvent): List<TaskChangedRow> =
+    taskChangedRows(event.changedRows)
+
 fun syncularDecodeCrdtFieldDescriptor(json: String): SyncularCrdtFieldDescriptor {
     val value = Json.parseToJsonElement(json).jsonObject
     return SyncularCrdtFieldDescriptor(

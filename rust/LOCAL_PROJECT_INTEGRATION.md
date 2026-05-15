@@ -758,3 +758,66 @@ as a long-lived runtime object, not as a per-screen helper:
 - initialize CRDT-backed text fields empty or with existing Yjs state before
   queued text replacement. The runtime rejects replacing populated legacy
   plaintext without Yjs state to prevent duplicated or blank editor content.
+
+## 20. Typed Row Delta Helpers
+
+The runtime emits schema-agnostic `changedRows` on sync, local write, live
+query, and native worker events. Codegen turns those generic rows into
+table-specific helpers in each generated app client so UI code can route
+precise row/field changes without hard-coded string checks.
+
+Browser/TypeScript:
+
+```ts
+import { syncularChangedRows } from './generated/syncular.browser';
+
+syncular.client.addRowsChangedListener((event) => {
+  for (const task of syncularChangedRows.tasks(event)) {
+    if (task.isDelete) removeTask(task.rowId);
+    if (task.changed.title || task.changed.completed) refreshTask(task.rowId);
+    if (task.crdt.title_yjs_state) refreshActiveEditor(task.rowId);
+  }
+});
+```
+
+Rust:
+
+```rust
+for task in generated::syncular::task_changed_rows(&event.changed_rows) {
+    if task.is_delete() {
+        remove_task(task.row_id());
+    }
+    if task.changed.title || task.changed.completed {
+        refresh_task(task.row_id());
+    }
+    if task.crdt.title_yjs_state {
+        refresh_active_editor(task.row_id());
+    }
+}
+```
+
+Swift:
+
+```swift
+for task in taskChangedRows(in: event) {
+    if task.isDelete { removeTask(task.rowId) }
+    if task.changed.title || task.changed.completed { refreshTask(task.rowId) }
+    if task.crdt.titleYjsState { refreshActiveEditor(task.rowId) }
+}
+```
+
+Kotlin/JVM/Android:
+
+```kotlin
+for (task in taskChangedRows(event)) {
+    if (task.isDelete) removeTask(task.rowId)
+    if (task.changed.title || task.changed.completed) refreshTask(task.rowId)
+    if (task.crdt.titleYjsState) refreshActiveEditor(task.rowId)
+}
+```
+
+Use these helpers for UI invalidation, active CRDT document refresh, conflict
+badges, and narrow list updates. `changedRows` operations are normalized to
+`insert`, `update`, and `delete` for row mutations; CRDT compaction events may
+also report the affected CRDT state column so hosts can refresh materialized
+document state.

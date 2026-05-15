@@ -2,7 +2,7 @@
 // Source: migrations/*.sql and syncular.codegen.json
 
 import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites } from '../../../../bindings/browser/src';
-import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../bindings/browser/src';
+import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../bindings/browser/src';
 
 import { sql, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
@@ -180,6 +180,129 @@ export const syncularGeneratedAppTables = [
   'projects',
   'tasks',
 ] as const satisfies readonly (keyof SyncularAppDb)[];
+
+export type SyncularGeneratedChangedOperation = SyncularV2ChangedRow['operation'];
+export type SyncularChangedRowsInput = SyncularV2RowsChangedEvent | { changedRows?: readonly SyncularV2ChangedRow[] } | readonly SyncularV2ChangedRow[];
+
+export interface SyncularGeneratedChangedRowBase<Table extends keyof SyncularAppDb, Field extends string> {
+  raw: SyncularV2ChangedRow;
+  table: Table;
+  rowId: string | null;
+  operation: SyncularGeneratedChangedOperation;
+  changedFields: Field[];
+  crdtFields: Field[];
+  changed: Record<Field, boolean>;
+  crdt: Record<Field, boolean>;
+  commitId: string | null;
+  commitSeq: number | null;
+  subscriptionId: string | null;
+  serverVersion: number | null;
+  isInsert: boolean;
+  isUpdate: boolean;
+  isDelete: boolean;
+}
+
+function syncularRowsFromChangedInput(input: SyncularChangedRowsInput): readonly SyncularV2ChangedRow[] {
+  return Array.isArray(input) ? input : input.changedRows ?? [];
+}
+
+function syncularColumnFlags<Field extends string>(fields: readonly string[], allFields: readonly Field[]): Record<Field, boolean> {
+  const changed = new Set(fields);
+  return Object.fromEntries(allFields.map((field) => [field, changed.has(field)])) as Record<Field, boolean>;
+}
+
+function syncularTypedChangedRows<Table extends keyof SyncularAppDb, Field extends string>(
+  input: SyncularChangedRowsInput,
+  table: Table,
+  fields: readonly Field[]
+): SyncularGeneratedChangedRowBase<Table, Field>[] {
+  const fieldSet = new Set<string>(fields);
+  return syncularRowsFromChangedInput(input)
+    .filter((row) => row.table === table)
+    .map((row) => ({
+      raw: row,
+      table,
+      rowId: row.rowId ?? null,
+      operation: row.operation,
+      changedFields: row.changedFields.filter((field): field is Field => fieldSet.has(field)),
+      crdtFields: row.crdtFields.filter((field): field is Field => fieldSet.has(field)),
+      changed: syncularColumnFlags(row.changedFields, fields),
+      crdt: syncularColumnFlags(row.crdtFields, fields),
+      commitId: row.commitId ?? null,
+      commitSeq: row.commitSeq ?? null,
+      subscriptionId: row.subscriptionId ?? null,
+      serverVersion: row.serverVersion ?? null,
+      isInsert: row.operation === 'insert',
+      isUpdate: row.operation === 'update',
+      isDelete: row.operation === 'delete',
+    }));
+}
+
+export const syncularCommentChangedFields = [
+  'id',
+  'task_id',
+  'project_id',
+  'body',
+  'author_id',
+  'deleted',
+  'server_version',
+] as const;
+export type CommentChangedField = typeof syncularCommentChangedFields[number];
+export type CommentChangedColumns = Record<CommentChangedField, boolean>;
+export type CommentChangedRow = SyncularGeneratedChangedRowBase<'comments', CommentChangedField>;
+export function commentChangedRows(input: SyncularChangedRowsInput): CommentChangedRow[] {
+  return syncularTypedChangedRows(input, 'comments', syncularCommentChangedFields);
+}
+
+export const syncularProjectChangedFields = [
+  'id',
+  'name',
+  'owner_id',
+  'archived',
+  'server_version',
+] as const;
+export type ProjectChangedField = typeof syncularProjectChangedFields[number];
+export type ProjectChangedColumns = Record<ProjectChangedField, boolean>;
+export type ProjectChangedRow = SyncularGeneratedChangedRowBase<'projects', ProjectChangedField>;
+export function projectChangedRows(input: SyncularChangedRowsInput): ProjectChangedRow[] {
+  return syncularTypedChangedRows(input, 'projects', syncularProjectChangedFields);
+}
+
+export const syncularTaskChangedFields = [
+  'id',
+  'title',
+  'completed',
+  'user_id',
+  'project_id',
+  'server_version',
+  'image',
+  'title_yjs_state',
+] as const;
+export type TaskChangedField = typeof syncularTaskChangedFields[number];
+export type TaskChangedColumns = Record<TaskChangedField, boolean>;
+export type TaskChangedRow = SyncularGeneratedChangedRowBase<'tasks', TaskChangedField>;
+export function taskChangedRows(input: SyncularChangedRowsInput): TaskChangedRow[] {
+  return syncularTypedChangedRows(input, 'tasks', syncularTaskChangedFields);
+}
+
+export type SyncularAppChangedRow =
+  CommentChangedRow
+  | ProjectChangedRow
+  | TaskChangedRow;
+
+export function syncularAppChangedRows(input: SyncularChangedRowsInput): SyncularAppChangedRow[] {
+  return [
+    ...commentChangedRows(input),
+    ...projectChangedRows(input),
+    ...taskChangedRows(input),
+  ];
+}
+
+export const syncularChangedRows = {
+  comments: commentChangedRows,
+  projects: projectChangedRows,
+  tasks: taskChangedRows,
+} as const;
 
 export const syncularGeneratedCodecs: ColumnCodecSource = (column) => {
   const table = syncularGeneratedTableConfig[column.table as keyof SyncularAppDb];

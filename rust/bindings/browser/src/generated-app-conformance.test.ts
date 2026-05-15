@@ -6,9 +6,12 @@ import {
   deleteTaskOperation,
   newTaskOperation,
   patchTaskOperation,
+  syncularAppChangedRows,
+  syncularChangedRows,
   type SyncularAppDb,
   syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedTableConfig,
+  taskChangedRows,
   taskSubscription,
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
 import { createSyncularV2Commit, createSyncularV2Dialect } from './database';
@@ -111,6 +114,34 @@ describe('generated app conformance', () => {
       envelopePrefix: syncScenarios.e2ee.envelopePrefix,
       rules: [syncScenarios.e2ee.rule],
     });
+  });
+
+  it('turns generic row deltas into typed table helpers', () => {
+    const event = {
+      source: 'remotePull',
+      changedTables: ['tasks'],
+      changedRows: [
+        {
+          table: 'tasks',
+          rowId: 'task-delta',
+          operation: 'update',
+          changedFields: ['title', 'title_yjs_state', 'unknown_column'],
+          crdtFields: ['title_yjs_state'],
+          commitId: 'commit-delta',
+        },
+      ],
+    };
+
+    const [task] = taskChangedRows(event);
+    expect(task?.rowId).toBe('task-delta');
+    expect(task?.isUpdate).toBe(true);
+    expect(task?.changed.title).toBe(true);
+    expect(task?.changed.title_yjs_state).toBe(true);
+    expect(task?.changed.completed).toBe(false);
+    expect(task?.crdt.title_yjs_state).toBe(true);
+    expect(task?.changedFields).toEqual(['title', 'title_yjs_state']);
+    expect(syncularChangedRows.tasks(event)[0]?.raw.commitId).toBe('commit-delta');
+    expect(syncularAppChangedRows(event)).toHaveLength(1);
   });
 
   it('keeps Yjs envelopes in outbox operations while materializing local rows', async () => {
@@ -284,6 +315,9 @@ function fakeClient(): SyncularV2Client {
       };
     },
     addDiagnosticListener() {
+      return () => undefined;
+    },
+    addRowsChangedListener() {
       return () => undefined;
     },
     addLiveQueryListener(queryId, listener) {
