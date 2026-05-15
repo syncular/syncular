@@ -62,6 +62,16 @@ fn generated_targets_share_the_same_app_schema_contract() {
         );
         assert_contains(
             &generated.rust_syncular,
+            &format!("pub struct {type_name}ChangedRow"),
+            "rust typed changed-row helper",
+        );
+        assert_contains(
+            &generated.rust_syncular,
+            &format!("pub struct {type_name}ChangedFields"),
+            "rust typed changed-field helper",
+        );
+        assert_contains(
+            &generated.rust_syncular,
             &format!("pub fn {table_name}(self)"),
             "rust mutation namespace",
         );
@@ -95,6 +105,16 @@ fn generated_targets_share_the_same_app_schema_contract() {
             &generated.typescript,
             &format!("patch{type_name}Operation"),
             "typescript patch operation builder",
+        );
+        assert_contains(
+            &generated.typescript,
+            &format!("export type {type_name}ChangedRow"),
+            "typescript typed changed-row helper",
+        );
+        assert_contains(
+            &generated.typescript,
+            &format!("export const syncular{type_name}ChangedFields"),
+            "typescript typed changed-field helper",
         );
 
         assert_contains(
@@ -137,6 +157,16 @@ fn generated_targets_share_the_same_app_schema_contract() {
             &format!("func applyNew{type_name}"),
             "swift mutation helper",
         );
+        assert_contains(
+            &generated.swift,
+            &format!("public struct {type_name}ChangedRow"),
+            "swift typed changed-row helper",
+        );
+        assert_contains(
+            &generated.swift,
+            &format!("public struct {type_name}ChangedFields"),
+            "swift typed changed-field helper",
+        );
 
         for kotlin in [&generated.kotlin, &generated.android_kotlin] {
             assert_contains(
@@ -178,6 +208,16 @@ fn generated_targets_share_the_same_app_schema_contract() {
                 kotlin,
                 &format!("fun SyncularNativeJsonClient.applyNew{type_name}"),
                 "kotlin mutation helper",
+            );
+            assert_contains(
+                kotlin,
+                &format!("data class {type_name}ChangedRow"),
+                "kotlin typed changed-row helper",
+            );
+            assert_contains(
+                kotlin,
+                &format!("data class {type_name}ChangedFields"),
+                "kotlin typed changed-field helper",
             );
         }
 

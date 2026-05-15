@@ -8,7 +8,7 @@ pub use syncular_client::app_schema::{
 };
 #[allow(unused_imports)]
 use syncular_client::client::{
-    SubscriptionSpec, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor,
+    SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor,
     SyncularMutationExecutor,
 };
 use syncular_client::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
@@ -262,6 +262,249 @@ pub fn table_metadata(table: &str) -> Option<&'static AppTableMetadata> {
     APP_TABLE_METADATA
         .iter()
         .find(|metadata| metadata.name == table)
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CommentChangedFields {
+    pub id: bool,
+    pub task_id: bool,
+    pub project_id: bool,
+    pub body: bool,
+    pub author_id: bool,
+    pub deleted: bool,
+    pub server_version: bool,
+}
+
+impl CommentChangedFields {
+    pub fn from_columns(columns: &[String]) -> Self {
+        Self {
+            id: columns.iter().any(|column| column == "id"),
+            task_id: columns.iter().any(|column| column == "task_id"),
+            project_id: columns.iter().any(|column| column == "project_id"),
+            body: columns.iter().any(|column| column == "body"),
+            author_id: columns.iter().any(|column| column == "author_id"),
+            deleted: columns.iter().any(|column| column == "deleted"),
+            server_version: columns.iter().any(|column| column == "server_version"),
+        }
+    }
+
+    pub fn contains(&self, column: &str) -> bool {
+        match column {
+            "id" => self.id,
+            "task_id" => self.task_id,
+            "project_id" => self.project_id,
+            "body" => self.body,
+            "author_id" => self.author_id,
+            "deleted" => self.deleted,
+            "server_version" => self.server_version,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CommentChangedRow<'a> {
+    pub raw: &'a SyncChangedRow,
+    pub changed: CommentChangedFields,
+    pub crdt: CommentChangedFields,
+}
+
+impl<'a> CommentChangedRow<'a> {
+    pub fn from_raw(row: &'a SyncChangedRow) -> Option<Self> {
+        if row.table != "comments" {
+            return None;
+        }
+        Some(Self {
+            raw: row,
+            changed: CommentChangedFields::from_columns(&row.changed_fields),
+            crdt: CommentChangedFields::from_columns(&row.crdt_fields),
+        })
+    }
+
+    pub fn row_id(&self) -> Option<&str> {
+        self.raw.row_id.as_deref()
+    }
+
+    pub fn is_insert(&self) -> bool {
+        self.raw.operation == "insert"
+    }
+
+    pub fn is_update(&self) -> bool {
+        self.raw.operation == "update"
+    }
+
+    pub fn is_delete(&self) -> bool {
+        self.raw.operation == "delete"
+    }
+}
+
+pub fn comment_changed_rows<'a>(
+    rows: impl IntoIterator<Item = &'a SyncChangedRow>,
+) -> Vec<CommentChangedRow<'a>> {
+    rows.into_iter()
+        .filter_map(CommentChangedRow::from_raw)
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectChangedFields {
+    pub id: bool,
+    pub name: bool,
+    pub owner_id: bool,
+    pub archived: bool,
+    pub server_version: bool,
+}
+
+impl ProjectChangedFields {
+    pub fn from_columns(columns: &[String]) -> Self {
+        Self {
+            id: columns.iter().any(|column| column == "id"),
+            name: columns.iter().any(|column| column == "name"),
+            owner_id: columns.iter().any(|column| column == "owner_id"),
+            archived: columns.iter().any(|column| column == "archived"),
+            server_version: columns.iter().any(|column| column == "server_version"),
+        }
+    }
+
+    pub fn contains(&self, column: &str) -> bool {
+        match column {
+            "id" => self.id,
+            "name" => self.name,
+            "owner_id" => self.owner_id,
+            "archived" => self.archived,
+            "server_version" => self.server_version,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectChangedRow<'a> {
+    pub raw: &'a SyncChangedRow,
+    pub changed: ProjectChangedFields,
+    pub crdt: ProjectChangedFields,
+}
+
+impl<'a> ProjectChangedRow<'a> {
+    pub fn from_raw(row: &'a SyncChangedRow) -> Option<Self> {
+        if row.table != "projects" {
+            return None;
+        }
+        Some(Self {
+            raw: row,
+            changed: ProjectChangedFields::from_columns(&row.changed_fields),
+            crdt: ProjectChangedFields::from_columns(&row.crdt_fields),
+        })
+    }
+
+    pub fn row_id(&self) -> Option<&str> {
+        self.raw.row_id.as_deref()
+    }
+
+    pub fn is_insert(&self) -> bool {
+        self.raw.operation == "insert"
+    }
+
+    pub fn is_update(&self) -> bool {
+        self.raw.operation == "update"
+    }
+
+    pub fn is_delete(&self) -> bool {
+        self.raw.operation == "delete"
+    }
+}
+
+pub fn project_changed_rows<'a>(
+    rows: impl IntoIterator<Item = &'a SyncChangedRow>,
+) -> Vec<ProjectChangedRow<'a>> {
+    rows.into_iter()
+        .filter_map(ProjectChangedRow::from_raw)
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskChangedFields {
+    pub id: bool,
+    pub title: bool,
+    pub completed: bool,
+    pub user_id: bool,
+    pub project_id: bool,
+    pub server_version: bool,
+    pub image: bool,
+    pub title_yjs_state: bool,
+}
+
+impl TaskChangedFields {
+    pub fn from_columns(columns: &[String]) -> Self {
+        Self {
+            id: columns.iter().any(|column| column == "id"),
+            title: columns.iter().any(|column| column == "title"),
+            completed: columns.iter().any(|column| column == "completed"),
+            user_id: columns.iter().any(|column| column == "user_id"),
+            project_id: columns.iter().any(|column| column == "project_id"),
+            server_version: columns.iter().any(|column| column == "server_version"),
+            image: columns.iter().any(|column| column == "image"),
+            title_yjs_state: columns.iter().any(|column| column == "title_yjs_state"),
+        }
+    }
+
+    pub fn contains(&self, column: &str) -> bool {
+        match column {
+            "id" => self.id,
+            "title" => self.title,
+            "completed" => self.completed,
+            "user_id" => self.user_id,
+            "project_id" => self.project_id,
+            "server_version" => self.server_version,
+            "image" => self.image,
+            "title_yjs_state" => self.title_yjs_state,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TaskChangedRow<'a> {
+    pub raw: &'a SyncChangedRow,
+    pub changed: TaskChangedFields,
+    pub crdt: TaskChangedFields,
+}
+
+impl<'a> TaskChangedRow<'a> {
+    pub fn from_raw(row: &'a SyncChangedRow) -> Option<Self> {
+        if row.table != "tasks" {
+            return None;
+        }
+        Some(Self {
+            raw: row,
+            changed: TaskChangedFields::from_columns(&row.changed_fields),
+            crdt: TaskChangedFields::from_columns(&row.crdt_fields),
+        })
+    }
+
+    pub fn row_id(&self) -> Option<&str> {
+        self.raw.row_id.as_deref()
+    }
+
+    pub fn is_insert(&self) -> bool {
+        self.raw.operation == "insert"
+    }
+
+    pub fn is_update(&self) -> bool {
+        self.raw.operation == "update"
+    }
+
+    pub fn is_delete(&self) -> bool {
+        self.raw.operation == "delete"
+    }
+}
+
+pub fn task_changed_rows<'a>(
+    rows: impl IntoIterator<Item = &'a SyncChangedRow>,
+) -> Vec<TaskChangedRow<'a>> {
+    rows.into_iter()
+        .filter_map(TaskChangedRow::from_raw)
+        .collect()
 }
 
 pub fn generated_field_encryption_rules() -> Vec<FieldEncryptionRule> {

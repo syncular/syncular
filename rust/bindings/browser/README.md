@@ -81,6 +81,28 @@ Generated helpers intentionally do not emit table constants, column constants,
 or canned queries. Reads stay plain Kysely. Sync-aware writes go through
 `syncular.mutations` or generated operation helpers.
 
+Generated apps also get typed row-delta helpers for realtime/UI routing. The
+runtime event stays generic, while app code can branch on real table columns:
+
+```ts
+import { syncularChangedRows } from './generated/syncular.browser';
+
+const unsubscribe = syncular.client.addRowsChangedListener((event) => {
+  for (const task of syncularChangedRows.tasks(event)) {
+    if (task.isDelete) {
+      removeTaskFromList(task.rowId);
+      continue;
+    }
+    if (task.changed.title || task.changed.completed) {
+      refreshTaskRow(task.rowId);
+    }
+    if (task.crdt.title_yjs_state) {
+      refreshActiveEditorState(task.rowId);
+    }
+  }
+});
+```
+
 The returned `syncular.db` is a read/query-builder surface. Public SQL execution
 rejects app-table and internal-table writes, including Kysely `insertInto`,
 `updateTable`, `deleteFrom`, schema DDL, and raw mutating SQL. This prevents

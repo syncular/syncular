@@ -204,6 +204,8 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("public struct SyncularSelectQuery"));
     assert!(swift.contains("public struct SyncularLiveQueryRegistration"));
     assert!(swift.contains("public struct SyncularChangedRow"));
+    assert!(swift.contains("public struct TaskChangedRow"));
+    assert!(swift.contains("public struct TaskChangedFields"));
     assert!(swift.contains("public struct SyncularNativeEvent"));
     assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
     assert!(swift.contains("public func syncularDecodeNativeEvent"));
@@ -233,6 +235,8 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("data class SyncularSelectQuery"));
     assert!(kotlin.contains("data class SyncularLiveQueryRegistration"));
     assert!(kotlin.contains("data class SyncularChangedRow"));
+    assert!(kotlin.contains("data class TaskChangedRow"));
+    assert!(kotlin.contains("data class TaskChangedFields"));
     assert!(kotlin.contains("data class SyncularNativeEvent"));
     assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
     assert!(kotlin.contains("fun syncularDecodeNativeEvent(eventJson: String)"));
@@ -262,6 +266,8 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(android_kotlin.contains("syncularGeneratedQueryRows(queryJson(query.toJsonString()))"));
     assert!(android_kotlin.contains("data class SyncularLiveQueryRegistration"));
     assert!(android_kotlin.contains("data class SyncularChangedRow"));
+    assert!(android_kotlin.contains("data class TaskChangedRow"));
+    assert!(android_kotlin.contains("data class TaskChangedFields"));
     assert!(android_kotlin.contains("data class SyncularNativeEvent"));
     assert!(android_kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
     assert!(android_kotlin.contains("class SyncularNativeLiveQuery<Row>"));

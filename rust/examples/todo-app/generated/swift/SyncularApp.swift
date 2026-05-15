@@ -361,6 +361,166 @@ public func syncularDecodeNativeEvent(_ eventJson: String) throws -> SyncularNat
     try JSONDecoder().decode(SyncularNativeEvent.self, from: Data(eventJson.utf8))
 }
 
+public struct CommentChangedFields: Equatable {
+    public let raw: Set<String>
+    public let id: Bool
+    public let taskId: Bool
+    public let projectId: Bool
+    public let body: Bool
+    public let authorId: Bool
+    public let deleted: Bool
+    public let serverVersion: Bool
+
+    public init(_ fields: [String]) {
+        let raw = Set(fields)
+        self.raw = raw
+        self.id = raw.contains("id")
+        self.taskId = raw.contains("task_id")
+        self.projectId = raw.contains("project_id")
+        self.body = raw.contains("body")
+        self.authorId = raw.contains("author_id")
+        self.deleted = raw.contains("deleted")
+        self.serverVersion = raw.contains("server_version")
+    }
+
+    public func contains(_ column: String) -> Bool {
+        raw.contains(column)
+    }
+}
+
+public struct CommentChangedRow: Equatable {
+    public let raw: SyncularChangedRow
+    public let changed: CommentChangedFields
+    public let crdt: CommentChangedFields
+
+    public var rowId: String? { raw.rowId }
+    public var operation: String { raw.operation }
+    public var isInsert: Bool { raw.operation == "insert" }
+    public var isUpdate: Bool { raw.operation == "update" }
+    public var isDelete: Bool { raw.operation == "delete" }
+
+    public init?(_ row: SyncularChangedRow) {
+        guard row.table == "comments" else { return nil }
+        self.raw = row
+        self.changed = CommentChangedFields(row.changedFields)
+        self.crdt = CommentChangedFields(row.crdtFields)
+    }
+}
+
+public func commentChangedRows(_ rows: [SyncularChangedRow]) -> [CommentChangedRow] {
+    rows.compactMap(CommentChangedRow.init)
+}
+
+public func commentChangedRows(in event: SyncularNativeEvent) -> [CommentChangedRow] {
+    commentChangedRows(event.changedRows)
+}
+
+public struct ProjectChangedFields: Equatable {
+    public let raw: Set<String>
+    public let id: Bool
+    public let name: Bool
+    public let ownerId: Bool
+    public let archived: Bool
+    public let serverVersion: Bool
+
+    public init(_ fields: [String]) {
+        let raw = Set(fields)
+        self.raw = raw
+        self.id = raw.contains("id")
+        self.name = raw.contains("name")
+        self.ownerId = raw.contains("owner_id")
+        self.archived = raw.contains("archived")
+        self.serverVersion = raw.contains("server_version")
+    }
+
+    public func contains(_ column: String) -> Bool {
+        raw.contains(column)
+    }
+}
+
+public struct ProjectChangedRow: Equatable {
+    public let raw: SyncularChangedRow
+    public let changed: ProjectChangedFields
+    public let crdt: ProjectChangedFields
+
+    public var rowId: String? { raw.rowId }
+    public var operation: String { raw.operation }
+    public var isInsert: Bool { raw.operation == "insert" }
+    public var isUpdate: Bool { raw.operation == "update" }
+    public var isDelete: Bool { raw.operation == "delete" }
+
+    public init?(_ row: SyncularChangedRow) {
+        guard row.table == "projects" else { return nil }
+        self.raw = row
+        self.changed = ProjectChangedFields(row.changedFields)
+        self.crdt = ProjectChangedFields(row.crdtFields)
+    }
+}
+
+public func projectChangedRows(_ rows: [SyncularChangedRow]) -> [ProjectChangedRow] {
+    rows.compactMap(ProjectChangedRow.init)
+}
+
+public func projectChangedRows(in event: SyncularNativeEvent) -> [ProjectChangedRow] {
+    projectChangedRows(event.changedRows)
+}
+
+public struct TaskChangedFields: Equatable {
+    public let raw: Set<String>
+    public let id: Bool
+    public let title: Bool
+    public let completed: Bool
+    public let userId: Bool
+    public let projectId: Bool
+    public let serverVersion: Bool
+    public let image: Bool
+    public let titleYjsState: Bool
+
+    public init(_ fields: [String]) {
+        let raw = Set(fields)
+        self.raw = raw
+        self.id = raw.contains("id")
+        self.title = raw.contains("title")
+        self.completed = raw.contains("completed")
+        self.userId = raw.contains("user_id")
+        self.projectId = raw.contains("project_id")
+        self.serverVersion = raw.contains("server_version")
+        self.image = raw.contains("image")
+        self.titleYjsState = raw.contains("title_yjs_state")
+    }
+
+    public func contains(_ column: String) -> Bool {
+        raw.contains(column)
+    }
+}
+
+public struct TaskChangedRow: Equatable {
+    public let raw: SyncularChangedRow
+    public let changed: TaskChangedFields
+    public let crdt: TaskChangedFields
+
+    public var rowId: String? { raw.rowId }
+    public var operation: String { raw.operation }
+    public var isInsert: Bool { raw.operation == "insert" }
+    public var isUpdate: Bool { raw.operation == "update" }
+    public var isDelete: Bool { raw.operation == "delete" }
+
+    public init?(_ row: SyncularChangedRow) {
+        guard row.table == "tasks" else { return nil }
+        self.raw = row
+        self.changed = TaskChangedFields(row.changedFields)
+        self.crdt = TaskChangedFields(row.crdtFields)
+    }
+}
+
+public func taskChangedRows(_ rows: [SyncularChangedRow]) -> [TaskChangedRow] {
+    rows.compactMap(TaskChangedRow.init)
+}
+
+public func taskChangedRows(in event: SyncularNativeEvent) -> [TaskChangedRow] {
+    taskChangedRows(event.changedRows)
+}
+
 public struct SyncularGeneratedOperation: Codable, Equatable {
     public let table: String
     public let rowId: String

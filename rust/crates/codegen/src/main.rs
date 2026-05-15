@@ -3352,7 +3352,7 @@ fn generate_generated_module(tables: &[TableInfo], config: &CodegenConfig) -> Re
     out.push_str(&format!(
         "pub use {runtime_crate}::app_schema::{{AppTableMetadata, ColumnMetadata, CrdtYjsFieldMetadata, EncryptedFieldMetadata, ScopeMetadata, ScopeSource}};\n\
          #[allow(unused_imports)]\n\
-         use {runtime_crate}::client::{{SubscriptionSpec, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor}};\n\
+         use {runtime_crate}::client::{{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor}};\n\
          use {runtime_crate}::crdt_yjs::{{YjsUpdateEnvelope, YJS_PAYLOAD_KEY}};\n\
          use {runtime_crate}::encryption::FieldEncryptionRule;\n\
          use {runtime_crate}::error::Result;\n\
@@ -3390,6 +3390,8 @@ fn generate_generated_module(tables: &[TableInfo], config: &CodegenConfig) -> Re
     out.push_str(
         "pub fn table_metadata(table: &str) -> Option<&'static AppTableMetadata> {\n    APP_TABLE_METADATA.iter().find(|metadata| metadata.name == table)\n}\n\n",
     );
+
+    push_rust_changed_row_helpers(&mut out, &user_tables);
 
     out.push_str("pub fn generated_field_encryption_rules() -> Vec<FieldEncryptionRule> {\n");
     let encrypted_rules = user_tables
@@ -3478,6 +3480,316 @@ fn generate_generated_module(tables: &[TableInfo], config: &CodegenConfig) -> Re
     Ok(out)
 }
 
+fn push_rust_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
+    for table in user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        let helper_fn = format!("{}_changed_rows", singular_name(&table.name));
+        out.push_str(&format!(
+            "#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]\npub struct {type_name}ChangedFields {{\n"
+        ));
+        for column in &table.columns {
+            out.push_str(&format!(
+                "    pub {}: bool,\n",
+                rust_column_name(&column.name)
+            ));
+        }
+        out.push_str("}\n\n");
+        out.push_str(&format!("impl {type_name}ChangedFields {{\n"));
+        out.push_str("    pub fn from_columns(columns: &[String]) -> Self {\n");
+        out.push_str("        Self {\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "            {}: columns.iter().any(|column| column == \"{}\"),\n",
+                rust_column_name(&column.name),
+                column.name
+            ));
+        }
+        out.push_str("        }\n");
+        out.push_str("    }\n\n");
+        out.push_str("    pub fn contains(&self, column: &str) -> bool {\n");
+        out.push_str("        match column {\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "            \"{}\" => self.{},\n",
+                column.name,
+                rust_column_name(&column.name)
+            ));
+        }
+        out.push_str("            _ => false,\n");
+        out.push_str("        }\n");
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "#[derive(Debug, Clone, Copy)]\npub struct {type_name}ChangedRow<'a> {{\n    pub raw: &'a SyncChangedRow,\n    pub changed: {type_name}ChangedFields,\n    pub crdt: {type_name}ChangedFields,\n}}\n\n"
+        ));
+        out.push_str(&format!("impl<'a> {type_name}ChangedRow<'a> {{\n"));
+        out.push_str("    pub fn from_raw(row: &'a SyncChangedRow) -> Option<Self> {\n");
+        out.push_str(&format!(
+            "        if row.table != \"{}\" {{\n            return None;\n        }}\n",
+            table.name
+        ));
+        out.push_str("        Some(Self {\n");
+        out.push_str("            raw: row,\n");
+        out.push_str(&format!(
+            "            changed: {type_name}ChangedFields::from_columns(&row.changed_fields),\n"
+        ));
+        out.push_str(&format!(
+            "            crdt: {type_name}ChangedFields::from_columns(&row.crdt_fields),\n"
+        ));
+        out.push_str("        })\n");
+        out.push_str("    }\n\n");
+        out.push_str("    pub fn row_id(&self) -> Option<&str> {\n");
+        out.push_str("        self.raw.row_id.as_deref()\n");
+        out.push_str("    }\n\n");
+        out.push_str("    pub fn is_insert(&self) -> bool {\n        self.raw.operation == \"insert\"\n    }\n\n");
+        out.push_str("    pub fn is_update(&self) -> bool {\n        self.raw.operation == \"update\"\n    }\n\n");
+        out.push_str("    pub fn is_delete(&self) -> bool {\n        self.raw.operation == \"delete\"\n    }\n");
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "pub fn {helper_fn}<'a>(rows: impl IntoIterator<Item = &'a SyncChangedRow>) -> Vec<{type_name}ChangedRow<'a>> {{\n    rows.into_iter().filter_map({type_name}ChangedRow::from_raw).collect()\n}}\n\n"
+        ));
+    }
+}
+
+fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
+    out.push_str(
+        "export type SyncularGeneratedChangedOperation = SyncularV2ChangedRow['operation'];\n",
+    );
+    out.push_str("export type SyncularChangedRowsInput = SyncularV2RowsChangedEvent | { changedRows?: readonly SyncularV2ChangedRow[] } | readonly SyncularV2ChangedRow[];\n\n");
+    out.push_str("export interface SyncularGeneratedChangedRowBase<Table extends keyof SyncularAppDb, Field extends string> {\n");
+    out.push_str("  raw: SyncularV2ChangedRow;\n");
+    out.push_str("  table: Table;\n");
+    out.push_str("  rowId: string | null;\n");
+    out.push_str("  operation: SyncularGeneratedChangedOperation;\n");
+    out.push_str("  changedFields: Field[];\n");
+    out.push_str("  crdtFields: Field[];\n");
+    out.push_str("  changed: Record<Field, boolean>;\n");
+    out.push_str("  crdt: Record<Field, boolean>;\n");
+    out.push_str("  commitId: string | null;\n");
+    out.push_str("  commitSeq: number | null;\n");
+    out.push_str("  subscriptionId: string | null;\n");
+    out.push_str("  serverVersion: number | null;\n");
+    out.push_str("  isInsert: boolean;\n");
+    out.push_str("  isUpdate: boolean;\n");
+    out.push_str("  isDelete: boolean;\n");
+    out.push_str("}\n\n");
+    out.push_str("function syncularRowsFromChangedInput(input: SyncularChangedRowsInput): readonly SyncularV2ChangedRow[] {\n");
+    out.push_str("  return Array.isArray(input) ? input : input.changedRows ?? [];\n");
+    out.push_str("}\n\n");
+    out.push_str("function syncularColumnFlags<Field extends string>(fields: readonly string[], allFields: readonly Field[]): Record<Field, boolean> {\n");
+    out.push_str("  const changed = new Set(fields);\n");
+    out.push_str("  return Object.fromEntries(allFields.map((field) => [field, changed.has(field)])) as Record<Field, boolean>;\n");
+    out.push_str("}\n\n");
+    out.push_str("function syncularTypedChangedRows<Table extends keyof SyncularAppDb, Field extends string>(\n");
+    out.push_str("  input: SyncularChangedRowsInput,\n");
+    out.push_str("  table: Table,\n");
+    out.push_str("  fields: readonly Field[]\n");
+    out.push_str("): SyncularGeneratedChangedRowBase<Table, Field>[] {\n");
+    out.push_str("  const fieldSet = new Set<string>(fields);\n");
+    out.push_str("  return syncularRowsFromChangedInput(input)\n");
+    out.push_str("    .filter((row) => row.table === table)\n");
+    out.push_str("    .map((row) => ({\n");
+    out.push_str("      raw: row,\n");
+    out.push_str("      table,\n");
+    out.push_str("      rowId: row.rowId ?? null,\n");
+    out.push_str("      operation: row.operation,\n");
+    out.push_str("      changedFields: row.changedFields.filter((field): field is Field => fieldSet.has(field)),\n");
+    out.push_str("      crdtFields: row.crdtFields.filter((field): field is Field => fieldSet.has(field)),\n");
+    out.push_str("      changed: syncularColumnFlags(row.changedFields, fields),\n");
+    out.push_str("      crdt: syncularColumnFlags(row.crdtFields, fields),\n");
+    out.push_str("      commitId: row.commitId ?? null,\n");
+    out.push_str("      commitSeq: row.commitSeq ?? null,\n");
+    out.push_str("      subscriptionId: row.subscriptionId ?? null,\n");
+    out.push_str("      serverVersion: row.serverVersion ?? null,\n");
+    out.push_str("      isInsert: row.operation === 'insert',\n");
+    out.push_str("      isUpdate: row.operation === 'update',\n");
+    out.push_str("      isDelete: row.operation === 'delete',\n");
+    out.push_str("    }));\n");
+    out.push_str("}\n\n");
+
+    for table in user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        let helper_name = format!("{}ChangedRows", singular_name(&table.name));
+        out.push_str(&format!(
+            "export const syncular{type_name}ChangedFields = [\n"
+        ));
+        for column in &table.columns {
+            out.push_str(&format!("  {},\n", ts_string(&column.name)));
+        }
+        out.push_str("] as const;\n");
+        out.push_str(&format!(
+            "export type {type_name}ChangedField = typeof syncular{type_name}ChangedFields[number];\n"
+        ));
+        out.push_str(&format!(
+            "export type {type_name}ChangedColumns = Record<{type_name}ChangedField, boolean>;\n"
+        ));
+        out.push_str(&format!(
+            "export type {type_name}ChangedRow = SyncularGeneratedChangedRowBase<{}, {type_name}ChangedField>;\n",
+            ts_string(&table.name)
+        ));
+        out.push_str(&format!(
+            "export function {helper_name}(input: SyncularChangedRowsInput): {type_name}ChangedRow[] {{\n"
+        ));
+        out.push_str(&format!(
+            "  return syncularTypedChangedRows(input, {}, syncular{type_name}ChangedFields);\n",
+            ts_string(&table.name)
+        ));
+        out.push_str("}\n\n");
+    }
+
+    out.push_str("export type SyncularAppChangedRow =\n");
+    if user_tables.is_empty() {
+        out.push_str("  never;\n\n");
+    } else {
+        for (index, table) in user_tables.iter().enumerate() {
+            let prefix = if index == 0 { "  " } else { "  | " };
+            out.push_str(&format!(
+                "{prefix}{}ChangedRow{}\n",
+                singular_pascal_case(&table.name),
+                if index + 1 == user_tables.len() {
+                    ";"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.push('\n');
+    }
+    out.push_str("export function syncularAppChangedRows(input: SyncularChangedRowsInput): SyncularAppChangedRow[] {\n");
+    out.push_str("  return [\n");
+    for table in user_tables {
+        out.push_str(&format!(
+            "    ...{}ChangedRows(input),\n",
+            singular_name(&table.name)
+        ));
+    }
+    out.push_str("  ];\n");
+    out.push_str("}\n\n");
+    out.push_str("export const syncularChangedRows = {\n");
+    for table in user_tables {
+        out.push_str(&format!(
+            "  {}: {}ChangedRows,\n",
+            ts_property_name(&table.name),
+            singular_name(&table.name)
+        ));
+    }
+    out.push_str("} as const;\n\n");
+}
+
+fn push_swift_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
+    for table in user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        let helper_fn = lower_camel_case(&format!("{}_changed_rows", singular_name(&table.name)));
+        out.push_str(&format!(
+            "public struct {type_name}ChangedFields: Equatable {{\n"
+        ));
+        out.push_str("    public let raw: Set<String>\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "    public let {}: Bool\n",
+                lower_camel_case(&column.name)
+            ));
+        }
+        out.push_str("\n    public init(_ fields: [String]) {\n");
+        out.push_str("        let raw = Set(fields)\n");
+        out.push_str("        self.raw = raw\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "        self.{} = raw.contains({})\n",
+                lower_camel_case(&column.name),
+                double_quoted_string(&column.name)
+            ));
+        }
+        out.push_str("    }\n\n");
+        out.push_str("    public func contains(_ column: String) -> Bool {\n");
+        out.push_str("        raw.contains(column)\n");
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "public struct {type_name}ChangedRow: Equatable {{\n"
+        ));
+        out.push_str("    public let raw: SyncularChangedRow\n");
+        out.push_str(&format!(
+            "    public let changed: {type_name}ChangedFields\n"
+        ));
+        out.push_str(&format!(
+            "    public let crdt: {type_name}ChangedFields\n\n"
+        ));
+        out.push_str("    public var rowId: String? { raw.rowId }\n");
+        out.push_str("    public var operation: String { raw.operation }\n");
+        out.push_str("    public var isInsert: Bool { raw.operation == \"insert\" }\n");
+        out.push_str("    public var isUpdate: Bool { raw.operation == \"update\" }\n");
+        out.push_str("    public var isDelete: Bool { raw.operation == \"delete\" }\n\n");
+        out.push_str("    public init?(_ row: SyncularChangedRow) {\n");
+        out.push_str(&format!(
+            "        guard row.table == {} else {{ return nil }}\n",
+            double_quoted_string(&table.name)
+        ));
+        out.push_str("        self.raw = row\n");
+        out.push_str(&format!(
+            "        self.changed = {type_name}ChangedFields(row.changedFields)\n"
+        ));
+        out.push_str(&format!(
+            "        self.crdt = {type_name}ChangedFields(row.crdtFields)\n"
+        ));
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "public func {helper_fn}(_ rows: [SyncularChangedRow]) -> [{type_name}ChangedRow] {{\n"
+        ));
+        out.push_str(&format!(
+            "    rows.compactMap({type_name}ChangedRow.init)\n"
+        ));
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "public func {helper_fn}(in event: SyncularNativeEvent) -> [{type_name}ChangedRow] {{\n"
+        ));
+        out.push_str(&format!("    {helper_fn}(event.changedRows)\n"));
+        out.push_str("}\n\n");
+    }
+}
+
+fn push_kotlin_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
+    for table in user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        let helper_fn = lower_camel_case(&format!("{}_changed_rows", singular_name(&table.name)));
+        out.push_str(&format!(
+            "data class {type_name}ChangedFields(val raw: Set<String>) {{\n"
+        ));
+        out.push_str("    constructor(fields: List<String>) : this(fields.toSet())\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "    val {}: Boolean = raw.contains({})\n",
+                lower_camel_case(&column.name),
+                double_quoted_string(&column.name)
+            ));
+        }
+        out.push_str("\n    fun contains(column: String): Boolean = raw.contains(column)\n");
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "data class {type_name}ChangedRow(\n    val raw: SyncularChangedRow,\n    val changed: {type_name}ChangedFields = {type_name}ChangedFields(raw.changedFields),\n    val crdt: {type_name}ChangedFields = {type_name}ChangedFields(raw.crdtFields),\n) {{\n"
+        ));
+        out.push_str("    val rowId: String? get() = raw.rowId\n");
+        out.push_str("    val operation: String get() = raw.operation\n");
+        out.push_str("    val isInsert: Boolean get() = raw.operation == \"insert\"\n");
+        out.push_str("    val isUpdate: Boolean get() = raw.operation == \"update\"\n");
+        out.push_str("    val isDelete: Boolean get() = raw.operation == \"delete\"\n\n");
+        out.push_str("    companion object {\n");
+        out.push_str(&format!(
+            "        fun from(row: SyncularChangedRow): {type_name}ChangedRow? =\n            if (row.table == {}) {type_name}ChangedRow(row) else null\n",
+            double_quoted_string(&table.name)
+        ));
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str(&format!(
+            "fun {helper_fn}(rows: List<SyncularChangedRow>): List<{type_name}ChangedRow> =\n    rows.mapNotNull {{ {type_name}ChangedRow.from(it) }}\n\n"
+        ));
+        out.push_str(&format!(
+            "fun {helper_fn}(event: SyncularNativeEvent): List<{type_name}ChangedRow> =\n    {helper_fn}(event.changedRows)\n\n"
+        ));
+    }
+}
+
 fn generate_typescript_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
@@ -3498,7 +3810,7 @@ fn generate_typescript_module(
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
@@ -3793,6 +4105,7 @@ fn generate_typescript_module(
         out.push_str(&format!("  {},\n", ts_string(&table.name)));
     }
     out.push_str("] as const satisfies readonly (keyof SyncularAppDb)[];\n\n");
+    push_typescript_changed_row_helpers(&mut out, &user_tables);
     out.push_str("export const syncularGeneratedCodecs: ColumnCodecSource = (column) => {\n");
     out.push_str(
         "  const table = syncularGeneratedTableConfig[column.table as keyof SyncularAppDb];\n",
@@ -4791,6 +5104,7 @@ fn generate_swift_module(
         "    try JSONDecoder().decode(SyncularNativeEvent.self, from: Data(eventJson.utf8))\n",
     );
     out.push_str("}\n\n");
+    push_swift_changed_row_helpers(&mut out, &user_tables);
     out.push_str("public struct SyncularGeneratedOperation: Codable, Equatable {\n");
     out.push_str("    public let table: String\n");
     out.push_str("    public let rowId: String\n");
@@ -6376,6 +6690,7 @@ fn generate_kotlin_module(
     out.push_str("        durationMs = event[\"duration_ms\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
+    push_kotlin_changed_row_helpers(&mut out, &user_tables);
     if has_native_crdt {
         out.push_str(
             "fun syncularDecodeCrdtFieldDescriptor(json: String): SyncularCrdtFieldDescriptor {\n",
@@ -7896,7 +8211,7 @@ mod tests {
             "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
-            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
@@ -8303,7 +8618,7 @@ mod tests {
         assert!(output.contains("encrypted_fields: TASKS_ENCRYPTED_FIELDS"));
         assert!(output.contains("columns: TASKS_COLUMNS"));
         assert!(output.contains("params.insert(\"includeArchived\".to_string(), json!(true));"));
-        assert!(output.contains("use syncular_client::client::{SubscriptionSpec, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor};"));
+        assert!(output.contains("use syncular_client::client::{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor};"));
         assert!(output.contains("use syncular_client::encryption::FieldEncryptionRule;"));
         assert!(output
             .contains("pub fn generated_field_encryption_rules() -> Vec<FieldEncryptionRule>"));

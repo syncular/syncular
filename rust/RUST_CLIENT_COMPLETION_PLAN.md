@@ -1053,6 +1053,13 @@ Progress:
   metadata so app bridges can update active documents and list/read models
   without full table/bootstrap refreshes. Generated Swift/Kotlin clients decode
   the same `SyncularChangedRow` shape.
+- Codegen now wraps those generic deltas in generated table-specific helpers
+  across Rust, browser TypeScript, Swift, Kotlin/JVM, and Android. Hosts can
+  ask for `taskChangedRows(event)`/`task_changed_rows(&rows)` and branch on
+  typed field flags such as `changed.title`, `changed.completed`, and
+  `crdt.title_yjs_state`/`titleYjsState` instead of open-coded table and column
+  strings. Row mutation operations are normalized to `insert`, `update`, and
+  `delete`; CRDT compaction remains a field-level CRDT event.
 - Generated Swift/Kotlin clients now include typed enqueue helpers for table
   mutations (`enqueueNewTask`, `enqueueTaskPatch`, `enqueueTaskDelete`) on top
   of the schema-agnostic low-level `enqueueMutationJson`.
