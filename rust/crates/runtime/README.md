@@ -158,20 +158,22 @@ coalesces sync triggers after local writes. rusqlite remains useful as a
 trait-boundary/parity backend, but it is not the native default.
 The C ABI catches Rust panics at exported boundaries and returns structured
 `Internal` errors through `error_out` instead of unwinding into Swift/Kotlin/C.
-Native hosts can poll `poll_event_timeout()` for binding-safe events:
+Native hosts receive binding-safe events from the native event stream:
 `SyncCompleted`, `SyncFailed` with structured `{ kind, message, debug? }` error
 info, or `RowsChanged` with affected table names and additive `changedRows`
 row/field summaries. Local writes emit `RowsChanged` immediately. Successful
-syncs return a `SyncReport`: if the server changed app tables, native polling
-emits `SyncCompleted` followed by `RowsChanged` for the actual affected
-generated tables. Both events include the same generic row deltas when Syncular
-can determine them: table, row id, insert/update/delete operation, changed
-fields, CRDT/Yjs state fields, subscription id, server version, and commit
-metadata. The JSON payload for row events also includes a generic `source`
-(`localWrite` or `remotePull`), so app bridges can update active documents,
-sidebars, and conflict UI without guessing from table names. Sync-created
-conflicts, conflict resolution, and keep-local retry emit `ConflictsChanged`.
-`poll_event_json_timeout()` exposes the same event as JSON for C-style bindings.
+syncs return a `SyncReport`: if the server changed app tables, the stream emits
+`SyncCompleted` followed by `RowsChanged` for the actual affected generated
+tables. Both events include the same generic row deltas when Syncular can
+determine them: table, row id, insert/update/delete operation, changed fields,
+CRDT/Yjs state fields, subscription id, server version, and commit metadata.
+The JSON payload for row events also includes a generic `source` (`localWrite`
+or `remotePull`), so app bridges can update active documents, sidebars, and
+conflict UI without guessing from table names. Sync-created conflicts, conflict
+resolution, and keep-local retry emit `ConflictsChanged`. C hosts subscribe with
+`syncular_native_client_subscribe_events_json(...)`; BoltFFI hosts use
+`startEventStream(capacity)`, read ordered JSON events with `nextEventJson()`
+from a background task, and close the stream with `closeEventStream()`.
 For generated host wrappers, `app_tables_json` lists generated app tables and
 `query_json(request)` executes read-only SQL/query-builder output against
 declared generated app-table dependencies while rejecting internal tables and
@@ -183,7 +185,7 @@ table, enqueues it in the outbox, emits `RowsChanged`, and optionally triggers
 sync. `apply_local_operation_json` remains as the compatibility alias for older
 wrappers, but generated app clients should use mutation naming.
 `native_ffi` adds a narrow C ABI over the same facade: JSON config in, opaque
-handle out, explicit string free, JSON reads/events, and the same JSON error
+handle out, explicit string free, JSON reads/callback events, and the same JSON error
 payloads as native events. `rust/bindings/c/syncular_native.h` remains a
 low-level ABI and debugging artifact.
 
@@ -544,9 +546,10 @@ The native bindings are shaped for UI hosts that keep Syncular work off the
 main thread. Open the database during app startup or scene/session activation,
 start or resume the native worker, then use queued methods for local writes,
 explicit sync, conflict commands, CRDT updates, blob file work, snapshot
-refresh, and compaction. Poll `poll_event_json_timeout()` from a background
-task and forward ordered events to the UI model by `event_seq` and
-`command_id`; do not make view code wait synchronously for SQLite/outbox work.
+refresh, and compaction. Subscribe to the native event stream once and read
+`nextEventJson()` from a background task, or use the C callback subscription,
+then forward ordered events to the UI model by `event_seq` and `command_id`; do
+not make view code wait synchronously for SQLite/outbox work.
 For live views, prefer the generic `changedRows` summaries on `RowsChanged`,
 `QueriesChanged`, `SyncCompleted`, and `LocalWriteCommitted` over reloading
 whole app tables. They are intentionally app-schema deltas, not editor-specific
@@ -559,17 +562,19 @@ library loading. Use the async native open path when that cost would sit on a
 UI-critical path: Swift exposes `SyncularBoltClient(openAsync:)`, Kotlin/JVM
 exposes `SyncularBoltClient.openAsync(config)`, and both wrappers provide
 `openCommandId()`, `isOpenFinished()`, and `finishOpenTimeout(...)`. C hosts can
-use `syncular_native_client_open_async*`. After async open finishes, the returned
-client is the normal long-lived native runtime and all queued APIs behave the
-same as with synchronous open.
+use `syncular_native_client_open_async_finish_timeout(...)` to wait for the
+background open result. After async open finishes, the returned client is the
+normal long-lived native runtime and all queued APIs behave the same as with
+synchronous open.
 
 When the app backgrounds, prefer leaving the worker alive if the platform allows
 short background work, then enqueue a sync or compaction only within the host
 platform's background execution budget. On foreground, refresh auth headers
 first, then enqueue sync and refresh large views through the snapshot/query
 refresh queue. On shutdown, call the explicit binding lifecycle method
-(`shutdown()` in BoltFFI-generated Swift/Kotlin/Java wrappers) and keep polling
-until the worker reports completion or the app's shutdown deadline is reached.
+(`shutdown()` in BoltFFI-generated Swift/Kotlin/Java wrappers), drain any
+already-delivered events that matter to the host, and close the event stream
+before releasing the native client.
 When opening native clients with injected `appSchemaJson`, set generated
 subscriptions with `setSubscriptionsJson` before the first foreground sync.
 

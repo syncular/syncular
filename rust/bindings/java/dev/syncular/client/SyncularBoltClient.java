@@ -196,14 +196,34 @@ public final class SyncularBoltClient implements AutoCloseable {
         return reader.readBool();
     }
 
-    public java.util.Optional<String> pollEventJsonTimeout(long timeoutMs) {
-        byte[] _buf = Native.boltffi_syncular_bolt_client_poll_event_json_timeout(handle, timeoutMs);
+    public boolean startEventStream(long capacity) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_start_event_stream(handle, capacity);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
+    public java.util.Optional<String> nextEventJson() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_next_event_json(handle);
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
             throw new RuntimeException(reader.readString());
         }
         return reader.readI8() == 0 ? java.util.Optional.empty() : java.util.Optional.ofNullable(reader.readString());
+    }
+
+    public boolean closeEventStream() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_close_event_stream(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
     }
 
     public String applyLocalOperationJson(String operationJson, java.util.Optional<String> localRowJson) {

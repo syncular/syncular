@@ -8,10 +8,20 @@
 extern "C" {
 #endif
 
-#define SYNCULAR_NATIVE_FFI_ABI_VERSION 1
+#define SYNCULAR_NATIVE_FFI_ABI_VERSION 2
 
 typedef struct SyncularNativeHandle SyncularNativeHandle;
 typedef struct SyncularNativeOpenHandle SyncularNativeOpenHandle;
+typedef struct SyncularNativeEventSubscription SyncularNativeEventSubscription;
+
+typedef void (*SyncularNativeEventCallback)(
+    const char *event_json,
+    void *user_data
+);
+typedef void (*SyncularNativeEventErrorCallback)(
+    const char *error_json,
+    void *user_data
+);
 
 /*
  * All returned strings are UTF-8 JSON unless a function documents otherwise.
@@ -48,7 +58,7 @@ bool syncular_native_client_open_async_is_finished(
     char **error_out
 );
 
-SyncularNativeHandle *syncular_native_client_open_async_poll(
+SyncularNativeHandle *syncular_native_client_open_async_finish_timeout(
     SyncularNativeOpenHandle *handle,
     uint64_t timeout_ms,
     char **error_out
@@ -408,9 +418,17 @@ char *syncular_native_client_retry_conflict_keep_local(
     char **error_out
 );
 
-char *syncular_native_client_poll_event_json(
+SyncularNativeEventSubscription *syncular_native_client_subscribe_events_json(
     SyncularNativeHandle *handle,
-    uint64_t timeout_ms,
+    uint32_t capacity,
+    SyncularNativeEventCallback callback,
+    SyncularNativeEventErrorCallback error_callback,
+    void *user_data,
+    char **error_out
+);
+
+bool syncular_native_event_subscription_close(
+    SyncularNativeEventSubscription *handle,
     char **error_out
 );
 

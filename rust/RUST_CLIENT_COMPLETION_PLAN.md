@@ -59,8 +59,8 @@ or needs a design decision.
   resolution, Yjs update bursts, large query/snapshot refresh,
   blob/compaction work, and async open/migration/schema validation for slow
   startup paths.
-- Native event polling: blocking event waits should not hold broad client locks
-  while waiting. Polling needs a narrow queue/receiver wait path.
+- Native event delivery: UI hosts should subscribe to a clean native event
+  stream or C callback API from app code.
 - Native transport: HTTP/WebSocket paths need production timeout defaults and
   consistent retry/cancellation behavior across desktop/mobile hosts.
 - Platform integration: generated Swift/Kotlin code compiles, command-line
@@ -122,9 +122,10 @@ Goal: close correctness holes before adding more public API.
 - `[x]` Add production transport timeout defaults for native HTTP/WebSocket.
   Cover connect, request, response body, websocket open, websocket idle, and
   shutdown behavior.
-- `[x]` Fix native event polling lock shape.
-  `poll_event_json_timeout` should wait on the event queue/receiver without
-  holding a broad client mutex that blocks unrelated queued commands.
+- `[x]` Replace host-facing native event waits with stream/callback delivery.
+  Rust hosts can subscribe to `NativeEventSubscription`, C hosts use a callback
+  subscription, and BoltFFI hosts use `startEventStream`/`nextEventJson`/
+  `closeEventStream`.
 - `[x]` Add queued native worker APIs for blob queue processing, blob cache
   pruning, storage compaction, and long snapshot/query refresh work.
 - `[x]` Add optional worker-owned open/migration path.
@@ -476,7 +477,7 @@ and native smoke if touched.
 Scope: make native UI runtime behavior production-shaped.
 
 - `[x]` Add production timeout defaults for native HTTP/WebSocket transports.
-- `[x]` Fix event polling so timeout waits do not hold broad client locks.
+- `[x]` Replace host-facing event waits with native stream/callback delivery.
 - `[x]` Add queued worker APIs for blob queue processing, blob cache pruning, storage
   compaction, and long snapshot/query refresh work.
 - `[x]` Add optional worker-owned open/migration/schema-validation path for UI apps.
@@ -493,7 +494,8 @@ Done when:
 
 - Native queued APIs cover local writes, sync, conflict commands, Yjs bursts,
   blob/compaction work, and long refresh work.
-- Event polling can wait without blocking unrelated queued commands.
+- Event delivery can block in a background stream reader without blocking
+  unrelated queued commands.
 - Timeout behavior has unit/integration coverage and clear error metadata.
 
 Suggested verification:

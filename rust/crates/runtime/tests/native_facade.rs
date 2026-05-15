@@ -30,7 +30,7 @@ fn native_facade_auto_triggers_sync_after_local_write() -> Result<()> {
     apply_task_upsert(&mut client, "native-write-task", "Native write")?;
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("local rows changed event");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
@@ -40,7 +40,7 @@ fn native_facade_auto_triggers_sync_after_local_write() -> Result<()> {
     );
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncFailed);
     assert_eq!(
@@ -169,18 +169,18 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
     assert_eq!(outbox_json[0]["status"], "pending");
 
     let local_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("local rows changed event");
     assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
     assert_eq!(local_event.tables, vec!["tasks".to_string()]);
 
     assert!(client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .is_none());
 
     client.trigger_sync()?;
     let event_json = client
-        .poll_event_json_timeout(Duration::from_secs(5))
+        .next_event_json_timeout(Duration::from_secs(5))
         .expect("manual sync result event");
     let event_json: Value = serde_json::from_str(&event_json?)?;
     assert_eq!(event_json["kind"], "SyncFailed");
@@ -212,7 +212,7 @@ fn native_facade_emits_auth_expired_event_for_sync_401() -> Result<()> {
     client.trigger_sync()?;
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("auth expired event");
     assert_eq!(event.kind, NativeEventKind::AuthExpired);
     assert_eq!(
@@ -255,7 +255,7 @@ fn native_facade_applies_dynamic_auth_headers_to_worker_sync() -> Result<()> {
     client.trigger_sync()?;
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("auth header sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert!(event.error.is_none());
@@ -288,13 +288,13 @@ fn native_facade_successful_empty_sync_emits_completion_only() -> Result<()> {
     client.trigger_sync()?;
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("successful sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert!(event.error.is_none());
     assert!(event.tables.is_empty());
     assert!(client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .is_none());
 
     client.close()?;
@@ -357,7 +357,7 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
     client.trigger_sync()?;
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("successful sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
@@ -369,7 +369,7 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
         .contains(&"title".to_string()));
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("post-sync rows changed event");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
@@ -383,7 +383,7 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
     );
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("post-sync queries changed event");
     assert_eq!(event.kind, NativeEventKind::QueriesChanged);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
@@ -413,20 +413,20 @@ fn native_facade_rejected_push_emits_conflicts_changed() -> Result<()> {
 
     apply_task_upsert(&mut client, "native-conflict-task", "Conflict candidate")?;
     let local_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("local rows changed event");
     assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
 
     client.trigger_sync()?;
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("conflict sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert!(event.tables.is_empty());
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(5))
+        .next_event_timeout(Duration::from_secs(5))
         .expect("conflicts changed event");
     assert_eq!(event.kind, NativeEventKind::ConflictsChanged);
     assert!(event.tables.is_empty());
@@ -473,7 +473,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
     assert_eq!(tasks_json[0]["title"], "Generic task");
 
     let local_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("generic operation rows changed event");
     assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
     assert_eq!(local_event.tables, vec!["tasks".to_string()]);
@@ -513,7 +513,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
     .to_string();
     client.apply_local_operation_json(&update, None)?;
     let local_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("generic update rows changed event");
     assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
     assert_eq!(local_event.changed_rows.len(), 1);
@@ -535,7 +535,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(tasks_json.as_array().map(Vec::len), Some(0));
     let delete_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("generic delete rows changed event");
     assert_eq!(delete_event.changed_rows.len(), 1);
     assert_eq!(delete_event.changed_rows[0].operation, "delete");
@@ -728,7 +728,7 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
     assert!(command_id.starts_with("native-local-write-"));
 
     let committed = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("queued local write committed event");
     assert_eq!(committed.kind, NativeEventKind::LocalWriteCommitted);
     assert_eq!(committed.command_id.as_deref(), Some(command_id.as_str()));
@@ -743,7 +743,7 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
     assert!(committed.event_seq > 0);
 
     let rows = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("queued local rows changed event");
     assert_eq!(rows.kind, NativeEventKind::RowsChanged);
     assert_eq!(rows.tables, vec!["tasks".to_string()]);
@@ -772,7 +772,7 @@ fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
     )?;
 
     apply_task_upsert(&mut client, "queued-yjs-task", "")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let first = build_yjs_text_update(BuildYjsTextUpdateArgs {
         previous_state_base64: None,
@@ -811,7 +811,7 @@ fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
     let mut saw_rows_changed = false;
     for _ in 0..6 {
         let event = client
-            .poll_event_timeout(Duration::from_secs(2))
+            .next_event_timeout(Duration::from_secs(2))
             .expect("Yjs worker event");
         match event.kind {
             NativeEventKind::LocalWriteCommitted
@@ -857,7 +857,7 @@ fn native_facade_exposes_generic_crdt_field_api() -> Result<()> {
     )?;
 
     apply_task_upsert(&mut client, "native-crdt-field-task", "")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let field_request = json!({
         "table": "tasks",
@@ -888,7 +888,7 @@ fn native_facade_exposes_generic_crdt_field_api() -> Result<()> {
         .is_some_and(|id| !id.is_empty()));
 
     let crdt_event = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT field changed event");
     assert_eq!(crdt_event.kind, NativeEventKind::CrdtFieldChanged);
     assert_eq!(crdt_event.tables, vec!["tasks".to_string()]);
@@ -923,7 +923,7 @@ fn native_facade_exposes_generic_crdt_field_api() -> Result<()> {
     );
 
     let event = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT field rows changed event");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
@@ -975,7 +975,7 @@ fn native_facade_enqueues_generic_crdt_field_yjs_update() -> Result<()> {
     )?;
 
     apply_task_upsert(&mut client, "queued-crdt-field-task", "")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
         previous_state_base64: None,
@@ -995,20 +995,20 @@ fn native_facade_enqueues_generic_crdt_field_yjs_update() -> Result<()> {
     assert!(command_id.starts_with("native-yjs-"));
 
     let committed = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued commit event");
     assert_eq!(committed.kind, NativeEventKind::LocalWriteCommitted);
     assert_eq!(committed.command_id.as_deref(), Some(command_id.as_str()));
     assert_eq!(committed.tables, vec!["tasks".to_string()]);
 
     let rows = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued rows changed event");
     assert_eq!(rows.kind, NativeEventKind::RowsChanged);
     assert_eq!(rows.tables, vec!["tasks".to_string()]);
 
     let crdt = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued field event");
     assert_eq!(crdt.kind, NativeEventKind::CrdtFieldChanged);
     assert_eq!(crdt.command_id.as_deref(), Some(command_id.as_str()));
@@ -1052,7 +1052,7 @@ fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()>
     )?;
 
     apply_task_upsert(&mut client, "queued-crdt-field-text-task", "")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let text_command_id = client.enqueue_crdt_field_text_json(
         &json!({
@@ -1066,7 +1066,7 @@ fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()>
     assert!(text_command_id.starts_with("native-crdt-text-"));
 
     let committed = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued text commit event");
     assert_eq!(committed.kind, NativeEventKind::LocalWriteCommitted);
     assert_eq!(
@@ -1076,13 +1076,13 @@ fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()>
     assert_eq!(committed.tables, vec!["tasks".to_string()]);
 
     let rows = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued text rows changed event");
     assert_eq!(rows.kind, NativeEventKind::RowsChanged);
     assert_eq!(rows.tables, vec!["tasks".to_string()]);
 
     let crdt = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued text field event");
     assert_eq!(crdt.kind, NativeEventKind::CrdtFieldChanged);
     assert_eq!(crdt.command_id.as_deref(), Some(text_command_id.as_str()));
@@ -1127,7 +1127,7 @@ fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()>
     assert!(compact_command_id.starts_with("native-crdt-compact-"));
 
     let compacted = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("server-merge CRDT queued compaction completion event");
     assert_eq!(compacted.kind, NativeEventKind::WorkerCommandCompleted);
     assert_eq!(
@@ -1169,7 +1169,7 @@ fn native_facade_failed_queued_crdt_field_write_reports_field_payload() -> Resul
     )?;
 
     apply_task_upsert(&mut client, "failed-crdt-field-task", "Legacy title")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let command_id = client.enqueue_crdt_field_text_json(
         &json!({
@@ -1182,7 +1182,7 @@ fn native_facade_failed_queued_crdt_field_write_reports_field_payload() -> Resul
     )?;
 
     let failed = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("generic CRDT queued text failure event");
     assert_eq!(failed.kind, NativeEventKind::LocalWriteFailed);
     assert_eq!(failed.command_id.as_deref(), Some(command_id.as_str()));
@@ -1217,7 +1217,7 @@ fn native_facade_queued_crdt_field_update_does_not_wait_for_busy_worker() -> Res
     )?;
 
     apply_task_upsert(&mut client, "nonblocking-crdt-field-task", "")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let sync_command_id = client.enqueue_sync_now()?;
     started_rx
@@ -1251,7 +1251,7 @@ fn native_facade_queued_crdt_field_update_does_not_wait_for_busy_worker() -> Res
     let mut saw_local_commit = false;
     for _ in 0..8 {
         let event = client
-            .poll_event_timeout(Duration::from_secs(2))
+            .next_event_timeout(Duration::from_secs(2))
             .expect("worker event after queued CRDT field update");
         match event.kind {
             NativeEventKind::SyncStarted
@@ -1298,7 +1298,7 @@ fn native_facade_enqueues_snapshot_refresh_on_worker() -> Result<()> {
     )?;
 
     apply_task_upsert(&mut client, "snapshot-task", "Snapshot task")?;
-    let _ = client.poll_event_timeout(Duration::from_millis(100));
+    let _ = client.next_event_timeout(Duration::from_millis(100));
 
     let command_id = client.enqueue_refresh_snapshot_json(
         &json!({
@@ -1309,7 +1309,7 @@ fn native_facade_enqueues_snapshot_refresh_on_worker() -> Result<()> {
         .to_string(),
     )?;
     let event = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("snapshot ready event");
     assert_eq!(event.kind, NativeEventKind::SnapshotReady);
     assert_eq!(event.command_id.as_deref(), Some(command_id.as_str()));
@@ -1351,7 +1351,7 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
         ),
     )?;
     let store_event = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("queued store blob event");
     assert_eq!(store_event.kind, NativeEventKind::WorkerCommandCompleted);
     assert_eq!(
@@ -1364,7 +1364,7 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
     let retrieve_command =
         client.enqueue_retrieve_blob_file_json(&blob_ref.to_string(), &output_path, None)?;
     let retrieve_event = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("queued retrieve blob event");
     assert_eq!(
         retrieve_event.command_id.as_deref(),
@@ -1374,7 +1374,7 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
 
     let compact_command = client.enqueue_compact_storage_json(None)?;
     let compact_event = client
-        .poll_event_timeout(Duration::from_secs(2))
+        .next_event_timeout(Duration::from_secs(2))
         .expect("queued compaction event");
     assert_eq!(compact_event.kind, NativeEventKind::WorkerCommandCompleted);
     assert_eq!(
@@ -1438,14 +1438,14 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
     client.apply_local_operation_json(&operation, None)?;
 
     let rows_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("rows changed event");
     assert_eq!(rows_event.kind, NativeEventKind::RowsChanged);
     assert_eq!(rows_event.tables, vec!["tasks".to_string()]);
     assert!(rows_event.queries.is_empty());
 
     let query_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("queries changed event");
     assert_eq!(query_event.kind, NativeEventKind::QueriesChanged);
     assert_eq!(query_event.tables, vec!["tasks".to_string()]);
@@ -1465,11 +1465,11 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
     )?;
 
     let rows_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("rows changed event after unregister");
     assert_eq!(rows_event.kind, NativeEventKind::RowsChanged);
     assert!(client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .is_none());
 
     let error = client
@@ -1523,23 +1523,23 @@ fn native_facade_replaces_duplicate_query_observer_dependencies() -> Result<()> 
 
     apply_task_upsert(&mut client, "query-replace-task", "Replacement task")?;
     let event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("task rows changed event");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     let event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("task queries changed event");
     assert_eq!(event.kind, NativeEventKind::QueriesChanged);
     assert_eq!(event.queries, vec!["live-list".to_string()]);
 
     apply_project_upsert(&mut client, "query-replace-project", "Ignored project")?;
     let event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("project rows changed event");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     assert_eq!(event.tables, vec!["projects".to_string()]);
     assert!(client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .is_none());
 
     client.unregister_query("live-list")?;
@@ -1556,11 +1556,11 @@ fn native_facade_replaces_duplicate_query_observer_dependencies() -> Result<()> 
         None,
     )?;
     let event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("task rows changed after duplicate unregister");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     assert!(client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .is_none());
 
     client.close()?;
@@ -1599,11 +1599,11 @@ fn native_facade_can_pause_and_resume_background_worker() -> Result<()> {
 
     apply_task_upsert(&mut client, "paused-worker-task", "Queued while paused")?;
     let local_event = client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .expect("local rows changed event");
     assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
     assert!(client
-        .poll_event_timeout(Duration::from_millis(100))
+        .next_event_timeout(Duration::from_millis(100))
         .is_none());
 
     let error = client

@@ -842,11 +842,29 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
-    fun pollEventJsonTimeout(timeoutMs: ULong): String? {
-        val buf = Native.boltffi_syncular_bolt_client_poll_event_json_timeout(handle, timeoutMs.toLong())
+    fun startEventStream(capacity: ULong): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_start_event_stream(handle, capacity.toLong())
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun nextEventJson(): String? {
+        val buf = Native.boltffi_syncular_bolt_client_next_event_json(handle)
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readOptional { reader.readString() } }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun closeEventStream(): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_close_event_stream(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
     }
 
 
@@ -1513,7 +1531,9 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_pause_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resume_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_sync_worker_running(handle: Long): ByteArray?
-    @JvmStatic external fun boltffi_syncular_bolt_client_poll_event_json_timeout(handle: Long, timeout_ms: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_start_event_stream(handle: Long, capacity: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_next_event_json(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_close_event_stream(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_local_operation_json(handle: Long, operation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_local_operation_json(handle: Long, operation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?

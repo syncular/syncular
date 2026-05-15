@@ -18,11 +18,11 @@ use crate::transport::{HttpSyncTransport, SyncAuthHeaders};
 use crate::worker::{SyncWorker, SyncWorkerEvent, SyncWorkerEvents};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -54,12 +54,14 @@ pub struct NativeSyncularClient {
     config: SyncularClientConfig,
     writer: SyncularClient<DieselSqliteStore, HttpSyncTransport>,
     worker: Option<SyncWorker>,
+    worker_event_pump: Option<JoinHandle<()>>,
     auth_headers: SyncAuthHeaders,
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
     auto_sync_local_writes: bool,
     command_seq: Mutex<u64>,
     events: NativeEventHub,
+    default_events: NativeEventSubscription,
 }
 
 pub struct NativeClientOpenTask {
@@ -70,7 +72,7 @@ pub struct NativeClientOpenTask {
     taken: bool,
 }
 
-pub const NATIVE_FFI_ABI_VERSION: u32 = 1;
+pub const NATIVE_FFI_ABI_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeRuntimeManifest {
@@ -176,14 +178,15 @@ pub struct NativeObservedQuery {
 #[derive(Clone, Default)]
 struct NativeEventHub {
     event_seq: Arc<Mutex<u64>>,
-    pending_events: Arc<Mutex<VecDeque<NativeEvent>>>,
+    subscriber_seq: Arc<Mutex<u64>>,
+    subscribers: Arc<Mutex<BTreeMap<u64, SyncSender<NativeEvent>>>>,
     query_observers: Arc<Mutex<BTreeMap<String, NativeObservedQuery>>>,
 }
 
-#[derive(Clone)]
-pub struct NativeEventPoller {
+pub struct NativeEventSubscription {
     hub: NativeEventHub,
-    worker_events: Option<SyncWorkerEvents>,
+    subscriber_id: u64,
+    event_rx: Mutex<Receiver<NativeEvent>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -267,7 +270,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
         worker_model: "background-sync-worker",
         string_encoding: "utf-8-json",
         error_shape: "native-error-info-v1",
-        event_model: "poll-json-v1",
+        event_model: "native-event-stream-json-v1",
         capabilities: &[
             "dynamic-auth-headers",
             "dynamic-subscriptions",
@@ -283,6 +286,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "queued-blob-cache-work",
             "worker-command-queue",
             "ordered-native-events",
+            "native-event-stream",
             "read-only-query-json",
             "outbox-json",
             "conflicts-json",
@@ -350,17 +354,26 @@ impl NativeSyncularClient {
     ) -> Result<Self> {
         let writer = SyncularClient::open_with_schema(config.clone(), app_schema)?;
         let worker_client = SyncularClient::open_with_schema(config.clone(), app_schema)?;
+        let events = NativeEventHub::default();
+        let default_events = events.subscribe(256);
+        let worker = SyncWorker::start(worker_client);
+        let worker_event_pump = Some(start_worker_event_pump(
+            events.clone(),
+            worker.event_source(),
+        ));
 
         Ok(Self {
             config,
             writer,
-            worker: Some(SyncWorker::start(worker_client)),
+            worker: Some(worker),
+            worker_event_pump,
             auth_headers: SyncAuthHeaders::new(),
             field_encryption: None,
             encrypted_crdt: None,
             auto_sync_local_writes: options.auto_sync_local_writes,
             command_seq: Mutex::new(0),
-            events: NativeEventHub::default(),
+            events,
+            default_events,
         })
     }
 
@@ -602,6 +615,7 @@ impl NativeSyncularClient {
         if let Some(worker) = self.worker.take() {
             worker.stop()?;
         }
+        self.join_worker_event_pump()?;
         Ok(())
     }
 
@@ -615,7 +629,12 @@ impl NativeSyncularClient {
         worker_client.set_auth_headers(self.auth_headers.clone());
         worker_client.set_field_encryption(self.field_encryption.clone());
         worker_client.set_encrypted_crdt(self.encrypted_crdt.clone());
-        self.worker = Some(SyncWorker::start(worker_client));
+        let worker = SyncWorker::start(worker_client);
+        self.worker_event_pump = Some(start_worker_event_pump(
+            self.events.clone(),
+            worker.event_source(),
+        ));
+        self.worker = Some(worker);
         Ok(())
     }
 
@@ -623,25 +642,24 @@ impl NativeSyncularClient {
         self.worker.is_some()
     }
 
-    pub fn recv_sync_result_timeout(&self, timeout: Duration) -> Option<Result<SyncReport>> {
-        self.worker
-            .as_ref()
-            .and_then(|worker| worker.recv_result_timeout(timeout))
+    pub fn subscribe_events(&self, capacity: usize) -> NativeEventSubscription {
+        self.events.subscribe(capacity)
     }
 
-    pub fn event_poller(&self) -> NativeEventPoller {
-        NativeEventPoller {
-            hub: self.events.clone(),
-            worker_events: self.worker.as_ref().map(SyncWorker::event_source),
-        }
+    pub fn next_event(&self) -> Option<NativeEvent> {
+        self.default_events.next_event()
     }
 
-    pub fn poll_event_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
-        self.event_poller().poll_event_timeout(timeout)
+    pub fn next_event_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
+        self.default_events.next_event_timeout(timeout)
     }
 
-    pub fn poll_event_json_timeout(&self, timeout: Duration) -> Option<Result<String>> {
-        self.event_poller().poll_event_json_timeout(timeout)
+    pub fn next_event_json(&self) -> Option<Result<String>> {
+        self.default_events.next_event_json()
+    }
+
+    pub fn next_event_json_timeout(&self, timeout: Duration) -> Option<Result<String>> {
+        self.default_events.next_event_json_timeout(timeout)
     }
 
     pub fn apply_local_operation_json(
@@ -737,7 +755,7 @@ impl NativeSyncularClient {
                 receipt.checkpoint_created,
                 request.min_uncheckpointed_updates.unwrap_or(1),
             );
-            self.events.push_pending_event(crdt_field_compacted_event(
+            self.events.publish_event(crdt_field_compacted_event(
                 &field,
                 receipt.client_commit_id.clone(),
                 crdt_field_compaction_tables(&field)
@@ -951,13 +969,13 @@ impl NativeSyncularClient {
 
     pub fn resolve_conflict(&mut self, id: &str, resolution: &str) -> Result<()> {
         self.writer.resolve_conflict(id, resolution)?;
-        self.events.push_pending_event(conflicts_changed_event());
+        self.events.publish_event(conflicts_changed_event());
         Ok(())
     }
 
     pub fn retry_conflict_keep_local(&mut self, id: &str) -> Result<String> {
         let client_commit_id = self.writer.retry_conflict_keep_local(id)?;
-        self.events.push_pending_event(conflicts_changed_event());
+        self.events.publish_event(conflicts_changed_event());
         self.trigger_after_local_write()?;
         Ok(client_commit_id)
     }
@@ -965,6 +983,16 @@ impl NativeSyncularClient {
     pub fn close(&mut self) -> Result<()> {
         if let Some(worker) = self.worker.take() {
             worker.stop()?;
+        }
+        self.join_worker_event_pump()?;
+        Ok(())
+    }
+
+    fn join_worker_event_pump(&mut self) -> Result<()> {
+        if let Some(join) = self.worker_event_pump.take() {
+            join.join().map_err(|_| {
+                SyncularError::message(ErrorKind::Internal, "native worker event pump panicked")
+            })?;
         }
         Ok(())
     }
@@ -997,7 +1025,7 @@ impl NativeSyncularClient {
         client_commit_id: Option<String>,
     ) -> Result<()> {
         let extra_payload_json = crdt_field_event_payload(&mut self.writer, field);
-        self.events.push_pending_event(crdt_field_changed_event(
+        self.events.publish_event(crdt_field_changed_event(
             field,
             client_commit_id.clone(),
             crdt_field_write_tables(field)
@@ -1115,37 +1143,93 @@ impl NativeCrdtFieldCompactionRequest {
     }
 }
 
-impl NativeEventPoller {
-    pub fn poll_event_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
-        if let Some(event) = self.hub.pop_pending_event() {
-            return Some(event);
-        }
-
-        let worker_event = self
-            .worker_events
-            .as_ref()
-            .and_then(|worker_events| worker_events.recv_event_timeout(timeout))?;
-        let mut events = self.hub.events_from_worker_event(worker_event);
-        if events.is_empty() {
-            return None;
-        }
-        let first = self.hub.stamp_event(events.remove(0));
-        for event in events {
-            self.hub.push_pending_event(event);
-        }
-        Some(first)
+impl NativeEventSubscription {
+    pub fn next_event(&self) -> Option<NativeEvent> {
+        self.event_rx
+            .lock()
+            .ok()
+            .and_then(|event_rx| event_rx.recv().ok())
     }
 
-    pub fn poll_event_json_timeout(&self, timeout: Duration) -> Option<Result<String>> {
-        self.poll_event_timeout(timeout)
+    pub fn next_event_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
+        self.event_rx
+            .lock()
+            .ok()
+            .and_then(|event_rx| event_rx.recv_timeout(timeout).ok())
+    }
+
+    pub fn next_event_json(&self) -> Option<Result<String>> {
+        self.next_event()
             .map(|event| serde_json::to_string(&event).map_err(Into::into))
+    }
+
+    pub fn next_event_json_timeout(&self, timeout: Duration) -> Option<Result<String>> {
+        self.next_event_timeout(timeout)
+            .map(|event| serde_json::to_string(&event).map_err(Into::into))
+    }
+
+    pub fn close(&self) {
+        if let Ok(mut subscribers) = self.hub.subscribers.lock() {
+            subscribers.remove(&self.subscriber_id);
+        }
     }
 }
 
+impl Drop for NativeEventSubscription {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+fn start_worker_event_pump(
+    events: NativeEventHub,
+    worker_events: SyncWorkerEvents,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        while let Some(event) = worker_events.recv_event() {
+            events.publish_worker_event(event);
+        }
+    })
+}
+
 impl NativeEventHub {
-    fn push_pending_event(&self, event: NativeEvent) {
-        if let Ok(mut pending) = self.pending_events.lock() {
-            pending.push_back(self.stamp_event(event));
+    fn subscribe(&self, capacity: usize) -> NativeEventSubscription {
+        let capacity = capacity.max(1);
+        let (event_tx, event_rx) = mpsc::sync_channel(capacity);
+        let subscriber_id = self.next_subscriber_id();
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.insert(subscriber_id, event_tx);
+        }
+        NativeEventSubscription {
+            hub: self.clone(),
+            subscriber_id,
+            event_rx: Mutex::new(event_rx),
+        }
+    }
+
+    fn publish_event(&self, event: NativeEvent) {
+        let event = self.stamp_event(event);
+        let Ok(mut subscribers) = self.subscribers.lock() else {
+            return;
+        };
+
+        let mut disconnected = Vec::new();
+        for (subscriber_id, event_tx) in subscribers.iter() {
+            match event_tx.try_send(event.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                    disconnected.push(*subscriber_id);
+                }
+            }
+        }
+        for subscriber_id in disconnected {
+            subscribers.remove(&subscriber_id);
+        }
+    }
+
+    fn publish_worker_event(&self, event: SyncWorkerEvent) {
+        for event in self.events_from_worker_event(event) {
+            self.publish_event(event);
         }
     }
 
@@ -1164,14 +1248,14 @@ impl NativeEventHub {
             return;
         }
 
-        self.push_pending_event(rows_changed_event_with_details(
+        self.publish_event(rows_changed_event_with_details(
             tables.iter().map(String::as_str),
             changed_rows.clone(),
             source,
         ));
         let queries = self.changed_query_ids(&tables);
         if !queries.is_empty() {
-            self.push_pending_event(queries_changed_event_with_details(
+            self.publish_event(queries_changed_event_with_details(
                 &tables,
                 queries,
                 changed_rows,
@@ -1198,19 +1282,21 @@ impl NativeEventHub {
             .collect()
     }
 
-    fn pop_pending_event(&self) -> Option<NativeEvent> {
-        self.pending_events
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.pop_front())
-    }
-
     fn stamp_event(&self, mut event: NativeEvent) -> NativeEvent {
         if let Ok(mut seq) = self.event_seq.lock() {
             *seq = seq.saturating_add(1);
             event.event_seq = *seq;
         }
         event
+    }
+
+    fn next_subscriber_id(&self) -> u64 {
+        if let Ok(mut seq) = self.subscriber_seq.lock() {
+            *seq = seq.saturating_add(1);
+            *seq
+        } else {
+            0
+        }
     }
 
     fn events_from_worker_event(&self, event: SyncWorkerEvent) -> Vec<NativeEvent> {

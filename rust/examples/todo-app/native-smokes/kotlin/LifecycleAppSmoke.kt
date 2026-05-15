@@ -79,7 +79,7 @@ private fun waitForEvent(
     val deadline = System.currentTimeMillis() + timeoutMs
     val seen = mutableListOf<String>()
     while (System.currentTimeMillis() < deadline) {
-        val eventJson = client.pollEventJsonTimeout(100uL) ?: continue
+        val eventJson = client.nextEventJson() ?: continue
         val event = syncularDecodeNativeEvent(eventJson)
         val json = lifecycleJson.parseToJsonElement(eventJson).jsonObject
         seen += "${event.kind}:${event.commandId ?: "-"}"
@@ -117,6 +117,7 @@ fun main(args: Array<String>) {
     )
     val client = BoltNativeClient(raw)
     try {
+        expect(raw.startEventStream(256uL), "Kotlin lifecycle should start native event stream")
         val manifest = raw.runtimeManifestJson()
         expect(manifest.contains("\"storage_backend\":\"diesel-sqlite\""), "Kotlin lifecycle app should expose diesel sqlite manifest")
         expect(raw.setAuthHeadersJson("""{"authorization":"Bearer lifecycle-kotlin"}"""), "Kotlin lifecycle app should accept auth headers")

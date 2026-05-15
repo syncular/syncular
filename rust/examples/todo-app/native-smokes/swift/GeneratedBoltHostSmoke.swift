@@ -15,13 +15,12 @@ private func removeSqliteFiles(_ path: String) {
     }
 }
 
-private func pollEvents(from client: SyncularBoltClient, maxCount: Int = 8) throws -> [SyncularNativeEvent] {
+private func readEvents(from client: SyncularBoltClient, count: Int) throws -> [SyncularNativeEvent] {
     var events: [SyncularNativeEvent] = []
-    for _ in 0..<maxCount {
-        guard let eventJson = try client.pollEventJsonTimeout(timeoutMs: 0) else {
-            break
+    for _ in 0..<count {
+        if let eventJson = try client.nextEventJson() {
+            events.append(try syncularDecodeNativeEvent(eventJson))
         }
-        events.append(try syncularDecodeNativeEvent(eventJson))
     }
     return events
 }
@@ -48,6 +47,7 @@ private enum GeneratedBoltHostSmoke {
         expect(try client.finishOpenTimeout(timeoutMs: 5_000), "Swift host async open should finish")
         expect(try client.isOpenFinished(), "Swift host async open should report finished")
         expect(try client.openCommandId() == nil, "Swift host async open command id should clear after ready")
+        expect(try client.startEventStream(capacity: 256), "Swift host should start native event stream")
 
         try assertSyncularNativeRuntimeManifestJson(try client.runtimeManifestJson())
         expect(try client.setAuthHeadersJson(headersJson: #"{"authorization":"Bearer local-swift"}"#), "Swift host should accept auth headers")
@@ -83,7 +83,7 @@ private enum GeneratedBoltHostSmoke {
         let materializedTitle = try client.materializeTaskTitle(rowId: "task-swift-bolt")
         expect(materializedTitle.value == .string("Swift Bolt CRDT"), "Swift host CRDT materialize helper should read updated title")
 
-        let events = try pollEvents(from: client)
+        let events = try readEvents(from: client, count: 5)
         expect(events.contains(where: { $0.kind == "RowsChanged" && $0.tables == ["tasks"] }), "Swift host should emit task rows changed")
         expect(events.contains(where: { $0.kind == "QueriesChanged" && $0.queries == ["swift-bolt-live"] }), "Swift host should emit live query changed")
         expect(events.contains(where: { $0.kind == "CrdtFieldChanged" && $0.tables.contains("tasks") }), "Swift host should emit CRDT field changed")

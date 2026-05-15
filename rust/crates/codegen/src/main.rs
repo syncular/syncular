@@ -4676,7 +4676,7 @@ fn generate_swift_module(
     out.push_str("// Source: migrations/*.sql and syncular.codegen.json\n\n");
     out.push_str("import Foundation\n\n");
     out.push_str(&format!(
-        "public let syncularNativeExpectedFfiAbiVersion = 1\npublic let syncularNativeExpectedCrateVersion = {}\npublic let syncularNativeGeneratedSchemaVersion = {schema_version}\n\n",
+        "public let syncularNativeExpectedFfiAbiVersion = 2\npublic let syncularNativeExpectedCrateVersion = {}\npublic let syncularNativeGeneratedSchemaVersion = {schema_version}\n\n",
         double_quoted_string(env!("CARGO_PKG_VERSION"))
     ));
     out.push_str(&format!(
@@ -6267,7 +6267,7 @@ fn generate_kotlin_module(
     out.push_str("import kotlinx.serialization.json.jsonObject\n");
     out.push_str("import kotlinx.serialization.json.jsonPrimitive\n");
     out.push_str("import kotlinx.serialization.json.longOrNull\n\n");
-    out.push_str("const val syncularNativeExpectedFfiAbiVersion: Int = 1\n");
+    out.push_str("const val syncularNativeExpectedFfiAbiVersion: Int = 2\n");
     out.push_str(&format!(
         "const val syncularNativeExpectedCrateVersion: String = {}\n",
         double_quoted_string(env!("CARGO_PKG_VERSION"))
@@ -8407,7 +8407,7 @@ mod tests {
             7,
             &test_app_schema_json(&tables, &config, 7)?,
         )?;
-        assert!(swift.contains("public let syncularNativeExpectedFfiAbiVersion = 1"));
+        assert!(swift.contains("public let syncularNativeExpectedFfiAbiVersion = 2"));
         assert!(swift.contains("public let syncularNativeGeneratedSchemaVersion = 7"));
         assert!(swift.contains("public struct SyncularNativeRuntimeManifest"));
         assert!(swift.contains("manifest.storageBackend == \"diesel-sqlite\""));
@@ -8489,7 +8489,7 @@ mod tests {
             &test_app_schema_json(&tables, &config, 7)?,
             None,
         )?;
-        assert!(kotlin.contains("const val syncularNativeExpectedFfiAbiVersion: Int = 1"));
+        assert!(kotlin.contains("const val syncularNativeExpectedFfiAbiVersion: Int = 2"));
         assert!(kotlin.contains("const val syncularNativeGeneratedSchemaVersion: Int = 7"));
         assert!(kotlin.contains("data class SyncularNativeRuntimeManifest"));
         assert!(kotlin.contains("manifest.storageBackend == \"diesel-sqlite\""));

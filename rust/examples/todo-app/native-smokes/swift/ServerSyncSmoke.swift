@@ -113,8 +113,8 @@ private struct BlobUploadQueueStats: Decodable {
     let failed: Int
 }
 
-private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
-    if !condition() {
+private func expect(_ condition: Bool, _ message: String) {
+    if !condition {
         fatalError(message)
     }
 }
@@ -219,7 +219,7 @@ private func waitForEventJson(
 ) throws -> (event: SyncularNativeEvent, json: String) {
     let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1_000.0)
     repeat {
-        if let eventJson = try client.pollEventJsonTimeout(timeoutMs: 100) {
+        if let eventJson = try client.nextEventJson() {
             let event = try syncularDecodeNativeEvent(eventJson)
             if event.kind == kind && (commandId == nil || event.commandId == commandId) {
                 return (event, eventJson)
@@ -286,6 +286,7 @@ private enum ServerSyncSmoke {
 
         let opened = try client.finishOpenTimeout(timeoutMs: 5_000)
         expect(opened, "Swift server sync client should open")
+        expect(try client.startEventStream(capacity: 256), "Swift server sync client should start native event stream")
 
         let staleAuthorization = info.staleAuthorization ?? "Bearer stale-native"
         try configureServerSync(client, info: info, authorization: staleAuthorization)
@@ -346,6 +347,7 @@ private enum ServerSyncSmoke {
         }
         let requiredSchemaOpened = try requiredSchemaClient.finishOpenTimeout(timeoutMs: 5_000)
         expect(requiredSchemaOpened, "Swift required-schema client should open")
+        expect(try requiredSchemaClient.startEventStream(capacity: 256), "Swift required-schema client should start native event stream")
         try configureServerSync(requiredSchemaClient, info: info)
         let requiredSchemaCommandId = try requiredSchemaClient.enqueueSyncNow()
         let requiredSchemaFailure = try waitForEventJson(
@@ -380,6 +382,7 @@ private enum ServerSyncSmoke {
         }
         let latestSchemaOpened = try latestSchemaClient.finishOpenTimeout(timeoutMs: 5_000)
         expect(latestSchemaOpened, "Swift latest-schema client should open")
+        expect(try latestSchemaClient.startEventStream(capacity: 256), "Swift latest-schema client should start native event stream")
         try configureServerSync(latestSchemaClient, info: info)
         let latestSchemaCommandId = try latestSchemaClient.enqueueSyncNow()
         _ = try waitForEvent(from: latestSchemaClient, kind: "SyncCompleted", commandId: latestSchemaCommandId)
@@ -406,6 +409,7 @@ private enum ServerSyncSmoke {
         }
         let ownerFirstOpened = try ownerFirst.finishOpenTimeout(timeoutMs: 5_000)
         expect(ownerFirstOpened, "Swift owner-conflict first client should open")
+        expect(try ownerFirst.startEventStream(capacity: 256), "Swift owner-conflict first client should start native event stream")
         try configureServerSync(ownerFirst, info: info)
         let ownerFirstCommandId = try ownerFirst.enqueueSyncNow()
         _ = try waitForEvent(from: ownerFirst, kind: "SyncCompleted", commandId: ownerFirstCommandId)
@@ -431,6 +435,7 @@ private enum ServerSyncSmoke {
         }
         let ownerSecondOpened = try ownerSecond.finishOpenTimeout(timeoutMs: 5_000)
         expect(ownerSecondOpened, "Swift owner-conflict second client should open")
+        expect(try ownerSecond.startEventStream(capacity: 256), "Swift owner-conflict second client should start native event stream")
         try configureServerSync(
             ownerSecond,
             info: info,
@@ -644,6 +649,7 @@ private enum ServerSyncSmoke {
         }
         let readerOpened = try reader.finishOpenTimeout(timeoutMs: 5_000)
         expect(readerOpened, "Swift server sync reader should open")
+        expect(try reader.startEventStream(capacity: 256), "Swift server sync reader should start native event stream")
         try configureServerSync(reader, info: info)
         let liveQuery = TaskQuery
             .select()
@@ -742,6 +748,7 @@ private enum ServerSyncSmoke {
         }
         let encryptedReaderOpened = try encryptedReader.finishOpenTimeout(timeoutMs: 5_000)
         expect(encryptedReaderOpened, "Swift encrypted server sync reader should open")
+        expect(try encryptedReader.startEventStream(capacity: 256), "Swift encrypted server sync reader should start native event stream")
         try configureServerSync(encryptedReader, info: info)
         try configureFieldEncryption(
             encryptedReader,

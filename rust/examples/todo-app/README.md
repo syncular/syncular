@@ -135,7 +135,7 @@ bun run rust:native-smoke
 
 The real host-language smokes cover runtime manifest validation, dynamic auth
 header updates, pause/resume/shutdown lifecycle, typed Syncular mutations,
-typed query reads, observed query registration, native event polling, and
+typed query reads, observed query registration, native event streaming, and
 live-query refresh through `QueriesChanged`.
 
 The Kotlin smoke downloads `kotlinx-serialization-json` jars into

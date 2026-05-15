@@ -30,7 +30,7 @@ fn native_c_header_lists_all_exported_ffi_symbols() {
 #[test]
 fn native_c_header_publishes_current_abi_version() {
     let header = include_str!("../../../bindings/c/syncular_native.h");
-    assert!(header.contains("#define SYNCULAR_NATIVE_FFI_ABI_VERSION 1"));
+    assert!(header.contains("#define SYNCULAR_NATIVE_FFI_ABI_VERSION 2"));
 }
 
 fn exported_rust_symbols(source: &str) -> BTreeSet<String> {

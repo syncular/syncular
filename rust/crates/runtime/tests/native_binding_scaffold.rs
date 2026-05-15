@@ -61,7 +61,9 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn enqueue_compact_storage_json"));
     assert!(source.contains("pub fn register_query_json"));
     assert!(source.contains("pub fn enqueue_resolve_conflict"));
-    assert!(source.contains("pub fn poll_event_json_timeout"));
+    assert!(source.contains("pub fn start_event_stream"));
+    assert!(source.contains("pub fn next_event_json"));
+    assert!(source.contains("pub fn close_event_stream"));
     assert!(source.contains("pub fn shutdown"));
     assert!(!source.contains("uniffi"));
 }
@@ -74,7 +76,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     let java = include_str!("../../../bindings/java/dev/syncular/client/SyncularBoltClient.java");
     let java_helpers = include_str!("../../../bindings/java/dev/syncular/client/Syncular.java");
     let android_header = include_str!("../../../bindings/kotlin/include/syncular-runtime.h");
-    let java_header = include_str!("../../../bindings/java/jni/syncular-runtime.h");
+    let java_header = include_str!("../../../bindings/java/jni/syncular_runtime.h");
 
     assert!(swift.contains("public final class SyncularBoltClient"));
     assert!(swift.contains("public func syncularTakeLastOpenError"));
@@ -116,6 +118,9 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         "func enqueueStoreBlobFileJson(path: String, optionsJson: String?) throws -> String"
     ));
     assert!(swift.contains("func queryJson(requestJson: String) throws -> String"));
+    assert!(swift.contains("func startEventStream(capacity: UInt64) throws -> Bool"));
+    assert!(swift.contains("func nextEventJson() throws -> String?"));
+    assert!(swift.contains("func closeEventStream() throws -> Bool"));
     assert!(swift.contains("func shutdown() throws -> Bool"));
     assert!(kotlin.contains("class SyncularBoltClient"));
     assert!(kotlin.contains("fun syncularTakeLastOpenError(): String?"));
@@ -144,6 +149,9 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         kotlin.contains("fun enqueueStoreBlobFileJson(path: String, optionsJson: String?): String")
     );
     assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun startEventStream(capacity: ULong): Boolean"));
+    assert!(kotlin.contains("fun nextEventJson(): String?"));
+    assert!(kotlin.contains("fun closeEventStream(): Boolean"));
     assert!(kotlin.contains("fun shutdown(): Boolean"));
     assert!(!kotlin.contains("fun close(): Boolean"));
     assert!(!kotlin.contains("1.toInt()"));
@@ -175,10 +183,15 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         "public String enqueueStoreBlobFileJson(String path, java.util.Optional<String> optionsJson)"
     ));
     assert!(java.contains("public String queryJson(String requestJson)"));
+    assert!(java.contains("public boolean startEventStream(long capacity)"));
+    assert!(java.contains("public java.util.Optional<String> nextEventJson()"));
+    assert!(java.contains("public boolean closeEventStream()"));
     assert!(java.contains("public boolean shutdown()"));
     assert!(!java.contains("public boolean close()"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_open"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_open"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     for output in [swift, kotlin, java] {
         assert!(!output.contains("tasks"));
         assert!(!output.contains("NewTask"));

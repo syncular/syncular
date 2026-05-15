@@ -14,7 +14,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
-const val syncularNativeExpectedFfiAbiVersion: Int = 1
+const val syncularNativeExpectedFfiAbiVersion: Int = 2
 const val syncularNativeExpectedCrateVersion: String = "0.1.0"
 const val syncularNativeGeneratedSchemaVersion: Int = 5
 

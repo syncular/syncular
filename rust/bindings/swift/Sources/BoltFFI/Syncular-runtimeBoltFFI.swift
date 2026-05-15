@@ -241,10 +241,22 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
-    public func pollEventJsonTimeout(timeoutMs: UInt64) throws -> String? {
-        let buf = boltffi_syncular_bolt_client_poll_event_json_timeout(handle, timeoutMs)
+    public func startEventStream(capacity: UInt64) throws -> Bool {
+        let buf = boltffi_syncular_bolt_client_start_event_stream(handle, capacity)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func nextEventJson() throws -> String? {
+        let buf = boltffi_syncular_bolt_client_next_event_json(handle)
         defer { boltffi_free_buf(buf) }
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readOptional { reader in reader.readString() } } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func closeEventStream() throws -> Bool {
+        let buf = boltffi_syncular_bolt_client_close_event_stream(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
     public func applyLocalOperationJson(operationJson: String, localRowJson: String?) throws -> String {

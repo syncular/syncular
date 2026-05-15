@@ -1,14 +1,15 @@
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::native::{
     native_runtime_manifest_json, NativeClientConfig, NativeClientOpenTask, NativeClientOptions,
-    NativeErrorInfo, NativeEventPoller, NativeSyncularClient,
+    NativeErrorInfo, NativeEventSubscription, NativeSyncularClient,
 };
 use std::any::Any;
 use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 pub struct SyncularNativeHandle {
@@ -18,6 +19,16 @@ pub struct SyncularNativeHandle {
 pub struct SyncularNativeOpenHandle {
     task: Mutex<NativeClientOpenTask>,
 }
+
+pub struct SyncularNativeEventSubscription {
+    subscription: Arc<NativeEventSubscription>,
+    join: Mutex<Option<JoinHandle<()>>>,
+}
+
+pub type SyncularNativeEventCallback =
+    extern "C" fn(event_json: *const c_char, user_data: *mut c_void);
+pub type SyncularNativeEventErrorCallback =
+    extern "C" fn(error_json: *const c_char, user_data: *mut c_void);
 
 #[no_mangle]
 pub extern "C" fn syncular_string_free(value: *mut c_char) {
@@ -103,7 +114,7 @@ pub extern "C" fn syncular_native_client_open_async_is_finished(
 }
 
 #[no_mangle]
-pub extern "C" fn syncular_native_client_open_async_poll(
+pub extern "C" fn syncular_native_client_open_async_finish_timeout(
     handle: *mut SyncularNativeOpenHandle,
     timeout_ms: u64,
     error_out: *mut *mut c_char,
@@ -965,20 +976,89 @@ pub extern "C" fn syncular_native_client_retry_conflict_keep_local(
 }
 
 #[no_mangle]
-pub extern "C" fn syncular_native_client_poll_event_json(
+pub extern "C" fn syncular_native_client_subscribe_events_json(
     handle: *mut SyncularNativeHandle,
-    timeout_ms: u64,
+    capacity: u32,
+    callback: Option<SyncularNativeEventCallback>,
+    error_callback: Option<SyncularNativeEventErrorCallback>,
+    user_data: *mut c_void,
     error_out: *mut *mut c_char,
-) -> *mut c_char {
+) -> *mut SyncularNativeEventSubscription {
     clear_error(error_out);
-    ffi_catch_string_or_null(error_out, || {
-        let poller = native_event_poller(handle)?;
-        Ok(poller.poll_event_json_timeout(Duration::from_millis(timeout_ms)))
+    ffi_catch_ptr(error_out, || {
+        let callback = callback.ok_or_else(|| {
+            SyncularError::message(ErrorKind::Config, "native event callback is null")
+        })?;
+        let subscription = Arc::new(with_client(handle, |client| {
+            Ok(client.subscribe_events(capacity as usize))
+        })?);
+        let thread_subscription = Arc::clone(&subscription);
+        let user_data = user_data as usize;
+        let join = thread::spawn(move || {
+            while let Some(event) = thread_subscription.next_event_json() {
+                match event {
+                    Ok(event_json) => call_event_callback(callback, &event_json, user_data),
+                    Err(error) => {
+                        if let Some(error_callback) = error_callback {
+                            let error_json = serde_json::to_string(&NativeErrorInfo::from_error(
+                                &error,
+                            ))
+                            .unwrap_or_else(|_| {
+                                r#"{"kind":"Internal","message":"failed to serialize native event error"}"#
+                                    .to_string()
+                            });
+                            call_error_callback(error_callback, &error_json, user_data);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Box::into_raw(Box::new(SyncularNativeEventSubscription {
+            subscription,
+            join: Mutex::new(Some(join)),
+        })))
     })
 }
 
-fn native_event_poller(handle: *mut SyncularNativeHandle) -> Result<NativeEventPoller> {
-    with_client(handle, |client| Ok(client.event_poller()))
+#[no_mangle]
+pub extern "C" fn syncular_native_event_subscription_close(
+    handle: *mut SyncularNativeEventSubscription,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        if handle.is_null() {
+            return Ok(());
+        }
+
+        let subscription = unsafe { Box::from_raw(handle) };
+        subscription.subscription.close();
+        if let Ok(mut join) = subscription.join.lock() {
+            if let Some(join) = join.take() {
+                let _ = join.join();
+            }
+        }
+        Ok(())
+    })
+}
+
+fn call_event_callback(callback: SyncularNativeEventCallback, event_json: &str, user_data: usize) {
+    let value = callback_c_string(event_json);
+    callback(value.as_ptr(), user_data as *mut c_void);
+}
+
+fn call_error_callback(
+    callback: SyncularNativeEventErrorCallback,
+    error_json: &str,
+    user_data: usize,
+) {
+    let value = callback_c_string(error_json);
+    callback(value.as_ptr(), user_data as *mut c_void);
+}
+
+fn callback_c_string(value: &str) -> CString {
+    CString::new(value.replace('\0', "\\u0000")).expect("sanitized string should not contain nul")
 }
 
 fn with_client<T>(
@@ -1099,24 +1179,6 @@ fn ffi_catch_string(
     f: impl FnOnce() -> Result<String>,
 ) -> *mut c_char {
     ffi_catch_ptr(error_out, || f().map(alloc_c_string))
-}
-
-fn ffi_catch_string_or_null(
-    error_out: *mut *mut c_char,
-    f: impl FnOnce() -> Result<Option<Result<String>>>,
-) -> *mut c_char {
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(Ok(Some(Ok(value)))) => alloc_c_string(value),
-        Ok(Ok(Some(Err(error)))) | Ok(Err(error)) => {
-            write_error(error_out, error);
-            ptr::null_mut()
-        }
-        Ok(Ok(None)) => ptr::null_mut(),
-        Err(payload) => {
-            write_error(error_out, panic_error(payload));
-            ptr::null_mut()
-        }
-    }
 }
 
 fn panic_error(payload: Box<dyn Any + Send>) -> SyncularError {
