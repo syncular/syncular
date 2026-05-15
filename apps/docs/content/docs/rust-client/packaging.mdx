@@ -9,6 +9,10 @@ Native packages are generated from the current Rust runtime, headers, and JNI
 glue in one pass. Do not treat checked-in generated binding files or binary
 artifacts as release truth.
 
+The current native FFI ABI version is `2`. Generated app clients assert this
+against the runtime manifest before opening data, so regenerate app clients after
+updating the runtime or native bindings.
+
 ## Local release check
 
 Run from the repo root:
@@ -25,6 +29,10 @@ This builds:
 - current-host JVM native package
 - Linux x86_64 JVM native package
 - generated Swift/Kotlin/JVM native smoke tests
+
+The native smoke covers the generated event-stream APIs
+(`startEventStream`, `nextEventJson`, and `closeEventStream`) in addition to
+sync, auth refresh, realtime wake-ups, conflicts, blobs, and encrypted fields.
 
 Artifacts are written to `.context/native-packages` by default. Override with:
 
