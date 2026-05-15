@@ -3,7 +3,9 @@ import type {
   SyncOperation,
   SyncOperationResult,
 } from '@syncular/core';
+import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
+  SyncularV2AppSchema,
   SyncularV2ClientConfig,
   SyncularV2SqlResult,
   SyncularV2Storage,
@@ -20,6 +22,7 @@ export interface SyncularRustOwnedSqliteConfig {
   clearOnInit?: boolean;
   stateId?: string;
   schemaVersion?: number;
+  appSchema?: SyncularV2AppSchema;
 }
 
 export interface SyncularRustOwnedSqliteClientConfig
@@ -81,6 +84,7 @@ export type RustOperationResult =
 
 export interface RawSyncularRustOwnedSqlite {
   executeSqlJson(sql: string, paramsJson: string): string;
+  executeUnsafeSqlJson(sql: string, paramsJson: string): string;
   generatedSchemaStateJson(): string;
   subscribeQueryJson(
     sql: string,
@@ -162,7 +166,16 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
     sql: string,
     params: readonly unknown[] = []
   ): SyncularV2SqlResult<Row> {
+    assertSyncularV2ReadonlySql(sql);
     return parseJson(this.raw.executeSqlJson(sql, stringifyParams(params)));
+  }
+
+  executeUnsafeSql<
+    Row extends Record<string, unknown> = Record<string, unknown>,
+  >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
+    return parseJson(
+      this.raw.executeUnsafeSqlJson(sql, stringifyParams(params))
+    );
   }
 
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(

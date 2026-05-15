@@ -3,6 +3,7 @@ import {
   resolveSyncularV2ClientConfig,
   SYNCULAR_V2_DEFAULT_STORAGE,
 } from './client-config';
+import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularApplyYjsEnvelopeToPayloadArgs,
@@ -16,7 +17,16 @@ import type {
   SyncularV2BlobUploadQueueStats,
   SyncularV2Client,
   SyncularV2ClientConfig,
+  SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
+  SyncularV2CrdtFieldCompactionReceipt,
+  SyncularV2CrdtFieldCompactionRequest,
+  SyncularV2CrdtFieldDescriptor,
+  SyncularV2CrdtFieldMaterialization,
+  SyncularV2CrdtFieldRequest,
+  SyncularV2CrdtFieldTextRequest,
+  SyncularV2CrdtFieldWriteReceipt,
+  SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSink,
   SyncularV2EncryptedCrdtConfig,
@@ -35,12 +45,14 @@ import type {
   SyncularV2SubscriptionSpec,
   SyncularV2SyncResult,
 } from './types';
+import { selectSyncularV2RuntimeArtifact } from './wasm-runtime';
 import type {
   SyncularV2WorkerErrorPayload,
   SyncularV2WorkerOutboundMessage,
   SyncularV2WorkerRealtimeOptions,
   SyncularV2WorkerRequest,
   SyncularV2WorkerResponse,
+  SyncularV2WorkerRuntimeArtifact,
 } from './worker-protocol';
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
@@ -63,6 +75,13 @@ const DEFAULT_SYNCULAR_V2_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 export async function createSyncularV2WorkerClient(
   options: CreateSyncularV2DatabaseOptions
 ): Promise<SyncularV2WorkerClient> {
+  const config = resolveSyncularV2ClientConfig(options.config);
+  const runtime =
+    options.runtime ??
+    selectSyncularV2RuntimeArtifact(
+      options.requiredRuntimeFeatures,
+      options.runtimeArtifacts
+    );
   const worker =
     typeof options.worker === 'function'
       ? options.worker()
@@ -74,9 +93,8 @@ export async function createSyncularV2WorkerClient(
     authLifecycle: options.authLifecycle,
     diagnostics: options.diagnostics,
   });
-  const config = resolveSyncularV2ClientConfig(options.config);
   try {
-    await client.open(config);
+    await client.open(config, runtime);
   } catch (err) {
     if (
       options.config.storage == null &&
@@ -89,7 +107,7 @@ export async function createSyncularV2WorkerClient(
         to: fallbackConfig.storage,
         reason: errorMessage(err),
       });
-      await client.open(fallbackConfig);
+      await client.open(fallbackConfig, runtime);
     } else {
       throw err;
     }
@@ -202,8 +220,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   private readonly ownsWorker: boolean;
 
-  async open(config: CreateSyncularV2DatabaseOptions['config']): Promise<void> {
-    await this.#request({ type: 'open', config });
+  async open(
+    config: CreateSyncularV2DatabaseOptions['config'],
+    runtime?: CreateSyncularV2DatabaseOptions['runtime']
+  ): Promise<void> {
+    await this.#request({
+      type: 'open',
+      config,
+      runtime: serializeRuntimeArtifact(runtime),
+    });
     this.#config = config;
     this.#realtimeOptions = undefined;
     await this.#refreshAuthHeaders();
@@ -282,12 +307,28 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
+  async executeSql<
+    Row extends Record<string, unknown> = Record<string, unknown>,
+  >(
     sql: string,
     params: readonly unknown[] = []
   ): Promise<SyncularV2SqlResult<Row>> {
+    assertSyncularV2ReadonlySql(sql);
     return this.#requestAndDrain({
       type: 'executeSql',
+      sql,
+      params: [...params],
+    });
+  }
+
+  executeUnsafeSql<
+    Row extends Record<string, unknown> = Record<string, unknown>,
+  >(
+    sql: string,
+    params: readonly unknown[] = []
+  ): Promise<SyncularV2SqlResult<Row>> {
+    return this.#request({
+      type: 'executeUnsafeSql',
       sql,
       params: [...params],
     });
@@ -355,6 +396,25 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   async syncOnce(): Promise<SyncularV2SyncResult> {
     return this.#syncWithAuthRetry({ type: 'syncOnce' });
+  }
+
+  conflictSummaries(): Promise<SyncularV2ConflictSummary[]> {
+    return this.#request({ type: 'conflictSummaries' });
+  }
+
+  retryConflictKeepLocal(id: string): Promise<string> {
+    return this.#requestAndDrain({
+      type: 'retryConflictKeepLocal',
+      conflictId: id,
+    });
+  }
+
+  async resolveConflict(id: string, resolution: string): Promise<void> {
+    await this.#requestAndDrain({
+      type: 'resolveConflict',
+      conflictId: id,
+      resolution,
+    });
   }
 
   listTable<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -433,6 +493,45 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     args: SyncularApplyYjsEnvelopeToPayloadArgs
   ): Promise<Record<string, unknown>> {
     return this.#request({ type: 'applyYjsEnvelopeToPayload', args });
+  }
+
+  openCrdtField(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtFieldDescriptor> {
+    return this.#request({ type: 'openCrdtField', request });
+  }
+
+  applyCrdtFieldText(
+    request: SyncularV2CrdtFieldTextRequest
+  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    return this.#requestAndDrain({ type: 'applyCrdtFieldText', request });
+  }
+
+  applyCrdtFieldYjsUpdate(
+    request: SyncularV2CrdtFieldYjsUpdateRequest
+  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    return this.#requestAndDrain({
+      type: 'applyCrdtFieldYjsUpdate',
+      request,
+    });
+  }
+
+  materializeCrdtField(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtFieldMaterialization> {
+    return this.#request({ type: 'materializeCrdtField', request });
+  }
+
+  snapshotCrdtFieldStateVector(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<{ stateVectorBase64: string }> {
+    return this.#request({ type: 'snapshotCrdtFieldStateVector', request });
+  }
+
+  compactCrdtField(
+    request: SyncularV2CrdtFieldCompactionRequest
+  ): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+    return this.#requestAndDrain({ type: 'compactCrdtField', request });
   }
 
   encryptionHelper(
@@ -798,6 +897,25 @@ function cloneAuthHeaders(
   headers: SyncularV2AuthHeaders
 ): SyncularV2AuthHeaders {
   return Object.fromEntries(Object.entries(headers));
+}
+
+function serializeRuntimeArtifact(
+  runtime: CreateSyncularV2DatabaseOptions['runtime'] | undefined
+): SyncularV2WorkerRuntimeArtifact | undefined {
+  if (!runtime) return undefined;
+  return {
+    wasmGlueUrl:
+      runtime.wasmGlueUrl == null
+        ? undefined
+        : runtimeUrlHref(runtime.wasmGlueUrl),
+    wasmUrl:
+      runtime.wasmUrl == null ? undefined : runtimeUrlHref(runtime.wasmUrl),
+  };
+}
+
+function runtimeUrlHref(value: string | URL | Request): string {
+  if (value instanceof Request) return value.url;
+  return value instanceof URL ? value.href : value;
 }
 
 function normalizeFieldEncryptionConfig(

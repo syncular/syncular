@@ -81,6 +81,14 @@ Generated helpers intentionally do not emit table constants, column constants,
 or canned queries. Reads stay plain Kysely. Sync-aware writes go through
 `syncular.mutations` or generated operation helpers.
 
+The returned `syncular.db` is a read/query-builder surface. Public SQL execution
+rejects app-table and internal-table writes, including Kysely `insertInto`,
+`updateTable`, `deleteFrom`, schema DDL, and raw mutating SQL. This prevents
+local rows from bypassing Syncular's outbox, conflict, encryption, blob, and
+realtime semantics. Generated app setup uses an internal schema-write path
+before the database handle is returned; application writes should use
+`syncular.mutations`.
+
 ## Blobs
 
 Blobs are a sidecar API on the same Rust-owned SQLite client. App data still
@@ -202,12 +210,18 @@ the runtime before returning:
 
 - package name/version must match `@syncular/client-rust`
 - Worker protocol version must match the generated helper
-- Rust generated schema version must match the generated helper
-- Rust runtime must include `web-owned-sqlite`
+- generated app schema version must match the local SQLite schema state
+- Rust runtime must include the generated schema's required feature list
 
 `client.runtimeInfo()` exposes the package identity, Worker protocol, resolved
 storage mode, fallback details, Worker/WASM asset URLs, Rust crate version,
 generated schema version, and Rust feature list.
+
+Generated clients emit `syncularGeneratedRequiredRuntimeFeatures` from schema
+metadata. A basic app only needs `web-owned-sqlite-core`; apps using blob
+columns, CRDT/Yjs, or field encryption add `blobs`, `crdt-yjs`, and/or `e2ee`.
+`createSyncularAppDatabase()` passes those requirements into the Worker open
+path automatically.
 
 ## Storage
 
@@ -247,17 +261,95 @@ Tombstone cleanup is intentionally not enabled by age alone; deleting
 soft-deleted app rows before the server/version contract says they are safe can
 break later sync repair.
 
+## CRDT Document Fields
+
+Generated app clients expose schema-derived CRDT field helpers, and the
+low-level client exposes generic `openCrdtField`, `applyCrdtFieldYjsUpdate`,
+`materializeCrdtField`, `snapshotCrdtFieldStateVector`, and `compactCrdtField`
+methods. Keep editor-specific code above this package: TipTap schemas,
+ProseMirror transforms, Excalidraw save policy, selection, undo, and WebView
+messages belong in app code or optional app adapters.
+
+The app-layer example in `rust/examples/crdt-adapters` shows how to connect an
+editor bridge that emits Yjs binary updates to Syncular's durable CRDT field
+API. It deliberately imports no editor libraries. The example preserves pending
+updates across failed writes, exposes backpressure, prefers queued native host
+writes when available, and refreshes app view models from materialized Syncular
+state after live-query or realtime changes.
+
 ## Assets
 
-The package build writes the Rust WASM artifact to `dist/wasm`:
+The package build writes the full Rust WASM artifact to `dist/wasm`:
 
 - `syncular_v2.js`
 - `syncular_v2_bg.wasm`
+- `syncular-v2-runtime-artifact.json`
 
-The default Worker resolves those assets relative to the package runtime. Custom
-asset serving can pass a custom `worker` to `createSyncularAppDatabase()`; the
-lower-level direct Rust client also accepts advanced `module` and `wasmUrl`
-options. Normal generated app code should not need either path.
+It also writes the core artifact to `dist/wasm-core` and the ordered catalog to
+`dist/syncular-v2-runtime-artifacts.json`.
+
+The default Worker resolves those assets relative to the package runtime.
+Generated app code can select from that catalog without changing the public
+query/mutation API:
+
+```ts
+import { resolveSyncularV2RuntimeArtifactCatalog } from '@syncular/client-rust';
+
+const catalogUrl = '/syncular/syncular-v2-runtime-artifacts.json';
+const catalog = await fetch(catalogUrl).then((response) => response.json());
+
+await createSyncularAppDatabase({
+  config,
+  runtimeArtifacts: resolveSyncularV2RuntimeArtifactCatalog(catalog, {
+    baseUrl: catalogUrl,
+  }),
+});
+```
+
+The first artifact containing every generated required feature is used. Custom
+asset serving can still pass a custom `worker`; the lower-level direct Rust
+client accepts advanced `runtime`, `module`, `wasmGlueUrl`, and `wasmUrl`
+options. Normal generated app code should not need those lower-level paths.
+
+Release WASM builds run a size budget check after `wasm-opt -Oz` and custom
+section stripping. The current checked budgets are `3.25 MiB` raw and
+`1.35 MiB` gzip. Override them only for an intentional release-size decision:
+
+```bash
+SYNCULAR_WASM_RAW_BUDGET_BYTES=3407872 \
+SYNCULAR_WASM_GZIP_BUDGET_BYTES=1415578 \
+  bun run size:wasm:check
+```
+
+The check writes an attribution report to
+`.context/wasm-size/syncular-v2-wasm-size.txt` when run through `build:wasm` or
+`size:wasm:check`. Release builds also write a non-shipping optimized profile
+WASM to `.context/wasm-size/syncular_v2_bg.profile.wasm` before final custom
+section stripping so attribution can keep symbol names when available.
+
+The current browser package is the canonical Rust-owned SQLite runtime and
+exposes one stable low-level contract to generated clients. The no-CRDT/no-E2EE
+core build has measured byte savings; the current core artifact also omits blob
+upload/cache helpers. The package `build` runs `build:wasm:variants`, which
+writes both artifacts plus the catalog, and generated loading can select the
+smallest matching artifact when an app serves the catalog. Publishing separate
+wrapper packages around the same WASM would not remove bytes.
+
+For local measurement or app experiments:
+
+```bash
+bun run build:wasm:core
+bun run build:wasm:variants
+bun run catalog:wasm
+bun run size:wasm:core
+```
+
+`build:wasm:core` writes `dist/wasm-core/syncular_v2.js` and
+`dist/wasm-core/syncular_v2_bg.wasm` with `web-owned-sqlite-core` only. That
+artifact does not include blob, CRDT/Yjs, or E2EE support. `catalog:wasm`
+combines `dist/wasm-core/syncular-v2-runtime-artifact.json` and
+`dist/wasm/syncular-v2-runtime-artifact.json` into the top-level
+`dist/syncular-v2-runtime-artifacts.json` catalog.
 
 ## Package Scripts
 
@@ -266,8 +358,13 @@ bun run build
 bun run test
 bun run test:wasm:auth
 bun run test:wasm:hono
+bun run test:wasm:variants
 bun run benchmark:browser -- --operations=100 --rounds=5 --warmup=10
+bun run benchmark:browser:features
 bun run size:wasm
+bun run size:wasm:check
+bun run size:wasm:core
+bun run catalog:wasm
 ```
 
 `test:wasm:hono` builds the dev WASM artifact and runs the Hono-backed browser
@@ -279,3 +376,11 @@ SQLite local mutation batches against the legacy JS/wa-sqlite host-store fixture
 That JS path is a benchmark baseline only, not a supported v2 client runtime.
 From this package directory, pass
 `--output=../../.context/benchmarks/rust-sqlite.json` to keep a JSON report.
+
+`benchmark:browser:features` uses the Rust-owned v2 package only and records
+read-heavy Kysely queries, live-query refreshes, CRDT text writes, encrypted
+field pushes, encrypted CRDT text writes, blob metadata stores, large local
+snapshot reads, and multi-table commits into
+`.context/benchmarks/browser-feature-workloads.json`.
+Browser benchmarks rebuild dev WASM for speed; run `bun run build:wasm` before
+checking release size or preparing a package.

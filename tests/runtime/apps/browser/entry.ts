@@ -5,7 +5,7 @@
  * functions on window.__runtime for Playwright to call via page.evaluate().
  */
 
-import type { Kysely } from 'kysely';
+import { Kysely } from 'kysely';
 import {
   type ClientHandlerCollection,
   enqueueOutboxCommit,
@@ -17,16 +17,25 @@ import {
 import { codecs, createDatabase } from '../../../../packages/core/src/index';
 import { createWaSqliteDialect } from '../../../../packages/dialect-wa-sqlite/src/index';
 import { createHttpTransport } from '../../../../packages/transport-http/src/index';
-import { createSyncularRustOwnedSqlite } from '../../../../rust/bindings/browser/src/index';
+import {
+  createSyncularRustOwnedSqlite,
+  createSyncularV2Dialect,
+  type SyncularRustOwnedSqlite,
+} from '../../../../rust/bindings/browser/src/index';
 import {
   createSyncularAppDatabase,
   ensureSyncularAppSchema,
+  newCommentOperation,
+  newProjectOperation,
   newTaskOperation,
   type SyncularAppDatabase,
+  syncularGeneratedAppSchema,
+  syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
   taskPatchPayload,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+import type { SyncularV2AppSchema } from '../../../../rust/bindings/browser/src/index';
 import type {
   ConformanceDb,
   RuntimeClientDb,
@@ -95,6 +104,22 @@ async function createSyncularAppWebStoreHost(
   });
 }
 
+async function ensureRustOwnedBenchmarkSchema(
+  client: SyncularRustOwnedSqlite
+): Promise<void> {
+  const dialect = createSyncularV2Dialect(
+    client as unknown as Parameters<typeof createSyncularV2Dialect>[0],
+    { unsafeWrites: true }
+  );
+  const db = new Kysely<any>({ dialect });
+  try {
+    await ensureSyncularAppSchema(db);
+  } finally {
+    await dialect.destroyLiveQueries();
+    await db.destroy();
+  }
+}
+
 interface LocalMutationBenchmarkOptions {
   operations?: number;
   rounds?: number;
@@ -115,6 +140,13 @@ interface LocalMutationBenchmarkStats {
   opsPerSecondMedian: number;
   outboxRows: number;
   taskRows: number;
+}
+
+interface FeatureWorkloadBenchmarkOptions {
+  operations?: number;
+  rounds?: number;
+  warmupOperations?: number;
+  storage?: 'memory' | 'indexedDb' | 'opfsSahPool';
 }
 
 type RustOwnedWorkerRequest =
@@ -317,6 +349,21 @@ function summarizeBenchmark(
   };
 }
 
+async function summarizeClientBenchmark(
+  client: SyncularAppDatabase['client'],
+  label: string,
+  operations: number,
+  times: number[]
+): Promise<LocalMutationBenchmarkStats> {
+  return summarizeBenchmark(
+    label,
+    operations,
+    times,
+    await countClientRows(client, 'sync_outbox_commits'),
+    await countClientRows(client, 'tasks')
+  );
+}
+
 async function countRows(
   db: RuntimeClientDbHandle,
   table: 'tasks' | 'sync_outbox_commits'
@@ -326,6 +373,16 @@ async function countRows(
     .select((eb) => eb.fn.countAll<number>().as('count'))
     .executeTakeFirstOrThrow();
   return Number(row.count);
+}
+
+async function countClientRows(
+  client: SyncularAppDatabase['client'],
+  table: string
+): Promise<number> {
+  const result = await client.executeSql<{ count: number }>(
+    `select count(*) as count from "${table}"`
+  );
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 async function measureLocalMutationBatches(args: {
@@ -357,6 +414,35 @@ async function measureLocalMutationBatches(args: {
     times,
     await countRows(args.db, 'sync_outbox_commits'),
     await countRows(args.db, 'tasks')
+  );
+}
+
+async function measureClientRounds(args: {
+  label: string;
+  operations: number;
+  rounds: number;
+  warmupOperations: number;
+  client: SyncularAppDatabase['client'];
+  run(prefix: string, startIndex: number, count: number): Promise<void>;
+}): Promise<LocalMutationBenchmarkStats> {
+  if (args.warmupOperations > 0) {
+    await args.run(`${args.label}-warmup`, 0, args.warmupOperations);
+  }
+
+  const times: number[] = [];
+  let nextIndex = 0;
+  for (let round = 0; round < args.rounds; round += 1) {
+    const startedAt = performance.now();
+    await args.run(`${args.label}-measured`, nextIndex, args.operations);
+    nextIndex += args.operations;
+    times.push(performance.now() - startedAt);
+  }
+
+  return summarizeClientBenchmark(
+    args.client,
+    args.label,
+    args.operations,
+    times
   );
 }
 
@@ -1415,8 +1501,10 @@ async function runLocalMutationBenchmark(
         fileName: `bench-rust-owned-idb-${Date.now()}.sqlite`,
         storage: 'indexedDb',
         clearOnInit: true,
+        appSchema: syncularGeneratedAppSchema,
       },
     });
+    await ensureRustOwnedBenchmarkSchema(rustOwnedSqliteIdb);
     const rustOwnedSqliteOpfsWorker = await RustOwnedSqliteWorkerClient.open({
       fileName: `bench-rust-owned-opfs-${Date.now()}.sqlite`,
       storage: 'opfsSahPool',
@@ -1512,11 +1600,459 @@ async function runLocalMutationBenchmark(
   }
 }
 
+async function runFeatureWorkloadBenchmark(
+  options: FeatureWorkloadBenchmarkOptions = {}
+): Promise<{
+  ok: boolean;
+  operations?: number;
+  rounds?: number;
+  storage?: string;
+  readHeavyQuery?: LocalMutationBenchmarkStats;
+  liveQueryRefresh?: LocalMutationBenchmarkStats;
+  crdtTextUpdates?: LocalMutationBenchmarkStats;
+  encryptedFieldPush?: LocalMutationBenchmarkStats;
+  encryptedCrdtTextUpdates?: LocalMutationBenchmarkStats;
+  blobMetadata?: LocalMutationBenchmarkStats;
+  largeSnapshotRead?: LocalMutationBenchmarkStats;
+  multiTableCommit?: LocalMutationBenchmarkStats;
+  error?: string;
+}> {
+  const operations = options.operations ?? 50;
+  const rounds = options.rounds ?? 5;
+  const warmupOperations = options.warmupOperations ?? 5;
+  const storage = options.storage ?? 'indexedDb';
+  const actorId = 'browser-feature-bench-user';
+  const projectId = 'feature-project';
+  let syncular: SyncularAppDatabase | undefined;
+  let encryptedSyncular: SyncularAppDatabase | undefined;
+
+  try {
+    syncular = await createSyncularAppDatabase({
+      worker: () =>
+        new Worker('/syncular-v2-worker.js', {
+          type: 'module',
+          credentials: 'same-origin',
+        }),
+      config: {
+        baseUrl: '/sync',
+        actorId,
+        clientId: `feature-bench-${Date.now()}`,
+        projectId,
+        fileName: `feature-bench-${storage}-${Date.now()}.sqlite`,
+        storage,
+        clearOnInit: true,
+      },
+    });
+    const { client, db, mutations, blobs, live } = syncular;
+
+    await client.applyLocalOperationsCommit([
+      {
+        operation: newProjectOperation(
+          {
+            id: projectId,
+            name: 'Feature Benchmark',
+            owner_id: actorId,
+          },
+          null
+        ),
+      },
+    ]);
+    await client.applyLocalOperationsCommit(
+      Array.from({ length: operations * 4 }, (_, index) => ({
+        operation: newTaskOperation(
+          {
+            id: `feature-seed-task-${index}`,
+            title: `Seed task ${index}`,
+            completed: index % 2,
+            user_id: actorId,
+            project_id: projectId,
+          },
+          null
+        ),
+      }))
+    );
+
+    const readHeavyQuery = await measureClientRounds({
+      label: 'Rust-owned Kysely read-heavy query',
+      operations,
+      rounds,
+      warmupOperations,
+      client,
+      run: async (_prefix, startIndex, count) => {
+        for (let index = 0; index < count; index += 1) {
+          const offset = (startIndex + index) % Math.max(1, operations * 2);
+          const rows = await db
+            .selectFrom('tasks')
+            .select(['id', 'title', 'completed', 'server_version'])
+            .where('project_id', '=', projectId)
+            .where('completed', '=', offset % 2)
+            .orderBy('id')
+            .limit(50)
+            .execute();
+          assert(rows.length > 0, 'read-heavy query returned no rows');
+        }
+      },
+    });
+
+    const liveQuery = db
+      .selectFrom('tasks')
+      .select(['id', 'title'])
+      .where('project_id', '=', projectId)
+      .where('completed', '=', 0)
+      .orderBy('id')
+      .limit(25);
+    let liveEvents = 0;
+    const subscription = await live(liveQuery, {
+      onChange(rows) {
+        liveEvents += 1;
+        assert(rows.length <= 25, 'live query returned too many rows');
+      },
+    });
+    const liveQueryRefresh = await measureClientRounds({
+      label: 'Rust-owned live query refresh',
+      operations,
+      rounds,
+      warmupOperations,
+      client,
+      run: async (prefix, startIndex, count) => {
+        for (let index = 0; index < count; index += 1) {
+          const absoluteIndex = startIndex + index;
+          const rowId = `feature-seed-task-${absoluteIndex % (operations * 4)}`;
+          await mutations.tasks.update(rowId, {
+            title: `${prefix} task ${absoluteIndex}`,
+            completed: absoluteIndex % 2,
+            user_id: actorId,
+            project_id: projectId,
+          });
+          await liveQuery.execute();
+        }
+      },
+    });
+    subscription.unsubscribe();
+    assert(liveEvents > 1, 'expected live query refresh events');
+
+    await client.applyLocalOperation(
+      newTaskOperation(
+        {
+          id: 'feature-crdt-task',
+          title: '',
+          user_id: actorId,
+          project_id: projectId,
+        },
+        null
+      ),
+      {
+        id: 'feature-crdt-task',
+        title: '',
+        completed: 0,
+        user_id: actorId,
+        project_id: projectId,
+        server_version: 0,
+        image: null,
+        title_yjs_state: null,
+      }
+    );
+    const crdtTextUpdates = await measureClientRounds({
+      label: 'Rust-owned CRDT text updates',
+      operations,
+      rounds,
+      warmupOperations,
+      client,
+      run: async (prefix, startIndex, count) => {
+        for (let index = 0; index < count; index += 1) {
+          await client.applyCrdtFieldText({
+            table: 'tasks',
+            rowId: 'feature-crdt-task',
+            field: 'title',
+            nextText: `${prefix} CRDT ${startIndex + index}`,
+          });
+        }
+        const materialized = await client.materializeCrdtField({
+          table: 'tasks',
+          rowId: 'feature-crdt-task',
+          field: 'title',
+        });
+        assert(
+          typeof materialized.value === 'string' &&
+            materialized.value.includes('CRDT'),
+          'CRDT materialization mismatch'
+        );
+      },
+    });
+
+    const blobMetadata = await measureClientRounds({
+      label: 'Rust-owned blob metadata store',
+      operations,
+      rounds,
+      warmupOperations,
+      client,
+      run: async (prefix, startIndex, count) => {
+        for (let index = 0; index < count; index += 1) {
+          const payload = new TextEncoder().encode(
+            `${prefix}-blob-${startIndex + index}-${'x'.repeat(128)}`
+          );
+          const ref = await blobs.store(payload, {
+            mimeType: 'text/plain',
+          });
+          assert(ref.hash.length > 0, 'blob ref missing hash');
+        }
+        const stats = await blobs.getUploadQueueStats();
+        assert(stats.pending >= count, 'blob upload queue did not grow');
+      },
+    });
+
+    const largeSnapshotRead = await measureClientRounds({
+      label: 'Rust-owned large local snapshot read',
+      operations,
+      rounds,
+      warmupOperations,
+      client,
+      run: async (_prefix, _startIndex, count) => {
+        for (let index = 0; index < count; index += 1) {
+          const rows = await db
+            .selectFrom('tasks')
+            .selectAll()
+            .where('project_id', '=', projectId)
+            .orderBy('id')
+            .limit(operations * 4)
+            .execute();
+          assert(
+            rows.length >= operations * 4,
+            'large local snapshot returned too few rows'
+          );
+        }
+      },
+    });
+
+    const multiTableCommit = await measureClientRounds({
+      label: 'Rust-owned multi-table commit',
+      operations,
+      rounds,
+      warmupOperations,
+      client,
+      run: async (prefix, startIndex, count) => {
+        await client.applyLocalOperationsCommit(
+          Array.from({ length: count }, (_, index) => {
+            const absoluteIndex = startIndex + index;
+            const taskId = `${prefix}-multi-task-${absoluteIndex}`;
+            return [
+              {
+                operation: newProjectOperation(
+                  {
+                    id: `${prefix}-multi-project-${absoluteIndex}`,
+                    name: `Project ${absoluteIndex}`,
+                    owner_id: actorId,
+                  },
+                  null
+                ),
+              },
+              {
+                operation: newTaskOperation(
+                  {
+                    id: taskId,
+                    title: `Multi task ${absoluteIndex}`,
+                    completed: absoluteIndex % 2,
+                    user_id: actorId,
+                    project_id: projectId,
+                  },
+                  null
+                ),
+              },
+              {
+                operation: newCommentOperation(
+                  {
+                    id: `${prefix}-multi-comment-${absoluteIndex}`,
+                    task_id: taskId,
+                    project_id: projectId,
+                    body: `Comment ${absoluteIndex}`,
+                    author_id: actorId,
+                  },
+                  null
+                ),
+              },
+            ];
+          }).flat()
+        );
+      },
+    });
+
+    encryptedSyncular = await createSyncularAppDatabase({
+      worker: () =>
+        new Worker('/syncular-v2-worker.js', {
+          type: 'module',
+          credentials: 'same-origin',
+        }),
+      config: {
+        baseUrl: '/sync',
+        actorId,
+        clientId: `feature-bench-encrypted-${Date.now()}`,
+        projectId,
+        fileName: `feature-bench-encrypted-${storage}-${Date.now()}.sqlite`,
+        storage,
+        clearOnInit: true,
+        appSchema: encryptedTitleCrdtAppSchema(),
+      },
+    });
+    const encryptedClient = encryptedSyncular.client;
+    await encryptedClient.setFieldEncryption(
+      syncularGeneratedFieldEncryptionConfig({
+        rules: [
+          {
+            scope: 'tasks',
+            table: 'tasks',
+            fields: ['title'],
+            rowIdField: 'id',
+          },
+        ],
+        keys: { default: new Uint8Array(32).fill(17) },
+        envelopePrefix: 'dgsync:e2ee:1:',
+      })
+    );
+    await encryptedClient.setEncryptedCrdt({
+      keys: { default: new Uint8Array(32).fill(19) },
+    });
+    await encryptedClient.applyLocalOperationsCommit([
+      {
+        operation: newProjectOperation(
+          {
+            id: projectId,
+            name: 'Encrypted Feature Benchmark',
+            owner_id: actorId,
+          },
+          null
+        ),
+      },
+    ]);
+
+    const encryptedFieldPush = await measureClientRounds({
+      label: 'Rust-owned encrypted field push',
+      operations,
+      rounds,
+      warmupOperations,
+      client: encryptedClient,
+      run: async (prefix, startIndex, count) => {
+        await encryptedClient.applyLocalOperationsCommit(
+          Array.from({ length: count }, (_, index) => {
+            const absoluteIndex = startIndex + index;
+            return {
+              operation: newTaskOperation(
+                {
+                  id: `${prefix}-encrypted-task-${absoluteIndex}`,
+                  title: `Secret task ${absoluteIndex}`,
+                  completed: absoluteIndex % 2,
+                  user_id: actorId,
+                  project_id: projectId,
+                },
+                null
+              ),
+            };
+          })
+        );
+        const pushed = await encryptedClient.syncPush();
+        assert(
+          pushed.pushedCommits > 0,
+          'encrypted field benchmark did not push any commits'
+        );
+      },
+    });
+
+    await encryptedClient.applyLocalOperation(
+      newTaskOperation(
+        {
+          id: 'feature-encrypted-crdt-task',
+          title: '',
+          user_id: actorId,
+          project_id: projectId,
+        },
+        null
+      ),
+      {
+        id: 'feature-encrypted-crdt-task',
+        title: '',
+        completed: 0,
+        user_id: actorId,
+        project_id: projectId,
+        server_version: 0,
+        image: null,
+        title_yjs_state: null,
+      }
+    );
+    const encryptedCrdtTextUpdates = await measureClientRounds({
+      label: 'Rust-owned encrypted CRDT text updates',
+      operations,
+      rounds,
+      warmupOperations,
+      client: encryptedClient,
+      run: async (prefix, startIndex, count) => {
+        for (let index = 0; index < count; index += 1) {
+          await encryptedClient.applyCrdtFieldText({
+            table: 'tasks',
+            rowId: 'feature-encrypted-crdt-task',
+            field: 'title',
+            nextText: `${prefix} encrypted CRDT ${startIndex + index}`,
+          });
+        }
+        const materialized = await encryptedClient.materializeCrdtField({
+          table: 'tasks',
+          rowId: 'feature-encrypted-crdt-task',
+          field: 'title',
+        });
+        assert(
+          typeof materialized.value === 'string' &&
+            materialized.value.includes('encrypted CRDT'),
+          'encrypted CRDT materialization mismatch'
+        );
+      },
+    });
+
+    return {
+      ok: true,
+      operations,
+      rounds,
+      storage,
+      readHeavyQuery,
+      liveQueryRefresh,
+      crdtTextUpdates,
+      encryptedFieldPush,
+      encryptedCrdtTextUpdates,
+      blobMetadata,
+      largeSnapshotRead,
+      multiTableCommit,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    await Promise.all([syncular?.close(), encryptedSyncular?.close()]);
+  }
+}
+
+function encryptedTitleCrdtAppSchema(): SyncularV2AppSchema {
+  return {
+    ...syncularGeneratedAppSchema,
+    tables: syncularGeneratedAppSchema.tables.map((table) =>
+      table.name === 'tasks'
+        ? {
+            ...table,
+            crdtYjsFields: table.crdtYjsFields.map((field) =>
+              field.field === 'title'
+                ? { ...field, syncMode: 'encrypted-update-log' }
+                : field
+            ),
+          }
+        : table
+    ),
+  };
+}
+
 // --- Expose to Playwright ---
 
 const runtime = {
   conformance: runConformance,
   bootstrap: runBootstrap,
+  benchmarkFeatureWorkloads: runFeatureWorkloadBenchmark,
   benchmarkLocalMutations: runLocalMutationBenchmark,
   hostStore: runHostStore,
   pushPull: runPushPull,

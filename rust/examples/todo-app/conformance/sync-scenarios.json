@@ -1,0 +1,307 @@
+{
+  "actors": {
+    "ownerA": {
+      "actorId": "user-owner-a",
+      "token": "Bearer owner-a"
+    },
+    "ownerB": {
+      "actorId": "user-owner-b",
+      "token": "Bearer owner-b"
+    },
+    "rust": {
+      "actorId": "user-rust",
+      "projectId": "p0",
+      "token": "Bearer user-rust"
+    }
+  },
+  "subscription": {
+    "id": "sub-tasks",
+    "table": "tasks"
+  },
+  "ownerConflict": {
+    "clientId": "client-rust-owner-conflict",
+    "firstFileName": "client-rust-owner-conflict-a.sqlite",
+    "secondFileName": "client-rust-owner-conflict-b.sqlite",
+    "expectedErrorPattern": "HTTP 400",
+    "expectedRefreshCount": 0
+  },
+  "revokedSubscription": {
+    "clientId": "client-rust-revoked-subscription",
+    "revokedActorId": "user-owner-b",
+    "seedTask": {
+      "id": "revoked-task",
+      "title": "Revoked task",
+      "serverVersion": 42
+    },
+    "expectedStatus": "revoked",
+    "expectedScopes": {},
+    "expectedCursorSequence": [-1, 42, -1]
+  },
+  "retryBackoff": {
+    "clientId": "client-rust-sync-retry-backoff",
+    "localRow": {
+      "id": "sync-retry-task",
+      "title": "retry task",
+      "completed": 0,
+      "project_id": null,
+      "server_version": 0,
+      "image": null,
+      "title_yjs_state": null
+    },
+    "expectedSyncPostCounts": [1, 1, 2],
+    "expectedPendingPushes": 0
+  },
+  "snapshotChunk": {
+    "clientId": "client-rust-snapshot-chunk",
+    "failureClientId": "client-rust-snapshot-chunk-failure",
+    "chunkId": "chunk-1",
+    "byteLength": 100,
+    "sha256": "unused-in-mock",
+    "encoding": "srf1",
+    "compression": "gzip",
+    "expectedErrorPattern": "HTTP 500",
+    "serverTask": {
+      "id": "chunk-task",
+      "title": "Chunk task",
+      "serverVersion": 77
+    },
+    "browserServerTask": {
+      "id": "chunk-server-task",
+      "title": "chunk server task"
+    },
+    "localRow": {
+      "id": "chunk-local-task",
+      "title": "local before failed chunk",
+      "completed": 0,
+      "project_id": null,
+      "server_version": 0,
+      "image": null,
+      "title_yjs_state": null
+    }
+  },
+  "repeatedPull": {
+    "clientId": "client-rust-repeated-pull",
+    "task": {
+      "id": "duplicate-pull-task",
+      "title": "Repeated pull commit",
+      "serverVersion": 91
+    },
+    "expectedCursor": 90,
+    "expectedBrowserCursor": 0,
+    "expectedRowCount": 1,
+    "expectedPullCount": 2
+  },
+  "duplicatePush": {
+    "clientId": "client-rust-duplicate-push",
+    "task": {
+      "id": "duplicate-push-task",
+      "title": "Duplicate push ack",
+      "completed": 0,
+      "project_id": null,
+      "server_version": 0,
+      "image": null,
+      "title_yjs_state": null
+    },
+    "expectedFirstPushCommits": 1,
+    "expectedSecondPushCommits": 0,
+    "expectedServerRowCount": 1,
+    "expectedOutboxStatus": "acked",
+    "expectedConflictCount": 0
+  },
+  "conflictKeepLocal": {
+    "clientId": "client-keep-local",
+    "keepServerClientId": "client-keep-server",
+    "dismissClientId": "client-dismiss-conflict",
+    "rowId": "conflict-task",
+    "localTitle": "Local winner",
+    "serverTitle": "Server winner",
+    "staleBaseVersion": 1,
+    "serverVersion": 9,
+    "conflictCode": "VERSION_CONFLICT",
+    "conflictMessage": "version conflict",
+    "browserConflictMessage": "Version conflict: server=9, base=1",
+    "keepServerResolution": "keep-server",
+    "dismissResolution": "dismiss",
+    "expectedInitialConflictCount": 1,
+    "expectedAfterResolveConflictCount": 0,
+    "expectedAfterRetryConflictCount": 0,
+    "expectedRetryPushCommits": 1,
+    "retryBaseVersion": 9
+  },
+  "realtime": {
+    "clientAId": "client-rust-realtime-a",
+    "clientBId": "client-rust-realtime-b",
+    "authRefreshClientId": "client-rust-realtime-auth-refresh",
+    "websocketToken": "realtime-token",
+    "refreshedWebsocketToken": "realtime-token-refreshed",
+    "expectedAuthTokens": ["realtime-token", "realtime-token-refreshed"],
+    "expectedConnectionCount": 1,
+    "presenceEvent": "presence",
+    "expectedEventDebug": ["Other(\"presence\")", "Sync"],
+    "task": {
+      "id": "realtime-task",
+      "title": "Realtime task",
+      "serverVersion": 88
+    }
+  },
+  "liveQuery": {
+    "clientAId": "client-rust-live-query-a",
+    "clientBId": "client-rust-live-query-b",
+    "querySql": "select id, title, user_id from tasks order by id",
+    "tables": ["tasks"],
+    "expectedInitialRows": 0,
+    "expectedEventsBeforeUnsubscribe": 2,
+    "expectedEventsAfterUnsubscribe": 2,
+    "firstTask": {
+      "id": "live-query-task-a",
+      "title": "Live query task A"
+    },
+    "secondTask": {
+      "id": "live-query-task-b",
+      "title": "Live query task B"
+    },
+    "thirdTask": {
+      "id": "live-query-task-c",
+      "title": "Live query task C"
+    }
+  },
+  "workerAuth": {
+    "clientId": "client-worker-auth",
+    "authorization": "Bearer worker-token"
+  },
+  "authRefresh": {
+    "clientId": "client-rust-auth-refresh",
+    "initialAuthorization": "Bearer stale-user-rust",
+    "refreshedAuthorization": "Bearer user-rust",
+    "expectedRefreshCount": 1,
+    "expectedAuthHeaders": [
+      "Bearer stale-user-rust",
+      "Bearer user-rust",
+      "Bearer user-rust"
+    ]
+  },
+  "revokedSession": {
+    "clientId": "client-rust-revoked-session",
+    "authorization": "Bearer revoked-user-rust",
+    "expectedStatus": 401,
+    "expectedRefreshCount": 1,
+    "expectedRetryCount": 1,
+    "expectedErrorPattern": "HTTP 401"
+  },
+  "schemaVersion": {
+    "requiredFutureClientId": "client-rust-required-future-schema",
+    "latestFutureClientId": "client-rust-latest-future-schema",
+    "invalidOutboxClientId": "client-rust-invalid-outbox-schema",
+    "futureVersionOffset": 1,
+    "expectedRequiredErrorPattern": "server requires schema version",
+    "expectedInvalidOutboxErrorPattern": "was created with schema version"
+  },
+  "e2ee": {
+    "clientId": "client-rust-e2ee-field",
+    "pullClientId": "client-rust-e2ee-field-pull",
+    "keyBase64": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+    "envelopePrefix": "dgsync:e2ee:1:",
+    "rule": {
+      "scope": "tasks",
+      "table": "tasks",
+      "fields": ["title"]
+    },
+    "task": {
+      "id": "local-secret",
+      "title": "Local secret"
+    },
+    "conflict": {
+      "seedClientId": "client-rust-e2ee-conflict-seed",
+      "clientId": "client-rust-e2ee-conflict",
+      "rowId": "encrypted-conflict-task",
+      "serverTitle": "Encrypted server winner",
+      "localTitle": "Encrypted local winner",
+      "staleBaseVersion": 0,
+      "expectedConflictCount": 1
+    },
+    "chunk": {
+      "seedClientId": "client-rust-e2ee-chunk-seed",
+      "clientId": "client-rust-e2ee-chunk"
+    },
+    "serverVersion": 31,
+    "expectedDecryptedRowCount": 1
+  },
+  "blob": {
+    "clientId": "blob-transport-client",
+    "browserClientId": "client-rust-blob-hono",
+    "streamingClientId": "blob-streaming-client",
+    "dedupeClientId": "client-rust-blob-dedupe",
+    "authFailureClientId": "client-rust-blob-auth-failure",
+    "interruptedUploadClientId": "client-rust-blob-interrupted-upload",
+    "missingClientId": "client-rust-blob-missing",
+    "cachePruneClientId": "client-rust-blob-cache-prune",
+    "actorId": "actor-blob",
+    "browserActorId": "user-blob",
+    "authorization": "Bearer blob-token",
+    "staleAuthorization": "Bearer stale-token",
+    "mimeType": "application/test",
+    "textMimeType": "text/plain",
+    "bytes": [9, 8, 7, 6],
+    "browserText": "rust-owned-sqlite-blob",
+    "referenceSync": {
+      "sourceClientId": "client-rust-blob-ref-source",
+      "readerClientId": "client-rust-blob-ref-reader",
+      "task": {
+        "id": "blob-ref-task",
+        "title": "Blob ref task"
+      },
+      "image": {
+        "hash": "sha256:7d73d44d85b9c2df2eb2431facba8a3bd12d90b177fd9beffa05aab04e2b8bf1",
+        "size": 22,
+        "mimeType": "text/plain"
+      }
+    },
+    "dedupeText": "same-content",
+    "authFailureText": "auth-failure-blob",
+    "interruptedUploadText": "retryable-upload",
+    "cachePruneOldText": "cache-old",
+    "cachePruneNewText": "cache-newer-entry",
+    "streamingByteCount": 128000,
+    "uploadToken": "upload-token",
+    "uploadPath": "/upload-target",
+    "downloadPath": "/download-target",
+    "expectedUploadQueueBefore": {
+      "pending": 1,
+      "uploading": 0,
+      "failed": 0
+    },
+    "expectedUploadQueueAfter": {
+      "pending": 0,
+      "uploading": 0,
+      "failed": 0
+    },
+    "expectedFailedQueue": {
+      "pending": 0,
+      "uploading": 0,
+      "failed": 1
+    },
+    "cachePruneMaxBytes": 17,
+    "expectedCacheBeforePrune": {
+      "count": 2,
+      "totalBytes": 26
+    },
+    "expectedCachePrunedBytes": 9,
+    "expectedCacheAfterPrune": {
+      "count": 1,
+      "totalBytes": 17
+    },
+    "expectedProcessUploaded": {
+      "uploaded": 1,
+      "failed": 0
+    },
+    "expectedProcessRetryableFailure": {
+      "uploaded": 0,
+      "failed": 0
+    },
+    "expectedProcessPermanentFailure": {
+      "uploaded": 0,
+      "failed": 1
+    },
+    "expectedAuthHeaderCount": 3
+  }
+}

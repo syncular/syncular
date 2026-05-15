@@ -651,6 +651,104 @@ fn generate_schema_json(
     Ok(format!("{}\n", serde_json::to_string_pretty(&document)?))
 }
 
+fn generate_runtime_app_schema_json(
+    tables: &[TableInfo],
+    config: &CodegenConfig,
+    migrations_dir: Option<&Path>,
+    schema_version: i32,
+) -> Result<String> {
+    let mut app_tables = Vec::new();
+    for table in tables
+        .iter()
+        .filter(|table| !table.name.starts_with("sync_"))
+    {
+        let table_config = config.table(&table.name);
+        let primary_key = primary_key_column(table);
+        let server_version_column = table_config
+            .server_version_column
+            .as_deref()
+            .expect("validated table has server version column");
+        let scopes = table_config.scopes();
+        app_tables.push(serde_json::json!({
+            "name": table.name,
+            "primaryKeyColumn": primary_key.name,
+            "serverVersionColumn": server_version_column,
+            "softDeleteColumn": table_config.soft_delete_column,
+            "subscriptionId": table_config.subscription_id(&table.name),
+            "columns": table.columns.iter().map(|column| {
+                serde_json::json!({
+                    "name": column.name,
+                    "typeFamily": ts_sqlite_column_type(column),
+                    "notnullRequired": !is_nullable(column) && column.pk == 0,
+                    "primaryKey": column.pk > 0,
+                })
+            }).collect::<Vec<_>>(),
+            "blobColumns": table_config.blob_columns,
+            "crdtYjsFields": table_config.crdt_yjs_fields.iter().map(|field| {
+                serde_json::json!({
+                    "field": field.field,
+                    "stateColumn": field.state_column,
+                    "containerKey": field.container_key.as_deref().unwrap_or(&field.field),
+                    "rowIdField": field.row_id_field.as_deref().unwrap_or(&primary_key.name),
+                    "kind": if field.kind.is_empty() { "text" } else { &field.kind },
+                    "syncMode": if field.sync_mode.is_empty() { "server-merge" } else { &field.sync_mode },
+                })
+            }).collect::<Vec<_>>(),
+            "encryptedFields": table_config.encrypted_fields.iter().map(|field| {
+                serde_json::json!({
+                    "field": field.field,
+                    "scope": field.scope.as_deref().unwrap_or(&table.name),
+                    "rowIdField": field.row_id_field.as_deref().unwrap_or(&primary_key.name),
+                })
+            }).collect::<Vec<_>>(),
+            "scopes": scopes.iter().map(|scope| {
+                serde_json::json!({
+                    "name": scope_name(scope),
+                    "column": scope.column,
+                    "source": scope.source.as_deref().expect("validated scope source"),
+                    "required": scope.required,
+                })
+            }).collect::<Vec<_>>(),
+        }));
+    }
+
+    let migrations = if let Some(migrations_dir) = migrations_dir {
+        migration_dirs(migrations_dir)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, migration_dir)| {
+                let dir_name = migration_dir
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .with_context(|| {
+                        format!("invalid migration dir name {}", migration_dir.display())
+                    })?;
+                let (version, name) = dir_name
+                    .split_once('_')
+                    .map(|(version, name)| (version, name))
+                    .unwrap_or((dir_name, dir_name));
+                let up_sql_path = migration_dir.join("up.sql");
+                let up_sql = fs::read_to_string(&up_sql_path)
+                    .with_context(|| format!("read migration {}", up_sql_path.display()))?;
+                Ok(serde_json::json!({
+                    "version": version,
+                    "schemaVersion": i32::try_from(index + 1).context("migration count exceeds i32")?,
+                    "name": name,
+                    "upSql": up_sql,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+
+    Ok(serde_json::to_string(&serde_json::json!({
+        "schemaVersion": schema_version,
+        "tables": app_tables,
+        "migrations": migrations,
+    }))?)
+}
+
 fn schema_backed_codegen_inputs(
     schema_json: &str,
     base_config: &CodegenConfig,
@@ -1022,6 +1120,130 @@ fn ts_record_literal(values: &BTreeMap<String, JsonValue>) -> String {
     format!("{{ {entries} }}")
 }
 
+fn swift_json_value_literal(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => ".null".to_string(),
+        JsonValue::Bool(value) => format!(".bool({value})"),
+        JsonValue::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                format!(".int({value})")
+            } else if let Some(value) = value.as_u64() {
+                match i64::try_from(value) {
+                    Ok(value) => format!(".int({value})"),
+                    Err(_) => format!(".double({})", value as f64),
+                }
+            } else {
+                format!(".double({})", value.as_f64().unwrap_or_default())
+            }
+        }
+        JsonValue::String(value) => format!(".string({})", double_quoted_string(value)),
+        JsonValue::Array(values) => format!(
+            ".array([{}])",
+            values
+                .iter()
+                .map(swift_json_value_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        JsonValue::Object(values) => format!(
+            ".object([{}])",
+            values
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}: {}",
+                        double_quoted_string(key),
+                        swift_json_value_literal(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn swift_json_record_literal(values: &BTreeMap<String, JsonValue>) -> String {
+    if values.is_empty() {
+        return "[:]".to_string();
+    }
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}: {}",
+                    double_quoted_string(key),
+                    swift_json_value_literal(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn kotlin_json_value_literal(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "null".to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                format!("{value}L")
+            } else if let Some(value) = value.as_u64() {
+                match i64::try_from(value) {
+                    Ok(value) => format!("{value}L"),
+                    Err(_) => value.to_string(),
+                }
+            } else {
+                value.as_f64().unwrap_or_default().to_string()
+            }
+        }
+        JsonValue::String(value) => double_quoted_string(value),
+        JsonValue::Array(values) => format!(
+            "listOf({})",
+            values
+                .iter()
+                .map(kotlin_json_value_literal)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        JsonValue::Object(values) => format!(
+            "linkedMapOf<String, Any?>({})",
+            values
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{} to {}",
+                        double_quoted_string(key),
+                        kotlin_json_value_literal(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn kotlin_json_record_literal(values: &BTreeMap<String, JsonValue>) -> String {
+    if values.is_empty() {
+        return "emptyMap<String, Any?>()".to_string();
+    }
+    format!(
+        "linkedMapOf<String, Any?>({})",
+        values
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "{} to {}",
+                    double_quoted_string(key),
+                    kotlin_json_value_literal(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn ts_string(value: &str) -> String {
     format!(
         "'{}'",
@@ -1190,6 +1412,18 @@ fn apply_delete_function_name(table_name: &str) -> String {
     format!("apply{}Delete", singular_pascal_case(table_name))
 }
 
+fn enqueue_new_function_name(table_name: &str) -> String {
+    format!("enqueueNew{}", singular_pascal_case(table_name))
+}
+
+fn enqueue_patch_function_name(table_name: &str) -> String {
+    format!("enqueue{}Patch", singular_pascal_case(table_name))
+}
+
+fn enqueue_delete_function_name(table_name: &str) -> String {
+    format!("enqueue{}Delete", singular_pascal_case(table_name))
+}
+
 fn double_quoted_string(value: &str) -> String {
     format!(
         "\"{}\"",
@@ -1218,6 +1452,19 @@ fn swift_type(column: &ColumnRow, optional: bool) -> String {
     }
 }
 
+fn swift_app_type(column: &ColumnRow, config: &TableCodegenConfig, optional: bool) -> String {
+    let base = if is_blob_ref_column(column, config) {
+        "SyncularBlobRef".to_string()
+    } else {
+        swift_type(column, false)
+    };
+    if optional {
+        format!("{base}?")
+    } else {
+        base
+    }
+}
+
 fn kotlin_type(column: &ColumnRow, optional: bool) -> String {
     let upper = column.sql_type.to_ascii_uppercase();
     let base = if upper.contains("INT") {
@@ -1233,6 +1480,37 @@ fn kotlin_type(column: &ColumnRow, optional: bool) -> String {
         format!("{base}?")
     } else {
         base.to_string()
+    }
+}
+
+fn kotlin_app_type(column: &ColumnRow, config: &TableCodegenConfig, optional: bool) -> String {
+    let base = if is_blob_ref_column(column, config) {
+        "SyncularBlobRef".to_string()
+    } else {
+        kotlin_type(column, false)
+    };
+    if optional {
+        format!("{base}?")
+    } else {
+        base
+    }
+}
+
+fn swift_row_id_input_expr(primary_key: &ColumnRow) -> String {
+    let property = lower_camel_case(&primary_key.name);
+    if swift_type(primary_key, false) == "String" {
+        format!("input.{property}")
+    } else {
+        format!("String(input.{property})")
+    }
+}
+
+fn kotlin_row_id_input_expr(primary_key: &ColumnRow) -> String {
+    let property = lower_camel_case(&primary_key.name);
+    if kotlin_type(primary_key, false) == "String" {
+        format!("input.{property}")
+    } else {
+        format!("input.{property}.toString()")
     }
 }
 
@@ -1279,6 +1557,14 @@ fn swift_json_value(column: &ColumnRow, value: &str) -> String {
     }
 }
 
+fn swift_payload_value(column: &ColumnRow, config: &TableCodegenConfig, value: &str) -> String {
+    if is_blob_ref_column(column, config) {
+        format!("{value}.syncularPayloadValue")
+    } else {
+        swift_json_value(column, value)
+    }
+}
+
 fn kotlin_payload_value(column: &ColumnRow, value: &str) -> String {
     let upper = column.sql_type.to_ascii_uppercase();
     if upper.contains("BLOB") {
@@ -1288,9 +1574,31 @@ fn kotlin_payload_value(column: &ColumnRow, value: &str) -> String {
     }
 }
 
-fn kotlin_row_decode_value(column: &ColumnRow, row_var: &str) -> String {
+fn kotlin_app_payload_value(
+    column: &ColumnRow,
+    config: &TableCodegenConfig,
+    value: &str,
+) -> String {
+    if is_blob_ref_column(column, config) {
+        format!("{value}.toJsonValue()")
+    } else {
+        kotlin_payload_value(column, value)
+    }
+}
+
+fn kotlin_row_decode_value(
+    column: &ColumnRow,
+    config: &TableCodegenConfig,
+    row_var: &str,
+) -> String {
     let key = double_quoted_string(&column.name);
     let nullable = is_nullable(column);
+    if is_blob_ref_column(column, config) {
+        if nullable {
+            return format!("{row_var}.syncularOptionalBlobRef({key})");
+        }
+        return format!("{row_var}.syncularRequiredBlobRef({key})");
+    }
     let upper = column.sql_type.to_ascii_uppercase();
     if upper.contains("INT") {
         if nullable {
@@ -2187,6 +2495,23 @@ fn ts_encrypted_crdt_subscription_fn(
     ))
 }
 
+fn native_table_subscription_fn(table: &TableInfo) -> String {
+    lower_camel_case(&format!("{}_subscription", singular_name(&table.name)))
+}
+
+fn native_encrypted_crdt_subscription_fn(
+    table: &TableInfo,
+    field: &CrdtYjsFieldConfig,
+    suffix: &str,
+) -> String {
+    lower_camel_case(&format!(
+        "{}_{}_crdt_{}_subscription",
+        singular_name(&table.name),
+        field.field,
+        suffix
+    ))
+}
+
 fn is_server_merge_crdt_field(field: &CrdtYjsFieldConfig) -> bool {
     field.sync_mode.is_empty() || field.sync_mode == "server-merge"
 }
@@ -2200,6 +2525,10 @@ fn has_server_merge_crdt_fields(config: &TableCodegenConfig) -> bool {
         .crdt_yjs_fields
         .iter()
         .any(is_server_merge_crdt_field)
+}
+
+fn has_crdt_yjs_fields(config: &TableCodegenConfig) -> bool {
+    !config.crdt_yjs_fields.is_empty()
 }
 
 fn encrypted_update_log_crdt_fields(
@@ -2216,6 +2545,41 @@ fn has_encrypted_update_log_crdt_fields(config: &TableCodegenConfig) -> bool {
         .crdt_yjs_fields
         .iter()
         .any(is_encrypted_update_log_crdt_field)
+}
+
+fn required_browser_runtime_features(
+    user_tables: &[TableInfo],
+    config: &CodegenConfig,
+) -> Vec<&'static str> {
+    let mut needs_blobs = false;
+    let mut needs_crdt_yjs = false;
+    let mut needs_e2ee = false;
+    for table in user_tables {
+        let table_config = config.table(&table.name);
+        if !table_config.blob_columns.is_empty() {
+            needs_blobs = true;
+        }
+        if has_crdt_yjs_fields(&table_config) {
+            needs_crdt_yjs = true;
+        }
+        if !table_config.encrypted_fields.is_empty()
+            || has_encrypted_update_log_crdt_fields(&table_config)
+        {
+            needs_e2ee = true;
+        }
+    }
+
+    let mut features = vec!["web-owned-sqlite-core"];
+    if needs_blobs {
+        features.push("blobs");
+    }
+    if needs_crdt_yjs {
+        features.push("crdt-yjs");
+    }
+    if needs_e2ee {
+        features.push("e2ee");
+    }
+    features
 }
 
 fn generate_rust_yjs_update_methods(config: &TableCodegenConfig) -> String {
@@ -3130,11 +3494,11 @@ fn generate_typescript_module(
     out.push_str("// Source: migrations/*.sql and syncular.codegen.json\n\n");
     let runtime_import_path = config.typescript_runtime_import_path()?;
     out.push_str(&format!(
-        "import {{ SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase }} from {};\n",
+        "import {{ SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites }} from {};\n",
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
@@ -3184,6 +3548,11 @@ fn generate_typescript_module(
         "export const syncularGeneratedSchemaVersion = {schema_version} as const;\n"
     ));
     out.push_str("const syncularGeneratedSchemaId = 'syncular-app';\n\n");
+    out.push_str("export const syncularGeneratedRequiredRuntimeFeatures = [\n");
+    for feature in required_browser_runtime_features(&user_tables, config) {
+        out.push_str(&format!("  {},\n", ts_string(feature)));
+    }
+    out.push_str("] as const;\n\n");
     out.push_str("export const syncularGeneratedTableConfig = {\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -3279,6 +3648,117 @@ fn generate_typescript_module(
         out.push_str("  },\n");
     }
     out.push_str("} satisfies Record<keyof SyncularAppDb, SyncularGeneratedTableConfig>;\n\n");
+    out.push_str("export const syncularGeneratedAppSchema = {\n");
+    out.push_str("  schemaVersion: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  tables: [\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        let primary_key = table
+            .columns
+            .iter()
+            .find(|column| column.pk > 0)
+            .with_context(|| format!("table {} has no primary key", table.name))?;
+        out.push_str("    {\n");
+        out.push_str(&format!("      name: {},\n", ts_string(&table.name)));
+        out.push_str(&format!(
+            "      primaryKeyColumn: {},\n",
+            ts_string(&primary_key.name)
+        ));
+        out.push_str(&format!(
+            "      serverVersionColumn: {},\n",
+            ts_string(
+                table_config
+                    .server_version_column
+                    .as_deref()
+                    .expect("validated table has server version column"),
+            )
+        ));
+        out.push_str(&format!(
+            "      softDeleteColumn: {},\n",
+            table_config
+                .soft_delete_column
+                .as_deref()
+                .map(ts_string)
+                .unwrap_or_else(|| "null".to_string())
+        ));
+        out.push_str(&format!(
+            "      subscriptionId: {},\n",
+            ts_string(&table_config.subscription_id(&table.name))
+        ));
+        out.push_str("      columns: [\n");
+        for column in &table.columns {
+            out.push_str(&format!(
+                "        {{ name: {}, typeFamily: {}, notnullRequired: {}, primaryKey: {} }},\n",
+                ts_string(&column.name),
+                ts_string(ts_sqlite_column_type(column)),
+                !is_nullable(column) && column.pk == 0,
+                column.pk > 0
+            ));
+        }
+        out.push_str("      ],\n");
+        out.push_str("      blobColumns: [");
+        for (index, column) in table_config.blob_columns.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&ts_string(column));
+        }
+        out.push_str("],\n");
+        out.push_str("      crdtYjsFields: [");
+        for (index, field) in table_config.crdt_yjs_fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{ field: {}, stateColumn: {}, containerKey: {}, rowIdField: {}, kind: {}, syncMode: {} }}",
+                ts_string(&field.field),
+                ts_string(&field.state_column),
+                ts_string(field.container_key.as_deref().unwrap_or(&field.field)),
+                ts_string(field.row_id_field.as_deref().unwrap_or(&primary_key.name)),
+                ts_string(if field.kind.is_empty() {
+                    "text"
+                } else {
+                    &field.kind
+                }),
+                ts_string(if field.sync_mode.is_empty() {
+                    "server-merge"
+                } else {
+                    &field.sync_mode
+                })
+            ));
+        }
+        out.push_str("],\n");
+        out.push_str("      encryptedFields: [");
+        for (index, field) in table_config.encrypted_fields.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{ field: {}, scope: {}, rowIdField: {} }}",
+                ts_string(&field.field),
+                ts_string(field.scope.as_deref().unwrap_or(&table.name)),
+                ts_string(field.row_id_field.as_deref().unwrap_or(&primary_key.name))
+            ));
+        }
+        out.push_str("],\n");
+        out.push_str("      scopes: [");
+        for (index, scope) in table_config.scopes().iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{ name: {}, column: {}, source: {}, required: {} }}",
+                ts_string(scope_name(scope)),
+                ts_string(&scope.column),
+                ts_string(scope.source.as_deref().expect("validated scope source")),
+                scope.required
+            ));
+        }
+        out.push_str("],\n");
+        out.push_str("    },\n");
+    }
+    out.push_str("  ],\n");
+    out.push_str("} satisfies SyncularV2AppSchema;\n\n");
     out.push_str("export const syncularGeneratedFieldEncryptionRules = [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -3454,6 +3934,10 @@ fn generate_typescript_module(
     out.push_str("}\n\n");
     out.push_str("export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
     out.push_str("  assertSyncularAppRuntimeInfo(await database.client.runtimeInfo());\n");
+    out.push_str("  const schemaState = await database.client.generatedSchemaState();\n");
+    out.push_str("  if (schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion) {\n");
+    out.push_str("    throw new Error(`Syncular Rust app schema version mismatch: ${schemaState.currentSchemaVersion}, expected ${syncularGeneratedSchemaVersion}`);\n");
+    out.push_str("  }\n");
     out.push_str("}\n\n");
     out.push_str("export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularV2RuntimeInfo): void {\n");
     out.push_str("  if (runtimeInfo.packageName !== SYNCULAR_V2_PACKAGE_NAME) {\n");
@@ -3472,13 +3956,10 @@ fn generate_typescript_module(
         "    throw new Error('Syncular runtime did not report Rust runtime information');\n",
     );
     out.push_str("  }\n");
-    out.push_str("  if (runtimeInfo.rust.schemaVersion !== syncularGeneratedSchemaVersion) {\n");
-    out.push_str("    throw new Error(`Syncular Rust schema version mismatch: ${runtimeInfo.rust.schemaVersion}, expected ${syncularGeneratedSchemaVersion}`);\n");
-    out.push_str("  }\n");
-    out.push_str("  if (!runtimeInfo.rust.features.includes('web-owned-sqlite')) {\n");
-    out.push_str(
-        "    throw new Error('Syncular Rust runtime is missing web-owned-sqlite support');\n",
-    );
+    out.push_str("  for (const feature of syncularGeneratedRequiredRuntimeFeatures) {\n");
+    out.push_str("    if (!runtimeInfo.rust.features.includes(feature)) {\n");
+    out.push_str("      throw new Error(`Syncular Rust runtime is missing ${feature} support`);\n");
+    out.push_str("    }\n");
     out.push_str("  }\n");
     out.push_str("}\n\n");
     out.push_str("function resolveSyncularAppSubscriptions(options: CreateSyncularAppDatabaseOptions): readonly SyncularSubscriptionSpec[] {\n");
@@ -3496,13 +3977,21 @@ fn generate_typescript_module(
     out.push_str("): Promise<SyncularAppDatabase> {\n");
     out.push_str("  const database = await createSyncularRustSqliteDatabase<SyncularAppDb>({\n");
     out.push_str("    ...options,\n");
+    out.push_str("    config: {\n");
+    out.push_str("      ...options.config,\n");
+    out.push_str(
+        "      schemaVersion: options.config.schemaVersion ?? syncularGeneratedSchemaVersion,\n",
+    );
+    out.push_str("      appSchema: options.config.appSchema ?? syncularGeneratedAppSchema,\n");
+    out.push_str("    },\n");
     out.push_str("    codecs: withSyncularGeneratedCodecs(options.codecs),\n");
     out.push_str("    appTables: syncularGeneratedAppTables,\n");
     out.push_str("    tableConfig: { ...options.tableConfig, ...syncularGeneratedTableConfig },\n");
+    out.push_str("    requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,\n");
     out.push_str("  });\n");
     out.push_str("  try {\n");
     out.push_str("    await assertSyncularAppRuntime(database);\n");
-    out.push_str("    await ensureSyncularAppSchema(database.db);\n");
+    out.push_str("    await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);\n");
     out.push_str(
         "    await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));\n",
     );
@@ -3837,12 +4326,16 @@ fn generate_swift_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
     schema_version: i32,
+    app_schema_json: &str,
 ) -> Result<String> {
     let user_tables = tables
         .iter()
         .filter(|table| !table.name.starts_with("sync_"))
         .cloned()
         .collect::<Vec<_>>();
+    let has_native_crdt = user_tables
+        .iter()
+        .any(|table| has_crdt_yjs_fields(&config.table(&table.name)));
     let has_native_encrypted_crdt = user_tables
         .iter()
         .any(|table| has_encrypted_update_log_crdt_fields(&config.table(&table.name)));
@@ -3854,6 +4347,10 @@ fn generate_swift_module(
     out.push_str(&format!(
         "public let syncularNativeExpectedFfiAbiVersion = 1\npublic let syncularNativeExpectedCrateVersion = {}\npublic let syncularNativeGeneratedSchemaVersion = {schema_version}\n\n",
         double_quoted_string(env!("CARGO_PKG_VERSION"))
+    ));
+    out.push_str(&format!(
+        "public let syncularNativeGeneratedAppSchemaJson = {}\n\n",
+        double_quoted_string(app_schema_json)
     ));
     out.push_str("public enum SyncularNativeGeneratedError: Error, Equatable {\n");
     out.push_str("    case runtimeManifestMismatch(String)\n");
@@ -3892,11 +4389,6 @@ fn generate_swift_module(
     out.push_str("    guard manifest.crateVersion == syncularNativeExpectedCrateVersion else {\n");
     out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust crate version \\(manifest.crateVersion) does not match generated expectation \\(syncularNativeExpectedCrateVersion)\")\n");
     out.push_str("    }\n");
-    out.push_str(
-        "    guard manifest.schemaVersion == syncularNativeGeneratedSchemaVersion else {\n",
-    );
-    out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust schema version \\(manifest.schemaVersion) does not match generated expectation \\(syncularNativeGeneratedSchemaVersion)\")\n");
-    out.push_str("    }\n");
     out.push_str("    guard manifest.storageBackend == \"diesel-sqlite\" else {\n");
     out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust storage backend \\(manifest.storageBackend) is not diesel-sqlite\")\n");
     out.push_str("    }\n");
@@ -3921,16 +4413,30 @@ fn generate_swift_module(
         out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing queued-encrypted-crdt\")\n");
         out.push_str("    }\n");
     }
+    if has_native_crdt {
+        out.push_str(
+            "    guard manifest.capabilities.contains(\"generic-crdt-field-api\") else {\n",
+        );
+        out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing generic-crdt-field-api\")\n");
+        out.push_str("    }\n");
+        out.push_str(
+            "    guard manifest.capabilities.contains(\"queued-crdt-field-updates\") else {\n",
+        );
+        out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing queued-crdt-field-updates\")\n");
+        out.push_str("    }\n");
+    }
     out.push_str("}\n\n");
     out.push_str("public enum SyncularGeneratedOperationKind: String, Codable, Equatable {\n");
     out.push_str("    case upsert\n");
     out.push_str("    case delete\n");
     out.push_str("}\n\n");
-    out.push_str("public enum SyncularJsonValue: Codable, Equatable {\n");
+    out.push_str("public indirect enum SyncularJsonValue: Codable, Equatable {\n");
     out.push_str("    case string(String)\n");
     out.push_str("    case int(Int64)\n");
     out.push_str("    case double(Double)\n");
     out.push_str("    case bool(Bool)\n");
+    out.push_str("    case object([String: SyncularJsonValue])\n");
+    out.push_str("    case array([SyncularJsonValue])\n");
     out.push_str("    case null\n\n");
     out.push_str("    public init(from decoder: Decoder) throws {\n");
     out.push_str("        let container = try decoder.singleValueContainer()\n");
@@ -3942,6 +4448,8 @@ fn generate_swift_module(
         "        else if let value = try? container.decode(Int64.self) { self = .int(value) }\n",
     );
     out.push_str("        else if let value = try? container.decode(Double.self) { self = .double(value) }\n");
+    out.push_str("        else if let value = try? container.decode([String: SyncularJsonValue].self) { self = .object(value) }\n");
+    out.push_str("        else if let value = try? container.decode([SyncularJsonValue].self) { self = .array(value) }\n");
     out.push_str("        else { self = .string(try container.decode(String.self)) }\n");
     out.push_str("    }\n\n");
     out.push_str("    public func encode(to encoder: Encoder) throws {\n");
@@ -3951,10 +4459,211 @@ fn generate_swift_module(
     out.push_str("        case .int(let value): try container.encode(value)\n");
     out.push_str("        case .double(let value): try container.encode(value)\n");
     out.push_str("        case .bool(let value): try container.encode(value)\n");
+    out.push_str("        case .object(let value): try container.encode(value)\n");
+    out.push_str("        case .array(let value): try container.encode(value)\n");
     out.push_str("        case .null: try container.encodeNil()\n");
     out.push_str("        }\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularBlobRef: Codable, Equatable {\n");
+    out.push_str("    public let hash: String\n");
+    out.push_str("    public let size: Int64\n");
+    out.push_str("    public let mimeType: String\n");
+    out.push_str("    public let encrypted: Bool?\n");
+    out.push_str("    public let keyId: String?\n\n");
+    out.push_str("    public init(hash: String, size: Int64, mimeType: String, encrypted: Bool? = nil, keyId: String? = nil) {\n");
+    out.push_str("        self.hash = hash\n");
+    out.push_str("        self.size = size\n");
+    out.push_str("        self.mimeType = mimeType\n");
+    out.push_str("        self.encrypted = encrypted\n");
+    out.push_str("        self.keyId = keyId\n");
+    out.push_str("    }\n\n");
+    out.push_str("    private enum CodingKeys: String, CodingKey {\n");
+    out.push_str("        case hash\n");
+    out.push_str("        case size\n");
+    out.push_str("        case mimeType\n");
+    out.push_str("        case encrypted\n");
+    out.push_str("        case keyId\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public init(from decoder: Decoder) throws {\n");
+    out.push_str("        let single = try decoder.singleValueContainer()\n");
+    out.push_str("        if let encoded = try? single.decode(String.self) {\n");
+    out.push_str("            self = try JSONDecoder().decode(SyncularBlobRef.self, from: Data(encoded.utf8))\n");
+    out.push_str("            return\n");
+    out.push_str("        }\n");
+    out.push_str("        let container = try decoder.container(keyedBy: CodingKeys.self)\n");
+    out.push_str("        hash = try container.decode(String.self, forKey: .hash)\n");
+    out.push_str("        size = try container.decode(Int64.self, forKey: .size)\n");
+    out.push_str("        mimeType = try container.decode(String.self, forKey: .mimeType)\n");
+    out.push_str(
+        "        encrypted = try container.decodeIfPresent(Bool.self, forKey: .encrypted)\n",
+    );
+    out.push_str("        keyId = try container.decodeIfPresent(String.self, forKey: .keyId)\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func encode(to encoder: Encoder) throws {\n");
+    out.push_str("        var container = encoder.container(keyedBy: CodingKeys.self)\n");
+    out.push_str("        try container.encode(hash, forKey: .hash)\n");
+    out.push_str("        try container.encode(size, forKey: .size)\n");
+    out.push_str("        try container.encode(mimeType, forKey: .mimeType)\n");
+    out.push_str("        try container.encodeIfPresent(encrypted, forKey: .encrypted)\n");
+    out.push_str("        try container.encodeIfPresent(keyId, forKey: .keyId)\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public var syncularPayloadValue: SyncularJsonValue {\n");
+    out.push_str("        var value: [String: SyncularJsonValue] = [\n");
+    out.push_str("            \"hash\": .string(hash),\n");
+    out.push_str("            \"size\": .int(size),\n");
+    out.push_str("            \"mimeType\": .string(mimeType),\n");
+    out.push_str("        ]\n");
+    out.push_str("        if let encrypted { value[\"encrypted\"] = .bool(encrypted) }\n");
+    out.push_str("        if let keyId { value[\"keyId\"] = .string(keyId) }\n");
+    out.push_str("        return .object(value)\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    out.push_str("    public func jsonString() throws -> String {\n");
+    out.push_str("        let encoder = JSONEncoder()\n");
+    out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+    out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularSubscriptionArgs: Equatable {\n");
+    out.push_str("    public let actorId: String\n");
+    out.push_str("    public let projectId: String?\n\n");
+    out.push_str("    public init(actorId: String, projectId: String? = nil) {\n");
+    out.push_str("        self.actorId = actorId\n");
+    out.push_str("        self.projectId = projectId\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularSubscriptionSpec: Codable, Equatable {\n");
+    out.push_str("    public let id: String\n");
+    out.push_str("    public let table: String\n");
+    out.push_str("    public let scopes: [String: SyncularJsonValue]\n");
+    out.push_str("    public let params: [String: SyncularJsonValue]\n\n");
+    out.push_str("    public init(id: String, table: String, scopes: [String: SyncularJsonValue], params: [String: SyncularJsonValue] = [:]) {\n");
+    out.push_str("        self.id = id\n");
+    out.push_str("        self.table = table\n");
+    out.push_str("        self.scopes = scopes\n");
+    out.push_str("        self.params = params\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func jsonString() throws -> String {\n");
+    out.push_str("        let encoder = JSONEncoder()\n");
+    out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+    out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("public func syncularSubscriptionsJson(_ subscriptions: [SyncularSubscriptionSpec]) throws -> String {\n");
+    out.push_str("    let encoder = JSONEncoder()\n");
+    out.push_str("    encoder.outputFormatting = [.sortedKeys]\n");
+    out.push_str("    return String(data: try encoder.encode(subscriptions), encoding: .utf8)!\n");
+    out.push_str("}\n\n");
+    out.push_str("public func syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = nil) throws -> String {\n");
+    out.push_str("    try syncularSubscriptionsJson(syncularDefaultSubscriptions(args: SyncularSubscriptionArgs(actorId: actorId, projectId: projectId)))\n");
+    out.push_str("}\n\n");
+    out.push_str("public func syncularDefaultSubscriptions(args: SyncularSubscriptionArgs) -> [SyncularSubscriptionSpec] {\n");
+    out.push_str("    [\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!(
+            "        {}(args: args),\n",
+            native_table_subscription_fn(table)
+        ));
+        for field in encrypted_update_log_crdt_fields(&table_config) {
+            out.push_str(&format!(
+                "        {}(args: args),\n",
+                native_encrypted_crdt_subscription_fn(table, field, "updates")
+            ));
+            out.push_str(&format!(
+                "        {}(args: args),\n",
+                native_encrypted_crdt_subscription_fn(table, field, "checkpoints")
+            ));
+        }
+    }
+    out.push_str("    ]\n");
+    out.push_str("}\n\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!(
+            "public func {}(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {{\n",
+            native_table_subscription_fn(table)
+        ));
+        out.push_str("    var scopes: [String: SyncularJsonValue] = [:]\n");
+        for scope in table_config.scopes() {
+            let name = scope_name(&scope);
+            match (scope.source.as_deref(), scope.required) {
+                (Some("actorId"), _) => out.push_str(&format!(
+                    "    scopes[{}] = .string(args.actorId)\n",
+                    double_quoted_string(name)
+                )),
+                (Some("projectId"), true) => {
+                    out.push_str("    precondition(args.projectId != nil, \"projectId scope requires projectId\")\n");
+                    out.push_str(&format!(
+                        "    scopes[{}] = .string(args.projectId!)\n",
+                        double_quoted_string(name)
+                    ));
+                }
+                (Some("projectId"), false) => out.push_str(&format!(
+                    "    if let projectId = args.projectId {{ scopes[{}] = .string(projectId) }}\n",
+                    double_quoted_string(name)
+                )),
+                (_, true) => out.push_str(&format!(
+                    "    scopes[{}] = .string(\"\")\n",
+                    double_quoted_string(name)
+                )),
+                (_, false) => {}
+            }
+        }
+        out.push_str(&format!(
+            "    return SyncularSubscriptionSpec(id: {}, table: {}, scopes: scopes, params: {})\n",
+            double_quoted_string(&table_config.subscription_id(&table.name)),
+            double_quoted_string(&table.name),
+            swift_json_record_literal(&table_config.subscription_params)
+        ));
+        out.push_str("}\n\n");
+        for field in encrypted_update_log_crdt_fields(&table_config) {
+            for (suffix, system_table) in [
+                ("updates", "sync_crdt_updates"),
+                ("checkpoints", "sync_crdt_checkpoints"),
+            ] {
+                out.push_str(&format!(
+                    "public func {}(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {{\n",
+                    native_encrypted_crdt_subscription_fn(table, field, suffix)
+                ));
+                out.push_str("    var scopes: [String: SyncularJsonValue] = [:]\n");
+                for scope in table_config.scopes() {
+                    let name = scope_name(&scope);
+                    match (scope.source.as_deref(), scope.required) {
+                        (Some("actorId"), _) => out.push_str(&format!(
+                            "    scopes[{}] = .string(args.actorId)\n",
+                            double_quoted_string(name)
+                        )),
+                        (Some("projectId"), true) => {
+                            out.push_str("    precondition(args.projectId != nil, \"projectId scope requires projectId\")\n");
+                            out.push_str(&format!(
+                                "    scopes[{}] = .string(args.projectId!)\n",
+                                double_quoted_string(name)
+                            ));
+                        }
+                        (Some("projectId"), false) => out.push_str(&format!(
+                            "    if let projectId = args.projectId {{ scopes[{}] = .string(projectId) }}\n",
+                            double_quoted_string(name)
+                        )),
+                        (_, true) => out.push_str(&format!(
+                            "    scopes[{}] = .string(\"\")\n",
+                            double_quoted_string(name)
+                        )),
+                        (_, false) => {}
+                    }
+                }
+                out.push_str(&format!(
+                    "    return SyncularSubscriptionSpec(id: {}, table: {}, scopes: scopes, params: [\"app_table\": .string({}), \"field_name\": .string({})])\n",
+                    double_quoted_string(&format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix)),
+                    double_quoted_string(system_table),
+                    double_quoted_string(&table.name),
+                    double_quoted_string(&field.field)
+                ));
+                out.push_str("}\n\n");
+            }
+        }
+    }
     out.push_str("public struct SyncularReadonlyQuery: Codable, Equatable {\n");
     out.push_str("    public let sql: String\n");
     out.push_str("    public let params: [SyncularJsonValue]\n");
@@ -3987,30 +4696,93 @@ fn generate_swift_module(
     out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularChangedRow: Decodable, Equatable {\n");
+    out.push_str("    public let table: String\n");
+    out.push_str("    public let rowId: String?\n");
+    out.push_str("    public let operation: String\n");
+    out.push_str("    public let changedFields: [String]\n");
+    out.push_str("    public let crdtFields: [String]\n");
+    out.push_str("    public let commitId: String?\n");
+    out.push_str("    public let commitSeq: Int64?\n");
+    out.push_str("    public let subscriptionId: String?\n");
+    out.push_str("    public let serverVersion: Int64?\n\n");
+    out.push_str(
+        "    public init(table: String, rowId: String? = nil, operation: String, changedFields: [String] = [], crdtFields: [String] = [], commitId: String? = nil, commitSeq: Int64? = nil, subscriptionId: String? = nil, serverVersion: Int64? = nil) {\n",
+    );
+    out.push_str("        self.table = table\n");
+    out.push_str("        self.rowId = rowId\n");
+    out.push_str("        self.operation = operation\n");
+    out.push_str("        self.changedFields = changedFields\n");
+    out.push_str("        self.crdtFields = crdtFields\n");
+    out.push_str("        self.commitId = commitId\n");
+    out.push_str("        self.commitSeq = commitSeq\n");
+    out.push_str("        self.subscriptionId = subscriptionId\n");
+    out.push_str("        self.serverVersion = serverVersion\n");
+    out.push_str("    }\n\n");
+    out.push_str("    private enum CodingKeys: String, CodingKey {\n");
+    out.push_str("        case table\n");
+    out.push_str("        case rowId\n");
+    out.push_str("        case operation\n");
+    out.push_str("        case changedFields\n");
+    out.push_str("        case crdtFields\n");
+    out.push_str("        case commitId\n");
+    out.push_str("        case commitSeq\n");
+    out.push_str("        case subscriptionId\n");
+    out.push_str("        case serverVersion\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
     out.push_str("public struct SyncularNativeEvent: Decodable, Equatable {\n");
+    out.push_str("    public let eventSeq: UInt64\n");
     out.push_str("    public let kind: String\n");
     out.push_str("    public let tables: [String]\n");
-    out.push_str("    public let queries: [String]\n\n");
+    out.push_str("    public let queries: [String]\n");
+    out.push_str("    public let changedRows: [SyncularChangedRow]\n");
+    out.push_str("    public let commandId: String?\n");
+    out.push_str("    public let clientCommitId: String?\n");
+    out.push_str("    public let durationMs: UInt64?\n\n");
     out.push_str(
-        "    public init(kind: String, tables: [String] = [], queries: [String] = []) {\n",
+        "    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil) {\n",
     );
+    out.push_str("        self.eventSeq = eventSeq\n");
     out.push_str("        self.kind = kind\n");
     out.push_str("        self.tables = tables\n");
     out.push_str("        self.queries = queries\n");
+    out.push_str("        self.changedRows = changedRows\n");
+    out.push_str("        self.commandId = commandId\n");
+    out.push_str("        self.clientCommitId = clientCommitId\n");
+    out.push_str("        self.durationMs = durationMs\n");
     out.push_str("    }\n\n");
     out.push_str("    private enum CodingKeys: String, CodingKey {\n");
+    out.push_str("        case eventSeq = \"event_seq\"\n");
     out.push_str("        case kind\n");
     out.push_str("        case tables\n");
     out.push_str("        case queries\n");
+    out.push_str("        case changedRows\n");
+    out.push_str("        case commandId = \"command_id\"\n");
+    out.push_str("        case clientCommitId = \"client_commit_id\"\n");
+    out.push_str("        case durationMs = \"duration_ms\"\n");
     out.push_str("    }\n\n");
     out.push_str("    public init(from decoder: Decoder) throws {\n");
     out.push_str("        let container = try decoder.container(keyedBy: CodingKeys.self)\n");
+    out.push_str(
+        "        eventSeq = try container.decodeIfPresent(UInt64.self, forKey: .eventSeq) ?? 0\n",
+    );
     out.push_str("        kind = try container.decode(String.self, forKey: .kind)\n");
     out.push_str(
         "        tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []\n",
     );
     out.push_str(
         "        queries = try container.decodeIfPresent([String].self, forKey: .queries) ?? []\n",
+    );
+    out.push_str(
+        "        changedRows = try container.decodeIfPresent([SyncularChangedRow].self, forKey: .changedRows) ?? []\n",
+    );
+    out.push_str(
+        "        commandId = try container.decodeIfPresent(String.self, forKey: .commandId)\n",
+    );
+    out.push_str("        clientCommitId = try container.decodeIfPresent(String.self, forKey: .clientCommitId)\n");
+    out.push_str(
+        "        durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)\n",
     );
     out.push_str("    }\n");
     out.push_str("}\n\n");
@@ -4043,6 +4815,23 @@ fn generate_swift_module(
     out.push_str("        let encoder = JSONEncoder()\n");
     out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
     out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    out.push_str("    public func encode(to encoder: Encoder) throws {\n");
+    out.push_str("        var container = encoder.container(keyedBy: CodingKeys.self)\n");
+    out.push_str("        try container.encode(table, forKey: .table)\n");
+    out.push_str("        try container.encode(rowId, forKey: .rowId)\n");
+    out.push_str("        try container.encode(op, forKey: .op)\n");
+    out.push_str("        if let payload {\n");
+    out.push_str("            try container.encode(payload, forKey: .payload)\n");
+    out.push_str("        } else {\n");
+    out.push_str("            try container.encodeNil(forKey: .payload)\n");
+    out.push_str("        }\n");
+    out.push_str("        if let baseVersion {\n");
+    out.push_str("            try container.encode(baseVersion, forKey: .baseVersion)\n");
+    out.push_str("        } else {\n");
+    out.push_str("            try container.encodeNil(forKey: .baseVersion)\n");
+    out.push_str("        }\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
     out.push_str("public struct SyncularFieldEncryptionRule: Codable, Equatable {\n");
@@ -4102,7 +4891,7 @@ fn generate_swift_module(
     out.push_str("public func syncularGeneratedFieldEncryptionConfigJson(keys: [String: String], encryptionKid: String? = nil, decryptionErrorMode: String? = nil, envelopePrefix: String? = nil, additionalRules: [SyncularFieldEncryptionRule] = []) throws -> String {\n");
     out.push_str("    try SyncularFieldEncryptionConfig(keys: keys, rules: syncularGeneratedFieldEncryptionRules + additionalRules, encryptionKid: encryptionKid, decryptionErrorMode: decryptionErrorMode, envelopePrefix: envelopePrefix).jsonString()\n");
     out.push_str("}\n\n");
-    if has_native_encrypted_crdt {
+    if has_native_crdt {
         out.push_str("public struct SyncularYjsUpdateEnvelope: Codable, Equatable {\n");
         out.push_str("    public let updateId: String\n");
         out.push_str("    public let updateBase64: String\n\n");
@@ -4111,6 +4900,102 @@ fn generate_swift_module(
         out.push_str("        self.updateBase64 = updateBase64\n");
         out.push_str("    }\n");
         out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldRequest: Codable, Equatable {\n");
+        out.push_str("    public let table: String\n");
+        out.push_str("    public let rowId: String\n");
+        out.push_str("    public let field: String\n\n");
+        out.push_str("    public init(table: String, rowId: String, field: String) {\n");
+        out.push_str("        self.table = table\n");
+        out.push_str("        self.rowId = rowId\n");
+        out.push_str("        self.field = field\n");
+        out.push_str("    }\n\n");
+        out.push_str("    public func jsonString() throws -> String {\n");
+        out.push_str("        let encoder = JSONEncoder()\n");
+        out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+        out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldTextRequest: Codable, Equatable {\n");
+        out.push_str("    public let table: String\n");
+        out.push_str("    public let rowId: String\n");
+        out.push_str("    public let field: String\n");
+        out.push_str("    public let nextText: String\n\n");
+        out.push_str(
+            "    public init(table: String, rowId: String, field: String, nextText: String) {\n",
+        );
+        out.push_str("        self.table = table\n");
+        out.push_str("        self.rowId = rowId\n");
+        out.push_str("        self.field = field\n");
+        out.push_str("        self.nextText = nextText\n");
+        out.push_str("    }\n\n");
+        out.push_str("    public func jsonString() throws -> String {\n");
+        out.push_str("        let encoder = JSONEncoder()\n");
+        out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+        out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldYjsUpdateRequest: Codable, Equatable {\n");
+        out.push_str("    public let table: String\n");
+        out.push_str("    public let rowId: String\n");
+        out.push_str("    public let field: String\n");
+        out.push_str("    public let update: SyncularYjsUpdateEnvelope\n\n");
+        out.push_str("    public init(table: String, rowId: String, field: String, update: SyncularYjsUpdateEnvelope) {\n");
+        out.push_str("        self.table = table\n");
+        out.push_str("        self.rowId = rowId\n");
+        out.push_str("        self.field = field\n");
+        out.push_str("        self.update = update\n");
+        out.push_str("    }\n\n");
+        out.push_str("    public func jsonString() throws -> String {\n");
+        out.push_str("        let encoder = JSONEncoder()\n");
+        out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+        out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldCompactionRequest: Codable, Equatable {\n");
+        out.push_str("    public let table: String\n");
+        out.push_str("    public let rowId: String\n");
+        out.push_str("    public let field: String\n");
+        out.push_str("    public let minUncheckpointedUpdates: Int64?\n\n");
+        out.push_str("    public init(table: String, rowId: String, field: String, minUncheckpointedUpdates: Int64? = nil) {\n");
+        out.push_str("        self.table = table\n");
+        out.push_str("        self.rowId = rowId\n");
+        out.push_str("        self.field = field\n");
+        out.push_str("        self.minUncheckpointedUpdates = minUncheckpointedUpdates\n");
+        out.push_str("    }\n\n");
+        out.push_str("    public func jsonString() throws -> String {\n");
+        out.push_str("        let encoder = JSONEncoder()\n");
+        out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+        out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldDescriptor: Codable, Equatable {\n");
+        out.push_str("    public let table: String\n");
+        out.push_str("    public let rowId: String\n");
+        out.push_str("    public let field: String\n");
+        out.push_str("    public let stateColumn: String\n");
+        out.push_str("    public let containerKey: String\n");
+        out.push_str("    public let rowIdField: String\n");
+        out.push_str("    public let syncMode: String\n");
+        out.push_str("    public let kind: String\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldWriteReceipt: Codable, Equatable {\n");
+        out.push_str("    public let clientCommitId: String\n");
+        out.push_str("    public let syncMode: String\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldMaterialization: Codable, Equatable {\n");
+        out.push_str("    public let value: SyncularJsonValue\n");
+        out.push_str("    public let stateBase64: String?\n");
+        out.push_str("    public let stateVectorBase64: String\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldStateVector: Codable, Equatable {\n");
+        out.push_str("    public let stateVectorBase64: String\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldCompactionReceipt: Codable, Equatable {\n");
+        out.push_str("    public let checkpointCreated: Bool\n");
+        out.push_str("    public let clientCommitId: String?\n");
+        out.push_str("}\n\n");
+    }
+    if has_native_encrypted_crdt {
         out.push_str("public struct SyncularEncryptedCrdtUpdateRequest: Codable, Equatable {\n");
         out.push_str("    public let table: String\n");
         out.push_str("    public let field: String\n");
@@ -4152,6 +5037,26 @@ fn generate_swift_module(
     }
     out.push_str("public protocol SyncularNativeJsonClient {\n");
     out.push_str("    func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
+    out.push_str("    func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
+    if has_native_crdt {
+        out.push_str("    func openCrdtFieldJson(requestJson: String) throws -> String\n");
+        out.push_str("    func applyCrdtFieldTextJson(requestJson: String) throws -> String\n");
+        out.push_str(
+            "    func applyCrdtFieldYjsUpdateJson(requestJson: String) throws -> String\n",
+        );
+        out.push_str(
+            "    func enqueueCrdtFieldYjsUpdateJson(requestJson: String) throws -> String\n",
+        );
+        out.push_str("    func enqueueCrdtFieldTextJson(requestJson: String) throws -> String\n");
+        out.push_str(
+            "    func enqueueCrdtFieldCompactionJson(requestJson: String) throws -> String\n",
+        );
+        out.push_str("    func materializeCrdtFieldJson(requestJson: String) throws -> String\n");
+        out.push_str(
+            "    func snapshotCrdtFieldStateVectorJson(requestJson: String) throws -> String\n",
+        );
+        out.push_str("    func compactCrdtFieldJson(requestJson: String) throws -> String\n");
+    }
     if has_native_encrypted_crdt {
         out.push_str(
             "    func applyEncryptedCrdtUpdateJson(requestJson: String) throws -> String\n",
@@ -4177,6 +5082,30 @@ fn generate_swift_module(
     );
     out.push_str("    }\n");
     out.push_str("\n");
+    out.push_str("    func enqueue(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
+    out.push_str("        try enqueueMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    if has_native_crdt {
+        out.push_str("    func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor {\n");
+        out.push_str("        try syncularDecodeJson(openCrdtFieldJson(requestJson: request.jsonString()), as: SyncularCrdtFieldDescriptor.self)\n");
+        out.push_str("    }\n\n");
+        out.push_str("    func applyCrdtFieldText(_ request: SyncularCrdtFieldTextRequest) throws -> SyncularCrdtFieldWriteReceipt {\n");
+        out.push_str("        try syncularDecodeJson(applyCrdtFieldTextJson(requestJson: request.jsonString()), as: SyncularCrdtFieldWriteReceipt.self)\n");
+        out.push_str("    }\n\n");
+        out.push_str("    func applyCrdtFieldYjsUpdate(_ request: SyncularCrdtFieldYjsUpdateRequest) throws -> SyncularCrdtFieldWriteReceipt {\n");
+        out.push_str("        try syncularDecodeJson(applyCrdtFieldYjsUpdateJson(requestJson: request.jsonString()), as: SyncularCrdtFieldWriteReceipt.self)\n");
+        out.push_str("    }\n\n");
+        out.push_str("    func materializeCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldMaterialization {\n");
+        out.push_str("        try syncularDecodeJson(materializeCrdtFieldJson(requestJson: request.jsonString()), as: SyncularCrdtFieldMaterialization.self)\n");
+        out.push_str("    }\n\n");
+        out.push_str("    func snapshotCrdtFieldStateVector(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldStateVector {\n");
+        out.push_str("        try syncularDecodeJson(snapshotCrdtFieldStateVectorJson(requestJson: request.jsonString()), as: SyncularCrdtFieldStateVector.self)\n");
+        out.push_str("    }\n\n");
+        out.push_str("    func compactCrdtField(_ request: SyncularCrdtFieldCompactionRequest) throws -> SyncularCrdtFieldCompactionReceipt {\n");
+        out.push_str("        try syncularDecodeJson(compactCrdtFieldJson(requestJson: request.jsonString()), as: SyncularCrdtFieldCompactionReceipt.self)\n");
+        out.push_str("    }\n\n");
+    }
     out.push_str("    func query<Row: Decodable>(_ query: SyncularReadonlyQuery, as type: Row.Type) throws -> [Row] {\n");
     out.push_str("        try syncularDecodeQueryRows(queryJson(requestJson: query.jsonString()), as: Row.self)\n");
     out.push_str("    }\n");
@@ -4233,6 +5162,9 @@ fn generate_swift_module(
     );
     out.push_str("    }\n");
     out.push_str("}\n\n");
+    out.push_str("private func syncularDecodeJson<T: Decodable>(_ json: String, as type: T.Type) throws -> T {\n");
+    out.push_str("    try JSONDecoder().decode(T.self, from: Data(json.utf8))\n");
+    out.push_str("}\n\n");
     out.push_str("private struct SyncularQueryResult<Row: Decodable>: Decodable {\n");
     out.push_str("    let rows: [Row]\n");
     out.push_str("}\n\n");
@@ -4249,12 +5181,32 @@ fn generate_swift_module(
     out.push_str("extension Int64: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .int(self) } }\n");
     out.push_str("extension Double: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .double(self) } }\n");
     out.push_str("extension Bool: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .bool(self) } }\n\n");
+    out.push_str("extension SyncularBlobRef: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .string((try? jsonString()) ?? \"{}\") } }\n\n");
     out.push_str("public struct SyncularQueryPredicate: Equatable {\n");
     out.push_str("    public let sql: String\n");
     out.push_str("    public let params: [SyncularJsonValue]\n");
+    out.push_str("\n");
+    out.push_str("    public init(sql: String, params: [SyncularJsonValue] = []) {\n");
+    out.push_str("        self.sql = sql\n");
+    out.push_str("        self.params = params\n");
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    public func and(_ other: SyncularQueryPredicate) -> SyncularQueryPredicate {\n",
+    );
+    out.push_str("        SyncularQueryPredicate(sql: \"((\\(sql)) and (\\(other.sql)))\", params: params + other.params)\n");
+    out.push_str("    }\n\n");
+    out.push_str(
+        "    public func or(_ other: SyncularQueryPredicate) -> SyncularQueryPredicate {\n",
+    );
+    out.push_str("        SyncularQueryPredicate(sql: \"((\\(sql)) or (\\(other.sql)))\", params: params + other.params)\n");
+    out.push_str("    }\n");
     out.push_str("}\n\n");
     out.push_str("public struct SyncularQueryOrder: Equatable {\n");
     out.push_str("    public let sql: String\n");
+    out.push_str("\n");
+    out.push_str("    public init(sql: String) {\n");
+    out.push_str("        self.sql = sql\n");
+    out.push_str("    }\n");
     out.push_str("}\n\n");
     out.push_str("public struct SyncularQueryColumn<Value>: Equatable {\n");
     out.push_str("    public let table: String\n");
@@ -4266,8 +5218,40 @@ fn generate_swift_module(
     out.push_str("    public func eq(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
     out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) = ?\", params: [value.syncularJsonValue])\n");
     out.push_str("    }\n\n");
+    out.push_str("    public func notEq(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) != ?\", params: [value.syncularJsonValue])\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func gt(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) > ?\", params: [value.syncularJsonValue])\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func gte(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) >= ?\", params: [value.syncularJsonValue])\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func lt(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) < ?\", params: [value.syncularJsonValue])\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func lte(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) <= ?\", params: [value.syncularJsonValue])\n");
+    out.push_str("    }\n\n");
     out.push_str("    public func isNull() -> SyncularQueryPredicate {\n");
     out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) is null\", params: [])\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func isNotNull() -> SyncularQueryPredicate {\n");
+    out.push_str("        SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) is not null\", params: [])\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func isIn(_ values: [Value]) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str(
+        "        guard !values.isEmpty else { return SyncularQueryPredicate(sql: \"0 = 1\") }\n",
+    );
+    out.push_str("        let placeholders = Array(repeating: \"?\", count: values.count).joined(separator: \", \")\n");
+    out.push_str("        return SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) in (\\(placeholders))\", params: values.map(\\.syncularJsonValue))\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func notIn(_ values: [Value]) -> SyncularQueryPredicate where Value: SyncularQueryValue {\n");
+    out.push_str(
+        "        guard !values.isEmpty else { return SyncularQueryPredicate(sql: \"1 = 1\") }\n",
+    );
+    out.push_str("        let placeholders = Array(repeating: \"?\", count: values.count).joined(separator: \", \")\n");
+    out.push_str("        return SyncularQueryPredicate(sql: \"\\(syncularQuoteIdentifier(name)) not in (\\(placeholders))\", params: values.map(\\.syncularJsonValue))\n");
     out.push_str("    }\n\n");
     out.push_str("    public func asc() -> SyncularQueryOrder {\n");
     out.push_str("        SyncularQueryOrder(sql: \"\\(syncularQuoteIdentifier(name)) asc\")\n");
@@ -4366,7 +5350,7 @@ fn generate_swift_module(
             out.push_str(&format!(
                 "    public let {}: {}\n",
                 lower_camel_case(&column.name),
-                swift_type(column, is_nullable(column))
+                swift_app_type(column, &table_config, is_nullable(column))
             ));
         }
         push_swift_coding_keys(&mut out, table.columns.iter());
@@ -4379,7 +5363,11 @@ fn generate_swift_module(
             out.push_str(&format!(
                 "    public let {}: {}\n",
                 lower_camel_case(&column.name),
-                swift_type(column, ts_input_optional(column, &table_config))
+                swift_app_type(
+                    column,
+                    &table_config,
+                    ts_input_optional(column, &table_config)
+                )
             ));
         }
         out.push('\n');
@@ -4392,7 +5380,7 @@ fn generate_swift_module(
             out.push_str(&format!(
                 "{}: {}{}",
                 lower_camel_case(&column.name),
-                swift_type(column, optional),
+                swift_app_type(column, &table_config, optional),
                 if optional { " = nil" } else { "" }
             ));
         }
@@ -4412,7 +5400,7 @@ fn generate_swift_module(
             out.push_str(&format!(
                 "    public let {}: {}\n",
                 lower_camel_case(&column.name),
-                swift_type(column, true)
+                swift_app_type(column, &table_config, true)
             ));
         }
         out.push('\n');
@@ -4424,7 +5412,7 @@ fn generate_swift_module(
             out.push_str(&format!(
                 "{}: {} = nil",
                 lower_camel_case(&column.name),
-                swift_type(column, true)
+                swift_app_type(column, &table_config, true)
             ));
         }
         out.push_str(") {\n");
@@ -4437,6 +5425,7 @@ fn generate_swift_module(
         out.push_str("}\n\n");
     }
     for table in &user_tables {
+        let table_config = config.table(&table.name);
         let type_name = singular_pascal_case(&table.name);
         let query_name = format!("{type_name}Query");
         let columns = table
@@ -4454,7 +5443,7 @@ fn generate_swift_module(
             out.push_str(&format!(
                 "    public static let {} = SyncularQueryColumn<{}>(table: {}, name: {})\n",
                 lower_camel_case(&column.name),
-                swift_type(column, false),
+                swift_app_type(column, &table_config, false),
                 double_quoted_string(&table.name),
                 double_quoted_string(&column.name)
             ));
@@ -4493,20 +5482,20 @@ fn generate_swift_module(
                     let expr = format!("input.{property} ?? {}", swift_default_value(column));
                     out.push_str(&format!(
                         "        payload[{key}] = {}\n",
-                        swift_json_value(column, &expr)
+                        swift_payload_value(column, &table_config, &expr)
                     ));
                 } else {
                     out.push_str(&format!("        if let value = input.{property} {{\n"));
                     out.push_str(&format!(
                         "            payload[{key}] = {}\n",
-                        swift_json_value(column, "value")
+                        swift_payload_value(column, &table_config, "value")
                     ));
                     out.push_str("        }\n");
                 }
             } else {
                 out.push_str(&format!(
                     "        payload[{key}] = {}\n",
-                    swift_json_value(column, &format!("input.{property}"))
+                    swift_payload_value(column, &table_config, &format!("input.{property}"))
                 ));
             }
         }
@@ -4516,8 +5505,8 @@ fn generate_swift_module(
             double_quoted_string(&table.name)
         ));
         out.push_str(&format!(
-            "            rowId: String(input.{}),\n",
-            lower_camel_case(&primary_key.name)
+            "            rowId: {},\n",
+            swift_row_id_input_expr(primary_key)
         ));
         out.push_str("            op: .upsert,\n");
         out.push_str("            payload: payload,\n");
@@ -4535,7 +5524,7 @@ fn generate_swift_module(
             out.push_str(&format!("        if let value = patch.{property} {{\n"));
             out.push_str(&format!(
                 "            payload[{key}] = {}\n",
-                swift_json_value(column, "value")
+                swift_payload_value(column, &table_config, "value")
             ));
             out.push_str("        }\n");
         }
@@ -4592,6 +5581,9 @@ fn generate_swift_module(
         let apply_new_fn = apply_new_function_name(&table.name);
         let apply_patch_fn = apply_patch_function_name(&table.name);
         let apply_delete_fn = apply_delete_function_name(&table.name);
+        let enqueue_new_fn = enqueue_new_function_name(&table.name);
+        let enqueue_patch_fn = enqueue_patch_function_name(&table.name);
+        let enqueue_delete_fn = enqueue_delete_function_name(&table.name);
         out.push_str(&format!(
             "    func {apply_new_fn}(_ input: New{type_name}, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {{\n"
         ));
@@ -4613,6 +5605,185 @@ fn generate_swift_module(
             "        try apply(SyncularAppOperations.delete{type_name}(rowId: rowId, baseVersion: baseVersion))\n"
         ));
         out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    func {enqueue_new_fn}(_ input: New{type_name}, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {{\n"
+        ));
+        out.push_str(&format!(
+            "        try enqueue(SyncularAppOperations.new{type_name}(input, baseVersion: baseVersion), localRowJson: localRowJson)\n"
+        ));
+        out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    func {enqueue_patch_fn}(rowId: String, patch: {type_name}Patch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {{\n"
+        ));
+        out.push_str(&format!(
+            "        try enqueue(SyncularAppOperations.patch{type_name}(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)\n"
+        ));
+        out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    func {enqueue_delete_fn}(rowId: String, baseVersion: Int64? = nil) throws -> String {{\n"
+        ));
+        out.push_str(&format!(
+            "        try enqueue(SyncularAppOperations.delete{type_name}(rowId: rowId, baseVersion: baseVersion))\n"
+        ));
+        out.push_str("    }\n\n");
+        for field in &table_config.crdt_yjs_fields {
+            if field.kind != "text" {
+                continue;
+            }
+            let table_name = double_quoted_string(&table.name);
+            let field_name = double_quoted_string(&field.field);
+            let open_fn = lower_camel_case(&format!(
+                "open_{}_{}_crdt_field",
+                singular_name(&table.name),
+                field.field
+            ));
+            let apply_text_fn = lower_camel_case(&format!(
+                "apply_{}_{}_text",
+                singular_name(&table.name),
+                field.field
+            ));
+            let enqueue_text_fn = lower_camel_case(&format!(
+                "enqueue_{}_{}_text",
+                singular_name(&table.name),
+                field.field
+            ));
+            let apply_update_fn = lower_camel_case(&format!(
+                "apply_{}_{}_update",
+                singular_name(&table.name),
+                field.field
+            ));
+            let enqueue_update_fn = lower_camel_case(&format!(
+                "enqueue_{}_{}_update",
+                singular_name(&table.name),
+                field.field
+            ));
+            let materialize_fn = lower_camel_case(&format!(
+                "materialize_{}_{}",
+                singular_name(&table.name),
+                field.field
+            ));
+            let materialize_json_fn = lower_camel_case(&format!(
+                "materialize_{}_{}_json",
+                singular_name(&table.name),
+                field.field
+            ));
+            let snapshot_fn = lower_camel_case(&format!(
+                "snapshot_{}_{}_state_vector",
+                singular_name(&table.name),
+                field.field
+            ));
+            let snapshot_json_fn = lower_camel_case(&format!(
+                "snapshot_{}_{}_state_vector_json",
+                singular_name(&table.name),
+                field.field
+            ));
+            let compact_fn = lower_camel_case(&format!(
+                "compact_{}_{}",
+                singular_name(&table.name),
+                field.field
+            ));
+            let enqueue_compaction_fn = lower_camel_case(&format!(
+                "enqueue_{}_{}_compaction",
+                singular_name(&table.name),
+                field.field
+            ));
+            out.push_str(&format!(
+                "    func {open_fn}(rowId: String) throws -> SyncularCrdtFieldDescriptor {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldRequest(table: {table_name}, rowId: rowId, field: {field_name})\n"
+            ));
+            out.push_str("        return try openCrdtField(request)\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {apply_text_fn}(rowId: String, nextText: String) throws -> SyncularCrdtFieldWriteReceipt {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldTextRequest(table: {table_name}, rowId: rowId, field: {field_name}, nextText: nextText)\n"
+            ));
+            out.push_str("        return try applyCrdtFieldText(request)\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {enqueue_text_fn}(rowId: String, nextText: String) throws -> String {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldTextRequest(table: {table_name}, rowId: rowId, field: {field_name}, nextText: nextText)\n"
+            ));
+            out.push_str(
+                "        return try enqueueCrdtFieldTextJson(requestJson: request.jsonString())\n",
+            );
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {apply_update_fn}(rowId: String, update: SyncularYjsUpdateEnvelope) throws -> SyncularCrdtFieldWriteReceipt {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldYjsUpdateRequest(table: {table_name}, rowId: rowId, field: {field_name}, update: update)\n"
+            ));
+            out.push_str("        return try applyCrdtFieldYjsUpdate(request)\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {enqueue_update_fn}(rowId: String, update: SyncularYjsUpdateEnvelope) throws -> String {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldYjsUpdateRequest(table: {table_name}, rowId: rowId, field: {field_name}, update: update)\n"
+            ));
+            out.push_str(
+                "        return try enqueueCrdtFieldYjsUpdateJson(requestJson: request.jsonString())\n",
+            );
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {materialize_fn}(rowId: String) throws -> SyncularCrdtFieldMaterialization {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldRequest(table: {table_name}, rowId: rowId, field: {field_name})\n"
+            ));
+            out.push_str("        return try materializeCrdtField(request)\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {materialize_json_fn}(rowId: String) throws -> String {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldRequest(table: {table_name}, rowId: rowId, field: {field_name})\n"
+            ));
+            out.push_str(
+                "        return try materializeCrdtFieldJson(requestJson: request.jsonString())\n",
+            );
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {snapshot_fn}(rowId: String) throws -> SyncularCrdtFieldStateVector {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldRequest(table: {table_name}, rowId: rowId, field: {field_name})\n"
+            ));
+            out.push_str("        return try snapshotCrdtFieldStateVector(request)\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {snapshot_json_fn}(rowId: String) throws -> String {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldRequest(table: {table_name}, rowId: rowId, field: {field_name})\n"
+            ));
+            out.push_str("        return try snapshotCrdtFieldStateVectorJson(requestJson: request.jsonString())\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {compact_fn}(rowId: String, minUncheckpointedUpdates: Int64 = 1) throws -> SyncularCrdtFieldCompactionReceipt {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldCompactionRequest(table: {table_name}, rowId: rowId, field: {field_name}, minUncheckpointedUpdates: minUncheckpointedUpdates)\n"
+            ));
+            out.push_str("        return try compactCrdtField(request)\n");
+            out.push_str("    }\n\n");
+            out.push_str(&format!(
+                "    func {enqueue_compaction_fn}(rowId: String, minUncheckpointedUpdates: Int64 = 1) throws -> String {{\n"
+            ));
+            out.push_str(&format!(
+                "        let request = SyncularCrdtFieldCompactionRequest(table: {table_name}, rowId: rowId, field: {field_name}, minUncheckpointedUpdates: minUncheckpointedUpdates)\n"
+            ));
+            out.push_str(
+                "        return try enqueueCrdtFieldCompactionJson(requestJson: request.jsonString())\n",
+            );
+            out.push_str("    }\n\n");
+        }
         for field in encrypted_update_log_crdt_fields(&table_config) {
             if field.kind != "text" {
                 continue;
@@ -4732,6 +5903,7 @@ fn generate_kotlin_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
     schema_version: i32,
+    app_schema_json: &str,
     package_name: Option<&str>,
 ) -> Result<String> {
     let user_tables = tables
@@ -4739,6 +5911,9 @@ fn generate_kotlin_module(
         .filter(|table| !table.name.starts_with("sync_"))
         .cloned()
         .collect::<Vec<_>>();
+    let has_native_crdt = user_tables
+        .iter()
+        .any(|table| has_crdt_yjs_fields(&config.table(&table.name)));
     let has_native_encrypted_crdt = user_tables
         .iter()
         .any(|table| has_encrypted_update_log_crdt_fields(&config.table(&table.name)));
@@ -4751,6 +5926,7 @@ fn generate_kotlin_module(
         out.push_str(&format!("package {package_name}\n\n"));
     }
     out.push_str("import kotlinx.serialization.json.Json\n");
+    out.push_str("import kotlinx.serialization.json.JsonElement\n");
     out.push_str("import kotlinx.serialization.json.JsonNull\n");
     out.push_str("import kotlinx.serialization.json.JsonObject\n");
     out.push_str("import kotlinx.serialization.json.booleanOrNull\n");
@@ -4767,6 +5943,10 @@ fn generate_kotlin_module(
     out.push_str(&format!(
         "const val syncularNativeGeneratedSchemaVersion: Int = {schema_version}\n\n"
     ));
+    out.push_str(&format!(
+        "const val syncularNativeGeneratedAppSchemaJson: String = {}\n\n",
+        double_quoted_string(app_schema_json)
+    ));
     out.push_str("data class SyncularNativeRuntimeManifest(\n");
     out.push_str("    val ffiAbiVersion: Int,\n");
     out.push_str("    val crateName: String,\n");
@@ -4781,7 +5961,6 @@ fn generate_kotlin_module(
     );
     out.push_str("    require(manifest.ffiAbiVersion == syncularNativeExpectedFfiAbiVersion) { \"FFI ABI version ${manifest.ffiAbiVersion} does not match generated expectation $syncularNativeExpectedFfiAbiVersion\" }\n");
     out.push_str("    require(manifest.crateVersion == syncularNativeExpectedCrateVersion) { \"Rust crate version ${manifest.crateVersion} does not match generated expectation $syncularNativeExpectedCrateVersion\" }\n");
-    out.push_str("    require(manifest.schemaVersion == syncularNativeGeneratedSchemaVersion) { \"Rust schema version ${manifest.schemaVersion} does not match generated expectation $syncularNativeGeneratedSchemaVersion\" }\n");
     out.push_str("    require(manifest.storageBackend == \"diesel-sqlite\") { \"Rust storage backend ${manifest.storageBackend} is not diesel-sqlite\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"generated-json-local-operations\")) { \"Rust native runtime is missing generated-json-local-operations\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"generated-json-mutations\")) { \"Rust native runtime is missing generated-json-mutations\" }\n");
@@ -4789,6 +5968,10 @@ fn generate_kotlin_module(
     out.push_str("    require(manifest.capabilities.contains(\"query-observer-events\")) { \"Rust native runtime is missing query-observer-events\" }\n");
     if has_native_encrypted_crdt {
         out.push_str("    require(manifest.capabilities.contains(\"queued-encrypted-crdt\")) { \"Rust native runtime is missing queued-encrypted-crdt\" }\n");
+    }
+    if has_native_crdt {
+        out.push_str("    require(manifest.capabilities.contains(\"generic-crdt-field-api\")) { \"Rust native runtime is missing generic-crdt-field-api\" }\n");
+        out.push_str("    require(manifest.capabilities.contains(\"queued-crdt-field-updates\")) { \"Rust native runtime is missing queued-crdt-field-updates\" }\n");
     }
     out.push_str("}\n\n");
     out.push_str("enum class SyncularGeneratedOperationKind(val wireValue: String) {\n");
@@ -4811,6 +5994,147 @@ fn generate_kotlin_module(
     out.push_str("    )\n\n");
     out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
     out.push_str("}\n\n");
+    out.push_str("data class SyncularBlobRef(\n");
+    out.push_str("    val hash: String,\n");
+    out.push_str("    val size: Long,\n");
+    out.push_str("    val mimeType: String,\n");
+    out.push_str("    val encrypted: Boolean? = null,\n");
+    out.push_str("    val keyId: String? = null,\n");
+    out.push_str(") {\n");
+    out.push_str("    fun toJsonValue(): Map<String, Any?> {\n");
+    out.push_str("        val value = linkedMapOf<String, Any?>(\n");
+    out.push_str("            \"hash\" to hash,\n");
+    out.push_str("            \"size\" to size,\n");
+    out.push_str("            \"mimeType\" to mimeType,\n");
+    out.push_str("        )\n");
+    out.push_str("        encrypted?.let { value[\"encrypted\"] = it }\n");
+    out.push_str("        keyId?.let { value[\"keyId\"] = it }\n");
+    out.push_str("        return value\n");
+    out.push_str("    }\n\n");
+    out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+    out.push_str("}\n\n");
+    out.push_str("data class SyncularSubscriptionArgs(\n");
+    out.push_str("    val actorId: String,\n");
+    out.push_str("    val projectId: String? = null,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularSubscriptionSpec(\n");
+    out.push_str("    val id: String,\n");
+    out.push_str("    val table: String,\n");
+    out.push_str("    val scopes: Map<String, Any?>,\n");
+    out.push_str("    val params: Map<String, Any?> = emptyMap(),\n");
+    out.push_str(") {\n");
+    out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+    out.push_str("        \"id\" to id,\n");
+    out.push_str("        \"table\" to table,\n");
+    out.push_str("        \"scopes\" to scopes,\n");
+    out.push_str("        \"params\" to params,\n");
+    out.push_str("    )\n\n");
+    out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "fun syncularSubscriptionsJson(subscriptions: List<SyncularSubscriptionSpec>): String =\n",
+    );
+    out.push_str("    syncularJsonValue(subscriptions.map { it.toJsonValue() })\n\n");
+    out.push_str("fun syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = null): String =\n");
+    out.push_str("    syncularSubscriptionsJson(syncularDefaultSubscriptions(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId)))\n\n");
+    out.push_str("fun syncularDefaultSubscriptions(args: SyncularSubscriptionArgs): List<SyncularSubscriptionSpec> = listOf(\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!(
+            "    {}(args),\n",
+            native_table_subscription_fn(table)
+        ));
+        for field in encrypted_update_log_crdt_fields(&table_config) {
+            out.push_str(&format!(
+                "    {}(args),\n",
+                native_encrypted_crdt_subscription_fn(table, field, "updates")
+            ));
+            out.push_str(&format!(
+                "    {}(args),\n",
+                native_encrypted_crdt_subscription_fn(table, field, "checkpoints")
+            ));
+        }
+    }
+    out.push_str(")\n\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!(
+            "fun {}(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {{\n",
+            native_table_subscription_fn(table)
+        ));
+        out.push_str("    val scopes = linkedMapOf<String, Any?>()\n");
+        for scope in table_config.scopes() {
+            let name = scope_name(&scope);
+            match (scope.source.as_deref(), scope.required) {
+                (Some("actorId"), _) => out.push_str(&format!(
+                    "    scopes[{}] = args.actorId\n",
+                    double_quoted_string(name)
+                )),
+                (Some("projectId"), true) => out.push_str(&format!(
+                    "    scopes[{}] = requireNotNull(args.projectId) {{ \"projectId scope requires projectId\" }}\n",
+                    double_quoted_string(name)
+                )),
+                (Some("projectId"), false) => out.push_str(&format!(
+                    "    args.projectId?.let {{ scopes[{}] = it }}\n",
+                    double_quoted_string(name)
+                )),
+                (_, true) => out.push_str(&format!(
+                    "    scopes[{}] = \"\"\n",
+                    double_quoted_string(name)
+                )),
+                (_, false) => {}
+            }
+        }
+        out.push_str(&format!(
+            "    return SyncularSubscriptionSpec(id = {}, table = {}, scopes = scopes, params = {})\n",
+            double_quoted_string(&table_config.subscription_id(&table.name)),
+            double_quoted_string(&table.name),
+            kotlin_json_record_literal(&table_config.subscription_params)
+        ));
+        out.push_str("}\n\n");
+        for field in encrypted_update_log_crdt_fields(&table_config) {
+            for (suffix, system_table) in [
+                ("updates", "sync_crdt_updates"),
+                ("checkpoints", "sync_crdt_checkpoints"),
+            ] {
+                out.push_str(&format!(
+                    "fun {}(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {{\n",
+                    native_encrypted_crdt_subscription_fn(table, field, suffix)
+                ));
+                out.push_str("    val scopes = linkedMapOf<String, Any?>()\n");
+                for scope in table_config.scopes() {
+                    let name = scope_name(&scope);
+                    match (scope.source.as_deref(), scope.required) {
+                        (Some("actorId"), _) => out.push_str(&format!(
+                            "    scopes[{}] = args.actorId\n",
+                            double_quoted_string(name)
+                        )),
+                        (Some("projectId"), true) => out.push_str(&format!(
+                            "    scopes[{}] = requireNotNull(args.projectId) {{ \"projectId scope requires projectId\" }}\n",
+                            double_quoted_string(name)
+                        )),
+                        (Some("projectId"), false) => out.push_str(&format!(
+                            "    args.projectId?.let {{ scopes[{}] = it }}\n",
+                            double_quoted_string(name)
+                        )),
+                        (_, true) => out.push_str(&format!(
+                            "    scopes[{}] = \"\"\n",
+                            double_quoted_string(name)
+                        )),
+                        (_, false) => {}
+                    }
+                }
+                out.push_str(&format!(
+                    "    return SyncularSubscriptionSpec(id = {}, table = {}, scopes = scopes, params = linkedMapOf(\"app_table\" to {}, \"field_name\" to {}))\n",
+                    double_quoted_string(&format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix)),
+                    double_quoted_string(system_table),
+                    double_quoted_string(&table.name),
+                    double_quoted_string(&field.field)
+                ));
+                out.push_str("}\n\n");
+            }
+        }
+    }
     out.push_str("data class SyncularFieldEncryptionRule(\n");
     out.push_str("    val scope: String,\n");
     out.push_str("    val table: String?,\n");
@@ -4882,12 +6206,28 @@ fn generate_kotlin_module(
     out.push_str("    )\n\n");
     out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
     out.push_str("}\n\n");
+    out.push_str("data class SyncularChangedRow(\n");
+    out.push_str("    val table: String,\n");
+    out.push_str("    val rowId: String? = null,\n");
+    out.push_str("    val operation: String,\n");
+    out.push_str("    val changedFields: List<String> = emptyList(),\n");
+    out.push_str("    val crdtFields: List<String> = emptyList(),\n");
+    out.push_str("    val commitId: String? = null,\n");
+    out.push_str("    val commitSeq: Long? = null,\n");
+    out.push_str("    val subscriptionId: String? = null,\n");
+    out.push_str("    val serverVersion: Long? = null,\n");
+    out.push_str(")\n\n");
     out.push_str("data class SyncularNativeEvent(\n");
+    out.push_str("    val eventSeq: Long = 0,\n");
     out.push_str("    val kind: String,\n");
     out.push_str("    val tables: List<String> = emptyList(),\n");
     out.push_str("    val queries: List<String> = emptyList(),\n");
+    out.push_str("    val changedRows: List<SyncularChangedRow> = emptyList(),\n");
+    out.push_str("    val commandId: String? = null,\n");
+    out.push_str("    val clientCommitId: String? = null,\n");
+    out.push_str("    val durationMs: Long? = null,\n");
     out.push_str(")\n\n");
-    if has_native_encrypted_crdt {
+    if has_native_crdt {
         out.push_str("data class SyncularYjsUpdateEnvelope(\n");
         out.push_str("    val updateId: String,\n");
         out.push_str("    val updateBase64: String,\n");
@@ -4897,6 +6237,88 @@ fn generate_kotlin_module(
         out.push_str("        \"updateBase64\" to updateBase64,\n");
         out.push_str("    )\n");
         out.push_str("}\n\n");
+        out.push_str("data class SyncularCrdtFieldRequest(\n");
+        out.push_str("    val table: String,\n");
+        out.push_str("    val rowId: String,\n");
+        out.push_str("    val field: String,\n");
+        out.push_str(") {\n");
+        out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+        out.push_str("        \"table\" to table,\n");
+        out.push_str("        \"rowId\" to rowId,\n");
+        out.push_str("        \"field\" to field,\n");
+        out.push_str("    )\n\n");
+        out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+        out.push_str("}\n\n");
+        out.push_str("data class SyncularCrdtFieldTextRequest(\n");
+        out.push_str("    val table: String,\n");
+        out.push_str("    val rowId: String,\n");
+        out.push_str("    val field: String,\n");
+        out.push_str("    val nextText: String,\n");
+        out.push_str(") {\n");
+        out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+        out.push_str("        \"table\" to table,\n");
+        out.push_str("        \"rowId\" to rowId,\n");
+        out.push_str("        \"field\" to field,\n");
+        out.push_str("        \"nextText\" to nextText,\n");
+        out.push_str("    )\n\n");
+        out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+        out.push_str("}\n\n");
+        out.push_str("data class SyncularCrdtFieldYjsUpdateRequest(\n");
+        out.push_str("    val table: String,\n");
+        out.push_str("    val rowId: String,\n");
+        out.push_str("    val field: String,\n");
+        out.push_str("    val update: SyncularYjsUpdateEnvelope,\n");
+        out.push_str(") {\n");
+        out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+        out.push_str("        \"table\" to table,\n");
+        out.push_str("        \"rowId\" to rowId,\n");
+        out.push_str("        \"field\" to field,\n");
+        out.push_str("        \"update\" to update.toJsonValue(),\n");
+        out.push_str("    )\n\n");
+        out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+        out.push_str("}\n\n");
+        out.push_str("data class SyncularCrdtFieldCompactionRequest(\n");
+        out.push_str("    val table: String,\n");
+        out.push_str("    val rowId: String,\n");
+        out.push_str("    val field: String,\n");
+        out.push_str("    val minUncheckpointedUpdates: Long? = null,\n");
+        out.push_str(") {\n");
+        out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+        out.push_str("        \"table\" to table,\n");
+        out.push_str("        \"rowId\" to rowId,\n");
+        out.push_str("        \"field\" to field,\n");
+        out.push_str("        \"minUncheckpointedUpdates\" to minUncheckpointedUpdates,\n");
+        out.push_str("    ).filterValues { it != null }\n\n");
+        out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+        out.push_str("}\n\n");
+        out.push_str("data class SyncularCrdtFieldDescriptor(\n");
+        out.push_str("    val table: String,\n");
+        out.push_str("    val rowId: String,\n");
+        out.push_str("    val field: String,\n");
+        out.push_str("    val stateColumn: String,\n");
+        out.push_str("    val containerKey: String,\n");
+        out.push_str("    val rowIdField: String,\n");
+        out.push_str("    val syncMode: String,\n");
+        out.push_str("    val kind: String,\n");
+        out.push_str(")\n\n");
+        out.push_str("data class SyncularCrdtFieldWriteReceipt(\n");
+        out.push_str("    val clientCommitId: String,\n");
+        out.push_str("    val syncMode: String,\n");
+        out.push_str(")\n\n");
+        out.push_str("data class SyncularCrdtFieldMaterialization(\n");
+        out.push_str("    val value: JsonElement,\n");
+        out.push_str("    val stateBase64: String?,\n");
+        out.push_str("    val stateVectorBase64: String,\n");
+        out.push_str(")\n\n");
+        out.push_str("data class SyncularCrdtFieldStateVector(\n");
+        out.push_str("    val stateVectorBase64: String,\n");
+        out.push_str(")\n\n");
+        out.push_str("data class SyncularCrdtFieldCompactionReceipt(\n");
+        out.push_str("    val checkpointCreated: Boolean,\n");
+        out.push_str("    val clientCommitId: String?,\n");
+        out.push_str(")\n\n");
+    }
+    if has_native_encrypted_crdt {
         out.push_str("data class SyncularEncryptedCrdtUpdateRequest(\n");
         out.push_str("    val table: String,\n");
         out.push_str("    val field: String,\n");
@@ -4928,18 +6350,103 @@ fn generate_kotlin_module(
         out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
         out.push_str("}\n\n");
     }
+    out.push_str(
+        "fun syncularDecodeChangedRow(row: JsonObject): SyncularChangedRow = SyncularChangedRow(\n",
+    );
+    out.push_str("    table = row[\"table\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    rowId = row[\"rowId\"]?.jsonPrimitive?.content,\n");
+    out.push_str("    operation = row[\"operation\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    changedFields = row[\"changedFields\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
+    out.push_str("    crdtFields = row[\"crdtFields\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
+    out.push_str("    commitId = row[\"commitId\"]?.jsonPrimitive?.content,\n");
+    out.push_str("    commitSeq = row[\"commitSeq\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str("    subscriptionId = row[\"subscriptionId\"]?.jsonPrimitive?.content,\n");
+    out.push_str("    serverVersion = row[\"serverVersion\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str(")\n\n");
     out.push_str("fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {\n");
     out.push_str("    val event = Json.parseToJsonElement(eventJson).jsonObject\n");
     out.push_str("    return SyncularNativeEvent(\n");
+    out.push_str("        eventSeq = event[\"event_seq\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
     out.push_str("        kind = event[\"kind\"]?.jsonPrimitive?.content ?: \"\",\n");
     out.push_str("        tables = event[\"tables\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
     out.push_str("        queries = event[\"queries\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
+    out.push_str("        changedRows = event[\"changedRows\"]?.jsonArray?.map { syncularDecodeChangedRow(it.jsonObject) } ?: emptyList(),\n");
+    out.push_str("        commandId = event[\"command_id\"]?.jsonPrimitive?.content,\n");
+    out.push_str("        clientCommitId = event[\"client_commit_id\"]?.jsonPrimitive?.content,\n");
+    out.push_str("        durationMs = event[\"duration_ms\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
+    if has_native_crdt {
+        out.push_str(
+            "fun syncularDecodeCrdtFieldDescriptor(json: String): SyncularCrdtFieldDescriptor {\n",
+        );
+        out.push_str("    val value = Json.parseToJsonElement(json).jsonObject\n");
+        out.push_str("    return SyncularCrdtFieldDescriptor(\n");
+        out.push_str("        table = value[\"table\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("        rowId = value[\"rowId\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("        field = value[\"field\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str(
+            "        stateColumn = value[\"stateColumn\"]?.jsonPrimitive?.content ?: \"\",\n",
+        );
+        out.push_str(
+            "        containerKey = value[\"containerKey\"]?.jsonPrimitive?.content ?: \"\",\n",
+        );
+        out.push_str(
+            "        rowIdField = value[\"rowIdField\"]?.jsonPrimitive?.content ?: \"\",\n",
+        );
+        out.push_str("        syncMode = value[\"syncMode\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("        kind = value[\"kind\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
+        out.push_str("fun syncularDecodeCrdtFieldWriteReceipt(json: String): SyncularCrdtFieldWriteReceipt {\n");
+        out.push_str("    val value = Json.parseToJsonElement(json).jsonObject\n");
+        out.push_str("    return SyncularCrdtFieldWriteReceipt(\n");
+        out.push_str(
+            "        clientCommitId = value[\"clientCommitId\"]?.jsonPrimitive?.content ?: \"\",\n",
+        );
+        out.push_str("        syncMode = value[\"syncMode\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
+        out.push_str("fun syncularDecodeCrdtFieldMaterialization(json: String): SyncularCrdtFieldMaterialization {\n");
+        out.push_str("    val value = Json.parseToJsonElement(json).jsonObject\n");
+        out.push_str("    return SyncularCrdtFieldMaterialization(\n");
+        out.push_str("        value = value[\"value\"] ?: JsonNull,\n");
+        out.push_str("        stateBase64 = value[\"stateBase64\"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content,\n");
+        out.push_str("        stateVectorBase64 = value[\"stateVectorBase64\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
+        out.push_str("fun syncularDecodeCrdtFieldStateVector(json: String): SyncularCrdtFieldStateVector {\n");
+        out.push_str("    val value = Json.parseToJsonElement(json).jsonObject\n");
+        out.push_str("    return SyncularCrdtFieldStateVector(\n");
+        out.push_str("        stateVectorBase64 = value[\"stateVectorBase64\"]?.jsonPrimitive?.content ?: \"\",\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
+        out.push_str("fun syncularDecodeCrdtFieldCompactionReceipt(json: String): SyncularCrdtFieldCompactionReceipt {\n");
+        out.push_str("    val value = Json.parseToJsonElement(json).jsonObject\n");
+        out.push_str("    return SyncularCrdtFieldCompactionReceipt(\n");
+        out.push_str("        checkpointCreated = value[\"checkpointCreated\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+        out.push_str("        clientCommitId = value[\"clientCommitId\"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content,\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
+    }
     out.push_str("interface SyncularNativeJsonClient {\n");
     out.push_str(
         "    fun applyMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
     );
+    out.push_str(
+        "    fun enqueueMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
+    );
+    if has_native_crdt {
+        out.push_str("    fun openCrdtFieldJson(requestJson: String): String\n");
+        out.push_str("    fun applyCrdtFieldTextJson(requestJson: String): String\n");
+        out.push_str("    fun applyCrdtFieldYjsUpdateJson(requestJson: String): String\n");
+        out.push_str("    fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String\n");
+        out.push_str("    fun enqueueCrdtFieldTextJson(requestJson: String): String\n");
+        out.push_str("    fun enqueueCrdtFieldCompactionJson(requestJson: String): String\n");
+        out.push_str("    fun materializeCrdtFieldJson(requestJson: String): String\n");
+        out.push_str("    fun snapshotCrdtFieldStateVectorJson(requestJson: String): String\n");
+        out.push_str("    fun compactCrdtFieldJson(requestJson: String): String\n");
+    }
     if has_native_encrypted_crdt {
         out.push_str("    fun applyEncryptedCrdtUpdateJson(requestJson: String): String\n");
         out.push_str("    fun enqueueEncryptedCrdtUpdateJson(requestJson: String): String\n");
@@ -4952,6 +6459,24 @@ fn generate_kotlin_module(
     out.push_str("}\n\n");
     out.push_str("fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
     out.push_str("    applyMutationJson(operation.toJsonString(), localRowJson)\n\n");
+    out.push_str("fun SyncularNativeJsonClient.enqueue(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
+    out.push_str("    enqueueMutationJson(operation.toJsonString(), localRowJson)\n\n");
+    if has_native_crdt {
+        out.push_str("fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor =\n");
+        out.push_str(
+            "    syncularDecodeCrdtFieldDescriptor(openCrdtFieldJson(request.toJsonString()))\n\n",
+        );
+        out.push_str("fun SyncularNativeJsonClient.applyCrdtFieldText(request: SyncularCrdtFieldTextRequest): SyncularCrdtFieldWriteReceipt =\n");
+        out.push_str("    syncularDecodeCrdtFieldWriteReceipt(applyCrdtFieldTextJson(request.toJsonString()))\n\n");
+        out.push_str("fun SyncularNativeJsonClient.applyCrdtFieldYjsUpdate(request: SyncularCrdtFieldYjsUpdateRequest): SyncularCrdtFieldWriteReceipt =\n");
+        out.push_str("    syncularDecodeCrdtFieldWriteReceipt(applyCrdtFieldYjsUpdateJson(request.toJsonString()))\n\n");
+        out.push_str("fun SyncularNativeJsonClient.materializeCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldMaterialization =\n");
+        out.push_str("    syncularDecodeCrdtFieldMaterialization(materializeCrdtFieldJson(request.toJsonString()))\n\n");
+        out.push_str("fun SyncularNativeJsonClient.snapshotCrdtFieldStateVector(request: SyncularCrdtFieldRequest): SyncularCrdtFieldStateVector =\n");
+        out.push_str("    syncularDecodeCrdtFieldStateVector(snapshotCrdtFieldStateVectorJson(request.toJsonString()))\n\n");
+        out.push_str("fun SyncularNativeJsonClient.compactCrdtField(request: SyncularCrdtFieldCompactionRequest): SyncularCrdtFieldCompactionReceipt =\n");
+        out.push_str("    syncularDecodeCrdtFieldCompactionReceipt(compactCrdtFieldJson(request.toJsonString()))\n\n");
+    }
     out.push_str(
         "fun SyncularNativeJsonClient.query(query: SyncularReadonlyQuery): List<JsonObject> =\n",
     );
@@ -4995,7 +6520,12 @@ fn generate_kotlin_module(
     out.push_str("data class SyncularQueryPredicate(\n");
     out.push_str("    val sql: String,\n");
     out.push_str("    val params: List<Any?> = emptyList(),\n");
-    out.push_str(")\n\n");
+    out.push_str(") {\n");
+    out.push_str("    infix fun and(other: SyncularQueryPredicate): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"(($sql) and (${other.sql}))\", params = params + other.params)\n\n");
+    out.push_str("    infix fun or(other: SyncularQueryPredicate): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"(($sql) or (${other.sql}))\", params = params + other.params)\n");
+    out.push_str("}\n\n");
     out.push_str("data class SyncularQueryOrder(\n");
     out.push_str("    val sql: String,\n");
     out.push_str(")\n\n");
@@ -5005,10 +6535,34 @@ fn generate_kotlin_module(
     out.push_str(") {\n");
     out.push_str("    fun eq(value: T): SyncularQueryPredicate =\n");
     out.push_str("        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} = ?\", params = listOf(value))\n\n");
+    out.push_str("    fun notEq(value: T): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} != ?\", params = listOf(value))\n\n");
+    out.push_str("    fun gt(value: T): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} > ?\", params = listOf(value))\n\n");
+    out.push_str("    fun gte(value: T): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} >= ?\", params = listOf(value))\n\n");
+    out.push_str("    fun lt(value: T): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} < ?\", params = listOf(value))\n\n");
+    out.push_str("    fun lte(value: T): SyncularQueryPredicate =\n");
+    out.push_str("        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} <= ?\", params = listOf(value))\n\n");
     out.push_str("    fun isNull(): SyncularQueryPredicate =\n");
     out.push_str(
         "        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} is null\")\n\n",
     );
+    out.push_str("    fun isNotNull(): SyncularQueryPredicate =\n");
+    out.push_str(
+        "        SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} is not null\")\n\n",
+    );
+    out.push_str("    fun isIn(values: Iterable<T>): SyncularQueryPredicate {\n");
+    out.push_str("        val list = values.toList()\n");
+    out.push_str("        if (list.isEmpty()) return SyncularQueryPredicate(sql = \"0 = 1\")\n");
+    out.push_str("        return SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} in (${list.joinToString(\", \") { \"?\" }})\", params = list)\n");
+    out.push_str("    }\n\n");
+    out.push_str("    fun notIn(values: Iterable<T>): SyncularQueryPredicate {\n");
+    out.push_str("        val list = values.toList()\n");
+    out.push_str("        if (list.isEmpty()) return SyncularQueryPredicate(sql = \"1 = 1\")\n");
+    out.push_str("        return SyncularQueryPredicate(sql = \"${syncularQuoteIdentifier(name)} not in (${list.joinToString(\", \") { \"?\" }})\", params = list)\n");
+    out.push_str("    }\n\n");
     out.push_str("    fun asc(): SyncularQueryOrder = SyncularQueryOrder(\"${syncularQuoteIdentifier(name)} asc\")\n\n");
     out.push_str("    fun desc(): SyncularQueryOrder = SyncularQueryOrder(\"${syncularQuoteIdentifier(name)} desc\")\n");
     out.push_str("}\n\n");
@@ -5086,7 +6640,7 @@ fn generate_kotlin_module(
             out.push_str(&format!(
                 "    val {}: {},\n",
                 lower_camel_case(&column.name),
-                kotlin_type(column, is_nullable(column))
+                kotlin_app_type(column, &table_config, is_nullable(column))
             ));
         }
         out.push_str(")\n\n");
@@ -5097,7 +6651,7 @@ fn generate_kotlin_module(
             out.push_str(&format!(
                 "    val {}: {}{},\n",
                 lower_camel_case(&column.name),
-                kotlin_type(column, optional),
+                kotlin_app_type(column, &table_config, optional),
                 if optional { " = null" } else { "" }
             ));
         }
@@ -5108,12 +6662,13 @@ fn generate_kotlin_module(
             out.push_str(&format!(
                 "    val {}: {} = null,\n",
                 lower_camel_case(&column.name),
-                kotlin_type(column, true)
+                kotlin_app_type(column, &table_config, true)
             ));
         }
         out.push_str(")\n\n");
     }
     for table in &user_tables {
+        let table_config = config.table(&table.name);
         let type_name = singular_pascal_case(&table.name);
         let query_name = format!("{type_name}Query");
         let columns = table
@@ -5131,7 +6686,7 @@ fn generate_kotlin_module(
             out.push_str(&format!(
                 "    val {} = SyncularQueryColumn<{}>(table = {}, name = {})\n",
                 lower_camel_case(&column.name),
-                kotlin_type(column, false),
+                kotlin_app_type(column, &table_config, false),
                 double_quoted_string(&table.name),
                 double_quoted_string(&column.name)
             ));
@@ -5170,18 +6725,18 @@ fn generate_kotlin_module(
                     let expr = format!("input.{property} ?: {}", kotlin_default_value(column));
                     out.push_str(&format!(
                         "        payload[{key}] = {}\n",
-                        kotlin_payload_value(column, &expr)
+                        kotlin_app_payload_value(column, &table_config, &expr)
                     ));
                 } else {
                     out.push_str(&format!(
                         "        input.{property}?.let {{ payload[{key}] = {} }}\n",
-                        kotlin_payload_value(column, "it")
+                        kotlin_app_payload_value(column, &table_config, "it")
                     ));
                 }
             } else {
                 out.push_str(&format!(
                     "        payload[{key}] = {}\n",
-                    kotlin_payload_value(column, &format!("input.{property}"))
+                    kotlin_app_payload_value(column, &table_config, &format!("input.{property}"))
                 ));
             }
         }
@@ -5191,8 +6746,8 @@ fn generate_kotlin_module(
             double_quoted_string(&table.name)
         ));
         out.push_str(&format!(
-            "            rowId = input.{}.toString(),\n",
-            lower_camel_case(&primary_key.name)
+            "            rowId = {},\n",
+            kotlin_row_id_input_expr(primary_key)
         ));
         out.push_str("            op = SyncularGeneratedOperationKind.Upsert,\n");
         out.push_str("            payload = payload,\n");
@@ -5209,7 +6764,7 @@ fn generate_kotlin_module(
             let key = double_quoted_string(&column.name);
             out.push_str(&format!(
                 "        patch.{property}?.let {{ payload[{key}] = {} }}\n",
-                kotlin_payload_value(column, "it")
+                kotlin_app_payload_value(column, &table_config, "it")
             ));
         }
         out.push_str("        return SyncularGeneratedOperation(\n");
@@ -5259,6 +6814,9 @@ fn generate_kotlin_module(
         let apply_new_fn = apply_new_function_name(&table.name);
         let apply_patch_fn = apply_patch_function_name(&table.name);
         let apply_delete_fn = apply_delete_function_name(&table.name);
+        let enqueue_new_fn = enqueue_new_function_name(&table.name);
+        let enqueue_patch_fn = enqueue_patch_function_name(&table.name);
+        let enqueue_delete_fn = enqueue_delete_function_name(&table.name);
         out.push_str(&format!(
             "fun SyncularNativeJsonClient.{apply_new_fn}(input: New{type_name}, baseVersion: Long? = 0, localRowJson: String? = null): String =\n"
         ));
@@ -5277,6 +6835,152 @@ fn generate_kotlin_module(
         out.push_str(&format!(
             "    apply(SyncularAppOperations.delete{type_name}(rowId, baseVersion))\n\n"
         ));
+        out.push_str(&format!(
+            "fun SyncularNativeJsonClient.{enqueue_new_fn}(input: New{type_name}, baseVersion: Long? = 0, localRowJson: String? = null): String =\n"
+        ));
+        out.push_str(&format!(
+            "    enqueue(SyncularAppOperations.new{type_name}(input, baseVersion), localRowJson)\n\n"
+        ));
+        out.push_str(&format!(
+            "fun SyncularNativeJsonClient.{enqueue_patch_fn}(rowId: String, patch: {type_name}Patch, baseVersion: Long? = null, localRowJson: String? = null): String =\n"
+        ));
+        out.push_str(&format!(
+            "    enqueue(SyncularAppOperations.patch{type_name}(rowId, patch, baseVersion), localRowJson)\n\n"
+        ));
+        out.push_str(&format!(
+            "fun SyncularNativeJsonClient.{enqueue_delete_fn}(rowId: String, baseVersion: Long? = null): String =\n"
+        ));
+        out.push_str(&format!(
+            "    enqueue(SyncularAppOperations.delete{type_name}(rowId, baseVersion))\n\n"
+        ));
+        for field in &table_config.crdt_yjs_fields {
+            if field.kind != "text" {
+                continue;
+            }
+            let table_name = double_quoted_string(&table.name);
+            let field_name = double_quoted_string(&field.field);
+            let open_fn = lower_camel_case(&format!(
+                "open_{}_{}_crdt_field",
+                singular_name(&table.name),
+                field.field
+            ));
+            let apply_text_fn = lower_camel_case(&format!(
+                "apply_{}_{}_text",
+                singular_name(&table.name),
+                field.field
+            ));
+            let enqueue_text_fn = lower_camel_case(&format!(
+                "enqueue_{}_{}_text",
+                singular_name(&table.name),
+                field.field
+            ));
+            let apply_update_fn = lower_camel_case(&format!(
+                "apply_{}_{}_update",
+                singular_name(&table.name),
+                field.field
+            ));
+            let enqueue_update_fn = lower_camel_case(&format!(
+                "enqueue_{}_{}_update",
+                singular_name(&table.name),
+                field.field
+            ));
+            let materialize_fn = lower_camel_case(&format!(
+                "materialize_{}_{}",
+                singular_name(&table.name),
+                field.field
+            ));
+            let materialize_json_fn = lower_camel_case(&format!(
+                "materialize_{}_{}_json",
+                singular_name(&table.name),
+                field.field
+            ));
+            let snapshot_fn = lower_camel_case(&format!(
+                "snapshot_{}_{}_state_vector",
+                singular_name(&table.name),
+                field.field
+            ));
+            let snapshot_json_fn = lower_camel_case(&format!(
+                "snapshot_{}_{}_state_vector_json",
+                singular_name(&table.name),
+                field.field
+            ));
+            let compact_fn = lower_camel_case(&format!(
+                "compact_{}_{}",
+                singular_name(&table.name),
+                field.field
+            ));
+            let enqueue_compaction_fn = lower_camel_case(&format!(
+                "enqueue_{}_{}_compaction",
+                singular_name(&table.name),
+                field.field
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{open_fn}(rowId: String): SyncularCrdtFieldDescriptor =\n"
+            ));
+            out.push_str(&format!(
+                "    openCrdtField(SyncularCrdtFieldRequest(table = {table_name}, rowId = rowId, field = {field_name}))\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{apply_text_fn}(rowId: String, nextText: String): SyncularCrdtFieldWriteReceipt =\n"
+            ));
+            out.push_str(&format!(
+                "    applyCrdtFieldText(SyncularCrdtFieldTextRequest(table = {table_name}, rowId = rowId, field = {field_name}, nextText = nextText))\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{enqueue_text_fn}(rowId: String, nextText: String): String =\n"
+            ));
+            out.push_str(&format!(
+                "    enqueueCrdtFieldTextJson(SyncularCrdtFieldTextRequest(table = {table_name}, rowId = rowId, field = {field_name}, nextText = nextText).toJsonString())\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{apply_update_fn}(rowId: String, update: SyncularYjsUpdateEnvelope): SyncularCrdtFieldWriteReceipt =\n"
+            ));
+            out.push_str(&format!(
+                "    applyCrdtFieldYjsUpdate(SyncularCrdtFieldYjsUpdateRequest(table = {table_name}, rowId = rowId, field = {field_name}, update = update))\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{enqueue_update_fn}(rowId: String, update: SyncularYjsUpdateEnvelope): String =\n"
+            ));
+            out.push_str(&format!(
+                "    enqueueCrdtFieldYjsUpdateJson(SyncularCrdtFieldYjsUpdateRequest(table = {table_name}, rowId = rowId, field = {field_name}, update = update).toJsonString())\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{materialize_fn}(rowId: String): SyncularCrdtFieldMaterialization =\n"
+            ));
+            out.push_str(&format!(
+                "    materializeCrdtField(SyncularCrdtFieldRequest(table = {table_name}, rowId = rowId, field = {field_name}))\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{materialize_json_fn}(rowId: String): String =\n"
+            ));
+            out.push_str(&format!(
+                "    materializeCrdtFieldJson(SyncularCrdtFieldRequest(table = {table_name}, rowId = rowId, field = {field_name}).toJsonString())\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{snapshot_fn}(rowId: String): SyncularCrdtFieldStateVector =\n"
+            ));
+            out.push_str(&format!(
+                "    snapshotCrdtFieldStateVector(SyncularCrdtFieldRequest(table = {table_name}, rowId = rowId, field = {field_name}))\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{snapshot_json_fn}(rowId: String): String =\n"
+            ));
+            out.push_str(&format!(
+                "    snapshotCrdtFieldStateVectorJson(SyncularCrdtFieldRequest(table = {table_name}, rowId = rowId, field = {field_name}).toJsonString())\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{compact_fn}(rowId: String, minUncheckpointedUpdates: Long = 1): SyncularCrdtFieldCompactionReceipt =\n"
+            ));
+            out.push_str(&format!(
+                "    compactCrdtField(SyncularCrdtFieldCompactionRequest(table = {table_name}, rowId = rowId, field = {field_name}, minUncheckpointedUpdates = minUncheckpointedUpdates))\n\n"
+            ));
+            out.push_str(&format!(
+                "fun SyncularNativeJsonClient.{enqueue_compaction_fn}(rowId: String, minUncheckpointedUpdates: Long = 1): String =\n"
+            ));
+            out.push_str(&format!(
+                "    enqueueCrdtFieldCompactionJson(SyncularCrdtFieldCompactionRequest(table = {table_name}, rowId = rowId, field = {field_name}, minUncheckpointedUpdates = minUncheckpointedUpdates).toJsonString())\n\n"
+            ));
+        }
         for field in encrypted_update_log_crdt_fields(&table_config) {
             if field.kind != "text" {
                 continue;
@@ -5359,6 +7063,7 @@ fn generate_kotlin_module(
     out.push_str("private fun syncularGeneratedQueryRows(json: String): List<JsonObject> =\n");
     out.push_str("    syncularGeneratedJson.parseToJsonElement(json).jsonObject[\"rows\"]?.jsonArray?.map { it.jsonObject } ?: emptyList()\n\n");
     for table in &user_tables {
+        let table_config = config.table(&table.name);
         let type_name = singular_pascal_case(&table.name);
         out.push_str(&format!(
             "private fun syncularDecode{type_name}Rows(json: String): List<{type_name}Row> =\n"
@@ -5373,7 +7078,7 @@ fn generate_kotlin_module(
             out.push_str(&format!(
                 "    {} = {},\n",
                 lower_camel_case(&column.name),
-                kotlin_row_decode_value(column, "row")
+                kotlin_row_decode_value(column, &table_config, "row")
             ));
         }
         out.push_str(")\n\n");
@@ -5384,6 +7089,30 @@ fn generate_kotlin_module(
     out.push_str("    val element = this[name] ?: return null\n");
     out.push_str("    if (element is JsonNull) return null\n");
     out.push_str("    return element.jsonPrimitive.content\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "private fun JsonObject.syncularRequiredBlobRef(name: String): SyncularBlobRef =\n",
+    );
+    out.push_str(
+        "    syncularOptionalBlobRef(name) ?: error(\"missing blob ref field $name\")\n\n",
+    );
+    out.push_str(
+        "private fun JsonObject.syncularOptionalBlobRef(name: String): SyncularBlobRef? {\n",
+    );
+    out.push_str("    val element = this[name] ?: return null\n");
+    out.push_str("    if (element is JsonNull) return null\n");
+    out.push_str("    val objectValue = runCatching {\n");
+    out.push_str("        syncularGeneratedJson.parseToJsonElement(element.jsonPrimitive.content).jsonObject\n");
+    out.push_str("    }.getOrElse {\n");
+    out.push_str("        element.jsonObject\n");
+    out.push_str("    }\n");
+    out.push_str("    return SyncularBlobRef(\n");
+    out.push_str("        hash = objectValue.syncularRequiredString(\"hash\"),\n");
+    out.push_str("        size = objectValue.syncularRequiredLong(\"size\"),\n");
+    out.push_str("        mimeType = objectValue.syncularRequiredString(\"mimeType\"),\n");
+    out.push_str("        encrypted = objectValue.syncularOptionalBoolean(\"encrypted\"),\n");
+    out.push_str("        keyId = objectValue.syncularOptionalString(\"keyId\"),\n");
+    out.push_str("    )\n");
     out.push_str("}\n\n");
     out.push_str("private fun JsonObject.syncularRequiredLong(name: String): Long =\n");
     out.push_str("    syncularOptionalLong(name) ?: error(\"missing integer field $name\")\n\n");
@@ -5412,6 +7141,7 @@ fn generate_kotlin_module(
     out.push_str("}\n\n");
     out.push_str("private fun syncularJsonValue(value: Any?): String = when (value) {\n");
     out.push_str("    null -> \"null\"\n");
+    out.push_str("    is SyncularBlobRef -> syncularJsonString(value.toJsonString())\n");
     out.push_str("    is String -> syncularJsonString(value)\n");
     out.push_str("    is Number -> value.toString()\n");
     out.push_str("    is Boolean -> value.toString()\n");
@@ -5580,12 +7310,27 @@ fn main() -> Result<()> {
         &schema_tables,
         &schema_codegen_config,
     )?)?;
+    let runtime_app_schema_json = generate_runtime_app_schema_json(
+        &schema_tables,
+        &schema_codegen_config,
+        Some(&migrations_dir),
+        schema_version,
+    )?;
     let generated_ts =
         generate_typescript_module(&schema_tables, &schema_codegen_config, schema_version)?;
-    let generated_swift =
-        generate_swift_module(&schema_tables, &schema_codegen_config, schema_version)?;
-    let generated_kotlin =
-        generate_kotlin_module(&schema_tables, &schema_codegen_config, schema_version, None)?;
+    let generated_swift = generate_swift_module(
+        &schema_tables,
+        &schema_codegen_config,
+        schema_version,
+        &runtime_app_schema_json,
+    )?;
+    let generated_kotlin = generate_kotlin_module(
+        &schema_tables,
+        &schema_codegen_config,
+        schema_version,
+        &runtime_app_schema_json,
+        None,
+    )?;
     let generated_android_kotlin = generated_android_kotlin_path
         .as_ref()
         .map(|_| {
@@ -5593,6 +7338,7 @@ fn main() -> Result<()> {
                 &schema_tables,
                 &schema_codegen_config,
                 schema_version,
+                &runtime_app_schema_json,
                 Some(generated_android_kotlin_package.as_str()),
             )
         })
@@ -5793,6 +7539,14 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).with_context(|| format!("create {}", path.display()))?;
         Ok(path)
+    }
+
+    fn test_app_schema_json(
+        tables: &[TableInfo],
+        config: &CodegenConfig,
+        schema_version: i32,
+    ) -> Result<String> {
+        generate_runtime_app_schema_json(tables, config, None, schema_version)
     }
 
     #[test]
@@ -6042,12 +7796,34 @@ mod tests {
             generate_typescript_module(&tables, &config, 2)?
         );
         assert_eq!(
-            generate_swift_module(&schema_tables, &schema_config, schema_version)?,
-            generate_swift_module(&tables, &config, 2)?
+            generate_swift_module(
+                &schema_tables,
+                &schema_config,
+                schema_version,
+                &test_app_schema_json(&schema_tables, &schema_config, schema_version)?,
+            )?,
+            generate_swift_module(
+                &tables,
+                &config,
+                2,
+                &test_app_schema_json(&tables, &config, 2)?
+            )?
         );
         assert_eq!(
-            generate_kotlin_module(&schema_tables, &schema_config, schema_version, None)?,
-            generate_kotlin_module(&tables, &config, 2, None)?
+            generate_kotlin_module(
+                &schema_tables,
+                &schema_config,
+                schema_version,
+                &test_app_schema_json(&schema_tables, &schema_config, schema_version)?,
+                None,
+            )?,
+            generate_kotlin_module(
+                &tables,
+                &config,
+                2,
+                &test_app_schema_json(&tables, &config, 2)?,
+                None,
+            )?
         );
 
         let _ = fs::remove_dir_all(&migrations_dir);
@@ -6117,10 +7893,10 @@ mod tests {
         let output = generate_typescript_module(&tables, &config, 7)?;
 
         assert!(output.contains(
-            "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase } from '@app/sync-runtime';"
+            "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
-            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
@@ -6147,10 +7923,23 @@ mod tests {
         assert!(output
             .contains("runtimeInfo.workerProtocolVersion !== SYNCULAR_V2_WORKER_PROTOCOL_VERSION"));
         assert!(
-            output.contains("runtimeInfo.rust.schemaVersion !== syncularGeneratedSchemaVersion")
+            output.contains("const schemaState = await database.client.generatedSchemaState();")
         );
-        assert!(output.contains("runtimeInfo.rust.features.includes('web-owned-sqlite')"));
-        assert!(output.contains("await ensureSyncularAppSchema(database.db);"));
+        assert!(
+            output.contains("schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion")
+        );
+        assert!(output.contains("export const syncularGeneratedRequiredRuntimeFeatures = ["));
+        assert!(output.contains("  'web-owned-sqlite-core',"));
+        assert!(output.contains("  'blobs',"));
+        assert!(output.contains("  'e2ee',"));
+        assert!(output.contains("for (const feature of syncularGeneratedRequiredRuntimeFeatures)"));
+        assert!(output.contains("runtimeInfo.rust.features.includes(feature)"));
+        assert!(
+            output.contains("requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures")
+        );
+        assert!(
+            output.contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);")
+        );
         assert!(output.contains("await database.client.setSubscriptions("));
         assert!(output.contains(
             "await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));"
@@ -6173,6 +7962,8 @@ mod tests {
         assert!(output.contains("  projects: ProjectRow;"));
         assert!(output.contains("export interface SyncularGeneratedTableConfig"));
         assert!(output.contains("export const syncularGeneratedTableConfig = {"));
+        assert!(output.contains("export const syncularGeneratedAppSchema = {"));
+        assert!(output.contains("} satisfies SyncularV2AppSchema;"));
         assert!(output.contains("    primaryKeyColumn: 'id',"));
         assert!(output.contains("    serverVersionColumn: 'server_version',"));
         assert!(output.contains("    softDeleteColumn: 'deleted',"));
@@ -6189,6 +7980,8 @@ mod tests {
         assert!(output.contains("export function syncularGeneratedFieldEncryptionConfig("));
         assert!(output.contains("export const syncularGeneratedAppTables = ["));
         assert!(output.contains("  'projects',"));
+        assert!(output
+            .contains("      appSchema: options.config.appSchema ?? syncularGeneratedAppSchema,"));
         assert!(output.contains("    appTables: syncularGeneratedAppTables,"));
         assert!(output
             .contains("tableConfig: { ...options.tableConfig, ...syncularGeneratedTableConfig },"));
@@ -6232,6 +8025,7 @@ mod tests {
                     column("user_id", "TEXT", true, false, None),
                     column("project_id", "TEXT", false, false, None),
                     column("server_version", "BIGINT", true, false, Some("0")),
+                    column("image", "TEXT", false, false, None),
                 ],
             ),
             table(
@@ -6254,6 +8048,7 @@ mod tests {
             ],
         );
         tasks_config.soft_delete_column = Some("deleted".to_string());
+        tasks_config.blob_columns = vec!["image".to_string()];
         tasks_config.encrypted_fields = vec![EncryptedFieldConfig {
             field: "title".to_string(),
             scope: None,
@@ -6273,7 +8068,12 @@ mod tests {
             ..CodegenConfig::default()
         };
 
-        let swift = generate_swift_module(&tables, &config, 7)?;
+        let swift = generate_swift_module(
+            &tables,
+            &config,
+            7,
+            &test_app_schema_json(&tables, &config, 7)?,
+        )?;
         assert!(swift.contains("public let syncularNativeExpectedFfiAbiVersion = 1"));
         assert!(swift.contains("public let syncularNativeGeneratedSchemaVersion = 7"));
         assert!(swift.contains("public struct SyncularNativeRuntimeManifest"));
@@ -6285,10 +8085,25 @@ mod tests {
         assert!(swift.contains("public struct NewTask"));
         assert!(swift.contains("public struct TaskPatch"));
         assert!(swift.contains("public struct SyncularReadonlyQuery"));
+        assert!(swift.contains("public struct SyncularSubscriptionSpec"));
+        assert!(swift.contains("public func syncularSubscriptionsJson"));
+        assert!(swift.contains("public func syncularDefaultSubscriptionsJson"));
+        assert!(swift.contains("public func taskSubscription(args: SyncularSubscriptionArgs)"));
+        assert!(
+            swift.contains("return SyncularSubscriptionSpec(id: \"sub-tasks\", table: \"tasks\"")
+        );
+        assert!(swift.contains("public struct SyncularBlobRef"));
         assert!(swift.contains("public struct SyncularQueryColumn"));
         assert!(swift.contains("public struct SyncularSelectQuery"));
+        assert!(swift.contains("public func notEq(_ value: Value)"));
+        assert!(swift.contains("public func isIn(_ values: [Value])"));
+        assert!(swift.contains("public func isNotNull()"));
+        assert!(swift.contains("public func and(_ other: SyncularQueryPredicate)"));
         assert!(swift.contains("public struct SyncularLiveQueryRegistration"));
+        assert!(swift.contains("public struct SyncularChangedRow"));
         assert!(swift.contains("public struct SyncularNativeEvent"));
+        assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
+        assert!(swift.contains("public let commandId: String?"));
         assert!(swift.contains("public struct SyncularFieldEncryptionRule"));
         assert!(swift.contains("public struct SyncularFieldEncryptionConfig"));
         assert!(swift.contains(
@@ -6299,6 +8114,7 @@ mod tests {
         assert!(swift.contains("public final class SyncularNativeLiveQuery"));
         assert!(swift.contains("public protocol SyncularNativeJsonClient"));
         assert!(swift.contains("func applyMutationJson(mutationJson: String"));
+        assert!(swift.contains("func enqueueMutationJson(mutationJson: String"));
         assert!(!swift.contains("func applyLocalOperationJson"));
         assert!(swift.contains("func queryJson(requestJson: String"));
         assert!(swift.contains("func registerQueryJson(queryJson: String"));
@@ -6314,20 +8130,32 @@ mod tests {
         assert!(swift.contains("public enum TaskQuery"));
         assert!(swift.contains("public static let table = SyncularQueryTable<TaskRow>"));
         assert!(swift.contains("public static let projectId = SyncularQueryColumn<String>"));
+        assert!(swift.contains("public static let image = SyncularQueryColumn<SyncularBlobRef>"));
         assert!(swift.contains("public static func select() -> SyncularSelectQuery<TaskRow>"));
         assert!(swift.contains("public static func newTask(_ input: NewTask"));
         assert!(!swift.contains("func listTasks()"));
         assert!(!swift.contains("func listTableJson"));
         assert!(swift.contains("func applyNewTask(_ input: NewTask"));
+        assert!(swift.contains("func enqueueNewTask(_ input: NewTask"));
+        assert!(swift.contains("func enqueueTaskPatch(rowId: String"));
+        assert!(swift.contains("func enqueueTaskDelete(rowId: String"));
         assert!(swift.contains("func applyTaskPatch(rowId: String"));
         assert!(swift.contains("func applyTaskDelete(rowId: String"));
         assert!(swift.contains("payload[\"completed\"] = .int(input.completed ?? 0)"));
+        assert!(swift.contains("payload[\"image\"] = value.syncularPayloadValue"));
+        assert!(swift.contains("public let image: SyncularBlobRef?"));
         assert!(swift.contains("payload: [\"deleted\": .int(1)]"));
         assert!(swift.contains("case projectId = \"project_id\""));
-        assert!(swift.contains("rowId: String(input.id)"));
+        assert!(swift.contains("rowId: input.id"));
         assert!(!swift.contains("TASKS_TABLE"));
 
-        let kotlin = generate_kotlin_module(&tables, &config, 7, None)?;
+        let kotlin = generate_kotlin_module(
+            &tables,
+            &config,
+            7,
+            &test_app_schema_json(&tables, &config, 7)?,
+            None,
+        )?;
         assert!(kotlin.contains("const val syncularNativeExpectedFfiAbiVersion: Int = 1"));
         assert!(kotlin.contains("const val syncularNativeGeneratedSchemaVersion: Int = 7"));
         assert!(kotlin.contains("data class SyncularNativeRuntimeManifest"));
@@ -6339,10 +8167,25 @@ mod tests {
         assert!(kotlin.contains("data class NewTask"));
         assert!(kotlin.contains("data class TaskPatch"));
         assert!(kotlin.contains("data class SyncularReadonlyQuery"));
+        assert!(kotlin.contains("data class SyncularSubscriptionSpec"));
+        assert!(kotlin.contains("fun syncularSubscriptionsJson"));
+        assert!(kotlin.contains("fun syncularDefaultSubscriptionsJson"));
+        assert!(kotlin.contains("fun taskSubscription(args: SyncularSubscriptionArgs)"));
+        assert!(kotlin
+            .contains("return SyncularSubscriptionSpec(id = \"sub-tasks\", table = \"tasks\""));
+        assert!(kotlin.contains("data class SyncularBlobRef"));
         assert!(kotlin.contains("class SyncularQueryColumn"));
         assert!(kotlin.contains("data class SyncularSelectQuery"));
+        assert!(kotlin.contains("fun notEq(value: T): SyncularQueryPredicate"));
+        assert!(kotlin.contains("fun isIn(values: Iterable<T>): SyncularQueryPredicate"));
+        assert!(kotlin.contains("fun isNotNull(): SyncularQueryPredicate"));
+        assert!(kotlin.contains("infix fun and(other: SyncularQueryPredicate)"));
         assert!(kotlin.contains("data class SyncularLiveQueryRegistration"));
+        assert!(kotlin.contains("data class SyncularChangedRow"));
         assert!(kotlin.contains("data class SyncularNativeEvent"));
+        assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
+        assert!(kotlin.contains("val commandId: String? = null"));
+        assert!(kotlin.contains("fun syncularDecodeChangedRow(row: JsonObject)"));
         assert!(kotlin.contains("data class SyncularFieldEncryptionRule"));
         assert!(kotlin.contains(
             "SyncularFieldEncryptionRule(scope = \"tasks\", table = \"tasks\", fields = listOf(\"title\"), rowIdField = \"id\")"
@@ -6352,6 +8195,7 @@ mod tests {
         assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));
         assert!(kotlin.contains("interface SyncularNativeJsonClient"));
         assert!(kotlin.contains("fun applyMutationJson(mutationJson: String"));
+        assert!(kotlin.contains("fun enqueueMutationJson(mutationJson: String"));
         assert!(!kotlin.contains("fun applyLocalOperationJson"));
         assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
         assert!(kotlin.contains("fun registerQueryJson(queryJson: String): String"));
@@ -6366,24 +8210,37 @@ mod tests {
         assert!(kotlin.contains("object TaskQuery"));
         assert!(kotlin.contains("val table = SyncularQueryTable(name = \"tasks\""));
         assert!(kotlin.contains("val projectId = SyncularQueryColumn<String>"));
+        assert!(kotlin.contains("val image = SyncularQueryColumn<SyncularBlobRef>"));
         assert!(kotlin.contains("fun select(): SyncularSelectQuery<TaskRow>"));
         assert!(kotlin.contains("fun newTask(input: NewTask"));
         assert!(kotlin.contains("import kotlinx.serialization.json.Json"));
         assert!(!kotlin.contains("fun SyncularNativeJsonClient.listTasks()"));
         assert!(!kotlin.contains("fun listTableJson"));
         assert!(kotlin.contains("fun SyncularNativeJsonClient.applyNewTask(input: NewTask"));
+        assert!(kotlin.contains("fun SyncularNativeJsonClient.enqueueNewTask(input: NewTask"));
+        assert!(kotlin.contains("fun SyncularNativeJsonClient.enqueueTaskPatch(rowId: String"));
+        assert!(kotlin.contains("fun SyncularNativeJsonClient.enqueueTaskDelete(rowId: String"));
         assert!(kotlin.contains("fun SyncularNativeJsonClient.applyTaskPatch(rowId: String"));
         assert!(kotlin.contains("fun SyncularNativeJsonClient.applyTaskDelete(rowId: String"));
         assert!(kotlin.contains("private fun syncularDecodeTaskRows(json: String): List<TaskRow>"));
+        assert!(kotlin.contains("image = row.syncularOptionalBlobRef(\"image\")"));
         assert!(kotlin.contains("private fun syncularGeneratedQueryRows(json: String)"));
         assert!(kotlin.contains("payload[\"completed\"] = input.completed ?: 0L"));
+        assert!(kotlin.contains("payload[\"image\"] = it.toJsonValue()"));
+        assert!(kotlin.contains("val image: SyncularBlobRef?"));
         assert!(kotlin.contains("payload = linkedMapOf(\"deleted\" to 1L)"));
-        assert!(kotlin.contains("rowId = input.id.toString()"));
+        assert!(kotlin.contains("rowId = input.id"));
+        assert!(!kotlin.contains("rowId = input.id.toString()"));
         assert!(kotlin.contains("fun toJsonString(): String"));
         assert!(!kotlin.contains("TASKS_TABLE"));
 
-        let android_kotlin =
-            generate_kotlin_module(&tables, &config, 7, Some("dev.syncular.client.generated"))?;
+        let android_kotlin = generate_kotlin_module(
+            &tables,
+            &config,
+            7,
+            &test_app_schema_json(&tables, &config, 7)?,
+            Some("dev.syncular.client.generated"),
+        )?;
         assert!(android_kotlin.contains("package dev.syncular.client.generated"));
         assert!(android_kotlin.contains("object SyncularAppOperations"));
 
@@ -6527,9 +8384,35 @@ mod tests {
         ));
         assert!(!output.contains("pub fn title_yjs_update"));
 
-        let swift = generate_swift_module(&tables, &config, 9)?;
+        let swift = generate_swift_module(
+            &tables,
+            &config,
+            9,
+            &test_app_schema_json(&tables, &config, 9)?,
+        )?;
+        assert!(swift.contains("generic-crdt-field-api"));
+        assert!(swift.contains("queued-crdt-field-updates"));
         assert!(swift.contains("queued-encrypted-crdt"));
         assert!(swift.contains("public struct SyncularYjsUpdateEnvelope"));
+        assert!(swift.contains("public struct SyncularCrdtFieldTextRequest"));
+        assert!(swift.contains("public struct SyncularCrdtFieldDescriptor"));
+        assert!(swift.contains("public struct SyncularCrdtFieldMaterialization"));
+        assert!(swift.contains("func openCrdtFieldJson(requestJson: String"));
+        assert!(swift.contains("func applyCrdtFieldTextJson(requestJson: String"));
+        assert!(swift.contains("func enqueueCrdtFieldYjsUpdateJson(requestJson: String"));
+        assert!(swift.contains("func enqueueCrdtFieldTextJson(requestJson: String"));
+        assert!(swift.contains("func enqueueCrdtFieldCompactionJson(requestJson: String"));
+        assert!(swift.contains("func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor"));
+        assert!(swift.contains("func applyTaskTitleText(rowId: String, nextText: String) throws -> SyncularCrdtFieldWriteReceipt"));
+        assert!(swift.contains("func enqueueTaskTitleText(rowId: String, nextText: String)"));
+        assert!(swift.contains(
+            "func materializeTaskTitle(rowId: String) throws -> SyncularCrdtFieldMaterialization"
+        ));
+        assert!(swift.contains("func materializeTaskTitleJson(rowId: String)"));
+        assert!(swift.contains("func compactTaskTitle(rowId: String, minUncheckpointedUpdates: Int64 = 1) throws -> SyncularCrdtFieldCompactionReceipt"));
+        assert!(swift.contains(
+            "func enqueueTaskTitleCompaction(rowId: String, minUncheckpointedUpdates: Int64 = 1)"
+        ));
         assert!(swift.contains("public struct SyncularEncryptedCrdtUpdateRequest"));
         assert!(swift.contains("func applyEncryptedCrdtUpdateJson(requestJson: String"));
         assert!(swift.contains("func enqueueEncryptedCrdtUpdateJson(requestJson: String"));
@@ -6553,9 +8436,46 @@ mod tests {
             "let request = SyncularEncryptedCrdtUpdateRequest(table: \"tasks\", field: \"title\", rowId: rowId, nextText: nextText)"
         ));
 
-        let kotlin = generate_kotlin_module(&tables, &config, 9, None)?;
+        let kotlin = generate_kotlin_module(
+            &tables,
+            &config,
+            9,
+            &test_app_schema_json(&tables, &config, 9)?,
+            None,
+        )?;
+        assert!(kotlin.contains("generic-crdt-field-api"));
+        assert!(kotlin.contains("queued-crdt-field-updates"));
         assert!(kotlin.contains("queued-encrypted-crdt"));
         assert!(kotlin.contains("data class SyncularYjsUpdateEnvelope"));
+        assert!(kotlin.contains("data class SyncularCrdtFieldTextRequest"));
+        assert!(kotlin.contains("data class SyncularCrdtFieldDescriptor"));
+        assert!(kotlin.contains("data class SyncularCrdtFieldMaterialization"));
+        assert!(kotlin.contains("fun openCrdtFieldJson(requestJson: String): String"));
+        assert!(kotlin.contains("fun applyCrdtFieldTextJson(requestJson: String): String"));
+        assert!(kotlin.contains("fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String"));
+        assert!(kotlin.contains("fun enqueueCrdtFieldTextJson(requestJson: String): String"));
+        assert!(kotlin.contains("fun enqueueCrdtFieldCompactionJson(requestJson: String): String"));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.applyTaskTitleText(rowId: String, nextText: String): SyncularCrdtFieldWriteReceipt"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.enqueueTaskTitleText(rowId: String, nextText: String): String"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.materializeTaskTitle(rowId: String): SyncularCrdtFieldMaterialization"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.materializeTaskTitleJson(rowId: String): String"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.compactTaskTitle(rowId: String, minUncheckpointedUpdates: Long = 1): SyncularCrdtFieldCompactionReceipt"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.enqueueTaskTitleCompaction(rowId: String, minUncheckpointedUpdates: Long = 1): String"
+        ));
         assert!(kotlin.contains("data class SyncularEncryptedCrdtUpdateRequest"));
         assert!(kotlin.contains("fun applyEncryptedCrdtUpdateJson(requestJson: String): String"));
         assert!(kotlin.contains("fun enqueueEncryptedCrdtUpdateJson(requestJson: String): String"));
@@ -6580,6 +8500,11 @@ mod tests {
         assert!(kotlin.contains(
             "SyncularEncryptedCrdtUpdateRequest(table = \"tasks\", field = \"title\", rowId = rowId, nextText = nextText)"
         ));
+
+        let typescript = generate_typescript_module(&tables, &config, 9)?;
+        assert!(typescript.contains("  'web-owned-sqlite-core',"));
+        assert!(typescript.contains("  'crdt-yjs',"));
+        assert!(typescript.contains("  'e2ee',"));
         Ok(())
     }
 }

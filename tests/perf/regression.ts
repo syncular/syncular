@@ -10,16 +10,21 @@ import type { BenchmarkResult } from './benchmark';
 /** Baseline data stored in baseline.json */
 export interface Baseline {
   [metricName: string]: {
-    median: number;
-    p95: number;
-    p99: number;
-    timestamp: string;
+      median: number;
+      p95: number;
+      p99: number;
+      unit?: BenchmarkResult['unit'];
+      timestamp: string;
     commit?: string;
     source?: 'local' | 'ci';
     environment?: {
       platform: string;
       arch: string;
       bunVersion: string;
+      rustcVersion?: string | null;
+      cargoVersion?: string | null;
+      wasmPackVersion?: string | null;
+      perfSuites?: string[];
       runnerOs?: string;
       runnerName?: string;
     };
@@ -28,6 +33,7 @@ export interface Baseline {
 
 interface RegressionResult {
   metric: string;
+  unit?: BenchmarkResult['unit'];
   baseline: number;
   current: number;
   change: number; // percentage (positive = slower)
@@ -55,6 +61,23 @@ const REGRESSION_THRESHOLD_OVERRIDES: Record<string, number> = {
   transport_direct_catchup: 0.5,
   transport_relay_catchup: 0.5,
   transport_ws_catchup: 0.5,
+  rust_browser_wasm_raw_kib: 0.03,
+  rust_browser_wasm_gzip_kib: 0.03,
+  rust_browser_local_mutations_indexeddb_50: 0.5,
+  rust_browser_local_mutations_opfs_worker_50: 0.5,
+  rust_native_open_client: 1.0,
+  rust_native_insert_batch_100: 1.0,
+  rust_native_update_batch_100: 1.0,
+  rust_native_list_tasks_json_400: 1.0,
+  rust_native_crdt_text_updates_100: 1.0,
+  rust_e2e_push_batch_100: 1.0,
+  rust_e2e_pull_catchup_100: 1.0,
+  rust_e2e_client_to_client_catchup_100: 1.0,
+  rust_http_push_batch_100: 1.0,
+  rust_http_pull_catchup_100: 1.0,
+  rust_http_client_to_client_catchup_100: 1.0,
+  rust_ws_push_batch_100: 1.0,
+  rust_ws_client_to_client_catchup_100: 1.0,
 };
 
 /**
@@ -113,6 +136,7 @@ export function detectRegressions(
 
     return {
       metric: r.name,
+      unit: r.unit,
       baseline: base,
       current: r.median,
       change,
@@ -161,9 +185,9 @@ export function formatRegressionReport(
 
     const baselineLabel = r.baselineMissing
       ? 'N/A'
-      : `${r.baseline.toFixed(1)}ms`;
+      : formatMetricValue(r.baseline, r.unit);
     const changeLabel = r.baselineMissing ? 'N/A' : formatChange(r.change);
-    return `| ${emoji} ${r.metric} | ${baselineLabel} | ${r.current.toFixed(1)}ms | ${changeLabel} |`;
+    return `| ${emoji} ${r.metric} | ${baselineLabel} | ${formatMetricValue(r.current, r.unit)} | ${changeLabel} |`;
   });
 
   return `## ${header}
@@ -171,6 +195,13 @@ export function formatRegressionReport(
 | Metric | Baseline | Current | Change |
 |--------|----------|---------|--------|
 ${rows.join('\n')}`;
+}
+
+function formatMetricValue(
+  value: number,
+  unit: BenchmarkResult['unit'] = 'ms'
+): string {
+  return `${value.toFixed(1)}${unit}`;
 }
 
 /**

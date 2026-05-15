@@ -27,15 +27,93 @@ bun --cwd tests/perf regression
 bun --cwd tests/perf update-baseline
 bun --cwd tests/perf fetch-history
 bun --cwd tests/perf trend-ci
+bun run test:perf:rust
+bun run test:perf:rust:stable
 ```
 
 Useful knobs:
 
 ```bash
 PERF_STABLE_RUNS=7 bun --cwd tests/perf stable-ci
+bun run test:perf:rust:stable
+PERF_RUST_ONLY=true PERF_STABLE_RUNS=5 bun --cwd tests/perf stable-ci
 PERF_STABLE_OUTPUT_JSON=.tmp/perf-summary.json bun --cwd tests/perf stable-ci
 PERF_TREND_CURRENT_PATH=.tmp/perf-summary.json PERF_TREND_HISTORY_DIR=perf-history bun --cwd tests/perf trend-ci
 ```
+
+`stable-ci` emits suite-neutral gate markers:
+
+- `PERF_GATE_REGRESSION=true|false`
+- `PERF_GATE_MISSING_BASELINE=true|false`
+
+The legacy `PERF_GATE_SYNC_*` markers are still printed as compatibility
+aliases. Summary JSON includes a `suite` field per metric (`sync`,
+`rust-native`, `rust-e2e`, `rust-http`, `rust-ws`, `rust-browser`, or `dialect`) so CI
+summaries make ownership obvious.
+
+## Rust Client Metrics
+
+The stable perf lane also runs `tests/perf/rust-client.perf.test.ts`, which
+tracks the Rust-first client alongside the existing TypeScript sync metrics.
+
+Tracked PR-safe metrics:
+
+- `rust_native_open_client`: native Rust client open plus in-memory SQLite migration/schema setup.
+- `rust_native_insert_batch_100`: generated Rust mutations inserting 100 task rows in one local commit.
+- `rust_native_update_batch_100`: generated Rust mutations updating 100 task rows in one local commit.
+- `rust_native_list_tasks_json_400`: Rust-owned SQLite app-row JSON read over a 400-row local table.
+- `rust_native_crdt_text_updates_100`: 100 server-merge CRDT text updates through the native client.
+- `rust_e2e_push_batch_100`: Rust client local outbox pushed to the Rust stateful test server.
+- `rust_e2e_pull_catchup_100`: Rust client catches up from rows committed on the Rust stateful test server.
+- `rust_e2e_client_to_client_catchup_100`: Rust writer client pushes to the Rust stateful test server, then a Rust reader client pulls the batch.
+- `rust_http_push_batch_100`: Rust client local outbox pushed over the production HTTP transport to a deterministic Rust stateful server.
+- `rust_http_pull_catchup_100`: Rust client catches up over the production HTTP transport from rows committed on the deterministic Rust stateful server.
+- `rust_http_client_to_client_catchup_100`: Rust writer client pushes over HTTP, then a Rust reader client pulls over HTTP.
+- `rust_ws_push_batch_100`: Rust client local outbox pushed over the production native WebSocket realtime transport, followed by the Rust client's normal HTTP pull phase.
+- `rust_ws_client_to_client_catchup_100`: Rust writer client pushes over WebSocket, then a Rust reader client pulls over HTTP.
+- `rust_browser_wasm_raw_kib` and `rust_browser_wasm_gzip_kib`: browser Rust WASM size, expressed in KiB so it can use the same baseline machinery.
+
+Nightly-only browser latency metrics can be enabled with
+`PERF_RUST_BROWSER_BENCHMARK=true`:
+
+- `rust_browser_local_mutations_indexeddb_50`: Rust-owned browser SQLite local mutation batches with IndexedDB storage.
+- `rust_browser_local_mutations_opfs_worker_50`: Rust-owned browser SQLite local mutation batches through the OPFS worker path.
+
+Run only the Rust client perf slice from repo root:
+
+```bash
+bun run test:perf:rust
+```
+
+Run the Rust HTTP and WebSocket stress slice separately from the regression gate:
+
+```bash
+bun run test:perf:rust:stress
+```
+
+The stress slice drives multiple Rust writer clients through the production
+HTTP transport and native WebSocket realtime transport into a deterministic
+Rust stateful server, then syncs multiple Rust reader clients and asserts that
+every reader converges to the server row count. It prints push, pull, and full
+client-server-client timings, but does not compare against `baseline.json`.
+
+Useful knobs:
+
+```bash
+PERF_RUST_NATIVE_OPERATIONS=200 PERF_RUST_NATIVE_ROUNDS=7 bun run test:perf:rust
+PERF_RUST_BROWSER_BENCHMARK=true PERF_RUST_BROWSER_OPERATIONS=50 PERF_RUST_BROWSER_ROUNDS=3 bun run test:perf:rust
+PERF_RUST_STRESS_WRITERS=4 PERF_RUST_STRESS_READERS=4 PERF_RUST_STRESS_BATCHES=20 PERF_RUST_STRESS_BATCH_SIZE=250 bun run test:perf:rust:stress
+PERF_RUST_STRESS_TRANSPORT=ws bun run test:perf:rust:stress
+```
+
+Operation counts are part of the metric name. For example,
+`PERF_RUST_NATIVE_OPERATIONS=200` emits `rust_native_insert_batch_200`, which
+will require its own baseline instead of being compared against the default
+`_100` metric.
+
+The Rust native runner lives at `syncular-rust-perf` in
+`rust/crates/client`. It emits JSON so future native, Swift/Kotlin/JVM, or
+browser runtime workloads can be added without changing the aggregation format.
 
 ## Triage Workflow
 
@@ -53,6 +131,9 @@ PERF_TREND_CURRENT_PATH=.tmp/perf-summary.json PERF_TREND_HISTORY_DIR=perf-histo
 3. Identify which metric regressed.
 - Capture baseline, aggregated median, delta %, and run min/max.
 - Mark if regression is isolated to one metric or broad across metrics.
+- Check the `suite` column before routing: `rust-native`, `rust-e2e`,
+  `rust-http`, `rust-ws`, and `rust-browser` belong to the Rust client lane, while `sync`
+  covers the TypeScript sync perf suite.
 
 4. Reproduce locally in stable mode.
 - Run `PERF_STABLE_RUNS=7 bun --cwd tests/perf stable-ci`.

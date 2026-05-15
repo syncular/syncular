@@ -250,6 +250,36 @@ headers.insert("authorization".to_string(), format!("Bearer {token}"));
 client.set_auth_headers(headers);
 ```
 
+Native UI apps can refresh auth on the existing worker before the next sync or
+realtime reconnect. HTTP 401/403 sync failures surface as an `AuthExpired`
+native event with the original `commandId`, so the host can correlate the failed
+foreground action, refresh headers, and enqueue another sync without reopening
+SQLite.
+
+Swift/Kotlin/JVM native apps also need subscriptions before sync when opening
+with injected `appSchemaJson`. Generated app clients now emit subscription
+helpers, so normal app code should avoid hand-written subscription JSON:
+
+```swift
+let args = SyncularSubscriptionArgs(actorId: actorId, projectId: projectId)
+try client.setSubscriptionsJson(
+    subscriptionsJson: syncularSubscriptionsJson([taskSubscription(args: args)])
+)
+```
+
+```kotlin
+client.setSubscriptionsJson(
+    syncularSubscriptionsJson(
+        listOf(taskSubscription(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId))),
+    ),
+)
+```
+
+Use `syncularDefaultSubscriptionsJson(actorId:projectId:)` /
+`syncularDefaultSubscriptionsJson(actorId = ..., projectId = ...)` when the app
+wants all generated table subscriptions. Use the per-table helpers when a view
+or app shell intentionally syncs a smaller set.
+
 ## 8. Client-Side Field Encryption
 
 The Rust client can encrypt configured fields on push and decrypt them on pull
@@ -619,8 +649,19 @@ Adjust module paths to match where you put `generated.rs`.
 - The current native Rust path is the strongest path. Swift/Kotlin generated
   query builders now exist, but should still be treated as early app-side DSLs
   over the stable `queryJson` binding.
+- Native release packaging is local but repeatable now:
+  `bash rust/scripts/package-native-bindings.sh --all` writes fresh Swift,
+  Android, Android Maven/AAR, and JVM artifacts to `.context/native-packages`.
+  Use `SYNCULAR_NATIVE_PACKAGE_OUT=/path/to/out` when copying artifacts into a
+  consuming app. The Android low-level binding is packaged as
+  `dev.syncular:syncular-android:<runtime-version>` in the generated local
+  Maven repository. Desktop JVM packaging defaults to the current host; Linux
+  x86_64 can be built with `bash rust/scripts/package-native-bindings.sh
+  --java-linux-x86_64` after installing `x86_64-unknown-linux-gnu` and `zig`.
+  Windows JVM artifacts need a Windows host/runner with the current BoltFFI
+  packaging backend.
 - CI coverage exists for local integration hardening, but the crates/packages
-  are not published yet; use path dependencies until release packaging is cut.
+  are not published yet; use path dependencies until published packages are cut.
 
 ## 18. Local Native Generated-Client Smoke
 
@@ -637,7 +678,83 @@ That compiles and runs:
 - `rust/examples/todo-app/native-smokes/swift/GeneratedClientSmoke.swift`
 - `rust/examples/todo-app/generated/kotlin/SyncularApp.kt`
 - `rust/examples/todo-app/native-smokes/kotlin/GeneratedClientSmoke.kt`
+- the Swift/Kotlin/JVM BoltFFI host smokes, lifecycle command-line smokes, and
+  real Hono server sync smokes
 
-The smoke uses a mock `SyncularNativeJsonClient`, so it checks generated query
-SQL, mutation JSON, live-query registration, event filtering, and refresh
-behavior without needing a real Swift/Kotlin app shell.
+The first generated-client stage uses a mock `SyncularNativeJsonClient`, so it
+checks generated query SQL, subscription JSON, mutation JSON, live-query
+registration, event filtering, and refresh behavior. Later stages link the real
+native library, exercise the same generated APIs against local SQLite, then
+start a local Hono sync server and prove Swift/Kotlin can set auth, set
+generated subscriptions, receive command-correlated `AuthExpired` for stale
+auth, refresh headers on the hot worker, enqueue sync, query pulled rows, push
+generated task mutations over HTTP and WebSocket, resolve a server version
+conflict with keep-local retry, clear conflicts with keep-server/dismiss, and
+pull those pushed/resolved rows into a second native client. The same server
+smokes mount the real Hono blob routes and prove Swift/Kotlin can store a blob
+file through the native binding, upload it from the queue, sync a generated
+task `BlobRef`, pull that row into another native client, and retrieve the
+blob bytes back through the binding. They also prove stale-auth blob uploads
+stay retryable, become failed after max attempts, and keep local cache bytes
+available for recovery, and that missing remote blobs surface a 404 without
+being cached locally. They also prove generated field-level
+E2EE config against that Hono server: the writer pushes an encrypted title, an
+unencrypted reader sees the ciphertext envelope, and an encrypted reader pulls
+plaintext. The same run verifies native subscription revocation by switching
+the generated task subscription to an unauthorized actor scope, clearing the
+local scoped row, restoring the valid scope, and pulling the row again. It
+also registers generated Swift/Kotlin live queries before a server pull and
+refreshes typed rows from the native `QueriesChanged` event after
+`SyncCompleted`. Native schema negotiation is covered too: a Hono route with a
+future `requiredSchemaVersion` produces a command-correlated `SyncFailed`
+event, while a route with only a future `latestSchemaVersion` still completes
+sync. Client-id ownership is covered as well: a second native client reusing
+the same client id with a different authenticated actor receives the server's
+HTTP ownership failure as a native `SyncFailed` event.
+
+For real app-shell validation, run:
+
+```bash
+bash rust/examples/todo-app/native-smokes/ios-lifecycle/run-local.sh
+bash rust/examples/todo-app/native-smokes/android-lifecycle/run-local.sh
+```
+
+## 19. Native App Lifecycle Rules
+
+For Swift, Kotlin/Android, and JVM UI apps, treat the low-level native binding
+as a long-lived runtime object, not as a per-screen helper:
+
+- open the database once per app/session and call the generated runtime/schema
+  assertion before showing data from that store.
+- keep SQLite open, migration, schema validation, and native library loading
+  away from UI-critical startup paths. Use `SyncularBoltClient(openAsync:)` on
+  Swift, `SyncularBoltClient.openAsync(config)` on Kotlin/JVM, or
+  `syncular_native_client_open_async*` from C when app startup needs an async
+  shell state before the native runtime is ready.
+- prefer queued APIs for writes and bursty work:
+  `enqueueMutationJson`, `enqueueSyncNow`, `enqueueSyncWebsocket`, queued CRDT
+  text/compaction helpers, queued blob file operations, queued snapshot
+  refresh, and queued storage compaction. These return command ids immediately
+  and report durability later. Use `enqueueSyncNow` for the normal HTTP path;
+  use `enqueueSyncWebsocket` when the server route supports Syncular's
+  WebSocket push transport.
+- poll native events from a background task and update UI state by ordered
+  `eventSeq` plus `commandId`. Events include rows/query changes, command
+  completion/failure, sync state, conflicts, CRDT field changes, and blob work.
+  `RowsChanged`, `QueriesChanged`, `SyncCompleted`, and
+  `LocalWriteCommitted` also include `changedRows` when the runtime can derive
+  precise row/field deltas. Use those deltas to route active-document CRDT
+  updates, list row refreshes, deletes, and conflict indicators before falling
+  back to table-level refresh.
+- refresh auth headers before foreground sync or realtime reconnect. A stale
+  HTTP 401/403 sync response is reported as `AuthExpired` with the original
+  command id.
+- set generated subscriptions with `setSubscriptionsJson` before the first sync
+  when opening native clients with injected `appSchemaJson`.
+- when backgrounding, only enqueue sync/blob/compaction work that fits the host
+  platform's background execution budget.
+- call the explicit native lifecycle method (`shutdown()` in BoltFFI wrappers)
+  during app teardown and keep polling until completion or the host deadline.
+- initialize CRDT-backed text fields empty or with existing Yjs state before
+  queued text replacement. The runtime rejects replacing populated legacy
+  plaintext without Yjs state to prevent duplicated or blank editor content.

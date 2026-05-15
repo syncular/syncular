@@ -79,6 +79,7 @@ const SyncOperationResultConflictSchema = z.object({
   opIndex: z.number().int(),
   status: z.literal('conflict'),
   message: z.string(),
+  code: z.string().optional(),
   server_version: z.number().int(),
   server_row: z.unknown(),
 });
@@ -247,6 +248,8 @@ export type SyncCombinedRequest = z.infer<typeof SyncCombinedRequestSchema>;
 
 export const SyncCombinedResponseSchema = z.object({
   ok: z.literal(true),
+  requiredSchemaVersion: z.number().int().min(1).optional(),
+  latestSchemaVersion: z.number().int().min(1).optional(),
   push: SyncPushBatchResponseSchema.optional(),
   pull: SyncPullResponseSchema.optional(),
 });

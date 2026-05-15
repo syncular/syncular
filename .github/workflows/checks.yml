@@ -327,6 +327,42 @@ jobs:
           export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
           boltffi pack android
 
+  rust-windows-jvm-package:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Install BoltFFI CLI
+        run: cargo install boltffi_cli --version 0.24.1 --locked
+
+      - name: Package Windows JVM binding
+        shell: bash
+        run: bash rust/scripts/package-native-bindings.sh --java-windows-x86_64
+
+      - name: Upload Windows JVM binding
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncular-jvm-windows-${{ github.run_id }}
+          if-no-files-found: error
+          path: .context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll
+
   integration-load:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
@@ -432,14 +468,29 @@ jobs:
   perf:
     if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Setup wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+      - name: Install WASM optimizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
       - uses: ./.github/actions/setup-environment
 
       - name: Run stable performance tests (5 runs)
         id: perf
         env:
+          CC_wasm32_unknown_unknown: clang
           PERF_STABLE_RUNS: 5
           PERF_STABLE_OUTPUT_JSON: perf-summary.json
         run: |
@@ -452,19 +503,19 @@ jobs:
       - name: Extract regression report
         id: report
         run: |
-          if ! grep -q "PERF_GATE_SYNC_REGRESSION=" perf-results.txt; then
+          if ! grep -q "PERF_GATE_REGRESSION=" perf-results.txt; then
             echo "execution_failed=true" >> $GITHUB_OUTPUT
           else
             echo "execution_failed=false" >> $GITHUB_OUTPUT
           fi
 
-          if grep -q "PERF_GATE_SYNC_REGRESSION=true" perf-results.txt; then
+          if grep -q "PERF_GATE_REGRESSION=true" perf-results.txt; then
             echo "has_regression=true" >> $GITHUB_OUTPUT
           else
             echo "has_regression=false" >> $GITHUB_OUTPUT
           fi
 
-          if grep -q "PERF_GATE_SYNC_MISSING_BASELINE=true" perf-results.txt; then
+          if grep -q "PERF_GATE_MISSING_BASELINE=true" perf-results.txt; then
             echo "has_missing_baseline=true" >> $GITHUB_OUTPUT
           else
             echo "has_missing_baseline=false" >> $GITHUB_OUTPUT
@@ -507,6 +558,15 @@ jobs:
               .filter(Boolean)
               .join(' / ');
             lines.push(`- Environment: ${env.source ?? 'unknown'} (${envLabel})`);
+            if (Array.isArray(env.perfSuites) && env.perfSuites.length > 0) {
+              lines.push(`- Perf suites: ${env.perfSuites.join(', ')}`);
+            }
+            if (env.rustcVersion) {
+              lines.push(`- Rust: ${env.rustcVersion}`);
+            }
+            if (env.wasmPackVersion) {
+              lines.push(`- wasm-pack: ${env.wasmPackVersion}`);
+            }
           }
           if (report.resources?.durationMs && report.resources?.cpuTotalMicros && report.resources?.maxRssBytes) {
             lines.push(
@@ -519,18 +579,19 @@ jobs:
             );
           }
           lines.push('');
-          lines.push('| Metric | Baseline | Median | Change |');
-          lines.push('|--------|----------|--------|--------|');
+          lines.push('| Suite | Metric | Baseline | Median | Change |');
+          lines.push('|-------|--------|----------|--------|--------|');
 
           for (const metric of report.metrics) {
+            const unit = metric.unit ?? 'ms';
             const baseline =
-              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}ms`;
-            const median = `${Number(metric.aggregatedMedian).toFixed(1)}ms`;
+              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}${unit}`;
+            const median = `${Number(metric.aggregatedMedian).toFixed(1)}${unit}`;
             const change =
               metric.changePercent === null
                 ? 'N/A'
                 : `${metric.changePercent >= 0 ? '+' : ''}${Number(metric.changePercent).toFixed(1)}%`;
-            lines.push(`| ${metric.metric} | ${baseline} | ${median} | ${change} |`);
+            lines.push(`| ${metric.suite ?? 'unknown'} | ${metric.metric} | ${baseline} | ${median} | ${change} |`);
           }
 
           fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);

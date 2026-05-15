@@ -113,6 +113,8 @@ const COOP_COEP_HEADERS = {
   'cache-control': 'no-cache',
 };
 
+let syncCommitSeq = 1;
+
 const HTML = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>Runtime Test</title></head>
@@ -130,6 +132,10 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ ok: true }), {
         headers: { 'content-type': 'application/json' },
       });
+    }
+
+    if (url.pathname === '/sync' && req.method === 'POST') {
+      return benchmarkSyncResponse(req);
     }
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
@@ -230,4 +236,73 @@ function assertSingleWorkerBundle(outputPaths: readonly string[]): void {
     `[runtime-browser] wa-sqlite worker build produced split artifacts (${extraOutputs.join(', ')}). ` +
       'This can trigger Bun ESM duplicate-export crashes in module workers. Keep worker bundling unsplit.'
   );
+}
+
+async function benchmarkSyncResponse(req: Request): Promise<Response> {
+  const request = (await req.json()) as {
+    push?: {
+      commits?: Array<{
+        clientCommitId: string;
+        operations?: unknown[];
+      }>;
+    };
+    pull?: {
+      subscriptions?: Array<{
+        id: string;
+        table: string;
+        scopes: Record<string, unknown>;
+        cursor: number;
+      }>;
+    };
+  };
+
+  const response = {
+    ok: true,
+    push: request.push
+      ? {
+          ok: true,
+          commits: (request.push.commits ?? []).map((commit) => {
+            const commitSeq = syncCommitSeq++;
+            return {
+              clientCommitId: commit.clientCommitId,
+              status: 'applied',
+              commitSeq,
+              results: (commit.operations ?? []).map((_operation, opIndex) => ({
+                opIndex,
+                status: 'applied',
+                message: null,
+                error: null,
+                code: null,
+                retriable: null,
+                server_version: commitSeq * 1000 + opIndex,
+                server_row: null,
+              })),
+            };
+          }),
+        }
+      : null,
+    pull: request.pull
+      ? {
+          ok: true,
+          subscriptions: (request.pull.subscriptions ?? []).map((sub) => ({
+            id: sub.id,
+            table: sub.table,
+            status: 'active',
+            scopes: sub.scopes,
+            bootstrap: false,
+            bootstrapState: null,
+            nextCursor: sub.cursor,
+            snapshotRows: [],
+            commits: [],
+          })),
+        }
+      : null,
+  };
+
+  return new Response(JSON.stringify(response), {
+    headers: {
+      ...COOP_COEP_HEADERS,
+      'content-type': 'application/json',
+    },
+  });
 }

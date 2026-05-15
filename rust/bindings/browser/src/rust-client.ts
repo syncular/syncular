@@ -1,6 +1,7 @@
 import type { BlobRef, SyncOperation } from '@syncular/core';
 import { resolveSyncularV2ClientConfig } from './client-config';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
+import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
@@ -12,11 +13,21 @@ import type {
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2ClientConfig,
+  SyncularV2ConflictSummary,
+  SyncularV2CrdtFieldCompactionReceipt,
+  SyncularV2CrdtFieldCompactionRequest,
+  SyncularV2CrdtFieldDescriptor,
+  SyncularV2CrdtFieldMaterialization,
+  SyncularV2CrdtFieldRequest,
+  SyncularV2CrdtFieldTextRequest,
+  SyncularV2CrdtFieldWriteReceipt,
+  SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
+  SyncularV2RuntimeArtifact,
   SyncularV2RuntimeInfo,
   SyncularV2SchemaState,
   SyncularV2SqlResult,
@@ -36,7 +47,9 @@ import {
 
 export interface CreateSyncularV2RustClientOptions {
   module?: SyncularV2WasmGlue | Promise<SyncularV2WasmGlue>;
+  wasmGlueUrl?: string | URL;
   wasmUrl?: string | URL | Request;
+  runtime?: SyncularV2RuntimeArtifact;
   config: SyncularV2ClientConfig;
 }
 
@@ -54,11 +67,31 @@ type RawSyncResult = {
   pushed_commits?: number;
 };
 
+type RawConflictSummary = {
+  id: string;
+  client_commit_id: string;
+  op_index: number;
+  result_status: string;
+  message: string;
+  code: string | null;
+  server_version: number | null;
+  resolved_at: number | null;
+  resolution: string | null;
+};
+
 export async function openSyncularV2RustClient(
   options: CreateSyncularV2RustClientOptions
 ): Promise<SyncularV2RustClient> {
-  const mod = await (options.module ?? loadSyncularV2WasmGlue());
-  const wasmUrl = options.wasmUrl ?? getSyncularV2WasmUrl();
+  const wasmGlueUrl =
+    options.runtime?.wasmGlueUrl ??
+    options.wasmGlueUrl ??
+    getSyncularV2WasmGlueUrl();
+  const mod = await (options.module ??
+    (options.runtime?.wasmGlueUrl || options.wasmGlueUrl
+      ? loadSyncularV2WasmGlueFromUrl(wasmGlueUrl)
+      : loadSyncularV2WasmGlue()));
+  const wasmUrl =
+    options.runtime?.wasmUrl ?? options.wasmUrl ?? getSyncularV2WasmUrl();
   const config = resolveSyncularV2ClientConfig(options.config);
   await mod.default(wasmUrl);
   const rustRuntimeInfo = readSyncularV2RustRuntimeInfo(mod);
@@ -66,11 +99,18 @@ export async function openSyncularV2RustClient(
     await mod.openSyncularRustOwnedSqliteClient(config),
     createSyncularV2RuntimeInfo({
       storage: config.storage,
-      wasmGlueUrl: getSyncularV2WasmGlueUrl(),
+      wasmGlueUrl,
       wasmUrl,
       rust: rustRuntimeInfo,
     })
   );
+}
+
+function loadSyncularV2WasmGlueFromUrl(
+  wasmGlueUrl: string | URL
+): Promise<SyncularV2WasmGlue> {
+  const href = wasmGlueUrl instanceof URL ? wasmGlueUrl.href : wasmGlueUrl;
+  return import(/* @vite-ignore */ href) as Promise<SyncularV2WasmGlue>;
 }
 
 export class SyncularV2RustClient {
@@ -155,11 +195,32 @@ export class SyncularV2RustClient {
     }
   }
 
+  async conflictSummaries(): Promise<SyncularV2ConflictSummary[]> {
+    return parseConflictSummaries(await this.raw.conflictSummariesJson());
+  }
+
+  retryConflictKeepLocal(id: string): Promise<string> {
+    return this.raw.retryConflictKeepLocal(id);
+  }
+
+  resolveConflict(id: string, resolution: string): Promise<void> {
+    return this.raw.resolveConflict(id, resolution);
+  }
+
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[] = []
   ): SyncularV2SqlResult<Row> {
+    assertSyncularV2ReadonlySql(sql);
     return parseJson(this.raw.executeSqlJson(sql, stringifyParams(params)));
+  }
+
+  executeUnsafeSql<
+    Row extends Record<string, unknown> = Record<string, unknown>,
+  >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
+    return parseJson(
+      this.raw.executeUnsafeSqlJson(sql, stringifyParams(params))
+    );
   }
 
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -225,7 +286,7 @@ export class SyncularV2RustClient {
   }
 
   pruneBlobCache(maxBytes = 0): number {
-    return this.raw.pruneBlobCache(maxBytes);
+    return Number(this.raw.pruneBlobCache(BigInt(maxBytes)));
   }
 
   clearBlobCache(): void {
@@ -263,6 +324,48 @@ export class SyncularV2RustClient {
     return result.payload;
   }
 
+  async openCrdtField(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtFieldDescriptor> {
+    return parseJson(this.raw.openCrdtFieldJson(JSON.stringify(request)));
+  }
+
+  async applyCrdtFieldText(
+    request: SyncularV2CrdtFieldTextRequest
+  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    return parseJson(this.raw.applyCrdtFieldTextJson(JSON.stringify(request)));
+  }
+
+  async applyCrdtFieldYjsUpdate(
+    request: SyncularV2CrdtFieldYjsUpdateRequest
+  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    return parseJson(
+      this.raw.applyCrdtFieldYjsUpdateJson(JSON.stringify(request))
+    );
+  }
+
+  async materializeCrdtField(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtFieldMaterialization> {
+    return parseJson(
+      this.raw.materializeCrdtFieldJson(JSON.stringify(request))
+    );
+  }
+
+  async snapshotCrdtFieldStateVector(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<{ stateVectorBase64: string }> {
+    return parseJson(
+      this.raw.snapshotCrdtFieldStateVectorJson(JSON.stringify(request))
+    );
+  }
+
+  async compactCrdtField(
+    request: SyncularV2CrdtFieldCompactionRequest
+  ): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+    return parseJson(this.raw.compactCrdtFieldJson(JSON.stringify(request)));
+  }
+
   encryptionHelper<T = unknown>(
     method: SyncularV2EncryptionHelperMethod,
     args: unknown = {}
@@ -296,6 +399,20 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
     })),
     pushedCommits: raw.pushed_commits ?? 0,
   };
+}
+
+function parseConflictSummaries(value: string): SyncularV2ConflictSummary[] {
+  return parseJson<RawConflictSummary[]>(value).map((conflict) => ({
+    id: conflict.id,
+    clientCommitId: conflict.client_commit_id,
+    opIndex: conflict.op_index,
+    resultStatus: conflict.result_status,
+    message: conflict.message,
+    code: conflict.code,
+    serverVersion: conflict.server_version,
+    resolvedAt: conflict.resolved_at,
+    resolution: conflict.resolution,
+  }));
 }
 
 function parseJson<T>(value: string): T {

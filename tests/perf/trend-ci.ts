@@ -5,7 +5,6 @@
 import path from 'node:path';
 import {
   detectChangePoint,
-  formatMs,
   formatPercent,
   formatRobustZ,
   mad,
@@ -16,6 +15,8 @@ import {
 
 interface StableMetricSummary {
   metric: string;
+  suite?: string;
+  unit?: 'ms' | 'KiB';
   baseline: number | null;
   aggregatedMedian: number;
   min: number;
@@ -34,6 +35,8 @@ interface StablePerfSummary {
 
 interface TrendMetricResult {
   metric: string;
+  suite: string;
+  unit: 'ms' | 'KiB';
   current: number;
   historyCount: number;
   historyMedian: number | null;
@@ -126,6 +129,8 @@ async function main() {
     if (insufficientHistory) {
       return {
         metric: metric.metric,
+        suite: metric.suite ?? metricSuite(metric.metric),
+        unit: metric.unit ?? metricUnit(metric.metric),
         current: metric.aggregatedMedian,
         historyCount,
         historyMedian: null,
@@ -150,6 +155,8 @@ async function main() {
 
     return {
       metric: metric.metric,
+      suite: metric.suite ?? metricSuite(metric.metric),
+      unit: metric.unit ?? metricUnit(metric.metric),
       current: metric.aggregatedMedian,
       historyCount,
       historyMedian,
@@ -190,10 +197,10 @@ async function main() {
 
   console.log('\n## Perf Trend Analysis');
   console.log(
-    '| Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |'
+    '| Suite | Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |'
   );
   console.log(
-    '|--------|---------|-------------|-------|----------|--------|--------|'
+    '|-------|--------|---------|-------------|-------|----------|--------|--------|'
   );
 
   for (const result of results) {
@@ -206,7 +213,7 @@ async function main() {
           : 'stable';
 
     console.log(
-      `| ${result.metric} | ${formatMs(result.current)} | ${formatMs(result.historyMedian)} | ${formatPercent(result.deltaPercent)} | ${formatRobustZ(result.robustZ)} | ${result.historyCount} | ${status} |`
+      `| ${result.suite} | ${result.metric} | ${formatMetricValue(result.current, result.unit)} | ${formatMetricValue(result.historyMedian, result.unit)} | ${formatPercent(result.deltaPercent)} | ${formatRobustZ(result.robustZ)} | ${result.historyCount} | ${status} |`
     );
   }
 
@@ -221,6 +228,28 @@ async function main() {
   if (hasRegressionChangePoint && failOnChange) {
     process.exit(1);
   }
+}
+
+function formatMetricValue(value: number | null, unit: 'ms' | 'KiB'): string {
+  if (value == null) return 'N/A';
+  return `${value.toFixed(1)}${unit}`;
+}
+
+function metricSuite(metric: string): string {
+  if (metric.startsWith('rust_native_')) return 'rust-native';
+  if (metric.startsWith('rust_e2e_')) return 'rust-e2e';
+  if (metric.startsWith('rust_http_')) return 'rust-http';
+  if (metric.startsWith('rust_ws_')) return 'rust-ws';
+  if (metric.startsWith('rust_browser_')) return 'rust-browser';
+  if (metric.startsWith('dialect_')) return 'dialect';
+  return 'sync';
+}
+
+function metricUnit(metric: string): 'ms' | 'KiB' {
+  if (metric.startsWith('rust_browser_wasm_') && metric.endsWith('_kib')) {
+    return 'KiB';
+  }
+  return 'ms';
 }
 
 void main();

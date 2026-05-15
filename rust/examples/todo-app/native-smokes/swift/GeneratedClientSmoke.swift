@@ -2,21 +2,95 @@ import Foundation
 
 private final class MockNativeClient: SyncularNativeJsonClient {
     private(set) var mutations: [String] = []
+    private(set) var crdtFieldRequests: [String] = []
+    private(set) var crdtTextRequests: [String] = []
+    private(set) var queuedCrdtTextRequests: [String] = []
+    private(set) var crdtUpdateRequests: [String] = []
+    private(set) var crdtCompactionRequests: [String] = []
+    private(set) var queuedCrdtCompactionRequests: [String] = []
     private(set) var queryRequests: [SyncularReadonlyQuery] = []
     private(set) var registrations: [SyncularLiveQueryRegistration] = []
     private(set) var unregisteredIds: [String] = []
+    private let imageJson: String?
+
+    init(imageJson: String? = nil) {
+        self.imageJson = imageJson
+    }
 
     func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
         mutations.append(mutationJson)
         return "commit-swift"
     }
 
+    func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
+        mutations.append(mutationJson)
+        return "command-swift"
+    }
+
+    func openCrdtFieldJson(requestJson: String) throws -> String {
+        crdtFieldRequests.append(requestJson)
+        return #"{"table":"tasks","rowId":"task-native","field":"title","stateColumn":"title_yjs_state","containerKey":"title","rowIdField":"id","kind":"text","syncMode":"server-merge"}"#
+    }
+
+    func applyCrdtFieldTextJson(requestJson: String) throws -> String {
+        crdtTextRequests.append(requestJson)
+        return #"{"clientCommitId":"commit-crdt-swift","syncMode":"server-merge"}"#
+    }
+
+    func applyCrdtFieldYjsUpdateJson(requestJson: String) throws -> String {
+        crdtUpdateRequests.append(requestJson)
+        return #"{"clientCommitId":"commit-crdt-yjs-swift","syncMode":"server-merge"}"#
+    }
+
+    func enqueueCrdtFieldYjsUpdateJson(requestJson: String) throws -> String {
+        crdtUpdateRequests.append(requestJson)
+        return "command-crdt-swift"
+    }
+
+    func enqueueCrdtFieldTextJson(requestJson: String) throws -> String {
+        queuedCrdtTextRequests.append(requestJson)
+        return "command-crdt-text-swift"
+    }
+
+    func enqueueCrdtFieldCompactionJson(requestJson: String) throws -> String {
+        queuedCrdtCompactionRequests.append(requestJson)
+        return "command-crdt-compact-swift"
+    }
+
+    func materializeCrdtFieldJson(requestJson: String) throws -> String {
+        crdtFieldRequests.append(requestJson)
+        return #"{"value":"Native CRDT smoke","stateBase64":"state","stateVectorBase64":"vector"}"#
+    }
+
+    func snapshotCrdtFieldStateVectorJson(requestJson: String) throws -> String {
+        crdtFieldRequests.append(requestJson)
+        return #"{"stateVectorBase64":"vector"}"#
+    }
+
+    func compactCrdtFieldJson(requestJson: String) throws -> String {
+        crdtCompactionRequests.append(requestJson)
+        return #"{"checkpointCreated":false,"clientCommitId":null}"#
+    }
+
     func queryJson(requestJson: String) throws -> String {
         let query = try JSONDecoder().decode(SyncularReadonlyQuery.self, from: Data(requestJson.utf8))
         queryRequests.append(query)
-        return """
-        {"rows":[{"id":"task-native","title":"Native smoke","completed":1,"user_id":"user-rust","project_id":"project-rust","server_version":11,"image":null,"title_yjs_state":null}]}
-        """
+        var row: [String: Any] = [
+            "id": "task-native",
+            "title": "Native smoke",
+            "completed": 1,
+            "user_id": "user-rust",
+            "project_id": "project-rust",
+            "server_version": 11,
+            "title_yjs_state": NSNull(),
+        ]
+        if let imageJson {
+            row["image"] = imageJson
+        } else {
+            row["image"] = NSNull()
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["rows": [row]], options: [.sortedKeys])
+        return String(data: data, encoding: .utf8)!
     }
 
     func registerQueryJson(queryJson: String) throws -> String {
@@ -37,38 +111,235 @@ private func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     }
 }
 
+private func loadJsonFixture(argumentIndex: Int, fallbackPath: String) throws -> [String: Any] {
+    let path = CommandLine.arguments.dropFirst().dropFirst(argumentIndex).first
+        ?? fallbackPath
+    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        fatalError("conformance fixture must be a JSON object")
+    }
+    return object
+}
+
+private func loadConformanceFixture() throws -> [String: Any] {
+    try loadJsonFixture(argumentIndex: 0, fallbackPath: "rust/examples/todo-app/conformance/generated-client.json")
+}
+
+private func loadSyncScenariosFixture() throws -> [String: Any] {
+    try loadJsonFixture(argumentIndex: 1, fallbackPath: "rust/examples/todo-app/conformance/sync-scenarios.json")
+}
+
+private func jsonObject(_ object: Any, _ key: String) -> [String: Any] {
+    guard let dict = object as? [String: Any], let child = dict[key] as? [String: Any] else {
+        fatalError("missing conformance object \(key)")
+    }
+    return child
+}
+
+private func jsonValue(_ object: Any, _ key: String) -> Any {
+    guard let dict = object as? [String: Any], let value = dict[key] else {
+        fatalError("missing conformance value \(key)")
+    }
+    return value
+}
+
+private func jsonString(_ object: Any, _ key: String) -> String {
+    guard let value = jsonValue(object, key) as? String else {
+        fatalError("conformance value \(key) must be a string")
+    }
+    return value
+}
+
+private func jsonStringArray(_ object: Any, _ key: String) -> [String] {
+    guard let value = jsonValue(object, key) as? [String] else {
+        fatalError("conformance value \(key) must be a string array")
+    }
+    return value
+}
+
+private func jsonInt(_ object: Any, _ key: String) -> Int64 {
+    guard let value = jsonValue(object, key) as? NSNumber else {
+        fatalError("conformance value \(key) must be an integer")
+    }
+    return value.int64Value
+}
+
+private func parseJson(_ json: String) throws -> Any {
+    try JSONSerialization.jsonObject(with: Data(json.utf8))
+}
+
+private func encodedJsonObject<T: Encodable>(_ value: T) throws -> Any {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return try JSONSerialization.jsonObject(with: encoder.encode(value))
+}
+
+private func canonicalJson(_ object: Any) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return String(data: data, encoding: .utf8)!
+}
+
+private func expectJsonEqual(_ lhs: Any, _ rhs: Any, _ message: String) throws {
+    let lhsJson = try canonicalJson(lhs)
+    let rhsJson = try canonicalJson(rhs)
+    expect(lhsJson == rhsJson, message)
+}
+
 @main
 private enum GeneratedClientSmoke {
     static func main() throws {
-        let client = MockNativeClient()
+        let conformance = try loadConformanceFixture()
+        let syncScenarios = try loadSyncScenariosFixture()
+        let taskFixture = jsonObject(conformance, "task")
+        let taskInput = jsonObject(taskFixture, "newInput")
+        let nativeQuery = jsonObject(taskFixture, "nativeQuery")
+        let crdtFixture = jsonObject(conformance, "crdt")
+        let crdtField = jsonObject(crdtFixture, "field")
+        let e2eeFixture = jsonObject(syncScenarios, "e2ee")
+        let e2eeRule = jsonObject(e2eeFixture, "rule")
+        let blobFixture = jsonObject(syncScenarios, "blob")
+        let blobReference = jsonObject(blobFixture, "referenceSync")
+        let blobTask = jsonObject(blobReference, "task")
+        let blobImage = jsonObject(blobReference, "image")
+        let blobImageJson = try canonicalJson(blobImage)
+        let blobRef = SyncularBlobRef(
+            hash: jsonString(blobImage, "hash"),
+            size: jsonInt(blobImage, "size"),
+            mimeType: jsonString(blobImage, "mimeType")
+        )
+        let client = MockNativeClient(imageJson: blobImageJson)
         let query = TaskQuery
             .select()
-            .filter(TaskQuery.userId.eq("user-rust"))
+            .filter(TaskQuery.userId.eq(jsonString(taskInput, "user_id")))
             .orderBy(TaskQuery.serverVersion.desc())
             .limit(5)
 
         let readonly = query.readonlyQuery()
-        expect(readonly.sql == #"select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state" from "tasks" where "user_id" = ? order by "server_version" desc limit 5"#, "unexpected Swift query SQL")
-        expect(readonly.params == [.string("user-rust")], "unexpected Swift query params")
-        expect(readonly.tables == ["tasks"], "unexpected Swift query tables")
+        let readonlyObject = try encodedJsonObject(readonly) as! [String: Any]
+        expect(readonly.sql == jsonString(nativeQuery, "sql"), "unexpected Swift query SQL")
+        try expectJsonEqual(jsonValue(readonlyObject, "params"), jsonValue(nativeQuery, "params"), "unexpected Swift query params")
+        try expectJsonEqual(jsonValue(readonlyObject, "tables"), jsonValue(nativeQuery, "tables"), "unexpected Swift query tables")
+
+        let subscriptionArgs = SyncularSubscriptionArgs(
+            actorId: jsonString(taskInput, "user_id"),
+            projectId: jsonString(taskInput, "project_id")
+        )
+        let taskSubscriptionObject = try parseJson(taskSubscription(args: subscriptionArgs).jsonString())
+        try expectJsonEqual(taskSubscriptionObject, jsonObject(taskFixture, "subscription"), "unexpected Swift subscription contract")
+        let taskSubscriptionsObject = try parseJson(syncularSubscriptionsJson([taskSubscription(args: subscriptionArgs)]))
+        try expectJsonEqual(taskSubscriptionsObject, [jsonObject(taskFixture, "subscription")], "unexpected Swift subscription array contract")
+
+        let advancedQuery = TaskQuery
+            .select()
+            .filter(
+                TaskQuery.userId.eq(jsonString(taskInput, "user_id"))
+                    .and(TaskQuery.serverVersion.gte(3))
+                    .or(TaskQuery.projectId.isNull())
+            )
+            .filter(TaskQuery.id.isIn([jsonString(taskInput, "id"), "task-native-other"]))
+            .filter(TaskQuery.image.isNotNull())
+            .filter(TaskQuery.completed.notEq(0))
+            .orderBy(TaskQuery.title.asc())
+            .limit(2)
+        let advancedReadonly = advancedQuery.readonlyQuery()
+        expect(
+            advancedReadonly.sql == #"select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state" from "tasks" where (((("user_id" = ?) and ("server_version" >= ?))) or ("project_id" is null)) and "id" in (?, ?) and "image" is not null and "completed" != ? order by "title" asc limit 2"#,
+            "unexpected Swift advanced query SQL"
+        )
+        expect(
+            advancedReadonly.params == [.string(jsonString(taskInput, "user_id")), .int(3), .string(jsonString(taskInput, "id")), .string("task-native-other"), .int(0)],
+            "unexpected Swift advanced query params"
+        )
+        expect(TaskQuery.id.isIn([]).sql == "0 = 1", "Swift empty IN should be false")
+        expect(TaskQuery.id.notIn([]).sql == "1 = 1", "Swift empty NOT IN should be true")
 
         let rows = try query.fetch(on: client)
         expect(rows.count == 1, "Swift fetch should decode one row")
-        expect(rows[0].id == "task-native", "Swift fetch should decode id")
-        expect(rows[0].completed == 1, "Swift fetch should decode completed")
+        expect(rows[0].id == jsonString(taskInput, "id"), "Swift fetch should decode id")
+        expect(rows[0].completed == jsonInt(taskInput, "completed"), "Swift fetch should decode completed")
+        expect(rows[0].image?.hash == jsonString(blobImage, "hash"), "Swift fetch should decode blob ref hash")
+        expect(rows[0].image?.size == jsonInt(blobImage, "size"), "Swift fetch should decode blob ref size")
+        expect(rows[0].image?.mimeType == jsonString(blobImage, "mimeType"), "Swift fetch should decode blob ref MIME type")
 
         let commitId = try client.applyNewTask(NewTask(
-            id: "task-native",
-            title: "Native smoke",
-            completed: 1,
-            userId: "user-rust",
-            projectId: "project-rust"
+            id: jsonString(taskInput, "id"),
+            title: jsonString(taskInput, "title"),
+            completed: jsonInt(taskInput, "completed"),
+            userId: jsonString(taskInput, "user_id"),
+            projectId: jsonString(taskInput, "project_id")
         ))
         expect(commitId == "commit-swift", "Swift mutation helper should return commit id")
         expect(client.mutations.count == 1, "Swift mutation helper should call applyMutationJson once")
-        expect(client.mutations[0].contains(#""table":"tasks""#), "Swift mutation should target tasks")
-        expect(client.mutations[0].contains(#""row_id":"task-native""#), "Swift mutation should use input id")
-        expect(client.mutations[0].contains(#""op":"upsert""#), "Swift mutation should be an upsert")
+        try expectJsonEqual(try parseJson(client.mutations[0]), jsonValue(taskFixture, "newOperation"), "Swift mutation should match shared new task operation")
+
+        _ = try client.applyTaskPatch(rowId: jsonString(taskInput, "id"), patch: TaskPatch(completed: 0), baseVersion: 11)
+        try expectJsonEqual(try parseJson(client.mutations[1]), jsonValue(taskFixture, "patchOperation"), "Swift patch should match shared task patch operation")
+        _ = try client.applyTaskDelete(rowId: jsonString(taskInput, "id"), baseVersion: 12)
+        try expectJsonEqual(try parseJson(client.mutations[2]), jsonValue(taskFixture, "deleteOperation"), "Swift delete should match shared task delete operation")
+
+        let enqueueCommandId = try client.enqueueNewTask(NewTask(
+            id: jsonString(taskInput, "id"),
+            title: jsonString(taskInput, "title"),
+            completed: jsonInt(taskInput, "completed"),
+            userId: jsonString(taskInput, "user_id"),
+            projectId: jsonString(taskInput, "project_id")
+        ))
+        expect(enqueueCommandId == "command-swift", "Swift enqueue mutation helper should return command id")
+        try expectJsonEqual(try parseJson(client.mutations[3]), jsonValue(taskFixture, "newOperation"), "Swift enqueue mutation should match shared new task operation")
+
+        let blobOperation = try encodedJsonObject(SyncularAppOperations.newTask(NewTask(
+            id: jsonString(blobTask, "id"),
+            title: jsonString(blobTask, "title"),
+            completed: 0,
+            userId: jsonString(taskInput, "user_id"),
+            image: blobRef
+        )))
+        let blobPayload = jsonObject(blobOperation, "payload")
+        try expectJsonEqual(jsonValue(blobPayload, "image"), blobImage, "Swift blob ref mutation payload should be app-shaped JSON")
+
+        let fieldEncryptionConfig = try parseJson(syncularGeneratedFieldEncryptionConfigJson(
+            keys: ["default": jsonString(e2eeFixture, "keyBase64")],
+            envelopePrefix: jsonString(e2eeFixture, "envelopePrefix"),
+            additionalRules: [SyncularFieldEncryptionRule(
+                scope: jsonString(e2eeRule, "scope"),
+                table: jsonString(e2eeRule, "table"),
+                fields: jsonStringArray(e2eeRule, "fields"),
+                rowIdField: nil
+            )]
+        ))
+        let fieldEncryptionConfigObject = fieldEncryptionConfig as! [String: Any]
+        try expectJsonEqual(jsonValue(fieldEncryptionConfigObject, "rules"), [e2eeRule], "Swift E2EE rules should match shared sync scenario")
+        try expectJsonEqual(jsonValue(fieldEncryptionConfigObject, "keys"), ["default": jsonString(e2eeFixture, "keyBase64")], "Swift E2EE keys should match shared sync scenario")
+        expect(jsonString(fieldEncryptionConfigObject, "envelopePrefix") == jsonString(e2eeFixture, "envelopePrefix"), "Swift E2EE envelope prefix should match shared sync scenario")
+
+        let rowId = jsonString(crdtField, "rowId")
+        let descriptor = try client.openTaskTitleCrdtField(rowId: rowId)
+        expect(descriptor.syncMode == "server-merge", "Swift CRDT helper should open server-merge field")
+        expect(descriptor.rowIdField == "id", "Swift CRDT helper should decode row id field")
+        try expectJsonEqual(try parseJson(client.crdtFieldRequests[0]), crdtField, "Swift CRDT open request should match shared field")
+        let applyTextRequest = jsonObject(crdtFixture, "applyTextRequest")
+        let crdtReceipt = try client.applyTaskTitleText(rowId: rowId, nextText: jsonString(applyTextRequest, "nextText"))
+        expect(crdtReceipt.clientCommitId == "commit-crdt-swift", "Swift CRDT text helper should return write receipt")
+        expect(crdtReceipt.syncMode == "server-merge", "Swift CRDT text helper should decode sync mode")
+        expect(client.crdtTextRequests.count == 1, "Swift CRDT text helper should call native text API once")
+        try expectJsonEqual(try parseJson(client.crdtTextRequests[0]), applyTextRequest, "Swift CRDT text request should match shared envelope")
+        let queuedTextRequest = jsonObject(crdtFixture, "enqueueTextRequest")
+        let queuedTextCommandId = try client.enqueueTaskTitleText(rowId: rowId, nextText: jsonString(queuedTextRequest, "nextText"))
+        expect(queuedTextCommandId == "command-crdt-text-swift", "Swift queued CRDT text helper should return command id")
+        expect(client.queuedCrdtTextRequests.count == 1, "Swift queued CRDT text helper should call native enqueue text API once")
+        try expectJsonEqual(try parseJson(client.queuedCrdtTextRequests[0]), queuedTextRequest, "Swift queued CRDT text request should match shared envelope")
+        let materialized = try client.materializeTaskTitle(rowId: rowId)
+        expect(materialized.value == .string("Native CRDT smoke"), "Swift CRDT materialize helper should return typed field value")
+        let snapshot = try client.snapshotTaskTitleStateVector(rowId: rowId)
+        expect(snapshot.stateVectorBase64 == "vector", "Swift CRDT snapshot helper should return typed state vector")
+        let compactionRequest = jsonObject(crdtFixture, "compactionRequest")
+        let compact = try client.compactTaskTitle(rowId: rowId, minUncheckpointedUpdates: jsonInt(compactionRequest, "minUncheckpointedUpdates"))
+        expect(compact.checkpointCreated == false, "Swift CRDT compact helper should return typed compaction receipt")
+        try expectJsonEqual(try parseJson(client.crdtCompactionRequests[0]), compactionRequest, "Swift CRDT compaction request should match shared envelope")
+        let queuedCompactionCommandId = try client.enqueueTaskTitleCompaction(rowId: rowId, minUncheckpointedUpdates: jsonInt(compactionRequest, "minUncheckpointedUpdates"))
+        expect(queuedCompactionCommandId == "command-crdt-compact-swift", "Swift queued CRDT compaction helper should return command id")
+        expect(client.queuedCrdtCompactionRequests.count == 1, "Swift queued CRDT compaction helper should call native enqueue compaction API once")
+        try expectJsonEqual(try parseJson(client.queuedCrdtCompactionRequests[0]), compactionRequest, "Swift queued CRDT compaction request should match shared envelope")
 
         let live = query.liveQuery(id: "live-tasks", label: "Tasks")
         let initialRows = try live.start(on: client)

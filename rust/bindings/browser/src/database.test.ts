@@ -4,7 +4,7 @@ import {
   createDatabase,
   type SyncOperation,
 } from '@syncular/core';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
 import { createServerHandler } from '../../../../packages/server/src/handlers';
 import type { SyncCoreDb } from '../../../../packages/server/src/schema';
@@ -14,7 +14,11 @@ import {
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
-import { createSyncularV2Commit, createSyncularV2Dialect } from './database';
+import {
+  createSyncularV2Commit,
+  createSyncularV2Dialect,
+  withSyncularV2SchemaWrites,
+} from './database';
 import type { SyncularV2Client } from './types';
 
 describe('Syncular v2 mutations', () => {
@@ -295,6 +299,90 @@ describe('Syncular v2 live query dependencies', () => {
   });
 });
 
+describe('Syncular v2 SQL boundary', () => {
+  it('allows public Kysely reads', async () => {
+    const probe = createSqlBoundaryProbe();
+    const dialect = createSyncularV2Dialect(probe.client, {
+      appTables: ['tasks'],
+    });
+    const db = new Kysely<LiveQueryDb>({ dialect });
+
+    try {
+      await expect(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where('id', '=', 'task-read')
+          .execute()
+      ).resolves.toEqual([{ id: 'task-read', title: 'Read task' }]);
+    } finally {
+      await db.destroy();
+    }
+
+    expect(probe.readSql).toHaveLength(1);
+    expect(probe.readSql[0]).toContain('select');
+    expect(probe.unsafeSql).toEqual([]);
+  });
+
+  it('rejects public Kysely writes before they reach the client', async () => {
+    const probe = createSqlBoundaryProbe();
+    const dialect = createSyncularV2Dialect(probe.client, {
+      appTables: ['tasks'],
+    });
+    const db = new Kysely<LiveQueryDb>({ dialect });
+
+    try {
+      await expect(
+        db
+          .insertInto('tasks')
+          .values({ id: 'task-write', title: 'Write task', completed: 0 })
+          .execute()
+      ).rejects.toThrow('public SQL is read-only');
+      await expect(
+        db.updateTable('tasks').set({ title: 'Blocked' }).execute()
+      ).rejects.toThrow('public SQL is read-only');
+      await expect(
+        db.deleteFrom('tasks').where('id', '=', 'task-write').execute()
+      ).rejects.toThrow('public SQL is read-only');
+      await expect(sql`delete from tasks`.execute(db)).rejects.toThrow(
+        'public SQL is read-only'
+      );
+      await expect(
+        db.schema.createTable('blocked').addColumn('id', 'text').execute()
+      ).rejects.toThrow('public SQL is read-only');
+    } finally {
+      await db.destroy();
+    }
+
+    expect(probe.readSql).toEqual([]);
+    expect(probe.unsafeSql).toEqual([]);
+  });
+
+  it('allows generated schema setup through the internal schema-write helper', async () => {
+    const probe = createSqlBoundaryProbe();
+
+    await withSyncularV2SchemaWrites({ client: probe.client }, async (db) => {
+      await db.schema
+        .createTable('schema_setup')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .execute();
+      await sql`
+        insert into syncular_app_schema (schema_id, schema_version, updated_at)
+        values ('test', 1, 1)
+      `.execute(db);
+    });
+
+    expect(probe.readSql).toEqual([]);
+    expect(
+      probe.unsafeSql.some((query) => query.includes('create table'))
+    ).toBe(true);
+    expect(probe.unsafeSql.some((query) => query.includes('insert into'))).toBe(
+      true
+    );
+  });
+});
+
 interface ServerTaskRow {
   id: string;
   title: string;
@@ -363,4 +451,44 @@ function createLiveClientProbe(): {
     async close() {},
   } as unknown as SyncularV2Client;
   return { client, subscriptions, unsubscribed };
+}
+
+function createSqlBoundaryProbe(): {
+  client: SyncularV2Client & {
+    executeUnsafeSql(
+      sql: string,
+      params?: readonly unknown[]
+    ): Promise<{ rows: Record<string, unknown>[] }>;
+  };
+  readSql: string[];
+  unsafeSql: string[];
+} {
+  const readSql: string[] = [];
+  const unsafeSql: string[] = [];
+  const client = {
+    async executeSql(query: string) {
+      readSql.push(query);
+      return { rows: [{ id: 'task-read', title: 'Read task' }] };
+    },
+    async executeUnsafeSql(query: string) {
+      unsafeSql.push(query);
+      return { rows: [] };
+    },
+    async subscribeQuery() {
+      return { id: 'query-unused', rows: [] };
+    },
+    async unsubscribeQuery() {},
+    addLiveQueryListener() {},
+    removeLiveQueryListener() {},
+    async drainLiveQueryEvents() {
+      return [];
+    },
+    async close() {},
+  } as unknown as SyncularV2Client & {
+    executeUnsafeSql(
+      sql: string,
+      params?: readonly unknown[]
+    ): Promise<{ rows: Record<string, unknown>[] }>;
+  };
+  return { client, readSql, unsafeSql };
 }

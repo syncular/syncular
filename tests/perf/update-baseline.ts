@@ -48,12 +48,14 @@ import {
   type BenchmarkResult,
   benchmark,
   formatBenchmarkTable,
+  parseBenchmarkTable,
 } from './benchmark';
 import type { Baseline } from './regression';
 import { installSilentSyncTelemetry } from './telemetry';
 
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
+const OPTIONAL_METRIC_PREFIXES = ['rust_browser_local_'];
 
 function createSingleCommitPush(
   clientCommitId: string,
@@ -90,6 +92,19 @@ async function resolveGitCommitSha(): Promise<string | null> {
   return sha.length > 0 ? sha : null;
 }
 
+async function resolveToolVersion(command: string[]): Promise<string | null> {
+  const proc = Bun.spawn(command, {
+    cwd: REPO_ROOT,
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const version = stdout.trim();
+  return version.length > 0 ? version : null;
+}
+
 /**
  * Save baseline to file
  */
@@ -97,6 +112,10 @@ async function saveBaseline(
   filePath: string,
   results: BenchmarkResult[]
 ): Promise<void> {
+  const existingBaseline = await Bun.file(filePath)
+    .json()
+    .then((value) => value as Baseline)
+    .catch(() => null);
   const baseline: Baseline = {};
   const timestamp = new Date().toISOString();
   const commit =
@@ -106,6 +125,9 @@ async function saveBaseline(
     platform: process.platform,
     arch: process.arch,
     bunVersion: Bun.version,
+    rustcVersion: await resolveToolVersion(['rustc', '--version']),
+    cargoVersion: await resolveToolVersion(['cargo', '--version']),
+    wasmPackVersion: await resolveToolVersion(['wasm-pack', '--version']),
     runnerOs: process.env.RUNNER_OS,
     runnerName: process.env.RUNNER_NAME,
   };
@@ -115,6 +137,7 @@ async function saveBaseline(
       median: result.median,
       p95: result.p95,
       p99: result.p99,
+      unit: result.unit,
       timestamp,
       commit,
       source,
@@ -122,9 +145,21 @@ async function saveBaseline(
     };
   }
 
+  if (existingBaseline) {
+    for (const [metric, value] of Object.entries(existingBaseline)) {
+      if (
+        baseline[metric] == null &&
+        OPTIONAL_METRIC_PREFIXES.some((prefix) => metric.startsWith(prefix))
+      ) {
+        baseline[metric] = value;
+      }
+    }
+  }
+
   await Bun.write(filePath, JSON.stringify(baseline, null, 2));
 }
 const userId = 'perf-user';
+const RUST_CLIENT_PERF_TEST_PATH = 'tests/perf/rust-client.perf.test.ts';
 
 interface TransportLaneServerDb extends SyncCoreDb {
   tasks: {
@@ -255,6 +290,32 @@ function buildDialectRows(kind: PerfDialect['kind'], count: number) {
     nullable_json: null,
     nullable_date: null,
   }));
+}
+
+async function runRustClientPerfBenchmarks(): Promise<BenchmarkResult[]> {
+  const proc = Bun.spawn(
+    ['bun', 'test', '--max-concurrency=1', RUST_CLIENT_PERF_TEST_PATH],
+    {
+    cwd: REPO_ROOT,
+    env: { ...process.env, PERF_STRICT: 'false' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+    }
+  );
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+  const combined = [stdout, stderr].filter(Boolean).join('\n');
+  if (exitCode !== 0) {
+    console.log(combined);
+    throw new Error(`rust client perf failed with exit code ${exitCode}`);
+  }
+
+  const results = parseBenchmarkTable(combined);
+  if (results.length === 0) {
+    throw new Error('rust client perf emitted no benchmark metrics');
+  }
+  return results;
 }
 
 async function insertDialectRowsChunked(
@@ -1270,6 +1331,9 @@ async function runBenchmarks(): Promise<BenchmarkResult[]> {
         }
       }
     }
+
+    console.log('  Running: rust client benchmarks');
+    results.push(...(await runRustClientPerfBenchmarks()));
 
     return results;
   } finally {

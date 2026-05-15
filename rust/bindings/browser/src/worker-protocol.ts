@@ -6,6 +6,11 @@ import type {
   SyncularV2AuthHeaders,
   SyncularV2BlobStoreOptions,
   SyncularV2ClientConfig,
+  SyncularV2ConflictResolution,
+  SyncularV2CrdtFieldCompactionRequest,
+  SyncularV2CrdtFieldRequest,
+  SyncularV2CrdtFieldTextRequest,
+  SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2DiagnosticEvent,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
@@ -41,6 +46,13 @@ export type SyncularV2WorkerRealtimeOptions = Omit<
   params?: Record<string, string>;
 };
 
+export interface SyncularV2WorkerRuntimeArtifact {
+  name?: string;
+  wasmGlueUrl?: string;
+  wasmUrl?: string;
+  features?: string[];
+}
+
 interface SyncularV2WorkerResponseBase {
   id: number;
   protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
@@ -56,6 +68,7 @@ export type SyncularV2WorkerRequest =
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'open';
       config: SyncularV2ClientConfig;
+      runtime?: SyncularV2WorkerRuntimeArtifact;
     }
   | {
       id: number;
@@ -102,6 +115,13 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'executeUnsafeSql';
+      sql: string;
+      params: unknown[];
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'subscribeQuery';
       sql: string;
       params: unknown[];
@@ -138,6 +158,24 @@ export type SyncularV2WorkerRequest =
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'syncPull' | 'syncPush' | 'syncOnce';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'conflictSummaries';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'retryConflictKeepLocal';
+      conflictId: string;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'resolveConflict';
+      conflictId: string;
+      resolution: SyncularV2ConflictResolution;
     }
   | {
       id: number;
@@ -207,6 +245,36 @@ export type SyncularV2WorkerRequest =
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'applyYjsEnvelopeToPayload';
       args: SyncularApplyYjsEnvelopeToPayloadArgs;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'openCrdtField';
+      request: SyncularV2CrdtFieldRequest;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'applyCrdtFieldText';
+      request: SyncularV2CrdtFieldTextRequest;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'applyCrdtFieldYjsUpdate';
+      request: SyncularV2CrdtFieldYjsUpdateRequest;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'materializeCrdtField' | 'snapshotCrdtFieldStateVector';
+      request: SyncularV2CrdtFieldRequest;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'compactCrdtField';
+      request: SyncularV2CrdtFieldCompactionRequest;
     }
   | {
       id: number;

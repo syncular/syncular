@@ -1,4 +1,3 @@
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use diesel::prelude::*;
@@ -6,7 +5,9 @@ use diesel::sql_query;
 use diesel::sql_types::{BigInt, Integer};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use syncular_runtime::app_schema::{AppSchema, AppTableMetadata, CrdtYjsFieldMetadata};
+use syncular_runtime::app_schema::{
+    app_schema_from_json, AppSchema, AppTableMetadata, CrdtYjsFieldMetadata,
+};
 use syncular_runtime::client::SyncularEncryptedCrdtMutationExecutor;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::compaction::{StorageCompactionOptions, StorageCompactionReport};
@@ -18,20 +19,23 @@ use syncular_runtime::encrypted_crdt::{
 };
 use syncular_runtime::encryption::{key_to_base64url, FieldEncryptionContext};
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
-use syncular_runtime::generated;
-use syncular_runtime::migrations::{current_schema_version, MIGRATIONS};
+use syncular_runtime::fixtures::todo::migrations::{current_schema_version, MIGRATIONS};
+use syncular_runtime::fixtures::todo::rusqlite_sqlite::RusqliteStore;
+use syncular_runtime::fixtures::todo::{
+    app_schema as demo_todo_app_schema, diesel_tables, generated, migrations,
+};
 use syncular_runtime::protocol::{
-    CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushCommitRequest,
-    PushCommitResponse, ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange,
-    SyncCommit, SyncOperation, SyncSnapshot,
+    CombinedRequest, CombinedResponse, PullResponse, PushCommitRequest, PushCommitResponse,
+    ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange, SyncCommit, SyncOperation,
+    SyncSnapshot,
 };
-use syncular_runtime::rusqlite_sqlite::RusqliteStore;
 use syncular_runtime::store::{now_ms, DemoTaskStore, SyncStateStore, SyncStore, SyncStoreTx};
-use syncular_runtime::transport::{
-    RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders, SyncTransport,
-};
+use syncular_runtime::transport::{RealtimeEvent, RealtimeTransport, SyncTransport};
 use syncular_runtime::worker::{SyncWorker, SyncWorkerEvent};
-use uuid::Uuid;
+use syncular_testkit::{
+    push_conflict_response, revoked_subscription_response, snapshot_combined_response,
+    unique_temp_db_path, TestTransport,
+};
 
 const ENCRYPTED_TASKS_CRDT_YJS_FIELDS: &[CrdtYjsFieldMetadata] = &[CrdtYjsFieldMetadata {
     field: "title",
@@ -64,9 +68,40 @@ const ENCRYPTED_APP_TABLE_METADATA: &[AppTableMetadata] = &[
 #[test]
 fn diesel_store_applies_migrations_and_stamps_outbox_schema_version() -> Result<()> {
     let path = temp_db_path("syncular-diesel-store");
-    let mut store = DieselSqliteStore::open(&path)?;
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_store_basics(&mut store)?;
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-default-schema");
+    let mut store = DieselSqliteStore::open(&path)?;
+
+    let error = store
+        .list_table_json("tasks")
+        .expect_err("default schema should not expose demo app tables");
+    assert_eq!(error.kind(), ErrorKind::Config);
+    drop(store);
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from sqlite_master where type = 'table' and name = 'sync_outbox_commits'"
+        )?,
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from sqlite_master where type = 'table' and name in ('comments', 'projects', 'tasks')"
+        )?,
+        0
+    );
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -86,7 +121,7 @@ fn rusqlite_store_applies_migrations_and_stamps_outbox_schema_version() -> Resul
 #[test]
 fn diesel_store_applies_generic_json_operations() -> Result<()> {
     let path = temp_db_path("syncular-diesel-json-store");
-    let mut store = DieselSqliteStore::open(&path)?;
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_generic_json_operations(&mut store)?;
 
@@ -95,9 +130,94 @@ fn diesel_store_applies_generic_json_operations() -> Result<()> {
 }
 
 #[test]
+fn diesel_store_uses_metadata_backed_json_tables_without_generated_adapter() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-dynamic-schema");
+    {
+        let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+        sql_query(
+            r#"
+            create table notes (
+                note_key text primary key,
+                body text not null,
+                owner_id text not null,
+                server_version bigint not null default 0
+            )
+            "#,
+        )
+        .execute(&mut conn)?;
+    }
+    let app_schema = app_schema_from_json(
+        &json!({
+            "schemaVersion": 12,
+            "tables": [{
+                "name": "notes",
+                "primaryKeyColumn": "note_key",
+                "serverVersionColumn": "server_version",
+                "subscriptionId": "sub-notes",
+                "columns": [
+                    { "name": "note_key", "typeFamily": "text", "notnullRequired": true, "primaryKey": true },
+                    { "name": "body", "typeFamily": "text", "notnullRequired": true },
+                    { "name": "owner_id", "typeFamily": "text", "notnullRequired": true },
+                    { "name": "server_version", "typeFamily": "integer", "notnullRequired": true }
+                ],
+                "scopes": [
+                    { "name": "user_id", "column": "owner_id", "source": "actorId", "required": true }
+                ]
+            }]
+        })
+        .to_string(),
+    )?;
+    let mut store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+
+    store.apply_local_operation(
+        SyncOperation {
+            table: "notes".to_string(),
+            row_id: "note-1".to_string(),
+            op: "upsert".to_string(),
+            payload: Some(json!({
+                "body": "First",
+                "owner_id": "user-rust"
+            })),
+            base_version: None,
+        },
+        None,
+    )?;
+
+    store.apply_local_operation(
+        SyncOperation {
+            table: "notes".to_string(),
+            row_id: "note-1".to_string(),
+            op: "upsert".to_string(),
+            payload: Some(json!({ "body": "Updated" })),
+            base_version: Some(0),
+        },
+        None,
+    )?;
+
+    let rows = store.list_table_json("notes")?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["note_key"], "note-1");
+    assert_eq!(rows[0]["body"], "Updated");
+    assert_eq!(rows[0]["owner_id"], "user-rust");
+    assert_eq!(rows[0]["server_version"], 0);
+    assert_eq!(store.outbox_summaries()?[0].schema_version, 12);
+
+    let mut scopes = ScopeValues::new();
+    scopes.insert(
+        "user_id".to_string(),
+        Value::String("user-rust".to_string()),
+    );
+    store.transaction(|tx| tx.clear_table_for_scopes("notes", &scopes))?;
+    assert!(store.list_table_json("notes")?.is_empty());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_store_materializes_yjs_envelopes_before_local_write() -> Result<()> {
     let path = temp_db_path("syncular-diesel-yjs-store");
-    let mut store = DieselSqliteStore::open(&path)?;
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     let base = build_yjs_text_update(BuildYjsTextUpdateArgs {
         previous_state_base64: None,
@@ -189,7 +309,7 @@ fn diesel_store_materializes_yjs_envelopes_before_local_write() -> Result<()> {
 #[test]
 fn diesel_store_accepts_encrypted_crdt_system_rows() -> Result<()> {
     let path = temp_db_path("syncular-diesel-encrypted-crdt-system");
-    let mut store = DieselSqliteStore::open(&path)?;
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     let update = SyncOperation {
         table: "sync_crdt_updates".to_string(),
@@ -243,7 +363,7 @@ fn diesel_client_applies_local_encrypted_crdt_text_update() -> Result<()> {
     let mut client = SyncularClient::with_app_schema_parts(
         test_config(&path),
         store,
-        PullParityTransport::new(PullParityMode::Empty),
+        TestTransport::new(),
         encrypted_app_schema(),
     );
     client.set_encrypted_crdt(Some(test_encrypted_crdt()?));
@@ -287,7 +407,7 @@ fn sync_worker_enqueues_encrypted_crdt_yjs_update() -> Result<()> {
     let mut client = SyncularClient::with_app_schema_parts(
         test_config(&path),
         store,
-        PullParityTransport::new(PullParityMode::Empty),
+        TestTransport::new(),
         encrypted_app_schema(),
     );
     client.add_task(
@@ -506,7 +626,7 @@ fn rusqlite_store_applies_generic_json_operations() -> Result<()> {
 #[test]
 fn diesel_client_retries_keep_local_conflicts() -> Result<()> {
     let path = temp_db_path("syncular-diesel-conflict-store");
-    let store = DieselSqliteStore::open(&path)?;
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_keep_local_retry_parity(path.clone(), store)?;
 
@@ -528,7 +648,7 @@ fn rusqlite_client_retries_keep_local_conflicts() -> Result<()> {
 #[test]
 fn diesel_client_defers_transport_retry_until_backoff_is_due() -> Result<()> {
     let path = temp_db_path("syncular-diesel-retry-backoff");
-    let store = DieselSqliteStore::open(&path)?;
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_transport_retry_backoff_parity(path.clone(), store)?;
 
@@ -550,7 +670,7 @@ fn rusqlite_client_defers_transport_retry_until_backoff_is_due() -> Result<()> {
 #[test]
 fn diesel_client_applies_snapshots() -> Result<()> {
     let path = temp_db_path("syncular-diesel-snapshot-store");
-    let store = DieselSqliteStore::open(&path)?;
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_snapshot_apply_parity(path.clone(), store)?;
 
@@ -572,7 +692,7 @@ fn rusqlite_client_applies_snapshots() -> Result<()> {
 #[test]
 fn diesel_client_clears_scoped_rows_on_revocation() -> Result<()> {
     let path = temp_db_path("syncular-diesel-revocation-store");
-    let store = DieselSqliteStore::open(&path)?;
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_revocation_parity(path.clone(), store)?;
 
@@ -703,9 +823,25 @@ fn assert_keep_local_retry_parity<S>(path: String, store: S) -> Result<()>
 where
     S: SyncStore + SyncStateStore + DemoTaskStore,
 {
-    let transport = ConflictRetryTransport::default();
-    let requests = transport.requests.clone();
-    let mut client = SyncularClient::with_parts(test_config(&path), store, transport);
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    transport.push_http_response_fn(|request| {
+        Ok(push_conflict_response(
+            request,
+            "version conflict",
+            "VERSION_CONFLICT",
+            json!({
+                "id": "conflict-parity-task",
+                "title": "Server winner",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "server_version": 9
+            }),
+            9,
+        ))
+    });
+    let mut client = demo_client(test_config(&path), store, transport);
 
     client.add_task(
         "Conflict candidate".to_string(),
@@ -722,7 +858,7 @@ where
 
     client.sync_http()?;
 
-    let requests = requests.lock().unwrap();
+    let requests = handle.requests();
     assert_eq!(requests.len(), 2);
     let retry_push = requests[1].push.as_ref().expect("retry push");
     assert_eq!(retry_push.commits.len(), 1);
@@ -739,9 +875,15 @@ fn assert_transport_retry_backoff_parity<S>(path: String, store: S) -> Result<()
 where
     S: SyncStore + SyncStateStore + DemoTaskStore,
 {
-    let transport = RetryBackoffParityTransport::default();
-    let requests = transport.requests.clone();
-    let mut client = SyncularClient::with_parts(test_config(&path), store, transport);
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    transport.push_http_response_fn(|_request| {
+        Err(SyncularError::message(
+            ErrorKind::Transport,
+            "sync failed with HTTP 500: retry later",
+        ))
+    });
+    let mut client = demo_client(test_config(&path), store, transport);
 
     client.add_task(
         "Retry backoff candidate".to_string(),
@@ -758,7 +900,7 @@ where
 
     client.sync_http()?;
     {
-        let requests = requests.lock().unwrap();
+        let requests = handle.requests();
         assert_eq!(requests.len(), 2);
         assert!(requests[0].push.is_some());
         assert!(requests[1].push.is_none());
@@ -767,7 +909,7 @@ where
     std::thread::sleep(Duration::from_millis(1_100));
     client.sync_http()?;
 
-    let requests = requests.lock().unwrap();
+    let requests = handle.requests();
     assert_eq!(requests.len(), 3);
     assert!(requests[2].push.is_some());
 
@@ -782,8 +924,15 @@ fn assert_snapshot_apply_parity<S>(path: String, store: S) -> Result<()>
 where
     S: SyncStore + DemoTaskStore,
 {
-    let transport = PullParityTransport::new(PullParityMode::Snapshot);
-    let mut client = SyncularClient::with_parts(test_config(&path), store, transport);
+    let transport = TestTransport::new();
+    transport.push_http_response(snapshot_combined_response(
+        "sub-tasks",
+        "tasks",
+        vec![task_row("snapshot-parity-task")],
+        scopes(),
+        1,
+    ));
+    let mut client = demo_client(test_config(&path), store, transport);
 
     let report = client.sync_http()?;
     assert_eq!(report.changed_tables, vec!["tasks".to_string()]);
@@ -801,8 +950,16 @@ fn assert_revocation_parity<S>(path: String, store: S) -> Result<()>
 where
     S: SyncStore + DemoTaskStore,
 {
-    let transport = PullParityTransport::new(PullParityMode::ActiveThenRevoked);
-    let mut client = SyncularClient::with_parts(test_config(&path), store, transport);
+    let transport = TestTransport::new();
+    transport.push_http_response(snapshot_combined_response(
+        "sub-tasks",
+        "tasks",
+        vec![task_row("revocation-parity-task")],
+        scopes(),
+        1,
+    ));
+    transport.push_http_response(revoked_subscription_response("sub-tasks", scopes(), 2));
+    let mut client = demo_client(test_config(&path), store, transport);
 
     let first = client.sync_http()?;
     assert_eq!(first.changed_tables, vec!["tasks".to_string()]);
@@ -818,7 +975,7 @@ where
 #[test]
 fn diesel_store_compacts_old_sync_state_and_bounded_tombstones() -> Result<()> {
     let path = temp_db_path("syncular-diesel-compaction");
-    let mut store = DieselSqliteStore::open(&path)?;
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
     let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
     let now = now_ms();
     let old = now - 120_000;
@@ -976,9 +1133,10 @@ fn encrypted_app_schema() -> AppSchema {
     AppSchema {
         app_tables: generated::APP_TABLES,
         app_table_metadata: ENCRYPTED_APP_TABLE_METADATA,
-        migrations: syncular_runtime::migrations::MIGRATIONS,
+        migrations: migrations::MIGRATIONS,
+        schema_version: None,
         default_subscriptions: generated::default_subscriptions,
-        adapter_for: syncular_runtime::diesel_tables::adapter_for,
+        adapter_for: diesel_tables::adapter_for,
     }
 }
 
@@ -1052,6 +1210,14 @@ fn encrypted_remote_title_checkpoint(
     Ok(mutation.payload.expect("encrypted checkpoint payload"))
 }
 
+fn demo_client<S, T>(config: SyncularClientConfig, store: S, transport: T) -> SyncularClient<S, T>
+where
+    S: SyncStore,
+    T: SyncTransport,
+{
+    SyncularClient::with_app_schema_parts(config, store, transport, demo_todo_app_schema())
+}
+
 fn test_config(path: &str) -> SyncularClientConfig {
     SyncularClientConfig {
         db_path: path.to_string(),
@@ -1059,62 +1225,6 @@ fn test_config(path: &str) -> SyncularClientConfig {
         client_id: "store-parity".to_string(),
         actor_id: "user-rust".to_string(),
         project_id: Some("p0".to_string()),
-    }
-}
-
-#[derive(Clone, Copy)]
-enum PullParityMode {
-    Empty,
-    Snapshot,
-    ActiveThenRevoked,
-}
-
-struct PullParityTransport {
-    mode: PullParityMode,
-    round: Arc<Mutex<usize>>,
-}
-
-impl PullParityTransport {
-    fn new(mode: PullParityMode) -> Self {
-        Self {
-            mode,
-            round: Arc::new(Mutex::new(0)),
-        }
-    }
-}
-
-impl SyncAuthHeaderStore for PullParityTransport {
-    fn set_auth_headers(&mut self, _headers: SyncAuthHeaders) {}
-}
-
-impl SyncTransport for PullParityTransport {
-    type Realtime = NoopRealtime;
-
-    fn post_sync(&self, _request: &CombinedRequest) -> Result<CombinedResponse> {
-        let mut round = self.round.lock().unwrap();
-        *round += 1;
-        Ok(CombinedResponse {
-            ok: true,
-            required_schema_version: None,
-            latest_schema_version: None,
-            push: None,
-            pull: Some(pull_response_for_mode(self.mode, *round)),
-        })
-    }
-
-    fn fetch_snapshot_chunk_rows(
-        &self,
-        _chunk: &SnapshotChunkRef,
-        _scopes: &ScopeValues,
-    ) -> Result<Vec<Value>> {
-        Err(SyncularError::message(
-            ErrorKind::Internal,
-            "snapshot chunks are not used in store parity tests",
-        ))
-    }
-
-    fn connect_realtime(&self) -> Result<NoopRealtime> {
-        Ok(NoopRealtime)
     }
 }
 
@@ -1292,43 +1402,6 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
     }
 }
 
-fn pull_response_for_mode(mode: PullParityMode, round: usize) -> PullResponse {
-    if matches!(mode, PullParityMode::Empty) {
-        return PullResponse {
-            ok: true,
-            subscriptions: Vec::new(),
-        };
-    }
-    let revoked = matches!(mode, PullParityMode::ActiveThenRevoked) && round >= 2;
-    PullResponse {
-        ok: true,
-        subscriptions: vec![SubscriptionResponse {
-            id: "sub-tasks".to_string(),
-            status: if revoked { "revoked" } else { "active" }.to_string(),
-            scopes: scopes(),
-            bootstrap: !revoked,
-            bootstrap_state: None,
-            next_cursor: round as i64,
-            commits: Vec::new(),
-            snapshots: if revoked {
-                None
-            } else {
-                Some(vec![SyncSnapshot {
-                    table: "tasks".to_string(),
-                    rows: vec![task_row(match mode {
-                        PullParityMode::Empty => "empty-parity-task",
-                        PullParityMode::Snapshot => "snapshot-parity-task",
-                        PullParityMode::ActiveThenRevoked => "revocation-parity-task",
-                    })],
-                    chunks: None,
-                    is_first_page: true,
-                    is_last_page: true,
-                }])
-            },
-        }],
-    }
-}
-
 fn task_row(id: &str) -> Value {
     json!({
         "id": id,
@@ -1353,187 +1426,6 @@ fn scopes() -> ScopeValues {
     scopes
 }
 
-#[derive(Default)]
-struct ConflictRetryTransport {
-    requests: Arc<Mutex<Vec<CombinedRequest>>>,
-}
-
-impl SyncTransport for ConflictRetryTransport {
-    type Realtime = NoopRealtime;
-
-    fn post_sync(&self, request: &CombinedRequest) -> Result<CombinedResponse> {
-        self.requests.lock().unwrap().push(request.clone());
-
-        let push = request.push.as_ref().and_then(|push| {
-            push.commits.first().map(|commit| {
-                let retrying = commit
-                    .operations
-                    .first()
-                    .and_then(|operation| operation.base_version)
-                    == Some(9);
-                PushCommitResponse {
-                    client_commit_id: commit.client_commit_id.clone(),
-                    status: if retrying { "applied" } else { "rejected" }.to_string(),
-                    commit_seq: retrying.then_some(10),
-                    results: if retrying {
-                        vec![OperationResult {
-                            op_index: 0,
-                            status: "applied".to_string(),
-                            message: None,
-                            error: None,
-                            code: None,
-                            retriable: None,
-                            server_version: Some(10),
-                            server_row: None,
-                        }]
-                    } else {
-                        vec![OperationResult {
-                            op_index: 0,
-                            status: "conflict".to_string(),
-                            message: Some("version conflict".to_string()),
-                            error: None,
-                            code: Some("VERSION_CONFLICT".to_string()),
-                            retriable: Some(false),
-                            server_version: Some(9),
-                            server_row: Some(json!({
-                                "id": "conflict-parity-task",
-                                "title": "Server winner",
-                                "completed": 0,
-                                "user_id": "user-rust",
-                                "project_id": "p0",
-                                "server_version": 9
-                            })),
-                        }]
-                    },
-                }
-            })
-        });
-
-        Ok(CombinedResponse {
-            ok: true,
-            required_schema_version: None,
-            latest_schema_version: None,
-            push: push.map(|commit| syncular_runtime::protocol::PushBatchResponse {
-                ok: true,
-                commits: vec![commit],
-            }),
-            pull: Some(PullResponse {
-                ok: true,
-                subscriptions: Vec::new(),
-            }),
-        })
-    }
-
-    fn fetch_snapshot_chunk_rows(
-        &self,
-        _chunk: &SnapshotChunkRef,
-        _scopes: &ScopeValues,
-    ) -> Result<Vec<Value>> {
-        Err(SyncularError::message(
-            ErrorKind::Internal,
-            "snapshot chunks are not used in store parity tests",
-        ))
-    }
-
-    fn connect_realtime(&self) -> Result<NoopRealtime> {
-        Ok(NoopRealtime)
-    }
-}
-
-#[derive(Default)]
-struct RetryBackoffParityTransport {
-    requests: Arc<Mutex<Vec<CombinedRequest>>>,
-    push_attempts: Arc<Mutex<usize>>,
-}
-
-impl SyncTransport for RetryBackoffParityTransport {
-    type Realtime = NoopRealtime;
-
-    fn post_sync(&self, request: &CombinedRequest) -> Result<CombinedResponse> {
-        self.requests.lock().unwrap().push(request.clone());
-
-        let push = request.push.as_ref().and_then(|push| {
-            if push.commits.is_empty() {
-                None
-            } else {
-                Some(push.commits.clone())
-            }
-        });
-        if let Some(commits) = push {
-            let mut attempts = self.push_attempts.lock().unwrap();
-            *attempts += 1;
-            if *attempts == 1 {
-                return Err(SyncularError::message(
-                    ErrorKind::Transport,
-                    "sync failed with HTTP 500: retry later",
-                ));
-            }
-
-            return Ok(CombinedResponse {
-                ok: true,
-                required_schema_version: None,
-                latest_schema_version: None,
-                push: Some(syncular_runtime::protocol::PushBatchResponse {
-                    ok: true,
-                    commits: commits
-                        .iter()
-                        .map(|commit| PushCommitResponse {
-                            client_commit_id: commit.client_commit_id.clone(),
-                            status: "applied".to_string(),
-                            commit_seq: Some(20),
-                            results: commit
-                                .operations
-                                .iter()
-                                .enumerate()
-                                .map(|(op_index, _)| OperationResult {
-                                    op_index: op_index as i32,
-                                    status: "applied".to_string(),
-                                    message: None,
-                                    error: None,
-                                    code: None,
-                                    retriable: None,
-                                    server_version: Some(20),
-                                    server_row: None,
-                                })
-                                .collect(),
-                        })
-                        .collect(),
-                }),
-                pull: Some(PullResponse {
-                    ok: true,
-                    subscriptions: Vec::new(),
-                }),
-            });
-        }
-
-        Ok(CombinedResponse {
-            ok: true,
-            required_schema_version: None,
-            latest_schema_version: None,
-            push: None,
-            pull: Some(PullResponse {
-                ok: true,
-                subscriptions: Vec::new(),
-            }),
-        })
-    }
-
-    fn fetch_snapshot_chunk_rows(
-        &self,
-        _chunk: &SnapshotChunkRef,
-        _scopes: &ScopeValues,
-    ) -> Result<Vec<Value>> {
-        Err(SyncularError::message(
-            ErrorKind::Internal,
-            "snapshot chunks are not used in store parity tests",
-        ))
-    }
-
-    fn connect_realtime(&self) -> Result<NoopRealtime> {
-        Ok(NoopRealtime)
-    }
-}
-
 struct NoopRealtime;
 
 impl RealtimeTransport for NoopRealtime {
@@ -1552,8 +1444,5 @@ impl RealtimeTransport for NoopRealtime {
 }
 
 fn temp_db_path(prefix: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned()
+    unique_temp_db_path(prefix)
 }

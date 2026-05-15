@@ -1,5 +1,5 @@
+use crate::app_schema::AppTableMetadata;
 use crate::error::{ErrorKind, Result, SyncularError};
-use crate::generated::{AppTableMetadata, APP_TABLE_METADATA};
 use crate::store::now_ms;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,9 @@ impl StorageCompactionOptions {
     }
 
     pub fn cutoff_ms_now(&self) -> Result<Option<i64>> {
+        if self.older_than_ms.is_none() {
+            return Ok(None);
+        }
         self.cutoff_ms(now_ms())
     }
 
@@ -97,8 +100,11 @@ impl StorageCompactionOptions {
     }
 }
 
-pub fn tombstone_delete_statements(max_server_version: i64) -> Result<Vec<String>> {
-    APP_TABLE_METADATA
+pub fn tombstone_delete_statements(
+    metadata: &[AppTableMetadata],
+    max_server_version: i64,
+) -> Result<Vec<String>> {
+    metadata
         .iter()
         .filter_map(|metadata| {
             metadata
@@ -111,8 +117,8 @@ pub fn tombstone_delete_statements(max_server_version: i64) -> Result<Vec<String
         .collect()
 }
 
-pub fn tombstone_table_names() -> Vec<String> {
-    APP_TABLE_METADATA
+pub fn tombstone_table_names(metadata: &[AppTableMetadata]) -> Vec<String> {
+    metadata
         .iter()
         .filter(|metadata| metadata.soft_delete_column.is_some())
         .map(|metadata| metadata.name.to_string())
@@ -184,7 +190,9 @@ mod tests {
         };
 
         assert!(options.should_prune_tombstones());
-        let statements = tombstone_delete_statements(42).expect("statements");
+        let statements =
+            tombstone_delete_statements(crate::fixtures::todo::generated::APP_TABLE_METADATA, 42)
+                .expect("statements");
         assert!(statements
             .iter()
             .any(|statement| statement.contains("delete from comments")));

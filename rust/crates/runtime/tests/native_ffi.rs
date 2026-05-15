@@ -1,28 +1,35 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use syncular_runtime::migrations::current_schema_version;
+use syncular_runtime::fixtures::todo::migrations::current_schema_version;
 use syncular_runtime::native_ffi::{
     syncular_native_client_app_table_metadata_json, syncular_native_client_app_tables_json,
+    syncular_native_client_apply_crdt_field_text_json,
     syncular_native_client_apply_local_operation_json, syncular_native_client_apply_mutation_json,
     syncular_native_client_blob_cache_stats_json,
     syncular_native_client_blob_upload_queue_stats_json, syncular_native_client_clear_blob_cache,
     syncular_native_client_close, syncular_native_client_compact_storage_json,
-    syncular_native_client_list_table_json, syncular_native_client_observed_queries_json,
-    syncular_native_client_open, syncular_native_client_outbox_summaries_json,
-    syncular_native_client_pause_sync_worker, syncular_native_client_poll_event_json,
-    syncular_native_client_process_blob_upload_queue_json, syncular_native_client_query_json,
-    syncular_native_client_register_query_json, syncular_native_client_resume_sync_worker,
-    syncular_native_client_retrieve_blob_file, syncular_native_client_retry_conflict_keep_local,
-    syncular_native_client_set_auth_headers_json, syncular_native_client_set_encrypted_crdt_json,
+    syncular_native_client_list_table_json, syncular_native_client_materialize_crdt_field_json,
+    syncular_native_client_observed_queries_json, syncular_native_client_open,
+    syncular_native_client_open_async, syncular_native_client_open_async_close,
+    syncular_native_client_open_async_command_id, syncular_native_client_open_async_is_finished,
+    syncular_native_client_open_async_poll, syncular_native_client_open_crdt_field_json,
+    syncular_native_client_outbox_summaries_json, syncular_native_client_pause_sync_worker,
+    syncular_native_client_poll_event_json, syncular_native_client_process_blob_upload_queue_json,
+    syncular_native_client_query_json, syncular_native_client_register_query_json,
+    syncular_native_client_resume_sync_worker, syncular_native_client_retrieve_blob_file,
+    syncular_native_client_retry_conflict_keep_local, syncular_native_client_set_auth_headers_json,
+    syncular_native_client_set_encrypted_crdt_json,
     syncular_native_client_set_field_encryption_json, syncular_native_client_store_blob_file_json,
     syncular_native_client_sync_worker_running, syncular_native_client_trigger_sync,
     syncular_native_client_unregister_query, syncular_native_encryption_helper_json,
-    syncular_native_runtime_manifest_json, syncular_string_free,
+    syncular_native_runtime_manifest_json, syncular_string_free, SyncularNativeHandle,
 };
-use uuid::Uuid;
+use syncular_testkit::{todo_app_schema_json, unique_temp_db_path, unique_temp_file_path};
 
 #[test]
 fn native_ffi_exposes_runtime_manifest_without_handle() {
@@ -41,10 +48,11 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
     assert_eq!(manifest["worker_model"], "background-sync-worker");
     assert_eq!(manifest["error_shape"], "native-error-info-v1");
     assert_eq!(manifest["event_model"], "poll-json-v1");
-    assert_eq!(manifest["app_tables"][0], "comments");
-    assert_eq!(manifest["app_tables"][1], "projects");
-    assert_eq!(manifest["app_tables"][2], "tasks");
-    assert_eq!(manifest["app_table_metadata"][2]["name"], "tasks");
+    assert_eq!(manifest["app_tables"].as_array().map(Vec::len), Some(0));
+    assert_eq!(
+        manifest["app_table_metadata"].as_array().map(Vec::len),
+        Some(0)
+    );
     assert_eq!(
         manifest["capabilities"]
             .as_array()
@@ -54,6 +62,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             .collect::<Vec<_>>(),
         vec![
             "dynamic-auth-headers",
+            "dynamic-subscriptions",
             "auth-expired-events",
             "generated-app-table-metadata",
             "generated-json-table-reads",
@@ -81,26 +90,60 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "field-encryption",
             "encrypted-crdt",
             "queued-encrypted-crdt",
-            "encryption-key-sharing"
+            "generic-crdt-field-api",
+            "queued-crdt-field-updates",
+            "encryption-key-sharing",
+            "async-native-open"
         ]
     );
+}
+
+#[test]
+fn native_ffi_can_open_client_asynchronously() {
+    let path = temp_db_path("syncular-native-ffi-async-open");
+    let mut error = ptr::null_mut();
+    let config = ffi_config(&path, "native-ffi-async-open");
+
+    let open_handle = syncular_native_client_open_async(config.as_ptr(), false, &mut error);
+    assert!(!open_handle.is_null());
+    assert!(error.is_null());
+
+    let command_id = syncular_native_client_open_async_command_id(open_handle, &mut error);
+    assert!(take_string(command_id).starts_with("native-open-"));
+    assert!(error.is_null());
+
+    let _ = syncular_native_client_open_async_is_finished(open_handle, &mut error);
+    assert!(error.is_null());
+
+    let handle = syncular_native_client_open_async_poll(open_handle, 5_000, &mut error);
+    assert!(!handle.is_null());
+    assert!(error.is_null());
+    assert!(syncular_native_client_open_async_is_finished(
+        open_handle,
+        &mut error
+    ));
+    assert!(error.is_null());
+
+    let tables_json = syncular_native_client_app_tables_json(handle, &mut error);
+    let tables: Value = serde_json::from_str(&take_string(tables_json)).unwrap();
+    assert_eq!(tables.as_array().map(Vec::len), Some(3));
+    assert_eq!(tables[0], "comments");
+    assert_eq!(tables[2], "tasks");
+
+    assert!(syncular_native_client_open_async_close(
+        open_handle,
+        &mut error
+    ));
+    assert!(syncular_native_client_close(handle, &mut error));
+    assert!(error.is_null());
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
 fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     let path = temp_db_path("syncular-native-ffi");
     let mut error = ptr::null_mut();
-    let config = CString::new(
-        json!({
-            "db_path": path,
-            "base_url": "http://127.0.0.1:9/sync",
-            "client_id": "native-ffi",
-            "actor_id": "user-rust",
-            "project_id": "p0"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let config = ffi_config(&path, "native-ffi");
 
     let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
     assert!(!handle.is_null());
@@ -276,7 +319,7 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     assert_eq!(metadata[0]["primary_key_column"], "id");
     assert_eq!(metadata[0]["server_version_column"], "server_version");
     assert_eq!(metadata[0]["subscription_id"], "sub-comments");
-    assert_eq!(metadata[0]["scopes"][0]["source"], "ActorId");
+    assert_eq!(metadata[0]["scopes"][0]["source"], "actorId");
     assert_eq!(metadata[1]["name"], "projects");
     assert_eq!(metadata[1]["subscription_id"], "sub-projects");
     assert_eq!(metadata[2]["name"], "tasks");
@@ -311,6 +354,12 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     let local_event: Value = serde_json::from_str(&take_string(local_event_json)).unwrap();
     assert_eq!(local_event["kind"], "RowsChanged");
     assert_eq!(local_event["tables"][0], "tasks");
+    assert_eq!(local_event["changedRows"][0]["table"], "tasks");
+    assert_eq!(local_event["changedRows"][0]["rowId"], "ffi-task");
+    assert_eq!(local_event["changedRows"][0]["operation"], "upsert");
+    assert!(local_event["changedRows"][0]["changedFields"]
+        .as_array()
+        .is_some_and(|fields| fields.iter().any(|field| field == "title")));
     assert_eq!(local_event["queries"].as_array().map(Vec::len), Some(0));
     assert!(error.is_null());
 
@@ -343,6 +392,136 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
         .as_str()
         .unwrap()
         .starts_with("Transport: "));
+
+    assert!(syncular_native_client_close(handle, &mut error));
+    assert!(error.is_null());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_ffi_exposes_generic_crdt_field_methods() {
+    let path = temp_db_path("syncular-native-ffi-crdt-field");
+    let mut error = ptr::null_mut();
+    let config = ffi_config(&path, "native-ffi-crdt-field");
+
+    let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
+    assert!(!handle.is_null());
+    assert!(error.is_null());
+
+    let operation = CString::new(
+        json!({
+            "table": "tasks",
+            "row_id": "ffi-crdt-task",
+            "op": "upsert",
+            "payload": {
+                "title": "",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let returned_id = syncular_native_client_apply_mutation_json(
+        handle,
+        operation.as_ptr(),
+        ptr::null(),
+        &mut error,
+    );
+    assert!(!take_string(returned_id).is_empty());
+    assert!(error.is_null());
+
+    let _ = syncular_native_client_poll_event_json(handle, 10, &mut error);
+    assert!(error.is_null());
+
+    let request = CString::new(
+        json!({
+            "table": "tasks",
+            "rowId": "ffi-crdt-task",
+            "field": "title"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let descriptor_json =
+        syncular_native_client_open_crdt_field_json(handle, request.as_ptr(), &mut error);
+    let descriptor: Value = serde_json::from_str(&take_string(descriptor_json)).unwrap();
+    assert_eq!(descriptor["table"], "tasks");
+    assert_eq!(descriptor["field"], "title");
+    assert_eq!(descriptor["syncMode"], "server-merge");
+    assert!(error.is_null());
+
+    let update_request = CString::new(
+        json!({
+            "table": "tasks",
+            "rowId": "ffi-crdt-task",
+            "field": "title",
+            "nextText": "FFI CRDT field"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let receipt_json = syncular_native_client_apply_crdt_field_text_json(
+        handle,
+        update_request.as_ptr(),
+        &mut error,
+    );
+    if receipt_json.is_null() {
+        panic!("apply_crdt_field_text_json failed: {}", take_string(error));
+    }
+    let receipt: Value = serde_json::from_str(&take_string(receipt_json)).unwrap();
+    assert_eq!(receipt["syncMode"], "server-merge");
+    assert!(receipt["clientCommitId"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(error.is_null());
+
+    let materialized_json =
+        syncular_native_client_materialize_crdt_field_json(handle, request.as_ptr(), &mut error);
+    let materialized: Value = serde_json::from_str(&take_string(materialized_json)).unwrap();
+    assert_eq!(materialized["value"], "FFI CRDT field");
+    assert!(materialized["stateVectorBase64"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    assert!(error.is_null());
+
+    let mut saw_crdt_field_changed = false;
+    let mut saw_rows_changed = false;
+    for _ in 0..3 {
+        let event_json = syncular_native_client_poll_event_json(handle, 10, &mut error);
+        if event_json.is_null() {
+            break;
+        }
+        let event: Value = serde_json::from_str(&take_string(event_json)).unwrap();
+        match event["kind"].as_str() {
+            Some("CrdtFieldChanged") => {
+                saw_crdt_field_changed = true;
+                assert_eq!(event["tables"][0], "tasks");
+                assert_eq!(event["payload_json"]["field"], "title");
+                assert_eq!(event["payload_json"]["syncMode"], "server-merge");
+                assert_eq!(event["payload_json"]["materializationAvailable"], true);
+                assert_eq!(event["payload_json"]["hasState"], true);
+                assert!(event["payload_json"]["stateVectorBase64"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()));
+            }
+            Some("RowsChanged") => {
+                saw_rows_changed = true;
+                assert_eq!(event["tables"][0], "tasks");
+                assert_eq!(event["changedRows"][0]["table"], "tasks");
+                assert_eq!(event["changedRows"][0]["rowId"], "ffi-crdt-task");
+                assert_eq!(event["changedRows"][0]["operation"], "update");
+                assert!(event["changedRows"][0]["crdtFields"]
+                    .as_array()
+                    .is_some_and(|fields| fields.iter().any(|field| field == "title_yjs_state")));
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_crdt_field_changed);
+    assert!(saw_rows_changed);
 
     assert!(syncular_native_client_close(handle, &mut error));
     assert!(error.is_null());
@@ -455,17 +634,7 @@ fn native_ffi_writes_structured_errors() {
 fn native_ffi_applies_generic_local_operation_json() {
     let path = temp_db_path("syncular-native-ffi-generic-operation");
     let mut error = ptr::null_mut();
-    let config = CString::new(
-        json!({
-            "db_path": path,
-            "base_url": "http://127.0.0.1:9/sync",
-            "client_id": "native-ffi-generic-operation",
-            "actor_id": "user-rust",
-            "project_id": "p0"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let config = ffi_config(&path, "native-ffi-generic-operation");
     let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
     assert!(!handle.is_null());
 
@@ -503,9 +672,63 @@ fn native_ffi_applies_generic_local_operation_json() {
     let local_event: Value = serde_json::from_str(&take_string(local_event)).unwrap();
     assert_eq!(local_event["kind"], "RowsChanged");
     assert_eq!(local_event["tables"][0], "tasks");
+    assert_eq!(local_event["changedRows"][0]["table"], "tasks");
+    assert_eq!(local_event["changedRows"][0]["rowId"], "ffi-generic-task");
+    assert_eq!(local_event["changedRows"][0]["operation"], "upsert");
 
     assert!(syncular_native_client_close(handle, &mut error));
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_ffi_event_poll_wait_does_not_hold_handle_lock() {
+    let path = temp_db_path("syncular-native-ffi-event-lock");
+    let mut error = ptr::null_mut();
+    let config = ffi_config(&path, "native-ffi-event-lock");
+
+    let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
+    assert!(!handle.is_null());
+    assert!(error.is_null());
+
+    let handle_addr = handle as usize;
+    let poll_thread = thread::spawn(move || {
+        let handle = handle_addr as *mut SyncularNativeHandle;
+        let mut error = ptr::null_mut();
+        let event = syncular_native_client_poll_event_json(handle, 800, &mut error);
+        assert!(event.is_null());
+        assert!(error.is_null());
+    });
+
+    thread::sleep(Duration::from_millis(75));
+    let started = Instant::now();
+    assert!(syncular_native_client_sync_worker_running(
+        handle, &mut error
+    ));
+    assert!(error.is_null());
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "poll_event_json_timeout held the native handle lock"
+    );
+
+    poll_thread.join().expect("poll thread finished");
+    assert!(syncular_native_client_close(handle, &mut error));
+    assert!(error.is_null());
+    let _ = std::fs::remove_file(path);
+}
+
+fn ffi_config(path: &str, client_id: &str) -> CString {
+    CString::new(
+        json!({
+            "db_path": path,
+            "base_url": "http://127.0.0.1:9/sync",
+            "client_id": client_id,
+            "actor_id": "user-rust",
+            "project_id": "p0",
+            "app_schema_json": todo_app_schema_json()
+        })
+        .to_string(),
+    )
+    .unwrap()
 }
 
 fn take_string(value: *mut c_char) -> String {
@@ -519,15 +742,9 @@ fn take_string(value: *mut c_char) -> String {
 }
 
 fn temp_db_path(prefix: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned()
+    unique_temp_db_path(prefix)
 }
 
 fn temp_file_path(prefix: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("{prefix}-{}", Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned()
+    unique_temp_file_path(prefix)
 }

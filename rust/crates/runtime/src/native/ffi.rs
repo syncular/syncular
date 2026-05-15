@@ -1,7 +1,7 @@
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::native::{
-    native_runtime_manifest_json, NativeClientConfig, NativeClientOptions, NativeErrorInfo,
-    NativeSyncularClient,
+    native_runtime_manifest_json, NativeClientConfig, NativeClientOpenTask, NativeClientOptions,
+    NativeErrorInfo, NativeEventPoller, NativeSyncularClient,
 };
 use std::any::Any;
 use std::ffi::{CStr, CString};
@@ -13,6 +13,10 @@ use std::time::Duration;
 
 pub struct SyncularNativeHandle {
     client: Mutex<NativeSyncularClient>,
+}
+
+pub struct SyncularNativeOpenHandle {
+    task: Mutex<NativeClientOpenTask>,
 }
 
 #[no_mangle]
@@ -56,6 +60,85 @@ pub extern "C" fn syncular_native_client_open(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_open_async(
+    config_json: *const c_char,
+    auto_sync_local_writes: bool,
+    error_out: *mut *mut c_char,
+) -> *mut SyncularNativeOpenHandle {
+    clear_error(error_out);
+    ffi_catch_ptr(error_out, || {
+        let config: NativeClientConfig = serde_json::from_str(&read_c_string(config_json)?)?;
+        let task = NativeSyncularClient::open_native_async_with_options(
+            config,
+            NativeClientOptions {
+                auto_sync_local_writes,
+            },
+        );
+        Ok(Box::into_raw(Box::new(SyncularNativeOpenHandle {
+            task: Mutex::new(task),
+        })))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_open_async_command_id(
+    handle: *mut SyncularNativeOpenHandle,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        with_open_task(handle, |task| Ok(task.command_id().to_string()))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_open_async_is_finished(
+    handle: *mut SyncularNativeOpenHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool_value(error_out, || {
+        with_open_task(handle, |task| Ok(task.is_finished()))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_open_async_poll(
+    handle: *mut SyncularNativeOpenHandle,
+    timeout_ms: u64,
+    error_out: *mut *mut c_char,
+) -> *mut SyncularNativeHandle {
+    clear_error(error_out);
+    ffi_catch_ptr(error_out, || {
+        with_open_task(handle, |task| {
+            match task.take_client_timeout(Duration::from_millis(timeout_ms)) {
+                Some(Ok(client)) => Ok(Box::into_raw(Box::new(SyncularNativeHandle {
+                    client: Mutex::new(client),
+                }))),
+                Some(Err(error)) => Err(error),
+                None => Ok(ptr::null_mut()),
+            }
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_open_async_close(
+    handle: *mut SyncularNativeOpenHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        if handle.is_null() {
+            return Ok(());
+        }
+
+        let _ = unsafe { Box::from_raw(handle) };
+        Ok(())
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_close(
     handle: *mut SyncularNativeHandle,
     error_out: *mut *mut c_char,
@@ -82,6 +165,17 @@ pub extern "C" fn syncular_native_client_trigger_sync(
     clear_error(error_out);
     ffi_catch_bool(error_out, || {
         with_client(handle, |client| client.trigger_sync())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_trigger_sync_websocket(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        with_client(handle, |client| client.trigger_sync_websocket())
     })
 }
 
@@ -128,6 +222,21 @@ pub extern "C" fn syncular_native_client_set_auth_headers_json(
     ffi_catch_bool(error_out, || {
         let headers_json = read_c_string(headers_json)?;
         with_client(handle, |client| client.set_auth_headers_json(&headers_json))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_set_subscriptions_json(
+    handle: *mut SyncularNativeHandle,
+    subscriptions_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let subscriptions_json = read_c_string(subscriptions_json)?;
+        with_client(handle, |client| {
+            client.set_subscriptions_json(&subscriptions_json)
+        })
     })
 }
 
@@ -259,6 +368,139 @@ pub extern "C" fn syncular_native_client_enqueue_yjs_update_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_open_crdt_field_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| client.open_crdt_field_json(&request_json))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_apply_crdt_field_text_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.apply_crdt_field_text_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_apply_crdt_field_yjs_update_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.apply_crdt_field_yjs_update_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_enqueue_crdt_field_yjs_update_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.enqueue_crdt_field_yjs_update_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_enqueue_crdt_field_text_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.enqueue_crdt_field_text_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_enqueue_crdt_field_compaction_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.enqueue_crdt_field_compaction_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_materialize_crdt_field_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.materialize_crdt_field_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_snapshot_crdt_field_state_vector_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.snapshot_crdt_field_state_vector_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_compact_crdt_field_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.compact_crdt_field_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_apply_encrypted_crdt_update_json(
     handle: *mut SyncularNativeHandle,
     request_json: *const c_char,
@@ -326,6 +568,17 @@ pub extern "C" fn syncular_native_client_enqueue_sync_now(
     clear_error(error_out);
     ffi_catch_string(error_out, || {
         with_client(handle, |client| client.enqueue_sync_now())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_enqueue_sync_websocket(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        with_client(handle, |client| client.enqueue_sync_websocket())
     })
 }
 
@@ -719,10 +972,13 @@ pub extern "C" fn syncular_native_client_poll_event_json(
 ) -> *mut c_char {
     clear_error(error_out);
     ffi_catch_string_or_null(error_out, || {
-        with_client(handle, |client| {
-            Ok(client.poll_event_json_timeout(Duration::from_millis(timeout_ms)))
-        })
+        let poller = native_event_poller(handle)?;
+        Ok(poller.poll_event_json_timeout(Duration::from_millis(timeout_ms)))
     })
+}
+
+fn native_event_poller(handle: *mut SyncularNativeHandle) -> Result<NativeEventPoller> {
+    with_client(handle, |client| Ok(client.event_poller()))
 }
 
 fn with_client<T>(
@@ -742,6 +998,24 @@ fn with_client<T>(
         .lock()
         .map_err(|_| SyncularError::message(ErrorKind::Internal, "native handle is poisoned"))?;
     f(&mut client)
+}
+
+fn with_open_task<T>(
+    handle: *mut SyncularNativeOpenHandle,
+    f: impl FnOnce(&mut NativeClientOpenTask) -> Result<T>,
+) -> Result<T> {
+    if handle.is_null() {
+        return Err(SyncularError::message(
+            ErrorKind::Internal,
+            "native async open handle is null",
+        ));
+    }
+
+    let task = unsafe { &*handle };
+    let mut task = task.task.lock().map_err(|_| {
+        SyncularError::message(ErrorKind::Internal, "native async open handle is poisoned")
+    })?;
+    f(&mut task)
 }
 
 fn read_c_string(value: *const c_char) -> Result<String> {

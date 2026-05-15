@@ -11,6 +11,7 @@ extern "C" {
 #define SYNCULAR_NATIVE_FFI_ABI_VERSION 1
 
 typedef struct SyncularNativeHandle SyncularNativeHandle;
+typedef struct SyncularNativeOpenHandle SyncularNativeOpenHandle;
 
 /*
  * All returned strings are UTF-8 JSON unless a function documents otherwise.
@@ -31,6 +32,33 @@ SyncularNativeHandle *syncular_native_client_open(
     char **error_out
 );
 
+SyncularNativeOpenHandle *syncular_native_client_open_async(
+    const char *config_json,
+    bool auto_sync_local_writes,
+    char **error_out
+);
+
+char *syncular_native_client_open_async_command_id(
+    SyncularNativeOpenHandle *handle,
+    char **error_out
+);
+
+bool syncular_native_client_open_async_is_finished(
+    SyncularNativeOpenHandle *handle,
+    char **error_out
+);
+
+SyncularNativeHandle *syncular_native_client_open_async_poll(
+    SyncularNativeOpenHandle *handle,
+    uint64_t timeout_ms,
+    char **error_out
+);
+
+bool syncular_native_client_open_async_close(
+    SyncularNativeOpenHandle *handle,
+    char **error_out
+);
+
 bool syncular_native_client_close(
     SyncularNativeHandle *handle,
     char **error_out
@@ -41,7 +69,17 @@ bool syncular_native_client_trigger_sync(
     char **error_out
 );
 
+bool syncular_native_client_trigger_sync_websocket(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
 char *syncular_native_client_enqueue_sync_now(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
+char *syncular_native_client_enqueue_sync_websocket(
     SyncularNativeHandle *handle,
     char **error_out
 );
@@ -64,6 +102,12 @@ bool syncular_native_client_sync_worker_running(
 bool syncular_native_client_set_auth_headers_json(
     SyncularNativeHandle *handle,
     const char *headers_json,
+    char **error_out
+);
+
+bool syncular_native_client_set_subscriptions_json(
+    SyncularNativeHandle *handle,
+    const char *subscriptions_json,
     char **error_out
 );
 
@@ -116,6 +160,60 @@ char *syncular_native_client_enqueue_mutation_json(
 char *syncular_native_client_enqueue_yjs_update_json(
     SyncularNativeHandle *handle,
     const char *update_json,
+    char **error_out
+);
+
+char *syncular_native_client_open_crdt_field_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_apply_crdt_field_text_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_apply_crdt_field_yjs_update_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_enqueue_crdt_field_yjs_update_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_enqueue_crdt_field_text_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_enqueue_crdt_field_compaction_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_materialize_crdt_field_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_snapshot_crdt_field_state_vector_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_compact_crdt_field_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
     char **error_out
 );
 

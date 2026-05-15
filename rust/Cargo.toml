@@ -1,3 +1,9 @@
 [workspace]
-members = ["crates/runtime", "crates/client", "crates/codegen", "examples/todo-app"]
+members = [
+    "crates/runtime",
+    "crates/client",
+    "crates/codegen",
+    "crates/testkit",
+    "examples/todo-app",
+]
 resolver = "2"

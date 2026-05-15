@@ -36,6 +36,22 @@ interface BenchmarkResult {
   error?: string;
 }
 
+interface FeatureBenchmarkResult {
+  ok: boolean;
+  operations?: number;
+  rounds?: number;
+  storage?: string;
+  readHeavyQuery?: BenchmarkStats;
+  liveQueryRefresh?: BenchmarkStats;
+  crdtTextUpdates?: BenchmarkStats;
+  encryptedFieldPush?: BenchmarkStats;
+  encryptedCrdtTextUpdates?: BenchmarkStats;
+  blobMetadata?: BenchmarkStats;
+  largeSnapshotRead?: BenchmarkStats;
+  multiTableCommit?: BenchmarkStats;
+  error?: string;
+}
+
 interface BenchmarkRuntimeWindow {
   __runtimeReady: boolean;
   __runtime: {
@@ -45,12 +61,23 @@ interface BenchmarkRuntimeWindow {
       warmupOperations: number;
       preferOPFS: boolean;
     }): Promise<BenchmarkResult>;
+    benchmarkFeatureWorkloads(options: {
+      operations: number;
+      rounds: number;
+      warmupOperations: number;
+      storage: 'memory' | 'indexedDb' | 'opfsSahPool';
+    }): Promise<FeatureBenchmarkResult>;
   };
 }
 
 const operations = numberArg('--operations', 100);
 const rounds = numberArg('--rounds', 5);
 const warmupOperations = numberArg('--warmup', 10);
+const featureWorkloads = process.argv.includes('--feature-workloads');
+const featureOperations = numberArg('--feature-operations', 50);
+const featureRounds = numberArg('--feature-rounds', 5);
+const featureWarmupOperations = numberArg('--feature-warmup', 5);
+const featureStorage = storageArg('--feature-storage', 'indexedDb');
 const preferOPFS = !process.argv.includes('--indexeddb');
 const jsonOutput = process.argv.includes('--json');
 const outputPath = stringArg('--output');
@@ -97,6 +124,20 @@ try {
       ).__runtime.benchmarkLocalMutations(options),
     { operations, rounds, warmupOperations, preferOPFS }
   );
+  const featureResult = featureWorkloads
+    ? await page.evaluate(
+        (options) =>
+          (
+            window as unknown as BenchmarkRuntimeWindow
+          ).__runtime.benchmarkFeatureWorkloads(options),
+        {
+          operations: featureOperations,
+          rounds: featureRounds,
+          warmupOperations: featureWarmupOperations,
+          storage: featureStorage,
+        }
+      )
+    : undefined;
 
   browserErrors.assertNone('browser wasm/js benchmark');
   if (
@@ -109,6 +150,12 @@ try {
     throw new Error(
       result.error ??
         `benchmark failed without an error: ${JSON.stringify(result)}`
+    );
+  }
+  if (featureResult && !featureResult.ok) {
+    throw new Error(
+      featureResult.error ??
+        `feature benchmark failed without an error: ${JSON.stringify(featureResult)}`
     );
   }
 
@@ -147,6 +194,17 @@ try {
         result.rustOwnedSqliteOpfsWorker
       ),
     },
+    featureWorkloads: featureResult
+      ? {
+          options: {
+            operations: featureOperations,
+            rounds: featureRounds,
+            warmupOperations: featureWarmupOperations,
+            storage: featureStorage,
+          },
+          results: collectFeatureRows(featureResult),
+        }
+      : undefined,
   };
 
   if (outputPath) {
@@ -192,12 +250,35 @@ try {
       )}x speedup)`
     );
     if (outputPath) console.log(`JSON report: ${outputPath}`);
+    if (featureResult) {
+      const featureRows = collectFeatureRows(featureResult);
+      console.log('');
+      console.log('Browser Rust-owned SQLite feature workload benchmark');
+      console.log(
+        `operations=${featureOperations} rounds=${featureRounds} warmup=${featureWarmupOperations} storage=${featureStorage}`
+      );
+      console.log('');
+      console.log(formatTable(featureRows));
+    }
   }
 } finally {
   browserErrors?.detach();
   await closeBrowser(browser);
   await killProcess(assetProc);
   killAssetServerByPort(assetPort);
+}
+
+function collectFeatureRows(result: FeatureBenchmarkResult): BenchmarkStats[] {
+  return [
+    result.readHeavyQuery,
+    result.liveQueryRefresh,
+    result.crdtTextUpdates,
+    result.encryptedFieldPush,
+    result.encryptedCrdtTextUpdates,
+    result.blobMetadata,
+    result.largeSnapshotRead,
+    result.multiTableCommit,
+  ].filter((row): row is BenchmarkStats => row != null);
 }
 
 function numberArg(name: string, fallback: number): number {
@@ -208,6 +289,19 @@ function numberArg(name: string, fallback: number): number {
     throw new Error(`Invalid ${name}: ${raw}`);
   }
   return Math.floor(value);
+}
+
+function storageArg(
+  name: string,
+  fallback: 'memory' | 'indexedDb' | 'opfsSahPool'
+): 'memory' | 'indexedDb' | 'opfsSahPool' {
+  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  const value = raw?.slice(name.length + 1);
+  if (value == null) return fallback;
+  if (value === 'memory' || value === 'indexedDb' || value === 'opfsSahPool') {
+    return value;
+  }
+  throw new Error(`Invalid ${name}: ${raw}`);
 }
 
 function stringArg(name: string): string | undefined {

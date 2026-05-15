@@ -1,13 +1,12 @@
-use crate::client::{SubscriptionSpec, SyncularClientConfig};
+use crate::client::SubscriptionSpec;
 use crate::encrypted_crdt::EncryptedCrdt;
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
-use crate::generated;
-use crate::migrations::current_schema_version;
 use crate::protocol::{
     CombinedRequest, PullRequest, PushBatchRequest, PushCommitRequest, ScopeValues,
     SubscriptionRequest, SyncCommit, SyncOperation,
 };
+use crate::runtime_schema::runtime_schema_version;
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
     AsyncSyncTransport, WebRealtimeSocket, WebSyncTransport, WebSyncTransportConfig,
@@ -16,8 +15,6 @@ use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use crate::web_store::{AsyncWebStore, WebMemoryStore, WebSubscriptionState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-const DEFAULT_STATE_ID: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSyncularClientConfig {
@@ -71,18 +68,11 @@ where
     S: AsyncWebStore,
 {
     pub fn with_parts(config: WebSyncularClientConfig, transport: T, store: S) -> Self {
-        let subscriptions = generated::default_subscriptions(&SyncularClientConfig {
-            db_path: DEFAULT_STATE_ID.to_string(),
-            base_url: config.base_url.clone(),
-            client_id: config.client_id.clone(),
-            actor_id: config.actor_id.clone(),
-            project_id: config.project_id.clone(),
-        });
         Self {
             config,
             transport,
             store,
-            subscriptions,
+            subscriptions: Vec::new(),
             field_encryption: None,
             encrypted_crdt: None,
         }
@@ -128,6 +118,14 @@ where
 
     pub fn store_mut(&mut self) -> &mut S {
         &mut self.store
+    }
+
+    pub fn config(&self) -> &WebSyncularClientConfig {
+        &self.config
+    }
+
+    pub fn encrypted_crdt(&self) -> Option<&EncryptedCrdt> {
+        self.encrypted_crdt.as_ref()
     }
 
     pub async fn sync_pull(&mut self) -> Result<WebSyncResult> {
@@ -194,7 +192,10 @@ where
                 for (snapshot, chunk_rows) in prepared_snapshots {
                     if snapshot.is_first_page {
                         self.store
-                            .clear_table_for_scopes(&snapshot.table, &sub.scopes)
+                            .clear_table_for_scopes_preserving_local_crdt(
+                                &snapshot.table,
+                                &sub.scopes,
+                            )
                             .await?;
                     }
                     snapshot_rows.extend(snapshot.rows.clone());
@@ -315,6 +316,12 @@ where
                 match commit_response.status.as_str() {
                     "applied" | "cached" => {
                         self.store
+                            .mark_pushed_operation_server_versions(
+                                outbox.clone(),
+                                commit_response.clone(),
+                            )
+                            .await?;
+                        self.store
                             .mark_outbox_acked(&outbox.id, commit_response)
                             .await?;
                         pushed_commits += 1;
@@ -419,7 +426,7 @@ where
         socket.send_push_commit(crate::protocol::PushCommitRequest {
             client_commit_id: uuid::Uuid::new_v4().to_string(),
             operations,
-            schema_version: current_schema_version(),
+            schema_version: runtime_schema_version(),
         })
     }
 
@@ -594,7 +601,7 @@ fn validate_server_schema_version(
     required_schema_version: Option<i32>,
     latest_schema_version: Option<i32>,
 ) -> Result<()> {
-    let current = current_schema_version();
+    let current = runtime_schema_version();
 
     if let Some(required) = required_schema_version {
         if required < 1 {
@@ -634,7 +641,7 @@ fn validate_outbox_schema_version(commit: &OutboxCommit) -> Result<()> {
         )));
     }
 
-    let current = current_schema_version();
+    let current = runtime_schema_version();
     if commit.schema_version > current {
         return Err(SyncularError::schema(format!(
             "web outbox commit {} was created with schema version {}, but this client supports {}",

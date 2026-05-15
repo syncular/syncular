@@ -790,6 +790,8 @@ export interface operations {
                     "application/json": {
                         /** @constant */
                         ok: true;
+                        requiredSchemaVersion?: number;
+                        latestSchemaVersion?: number;
                         push?: {
                             /** @constant */
                             ok: true;
@@ -808,6 +810,7 @@ export interface operations {
                                     /** @constant */
                                     status: "conflict";
                                     message: string;
+                                    code?: string;
                                     server_version: number;
                                     server_row: unknown;
                                 } | {

@@ -243,6 +243,7 @@ impl EncryptedCrdt {
         let previous_state_base64 = existing
             .get(field.state_column)
             .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
             .map(str::to_string);
         let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
             previous_state_base64,
@@ -522,6 +523,7 @@ pub fn apply_encrypted_crdt_plaintext_to_row(
     let previous_state_base64 = app_row
         .get(field.state_column)
         .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
         .map(str::to_string);
     let next_state_base64 = match system_table {
         CRDT_UPDATES_TABLE => {

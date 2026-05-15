@@ -6,7 +6,10 @@
  */
 
 import path from 'node:path';
-import type { BenchmarkResult } from './benchmark';
+import {
+  type BenchmarkResult,
+  parseBenchmarkTable,
+} from './benchmark';
 import {
   detectRegressions,
   formatRegressionReport,
@@ -19,11 +22,25 @@ const RUN_COUNT = parseRunCount(Bun.env.PERF_STABLE_RUNS);
 const RUN_RETRY_COUNT = 2;
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
-const SYNC_TEST_PATH = 'tests/perf/sync.perf.test.ts';
+const PERF_TEST_PATHS = [
+  'tests/perf/sync.perf.test.ts',
+  'tests/perf/rust-client.perf.test.ts',
+];
+const RUST_PERF_TEST_PATHS = ['tests/perf/rust-client.perf.test.ts'];
+const OPTIONAL_METRIC_PREFIXES = ['rust_browser_local_'];
+const RUST_METRIC_PREFIXES = [
+  'rust_native_',
+  'rust_e2e_',
+  'rust_http_',
+  'rust_ws_',
+  'rust_browser_',
+];
 const OUTPUT_JSON_PATH = Bun.env.PERF_STABLE_OUTPUT_JSON;
 
 interface StableMetricStats {
   metric: string;
+  suite: string;
+  unit: BenchmarkResult['unit'];
   baseline: number | null;
   median: number;
   min: number;
@@ -43,6 +60,7 @@ interface PerfRunResourceUsage {
 
 interface PerfRunResult {
   medians: Map<string, number>;
+  units: Map<string, BenchmarkResult['unit']>;
   resourceUsage: PerfRunResourceUsage;
 }
 
@@ -64,6 +82,19 @@ async function resolveGitCommitSha(): Promise<string | null> {
   if (exitCode !== 0) return null;
   const sha = stdout.trim();
   return sha.length > 0 ? sha : null;
+}
+
+async function resolveToolVersion(command: string[]): Promise<string | null> {
+  const proc = Bun.spawn(command, {
+    cwd: REPO_ROOT,
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) return null;
+  const version = stdout.trim();
+  return version.length > 0 ? version : null;
 }
 
 function median(values: number[]): number {
@@ -90,8 +121,11 @@ function percentile(values: number[], p: number): number {
   return sorted[index]!;
 }
 
-function formatMilliseconds(value: number): string {
-  return `${value.toFixed(1)}ms`;
+function formatMetricValue(
+  value: number,
+  unit: BenchmarkResult['unit'] = 'ms'
+): string {
+  return `${value.toFixed(1)}${unit}`;
 }
 
 function formatChange(current: number, baseline: number | null): string {
@@ -102,46 +136,18 @@ function formatChange(current: number, baseline: number | null): string {
   return `${sign}${delta.toFixed(1)}%`;
 }
 
-function parseBenchmarkMedians(output: string): Map<string, number> {
-  const metrics = new Map<string, number>();
-  const lines = output.split('\n');
-  let inBenchmarkTable = false;
-
-  for (const line of lines) {
-    if (line.includes('| Benchmark |')) {
-      inBenchmarkTable = true;
-      continue;
-    }
-
-    if (!inBenchmarkTable) continue;
-
-    if (!line.startsWith('|')) {
-      inBenchmarkTable = false;
-      continue;
-    }
-
-    const match = /^\|\s([a-z0-9_:-]+)\s\|\s([0-9.]+)ms\s\|/i.exec(line);
-    if (!match) continue;
-
-    const metric = match[1]!;
-    const metricMedian = Number(match[2]!);
-    if (!Number.isNaN(metricMedian)) {
-      metrics.set(metric, metricMedian);
-    }
-  }
-
-  return metrics;
-}
-
-async function runSyncPerf(run: number): Promise<PerfRunResult> {
+async function runPerfTestPath(
+  run: number,
+  testPath: string
+): Promise<PerfRunResult> {
   for (let attempt = 1; attempt <= RUN_RETRY_COUNT; attempt++) {
     console.log(
-      `\n### Stable Perf Run ${run}/${RUN_COUNT}${
+      `\n### Stable Perf Run ${run}/${RUN_COUNT} (${testPath})${
         attempt > 1 ? ` (retry ${attempt - 1}/${RUN_RETRY_COUNT - 1})` : ''
       }`
     );
     const startedAt = performance.now();
-    const proc = Bun.spawn(['bun', 'test', SYNC_TEST_PATH], {
+    const proc = Bun.spawn(['bun', 'test', '--max-concurrency=1', testPath], {
       cwd: REPO_ROOT,
       env: { ...process.env, PERF_STRICT: 'false' },
       stdout: 'pipe',
@@ -161,31 +167,44 @@ async function runSyncPerf(run: number): Promise<PerfRunResult> {
         combined.includes('RuntimeError: Aborted(). Build with -sASSERTIONS');
       if (transientCrash && attempt < RUN_RETRY_COUNT) {
         console.log(
-          `sync.perf run ${run} hit transient crash (exit ${exitCode}); retrying...`
+          `${testPath} run ${run} hit transient crash (exit ${exitCode}); retrying...`
         );
         continue;
       }
-      throw new Error(`sync perf run ${run} failed with exit code ${exitCode}`);
+      throw new Error(`${testPath} run ${run} failed with exit code ${exitCode}`);
     }
 
-    const runRegressionMarker = combined
-      .split('\n')
-      .find((line) => line.startsWith('PERF_GATE_SYNC_REGRESSION='));
-    const runMissingBaselineMarker = combined
-      .split('\n')
-      .find((line) => line.startsWith('PERF_GATE_SYNC_MISSING_BASELINE='));
+    const runRegressionMarker = findGateMarker(combined, [
+      'PERF_GATE_REGRESSION',
+      'PERF_GATE_SYNC_REGRESSION',
+    ]);
+    const runMissingBaselineMarker = findGateMarker(combined, [
+      'PERF_GATE_MISSING_BASELINE',
+      'PERF_GATE_SYNC_MISSING_BASELINE',
+    ]);
     if (runRegressionMarker || runMissingBaselineMarker) {
       console.log(
-        `sync.perf run ${run} markers: regression=${
-          runRegressionMarker?.split('=')[1] ?? 'unknown'
-        }, missingBaseline=${runMissingBaselineMarker?.split('=')[1] ?? 'unknown'}`
+        `${testPath} run ${run} markers: regression=${
+          runRegressionMarker ?? 'unknown'
+        }, missingBaseline=${runMissingBaselineMarker ?? 'unknown'}`
       );
     }
 
-    const medians = parseBenchmarkMedians(combined);
-    if (medians.size === 0) {
-      throw new Error(`unable to parse benchmark medians for run ${run}`);
+    const parsedBenchmarks = parseBenchmarkTable(combined);
+    if (parsedBenchmarks.length === 0) {
+      throw new Error(
+        `unable to parse benchmark medians for ${testPath} run ${run}`
+      );
     }
+    const medians = new Map(
+      parsedBenchmarks.map((benchmark) => [benchmark.name, benchmark.median])
+    );
+    const units = new Map(
+      parsedBenchmarks.map((benchmark) => [
+        benchmark.name,
+        benchmark.unit ?? 'ms',
+      ])
+    );
 
     const usage = proc.resourceUsage();
     const cpuUserMicros = usage ? Number(usage.cpuTime.user) : 0;
@@ -200,6 +219,7 @@ async function runSyncPerf(run: number): Promise<PerfRunResult> {
       : 0;
     return {
       medians,
+      units,
       resourceUsage: {
         durationMs: performance.now() - startedAt,
         cpuUserMicros,
@@ -212,16 +232,68 @@ async function runSyncPerf(run: number): Promise<PerfRunResult> {
     };
   }
 
-  throw new Error(`sync perf run ${run} exhausted retries`);
+  throw new Error(`${testPath} run ${run} exhausted retries`);
+}
+
+async function runStablePerf(
+  run: number,
+  testPaths: string[]
+): Promise<PerfRunResult> {
+  const merged = new Map<string, number>();
+  const units = new Map<string, BenchmarkResult['unit']>();
+  const resources: PerfRunResourceUsage[] = [];
+
+  for (const testPath of testPaths) {
+    const result = await runPerfTestPath(run, testPath);
+    for (const [metric, value] of result.medians) {
+      if (merged.has(metric)) {
+        throw new Error(`duplicate benchmark metric emitted: ${metric}`);
+      }
+      merged.set(metric, value);
+      units.set(metric, result.units.get(metric) ?? 'ms');
+    }
+    resources.push(result.resourceUsage);
+  }
+
+  return {
+    medians: merged,
+    units,
+    resourceUsage: {
+      durationMs: resources.reduce((sum, usage) => sum + usage.durationMs, 0),
+      cpuUserMicros: resources.reduce(
+        (sum, usage) => sum + usage.cpuUserMicros,
+        0
+      ),
+      cpuSystemMicros: resources.reduce(
+        (sum, usage) => sum + usage.cpuSystemMicros,
+        0
+      ),
+      cpuTotalMicros: resources.reduce(
+        (sum, usage) => sum + usage.cpuTotalMicros,
+        0
+      ),
+      maxRssBytes: Math.max(...resources.map((usage) => usage.maxRssBytes)),
+      contextSwitchesVoluntary: resources.reduce(
+        (sum, usage) => sum + usage.contextSwitchesVoluntary,
+        0
+      ),
+      contextSwitchesInvoluntary: resources.reduce(
+        (sum, usage) => sum + usage.contextSwitchesInvoluntary,
+        0
+      ),
+    },
+  };
 }
 
 function toBenchmarkResult(
   metric: string,
   values: number[],
-  aggregatedMedian: number
+  aggregatedMedian: number,
+  unit: BenchmarkResult['unit']
 ): BenchmarkResult {
   return {
     name: metric,
+    unit,
     iterations: values.length,
     mean: average(values),
     median: aggregatedMedian,
@@ -237,20 +309,20 @@ async function main() {
   const baseline = await loadBaseline(BASELINE_PATH);
   if (!baseline) {
     console.log('Unable to load tests/perf/baseline.json');
+    console.log('PERF_GATE_REGRESSION=false');
+    console.log('PERF_GATE_MISSING_BASELINE=true');
     console.log('PERF_GATE_SYNC_REGRESSION=false');
     console.log('PERF_GATE_SYNC_MISSING_BASELINE=true');
     process.exit(1);
   }
 
-  const trackedMetrics = Object.keys(baseline).filter(
-    (metric) => !metric.startsWith('dialect_')
-  );
-
+  const testPaths = selectedPerfTestPaths();
   const runResults: PerfRunResult[] = [];
   for (let run = 1; run <= RUN_COUNT; run++) {
-    const result = await runSyncPerf(run);
+    const result = await runStablePerf(run, testPaths);
     runResults.push(result);
   }
+  const trackedMetrics = trackedMetricNames(baseline, runResults);
 
   const stableMetrics: StableMetricStats[] = trackedMetrics.map((metric) => {
     const values = runResults
@@ -265,6 +337,11 @@ async function main() {
 
     return {
       metric,
+      suite: metricSuite(metric),
+      unit:
+        runResults.find((run) => run.units.has(metric))?.units.get(metric) ??
+        baseline[metric]?.unit ??
+        metricUnit(metric),
       baseline: baseline[metric]?.median ?? null,
       median: median(numericValues),
       min: Math.min(...numericValues),
@@ -274,7 +351,7 @@ async function main() {
   });
 
   const aggregatedResults: BenchmarkResult[] = stableMetrics.map((metric) =>
-    toBenchmarkResult(metric.metric, metric.runs, metric.median)
+    toBenchmarkResult(metric.metric, metric.runs, metric.median, metric.unit)
   );
 
   const regressions = detectRegressions(aggregatedResults, baseline);
@@ -310,6 +387,10 @@ async function main() {
     platform: process.platform,
     arch: process.arch,
     bunVersion: Bun.version,
+    rustcVersion: await resolveToolVersion(['rustc', '--version']),
+    cargoVersion: await resolveToolVersion(['cargo', '--version']),
+    wasmPackVersion: await resolveToolVersion(['wasm-pack', '--version']),
+    perfSuites: testPaths,
     runnerOs: process.env.RUNNER_OS ?? null,
     runnerName: process.env.RUNNER_NAME ?? null,
   };
@@ -337,6 +418,8 @@ async function main() {
           resources: resourceStats,
           metrics: stableMetrics.map((metric) => ({
             metric: metric.metric,
+            suite: metric.suite,
+            unit: metric.unit,
             baseline: metric.baseline,
             aggregatedMedian: metric.median,
             min: metric.min,
@@ -356,20 +439,33 @@ async function main() {
 
   console.log(`\n## Stable Performance (${RUN_COUNT} runs, median-of-medians)`);
   console.log(
-    '| Benchmark | Baseline | Aggregated Median | Change | Run Min | Run Max |'
+    '| Suite | Benchmark | Baseline | Aggregated Median | Change | Run Min | Run Max |'
   );
   console.log(
-    '|-----------|----------|-------------------|--------|---------|---------|'
+    '|-------|-----------|----------|-------------------|--------|---------|---------|'
   );
   for (const metric of stableMetrics) {
     const baselineLabel =
-      metric.baseline === null ? 'N/A' : formatMilliseconds(metric.baseline);
+      metric.baseline === null
+        ? 'N/A'
+        : formatMetricValue(metric.baseline, metric.unit);
     console.log(
-      `| ${metric.metric} | ${baselineLabel} | ${formatMilliseconds(metric.median)} | ${formatChange(metric.median, metric.baseline)} | ${formatMilliseconds(metric.min)} | ${formatMilliseconds(metric.max)} |`
+      `| ${metric.suite} | ${metric.metric} | ${baselineLabel} | ${formatMetricValue(metric.median, metric.unit)} | ${formatChange(metric.median, metric.baseline)} | ${formatMetricValue(metric.min, metric.unit)} | ${formatMetricValue(metric.max, metric.unit)} |`
     );
   }
 
   console.log(`\n${formatRegressionReport(regressions)}`);
+  console.log('\n## Stable Perf Environment');
+  console.log(`- suites: ${testPaths.join(', ')}`);
+  console.log(
+    `- runtime: ${runEnvironment.source} / ${runEnvironment.platform} / ${runEnvironment.arch} / bun ${runEnvironment.bunVersion}`
+  );
+  if (runEnvironment.rustcVersion) {
+    console.log(`- rustc: ${runEnvironment.rustcVersion}`);
+  }
+  if (runEnvironment.wasmPackVersion) {
+    console.log(`- wasm-pack: ${runEnvironment.wasmPackVersion}`);
+  }
   console.log('\n## Stable Perf Resources');
   console.log(
     `- duration per run (median): ${resourceStats.durationMs.median.toFixed(1)}ms`
@@ -380,14 +476,87 @@ async function main() {
   console.log(
     `- max RSS per run (median): ${(resourceStats.maxRssBytes.median / (1024 * 1024)).toFixed(1)} MiB`
   );
-  console.log(`PERF_GATE_SYNC_REGRESSION=${hasRegression ? 'true' : 'false'}`);
-  console.log(
-    `PERF_GATE_SYNC_MISSING_BASELINE=${hasMissingBaseline ? 'true' : 'false'}`
-  );
+  printGateMarkers(hasRegression, hasMissingBaseline);
 
   if (hasRegression || hasMissingBaseline) {
     process.exit(1);
   }
+}
+
+function shouldTrackMetric(metric: string): boolean {
+  if (!OPTIONAL_METRIC_PREFIXES.some((prefix) => metric.startsWith(prefix))) {
+    return true;
+  }
+  return Bun.env.PERF_RUST_BROWSER_BENCHMARK === 'true';
+}
+
+function findGateMarker(output: string, names: string[]): string | null {
+  for (const line of output.split('\n')) {
+    for (const name of names) {
+      if (line.startsWith(`${name}=`)) {
+        return line.split('=')[1] ?? null;
+      }
+    }
+  }
+  return null;
+}
+
+function printGateMarkers(
+  hasRegression: boolean,
+  hasMissingBaseline: boolean
+): void {
+  const regression = hasRegression ? 'true' : 'false';
+  const missingBaseline = hasMissingBaseline ? 'true' : 'false';
+
+  console.log(`PERF_GATE_REGRESSION=${regression}`);
+  console.log(`PERF_GATE_MISSING_BASELINE=${missingBaseline}`);
+
+  // Compatibility aliases for existing CI parsers and direct sync perf output.
+  console.log(`PERF_GATE_SYNC_REGRESSION=${regression}`);
+  console.log(`PERF_GATE_SYNC_MISSING_BASELINE=${missingBaseline}`);
+}
+
+function metricSuite(metric: string): string {
+  if (metric.startsWith('rust_native_')) return 'rust-native';
+  if (metric.startsWith('rust_e2e_')) return 'rust-e2e';
+  if (metric.startsWith('rust_http_')) return 'rust-http';
+  if (metric.startsWith('rust_ws_')) return 'rust-ws';
+  if (metric.startsWith('rust_browser_')) return 'rust-browser';
+  if (metric.startsWith('dialect_')) return 'dialect';
+  return 'sync';
+}
+
+function metricUnit(metric: string): BenchmarkResult['unit'] {
+  if (metric.startsWith('rust_browser_wasm_') && metric.endsWith('_kib')) {
+    return 'KiB';
+  }
+  return 'ms';
+}
+
+function selectedPerfTestPaths(): string[] {
+  return Bun.env.PERF_RUST_ONLY === 'true'
+    ? RUST_PERF_TEST_PATHS
+    : PERF_TEST_PATHS;
+}
+
+function shouldIncludeSuiteMetric(metric: string): boolean {
+  if (Bun.env.PERF_RUST_ONLY !== 'true') return true;
+  return RUST_METRIC_PREFIXES.some((prefix) => metric.startsWith(prefix));
+}
+
+function trackedMetricNames(
+  baseline: NonNullable<Awaited<ReturnType<typeof loadBaseline>>>,
+  runResults: PerfRunResult[]
+): string[] {
+  return Array.from(
+    new Set([
+      ...Object.keys(baseline),
+      ...runResults.flatMap((run) => Array.from(run.medians.keys())),
+    ])
+  )
+    .filter((metric) => !metric.startsWith('dialect_'))
+    .filter((metric) => shouldIncludeSuiteMetric(metric))
+    .filter((metric) => shouldTrackMetric(metric));
 }
 
 function summarizeResourceMetric(values: number[]): {

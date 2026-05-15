@@ -37,6 +37,15 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn apply_mutation_json"));
     assert!(source.contains("pub fn enqueue_mutation_json"));
     assert!(source.contains("pub fn enqueue_yjs_update_json"));
+    assert!(source.contains("pub fn open_crdt_field_json"));
+    assert!(source.contains("pub fn apply_crdt_field_text_json"));
+    assert!(source.contains("pub fn apply_crdt_field_yjs_update_json"));
+    assert!(source.contains("pub fn enqueue_crdt_field_yjs_update_json"));
+    assert!(source.contains("pub fn enqueue_crdt_field_text_json"));
+    assert!(source.contains("pub fn enqueue_crdt_field_compaction_json"));
+    assert!(source.contains("pub fn materialize_crdt_field_json"));
+    assert!(source.contains("pub fn snapshot_crdt_field_state_vector_json"));
+    assert!(source.contains("pub fn compact_crdt_field_json"));
     assert!(source.contains("pub fn apply_encrypted_crdt_update_json"));
     assert!(source.contains("pub fn enqueue_encrypted_crdt_update_json"));
     assert!(source.contains("pub fn apply_encrypted_crdt_checkpoint_json"));
@@ -80,6 +89,18 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         "func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String"
     ));
     assert!(swift.contains("func enqueueYjsUpdateJson(updateJson: String) throws -> String"));
+    assert!(swift.contains("func openCrdtFieldJson(requestJson: String) throws -> String"));
+    assert!(swift.contains("func applyCrdtFieldTextJson(requestJson: String) throws -> String"));
+    assert!(
+        swift.contains("func applyCrdtFieldYjsUpdateJson(requestJson: String) throws -> String")
+    );
+    assert!(
+        swift.contains("func enqueueCrdtFieldYjsUpdateJson(requestJson: String) throws -> String")
+    );
+    assert!(swift.contains("func materializeCrdtFieldJson(requestJson: String) throws -> String"));
+    assert!(swift
+        .contains("func snapshotCrdtFieldStateVectorJson(requestJson: String) throws -> String"));
+    assert!(swift.contains("func compactCrdtFieldJson(requestJson: String) throws -> String"));
     assert!(
         swift.contains("func applyEncryptedCrdtUpdateJson(requestJson: String) throws -> String")
     );
@@ -107,6 +128,13 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin
         .contains("fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String"));
     assert!(kotlin.contains("fun enqueueYjsUpdateJson(updateJson: String): String"));
+    assert!(kotlin.contains("fun openCrdtFieldJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun applyCrdtFieldTextJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun applyCrdtFieldYjsUpdateJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun materializeCrdtFieldJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun snapshotCrdtFieldStateVectorJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun compactCrdtFieldJson(requestJson: String): String"));
     assert!(kotlin.contains("fun applyEncryptedCrdtUpdateJson(requestJson: String): String"));
     assert!(kotlin.contains("fun enqueueEncryptedCrdtUpdateJson(requestJson: String): String"));
     assert!(kotlin.contains("fun applyEncryptedCrdtCheckpointJson(requestJson: String): String"));
@@ -118,6 +146,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
     assert!(kotlin.contains("fun shutdown(): Boolean"));
     assert!(!kotlin.contains("fun close(): Boolean"));
+    assert!(!kotlin.contains("1.toInt()"));
     assert!(java.contains("public final class SyncularBoltClient"));
     assert!(java.contains("public boolean setAuthHeadersJson(String headersJson)"));
     assert!(java.contains("public boolean setFieldEncryptionJson(String configJson)"));
@@ -130,6 +159,13 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         "public String enqueueMutationJson(String mutationJson, java.util.Optional<String> localRowJson)"
     ));
     assert!(java.contains("public String enqueueYjsUpdateJson(String updateJson)"));
+    assert!(java.contains("public String openCrdtFieldJson(String requestJson)"));
+    assert!(java.contains("public String applyCrdtFieldTextJson(String requestJson)"));
+    assert!(java.contains("public String applyCrdtFieldYjsUpdateJson(String requestJson)"));
+    assert!(java.contains("public String enqueueCrdtFieldYjsUpdateJson(String requestJson)"));
+    assert!(java.contains("public String materializeCrdtFieldJson(String requestJson)"));
+    assert!(java.contains("public String snapshotCrdtFieldStateVectorJson(String requestJson)"));
+    assert!(java.contains("public String compactCrdtFieldJson(String requestJson)"));
     assert!(java.contains("public String applyEncryptedCrdtUpdateJson(String requestJson)"));
     assert!(java.contains("public String enqueueEncryptedCrdtUpdateJson(String requestJson)"));
     assert!(java.contains("public String applyEncryptedCrdtCheckpointJson(String requestJson)"));
@@ -167,8 +203,12 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("public struct SyncularQueryColumn"));
     assert!(swift.contains("public struct SyncularSelectQuery"));
     assert!(swift.contains("public struct SyncularLiveQueryRegistration"));
+    assert!(swift.contains("public struct SyncularChangedRow"));
     assert!(swift.contains("public struct SyncularNativeEvent"));
+    assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
     assert!(swift.contains("public func syncularDecodeNativeEvent"));
+    assert!(swift.contains("public struct SyncularCrdtFieldDescriptor"));
+    assert!(swift.contains("func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor"));
     assert!(swift.contains("public final class SyncularNativeLiveQuery"));
     assert!(swift.contains("func applyMutationJson(mutationJson: String"));
     assert!(swift.contains("try applyMutationJson(mutationJson: operation.jsonString()"));
@@ -192,8 +232,12 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("class SyncularQueryColumn"));
     assert!(kotlin.contains("data class SyncularSelectQuery"));
     assert!(kotlin.contains("data class SyncularLiveQueryRegistration"));
+    assert!(kotlin.contains("data class SyncularChangedRow"));
     assert!(kotlin.contains("data class SyncularNativeEvent"));
+    assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
     assert!(kotlin.contains("fun syncularDecodeNativeEvent(eventJson: String)"));
+    assert!(kotlin.contains("data class SyncularCrdtFieldDescriptor"));
+    assert!(kotlin.contains("fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor"));
     assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));
     assert!(kotlin.contains("fun applyMutationJson(mutationJson: String"));
     assert!(kotlin.contains("applyMutationJson(operation.toJsonString(), localRowJson)"));
@@ -217,7 +261,9 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(android_kotlin.contains("applyMutationJson(operation.toJsonString(), localRowJson)"));
     assert!(android_kotlin.contains("syncularGeneratedQueryRows(queryJson(query.toJsonString()))"));
     assert!(android_kotlin.contains("data class SyncularLiveQueryRegistration"));
+    assert!(android_kotlin.contains("data class SyncularChangedRow"));
     assert!(android_kotlin.contains("data class SyncularNativeEvent"));
+    assert!(android_kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
     assert!(android_kotlin.contains("class SyncularNativeLiveQuery<Row>"));
     assert!(android_kotlin.contains("fun registerQueryJson(queryJson: String): String"));
     assert!(android_kotlin.contains("fun refreshIfChanged(event: SyncularNativeEvent"));

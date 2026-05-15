@@ -1,6 +1,6 @@
+use super::generated::{table_metadata, NewTask, TaskPatch};
+use super::migrations::{checksum, current_schema_version, split_sql_statements, MIGRATIONS};
 use crate::error::{Result, SyncularError};
-use crate::generated::{table_metadata, NewTask, TaskPatch};
-use crate::migrations::{checksum, current_schema_version, split_sql_statements, MIGRATIONS};
 use crate::protocol::*;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, DemoTaskStore, OutboxCommit, OutboxSummary,
@@ -645,6 +645,30 @@ impl SyncStoreTx for RusqliteTx<'_> {
             }
         }
         Ok(())
+    }
+
+    fn current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
+        if table != "tasks" {
+            return Err(SyncularError::codegen(format!(
+                "no rusqlite table adapter registered for {table}"
+            )));
+        }
+        let row = self
+            .tx
+            .query_row(
+                r#"
+                select id, title, completed, user_id, project_id, server_version, image, title_yjs_state
+                from tasks
+                where id = ?1
+                limit 1
+                "#,
+                params![row_id],
+                task_from_row,
+            )
+            .optional()?;
+        row.map(serde_json::to_value)
+            .transpose()
+            .map_err(Into::into)
     }
 
     fn upsert_row(

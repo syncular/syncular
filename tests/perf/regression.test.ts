@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'bun:test';
-import type { BenchmarkResult } from './benchmark';
+import {
+  type BenchmarkResult,
+  formatBenchmarkTable,
+  parseBenchmarkTable,
+} from './benchmark';
 import {
   detectRegressions,
   formatRegressionReport,
   hasMissingBaselines,
 } from './regression';
 
-function makeResult(name: string, median: number): BenchmarkResult {
+function makeResult(
+  name: string,
+  median: number,
+  unit?: BenchmarkResult['unit']
+): BenchmarkResult {
   return {
     name,
+    unit,
     iterations: 1,
     mean: median,
     median,
@@ -111,5 +120,59 @@ describe('detectRegressions', () => {
     const regressions = detectRegressions(results, baseline);
 
     expect(regressions[0]?.regression).toBe(false);
+  });
+
+  it('preserves non-latency units in regression reports', () => {
+    const results = [
+      makeResult('rust_browser_wasm_raw_kib', 3000, 'KiB'),
+    ];
+    const baseline = {
+      rust_browser_wasm_raw_kib: {
+        median: 2988.6,
+        p95: 2988.6,
+        p99: 2988.6,
+        timestamp: '2025-01-01',
+      },
+    };
+
+    const regressions = detectRegressions(results, baseline);
+    const report = formatRegressionReport(regressions);
+
+    expect(report.includes('2988.6KiB')).toBe(true);
+    expect(report.includes('3000.0KiB')).toBe(true);
+    expect(report.includes('3000.0ms')).toBe(false);
+  });
+});
+
+describe('formatBenchmarkTable', () => {
+  it('renders benchmark values with the result unit', () => {
+    const table = formatBenchmarkTable([
+      makeResult('rust_browser_wasm_gzip_kib', 1229.8, 'KiB'),
+    ]);
+
+    expect(table.includes('1229.8KiB')).toBe(true);
+    expect(table.includes('1229.8ms')).toBe(false);
+  });
+
+  it('round-trips formatted benchmark rows with units', () => {
+    const results = parseBenchmarkTable(
+      formatBenchmarkTable([
+        makeResult('rust_browser_wasm_gzip_kib', 1229.8, 'KiB'),
+        makeResult('rust_native_insert_batch_100', 6.8),
+      ])
+    );
+
+    expect(results).toMatchObject([
+      {
+        name: 'rust_browser_wasm_gzip_kib',
+        unit: 'KiB',
+        median: 1229.8,
+      },
+      {
+        name: 'rust_native_insert_batch_100',
+        unit: 'ms',
+        median: 6.8,
+      },
+    ]);
   });
 });

@@ -7,6 +7,8 @@ public let syncularNativeExpectedFfiAbiVersion = 1
 public let syncularNativeExpectedCrateVersion = "0.1.0"
 public let syncularNativeGeneratedSchemaVersion = 5
 
+public let syncularNativeGeneratedAppSchemaJson = "{\"migrations\":[{\"name\":\"initial\",\"schemaVersion\":1,\"upSql\":\"CREATE TABLE IF NOT EXISTS projects (\\n  id TEXT PRIMARY KEY,\\n  name TEXT NOT NULL,\\n  owner_id TEXT NOT NULL,\\n  archived INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n);\\n\\nCREATE TABLE IF NOT EXISTS tasks (\\n  id TEXT PRIMARY KEY,\\n  title TEXT NOT NULL,\\n  completed INTEGER NOT NULL DEFAULT 0,\\n  user_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  server_version BIGINT NOT NULL DEFAULT 0,\\n  image TEXT NULL,\\n  title_yjs_state TEXT NULL\\n);\\n\\nCREATE TABLE IF NOT EXISTS comments (\\n  id TEXT PRIMARY KEY,\\n  task_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  body TEXT NOT NULL,\\n  author_id TEXT NOT NULL,\\n  deleted INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_migrations (\\n  version TEXT PRIMARY KEY,\\n  name TEXT NOT NULL,\\n  checksum TEXT NOT NULL,\\n  applied_at BIGINT NOT NULL\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_subscription_state (\\n  state_id TEXT NOT NULL,\\n  subscription_id TEXT NOT NULL,\\n  \\\"table\\\" TEXT NOT NULL,\\n  scopes_json TEXT NOT NULL DEFAULT '{}',\\n  params_json TEXT NOT NULL DEFAULT '{}',\\n  cursor BIGINT NOT NULL,\\n  bootstrap_state_json TEXT NULL,\\n  status TEXT NOT NULL,\\n  created_at BIGINT NOT NULL,\\n  updated_at BIGINT NOT NULL,\\n  PRIMARY KEY (state_id, subscription_id)\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_outbox_commits (\\n  id TEXT PRIMARY KEY,\\n  client_commit_id TEXT NOT NULL UNIQUE,\\n  status TEXT NOT NULL,\\n  operations_json TEXT NOT NULL,\\n  last_response_json TEXT NULL,\\n  error TEXT NULL,\\n  created_at BIGINT NOT NULL,\\n  updated_at BIGINT NOT NULL,\\n  attempt_count INTEGER NOT NULL DEFAULT 0,\\n  acked_commit_seq BIGINT NULL,\\n  schema_version INTEGER NOT NULL DEFAULT 1\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_conflicts (\\n  id TEXT PRIMARY KEY,\\n  outbox_commit_id TEXT NOT NULL,\\n  client_commit_id TEXT NOT NULL,\\n  op_index INTEGER NOT NULL,\\n  result_status TEXT NOT NULL,\\n  message TEXT NOT NULL,\\n  code TEXT NULL,\\n  server_version BIGINT NULL,\\n  server_row_json TEXT NULL,\\n  created_at BIGINT NOT NULL,\\n  resolved_at BIGINT NULL,\\n  resolution TEXT NULL\\n);\\n\",\"version\":\"0001\"},{\"name\":\"blob_client_tables\",\"schemaVersion\":2,\"upSql\":\"CREATE TABLE IF NOT EXISTS sync_blob_cache (\\n  hash TEXT PRIMARY KEY,\\n  size BIGINT NOT NULL,\\n  mime_type TEXT NOT NULL,\\n  body BLOB NOT NULL,\\n  encrypted INTEGER NOT NULL DEFAULT 0,\\n  key_id TEXT NULL,\\n  cached_at BIGINT NOT NULL,\\n  last_accessed_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_blob_cache_last_accessed\\n  ON sync_blob_cache (last_accessed_at);\\n\\nCREATE TABLE IF NOT EXISTS sync_blob_outbox (\\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\\n  hash TEXT NOT NULL UNIQUE,\\n  size BIGINT NOT NULL,\\n  mime_type TEXT NOT NULL,\\n  body BLOB NOT NULL,\\n  encrypted INTEGER NOT NULL DEFAULT 0,\\n  key_id TEXT NULL,\\n  status TEXT NOT NULL,\\n  attempt_count INTEGER NOT NULL DEFAULT 0,\\n  error TEXT NULL,\\n  created_at BIGINT NOT NULL,\\n  updated_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_blob_outbox_status\\n  ON sync_blob_outbox (status, created_at);\\n\",\"version\":\"0002\"},{\"name\":\"retry_backoff\",\"schemaVersion\":3,\"upSql\":\"ALTER TABLE sync_outbox_commits\\n  ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 0;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_outbox_commits_due\\n  ON sync_outbox_commits (status, next_attempt_at, created_at);\\n\\nALTER TABLE sync_blob_outbox\\n  ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 0;\\n\\nDROP INDEX IF EXISTS idx_sync_blob_outbox_status;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_blob_outbox_status\\n  ON sync_blob_outbox (status, next_attempt_at, created_at);\\n\",\"version\":\"0003\"},{\"name\":\"encrypted_crdt_tables\",\"schemaVersion\":4,\"upSql\":\"CREATE TABLE IF NOT EXISTS sync_crdt_updates (\\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\\n  partition_id TEXT NOT NULL DEFAULT 'default',\\n  stream_id TEXT NOT NULL,\\n  app_table TEXT NOT NULL,\\n  row_id TEXT NOT NULL,\\n  field_name TEXT NOT NULL,\\n  update_id TEXT NOT NULL UNIQUE,\\n  actor_id TEXT NULL,\\n  client_id TEXT NULL,\\n  key_id TEXT NOT NULL,\\n  ciphertext TEXT NOT NULL,\\n  scopes TEXT NOT NULL DEFAULT '{}',\\n  created_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_stream_seq\\n  ON sync_crdt_updates (partition_id, stream_id, seq);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_scope_table\\n  ON sync_crdt_updates (partition_id, app_table, row_id, field_name);\\n\\nCREATE TABLE IF NOT EXISTS sync_crdt_checkpoints (\\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\\n  partition_id TEXT NOT NULL DEFAULT 'default',\\n  stream_id TEXT NOT NULL,\\n  app_table TEXT NOT NULL,\\n  row_id TEXT NOT NULL,\\n  field_name TEXT NOT NULL,\\n  checkpoint_id TEXT NOT NULL UNIQUE,\\n  covers_seq BIGINT NOT NULL,\\n  actor_id TEXT NULL,\\n  client_id TEXT NULL,\\n  key_id TEXT NOT NULL,\\n  ciphertext TEXT NOT NULL,\\n  scopes TEXT NOT NULL DEFAULT '{}',\\n  created_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_stream_covers\\n  ON sync_crdt_checkpoints (partition_id, stream_id, covers_seq);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_scope_table\\n  ON sync_crdt_checkpoints (partition_id, app_table, row_id, field_name);\\n\",\"version\":\"0004\"},{\"name\":\"encrypted_crdt_server_seq\",\"schemaVersion\":5,\"upSql\":\"ALTER TABLE sync_crdt_updates ADD COLUMN server_seq BIGINT NULL;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_server_seq\\n  ON sync_crdt_updates (partition_id, stream_id, server_seq);\\n\\nALTER TABLE sync_crdt_checkpoints ADD COLUMN server_seq BIGINT NULL;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_server_seq\\n  ON sync_crdt_checkpoints (partition_id, stream_id, server_seq);\\n\",\"version\":\"0005\"}],\"schemaVersion\":5,\"tables\":[{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"task_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"body\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"author_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"deleted\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"comments\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"author_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":\"deleted\",\"subscriptionId\":\"sub-comments\"},{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"name\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"owner_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"archived\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"projects\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"owner_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-projects\"},{\"blobColumns\":[\"image\"],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"title\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"completed\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"user_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"image\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"title_yjs_state\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"}],\"crdtYjsFields\":[{\"containerKey\":\"title\",\"field\":\"title\",\"kind\":\"text\",\"rowIdField\":\"id\",\"stateColumn\":\"title_yjs_state\",\"syncMode\":\"server-merge\"}],\"encryptedFields\":[],\"name\":\"tasks\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"user_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-tasks\"}]}"
+
 public enum SyncularNativeGeneratedError: Error, Equatable {
     case runtimeManifestMismatch(String)
 }
@@ -44,9 +46,6 @@ public func assertSyncularNativeRuntimeManifest(_ manifest: SyncularNativeRuntim
     guard manifest.crateVersion == syncularNativeExpectedCrateVersion else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust crate version \(manifest.crateVersion) does not match generated expectation \(syncularNativeExpectedCrateVersion)")
     }
-    guard manifest.schemaVersion == syncularNativeGeneratedSchemaVersion else {
-        throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust schema version \(manifest.schemaVersion) does not match generated expectation \(syncularNativeGeneratedSchemaVersion)")
-    }
     guard manifest.storageBackend == "diesel-sqlite" else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust storage backend \(manifest.storageBackend) is not diesel-sqlite")
     }
@@ -62,6 +61,12 @@ public func assertSyncularNativeRuntimeManifest(_ manifest: SyncularNativeRuntim
     guard manifest.capabilities.contains("query-observer-events") else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing query-observer-events")
     }
+    guard manifest.capabilities.contains("generic-crdt-field-api") else {
+        throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing generic-crdt-field-api")
+    }
+    guard manifest.capabilities.contains("queued-crdt-field-updates") else {
+        throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing queued-crdt-field-updates")
+    }
 }
 
 public enum SyncularGeneratedOperationKind: String, Codable, Equatable {
@@ -69,11 +74,13 @@ public enum SyncularGeneratedOperationKind: String, Codable, Equatable {
     case delete
 }
 
-public enum SyncularJsonValue: Codable, Equatable {
+public indirect enum SyncularJsonValue: Codable, Equatable {
     case string(String)
     case int(Int64)
     case double(Double)
     case bool(Bool)
+    case object([String: SyncularJsonValue])
+    case array([SyncularJsonValue])
     case null
 
     public init(from decoder: Decoder) throws {
@@ -82,6 +89,8 @@ public enum SyncularJsonValue: Codable, Equatable {
         else if let value = try? container.decode(Bool.self) { self = .bool(value) }
         else if let value = try? container.decode(Int64.self) { self = .int(value) }
         else if let value = try? container.decode(Double.self) { self = .double(value) }
+        else if let value = try? container.decode([String: SyncularJsonValue].self) { self = .object(value) }
+        else if let value = try? container.decode([SyncularJsonValue].self) { self = .array(value) }
         else { self = .string(try container.decode(String.self)) }
     }
 
@@ -92,9 +101,143 @@ public enum SyncularJsonValue: Codable, Equatable {
         case .int(let value): try container.encode(value)
         case .double(let value): try container.encode(value)
         case .bool(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
         case .null: try container.encodeNil()
         }
     }
+}
+
+public struct SyncularBlobRef: Codable, Equatable {
+    public let hash: String
+    public let size: Int64
+    public let mimeType: String
+    public let encrypted: Bool?
+    public let keyId: String?
+
+    public init(hash: String, size: Int64, mimeType: String, encrypted: Bool? = nil, keyId: String? = nil) {
+        self.hash = hash
+        self.size = size
+        self.mimeType = mimeType
+        self.encrypted = encrypted
+        self.keyId = keyId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hash
+        case size
+        case mimeType
+        case encrypted
+        case keyId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let single = try decoder.singleValueContainer()
+        if let encoded = try? single.decode(String.self) {
+            self = try JSONDecoder().decode(SyncularBlobRef.self, from: Data(encoded.utf8))
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hash = try container.decode(String.self, forKey: .hash)
+        size = try container.decode(Int64.self, forKey: .size)
+        mimeType = try container.decode(String.self, forKey: .mimeType)
+        encrypted = try container.decodeIfPresent(Bool.self, forKey: .encrypted)
+        keyId = try container.decodeIfPresent(String.self, forKey: .keyId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(hash, forKey: .hash)
+        try container.encode(size, forKey: .size)
+        try container.encode(mimeType, forKey: .mimeType)
+        try container.encodeIfPresent(encrypted, forKey: .encrypted)
+        try container.encodeIfPresent(keyId, forKey: .keyId)
+    }
+
+    public var syncularPayloadValue: SyncularJsonValue {
+        var value: [String: SyncularJsonValue] = [
+            "hash": .string(hash),
+            "size": .int(size),
+            "mimeType": .string(mimeType),
+        ]
+        if let encrypted { value["encrypted"] = .bool(encrypted) }
+        if let keyId { value["keyId"] = .string(keyId) }
+        return .object(value)
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public struct SyncularSubscriptionArgs: Equatable {
+    public let actorId: String
+    public let projectId: String?
+
+    public init(actorId: String, projectId: String? = nil) {
+        self.actorId = actorId
+        self.projectId = projectId
+    }
+}
+
+public struct SyncularSubscriptionSpec: Codable, Equatable {
+    public let id: String
+    public let table: String
+    public let scopes: [String: SyncularJsonValue]
+    public let params: [String: SyncularJsonValue]
+
+    public init(id: String, table: String, scopes: [String: SyncularJsonValue], params: [String: SyncularJsonValue] = [:]) {
+        self.id = id
+        self.table = table
+        self.scopes = scopes
+        self.params = params
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public func syncularSubscriptionsJson(_ subscriptions: [SyncularSubscriptionSpec]) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return String(data: try encoder.encode(subscriptions), encoding: .utf8)!
+}
+
+public func syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = nil) throws -> String {
+    try syncularSubscriptionsJson(syncularDefaultSubscriptions(args: SyncularSubscriptionArgs(actorId: actorId, projectId: projectId)))
+}
+
+public func syncularDefaultSubscriptions(args: SyncularSubscriptionArgs) -> [SyncularSubscriptionSpec] {
+    [
+        commentSubscription(args: args),
+        projectSubscription(args: args),
+        taskSubscription(args: args),
+    ]
+}
+
+public func commentSubscription(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {
+    var scopes: [String: SyncularJsonValue] = [:]
+    scopes["user_id"] = .string(args.actorId)
+    if let projectId = args.projectId { scopes["project_id"] = .string(projectId) }
+    return SyncularSubscriptionSpec(id: "sub-comments", table: "comments", scopes: scopes, params: [:])
+}
+
+public func projectSubscription(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {
+    var scopes: [String: SyncularJsonValue] = [:]
+    scopes["user_id"] = .string(args.actorId)
+    return SyncularSubscriptionSpec(id: "sub-projects", table: "projects", scopes: scopes, params: [:])
+}
+
+public func taskSubscription(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {
+    var scopes: [String: SyncularJsonValue] = [:]
+    scopes["user_id"] = .string(args.actorId)
+    if let projectId = args.projectId { scopes["project_id"] = .string(projectId) }
+    return SyncularSubscriptionSpec(id: "sub-tasks", table: "tasks", scopes: scopes, params: [:])
 }
 
 public struct SyncularReadonlyQuery: Codable, Equatable {
@@ -133,28 +276,84 @@ public struct SyncularLiveQueryRegistration: Codable, Equatable {
     }
 }
 
-public struct SyncularNativeEvent: Decodable, Equatable {
-    public let kind: String
-    public let tables: [String]
-    public let queries: [String]
+public struct SyncularChangedRow: Decodable, Equatable {
+    public let table: String
+    public let rowId: String?
+    public let operation: String
+    public let changedFields: [String]
+    public let crdtFields: [String]
+    public let commitId: String?
+    public let commitSeq: Int64?
+    public let subscriptionId: String?
+    public let serverVersion: Int64?
 
-    public init(kind: String, tables: [String] = [], queries: [String] = []) {
-        self.kind = kind
-        self.tables = tables
-        self.queries = queries
+    public init(table: String, rowId: String? = nil, operation: String, changedFields: [String] = [], crdtFields: [String] = [], commitId: String? = nil, commitSeq: Int64? = nil, subscriptionId: String? = nil, serverVersion: Int64? = nil) {
+        self.table = table
+        self.rowId = rowId
+        self.operation = operation
+        self.changedFields = changedFields
+        self.crdtFields = crdtFields
+        self.commitId = commitId
+        self.commitSeq = commitSeq
+        self.subscriptionId = subscriptionId
+        self.serverVersion = serverVersion
     }
 
     private enum CodingKeys: String, CodingKey {
+        case table
+        case rowId
+        case operation
+        case changedFields
+        case crdtFields
+        case commitId
+        case commitSeq
+        case subscriptionId
+        case serverVersion
+    }
+}
+
+public struct SyncularNativeEvent: Decodable, Equatable {
+    public let eventSeq: UInt64
+    public let kind: String
+    public let tables: [String]
+    public let queries: [String]
+    public let changedRows: [SyncularChangedRow]
+    public let commandId: String?
+    public let clientCommitId: String?
+    public let durationMs: UInt64?
+
+    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil) {
+        self.eventSeq = eventSeq
+        self.kind = kind
+        self.tables = tables
+        self.queries = queries
+        self.changedRows = changedRows
+        self.commandId = commandId
+        self.clientCommitId = clientCommitId
+        self.durationMs = durationMs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case eventSeq = "event_seq"
         case kind
         case tables
         case queries
+        case changedRows
+        case commandId = "command_id"
+        case clientCommitId = "client_commit_id"
+        case durationMs = "duration_ms"
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        eventSeq = try container.decodeIfPresent(UInt64.self, forKey: .eventSeq) ?? 0
         kind = try container.decode(String.self, forKey: .kind)
         tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []
         queries = try container.decodeIfPresent([String].self, forKey: .queries) ?? []
+        changedRows = try container.decodeIfPresent([SyncularChangedRow].self, forKey: .changedRows) ?? []
+        commandId = try container.decodeIfPresent(String.self, forKey: .commandId)
+        clientCommitId = try container.decodeIfPresent(String.self, forKey: .clientCommitId)
+        durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)
     }
 }
 
@@ -189,6 +388,23 @@ public struct SyncularGeneratedOperation: Codable, Equatable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(table, forKey: .table)
+        try container.encode(rowId, forKey: .rowId)
+        try container.encode(op, forKey: .op)
+        if let payload {
+            try container.encode(payload, forKey: .payload)
+        } else {
+            try container.encodeNil(forKey: .payload)
+        }
+        if let baseVersion {
+            try container.encode(baseVersion, forKey: .baseVersion)
+        } else {
+            try container.encodeNil(forKey: .baseVersion)
+        }
     }
 }
 
@@ -235,8 +451,137 @@ public func syncularGeneratedFieldEncryptionConfigJson(keys: [String: String], e
     try SyncularFieldEncryptionConfig(keys: keys, rules: syncularGeneratedFieldEncryptionRules + additionalRules, encryptionKid: encryptionKid, decryptionErrorMode: decryptionErrorMode, envelopePrefix: envelopePrefix).jsonString()
 }
 
+public struct SyncularYjsUpdateEnvelope: Codable, Equatable {
+    public let updateId: String
+    public let updateBase64: String
+
+    public init(updateId: String, updateBase64: String) {
+        self.updateId = updateId
+        self.updateBase64 = updateBase64
+    }
+}
+
+public struct SyncularCrdtFieldRequest: Codable, Equatable {
+    public let table: String
+    public let rowId: String
+    public let field: String
+
+    public init(table: String, rowId: String, field: String) {
+        self.table = table
+        self.rowId = rowId
+        self.field = field
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public struct SyncularCrdtFieldTextRequest: Codable, Equatable {
+    public let table: String
+    public let rowId: String
+    public let field: String
+    public let nextText: String
+
+    public init(table: String, rowId: String, field: String, nextText: String) {
+        self.table = table
+        self.rowId = rowId
+        self.field = field
+        self.nextText = nextText
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public struct SyncularCrdtFieldYjsUpdateRequest: Codable, Equatable {
+    public let table: String
+    public let rowId: String
+    public let field: String
+    public let update: SyncularYjsUpdateEnvelope
+
+    public init(table: String, rowId: String, field: String, update: SyncularYjsUpdateEnvelope) {
+        self.table = table
+        self.rowId = rowId
+        self.field = field
+        self.update = update
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public struct SyncularCrdtFieldCompactionRequest: Codable, Equatable {
+    public let table: String
+    public let rowId: String
+    public let field: String
+    public let minUncheckpointedUpdates: Int64?
+
+    public init(table: String, rowId: String, field: String, minUncheckpointedUpdates: Int64? = nil) {
+        self.table = table
+        self.rowId = rowId
+        self.field = field
+        self.minUncheckpointedUpdates = minUncheckpointedUpdates
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public struct SyncularCrdtFieldDescriptor: Codable, Equatable {
+    public let table: String
+    public let rowId: String
+    public let field: String
+    public let stateColumn: String
+    public let containerKey: String
+    public let rowIdField: String
+    public let syncMode: String
+    public let kind: String
+}
+
+public struct SyncularCrdtFieldWriteReceipt: Codable, Equatable {
+    public let clientCommitId: String
+    public let syncMode: String
+}
+
+public struct SyncularCrdtFieldMaterialization: Codable, Equatable {
+    public let value: SyncularJsonValue
+    public let stateBase64: String?
+    public let stateVectorBase64: String
+}
+
+public struct SyncularCrdtFieldStateVector: Codable, Equatable {
+    public let stateVectorBase64: String
+}
+
+public struct SyncularCrdtFieldCompactionReceipt: Codable, Equatable {
+    public let checkpointCreated: Bool
+    public let clientCommitId: String?
+}
+
 public protocol SyncularNativeJsonClient {
     func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String
+    func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String
+    func openCrdtFieldJson(requestJson: String) throws -> String
+    func applyCrdtFieldTextJson(requestJson: String) throws -> String
+    func applyCrdtFieldYjsUpdateJson(requestJson: String) throws -> String
+    func enqueueCrdtFieldYjsUpdateJson(requestJson: String) throws -> String
+    func enqueueCrdtFieldTextJson(requestJson: String) throws -> String
+    func enqueueCrdtFieldCompactionJson(requestJson: String) throws -> String
+    func materializeCrdtFieldJson(requestJson: String) throws -> String
+    func snapshotCrdtFieldStateVectorJson(requestJson: String) throws -> String
+    func compactCrdtFieldJson(requestJson: String) throws -> String
     func queryJson(requestJson: String) throws -> String
     func registerQueryJson(queryJson: String) throws -> String
     func unregisterQuery(id: String) throws -> Bool
@@ -245,6 +590,34 @@ public protocol SyncularNativeJsonClient {
 public extension SyncularNativeJsonClient {
     func apply(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
         try applyMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
+    }
+
+    func enqueue(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
+        try enqueueMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
+    }
+
+    func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor {
+        try syncularDecodeJson(openCrdtFieldJson(requestJson: request.jsonString()), as: SyncularCrdtFieldDescriptor.self)
+    }
+
+    func applyCrdtFieldText(_ request: SyncularCrdtFieldTextRequest) throws -> SyncularCrdtFieldWriteReceipt {
+        try syncularDecodeJson(applyCrdtFieldTextJson(requestJson: request.jsonString()), as: SyncularCrdtFieldWriteReceipt.self)
+    }
+
+    func applyCrdtFieldYjsUpdate(_ request: SyncularCrdtFieldYjsUpdateRequest) throws -> SyncularCrdtFieldWriteReceipt {
+        try syncularDecodeJson(applyCrdtFieldYjsUpdateJson(requestJson: request.jsonString()), as: SyncularCrdtFieldWriteReceipt.self)
+    }
+
+    func materializeCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldMaterialization {
+        try syncularDecodeJson(materializeCrdtFieldJson(requestJson: request.jsonString()), as: SyncularCrdtFieldMaterialization.self)
+    }
+
+    func snapshotCrdtFieldStateVector(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldStateVector {
+        try syncularDecodeJson(snapshotCrdtFieldStateVectorJson(requestJson: request.jsonString()), as: SyncularCrdtFieldStateVector.self)
+    }
+
+    func compactCrdtField(_ request: SyncularCrdtFieldCompactionRequest) throws -> SyncularCrdtFieldCompactionReceipt {
+        try syncularDecodeJson(compactCrdtFieldJson(requestJson: request.jsonString()), as: SyncularCrdtFieldCompactionReceipt.self)
     }
 
     func query<Row: Decodable>(_ query: SyncularReadonlyQuery, as type: Row.Type) throws -> [Row] {
@@ -305,6 +678,10 @@ public final class SyncularNativeLiveQuery<Row: Decodable> {
     }
 }
 
+private func syncularDecodeJson<T: Decodable>(_ json: String, as type: T.Type) throws -> T {
+    try JSONDecoder().decode(T.self, from: Data(json.utf8))
+}
+
 private struct SyncularQueryResult<Row: Decodable>: Decodable {
     let rows: [Row]
 }
@@ -323,13 +700,32 @@ extension Int64: SyncularQueryValue { public var syncularJsonValue: SyncularJson
 extension Double: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .double(self) } }
 extension Bool: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .bool(self) } }
 
+extension SyncularBlobRef: SyncularQueryValue { public var syncularJsonValue: SyncularJsonValue { .string((try? jsonString()) ?? "{}") } }
+
 public struct SyncularQueryPredicate: Equatable {
     public let sql: String
     public let params: [SyncularJsonValue]
+
+    public init(sql: String, params: [SyncularJsonValue] = []) {
+        self.sql = sql
+        self.params = params
+    }
+
+    public func and(_ other: SyncularQueryPredicate) -> SyncularQueryPredicate {
+        SyncularQueryPredicate(sql: "((\(sql)) and (\(other.sql)))", params: params + other.params)
+    }
+
+    public func or(_ other: SyncularQueryPredicate) -> SyncularQueryPredicate {
+        SyncularQueryPredicate(sql: "((\(sql)) or (\(other.sql)))", params: params + other.params)
+    }
 }
 
 public struct SyncularQueryOrder: Equatable {
     public let sql: String
+
+    public init(sql: String) {
+        self.sql = sql
+    }
 }
 
 public struct SyncularQueryColumn<Value>: Equatable {
@@ -345,8 +741,44 @@ public struct SyncularQueryColumn<Value>: Equatable {
         SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) = ?", params: [value.syncularJsonValue])
     }
 
+    public func notEq(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) != ?", params: [value.syncularJsonValue])
+    }
+
+    public func gt(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) > ?", params: [value.syncularJsonValue])
+    }
+
+    public func gte(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) >= ?", params: [value.syncularJsonValue])
+    }
+
+    public func lt(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) < ?", params: [value.syncularJsonValue])
+    }
+
+    public func lte(_ value: Value) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) <= ?", params: [value.syncularJsonValue])
+    }
+
     public func isNull() -> SyncularQueryPredicate {
         SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) is null", params: [])
+    }
+
+    public func isNotNull() -> SyncularQueryPredicate {
+        SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) is not null", params: [])
+    }
+
+    public func isIn(_ values: [Value]) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        guard !values.isEmpty else { return SyncularQueryPredicate(sql: "0 = 1") }
+        let placeholders = Array(repeating: "?", count: values.count).joined(separator: ", ")
+        return SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) in (\(placeholders))", params: values.map(\.syncularJsonValue))
+    }
+
+    public func notIn(_ values: [Value]) -> SyncularQueryPredicate where Value: SyncularQueryValue {
+        guard !values.isEmpty else { return SyncularQueryPredicate(sql: "1 = 1") }
+        let placeholders = Array(repeating: "?", count: values.count).joined(separator: ", ")
+        return SyncularQueryPredicate(sql: "\(syncularQuoteIdentifier(name)) not in (\(placeholders))", params: values.map(\.syncularJsonValue))
     }
 
     public func asc() -> SyncularQueryOrder {
@@ -560,7 +992,7 @@ public struct TaskRow: Codable, Equatable {
     public let userId: String
     public let projectId: String?
     public let serverVersion: Int64
-    public let image: String?
+    public let image: SyncularBlobRef?
     public let titleYjsState: String?
 
     private enum CodingKeys: String, CodingKey {
@@ -581,10 +1013,10 @@ public struct NewTask: Codable, Equatable {
     public let completed: Int64?
     public let userId: String
     public let projectId: String?
-    public let image: String?
+    public let image: SyncularBlobRef?
     public let titleYjsState: String?
 
-    public init(id: String, title: String, completed: Int64? = nil, userId: String, projectId: String? = nil, image: String? = nil, titleYjsState: String? = nil) {
+    public init(id: String, title: String, completed: Int64? = nil, userId: String, projectId: String? = nil, image: SyncularBlobRef? = nil, titleYjsState: String? = nil) {
         self.id = id
         self.title = title
         self.completed = completed
@@ -610,10 +1042,10 @@ public struct TaskPatch: Codable, Equatable {
     public let completed: Int64?
     public let userId: String?
     public let projectId: String?
-    public let image: String?
+    public let image: SyncularBlobRef?
     public let titleYjsState: String?
 
-    public init(title: String? = nil, completed: Int64? = nil, userId: String? = nil, projectId: String? = nil, image: String? = nil, titleYjsState: String? = nil) {
+    public init(title: String? = nil, completed: Int64? = nil, userId: String? = nil, projectId: String? = nil, image: SyncularBlobRef? = nil, titleYjsState: String? = nil) {
         self.title = title
         self.completed = completed
         self.userId = userId
@@ -662,7 +1094,7 @@ public enum TaskQuery {
     public static let userId = SyncularQueryColumn<String>(table: "tasks", name: "user_id")
     public static let projectId = SyncularQueryColumn<String>(table: "tasks", name: "project_id")
     public static let serverVersion = SyncularQueryColumn<Int64>(table: "tasks", name: "server_version")
-    public static let image = SyncularQueryColumn<String>(table: "tasks", name: "image")
+    public static let image = SyncularQueryColumn<SyncularBlobRef>(table: "tasks", name: "image")
     public static let titleYjsState = SyncularQueryColumn<String>(table: "tasks", name: "title_yjs_state")
     public static func select() -> SyncularSelectQuery<TaskRow> { table.select() }
 }
@@ -679,7 +1111,7 @@ public enum SyncularAppOperations {
         payload["deleted"] = .int(input.deleted ?? 0)
         return SyncularGeneratedOperation(
             table: "comments",
-            rowId: String(input.id),
+            rowId: input.id,
             op: .upsert,
             payload: payload,
             baseVersion: baseVersion
@@ -729,7 +1161,7 @@ public enum SyncularAppOperations {
         payload["archived"] = .int(input.archived ?? 0)
         return SyncularGeneratedOperation(
             table: "projects",
-            rowId: String(input.id),
+            rowId: input.id,
             op: .upsert,
             payload: payload,
             baseVersion: baseVersion
@@ -775,14 +1207,14 @@ public enum SyncularAppOperations {
             payload["project_id"] = .string(value)
         }
         if let value = input.image {
-            payload["image"] = .string(value)
+            payload["image"] = value.syncularPayloadValue
         }
         if let value = input.titleYjsState {
             payload["title_yjs_state"] = .string(value)
         }
         return SyncularGeneratedOperation(
             table: "tasks",
-            rowId: String(input.id),
+            rowId: input.id,
             op: .upsert,
             payload: payload,
             baseVersion: baseVersion
@@ -804,7 +1236,7 @@ public enum SyncularAppOperations {
             payload["project_id"] = .string(value)
         }
         if let value = patch.image {
-            payload["image"] = .string(value)
+            payload["image"] = value.syncularPayloadValue
         }
         if let value = patch.titleYjsState {
             payload["title_yjs_state"] = .string(value)
@@ -843,6 +1275,18 @@ public extension SyncularNativeJsonClient {
         try apply(SyncularAppOperations.deleteComment(rowId: rowId, baseVersion: baseVersion))
     }
 
+    func enqueueNewComment(_ input: NewComment, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.newComment(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    }
+
+    func enqueueCommentPatch(rowId: String, patch: CommentPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.patchComment(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+    }
+
+    func enqueueCommentDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.deleteComment(rowId: rowId, baseVersion: baseVersion))
+    }
+
     func applyNewProject(_ input: NewProject, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
         try apply(SyncularAppOperations.newProject(input, baseVersion: baseVersion), localRowJson: localRowJson)
     }
@@ -855,6 +1299,18 @@ public extension SyncularNativeJsonClient {
         try apply(SyncularAppOperations.deleteProject(rowId: rowId, baseVersion: baseVersion))
     }
 
+    func enqueueNewProject(_ input: NewProject, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.newProject(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    }
+
+    func enqueueProjectPatch(rowId: String, patch: ProjectPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.patchProject(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+    }
+
+    func enqueueProjectDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.deleteProject(rowId: rowId, baseVersion: baseVersion))
+    }
+
     func applyNewTask(_ input: NewTask, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
         try apply(SyncularAppOperations.newTask(input, baseVersion: baseVersion), localRowJson: localRowJson)
     }
@@ -865,6 +1321,73 @@ public extension SyncularNativeJsonClient {
 
     func applyTaskDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
         try apply(SyncularAppOperations.deleteTask(rowId: rowId, baseVersion: baseVersion))
+    }
+
+    func enqueueNewTask(_ input: NewTask, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.newTask(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    }
+
+    func enqueueTaskPatch(rowId: String, patch: TaskPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.patchTask(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+    }
+
+    func enqueueTaskDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
+        try enqueue(SyncularAppOperations.deleteTask(rowId: rowId, baseVersion: baseVersion))
+    }
+
+    func openTaskTitleCrdtField(rowId: String) throws -> SyncularCrdtFieldDescriptor {
+        let request = SyncularCrdtFieldRequest(table: "tasks", rowId: rowId, field: "title")
+        return try openCrdtField(request)
+    }
+
+    func applyTaskTitleText(rowId: String, nextText: String) throws -> SyncularCrdtFieldWriteReceipt {
+        let request = SyncularCrdtFieldTextRequest(table: "tasks", rowId: rowId, field: "title", nextText: nextText)
+        return try applyCrdtFieldText(request)
+    }
+
+    func enqueueTaskTitleText(rowId: String, nextText: String) throws -> String {
+        let request = SyncularCrdtFieldTextRequest(table: "tasks", rowId: rowId, field: "title", nextText: nextText)
+        return try enqueueCrdtFieldTextJson(requestJson: request.jsonString())
+    }
+
+    func applyTaskTitleUpdate(rowId: String, update: SyncularYjsUpdateEnvelope) throws -> SyncularCrdtFieldWriteReceipt {
+        let request = SyncularCrdtFieldYjsUpdateRequest(table: "tasks", rowId: rowId, field: "title", update: update)
+        return try applyCrdtFieldYjsUpdate(request)
+    }
+
+    func enqueueTaskTitleUpdate(rowId: String, update: SyncularYjsUpdateEnvelope) throws -> String {
+        let request = SyncularCrdtFieldYjsUpdateRequest(table: "tasks", rowId: rowId, field: "title", update: update)
+        return try enqueueCrdtFieldYjsUpdateJson(requestJson: request.jsonString())
+    }
+
+    func materializeTaskTitle(rowId: String) throws -> SyncularCrdtFieldMaterialization {
+        let request = SyncularCrdtFieldRequest(table: "tasks", rowId: rowId, field: "title")
+        return try materializeCrdtField(request)
+    }
+
+    func materializeTaskTitleJson(rowId: String) throws -> String {
+        let request = SyncularCrdtFieldRequest(table: "tasks", rowId: rowId, field: "title")
+        return try materializeCrdtFieldJson(requestJson: request.jsonString())
+    }
+
+    func snapshotTaskTitleStateVector(rowId: String) throws -> SyncularCrdtFieldStateVector {
+        let request = SyncularCrdtFieldRequest(table: "tasks", rowId: rowId, field: "title")
+        return try snapshotCrdtFieldStateVector(request)
+    }
+
+    func snapshotTaskTitleStateVectorJson(rowId: String) throws -> String {
+        let request = SyncularCrdtFieldRequest(table: "tasks", rowId: rowId, field: "title")
+        return try snapshotCrdtFieldStateVectorJson(requestJson: request.jsonString())
+    }
+
+    func compactTaskTitle(rowId: String, minUncheckpointedUpdates: Int64 = 1) throws -> SyncularCrdtFieldCompactionReceipt {
+        let request = SyncularCrdtFieldCompactionRequest(table: "tasks", rowId: rowId, field: "title", minUncheckpointedUpdates: minUncheckpointedUpdates)
+        return try compactCrdtField(request)
+    }
+
+    func enqueueTaskTitleCompaction(rowId: String, minUncheckpointedUpdates: Int64 = 1) throws -> String {
+        let request = SyncularCrdtFieldCompactionRequest(table: "tasks", rowId: rowId, field: "title", minUncheckpointedUpdates: minUncheckpointedUpdates)
+        return try enqueueCrdtFieldCompactionJson(requestJson: request.jsonString())
     }
 
 }

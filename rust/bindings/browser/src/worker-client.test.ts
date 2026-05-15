@@ -45,6 +45,175 @@ describe('Syncular v2 worker client', () => {
     });
   });
 
+  it('rejects public mutating SQL before sending it to the worker', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    await expect(
+      client.executeSql('insert into tasks (id) values (?)', ['1'])
+    ).rejects.toThrow('public SQL is read-only');
+    expect(worker.messages).toEqual([]);
+  });
+
+  it('keeps unsafe SQL on an explicit internal worker request', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const promise = client.executeUnsafeSql('create table setup (id text)');
+    const request = worker.messages[0]!;
+    expect(request).toMatchObject({
+      type: 'executeUnsafeSql',
+      sql: 'create table setup (id text)',
+    });
+    worker.respond({
+      id: request.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [], numAffectedRows: 0 },
+    });
+
+    await expect(promise).resolves.toEqual({ rows: [], numAffectedRows: 0 });
+  });
+
+  it('forwards conflict summary and resolution requests to the worker', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const summaries = client.conflictSummaries();
+    expect(worker.messages[0]).toMatchObject({ type: 'conflictSummaries' });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [
+        {
+          id: 'conflict-1',
+          clientCommitId: 'commit-1',
+          opIndex: 0,
+          resultStatus: 'conflict',
+          message: 'version conflict',
+          code: 'VERSION_CONFLICT',
+          serverVersion: 9,
+          resolvedAt: null,
+          resolution: null,
+        },
+      ],
+    });
+    await expect(summaries).resolves.toEqual([
+      expect.objectContaining({ id: 'conflict-1', code: 'VERSION_CONFLICT' }),
+    ]);
+
+    const retry = client.retryConflictKeepLocal('conflict-1');
+    expect(worker.messages[1]).toMatchObject({
+      type: 'retryConflictKeepLocal',
+      conflictId: 'conflict-1',
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: 'commit-retry',
+    });
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+    await expect(retry).resolves.toBe('commit-retry');
+
+    const resolve = client.resolveConflict('conflict-1', 'keep-server');
+    expect(worker.messages[3]).toMatchObject({
+      type: 'resolveConflict',
+      conflictId: 'conflict-1',
+      resolution: 'keep-server',
+    });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+    await expect(resolve).resolves.toBeUndefined();
+  });
+
+  it('forwards generic CRDT field requests to the worker', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const field = { table: 'tasks', rowId: 'task-1', field: 'title' };
+    const openPromise = client.openCrdtField(field);
+    expect(worker.messages[0]).toMatchObject({
+      type: 'openCrdtField',
+      request: field,
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        ...field,
+        stateColumn: 'title_yjs_state',
+        containerKey: 'title',
+        rowIdField: 'id',
+        kind: 'text',
+        syncMode: 'server-merge',
+      },
+    });
+    await expect(openPromise).resolves.toMatchObject({
+      stateColumn: 'title_yjs_state',
+    });
+
+    const writePromise = client.applyCrdtFieldYjsUpdate({
+      ...field,
+      update: { updateId: 'u1', updateBase64: 'AA' },
+    });
+    expect(worker.messages[1]).toMatchObject({
+      type: 'applyCrdtFieldYjsUpdate',
+      request: { table: 'tasks', rowId: 'task-1', field: 'title' },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { clientCommitId: 'commit-1', syncMode: 'server-merge' },
+    });
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+    await expect(writePromise).resolves.toEqual({
+      clientCommitId: 'commit-1',
+      syncMode: 'server-merge',
+    });
+  });
+
   it('times out requests and sends best-effort cancel', async () => {
     const worker = new FakeWorker();
     const diagnostics: SyncularV2DiagnosticEvent[] = [];
@@ -112,6 +281,80 @@ describe('Syncular v2 worker client', () => {
       storage: 'opfsSahPool',
       rust: { features: ['web-owned-sqlite'] },
     });
+  });
+
+  it('selects compatible runtime artifacts before opening the worker', async () => {
+    const worker = new FakeWorker();
+    const promise = createSyncularV2WorkerClient({
+      worker: worker.asWorker(),
+      config: {
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client',
+      },
+      requiredRuntimeFeatures: ['web-owned-sqlite-core'],
+      runtimeArtifacts: [
+        {
+          name: 'core',
+          features: ['web-owned-sqlite-core'],
+          wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
+          wasmUrl: new URL(
+            'https://app.test/syncular/wasm-core/syncular_v2_bg.wasm'
+          ),
+        },
+        {
+          name: 'full',
+          features: [
+            'web-owned-sqlite-core',
+            'web-owned-sqlite',
+            'blobs',
+            'crdt-yjs',
+            'e2ee',
+          ],
+          wasmGlueUrl: '/syncular/wasm/syncular_v2.js',
+          wasmUrl: '/syncular/wasm/syncular_v2_bg.wasm',
+        },
+      ],
+    });
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({
+      type: 'open',
+      runtime: {
+        wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
+        wasmUrl: 'https://app.test/syncular/wasm-core/syncular_v2_bg.wasm',
+      },
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await expect(promise).resolves.toBeInstanceOf(SyncularV2WorkerClient);
+  });
+
+  it('rejects opening when no runtime artifact satisfies required features', async () => {
+    const worker = new FakeWorker();
+    await expect(
+      createSyncularV2WorkerClient({
+        worker: worker.asWorker(),
+        config: {
+          baseUrl: '/sync',
+          actorId: 'actor',
+          clientId: 'client',
+        },
+        requiredRuntimeFeatures: ['e2ee'],
+        runtimeArtifacts: [
+          {
+            name: 'core',
+            features: ['web-owned-sqlite-core'],
+            wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
+            wasmUrl: '/syncular/wasm-core/syncular_v2_bg.wasm',
+          },
+        ],
+      })
+    ).rejects.toThrow('No Syncular Rust runtime artifact satisfies');
+    expect(worker.messages).toEqual([]);
   });
 
   it('reports connection state for UI surfaces', async () => {

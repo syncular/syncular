@@ -9,27 +9,29 @@ pub mod boltffi_bindings;
 pub mod client;
 #[path = "storage/compaction.rs"]
 pub mod compaction;
+#[path = "core/crdt_field.rs"]
+pub mod crdt_field;
 #[path = "core/crdt_yjs.rs"]
 pub mod crdt_yjs;
 #[cfg(feature = "native")]
-#[path = "demo/tasks.rs"]
-pub mod demo_tasks;
-#[cfg(feature = "native")]
 #[path = "storage/diesel_sqlite.rs"]
 pub mod diesel_sqlite;
-#[cfg(feature = "native")]
-#[path = "generated/diesel_tables.rs"]
-pub mod diesel_tables;
+#[cfg(feature = "e2ee")]
 #[path = "core/encrypted_crdt.rs"]
 pub mod encrypted_crdt;
+#[cfg(not(feature = "e2ee"))]
+#[path = "core/encrypted_crdt_disabled.rs"]
+pub mod encrypted_crdt;
+#[cfg(feature = "e2ee")]
 #[path = "core/encryption.rs"]
+pub mod encryption;
+#[cfg(not(feature = "e2ee"))]
+#[path = "core/encryption_disabled.rs"]
 pub mod encryption;
 #[path = "core/error.rs"]
 pub mod error;
-#[path = "generated/syncular.rs"]
-pub mod generated;
-#[path = "generated/migrations.rs"]
-pub mod migrations;
+#[cfg(feature = "demo-todo-fixture")]
+pub mod fixtures;
 #[cfg(feature = "native")]
 #[path = "native/facade.rs"]
 pub mod native;
@@ -38,12 +40,11 @@ pub mod native;
 pub mod native_ffi;
 #[path = "core/protocol.rs"]
 pub mod protocol;
+#[path = "core/runtime_schema.rs"]
+pub mod runtime_schema;
 #[cfg(feature = "native")]
-#[path = "storage/rusqlite_sqlite.rs"]
-pub mod rusqlite_sqlite;
-#[cfg(feature = "native")]
-#[path = "generated/schema.rs"]
-pub mod schema;
+#[path = "storage/diesel_schema.rs"]
+mod schema;
 #[cfg(feature = "native")]
 #[path = "storage/sqlite_query.rs"]
 pub mod sqlite_query;
@@ -56,7 +57,7 @@ pub mod web_client;
 #[cfg(all(feature = "web-store", target_arch = "wasm32"))]
 #[path = "web/host_store.rs"]
 pub mod web_host_store;
-#[cfg(all(feature = "web-owned-sqlite", target_arch = "wasm32"))]
+#[cfg(all(feature = "web-owned-sqlite-core", target_arch = "wasm32"))]
 #[path = "web/sqlite_wasm_store.rs"]
 pub mod web_sqlite_wasm_store;
 #[cfg(feature = "web-client")]
