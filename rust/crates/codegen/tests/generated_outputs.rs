@@ -16,7 +16,7 @@ fn generated_outputs_are_current() {
         .arg("--migrations-dir")
         .arg(runtime_dir.join("migrations"))
         .arg("--rust-output-dir")
-        .arg(runtime_dir.join("src/generated"))
+        .arg(runtime_dir.join("src/fixtures/todo/generated"))
         .arg("--check")
         .output()
         .expect("run syncular-codegen --check for runtime generated modules");

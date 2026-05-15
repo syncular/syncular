@@ -4,7 +4,8 @@ use crate::crdt_yjs::{
 };
 use crate::encryption::encryption_helpers_json;
 use crate::native::{
-    native_runtime_manifest_json, NativeClientConfig, NativeClientOptions, NativeSyncularClient,
+    native_runtime_manifest_json, NativeClientConfig, NativeClientOpenTask, NativeClientOptions,
+    NativeSyncularClient,
 };
 use boltffi::{data, export};
 use std::sync::Mutex;
@@ -20,11 +21,17 @@ pub struct SyncularBoltClientConfig {
     pub client_id: String,
     pub actor_id: String,
     pub project_id: Option<String>,
+    pub app_schema_json: Option<String>,
     pub auto_sync_local_writes: bool,
 }
 
 pub struct SyncularBoltClient {
-    inner: Mutex<NativeSyncularClient>,
+    inner: Mutex<SyncularBoltClientInner>,
+}
+
+enum SyncularBoltClientInner {
+    Opening(NativeClientOpenTask),
+    Ready(NativeSyncularClient),
 }
 
 #[export]
@@ -77,12 +84,76 @@ impl SyncularBoltClient {
         }
     }
 
+    pub fn open_async(config: SyncularBoltClientConfig) -> Result<Self, String> {
+        let options = NativeClientOptions {
+            auto_sync_local_writes: config.auto_sync_local_writes,
+        };
+        let task = NativeSyncularClient::open_native_async_with_options(config.into(), options);
+        set_last_open_error(None);
+        Ok(Self {
+            inner: Mutex::new(SyncularBoltClientInner::Opening(task)),
+        })
+    }
+
+    pub fn open_command_id(&self) -> Result<Option<String>, String> {
+        let client = self
+            .inner
+            .lock()
+            .map_err(|_| "syncular native client mutex is poisoned".to_string())?;
+        match &*client {
+            SyncularBoltClientInner::Opening(task) => Ok(Some(task.command_id().to_string())),
+            SyncularBoltClientInner::Ready(_) => Ok(None),
+        }
+    }
+
+    pub fn is_open_finished(&self) -> Result<bool, String> {
+        let mut client = self
+            .inner
+            .lock()
+            .map_err(|_| "syncular native client mutex is poisoned".to_string())?;
+        match &mut *client {
+            SyncularBoltClientInner::Opening(task) => Ok(task.is_finished()),
+            SyncularBoltClientInner::Ready(_) => Ok(true),
+        }
+    }
+
+    pub fn finish_open_timeout(&self, timeout_ms: u64) -> Result<bool, String> {
+        let mut client = self
+            .inner
+            .lock()
+            .map_err(|_| "syncular native client mutex is poisoned".to_string())?;
+        let SyncularBoltClientInner::Opening(task) = &mut *client else {
+            return Ok(true);
+        };
+        match task.take_client_timeout(Duration::from_millis(timeout_ms)) {
+            Some(Ok(ready)) => {
+                *client = SyncularBoltClientInner::Ready(ready);
+                set_last_open_error(None);
+                Ok(true)
+            }
+            Some(Err(error)) => {
+                let error = binding_error(error);
+                set_last_open_error(Some(error.clone()));
+                Err(error)
+            }
+            None => Ok(false),
+        }
+    }
+
     pub fn runtime_manifest_json(&self) -> Result<String, String> {
         syncular_runtime_manifest_json()
     }
 
     pub fn set_auth_headers_json(&self, headers_json: &str) -> Result<bool, String> {
         self.with_client_mut(|client| client.set_auth_headers_json(headers_json).map(|_| true))
+    }
+
+    pub fn set_subscriptions_json(&self, subscriptions_json: &str) -> Result<bool, String> {
+        self.with_client_mut(|client| {
+            client
+                .set_subscriptions_json(subscriptions_json)
+                .map(|_| true)
+        })
     }
 
     pub fn set_field_encryption_json(&self, config_json: &str) -> Result<bool, String> {
@@ -97,8 +168,16 @@ impl SyncularBoltClient {
         self.with_client(|client| client.trigger_sync().map(|_| true))
     }
 
+    pub fn trigger_sync_websocket(&self) -> Result<bool, String> {
+        self.with_client(|client| client.trigger_sync_websocket().map(|_| true))
+    }
+
     pub fn enqueue_sync_now(&self) -> Result<String, String> {
         self.with_client(|client| client.enqueue_sync_now())
+    }
+
+    pub fn enqueue_sync_websocket(&self) -> Result<String, String> {
+        self.with_client(|client| client.enqueue_sync_websocket())
     }
 
     pub fn pause_sync_worker(&self) -> Result<bool, String> {
@@ -114,11 +193,11 @@ impl SyncularBoltClient {
     }
 
     pub fn poll_event_json_timeout(&self, timeout_ms: u64) -> Result<Option<String>, String> {
-        self.with_client(|client| {
-            client
-                .poll_event_json_timeout(Duration::from_millis(timeout_ms))
-                .transpose()
-        })
+        let poller = self.with_client(|client| Ok(client.event_poller()))?;
+        poller
+            .poll_event_json_timeout(Duration::from_millis(timeout_ms))
+            .transpose()
+            .map_err(binding_error)
     }
 
     pub fn apply_local_operation_json(
@@ -163,6 +242,45 @@ impl SyncularBoltClient {
 
     pub fn enqueue_yjs_update_json(&self, update_json: &str) -> Result<String, String> {
         self.with_client(|client| client.enqueue_yjs_update_json(update_json))
+    }
+
+    pub fn open_crdt_field_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client(|client| client.open_crdt_field_json(request_json))
+    }
+
+    pub fn apply_crdt_field_text_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.apply_crdt_field_text_json(request_json))
+    }
+
+    pub fn apply_crdt_field_yjs_update_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.apply_crdt_field_yjs_update_json(request_json))
+    }
+
+    pub fn enqueue_crdt_field_yjs_update_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client(|client| client.enqueue_crdt_field_yjs_update_json(request_json))
+    }
+
+    pub fn enqueue_crdt_field_text_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client(|client| client.enqueue_crdt_field_text_json(request_json))
+    }
+
+    pub fn enqueue_crdt_field_compaction_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client(|client| client.enqueue_crdt_field_compaction_json(request_json))
+    }
+
+    pub fn materialize_crdt_field_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.materialize_crdt_field_json(request_json))
+    }
+
+    pub fn snapshot_crdt_field_state_vector_json(
+        &self,
+        request_json: &str,
+    ) -> Result<String, String> {
+        self.with_client_mut(|client| client.snapshot_crdt_field_state_vector_json(request_json))
+    }
+
+    pub fn compact_crdt_field_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.compact_crdt_field_json(request_json))
     }
 
     pub fn apply_encrypted_crdt_update_json(&self, request_json: &str) -> Result<String, String> {
@@ -337,7 +455,7 @@ impl SyncularBoltClient {
         let client = NativeSyncularClient::open_native_with_options(config.into(), options)
             .map_err(binding_error)?;
         Ok(Self {
-            inner: Mutex::new(client),
+            inner: Mutex::new(SyncularBoltClientInner::Ready(client)),
         })
     }
 
@@ -349,7 +467,13 @@ impl SyncularBoltClient {
             .inner
             .lock()
             .map_err(|_| "syncular native client mutex is poisoned".to_string())?;
-        f(&client).map_err(binding_error)
+        match &*client {
+            SyncularBoltClientInner::Ready(client) => f(client).map_err(binding_error),
+            SyncularBoltClientInner::Opening(task) => Err(format!(
+                "syncular native client open is still running ({})",
+                task.command_id()
+            )),
+        }
     }
 
     fn with_client_mut<T>(
@@ -360,7 +484,13 @@ impl SyncularBoltClient {
             .inner
             .lock()
             .map_err(|_| "syncular native client mutex is poisoned".to_string())?;
-        f(&mut client).map_err(binding_error)
+        match &mut *client {
+            SyncularBoltClientInner::Ready(client) => f(client).map_err(binding_error),
+            SyncularBoltClientInner::Opening(task) => Err(format!(
+                "syncular native client open is still running ({})",
+                task.command_id()
+            )),
+        }
     }
 }
 
@@ -372,6 +502,7 @@ impl From<SyncularBoltClientConfig> for NativeClientConfig {
             client_id: config.client_id,
             actor_id: config.actor_id,
             project_id: config.project_id,
+            app_schema_json: config.app_schema_json,
         }
     }
 }

@@ -1,8 +1,14 @@
 import type { SyncOperation } from '../../../../packages/core/src/index';
+import { Kysely } from 'kysely';
 import {
   createSyncularRustOwnedSqlite,
+  createSyncularV2Dialect,
   type SyncularRustOwnedSqlite,
 } from '../../../../rust/bindings/browser/src/index';
+import {
+  ensureSyncularAppSchema,
+  syncularGeneratedAppSchema,
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 
 type WorkerRequest =
   | {
@@ -62,8 +68,10 @@ async function dispatch(request: WorkerRequest): Promise<unknown> {
           fileName: request.fileName,
           storage: request.storage,
           clearOnInit: request.clearOnInit ?? false,
+          appSchema: syncularGeneratedAppSchema,
         },
       });
+      await ensureRustOwnedBenchmarkSchema(db);
       return true;
     }
     case 'applyBatch':
@@ -80,6 +88,22 @@ async function dispatch(request: WorkerRequest): Promise<unknown> {
 function requireDb(): SyncularRustOwnedSqlite {
   if (!db) throw new Error('Rust-owned SQLite worker database is not open');
   return db;
+}
+
+async function ensureRustOwnedBenchmarkSchema(
+  client: SyncularRustOwnedSqlite
+): Promise<void> {
+  const dialect = createSyncularV2Dialect(
+    client as unknown as Parameters<typeof createSyncularV2Dialect>[0],
+    { unsafeWrites: true }
+  );
+  const schemaDb = new Kysely<any>({ dialect });
+  try {
+    await ensureSyncularAppSchema(schemaDb);
+  } finally {
+    await dialect.destroyLiveQueries();
+    await schemaDb.destroy();
+  }
 }
 
 function post(response: WorkerResponse): void {

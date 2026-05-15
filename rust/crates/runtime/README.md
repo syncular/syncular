@@ -33,13 +33,13 @@ module names:
 - `src/transport`: native HTTP, snapshot chunk, and WebSocket transport
 - `src/native`: binding-oriented facade and narrow C ABI
 - `src/bindings`: generated-binding surfaces such as BoltFFI
-- `src/generated`: checked-in codegen output from migrations and `syncular.codegen.json`
-- `src/demo`: hand-written CLI demo helpers built on top of generated code
+- `src/fixtures/todo`: checked-in todo-app fixture output and demo helpers used
+  by runtime tests and the CLI demo feature
 
 That keeps the Rust SDK/CLI thin while leaving a reusable core behind
 Swift/Kotlin/TypeScript bindings or a different storage/transport adapter.
-rusqlite remains useful as a test/parity backend, but Diesel is the supported
-native SQLite store. Browser/WASM uses Rust-owned SQLite through
+rusqlite remains useful as a fixture/test parity backend, but Diesel is the
+supported native SQLite store. Browser/WASM uses Rust-owned SQLite through
 `sqlite-wasm-rs`/`sqlite-wasm-vfs` instead of a JavaScript host store.
 
 Feature flags now make that boundary explicit:
@@ -160,11 +160,17 @@ The C ABI catches Rust panics at exported boundaries and returns structured
 `Internal` errors through `error_out` instead of unwinding into Swift/Kotlin/C.
 Native hosts can poll `poll_event_timeout()` for binding-safe events:
 `SyncCompleted`, `SyncFailed` with structured `{ kind, message, debug? }` error
-info, or `RowsChanged` with affected table names. Local writes emit
-`RowsChanged` immediately. Successful syncs return a `SyncReport`: if the server
-changed app tables, native polling emits `SyncCompleted` followed by
-`RowsChanged` for the actual affected generated tables. Sync-created conflicts,
-conflict resolution, and keep-local retry emit `ConflictsChanged`.
+info, or `RowsChanged` with affected table names and additive `changedRows`
+row/field summaries. Local writes emit `RowsChanged` immediately. Successful
+syncs return a `SyncReport`: if the server changed app tables, native polling
+emits `SyncCompleted` followed by `RowsChanged` for the actual affected
+generated tables. Both events include the same generic row deltas when Syncular
+can determine them: table, row id, insert/update/delete operation, changed
+fields, CRDT/Yjs state fields, subscription id, server version, and commit
+metadata. The JSON payload for row events also includes a generic `source`
+(`localWrite` or `remotePull`), so app bridges can update active documents,
+sidebars, and conflict UI without guessing from table names. Sync-created
+conflicts, conflict resolution, and keep-local retry emit `ConflictsChanged`.
 `poll_event_json_timeout()` exposes the same event as JSON for C-style bindings.
 For generated host wrappers, `app_tables_json` lists generated app tables and
 `query_json(request)` executes read-only SQL/query-builder output against
@@ -200,6 +206,15 @@ Native apps can update sync auth with `set_auth_headers_json` /
 `syncular_native_client_set_auth_headers_json`; the headers are applied to the
 foreground writer and the background sync worker before subsequent HTTP sync
 requests. Generated/native wrappers should expose this as `setAuthHeaders`.
+HTTP 401/403 sync failures are normalized to `AuthExpired` native events that
+carry the original sync `command_id`, allowing hosts to refresh headers and
+retry without reopening the native client.
+Native apps that open with injected app schema JSON can update subscriptions
+with `set_subscriptions_json` /
+`syncular_native_client_set_subscriptions_json` before sync. Generated
+Swift/Kotlin app clients emit `SyncularSubscriptionSpec`, per-table
+subscription helpers, and `syncularSubscriptionsJson(...)` so UI shells do not
+hand-roll subscription JSON.
 Native apps can also call `compact_storage_json` /
 `syncular_native_client_compact_storage_json` to prune old acked outbox rows,
 resolved conflicts, optional failed blob uploads, optional inactive
@@ -222,26 +237,33 @@ The example also includes local native generated-client smokes. They first
 compile and run generated Swift/Kotlin app clients against mock generic native
 clients, then build the Rust runtime dylib, link generated Swift through
 BoltFFI, package the JVM native library, and run generated Kotlin through the
-actual Kotlin/JNI binding against a real local SQLite database:
+actual Kotlin/JNI binding against a real local SQLite database. The same smoke
+then starts a local Hono sync server and proves Swift plus Kotlin/JVM can set
+auth, set generated subscriptions, receive command-correlated `AuthExpired` for
+stale auth, refresh headers on the hot worker, enqueue sync, receive
+`SyncCompleted`, and query pulled rows. It also pushes generated task mutations,
+pushes one generated mutation through the WebSocket transport, resolves a
+Hono-backed version conflict with keep-local retry, clears non-retry conflicts
+with keep-server/dismiss, and pulls those rows into a second native client:
 
 ```bash
 bun run rust:native-smoke
 ```
 
 The crate is configured to build `rlib`, `staticlib`, and `cdylib` artifacts.
-Native BoltFFI packaging has been smoke-tested locally with:
+Native BoltFFI packaging should use the repo-owned packaging script so Swift
+headers, Swift wrappers, Android Kotlin wrappers, JNI glue, and native
+libraries are regenerated together:
 
 ```bash
-cd rust/crates/runtime
-boltffi pack apple
-ANDROID_HOME=../../../.context/android-sdk \
-ANDROID_SDK_ROOT=../../../.context/android-sdk \
-ANDROID_NDK_HOME=../../../.context/android-sdk/ndk/28.2.13676358 \
-  boltffi pack android
-JAVA_HOME=/opt/homebrew/Cellar/openjdk/25.0.2/libexec/openjdk.jdk/Contents/Home \
-  boltffi pack java
+bash rust/scripts/package-native-bindings.sh --all
 ```
 
+The script writes to `.context/native-packages` by default. See
+`rust/NATIVE_PACKAGING.md` for output layout, Android SDK/NDK environment
+variables, targeted `--apple` / `--android` / `--java` commands, Linux JVM
+cross-packaging notes, SwiftPM checksums, and the Android AAR/Maven publication
+flow.
 Android packaging requires bundled SQLite, so `native` enables
 `libsqlite3-sys/bundled` instead of linking a device/sysroot `sqlite3`.
 
@@ -447,6 +469,27 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
 `sync-ws` sends pending outbox commits over WebSocket and then performs the pull
 phase over HTTP, matching Syncular's transport model.
 
+Native host bindings expose the same path as `enqueueSyncWebsocket()` for
+queued UI work and `triggerSyncWebsocket()` for direct CLI/test work. The local
+Swift/Kotlin/JVM native smoke validates the queued WebSocket push path against a
+Bun-backed Hono route with WebSocket upgrades enabled. The same native smoke
+mounts the Hono blob routes and validates native file blob store, queued upload,
+generated `BlobRef` row sync, second-client pull, and native file retrieval. It
+also validates stale-auth blob upload retry/fail behavior while keeping local
+cache bytes available, plus missing remote blob 404 behavior without local
+caching. It also validates generated field-level E2EE config by pushing an
+encrypted title, observing the server-stored envelope from a plain reader, and
+pulling plaintext from a configured reader. It also verifies subscription
+revocation by switching
+the generated task subscription to an unauthorized scope, clearing scoped rows,
+then restoring the valid subscription and pulling the row again. Generated
+Swift/Kotlin live queries are registered before the reader sync and refresh
+typed rows from the native `QueriesChanged` event after `SyncCompleted`.
+Native schema negotiation is also covered: a future required schema version
+surfaces as `SyncFailed`, while a future latest schema version is tolerated.
+Client-id ownership conflicts also surface as command-correlated `SyncFailed`
+events when another authenticated actor reuses the same client id.
+
 Pull handling performs bounded follow-up rounds when the server returns a
 bootstrap continuation state, so large snapshots can complete across multiple
 pull requests. Snapshot chunk references are fetched through the transport and
@@ -494,6 +537,46 @@ Multiple updates for the same `(table, row_id, field)` are written as one local
 operation, while the UI can keep applying editor updates in memory immediately.
 The direct synchronous APIs remain available for CLI/tests/simple apps and for
 bounded, measured local operations.
+
+## Native App Lifecycle
+
+The native bindings are shaped for UI hosts that keep Syncular work off the
+main thread. Open the database during app startup or scene/session activation,
+start or resume the native worker, then use queued methods for local writes,
+explicit sync, conflict commands, CRDT updates, blob file work, snapshot
+refresh, and compaction. Poll `poll_event_json_timeout()` from a background
+task and forward ordered events to the UI model by `event_seq` and
+`command_id`; do not make view code wait synchronously for SQLite/outbox work.
+For live views, prefer the generic `changedRows` summaries on `RowsChanged`,
+`QueriesChanged`, `SyncCompleted`, and `LocalWriteCommitted` over reloading
+whole app tables. They are intentionally app-schema deltas, not editor-specific
+events: a bridge can route CRDT-backed field changes to an active editor,
+update list rows for title/preview changes, and handle deletes or conflicts
+without a full bootstrap refresh.
+
+Startup can still include SQLite open, migration, schema validation, and native
+library loading. Use the async native open path when that cost would sit on a
+UI-critical path: Swift exposes `SyncularBoltClient(openAsync:)`, Kotlin/JVM
+exposes `SyncularBoltClient.openAsync(config)`, and both wrappers provide
+`openCommandId()`, `isOpenFinished()`, and `finishOpenTimeout(...)`. C hosts can
+use `syncular_native_client_open_async*`. After async open finishes, the returned
+client is the normal long-lived native runtime and all queued APIs behave the
+same as with synchronous open.
+
+When the app backgrounds, prefer leaving the worker alive if the platform allows
+short background work, then enqueue a sync or compaction only within the host
+platform's background execution budget. On foreground, refresh auth headers
+first, then enqueue sync and refresh large views through the snapshot/query
+refresh queue. On shutdown, call the explicit binding lifecycle method
+(`shutdown()` in BoltFFI-generated Swift/Kotlin/Java wrappers) and keep polling
+until the worker reports completion or the app's shutdown deadline is reached.
+When opening native clients with injected `appSchemaJson`, set generated
+subscriptions with `setSubscriptionsJson` before the first foreground sync.
+
+CRDT-backed editor fields should be initialized empty or with existing Yjs
+state before queued text replacement. Replacing populated legacy plaintext
+without Yjs state is rejected so the runtime cannot accidentally duplicate or
+blank editor content.
 
 The demo app server usually mounts sync at `http://localhost:9811/api/sync`, but
 its `tasks` table uses `user:{user_id}` scopes rather than the runtime test
@@ -545,9 +628,12 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir 
 }
 ```
 
-6. It writes generated Diesel `table!` macros into `src/generated/schema.rs`.
-7. It writes generated Diesel table adapters into `src/generated/diesel_tables.rs`.
-8. It writes generated subscriptions and mutation helpers into `src/generated/syncular.rs`.
+6. It writes generated Diesel `table!` macros into the consuming app's generated
+   Rust schema module.
+7. It writes generated Diesel table adapters into the consuming app's generated
+   Rust table-adapter module.
+8. It writes generated subscriptions and mutation helpers into the consuming
+   app's generated Rust client module.
 9. It writes generated browser TypeScript helpers to `typescriptOutputPath`
    or `generated/syncular.browser.ts` by default. That file contains the app DB
    type, a typed `createSyncularAppDatabase()` helper, row/input/patch types,

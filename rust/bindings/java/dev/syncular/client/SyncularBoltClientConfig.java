@@ -9,14 +9,16 @@ public final class SyncularBoltClientConfig {
     public final String clientId;
     public final String actorId;
     public final java.util.Optional<String> projectId;
+    public final java.util.Optional<String> appSchemaJson;
     public final boolean autoSyncLocalWrites;
 
-    public SyncularBoltClientConfig(String dbPath, String baseUrl, String clientId, String actorId, java.util.Optional<String> projectId, boolean autoSyncLocalWrites) {
+    public SyncularBoltClientConfig(String dbPath, String baseUrl, String clientId, String actorId, java.util.Optional<String> projectId, java.util.Optional<String> appSchemaJson, boolean autoSyncLocalWrites) {
         this.dbPath = dbPath;
         this.baseUrl = baseUrl;
         this.clientId = clientId;
         this.actorId = actorId;
         this.projectId = projectId;
+        this.appSchemaJson = appSchemaJson;
         this.autoSyncLocalWrites = autoSyncLocalWrites;
     }
     public String dbPath() {
@@ -39,6 +41,10 @@ public final class SyncularBoltClientConfig {
         return projectId;
     }
 
+    public java.util.Optional<String> appSchemaJson() {
+        return appSchemaJson;
+    }
+
     public boolean autoSyncLocalWrites() {
         return autoSyncLocalWrites;
     }
@@ -51,12 +57,13 @@ public final class SyncularBoltClientConfig {
             reader.readString(),
             reader.readString(),
             reader.readI8() == 0 ? java.util.Optional.empty() : java.util.Optional.ofNullable(reader.readString()),
+            reader.readI8() == 0 ? java.util.Optional.empty() : java.util.Optional.ofNullable(reader.readString()),
             reader.readBool()
         );
     }
 
     int wireEncodedSize() {
-        return (4 + (4 + (dbPath).length() * 3)) + (4 + (4 + (baseUrl).length() * 3)) + (4 + (4 + (clientId).length() * 3)) + (4 + (4 + (actorId).length() * 3)) + (1 + ((projectId).isPresent() ? ((4 + (4 + ((projectId).get()).length() * 3))) : 0)) + 1;
+        return (4 + (4 + (dbPath).length() * 3)) + (4 + (4 + (baseUrl).length() * 3)) + (4 + (4 + (clientId).length() * 3)) + (4 + (4 + (actorId).length() * 3)) + (1 + ((projectId).isPresent() ? ((4 + (4 + ((projectId).get()).length() * 3))) : 0)) + (1 + ((appSchemaJson).isPresent() ? ((4 + (4 + ((appSchemaJson).get()).length() * 3))) : 0)) + 1;
     }
 
     void wireEncodeTo(WireWriter wire) {
@@ -65,6 +72,7 @@ public final class SyncularBoltClientConfig {
         wire.writeString(clientId);
         wire.writeString(actorId);
         if ((projectId).isPresent()) { wire.writeI8((byte)1); wire.writeString((projectId).get()); } else { wire.writeI8((byte)0); };
+        if ((appSchemaJson).isPresent()) { wire.writeI8((byte)1); wire.writeString((appSchemaJson).get()); } else { wire.writeI8((byte)0); };
         wire.writeBool(autoSyncLocalWrites);
     }
 
@@ -80,7 +88,7 @@ public final class SyncularBoltClientConfig {
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
         SyncularBoltClientConfig other = (SyncularBoltClientConfig) obj;
-        return java.util.Objects.equals(this.dbPath, other.dbPath) && java.util.Objects.equals(this.baseUrl, other.baseUrl) && java.util.Objects.equals(this.clientId, other.clientId) && java.util.Objects.equals(this.actorId, other.actorId) && ((this.projectId) == null ? (other.projectId) == null : (!((other.projectId) == null) && (this.projectId).isPresent() == (other.projectId).isPresent() && (!((this.projectId).isPresent()) || java.util.Objects.equals((this.projectId).get(), (other.projectId).get())))) && this.autoSyncLocalWrites == other.autoSyncLocalWrites;
+        return java.util.Objects.equals(this.dbPath, other.dbPath) && java.util.Objects.equals(this.baseUrl, other.baseUrl) && java.util.Objects.equals(this.clientId, other.clientId) && java.util.Objects.equals(this.actorId, other.actorId) && ((this.projectId) == null ? (other.projectId) == null : (!((other.projectId) == null) && (this.projectId).isPresent() == (other.projectId).isPresent() && (!((this.projectId).isPresent()) || java.util.Objects.equals((this.projectId).get(), (other.projectId).get())))) && ((this.appSchemaJson) == null ? (other.appSchemaJson) == null : (!((other.appSchemaJson) == null) && (this.appSchemaJson).isPresent() == (other.appSchemaJson).isPresent() && (!((this.appSchemaJson).isPresent()) || java.util.Objects.equals((this.appSchemaJson).get(), (other.appSchemaJson).get())))) && this.autoSyncLocalWrites == other.autoSyncLocalWrites;
     }
 
     @Override
@@ -91,6 +99,7 @@ public final class SyncularBoltClientConfig {
         result = 31 * result + java.util.Objects.hashCode(clientId);
         result = 31 * result + java.util.Objects.hashCode(actorId);
         result = 31 * result + ((projectId) == null ? 0 : ((projectId).isPresent() ? (31 + (java.util.Objects.hashCode((projectId).get()))) : 0));
+        result = 31 * result + ((appSchemaJson) == null ? 0 : ((appSchemaJson).isPresent() ? (31 + (java.util.Objects.hashCode((appSchemaJson).get()))) : 0));
         result = 31 * result + Boolean.hashCode(autoSyncLocalWrites);
         return result;
     }
@@ -103,6 +112,7 @@ public final class SyncularBoltClientConfig {
             ", clientId=" + clientId +
             ", actorId=" + actorId +
             ", projectId=" + projectId +
+            ", appSchemaJson=" + appSchemaJson +
             ", autoSyncLocalWrites=" + autoSyncLocalWrites +
             '}';
     }

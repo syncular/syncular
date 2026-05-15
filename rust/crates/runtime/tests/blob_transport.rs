@@ -1,41 +1,57 @@
-use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
+use serde_json::Value;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::error::Result;
 use syncular_runtime::protocol::blob_hash;
 use syncular_runtime::transport::SyncAuthHeaders;
-use uuid::Uuid;
+use syncular_testkit::{
+    encoded_blob_hash, unique_temp_db_path, unique_temp_file_path, TestBlobServer,
+    TestBlobServerOptions,
+};
 
 #[test]
 fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
-    let bytes = vec![9u8, 8, 7, 6];
+    let bytes = blob_conformance_bytes(&["bytes"]);
     let hash = blob_hash(&bytes);
-    let server = BlobServer::start(bytes.clone(), hash.clone());
+    let server = blob_server(bytes.clone(), hash.clone())?;
     let path = temp_db_path("syncular-native-blob-transport");
     let mut client = SyncularClient::open(SyncularClientConfig {
         db_path: path.clone(),
-        base_url: format!("http://{}/sync", server.addr),
-        client_id: "blob-transport-client".to_string(),
-        actor_id: "actor-blob".to_string(),
+        base_url: server.sync_base_url(),
+        client_id: blob_conformance_str(&["clientId"]),
+        actor_id: blob_conformance_str(&["actorId"]),
         project_id: Some("p0".to_string()),
     })?;
     let mut headers = SyncAuthHeaders::new();
-    headers.insert("authorization".to_string(), "Bearer blob-token".to_string());
+    headers.insert(
+        "authorization".to_string(),
+        blob_conformance_str(&["authorization"]),
+    );
     client.set_auth_headers(headers);
 
-    let blob = client.store_blob_bytes(&bytes, "application/test", false)?;
+    let blob = client.store_blob_bytes(&bytes, &blob_conformance_str(&["mimeType"]), false)?;
     assert_eq!(blob.hash, hash);
-    assert_eq!(client.blob_upload_queue_stats()?.pending, 1);
+    assert_eq!(
+        client.blob_upload_queue_stats()?.pending,
+        blob_conformance_i64(&["expectedUploadQueueBefore", "pending"])
+    );
 
     let uploaded = client.process_blob_upload_queue()?;
-    assert_eq!(uploaded.uploaded, 1);
-    assert_eq!(uploaded.failed, 0);
-    assert_eq!(client.blob_upload_queue_stats()?.pending, 0);
+    assert_eq!(
+        uploaded.uploaded,
+        blob_conformance_i32(&["expectedProcessUploaded", "uploaded"])
+    );
+    assert_eq!(
+        uploaded.failed,
+        blob_conformance_i32(&["expectedProcessUploaded", "failed"])
+    );
+    assert_eq!(
+        client.blob_upload_queue_stats()?.pending,
+        blob_conformance_i64(&["expectedUploadQueueAfter", "pending"])
+    );
 
     client.clear_blob_cache()?;
     assert!(!client.is_blob_local(&blob.hash)?);
@@ -43,7 +59,7 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
     assert_eq!(downloaded, bytes);
     assert!(client.is_blob_local(&blob.hash)?);
 
-    let requests = server.requests.lock().unwrap().clone();
+    let requests = server.wait_for_requests(5, Duration::from_secs(1));
     assert_eq!(
         requests
             .iter()
@@ -51,15 +67,17 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
             .collect::<Vec<_>>(),
         vec![
             "/sync/blobs/upload".to_string(),
-            "/upload-target".to_string(),
-            format!("/sync/blobs/{}/complete", encoded_hash(&hash)),
-            format!("/sync/blobs/{}/url", encoded_hash(&hash)),
-            "/download-target".to_string(),
+            blob_conformance_str(&["uploadPath"]),
+            format!("/sync/blobs/{}/complete", encoded_blob_hash(&hash)),
+            format!("/sync/blobs/{}/url", encoded_blob_hash(&hash)),
+            blob_conformance_str(&["downloadPath"]),
         ]
     );
+    let expected_authorization = blob_conformance_str(&["authorization"]);
+    let expected_upload_token = blob_conformance_str(&["uploadToken"]);
     assert_eq!(
         requests[0].headers.get("authorization").map(String::as_str),
-        Some("Bearer blob-token")
+        Some(expected_authorization.as_str())
     );
     assert_eq!(requests[1].body, bytes);
     assert_eq!(
@@ -67,15 +85,15 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
             .headers
             .get("x-upload-token")
             .map(String::as_str),
-        Some("upload-token")
+        Some(expected_upload_token.as_str())
     );
     assert_eq!(
         requests[2].headers.get("authorization").map(String::as_str),
-        Some("Bearer blob-token")
+        Some(expected_authorization.as_str())
     );
     assert_eq!(
         requests[3].headers.get("authorization").map(String::as_str),
-        Some("Bearer blob-token")
+        Some(expected_authorization.as_str())
     );
 
     let _ = std::fs::remove_file(path);
@@ -84,24 +102,35 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
 
 #[test]
 fn native_http_blob_transport_streams_files_without_local_cache() -> Result<()> {
-    let bytes = (0..128_000)
+    let bytes = (0..blob_conformance_usize(&["streamingByteCount"]))
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
     let hash = blob_hash(&bytes);
-    let server = BlobServer::start(bytes.clone(), hash.clone());
+    let server = blob_server(bytes.clone(), hash.clone())?;
     let path = temp_db_path("syncular-native-blob-streaming");
     let input_path = temp_file_path("syncular-native-blob-streaming-input");
     let output_path = temp_file_path("syncular-native-blob-streaming-output");
     std::fs::write(&input_path, &bytes)?;
     let mut client = SyncularClient::open(SyncularClientConfig {
         db_path: path.clone(),
-        base_url: format!("http://{}/sync", server.addr),
-        client_id: "blob-streaming-client".to_string(),
-        actor_id: "actor-blob".to_string(),
+        base_url: server.sync_base_url(),
+        client_id: blob_conformance_str(&["streamingClientId"]),
+        actor_id: blob_conformance_str(&["actorId"]),
         project_id: Some("p0".to_string()),
     })?;
+    let mut headers = SyncAuthHeaders::new();
+    headers.insert(
+        "authorization".to_string(),
+        blob_conformance_str(&["authorization"]),
+    );
+    client.set_auth_headers(headers);
 
-    let blob = client.store_blob_file(Path::new(&input_path), "application/test", true, false)?;
+    let blob = client.store_blob_file(
+        Path::new(&input_path),
+        &blob_conformance_str(&["mimeType"]),
+        true,
+        false,
+    )?;
     assert_eq!(blob.hash, hash);
     assert_eq!(blob.size, bytes.len() as i64);
     assert!(!client.is_blob_local(&blob.hash)?);
@@ -110,8 +139,11 @@ fn native_http_blob_transport_streams_files_without_local_cache() -> Result<()> 
     assert_eq!(std::fs::read(&output_path)?, bytes);
     assert!(!client.is_blob_local(&blob.hash)?);
 
-    let requests = server.requests.lock().unwrap().clone();
-    assert_eq!(requests[1].body.len(), 128_000);
+    let requests = server.wait_for_requests(5, Duration::from_secs(1));
+    assert_eq!(
+        requests[1].body.len(),
+        blob_conformance_usize(&["streamingByteCount"])
+    );
     assert_eq!(requests[1].body, std::fs::read(&input_path)?);
 
     let _ = std::fs::remove_file(path);
@@ -120,130 +152,127 @@ fn native_http_blob_transport_streams_files_without_local_cache() -> Result<()> 
     Ok(())
 }
 
-#[derive(Clone, Debug)]
-struct RecordedRequest {
-    path: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
-}
+#[test]
+fn native_blob_cache_prunes_oldest_entries_to_byte_budget() -> Result<()> {
+    let path = temp_db_path("syncular-native-blob-cache-prune");
+    let mut client = SyncularClient::open(SyncularClientConfig {
+        db_path: path.clone(),
+        base_url: "http://127.0.0.1:9/sync".to_string(),
+        client_id: blob_conformance_str(&["cachePruneClientId"]),
+        actor_id: blob_conformance_str(&["actorId"]),
+        project_id: Some("p0".to_string()),
+    })?;
 
-struct BlobServer {
-    addr: SocketAddr,
-    requests: Arc<Mutex<Vec<RecordedRequest>>>,
-}
+    let old_bytes = blob_conformance_str(&["cachePruneOldText"]).into_bytes();
+    let old_blob =
+        client.store_blob_bytes(&old_bytes, &blob_conformance_str(&["textMimeType"]), false)?;
+    thread::sleep(Duration::from_millis(5));
+    let new_bytes = blob_conformance_str(&["cachePruneNewText"]).into_bytes();
+    let new_blob =
+        client.store_blob_bytes(&new_bytes, &blob_conformance_str(&["textMimeType"]), false)?;
 
-impl BlobServer {
-    fn start(bytes: Vec<u8>, hash: String) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind blob test server");
-        let addr = listener.local_addr().expect("blob test server addr");
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let thread_requests = Arc::clone(&requests);
-        thread::spawn(move || {
-            for stream in listener.incoming().take(5) {
-                let Ok(stream) = stream else {
-                    continue;
-                };
-                let (request, mut stream) = read_request(stream).expect("read blob test request");
-                let response = response_for(&request, addr, &hash, &bytes);
-                stream
-                    .write_all(response.as_slice())
-                    .expect("write blob test response");
-                thread_requests.lock().unwrap().push(request);
-            }
-        });
-        Self { addr, requests }
-    }
-}
-
-fn read_request(stream: TcpStream) -> std::io::Result<(RecordedRequest, TcpStream)> {
-    let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("/")
-        .to_string();
-    let mut headers = BTreeMap::new();
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        if line == "\r\n" || line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
-        }
-    }
-    let content_length = headers
-        .get("content-length")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let mut body = vec![0u8; content_length];
-    reader.read_exact(&mut body)?;
-    let stream = reader.into_inner();
-    Ok((
-        RecordedRequest {
-            path,
-            headers,
-            body,
-        },
-        stream,
-    ))
-}
-
-fn response_for(request: &RecordedRequest, addr: SocketAddr, hash: &str, bytes: &[u8]) -> Vec<u8> {
-    let body = match request.path.as_str() {
-        "/sync/blobs/upload" => format!(
-            r#"{{"exists":false,"uploadUrl":"http://{addr}/upload-target","uploadMethod":"PUT","uploadHeaders":{{"x-upload-token":"upload-token"}}}}"#
-        )
-        .into_bytes(),
-        "/upload-target" => b"OK".to_vec(),
-        path if path == format!("/sync/blobs/{}/complete", encoded_hash(hash)) => {
-            br#"{"ok":true}"#.to_vec()
-        }
-        path if path == format!("/sync/blobs/{}/url", encoded_hash(hash)) => format!(
-            r#"{{"url":"http://{addr}/download-target","expiresAt":"2099-01-01T00:00:00.000Z"}}"#
-        )
-        .into_bytes(),
-        "/download-target" => bytes.to_vec(),
-        _ => br#"{"error":"NOT_FOUND"}"#.to_vec(),
-    };
-    let status = if request.path == "/download-target" || request.path == "/upload-target" {
-        "200 OK"
-    } else if request.path.starts_with("/sync/blobs/") {
-        "200 OK"
-    } else {
-        "404 Not Found"
-    };
-    let content_type = if request.path == "/download-target" {
-        "application/octet-stream"
-    } else {
-        "application/json"
-    };
-    let head = format!(
-        "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-        body.len()
+    let before = client.blob_cache_stats()?;
+    assert_eq!(
+        before.count,
+        blob_conformance_i64(&["expectedCacheBeforePrune", "count"])
     );
-    let mut response = head.into_bytes();
-    response.extend(body);
-    response
+    assert_eq!(
+        before.total_bytes,
+        blob_conformance_i64(&["expectedCacheBeforePrune", "totalBytes"])
+    );
+    assert_eq!(
+        client.prune_blob_cache(blob_conformance_i64(&["cachePruneMaxBytes"]))?,
+        blob_conformance_i64(&["expectedCachePrunedBytes"])
+    );
+    let after = client.blob_cache_stats()?;
+    assert_eq!(
+        after.count,
+        blob_conformance_i64(&["expectedCacheAfterPrune", "count"])
+    );
+    assert_eq!(
+        after.total_bytes,
+        blob_conformance_i64(&["expectedCacheAfterPrune", "totalBytes"])
+    );
+    assert!(!client.is_blob_local(&old_blob.hash)?);
+    assert!(client.is_blob_local(&new_blob.hash)?);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
 }
 
-fn encoded_hash(hash: &str) -> String {
-    hash.replace(':', "%3A")
+fn blob_server(bytes: Vec<u8>, hash: String) -> Result<TestBlobServer> {
+    TestBlobServer::start_with_options(
+        TestBlobServerOptions::new(bytes, hash)
+            .upload_path(blob_conformance_str(&["uploadPath"]))
+            .download_path(blob_conformance_str(&["downloadPath"]))
+            .upload_token(blob_conformance_str(&["uploadToken"])),
+    )
 }
 
 fn temp_db_path(prefix: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned()
+    unique_temp_db_path(prefix)
 }
 
 fn temp_file_path(prefix: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("{prefix}-{}", Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned()
+    unique_temp_file_path(prefix)
+}
+
+fn blob_conformance() -> Value {
+    serde_json::from_str::<Value>(include_str!(
+        "../../../examples/todo-app/conformance/sync-scenarios.json"
+    ))
+    .expect("sync conformance JSON")
+    .get("blob")
+    .expect("blob conformance scenario")
+    .clone()
+}
+
+fn blob_conformance_str(path: &[&str]) -> String {
+    blob_conformance_value(path)
+        .as_str()
+        .unwrap_or_else(|| panic!("blob conformance path {path:?} must be a string"))
+        .to_string()
+}
+
+fn blob_conformance_i64(path: &[&str]) -> i64 {
+    blob_conformance_value(path)
+        .as_i64()
+        .unwrap_or_else(|| panic!("blob conformance path {path:?} must be an integer"))
+}
+
+fn blob_conformance_i32(path: &[&str]) -> i32 {
+    blob_conformance_i64(path)
+        .try_into()
+        .unwrap_or_else(|_| panic!("blob conformance path {path:?} must fit in i32"))
+}
+
+fn blob_conformance_usize(path: &[&str]) -> usize {
+    blob_conformance_i64(path)
+        .try_into()
+        .unwrap_or_else(|_| panic!("blob conformance path {path:?} must fit in usize"))
+}
+
+fn blob_conformance_bytes(path: &[&str]) -> Vec<u8> {
+    blob_conformance_value(path)
+        .as_array()
+        .unwrap_or_else(|| panic!("blob conformance path {path:?} must be an array"))
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|byte| byte.try_into().ok())
+                .unwrap_or_else(|| panic!("blob conformance path {path:?} must contain bytes"))
+        })
+        .collect()
+}
+
+fn blob_conformance_value(path: &[&str]) -> Value {
+    let mut value = blob_conformance();
+    for segment in path {
+        value = value
+            .get(segment)
+            .unwrap_or_else(|| panic!("missing blob conformance path {path:?}"))
+            .clone();
+    }
+    value
 }

@@ -34,10 +34,11 @@ mod tests {
     use diesel::connection::SimpleConnection;
     use diesel::prelude::*;
     use diesel::sqlite::SqliteConnection;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use syncular_client::app_schema::AppSchema;
     use syncular_client::client::{SyncReport, SyncularClient, SyncularClientConfig};
 
@@ -78,6 +79,7 @@ mod tests {
 
     #[test]
     fn generated_rust_mutations_and_subscriptions_use_the_sdk_types() {
+        let conformance = generated_client_conformance();
         let config = SyncularClientConfig {
             db_path: ":memory:".to_string(),
             base_url: "http://localhost:9811/api/sync".to_string(),
@@ -91,23 +93,47 @@ mod tests {
         assert_eq!(subscriptions[2].table, "tasks");
         assert_eq!(subscriptions[2].scopes["user_id"], "user-rust");
         assert_eq!(subscriptions[2].scopes["project_id"], "project-rust");
+        assert_eq!(
+            serde_json::to_value(&subscriptions[2]).expect("subscription JSON"),
+            conformance["task"]["subscription"]
+        );
 
-        let operation = syncular::NewTask::new(
-            "task-rust-2",
-            "write generated Rust",
+        let mut new_task = syncular::NewTask::new(
+            "task-native",
+            "Native smoke",
             "user-rust",
             Some("project-rust"),
-        )
-        .sync_operation();
+        );
+        new_task.completed = 1;
+        let operation = new_task.sync_operation();
         assert_eq!(operation.table, "tasks");
-        assert_eq!(operation.row_id, "task-rust-2");
+        assert_eq!(operation.row_id, "task-native");
         assert_eq!(operation.op, "upsert");
         assert_eq!(
             operation
                 .payload
                 .as_ref()
                 .and_then(|payload| payload.get("title")),
-            Some(&json!("write generated Rust"))
+            Some(&json!("Native smoke"))
+        );
+        assert_eq!(
+            serde_json::to_value(&operation).expect("new task operation JSON"),
+            conformance["task"]["newOperation"]
+        );
+
+        let patch_operation = syncular::TaskPatch::new("task-native")
+            .completed(0)
+            .base_version(11)
+            .sync_operation();
+        assert_eq!(
+            serde_json::to_value(&patch_operation).expect("patch task operation JSON"),
+            conformance["task"]["patchOperation"]
+        );
+
+        let delete_operation = syncular::delete_task("task-native", Some(12));
+        assert_eq!(
+            serde_json::to_value(&delete_operation).expect("delete task operation JSON"),
+            conformance["task"]["deleteOperation"]
         );
     }
 
@@ -229,8 +255,9 @@ mod tests {
         use syncular::prelude::SyncularGeneratedMutationsExt;
 
         let base_url = rejecting_sync_server();
+        let db_path = temp_db_path("conflicts-keep-local");
         let config = SyncularClientConfig {
-            db_path: ":memory:".to_string(),
+            db_path: db_path.clone(),
             base_url,
             client_id: "client-rust-conflicts".to_string(),
             actor_id: "user-rust".to_string(),
@@ -275,6 +302,54 @@ mod tests {
             Some(outbox[1].client_commit_id.as_str()),
             receipt.retry_client_commit_id.as_deref()
         );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn rust_client_conflicts_keep_server_uses_js_resolution_string() {
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let base_url = rejecting_sync_server();
+        let db_path = temp_db_path("conflicts-keep-server");
+        let config = SyncularClientConfig {
+            db_path: db_path.clone(),
+            base_url,
+            client_id: "client-rust-keep-server-conflict".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        client
+            .mutations()
+            .tasks()
+            .insert(syncular::NewTask::new(
+                "task-conflict",
+                "local winner",
+                "user-rust",
+                Some("project-rust"),
+            ))
+            .expect("typed insert");
+        client.sync_http().expect("sync conflict");
+
+        let pending = client.conflicts().pending().expect("pending conflicts");
+        assert_eq!(pending.len(), 1);
+        let receipt = client
+            .conflicts()
+            .accept_server(&pending[0].id)
+            .expect("accept server conflict");
+
+        assert_eq!(
+            receipt.resolution,
+            syncular_client::client::ConflictResolution::AcceptServer
+        );
+        assert_eq!(receipt.resolution.as_str(), "keep-server");
+        assert!(receipt.retry_client_commit_id.is_none());
+        assert!(client.conflicts().is_empty().expect("resolved conflicts"));
+
+        let _ = std::fs::remove_file(db_path);
     }
 
     #[test]
@@ -330,6 +405,11 @@ mod tests {
         assert_eq!(live.revision(), 2);
     }
 
+    fn generated_client_conformance() -> Value {
+        serde_json::from_str(include_str!("../conformance/generated-client.json"))
+            .expect("generated client conformance JSON")
+    }
+
     fn migrated_connection() -> SqliteConnection {
         let mut conn = SqliteConnection::establish(":memory:").expect("open sqlite");
         for migration in migrations::MIGRATIONS {
@@ -344,9 +424,24 @@ mod tests {
             app_tables: syncular::APP_TABLES,
             app_table_metadata: syncular::APP_TABLE_METADATA,
             migrations: migrations::MIGRATIONS,
+            schema_version: None,
             default_subscriptions: syncular::default_subscriptions,
             adapter_for: diesel_tables::adapter_for,
         }
+    }
+
+    fn temp_db_path(name: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "syncular-todo-app-{name}-{}-{nanos}.sqlite",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn rejecting_sync_server() -> String {

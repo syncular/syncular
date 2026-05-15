@@ -1,4 +1,8 @@
-use crate::client::{SyncReport, SyncularClient};
+use crate::client::{
+    sync_changed_row_for_operation, SubscriptionSpec, SyncChangedRow, SyncReport, SyncularClient,
+};
+#[cfg(feature = "native")]
+use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
 use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 #[cfg(feature = "native")]
 use crate::diesel_sqlite::DieselSqliteStore;
@@ -7,11 +11,11 @@ use crate::encrypted_crdt::EncryptedCrdt;
 use crate::encrypted_crdt::{CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE};
 use crate::encryption::FieldEncryption;
 use crate::error::{ErrorKind, Result, SyncularError};
+#[cfg(feature = "demo-todo-native-fixture")]
+use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 #[cfg(feature = "native")]
 use crate::protocol::BlobRef;
 use crate::protocol::SyncOperation;
-#[cfg(feature = "native")]
-use crate::rusqlite_sqlite::RusqliteStore;
 use crate::store::{SyncStateStore, SyncStore};
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders, SyncTransport};
 use serde::Deserialize;
@@ -20,6 +24,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "native")]
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -45,6 +50,7 @@ enum WorkerCommand {
     Trigger {
         command_id: Option<String>,
         emit_started: bool,
+        transport: WorkerSyncTransport,
     },
     ApplyLocalOperationJson {
         command_id: String,
@@ -55,6 +61,16 @@ enum WorkerCommand {
     SaveYjsUpdateJson {
         command_id: String,
         update_json: String,
+        auto_sync: bool,
+    },
+    ApplyCrdtFieldTextJson {
+        command_id: String,
+        request_json: String,
+        auto_sync: bool,
+    },
+    CompactCrdtFieldJson {
+        command_id: String,
+        request_json: String,
         auto_sync: bool,
     },
     ApplyEncryptedCrdtUpdateJson {
@@ -99,10 +115,27 @@ enum WorkerCommand {
     ClearBlobCache {
         command_id: String,
     },
+    SetSubscriptions(Vec<SubscriptionSpec>),
     SetAuthHeaders(SyncAuthHeaders),
     SetFieldEncryption(Option<FieldEncryption>),
     SetEncryptedCrdt(Option<EncryptedCrdt>),
     Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerSyncTransport {
+    Http,
+    WebSocket,
+}
+
+impl WorkerSyncTransport {
+    fn coalesce(self, next: Self) -> Self {
+        if matches!(self, Self::WebSocket) || matches!(next, Self::WebSocket) {
+            Self::WebSocket
+        } else {
+            Self::Http
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -127,11 +160,33 @@ pub enum SyncWorkerEvent {
         command_id: String,
         client_commit_id: String,
         changed_tables: Vec<String>,
+        changed_rows: Vec<SyncChangedRow>,
+        duration_ms: u64,
+    },
+    CrdtFieldChanged {
+        command_id: String,
+        client_commit_id: String,
+        table: String,
+        row_id: String,
+        field: String,
+        changed_tables: Vec<String>,
+        payload_json: Option<Value>,
+        duration_ms: u64,
+    },
+    CrdtFieldCompacted {
+        command_id: String,
+        client_commit_id: String,
+        table: String,
+        row_id: String,
+        field: String,
+        changed_tables: Vec<String>,
+        payload_json: Option<Value>,
         duration_ms: u64,
     },
     LocalWriteFailed {
         command_id: String,
         error: SyncularError,
+        payload_json: Option<Value>,
         duration_ms: u64,
     },
     ConflictResolutionCompleted {
@@ -194,6 +249,33 @@ pub trait SyncWorkerClientExt {
         ))
     }
 
+    fn apply_worker_crdt_field_text_json(
+        &mut self,
+        _request_json: &str,
+    ) -> Result<WorkerLocalWriteReceipt> {
+        Err(SyncularError::config(
+            "worker-owned CRDT field text updates are not available for this client",
+        ))
+    }
+
+    fn compact_worker_crdt_field_json(
+        &mut self,
+        _request_json: &str,
+    ) -> Result<Option<WorkerLocalWriteReceipt>> {
+        Err(SyncularError::config(
+            "worker-owned CRDT field compaction is not available for this client",
+        ))
+    }
+
+    fn worker_crdt_field_event_payload_json(
+        &mut self,
+        _table: &str,
+        _row_id: &str,
+        _field: &str,
+    ) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
     fn worker_query_json(&mut self, _request_json: &str) -> Result<String> {
         Err(SyncularError::config(
             "worker-owned snapshot refresh is not available for this client",
@@ -244,6 +326,8 @@ pub trait SyncWorkerClientExt {
 pub struct WorkerLocalWriteReceipt {
     pub client_commit_id: String,
     pub changed_tables: Vec<String>,
+    pub changed_rows: Vec<SyncChangedRow>,
+    pub crdt_event_payload_json: Option<Value>,
 }
 
 #[cfg(feature = "native")]
@@ -274,10 +358,22 @@ where
         request_json: &str,
     ) -> Result<WorkerLocalWriteReceipt> {
         let request: WorkerEncryptedCrdtRequest = serde_json::from_str(request_json)?;
+        let field = request
+            .field_identity_ref()
+            .and_then(|identity| self.open_crdt_field(identity.id()).ok());
         let receipt = self.apply_encrypted_crdt_update_json(request_json)?;
+        let crdt_event_payload_json = field
+            .as_ref()
+            .and_then(|field| crdt_field_event_payload_for_worker(self, field));
         Ok(WorkerLocalWriteReceipt {
+            changed_rows: field
+                .as_ref()
+                .map(|field| crdt_field_changed_row_for_worker(field, &receipt.client_commit_id))
+                .into_iter()
+                .collect(),
             client_commit_id: receipt.client_commit_id,
             changed_tables: vec![request.table, CRDT_UPDATES_TABLE.to_string()],
+            crdt_event_payload_json,
         })
     }
 
@@ -285,12 +381,85 @@ where
         &mut self,
         request_json: &str,
     ) -> Result<Option<WorkerLocalWriteReceipt>> {
-        let _request: WorkerEncryptedCrdtRequest = serde_json::from_str(request_json)?;
+        let request: WorkerEncryptedCrdtRequest = serde_json::from_str(request_json)?;
+        let field = request
+            .field_identity_ref()
+            .and_then(|identity| self.open_crdt_field(identity.id()).ok());
         let receipt = self.apply_encrypted_crdt_checkpoint_json(request_json)?;
+        let crdt_event_payload_json = field.as_ref().and_then(|field| {
+            crdt_field_compaction_payload_for_worker(
+                self,
+                field,
+                true,
+                encrypted_crdt_min_uncheckpointed_updates(request_json),
+            )
+        });
         Ok(receipt.map(|receipt| WorkerLocalWriteReceipt {
+            changed_rows: field
+                .as_ref()
+                .map(|field| crdt_field_compacted_row_for_worker(field, &receipt.client_commit_id))
+                .into_iter()
+                .collect(),
             client_commit_id: receipt.client_commit_id,
             changed_tables: vec![CRDT_CHECKPOINTS_TABLE.to_string()],
+            crdt_event_payload_json,
         }))
+    }
+
+    fn apply_worker_crdt_field_text_json(
+        &mut self,
+        request_json: &str,
+    ) -> Result<WorkerLocalWriteReceipt> {
+        let request: WorkerCrdtFieldTextRequest = serde_json::from_str(request_json)?;
+        let field = self.open_crdt_field(request.id())?;
+        let receipt = self.apply_crdt_field_text(&field, &request.next_text)?;
+        let crdt_event_payload_json = crdt_field_event_payload_for_worker(self, &field);
+        Ok(WorkerLocalWriteReceipt {
+            changed_rows: vec![crdt_field_changed_row_for_worker(
+                &field,
+                &receipt.client_commit_id,
+            )],
+            client_commit_id: receipt.client_commit_id,
+            changed_tables: crdt_field_write_tables_for_worker(&field),
+            crdt_event_payload_json,
+        })
+    }
+
+    fn compact_worker_crdt_field_json(
+        &mut self,
+        request_json: &str,
+    ) -> Result<Option<WorkerLocalWriteReceipt>> {
+        let request: WorkerCrdtFieldCompactionRequest = serde_json::from_str(request_json)?;
+        let field = self.open_crdt_field(request.id())?;
+        let receipt =
+            self.compact_crdt_field(&field, request.min_uncheckpointed_updates.unwrap_or(1))?;
+        let crdt_event_payload_json = crdt_field_compaction_payload_for_worker(
+            self,
+            &field,
+            receipt.checkpoint_created,
+            request.min_uncheckpointed_updates.unwrap_or(1),
+        );
+        Ok(receipt
+            .client_commit_id
+            .map(|client_commit_id| WorkerLocalWriteReceipt {
+                changed_rows: vec![crdt_field_compacted_row_for_worker(
+                    &field,
+                    &client_commit_id,
+                )],
+                client_commit_id,
+                changed_tables: crdt_field_compaction_tables_for_worker(&field),
+                crdt_event_payload_json,
+            }))
+    }
+
+    fn worker_crdt_field_event_payload_json(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        field: &str,
+    ) -> Result<Option<Value>> {
+        let field = self.open_crdt_field(CrdtFieldId::new(table, row_id, field))?;
+        Ok(crdt_field_event_payload_for_worker(self, &field))
     }
 
     fn worker_query_json(&mut self, request_json: &str) -> Result<String> {
@@ -360,7 +529,7 @@ where
     }
 }
 
-#[cfg(feature = "native")]
+#[cfg(feature = "demo-todo-native-fixture")]
 impl<T> SyncWorkerClientExt for SyncularClient<RusqliteStore, T>
 where
     T: SyncTransport,
@@ -386,8 +555,22 @@ where
 
 pub struct SyncWorker {
     command_tx: SyncSender<WorkerCommand>,
-    event_rx: Receiver<SyncWorkerEvent>,
+    events: SyncWorkerEvents,
     join: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct SyncWorkerEvents {
+    event_rx: Arc<Mutex<Receiver<SyncWorkerEvent>>>,
+}
+
+impl SyncWorkerEvents {
+    pub fn recv_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
+        self.event_rx
+            .lock()
+            .ok()
+            .and_then(|event_rx| event_rx.recv_timeout(timeout).ok())
+    }
 }
 
 #[derive(Clone)]
@@ -401,6 +584,7 @@ impl SyncWorkerTrigger {
             .try_send(WorkerCommand::Trigger {
                 command_id: None,
                 emit_started: false,
+                transport: WorkerSyncTransport::Http,
             })
             .map_err(|err| match err {
                 TrySendError::Full(_) => SyncularError::busy("sync worker command queue is full"),
@@ -452,6 +636,7 @@ impl SyncWorker {
                                     &mut pending_yjs,
                                     None,
                                     false,
+                                    WorkerSyncTransport::Http,
                                 ) {
                                     return;
                                 }
@@ -476,13 +661,19 @@ impl SyncWorker {
 
         Self {
             command_tx,
-            event_rx,
+            events: SyncWorkerEvents {
+                event_rx: Arc::new(Mutex::new(event_rx)),
+            },
             join: Some(join),
         }
     }
 
     pub fn trigger_sync(&self) -> Result<()> {
-        self.trigger_sync_inner(None, false)
+        self.trigger_sync_inner(None, false, WorkerSyncTransport::Http)
+    }
+
+    pub fn trigger_sync_websocket(&self) -> Result<()> {
+        self.trigger_sync_inner(None, false, WorkerSyncTransport::WebSocket)
     }
 
     pub fn trigger_handle(&self) -> SyncWorkerTrigger {
@@ -491,8 +682,16 @@ impl SyncWorker {
         }
     }
 
+    pub fn event_source(&self) -> SyncWorkerEvents {
+        self.events.clone()
+    }
+
     pub fn enqueue_sync_now(&self, command_id: String) -> Result<()> {
-        self.trigger_sync_inner(Some(command_id), true)
+        self.trigger_sync_inner(Some(command_id), true, WorkerSyncTransport::Http)
+    }
+
+    pub fn enqueue_sync_websocket(&self, command_id: String) -> Result<()> {
+        self.trigger_sync_inner(Some(command_id), true, WorkerSyncTransport::WebSocket)
     }
 
     pub fn enqueue_local_operation_json(
@@ -519,6 +718,32 @@ impl SyncWorker {
         self.try_send(WorkerCommand::SaveYjsUpdateJson {
             command_id,
             update_json,
+            auto_sync,
+        })
+    }
+
+    pub fn enqueue_crdt_field_text_json(
+        &self,
+        command_id: String,
+        request_json: String,
+        auto_sync: bool,
+    ) -> Result<()> {
+        self.try_send(WorkerCommand::ApplyCrdtFieldTextJson {
+            command_id,
+            request_json,
+            auto_sync,
+        })
+    }
+
+    pub fn enqueue_crdt_field_compaction_json(
+        &self,
+        command_id: String,
+        request_json: String,
+        auto_sync: bool,
+    ) -> Result<()> {
+        self.try_send(WorkerCommand::CompactCrdtFieldJson {
+            command_id,
+            request_json,
             auto_sync,
         })
     }
@@ -629,6 +854,10 @@ impl SyncWorker {
         self.try_send(WorkerCommand::SetAuthHeaders(headers))
     }
 
+    pub fn set_subscriptions(&self, subscriptions: Vec<SubscriptionSpec>) -> Result<()> {
+        self.try_send(WorkerCommand::SetSubscriptions(subscriptions))
+    }
+
     pub fn set_field_encryption(&self, encryption: Option<FieldEncryption>) -> Result<()> {
         self.try_send(WorkerCommand::SetFieldEncryption(encryption))
     }
@@ -638,7 +867,7 @@ impl SyncWorker {
     }
 
     pub fn recv_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
-        self.event_rx.recv_timeout(timeout).ok()
+        self.events.recv_event_timeout(timeout)
     }
 
     pub fn recv_result_timeout(&self, timeout: Duration) -> Option<Result<SyncReport>> {
@@ -676,10 +905,16 @@ impl SyncWorker {
         self.join()
     }
 
-    fn trigger_sync_inner(&self, command_id: Option<String>, emit_started: bool) -> Result<()> {
+    fn trigger_sync_inner(
+        &self,
+        command_id: Option<String>,
+        emit_started: bool,
+        transport: WorkerSyncTransport,
+    ) -> Result<()> {
         self.try_send(WorkerCommand::Trigger {
             command_id,
             emit_started,
+            transport,
         })
     }
 
@@ -718,6 +953,7 @@ where
         WorkerCommand::Trigger {
             command_id,
             emit_started,
+            transport,
         } => run_until_settled(
             client,
             command_rx,
@@ -725,6 +961,7 @@ where
             pending_yjs,
             command_id,
             emit_started,
+            transport,
         ),
         WorkerCommand::ApplyLocalOperationJson {
             command_id,
@@ -733,7 +970,15 @@ where
             auto_sync,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
-                if !run_until_settled(client, command_rx, event_tx, pending_yjs, None, false) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
                     return false;
                 }
             }
@@ -746,7 +991,15 @@ where
                 auto_sync,
             );
             if should_sync {
-                run_until_settled(client, command_rx, event_tx, pending_yjs, None, false)
+                run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                )
             } else {
                 true
             }
@@ -759,13 +1012,89 @@ where
             queue_yjs_update_json(pending_yjs, event_tx, command_id, &update_json, auto_sync);
             true
         }
+        WorkerCommand::ApplyCrdtFieldTextJson {
+            command_id,
+            request_json,
+            auto_sync,
+        } => {
+            if flush_pending_yjs(client, pending_yjs, event_tx) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
+                    return false;
+                }
+            }
+            let should_sync =
+                apply_crdt_field_text_json(client, event_tx, command_id, &request_json, auto_sync);
+            if should_sync {
+                run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                )
+            } else {
+                true
+            }
+        }
+        WorkerCommand::CompactCrdtFieldJson {
+            command_id,
+            request_json,
+            auto_sync,
+        } => {
+            if flush_pending_yjs(client, pending_yjs, event_tx) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
+                    return false;
+                }
+            }
+            let should_sync =
+                compact_crdt_field_json(client, event_tx, command_id, &request_json, auto_sync);
+            if should_sync {
+                run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                )
+            } else {
+                true
+            }
+        }
         WorkerCommand::ApplyEncryptedCrdtUpdateJson {
             command_id,
             request_json,
             auto_sync,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
-                if !run_until_settled(client, command_rx, event_tx, pending_yjs, None, false) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
                     return false;
                 }
             }
@@ -777,7 +1106,15 @@ where
                 auto_sync,
             );
             if should_sync {
-                run_until_settled(client, command_rx, event_tx, pending_yjs, None, false)
+                run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                )
             } else {
                 true
             }
@@ -788,7 +1125,15 @@ where
             auto_sync,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
-                if !run_until_settled(client, command_rx, event_tx, pending_yjs, None, false) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
                     return false;
                 }
             }
@@ -800,7 +1145,15 @@ where
                 auto_sync,
             );
             if should_sync {
-                run_until_settled(client, command_rx, event_tx, pending_yjs, None, false)
+                run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                )
             } else {
                 true
             }
@@ -812,7 +1165,15 @@ where
             auto_sync,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
-                if !run_until_settled(client, command_rx, event_tx, pending_yjs, None, false) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
                     return false;
                 }
             }
@@ -825,7 +1186,15 @@ where
                 auto_sync,
             );
             if should_sync {
-                run_until_settled(client, command_rx, event_tx, pending_yjs, None, false)
+                run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                )
             } else {
                 true
             }
@@ -835,7 +1204,15 @@ where
             request_json,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
-                if !run_until_settled(client, command_rx, event_tx, pending_yjs, None, false) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
                     return false;
                 }
             }
@@ -847,7 +1224,15 @@ where
             options_json,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
-                if !run_until_settled(client, command_rx, event_tx, pending_yjs, None, false) {
+                if !run_until_settled(
+                    client,
+                    command_rx,
+                    event_tx,
+                    pending_yjs,
+                    None,
+                    false,
+                    WorkerSyncTransport::Http,
+                ) {
                     return false;
                 }
             }
@@ -896,6 +1281,10 @@ where
             client.set_auth_headers(headers);
             true
         }
+        WorkerCommand::SetSubscriptions(subscriptions) => {
+            client.set_subscriptions(subscriptions);
+            true
+        }
         WorkerCommand::SetFieldEncryption(encryption) => {
             client.set_field_encryption(encryption);
             true
@@ -918,33 +1307,39 @@ fn run_until_settled<S, T>(
     pending_yjs: &mut BTreeMap<YjsBatchKey, PendingYjsBatch>,
     initial_command_id: Option<String>,
     initial_emit_started: bool,
+    initial_transport: WorkerSyncTransport,
 ) -> bool
 where
     S: SyncStore + SyncStateStore,
     T: SyncTransport + SyncAuthHeaderStore,
     SyncularClient<S, T>: SyncWorkerClientExt,
 {
-    let mut should_sync = Some((initial_command_id, initial_emit_started));
-    while let Some((command_id, emit_started)) = should_sync.take() {
-        run_sync(client, event_tx, command_id, emit_started);
+    let mut should_sync = Some((initial_command_id, initial_emit_started, initial_transport));
+    while let Some((command_id, emit_started, transport)) = should_sync.take() {
+        run_sync(client, event_tx, command_id, emit_started, transport);
 
-        let mut next_sync: Option<(Option<String>, bool)> = None;
+        let mut next_sync: Option<(Option<String>, bool, WorkerSyncTransport)> = None;
         loop {
             match command_rx.try_recv() {
                 Ok(WorkerCommand::Trigger {
                     command_id,
                     emit_started,
+                    transport,
                 }) => {
                     next_sync = Some(match next_sync {
-                        Some((existing_id, existing_emit_started)) => (
+                        Some((existing_id, existing_emit_started, existing_transport)) => (
                             existing_id.or(command_id),
                             existing_emit_started || emit_started,
+                            existing_transport.coalesce(transport),
                         ),
-                        None => (command_id, emit_started),
+                        None => (command_id, emit_started, transport),
                     });
                 }
                 Ok(WorkerCommand::SetAuthHeaders(headers)) => {
                     client.set_auth_headers(headers);
+                }
+                Ok(WorkerCommand::SetSubscriptions(subscriptions)) => {
+                    client.set_subscriptions(subscriptions);
                 }
                 Ok(WorkerCommand::SetFieldEncryption(encryption)) => {
                     client.set_field_encryption(encryption);
@@ -959,7 +1354,7 @@ where
                     auto_sync,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                     if apply_local_operation_json(
                         client,
@@ -969,7 +1364,7 @@ where
                         local_row_json.as_deref(),
                         auto_sync,
                     ) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                 }
                 Ok(WorkerCommand::SaveYjsUpdateJson {
@@ -985,13 +1380,49 @@ where
                         auto_sync,
                     );
                 }
+                Ok(WorkerCommand::ApplyCrdtFieldTextJson {
+                    command_id,
+                    request_json,
+                    auto_sync,
+                }) => {
+                    if flush_pending_yjs(client, pending_yjs, event_tx) {
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
+                    }
+                    if apply_crdt_field_text_json(
+                        client,
+                        event_tx,
+                        command_id,
+                        &request_json,
+                        auto_sync,
+                    ) {
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
+                    }
+                }
+                Ok(WorkerCommand::CompactCrdtFieldJson {
+                    command_id,
+                    request_json,
+                    auto_sync,
+                }) => {
+                    if flush_pending_yjs(client, pending_yjs, event_tx) {
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
+                    }
+                    if compact_crdt_field_json(
+                        client,
+                        event_tx,
+                        command_id,
+                        &request_json,
+                        auto_sync,
+                    ) {
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
+                    }
+                }
                 Ok(WorkerCommand::ApplyEncryptedCrdtUpdateJson {
                     command_id,
                     request_json,
                     auto_sync,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                     if apply_encrypted_crdt_update_json(
                         client,
@@ -1000,7 +1431,7 @@ where
                         &request_json,
                         auto_sync,
                     ) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                 }
                 Ok(WorkerCommand::ApplyEncryptedCrdtCheckpointJson {
@@ -1009,7 +1440,7 @@ where
                     auto_sync,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                     if apply_encrypted_crdt_checkpoint_json(
                         client,
@@ -1018,7 +1449,7 @@ where
                         &request_json,
                         auto_sync,
                     ) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                 }
                 Ok(WorkerCommand::ResolveConflict {
@@ -1028,7 +1459,7 @@ where
                     auto_sync,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                     if resolve_conflict(
                         client,
@@ -1038,7 +1469,7 @@ where
                         &resolution,
                         auto_sync,
                     ) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                 }
                 Ok(WorkerCommand::RefreshSnapshotJson {
@@ -1046,7 +1477,7 @@ where
                     request_json,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                     refresh_snapshot_json(client, event_tx, command_id, &request_json);
                 }
@@ -1055,7 +1486,7 @@ where
                     options_json,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
-                        next_sync = Some((None, false));
+                        next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
                     run_worker_json_command(
                         client,
@@ -1128,7 +1559,7 @@ where
         }
 
         if flush_pending_yjs(client, pending_yjs, event_tx) {
-            next_sync = Some((None, false));
+            next_sync = Some((None, false, WorkerSyncTransport::Http));
         }
         should_sync = next_sync;
     }
@@ -1140,6 +1571,7 @@ fn run_sync<S, T>(
     event_tx: &mpsc::Sender<SyncWorkerEvent>,
     command_id: Option<String>,
     emit_started: bool,
+    transport: WorkerSyncTransport,
 ) where
     S: SyncStore + SyncStateStore,
     T: SyncTransport,
@@ -1151,7 +1583,11 @@ fn run_sync<S, T>(
     }
 
     let started = Instant::now();
-    match client.sync_http() {
+    let result = match transport {
+        WorkerSyncTransport::Http => client.sync_http(),
+        WorkerSyncTransport::WebSocket => client.sync_ws(),
+    };
+    match result {
         Ok(report) => {
             let (outbox_count, conflict_count) = worker_counts(client).unwrap_or((0, 0));
             let _ = event_tx.send(SyncWorkerEvent::SyncCompleted {
@@ -1188,15 +1624,29 @@ where
     SyncularClient<S, T>: SyncWorkerClientExt,
 {
     let started = Instant::now();
-    let table = serde_json::from_str::<SyncOperation>(operation_json)
-        .map(|operation| operation.table)
-        .unwrap_or_else(|_| "unknown".to_string());
+    let operation = serde_json::from_str::<SyncOperation>(operation_json).ok();
+    let table = operation
+        .as_ref()
+        .map(|operation| operation.table.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     match client.apply_worker_local_operation_json(operation_json, local_row_json) {
         Ok(client_commit_id) => {
+            let changed_rows = operation
+                .as_ref()
+                .and_then(|operation| {
+                    sync_changed_row_for_operation(
+                        client.app_schema(),
+                        operation,
+                        Some(client_commit_id.clone()),
+                    )
+                })
+                .into_iter()
+                .collect();
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
                 command_id,
                 client_commit_id,
                 changed_tables: vec![table],
+                changed_rows,
                 duration_ms: duration_ms(started),
             });
             auto_sync
@@ -1205,6 +1655,7 @@ where
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
+                payload_json: None,
                 duration_ms: duration_ms(started),
             });
             false
@@ -1227,18 +1678,34 @@ where
     let started = Instant::now();
     match client.apply_worker_encrypted_crdt_update_json(request_json) {
         Ok(receipt) => {
+            let crdt_event = WorkerEncryptedCrdtRequest::from_json(request_json).ok();
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
-                command_id,
-                client_commit_id: receipt.client_commit_id,
-                changed_tables: receipt.changed_tables,
+                command_id: command_id.clone(),
+                client_commit_id: receipt.client_commit_id.clone(),
+                changed_tables: receipt.changed_tables.clone(),
+                changed_rows: receipt.changed_rows.clone(),
                 duration_ms: duration_ms(started),
             });
+            if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
+                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldChanged {
+                    command_id,
+                    client_commit_id: receipt.client_commit_id,
+                    table: request.table,
+                    row_id: request.row_id,
+                    field: request.field,
+                    changed_tables: receipt.changed_tables,
+                    payload_json: receipt.crdt_event_payload_json,
+                    duration_ms: duration_ms(started),
+                });
+            }
             auto_sync
         }
         Err(error) => {
+            let payload_json = crdt_field_failure_payload_json("encryptedCrdtUpdate", request_json);
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
+                payload_json: Some(payload_json),
                 duration_ms: duration_ms(started),
             });
             false
@@ -1261,12 +1728,26 @@ where
     let started = Instant::now();
     match client.apply_worker_encrypted_crdt_checkpoint_json(request_json) {
         Ok(Some(receipt)) => {
+            let crdt_event = WorkerEncryptedCrdtRequest::from_json(request_json).ok();
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
-                command_id,
-                client_commit_id: receipt.client_commit_id,
-                changed_tables: receipt.changed_tables,
+                command_id: command_id.clone(),
+                client_commit_id: receipt.client_commit_id.clone(),
+                changed_tables: receipt.changed_tables.clone(),
+                changed_rows: receipt.changed_rows.clone(),
                 duration_ms: duration_ms(started),
             });
+            if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
+                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldCompacted {
+                    command_id,
+                    client_commit_id: receipt.client_commit_id,
+                    table: request.table,
+                    row_id: request.row_id,
+                    field: request.field,
+                    changed_tables: receipt.changed_tables,
+                    payload_json: receipt.crdt_event_payload_json,
+                    duration_ms: duration_ms(started),
+                });
+            }
             auto_sync
         }
         Ok(None) => {
@@ -1279,9 +1760,122 @@ where
             false
         }
         Err(error) => {
+            let payload_json =
+                crdt_field_failure_payload_json("encryptedCrdtCheckpoint", request_json);
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
+                payload_json: Some(payload_json),
+                duration_ms: duration_ms(started),
+            });
+            false
+        }
+    }
+}
+
+fn apply_crdt_field_text_json<S, T>(
+    client: &mut SyncularClient<S, T>,
+    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    command_id: String,
+    request_json: &str,
+    auto_sync: bool,
+) -> bool
+where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    let started = Instant::now();
+    match client.apply_worker_crdt_field_text_json(request_json) {
+        Ok(receipt) => {
+            let crdt_event = WorkerCrdtFieldTextRequest::from_json(request_json).ok();
+            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+                command_id: command_id.clone(),
+                client_commit_id: receipt.client_commit_id.clone(),
+                changed_tables: receipt.changed_tables.clone(),
+                changed_rows: receipt.changed_rows.clone(),
+                duration_ms: duration_ms(started),
+            });
+            if let Some(request) = crdt_event {
+                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldChanged {
+                    command_id,
+                    client_commit_id: receipt.client_commit_id,
+                    table: request.table,
+                    row_id: request.row_id,
+                    field: request.field,
+                    changed_tables: receipt.changed_tables,
+                    payload_json: receipt.crdt_event_payload_json,
+                    duration_ms: duration_ms(started),
+                });
+            }
+            auto_sync
+        }
+        Err(error) => {
+            let payload_json = crdt_field_failure_payload_json("crdtFieldText", request_json);
+            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+                command_id,
+                error,
+                payload_json: Some(payload_json),
+                duration_ms: duration_ms(started),
+            });
+            false
+        }
+    }
+}
+
+fn compact_crdt_field_json<S, T>(
+    client: &mut SyncularClient<S, T>,
+    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    command_id: String,
+    request_json: &str,
+    auto_sync: bool,
+) -> bool
+where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    let started = Instant::now();
+    match client.compact_worker_crdt_field_json(request_json) {
+        Ok(Some(receipt)) => {
+            let crdt_event = WorkerCrdtFieldCompactionRequest::from_json(request_json).ok();
+            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+                command_id: command_id.clone(),
+                client_commit_id: receipt.client_commit_id.clone(),
+                changed_tables: receipt.changed_tables.clone(),
+                changed_rows: receipt.changed_rows.clone(),
+                duration_ms: duration_ms(started),
+            });
+            if let Some(request) = crdt_event {
+                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldCompacted {
+                    command_id,
+                    client_commit_id: receipt.client_commit_id,
+                    table: request.table,
+                    row_id: request.row_id,
+                    field: request.field,
+                    changed_tables: receipt.changed_tables,
+                    payload_json: receipt.crdt_event_payload_json,
+                    duration_ms: duration_ms(started),
+                });
+            }
+            auto_sync
+        }
+        Ok(None) => {
+            let payload_json = compact_crdt_field_skipped_payload(client, request_json);
+            let _ = event_tx.send(SyncWorkerEvent::WorkerCommandCompleted {
+                command_id,
+                operation: "compactCrdtField",
+                payload_json: Some(payload_json),
+                duration_ms: duration_ms(started),
+            });
+            false
+        }
+        Err(error) => {
+            let payload_json = crdt_field_failure_payload_json("compactCrdtField", request_json);
+            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+                command_id,
+                error,
+                payload_json: Some(payload_json),
                 duration_ms: duration_ms(started),
             });
             false
@@ -1364,6 +1958,109 @@ fn refresh_snapshot_json<S, T>(
     }
 }
 
+fn compact_crdt_field_skipped_payload<S, T>(
+    client: &mut SyncularClient<S, T>,
+    request_json: &str,
+) -> Value
+where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    let request = WorkerCrdtFieldCompactionRequest::from_json(request_json).ok();
+    let mut payload = request
+        .as_ref()
+        .and_then(|request| {
+            client
+                .worker_crdt_field_event_payload_json(
+                    &request.table,
+                    &request.row_id,
+                    &request.field,
+                )
+                .ok()
+                .flatten()
+        })
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+
+    if let Some(request) = request {
+        payload.insert("table".to_string(), json!(request.table));
+        payload.insert("rowId".to_string(), json!(request.row_id));
+        payload.insert("field".to_string(), json!(request.field));
+        payload.insert(
+            "minUncheckpointedUpdates".to_string(),
+            json!(request.min_uncheckpointed_updates.unwrap_or(1)),
+        );
+    }
+    payload.insert("checkpointCreated".to_string(), json!(false));
+    Value::Object(payload)
+}
+
+fn crdt_field_failure_payload_json(operation: &'static str, request_json: &str) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("operation".to_string(), json!(operation));
+    payload.insert("failedBeforeCommit".to_string(), json!(true));
+    payload.insert("retryScheduled".to_string(), json!(false));
+
+    match serde_json::from_str::<Value>(request_json) {
+        Ok(Value::Object(request)) => {
+            copy_crdt_request_field(&mut payload, &request, "table", "table");
+            copy_crdt_request_field(&mut payload, &request, "rowId", "rowId");
+            copy_crdt_request_field(&mut payload, &request, "row_id", "rowId");
+            copy_crdt_request_field(&mut payload, &request, "field", "field");
+            copy_crdt_request_field(
+                &mut payload,
+                &request,
+                "minUncheckpointedUpdates",
+                "minUncheckpointedUpdates",
+            );
+            copy_crdt_request_field(
+                &mut payload,
+                &request,
+                "min_uncheckpointed_updates",
+                "minUncheckpointedUpdates",
+            );
+        }
+        Ok(_) => {
+            payload.insert("requestShape".to_string(), json!("non-object"));
+        }
+        Err(error) => {
+            payload.insert("requestParseError".to_string(), json!(error.to_string()));
+        }
+    }
+
+    Value::Object(payload)
+}
+
+fn crdt_field_failure_payload_from_parts(
+    operation: &'static str,
+    table: &str,
+    row_id: &str,
+    field: &str,
+) -> Value {
+    json!({
+        "operation": operation,
+        "table": table,
+        "rowId": row_id,
+        "field": field,
+        "failedBeforeCommit": true,
+        "retryScheduled": false,
+    })
+}
+
+fn copy_crdt_request_field(
+    payload: &mut serde_json::Map<String, Value>,
+    request: &serde_json::Map<String, Value>,
+    from: &str,
+    to: &str,
+) {
+    if !payload.contains_key(to) {
+        if let Some(value) = request.get(from) {
+            payload.insert(to.to_string(), value.clone());
+        }
+    }
+}
+
 fn run_worker_json_command<S, T>(
     client: &mut SyncularClient<S, T>,
     event_tx: &mpsc::Sender<SyncWorkerEvent>,
@@ -1431,9 +2128,11 @@ fn queue_yjs_update_json(
             batch.auto_sync |= auto_sync;
         }
         Err(error) => {
+            let payload_json = crdt_field_failure_payload_json("crdtFieldYjsUpdate", update_json);
             let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
+                payload_json: Some(payload_json),
                 duration_ms: duration_ms(started),
             });
         }
@@ -1467,6 +2166,12 @@ where
                         let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
                             command_id,
                             error: SyncularError::message(kind, &message),
+                            payload_json: Some(crdt_field_failure_payload_from_parts(
+                                "crdtFieldYjsUpdate",
+                                &key.table,
+                                &key.row_id,
+                                &key.field,
+                            )),
                             duration_ms: duration_ms(started),
                         });
                     }
@@ -1489,11 +2194,36 @@ where
         match client.apply_worker_local_operation(operation, batch.materialized) {
             Ok(client_commit_id) => {
                 should_sync |= batch.auto_sync;
+                let crdt_event_payload_json = client
+                    .worker_crdt_field_event_payload_json(&key.table, &key.row_id, &key.field)
+                    .ok()
+                    .flatten();
                 for command_id in batch.command_ids {
                     let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
-                        command_id,
+                        command_id: command_id.clone(),
                         client_commit_id: client_commit_id.clone(),
                         changed_tables: vec![key.table.clone()],
+                        changed_rows: vec![SyncChangedRow {
+                            table: key.table.clone(),
+                            row_id: Some(key.row_id.clone()),
+                            operation: "update".to_string(),
+                            changed_fields: vec![key.field.clone()],
+                            crdt_fields: vec![key.field.clone()],
+                            commit_id: Some(client_commit_id.clone()),
+                            commit_seq: None,
+                            subscription_id: None,
+                            server_version: None,
+                        }],
+                        duration_ms: duration_ms(started),
+                    });
+                    let _ = event_tx.send(SyncWorkerEvent::CrdtFieldChanged {
+                        command_id,
+                        client_commit_id: client_commit_id.clone(),
+                        table: key.table.clone(),
+                        row_id: key.row_id.clone(),
+                        field: key.field.clone(),
+                        changed_tables: vec![key.table.clone()],
+                        payload_json: crdt_event_payload_json.clone(),
                         duration_ms: duration_ms(started),
                     });
                 }
@@ -1505,6 +2235,12 @@ where
                     let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
                         command_id,
                         error: SyncularError::message(kind, &message),
+                        payload_json: Some(crdt_field_failure_payload_from_parts(
+                            "crdtFieldYjsUpdate",
+                            &key.table,
+                            &key.row_id,
+                            &key.field,
+                        )),
                         duration_ms: duration_ms(started),
                     });
                 }
@@ -1577,11 +2313,226 @@ struct SaveYjsUpdate {
     server_payload: Option<Value>,
 }
 
-#[cfg(feature = "native")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkerEncryptedCrdtRequest {
     table: String,
+    #[serde(default, alias = "row_id")]
+    row_id: Option<String>,
+    #[serde(default)]
+    field: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+#[serde(rename_all = "camelCase")]
+struct WorkerCrdtFieldTextRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    #[serde(alias = "next_text")]
+    next_text: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+#[serde(rename_all = "camelCase")]
+struct WorkerCrdtFieldCompactionRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    #[serde(default, alias = "min_uncheckpointed_updates")]
+    min_uncheckpointed_updates: Option<i64>,
+}
+
+struct WorkerCrdtFieldIdentity {
+    table: String,
+    row_id: String,
+    field: String,
+}
+
+#[cfg(feature = "native")]
+struct WorkerCrdtFieldIdentityRef<'a> {
+    table: &'a str,
+    row_id: &'a str,
+    field: &'a str,
+}
+
+impl WorkerEncryptedCrdtRequest {
+    fn from_json(request_json: &str) -> Result<Self> {
+        serde_json::from_str(request_json).map_err(Into::into)
+    }
+
+    #[cfg(feature = "native")]
+    fn field_identity_ref(&self) -> Option<WorkerCrdtFieldIdentityRef<'_>> {
+        Some(WorkerCrdtFieldIdentityRef {
+            table: &self.table,
+            row_id: self.row_id.as_deref()?,
+            field: self.field.as_deref()?,
+        })
+    }
+
+    fn field_identity(self) -> Option<WorkerCrdtFieldIdentity> {
+        Some(WorkerCrdtFieldIdentity {
+            table: self.table,
+            row_id: self.row_id?,
+            field: self.field?,
+        })
+    }
+}
+
+#[cfg(feature = "native")]
+impl WorkerCrdtFieldIdentityRef<'_> {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table, self.row_id, self.field)
+    }
+}
+
+impl WorkerCrdtFieldTextRequest {
+    fn from_json(request_json: &str) -> Result<Self> {
+        serde_json::from_str(request_json).map_err(Into::into)
+    }
+
+    #[cfg(feature = "native")]
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+impl WorkerCrdtFieldCompactionRequest {
+    fn from_json(request_json: &str) -> Result<Self> {
+        serde_json::from_str(request_json).map_err(Into::into)
+    }
+
+    #[cfg(feature = "native")]
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_write_tables_for_worker(field: &CrdtField) -> Vec<String> {
+    match field.sync_mode() {
+        CrdtFieldSyncMode::ServerMerge => vec![field.table().to_string()],
+        CrdtFieldSyncMode::EncryptedUpdateLog => {
+            vec![field.table().to_string(), CRDT_UPDATES_TABLE.to_string()]
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_compaction_tables_for_worker(field: &CrdtField) -> Vec<String> {
+    match field.sync_mode() {
+        CrdtFieldSyncMode::ServerMerge => Vec::new(),
+        CrdtFieldSyncMode::EncryptedUpdateLog => vec![CRDT_CHECKPOINTS_TABLE.to_string()],
+    }
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_changed_row_for_worker(field: &CrdtField, client_commit_id: &str) -> SyncChangedRow {
+    SyncChangedRow {
+        table: field.table().to_string(),
+        row_id: Some(field.row_id().to_string()),
+        operation: "update".to_string(),
+        changed_fields: vec![field.field().to_string(), field.state_column().to_string()],
+        crdt_fields: vec![field.state_column().to_string()],
+        commit_id: Some(client_commit_id.to_string()),
+        commit_seq: None,
+        subscription_id: None,
+        server_version: None,
+    }
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_compacted_row_for_worker(
+    field: &CrdtField,
+    client_commit_id: &str,
+) -> SyncChangedRow {
+    SyncChangedRow {
+        table: field.table().to_string(),
+        row_id: Some(field.row_id().to_string()),
+        operation: "compact".to_string(),
+        changed_fields: vec![field.state_column().to_string()],
+        crdt_fields: vec![field.state_column().to_string()],
+        commit_id: Some(client_commit_id.to_string()),
+        commit_seq: None,
+        subscription_id: None,
+        server_version: None,
+    }
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_event_payload_for_worker<T>(
+    client: &mut SyncularClient<DieselSqliteStore, T>,
+    field: &CrdtField,
+) -> Option<Value>
+where
+    T: SyncTransport,
+{
+    let mut payload = crdt_field_base_payload_for_worker(field);
+    match client.materialize_crdt_field(field) {
+        Ok(materialization) => {
+            payload.insert("materializationAvailable".to_string(), json!(true));
+            payload.insert(
+                "hasState".to_string(),
+                json!(materialization.state_base64.is_some()),
+            );
+            payload.insert(
+                "stateVectorBase64".to_string(),
+                json!(materialization.state_vector_base64),
+            );
+        }
+        Err(error) => {
+            payload.insert("materializationAvailable".to_string(), json!(false));
+            payload.insert(
+                "materializationError".to_string(),
+                json!(error.message_text()),
+            );
+        }
+    }
+    Some(Value::Object(payload))
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_compaction_payload_for_worker<T>(
+    client: &mut SyncularClient<DieselSqliteStore, T>,
+    field: &CrdtField,
+    checkpoint_created: bool,
+    min_uncheckpointed_updates: i64,
+) -> Option<Value>
+where
+    T: SyncTransport,
+{
+    let mut payload = crdt_field_event_payload_for_worker(client, field)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_else(|| crdt_field_base_payload_for_worker(field));
+    payload.insert("checkpointCreated".to_string(), json!(checkpoint_created));
+    payload.insert(
+        "minUncheckpointedUpdates".to_string(),
+        json!(min_uncheckpointed_updates),
+    );
+    Some(Value::Object(payload))
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_base_payload_for_worker(field: &CrdtField) -> serde_json::Map<String, Value> {
+    let mut payload = serde_json::Map::new();
+    payload.insert("syncMode".to_string(), json!(field.sync_mode()));
+    payload.insert("kind".to_string(), json!(field.field_metadata().kind));
+    payload.insert("stateColumn".to_string(), json!(field.state_column()));
+    payload.insert("containerKey".to_string(), json!(field.container_key()));
+    payload.insert("rowIdField".to_string(), json!(field.row_id_field()));
+    payload
+}
+
+#[cfg(feature = "native")]
+fn encrypted_crdt_min_uncheckpointed_updates(request_json: &str) -> i64 {
+    serde_json::from_str::<WorkerCrdtFieldCompactionRequest>(request_json)
+        .ok()
+        .and_then(|request| request.min_uncheckpointed_updates)
+        .unwrap_or(1)
 }
 
 #[cfg(feature = "native")]

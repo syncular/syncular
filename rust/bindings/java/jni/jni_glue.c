@@ -677,8 +677,51 @@ boltffi_input_cleanup:
     return (jlong)_handle;
 }
 
+JNIEXPORT jlong JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1open_1async(JNIEnv *env, jclass cls, jobject config) {
+    bool _boltffi_input_error = false;
+    jlong _config_size = (*env)->GetDirectBufferCapacity(env, config);
+    uint8_t* _config_ptr = (uint8_t*)(*env)->GetDirectBufferAddress(env, config);
+    uintptr_t _config_len = (_config_ptr && _config_size > 0) ? (uintptr_t)_config_size : 0;
+    void* _handle = NULL;
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _handle = boltffi_syncular_bolt_client_open_async((const uint8_t*)_config_ptr, (uintptr_t)_config_len);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return 0;
+    return (jlong)_handle;
+}
+
 JNIEXPORT void JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1free(JNIEnv *env, jclass cls, jlong handle) {
     if (handle != 0) boltffi_syncular_bolt_client_free((void*)handle);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1open_1command_1id(JNIEnv *env, jclass cls, jlong handle) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_open_command_id((void*)handle);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1is_1open_1finished(JNIEnv *env, jclass cls, jlong handle) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_is_open_finished((void*)handle);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1finish_1open_1timeout(JNIEnv *env, jclass cls, jlong handle, jlong timeout_ms) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_finish_open_timeout((void*)handle, timeout_ms);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
 }
 JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1runtime_1manifest_1json(JNIEnv *env, jclass cls, jlong handle) {
     if (handle == 0) return NULL;
@@ -720,6 +763,39 @@ JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1
     _buf = boltffi_syncular_bolt_client_set_auth_headers_json((void*)handle, (const uint8_t*)_headers_json_ptr, (uintptr_t)_headers_json_len);
 boltffi_input_cleanup:
     if (_headers_json_needs_release) (*env)->ReleaseByteArrayElements(env, headers_json, (jbyte*)_headers_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1set_1subscriptions_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray subscriptions_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _subscriptions_json_stack[8];
+    uintptr_t _subscriptions_json_len = (uintptr_t)(*env)->GetArrayLength(env, subscriptions_json);
+    uint8_t* _subscriptions_json_ptr = NULL;
+    bool _subscriptions_json_needs_release = false;
+    if (_subscriptions_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, subscriptions_json, 0, (jsize)_subscriptions_json_len, _subscriptions_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _subscriptions_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _subscriptions_json_ptr = (uint8_t*)_subscriptions_json_stack;
+        }
+    } else {
+        _subscriptions_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, subscriptions_json, NULL);
+        if (_subscriptions_json_ptr == NULL) {
+            _subscriptions_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _subscriptions_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_set_subscriptions_json((void*)handle, (const uint8_t*)_subscriptions_json_ptr, (uintptr_t)_subscriptions_json_len);
+boltffi_input_cleanup:
+    if (_subscriptions_json_needs_release) (*env)->ReleaseByteArrayElements(env, subscriptions_json, (jbyte*)_subscriptions_json_ptr, JNI_ABORT);
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);
 }
@@ -799,12 +875,32 @@ boltffi_input_cleanup:
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);
 }
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1trigger_1sync_1websocket(JNIEnv *env, jclass cls, jlong handle) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_trigger_sync_websocket((void*)handle);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
 JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1enqueue_1sync_1now(JNIEnv *env, jclass cls, jlong handle) {
     if (handle == 0) return NULL;
     bool _boltffi_input_error = false;
     FfiBuf_u8 _buf = {0};
     if (_boltffi_input_error) goto boltffi_input_cleanup;
     _buf = boltffi_syncular_bolt_client_enqueue_sync_now((void*)handle);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1enqueue_1sync_1websocket(JNIEnv *env, jclass cls, jlong handle) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_enqueue_sync_websocket((void*)handle);
 boltffi_input_cleanup:
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);
@@ -1023,6 +1119,303 @@ JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1
     _buf = boltffi_syncular_bolt_client_enqueue_yjs_update_json((void*)handle, (const uint8_t*)_update_json_ptr, (uintptr_t)_update_json_len);
 boltffi_input_cleanup:
     if (_update_json_needs_release) (*env)->ReleaseByteArrayElements(env, update_json, (jbyte*)_update_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1open_1crdt_1field_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_open_crdt_field_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1apply_1crdt_1field_1text_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_apply_crdt_field_text_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1apply_1crdt_1field_1yjs_1update_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_apply_crdt_field_yjs_update_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1enqueue_1crdt_1field_1yjs_1update_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_enqueue_crdt_field_yjs_update_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1enqueue_1crdt_1field_1text_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_enqueue_crdt_field_text_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1enqueue_1crdt_1field_1compaction_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_enqueue_crdt_field_compaction_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1materialize_1crdt_1field_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_materialize_crdt_field_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1snapshot_1crdt_1field_1state_1vector_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_snapshot_crdt_field_state_vector_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1compact_1crdt_1field_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray request_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _request_json_stack[8];
+    uintptr_t _request_json_len = (uintptr_t)(*env)->GetArrayLength(env, request_json);
+    uint8_t* _request_json_ptr = NULL;
+    bool _request_json_needs_release = false;
+    if (_request_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, request_json, 0, (jsize)_request_json_len, _request_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_ptr = (uint8_t*)_request_json_stack;
+        }
+    } else {
+        _request_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, request_json, NULL);
+        if (_request_json_ptr == NULL) {
+            _request_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _request_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_compact_crdt_field_json((void*)handle, (const uint8_t*)_request_json_ptr, (uintptr_t)_request_json_len);
+boltffi_input_cleanup:
+    if (_request_json_needs_release) (*env)->ReleaseByteArrayElements(env, request_json, (jbyte*)_request_json_ptr, JNI_ABORT);
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);
 }

@@ -226,6 +226,17 @@ export interface SyncRoutesConfigWithRateLimit {
     maxBytes?: number;
   };
   /**
+   * Minimum Syncular client schema version accepted by this server.
+   * Clients with an older runtime must upgrade before continuing sync.
+   */
+  requiredSchemaVersion?: number;
+  /**
+   * Latest Syncular client schema version known by this server.
+   * Newer values are informational and should not block older compatible
+   * clients.
+   */
+  latestSchemaVersion?: number;
+  /**
    * Rate limiting configuration.
    * Set to false to disable all rate limiting.
    */
@@ -656,6 +667,18 @@ function readPositiveInteger(
   return Math.floor(value);
 }
 
+function readOptionalPositiveInteger(
+  value: number | undefined
+): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  if (value <= 0) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
 function readTraceContext(c: Context): TraceContext {
   const traceparent = parseW3cTraceparent(c.req.header('traceparent'));
   if (traceparent) return traceparent;
@@ -915,6 +938,12 @@ export function createSyncRoutes<
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 5000;
   const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 10;
   const maxOperationsPerPush = config.maxOperationsPerPush ?? 200;
+  const requiredSchemaVersion = readOptionalPositiveInteger(
+    config.requiredSchemaVersion
+  );
+  const latestSchemaVersion = readOptionalPositiveInteger(
+    config.latestSchemaVersion
+  );
   const requestPayloadSnapshots = config.requestPayloadSnapshots;
   const requestPayloadSnapshotsEnabled =
     requestPayloadSnapshots?.enabled ??
@@ -2275,6 +2304,8 @@ export function createSyncRoutes<
       return c.json(
         {
           ok: true as const,
+          ...(requiredSchemaVersion ? { requiredSchemaVersion } : {}),
+          ...(latestSchemaVersion ? { latestSchemaVersion } : {}),
           ...(pushResponse ? { push: pushResponse } : {}),
           ...(pullResponse ? { pull: pullResponse } : {}),
         },

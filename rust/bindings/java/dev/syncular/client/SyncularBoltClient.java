@@ -35,6 +35,47 @@ public final class SyncularBoltClient implements AutoCloseable {
         Native.boltffi_syncular_bolt_client_free(handle);
     }
 
+    public static SyncularBoltClient openAsync(SyncularBoltClientConfig config) {
+        try (
+            WireWriter _wire_config = new WireWriter(config.wireEncodedSize())
+        ) {
+            config.wireEncodeTo(_wire_config);
+            long _handle = Native.boltffi_syncular_bolt_client_open_async(_wire_config.toBuffer());
+            if (_handle == 0L) throw new RuntimeException("Factory constructor failed");
+            return new SyncularBoltClient(_handle);
+        }
+    }
+
+    public java.util.Optional<String> openCommandId() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_open_command_id(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readI8() == 0 ? java.util.Optional.empty() : java.util.Optional.ofNullable(reader.readString());
+    }
+
+    public boolean isOpenFinished() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_is_open_finished(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
+    public boolean finishOpenTimeout(long timeoutMs) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_finish_open_timeout(handle, timeoutMs);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
     public String runtimeManifestJson() {
         byte[] _buf = Native.boltffi_syncular_bolt_client_runtime_manifest_json(handle);
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -47,6 +88,16 @@ public final class SyncularBoltClient implements AutoCloseable {
 
     public boolean setAuthHeadersJson(String headersJson) {
         byte[] _buf = Native.boltffi_syncular_bolt_client_set_auth_headers_json(handle, headersJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
+    public boolean setSubscriptionsJson(String subscriptionsJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_set_subscriptions_json(handle, subscriptionsJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
@@ -85,8 +136,28 @@ public final class SyncularBoltClient implements AutoCloseable {
         return reader.readBool();
     }
 
+    public boolean triggerSyncWebsocket() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_trigger_sync_websocket(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
     public String enqueueSyncNow() {
         byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_sync_now(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String enqueueSyncWebsocket() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_sync_websocket(handle);
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {
@@ -197,6 +268,96 @@ public final class SyncularBoltClient implements AutoCloseable {
 
     public String enqueueYjsUpdateJson(String updateJson) {
         byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_yjs_update_json(handle, updateJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String openCrdtFieldJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_open_crdt_field_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String applyCrdtFieldTextJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_apply_crdt_field_text_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String applyCrdtFieldYjsUpdateJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_apply_crdt_field_yjs_update_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String enqueueCrdtFieldYjsUpdateJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_crdt_field_yjs_update_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String enqueueCrdtFieldTextJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_crdt_field_text_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String enqueueCrdtFieldCompactionJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_crdt_field_compaction_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String materializeCrdtFieldJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_materialize_crdt_field_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String snapshotCrdtFieldStateVectorJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_snapshot_crdt_field_state_vector_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String compactCrdtFieldJson(String requestJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_compact_crdt_field_json(handle, requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {

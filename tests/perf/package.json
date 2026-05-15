@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "tsgo": "tsgo --noEmit",
-    "test": "bun test .",
+    "test": "bun test --max-concurrency=1 .",
+    "rust": "bun test --max-concurrency=1 rust-client.perf.test.ts",
+    "rust:stable": "PERF_RUST_ONLY=true bun run stable-ci.ts",
+    "rust:stress": "bun test --max-concurrency=1 --timeout=300000 rust-client.stress.test.ts",
     "update-baseline": "bun run update-baseline.ts",
     "stable-ci": "bun run stable-ci.ts",
     "fetch-history": "bun run fetch-history.ts",

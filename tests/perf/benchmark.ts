@@ -8,10 +8,11 @@
 export interface BenchmarkResult {
   name: string;
   iterations: number;
-  mean: number; // ms
-  median: number; // ms
-  p95: number; // ms
-  p99: number; // ms
+  unit?: 'ms' | 'KiB';
+  mean: number;
+  median: number;
+  p95: number;
+  p99: number;
   min: number;
   max: number;
   stdDev: number;
@@ -92,10 +93,57 @@ export function formatBenchmarkTable(results: BenchmarkResult[]): string {
     const mem = r.memoryDelta
       ? `${(r.memoryDelta / 1024 / 1024).toFixed(1)}MB`
       : '-';
-    return `| ${r.name} | ${r.median.toFixed(1)}ms | ${r.p95.toFixed(1)}ms | ${r.p99.toFixed(1)}ms | ${r.min.toFixed(1)}ms | ${r.max.toFixed(1)}ms | ${r.stdDev.toFixed(1)}ms | ${mem} |`;
+    return `| ${r.name} | ${formatBenchmarkValue(r.median, r.unit)} | ${formatBenchmarkValue(r.p95, r.unit)} | ${formatBenchmarkValue(r.p99, r.unit)} | ${formatBenchmarkValue(r.min, r.unit)} | ${formatBenchmarkValue(r.max, r.unit)} | ${formatBenchmarkValue(r.stdDev, r.unit)} | ${mem} |`;
   });
 
   return [header, separator, ...rows].join('\n');
+}
+
+export function parseBenchmarkTable(output: string): BenchmarkResult[] {
+  const results: BenchmarkResult[] = [];
+  const lines = output.split('\n');
+  let inBenchmarkTable = false;
+
+  for (const line of lines) {
+    if (line.includes('| Benchmark |')) {
+      inBenchmarkTable = true;
+      continue;
+    }
+
+    if (!inBenchmarkTable) continue;
+    if (!line.startsWith('|')) {
+      inBenchmarkTable = false;
+      continue;
+    }
+
+    const match =
+      /^\|\s([a-z0-9_:-]+)\s\|\s([0-9.]+)(ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|/i.exec(
+        line
+      );
+    if (!match) continue;
+
+    results.push({
+      name: match[1]!,
+      unit: match[3] as BenchmarkResult['unit'],
+      iterations: 1,
+      median: Number(match[2]!),
+      p95: Number(match[4]!),
+      p99: Number(match[5]!),
+      min: Number(match[6]!),
+      max: Number(match[7]!),
+      stdDev: Number(match[8]!),
+      mean: Number(match[2]!),
+    });
+  }
+
+  return results;
+}
+
+function formatBenchmarkValue(
+  value: number,
+  unit: BenchmarkResult['unit'] = 'ms'
+): string {
+  return `${value.toFixed(1)}${unit}`;
 }
 
 /**

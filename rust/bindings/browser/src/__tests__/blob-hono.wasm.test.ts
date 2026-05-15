@@ -23,9 +23,11 @@ import {
   openSyncularV2RustClient,
   type SyncularV2RustClient,
 } from '../rust-client';
+import { syncConformance } from './fixtures/sync-conformance';
 
-const ACTOR_ID = 'user-blob';
-const AUTHORIZATION = 'Bearer blob-token';
+const BLOB_SCENARIO = syncConformance.blob;
+const ACTOR_ID = BLOB_SCENARIO.browserActorId;
+const AUTHORIZATION = BLOB_SCENARIO.authorization;
 
 describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
   const servers: Array<ReturnType<typeof createNodeHonoServer>> = [];
@@ -40,146 +42,139 @@ describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
 
   it('uploads queued blobs and retrieves them through real Hono blob routes', async () => {
     const { authHeaders, client } = await openBlobHarness({
-      clientId: 'client-rust-blob-hono',
+      clientId: BLOB_SCENARIO.browserClientId,
     });
 
-    const bytes = new TextEncoder().encode('rust-owned-sqlite-blob');
-    const blob = await client.storeBlob(bytes, { mimeType: 'text/plain' });
+    const bytes = new TextEncoder().encode(BLOB_SCENARIO.browserText);
+    const blob = await client.storeBlob(bytes, {
+      mimeType: BLOB_SCENARIO.textMimeType,
+    });
     expect(blob).toMatchObject({
       size: bytes.length,
-      mimeType: 'text/plain',
+      mimeType: BLOB_SCENARIO.textMimeType,
     });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 1,
-      uploading: 0,
-      failed: 0,
-    });
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueBefore
+    );
 
-    await expect(client.processBlobUploadQueue()).resolves.toEqual({
-      uploaded: 1,
-      failed: 0,
-    });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 0,
-      uploading: 0,
-      failed: 0,
-    });
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessUploaded
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueAfter
+    );
 
     await client.clearBlobCache();
     expect(await client.isBlobLocal(blob.hash)).toBe(false);
     const downloaded = await client.retrieveBlob(blob);
-    expect(new TextDecoder().decode(downloaded)).toBe('rust-owned-sqlite-blob');
+    expect(new TextDecoder().decode(downloaded)).toBe(
+      BLOB_SCENARIO.browserText
+    );
     expect(await client.isBlobLocal(blob.hash)).toBe(true);
     expect(await client.blobCacheStats()).toEqual({
       count: 1,
       totalBytes: bytes.length,
     });
 
-    expect(authHeaders).toEqual([AUTHORIZATION, AUTHORIZATION, AUTHORIZATION]);
+    expect(authHeaders).toEqual(
+      Array.from(
+        { length: BLOB_SCENARIO.expectedAuthHeaderCount },
+        () => AUTHORIZATION
+      )
+    );
   });
 
   it('dedupes identical local blob stores before upload', async () => {
     const { client } = await openBlobHarness({
-      clientId: 'client-rust-blob-dedupe',
+      clientId: BLOB_SCENARIO.dedupeClientId,
     });
 
-    const bytes = new TextEncoder().encode('same-content');
-    const first = await client.storeBlob(bytes, { mimeType: 'text/plain' });
-    const second = await client.storeBlob(bytes, { mimeType: 'text/plain' });
+    const bytes = new TextEncoder().encode(BLOB_SCENARIO.dedupeText);
+    const first = await client.storeBlob(bytes, {
+      mimeType: BLOB_SCENARIO.textMimeType,
+    });
+    const second = await client.storeBlob(bytes, {
+      mimeType: BLOB_SCENARIO.textMimeType,
+    });
 
     expect(second).toEqual(first);
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 1,
-      uploading: 0,
-      failed: 0,
-    });
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueBefore
+    );
     expect(await client.blobCacheStats()).toEqual({
       count: 1,
       totalBytes: bytes.length,
     });
-    expect(await client.processBlobUploadQueue()).toEqual({
-      uploaded: 1,
-      failed: 0,
-    });
+    expect(await client.processBlobUploadQueue()).toEqual(
+      BLOB_SCENARIO.expectedProcessUploaded
+    );
   });
 
   it('keeps queued blobs retryable on auth failures and fails after max attempts', async () => {
     const { client } = await openBlobHarness({
-      clientId: 'client-rust-blob-auth-failure',
-      authorization: 'Bearer stale-token',
+      clientId: BLOB_SCENARIO.authFailureClientId,
+      authorization: BLOB_SCENARIO.staleAuthorization,
     });
 
-    const bytes = new TextEncoder().encode('auth-failure-blob');
-    await client.storeBlob(bytes, { mimeType: 'text/plain' });
+    const bytes = new TextEncoder().encode(BLOB_SCENARIO.authFailureText);
+    await client.storeBlob(bytes, { mimeType: BLOB_SCENARIO.textMimeType });
 
-    await expect(client.processBlobUploadQueue()).resolves.toEqual({
-      uploaded: 0,
-      failed: 0,
-    });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 1,
-      uploading: 0,
-      failed: 0,
-    });
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessRetryableFailure
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueBefore
+    );
 
     await waitForRetryBackoff();
-    await expect(client.processBlobUploadQueue()).resolves.toEqual({
-      uploaded: 0,
-      failed: 0,
-    });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 1,
-      uploading: 0,
-      failed: 0,
-    });
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessRetryableFailure
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueBefore
+    );
 
     await waitForRetryBackoff(2_100);
-    await expect(client.processBlobUploadQueue()).resolves.toEqual({
-      uploaded: 0,
-      failed: 1,
-    });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 0,
-      uploading: 0,
-      failed: 1,
-    });
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessPermanentFailure
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedFailedQueue
+    );
   });
 
   it('keeps queued blobs pending after an interrupted upload and succeeds later', async () => {
     const { client } = await openBlobHarness({
-      clientId: 'client-rust-blob-interrupted-upload',
+      clientId: BLOB_SCENARIO.interruptedUploadClientId,
       failDirectUploadAttempts: 1,
     });
 
-    await client.storeBlob(new TextEncoder().encode('retryable-upload'), {
-      mimeType: 'text/plain',
-    });
+    await client.storeBlob(
+      new TextEncoder().encode(BLOB_SCENARIO.interruptedUploadText),
+      {
+        mimeType: BLOB_SCENARIO.textMimeType,
+      }
+    );
 
-    await expect(client.processBlobUploadQueue()).resolves.toEqual({
-      uploaded: 0,
-      failed: 0,
-    });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 1,
-      uploading: 0,
-      failed: 0,
-    });
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessRetryableFailure
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueBefore
+    );
 
     await waitForRetryBackoff();
-    await expect(client.processBlobUploadQueue()).resolves.toEqual({
-      uploaded: 1,
-      failed: 0,
-    });
-    expect(await client.blobUploadQueueStats()).toEqual({
-      pending: 0,
-      uploading: 0,
-      failed: 0,
-    });
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessUploaded
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueAfter
+    );
   });
 
   it('rejects missing remote blobs without caching them locally', async () => {
     const { client } = await openBlobHarness({
-      clientId: 'client-rust-blob-missing',
+      clientId: BLOB_SCENARIO.missingClientId,
     });
     const missing: BlobRef = {
       hash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
@@ -189,6 +184,33 @@ describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
 
     await expect(client.retrieveBlob(missing)).rejects.toThrow(/HTTP 404/);
     expect(await client.isBlobLocal(missing.hash)).toBe(false);
+  });
+
+  it('prunes the oldest blob cache entries to the shared byte budget', async () => {
+    const { client } = await openBlobHarness({
+      clientId: BLOB_SCENARIO.cachePruneClientId,
+    });
+    const oldBlob = await client.storeBlob(
+      new TextEncoder().encode(BLOB_SCENARIO.cachePruneOldText),
+      { mimeType: BLOB_SCENARIO.textMimeType }
+    );
+    await waitForRetryBackoff(5);
+    const newBlob = await client.storeBlob(
+      new TextEncoder().encode(BLOB_SCENARIO.cachePruneNewText),
+      { mimeType: BLOB_SCENARIO.textMimeType }
+    );
+
+    expect(await client.blobCacheStats()).toEqual(
+      BLOB_SCENARIO.expectedCacheBeforePrune
+    );
+    expect(client.pruneBlobCache(BLOB_SCENARIO.cachePruneMaxBytes)).toBe(
+      BLOB_SCENARIO.expectedCachePrunedBytes
+    );
+    expect(await client.blobCacheStats()).toEqual(
+      BLOB_SCENARIO.expectedCacheAfterPrune
+    );
+    expect(await client.isBlobLocal(oldBlob.hash)).toBe(false);
+    expect(await client.isBlobLocal(newBlob.hash)).toBe(true);
   });
 
   async function openBlobHarness(

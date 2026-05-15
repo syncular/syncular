@@ -16,6 +16,7 @@ export interface SyncularV2ClientConfig {
   clearOnInit?: boolean;
   stateId?: string;
   schemaVersion?: number;
+  appSchema?: SyncularV2AppSchema;
 }
 
 export type SyncularV2Storage = 'memory' | 'indexedDb' | 'opfsSahPool';
@@ -102,6 +103,9 @@ export interface CreateSyncularV2DatabaseOptions {
   config: SyncularV2ClientConfig;
   worker?: Worker | (() => Worker);
   requestTimeoutMs?: number;
+  runtime?: SyncularV2RuntimeArtifact;
+  runtimeArtifacts?: readonly SyncularV2RuntimeArtifactCandidate[];
+  requiredRuntimeFeatures?: readonly string[];
   codecs?: ColumnCodecSource;
   appTables?: readonly string[];
   tableConfig?: SyncularV2TableConfigMap;
@@ -111,6 +115,37 @@ export interface CreateSyncularV2DatabaseOptions {
   realtime?: boolean | SyncularV2RealtimeOptions;
 }
 
+export interface SyncularV2RuntimeArtifact {
+  wasmGlueUrl?: string | URL;
+  wasmUrl?: string | URL | Request;
+}
+
+export interface SyncularV2RuntimeArtifactCandidate
+  extends SyncularV2RuntimeArtifact {
+  name?: string;
+  features: readonly string[];
+}
+
+export interface SyncularV2RuntimeArtifactCatalog {
+  catalogVersion: 1;
+  packageName: string;
+  packageVersion: string;
+  generatedAt?: string;
+  artifacts: readonly SyncularV2RuntimeArtifactCatalogEntry[];
+}
+
+export interface SyncularV2RuntimeArtifactCatalogEntry {
+  name: string;
+  variant?: string;
+  profile?: string;
+  features: readonly string[];
+  rustFeatures?: readonly string[];
+  wasmGlueUrl: string;
+  wasmUrl: string;
+  rawBytes?: number;
+  gzipBytes?: number;
+}
+
 export type SyncularV2TableConfigMap = Record<string, SyncularV2TableConfig>;
 
 export interface SyncularV2TableConfig {
@@ -118,6 +153,61 @@ export interface SyncularV2TableConfig {
   serverVersionColumn?: string | null;
   softDeleteColumn?: string | null;
   crdtYjsFields?: readonly SyncularV2CrdtYjsFieldConfig[];
+}
+
+export interface SyncularV2AppSchema {
+  schemaVersion: number;
+  tables: readonly SyncularV2AppTableMetadata[];
+  migrations?: readonly SyncularV2EmbeddedMigration[];
+}
+
+export interface SyncularV2EmbeddedMigration {
+  version: string;
+  schemaVersion: number;
+  name: string;
+  upSql: string;
+}
+
+export interface SyncularV2AppTableMetadata {
+  name: string;
+  primaryKeyColumn: string;
+  serverVersionColumn: string;
+  softDeleteColumn?: string | null;
+  subscriptionId: string;
+  columns: readonly SyncularV2ColumnMetadata[];
+  blobColumns: readonly string[];
+  crdtYjsFields: readonly SyncularV2CrdtYjsFieldMetadata[];
+  encryptedFields: readonly SyncularV2EncryptedFieldMetadata[];
+  scopes: readonly SyncularV2ScopeMetadata[];
+}
+
+export interface SyncularV2ColumnMetadata {
+  name: string;
+  typeFamily: string;
+  notnullRequired: boolean;
+  primaryKey: boolean;
+}
+
+export interface SyncularV2ScopeMetadata {
+  name: string;
+  column: string;
+  source: 'actorId' | 'projectId';
+  required: boolean;
+}
+
+export interface SyncularV2CrdtYjsFieldMetadata {
+  field: string;
+  stateColumn: string;
+  containerKey: string;
+  rowIdField: string;
+  kind: SyncularYjsFieldKind;
+  syncMode: SyncularYjsSyncMode;
+}
+
+export interface SyncularV2EncryptedFieldMetadata {
+  field: string;
+  scope: string;
+  rowIdField: string;
 }
 
 export type SyncularYjsFieldKind = 'text' | 'xml-fragment' | 'prosemirror';
@@ -144,6 +234,52 @@ export type SyncularYjsUpdateInput =
 export type SyncularYjsPayloadEnvelope<Field extends string = string> = {
   __yjs?: Partial<Record<Field, SyncularYjsUpdateInput>>;
 };
+
+export interface SyncularV2CrdtFieldRequest {
+  table: string;
+  rowId: string;
+  field: string;
+}
+
+export interface SyncularV2CrdtFieldDescriptor
+  extends SyncularV2CrdtFieldRequest {
+  stateColumn: string;
+  containerKey: string;
+  rowIdField: string;
+  kind: SyncularYjsFieldKind;
+  syncMode: SyncularYjsSyncMode;
+}
+
+export interface SyncularV2CrdtFieldTextRequest
+  extends SyncularV2CrdtFieldRequest {
+  nextText: string;
+}
+
+export interface SyncularV2CrdtFieldYjsUpdateRequest
+  extends SyncularV2CrdtFieldRequest {
+  update: SyncularYjsUpdateEnvelope;
+}
+
+export interface SyncularV2CrdtFieldCompactionRequest
+  extends SyncularV2CrdtFieldRequest {
+  minUncheckpointedUpdates?: number;
+}
+
+export interface SyncularV2CrdtFieldWriteReceipt {
+  clientCommitId: string;
+  syncMode: SyncularYjsSyncMode;
+}
+
+export interface SyncularV2CrdtFieldMaterialization {
+  value: unknown;
+  stateBase64?: string | null;
+  stateVectorBase64: string;
+}
+
+export interface SyncularV2CrdtFieldCompactionReceipt {
+  checkpointCreated: boolean;
+  clientCommitId?: string | null;
+}
 
 export interface SyncularBuildYjsTextUpdateArgs {
   previousStateBase64?: string | null;
@@ -192,6 +328,25 @@ export interface SyncularV2SyncResult {
   subscriptions: SyncularV2SubscriptionResult[];
   pushedCommits: number;
 }
+
+export interface SyncularV2ConflictSummary {
+  id: string;
+  clientCommitId: string;
+  opIndex: number;
+  resultStatus: string;
+  message: string;
+  code: string | null;
+  serverVersion: number | null;
+  resolvedAt: number | null;
+  resolution: string | null;
+}
+
+export type SyncularV2ConflictResolution =
+  | 'keep-local'
+  | 'keep-server'
+  | 'dismiss'
+  | 'accept-server'
+  | (string & {});
 
 export interface SyncularV2SubscriptionResult {
   id: string;
@@ -311,6 +466,15 @@ export interface SyncularV2SqlClient {
   close(): Promise<void>;
 }
 
+export interface SyncularV2UnsafeSqlClient extends SyncularV2SqlClient {
+  executeUnsafeSql<
+    Row extends Record<string, unknown> = Record<string, unknown>,
+  >(
+    sql: string,
+    params?: readonly unknown[]
+  ): Promise<SyncularV2SqlResult<Row>>;
+}
+
 export interface SyncularV2BlobStoreOptions {
   mimeType?: string;
   immediate?: boolean;
@@ -390,6 +554,12 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   syncPull(): Promise<SyncularV2SyncResult>;
   syncPush(): Promise<SyncularV2SyncResult>;
   syncOnce(): Promise<SyncularV2SyncResult>;
+  conflictSummaries(): Promise<SyncularV2ConflictSummary[]>;
+  retryConflictKeepLocal(id: string): Promise<string>;
+  resolveConflict(
+    id: string,
+    resolution: SyncularV2ConflictResolution
+  ): Promise<void>;
   listTable<Row extends Record<string, unknown> = Record<string, unknown>>(
     table: string
   ): Promise<Row[]>;
@@ -417,6 +587,24 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   applyYjsEnvelopeToPayload(
     args: SyncularApplyYjsEnvelopeToPayloadArgs
   ): Promise<Record<string, unknown>>;
+  openCrdtField(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtFieldDescriptor>;
+  applyCrdtFieldText(
+    request: SyncularV2CrdtFieldTextRequest
+  ): Promise<SyncularV2CrdtFieldWriteReceipt>;
+  applyCrdtFieldYjsUpdate(
+    request: SyncularV2CrdtFieldYjsUpdateRequest
+  ): Promise<SyncularV2CrdtFieldWriteReceipt>;
+  materializeCrdtField(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtFieldMaterialization>;
+  snapshotCrdtFieldStateVector(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<{ stateVectorBase64: string }>;
+  compactCrdtField(
+    request: SyncularV2CrdtFieldCompactionRequest
+  ): Promise<SyncularV2CrdtFieldCompactionReceipt>;
   encryptionHelper(
     method: SyncularV2EncryptionHelperMethod,
     args?: unknown

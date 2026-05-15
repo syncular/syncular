@@ -84,13 +84,31 @@ jobs:
 
   perf-nightly:
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Setup wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+      - name: Install WASM optimizer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
       - uses: ./.github/actions/setup-environment
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
 
       - name: Run nightly stable performance tests (7 runs)
         env:
+          CC_wasm32_unknown_unknown: clang
+          PERF_RUST_BROWSER_BENCHMARK: true
           PERF_STABLE_RUNS: 7
           PERF_STABLE_OUTPUT_JSON: perf-nightly-summary.json
         run: bun --cwd tests/perf stable-ci 2>&1 | tee perf-nightly-results.txt
@@ -182,6 +200,15 @@ jobs:
               .filter(Boolean)
               .join(' / ');
             lines.push(`- Environment: ${env.source ?? 'unknown'} (${envLabel})`);
+            if (Array.isArray(env.perfSuites) && env.perfSuites.length > 0) {
+              lines.push(`- Perf suites: ${env.perfSuites.join(', ')}`);
+            }
+            if (env.rustcVersion) {
+              lines.push(`- Rust: ${env.rustcVersion}`);
+            }
+            if (env.wasmPackVersion) {
+              lines.push(`- wasm-pack: ${env.wasmPackVersion}`);
+            }
           }
           if (report.resources?.durationMs && report.resources?.cpuTotalMicros && report.resources?.maxRssBytes) {
             lines.push(
@@ -194,18 +221,19 @@ jobs:
             );
           }
           lines.push('');
-          lines.push('| Metric | Baseline | Median | Change |');
-          lines.push('|--------|----------|--------|--------|');
+          lines.push('| Suite | Metric | Baseline | Median | Change |');
+          lines.push('|-------|--------|----------|--------|--------|');
 
           for (const metric of report.metrics) {
+            const unit = metric.unit ?? 'ms';
             const baseline =
-              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}ms`;
-            const median = `${Number(metric.aggregatedMedian).toFixed(1)}ms`;
+              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}${unit}`;
+            const median = `${Number(metric.aggregatedMedian).toFixed(1)}${unit}`;
             const change =
               metric.changePercent === null
                 ? 'N/A'
                 : `${metric.changePercent >= 0 ? '+' : ''}${Number(metric.changePercent).toFixed(1)}%`;
-            lines.push(`| ${metric.metric} | ${baseline} | ${median} | ${change} |`);
+            lines.push(`| ${metric.suite ?? 'unknown'} | ${metric.metric} | ${baseline} | ${median} | ${change} |`);
           }
 
           fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
@@ -230,13 +258,14 @@ jobs:
           lines.push(`- Regression change-point: ${trend.hasRegressionChangePoint ? 'yes' : 'no'}`);
           lines.push(`- Insufficient history: ${trend.hasInsufficientHistory ? 'yes' : 'no'}`);
           lines.push('');
-          lines.push('| Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |');
-          lines.push('|--------|---------|-------------|-------|----------|--------|--------|');
+          lines.push('| Suite | Metric | Current | Hist Median | Delta | Robust Z | Hist N | Status |');
+          lines.push('|-------|--------|---------|-------------|-------|----------|--------|--------|');
 
           for (const metric of trend.metrics) {
-            const current = Number(metric.current).toFixed(1) + 'ms';
+            const unit = metric.unit ?? 'ms';
+            const current = Number(metric.current).toFixed(1) + unit;
             const histMedian =
-              metric.historyMedian == null ? 'N/A' : Number(metric.historyMedian).toFixed(1) + 'ms';
+              metric.historyMedian == null ? 'N/A' : Number(metric.historyMedian).toFixed(1) + unit;
             const delta =
               metric.deltaPercent == null
                 ? 'N/A'
@@ -252,7 +281,7 @@ jobs:
                   : 'stable';
 
             lines.push(
-              `| ${metric.metric} | ${current} | ${histMedian} | ${delta} | ${robustZ} | ${metric.historyCount} | ${status} |`
+              `| ${metric.suite ?? 'unknown'} | ${metric.metric} | ${current} | ${histMedian} | ${delta} | ${robustZ} | ${metric.historyCount} | ${status} |`
             );
           }
 

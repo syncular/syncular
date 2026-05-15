@@ -8,9 +8,27 @@ publish = false
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
-default = ["native", "boltffi-bindings", "crdt-yjs"]
+default = [
+    "native",
+    "boltffi-bindings",
+    "crdt-yjs",
+    "e2ee",
+    "demo-todo-native-fixture",
+]
 boltffi-bindings = ["native", "dep:boltffi"]
-crdt-yjs = []
+crdt-yjs = ["dep:base64", "dep:yrs"]
+demo-todo-fixture = []
+demo-todo-native-fixture = ["native", "demo-todo-fixture"]
+e2ee = [
+    "dep:argon2",
+    "dep:base64",
+    "dep:bip39",
+    "dep:chacha20poly1305",
+    "dep:hkdf",
+    "dep:pbkdf2",
+    "dep:x25519-dalek",
+    "dep:zeroize",
+]
 native = [
     "dep:diesel",
     "dep:flate2",
@@ -27,30 +45,31 @@ web-transport = [
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
 ]
+web-blobs = ["web-transport"]
 web-client = ["web-transport"]
-web-store = ["web-client"]
-web-owned-sqlite = [
+web-store = ["web-client", "demo-todo-fixture"]
+web-owned-sqlite = ["web-owned-sqlite-core", "web-blobs", "crdt-yjs", "e2ee"]
+web-owned-sqlite-core = [
     "web-client",
-    "crdt-yjs",
     "dep:sqlite-wasm-rs",
     "dep:sqlite-wasm-vfs",
 ]
 
 [dependencies]
 anyhow = "1.0"
-argon2 = "0.5"
-base64 = "0.22"
-bip39 = { version = "2.1", default-features = false, features = ["std"] }
+argon2 = { version = "0.5", optional = true }
+base64 = { version = "0.22", optional = true }
+bip39 = { version = "2.1", default-features = false, features = ["std"], optional = true }
 boltffi = { version = "0.24.1", optional = true }
-chacha20poly1305 = { version = "0.10", features = ["std"] }
+chacha20poly1305 = { version = "0.10", features = ["std"], optional = true }
 diesel = { version = "2.2", features = ["sqlite", "returning_clauses_for_sqlite_3_35"], optional = true }
 flate2 = { version = "1.0", optional = true }
 getrandom = "0.2"
 hex = "0.4"
-hkdf = "0.12"
+hkdf = { version = "0.12", optional = true }
 js-sys = { version = "0.3", optional = true }
 libsqlite3-sys = { version = "0.37", features = ["bundled"], optional = true }
-pbkdf2 = "0.12"
+pbkdf2 = { version = "0.12", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 rusqlite = { version = "0.39", optional = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -77,9 +96,9 @@ web-sys = { version = "0.3", features = [
     "Window",
     "console",
 ], optional = true }
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
-yrs = "0.26"
-zeroize = "1.8"
+x25519-dalek = { version = "2.0", features = ["static_secrets"], optional = true }
+yrs = { version = "0.26", optional = true }
+zeroize = { version = "1.8", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 uuid = { version = "1.11", features = ["v4"] }
@@ -87,3 +106,6 @@ uuid = { version = "1.11", features = ["v4"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 uuid = { version = "1.11", features = ["v4", "js"] }
+
+[dev-dependencies]
+syncular-testkit = { path = "../testkit" }

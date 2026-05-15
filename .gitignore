@@ -1,3 +1,4 @@
+.context/
 .ignore/
 node_modules/
 .DS_Store
@@ -46,3 +47,13 @@ rust/bindings/java/native/
 rust/bindings/java/*.dylib
 rust/bindings/java/*.so
 rust/bindings/java/*.dll
+
+# Native app smoke build artifacts
+rust/examples/todo-app/native-smokes/android-lifecycle/.gradle/
+rust/examples/todo-app/native-smokes/android-lifecycle/.kotlin/
+rust/examples/todo-app/native-smokes/android-lifecycle/local.properties
+rust/examples/todo-app/native-smokes/android-lifecycle/app/build/
+rust/examples/todo-app/native-smokes/android-lifecycle/build/
+rust/examples/todo-app/native-smokes/ios-lifecycle/SyncularLifecycleApp.xcodeproj/
+rust/examples/todo-app/native-smokes/ios-lifecycle/.build/
+rust/examples/todo-app/native-smokes/ios-lifecycle/DerivedData/

@@ -22,6 +22,7 @@ import {
   type MutationsCommitFn,
   type MutationsTx,
 } from './mutations';
+import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2Blobs,
@@ -33,8 +34,14 @@ import type {
   SyncularV2LiveQuerySubscription,
   SyncularV2SqlClient,
   SyncularV2TableConfigMap,
+  SyncularV2UnsafeSqlClient,
 } from './types';
 import { createSyncularV2WorkerClient } from './worker-client';
+
+type SyncularV2DriverClient = SyncularV2Client &
+  Partial<SyncularV2UnsafeSqlClient>;
+type SyncularV2ConnectionClient = SyncularV2SqlClient &
+  Partial<SyncularV2UnsafeSqlClient>;
 
 export interface SyncularV2Dialect extends Dialect, SyncularV2LiveQueries {
   destroyLiveQueries(): Promise<void>;
@@ -42,6 +49,7 @@ export interface SyncularV2Dialect extends Dialect, SyncularV2LiveQueries {
 
 export interface SyncularV2DialectOptions {
   appTables?: readonly string[];
+  unsafeWrites?: boolean;
 }
 
 export interface SyncularV2Database<DB> extends SyncularV2LiveQueries {
@@ -51,6 +59,21 @@ export interface SyncularV2Database<DB> extends SyncularV2LiveQueries {
   mutations: MutationsApi<DB, undefined>;
   blobs: SyncularV2Blobs;
   close(): Promise<void>;
+}
+
+export async function withSyncularV2SchemaWrites<DB, Result>(
+  database: Pick<SyncularV2Database<DB>, 'client'>,
+  callback: (db: Kysely<any>) => Promise<Result>
+): Promise<Result> {
+  const client = assertUnsafeSqlClient(database.client);
+  const dialect = createSyncularV2Dialect(client, { unsafeWrites: true });
+  const db = new Kysely<any>({ dialect });
+  try {
+    return await callback(db);
+  } finally {
+    await dialect.destroyLiveQueries();
+    await db.destroy();
+  }
 }
 
 export interface SyncularV2MutationsMeta {
@@ -450,11 +473,15 @@ class SyncularV2Driver extends BaseSqliteDriver {
   readonly #appTables: Set<string> | undefined;
 
   constructor(
-    private readonly client: SyncularV2Client,
+    private readonly client: SyncularV2DriverClient,
     options: SyncularV2DialectOptions = {}
   ) {
     super(async () => {
-      this.conn = new SyncularV2Connection(client, this.#emitLiveEvents);
+      this.conn = new SyncularV2Connection(
+        client,
+        this.#emitLiveEvents,
+        options.unsafeWrites ?? false
+      );
     });
     this.#appTables =
       options.appTables == null
@@ -505,7 +532,7 @@ class SyncularV2Driver extends BaseSqliteDriver {
   }
 
   async beginTransaction(connection: DatabaseConnection): Promise<void> {
-    await connection.executeQuery(KyselyCompiledQuery.raw('begin immediate'));
+    await connection.executeQuery(KyselyCompiledQuery.raw('begin'));
   }
 
   override async destroy(): Promise<void> {
@@ -531,15 +558,21 @@ class SyncularV2Driver extends BaseSqliteDriver {
 
 class SyncularV2Connection implements DatabaseConnection {
   constructor(
-    private readonly client: SyncularV2SqlClient,
-    private readonly emitLiveEvents: () => Promise<void>
+    private readonly client: SyncularV2ConnectionClient,
+    private readonly emitLiveEvents: () => Promise<void>,
+    private readonly unsafeWrites: boolean
   ) {}
 
   async executeQuery<R>(compiledQuery: CompiledQuery): Promise<QueryResult<R>> {
-    const result = await this.client.executeSql<R & Record<string, unknown>>(
-      compiledQuery.sql,
-      compiledQuery.parameters
-    );
+    if (!this.unsafeWrites) assertSyncularV2ReadonlySql(compiledQuery.sql);
+    const result = this.unsafeWrites
+      ? await assertUnsafeSqlClient(this.client).executeUnsafeSql<
+          R & Record<string, unknown>
+        >(compiledQuery.sql, compiledQuery.parameters)
+      : await this.client.executeSql<R & Record<string, unknown>>(
+          compiledQuery.sql,
+          compiledQuery.parameters
+        );
     await this.emitLiveEvents();
     return {
       rows: result.rows as R[],
@@ -557,6 +590,18 @@ class SyncularV2Connection implements DatabaseConnection {
   ): AsyncIterableIterator<QueryResult<R>> {
     throw new Error('syncular v2 sqlite dialect does not support streaming');
   }
+}
+
+function assertUnsafeSqlClient<Client extends SyncularV2SqlClient>(
+  client: Client
+): Client & SyncularV2UnsafeSqlClient {
+  const maybe = client as Partial<SyncularV2UnsafeSqlClient>;
+  if (typeof maybe.executeUnsafeSql === 'function') {
+    return client as Client & SyncularV2UnsafeSqlClient;
+  }
+  throw new Error(
+    'Syncular v2 schema installation requires an internal unsafe SQL client.'
+  );
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {

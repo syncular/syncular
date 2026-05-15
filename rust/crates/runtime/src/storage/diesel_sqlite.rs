@@ -1,4 +1,6 @@
-use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
+use crate::app_schema::{
+    checksum, default_app_schema, split_sql_statements, AppSchema, AppTableMetadata,
+};
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, StorageCompactionOptions,
     StorageCompactionReport,
@@ -6,7 +8,6 @@ use crate::compaction::{
 use crate::crdt_yjs::{
     materialize_row_for_metadata, transform_local_row_for_metadata, YJS_PAYLOAD_KEY,
 };
-use crate::demo_tasks::{insert_local_task, list_tasks, patch_local_task_title};
 use crate::encrypted_crdt::{
     apply_encrypted_crdt_plaintext_to_row, encrypted_crdt_identity_column,
     encrypted_crdt_normalize_row, encrypted_crdt_row_matches_scopes, encrypted_crdt_scopes_json,
@@ -14,14 +15,18 @@ use crate::encrypted_crdt::{
     CRDT_UPDATES_TABLE,
 };
 use crate::error::{Result, SyncularError};
-use crate::migrations::{checksum, split_sql_statements};
+#[cfg(feature = "demo-todo-native-fixture")]
+use crate::fixtures::todo::tasks::{insert_local_task, list_tasks, patch_local_task_title};
 use crate::protocol::*;
+use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
-    now_ms, AppliedMigration, ConflictSummary, DemoTaskStore, OutboxCommit, OutboxSummary,
-    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, Task, BLOB_UPLOAD_STALE_TIMEOUT_MS,
-    MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    now_ms, AppliedMigration, ConflictSummary, OutboxCommit, OutboxSummary, SubscriptionState,
+    SyncStateStore, SyncStore, SyncStoreTx, BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES,
+    MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
+#[cfg(feature = "demo-todo-fixture")]
+use crate::store::{DemoTaskStore, Task};
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{BigInt, Binary, Integer, Text};
@@ -211,6 +216,12 @@ struct BlobFoundRow {
 }
 
 #[derive(QueryableByName)]
+struct JsonObjectRow {
+    #[diesel(sql_type = Text)]
+    row_json: String,
+}
+
+#[derive(QueryableByName)]
 struct EncryptedCrdtScopeRow {
     #[diesel(sql_type = Text)]
     identity: String,
@@ -357,6 +368,10 @@ impl DieselSqliteStore {
         )
         .execute(&mut self.conn)?;
 
+        if self.app_schema.migrations.is_empty() {
+            self.ensure_runtime_system_schema()?;
+        }
+
         for migration in self.app_schema.migrations {
             let applied = sql_query(
                 r#"
@@ -404,6 +419,13 @@ impl DieselSqliteStore {
         Ok(())
     }
 
+    fn ensure_runtime_system_schema(&mut self) -> Result<()> {
+        for statement in split_sql_statements(RUNTIME_SYSTEM_SCHEMA_SQL) {
+            sql_query(statement).execute(&mut self.conn)?;
+        }
+        Ok(())
+    }
+
     pub fn list_table_json(&mut self, table: &str) -> Result<Vec<Value>> {
         if self.app_schema.table_metadata(table).is_none() {
             return Err(SyncularError::config(format!(
@@ -411,9 +433,7 @@ impl DieselSqliteStore {
             )));
         }
 
-        self.app_schema
-            .adapter_for(table)?
-            .list_rows_json(&mut self.conn)
+        list_app_rows_json(&mut self.conn, self.app_schema, table)
     }
 
     pub fn read_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
@@ -813,7 +833,9 @@ impl DieselSqliteStore {
                     "storage compaction tombstone cleanup requires maxTombstoneServerVersion",
                 )
             })?;
-            for statement in tombstone_delete_statements(max_server_version)? {
+            for statement in
+                tombstone_delete_statements(self.app_schema.app_table_metadata, max_server_version)?
+            {
                 report.tombstone_rows_deleted +=
                     sql_query(statement).execute(&mut self.conn)? as i64;
             }
@@ -928,6 +950,7 @@ impl SyncStore for DieselSqliteStore {
     }
 }
 
+#[cfg(feature = "demo-todo-native-fixture")]
 impl DemoTaskStore for DieselSqliteStore {
     fn add_task(
         &mut self,
@@ -1016,6 +1039,7 @@ impl SyncStateStore for DieselSqliteStore {
 }
 
 impl<'a> DieselSqliteTx<'a> {
+    #[cfg(feature = "demo-todo-native-fixture")]
     fn add_task(
         &mut self,
         actor_id: &str,
@@ -1029,6 +1053,7 @@ impl<'a> DieselSqliteTx<'a> {
         Ok(())
     }
 
+    #[cfg(feature = "demo-todo-native-fixture")]
     fn patch_task_title(
         &mut self,
         project_id: Option<&str>,
@@ -1179,7 +1204,14 @@ impl<'a> DieselSqliteTx<'a> {
 
         match operation.op.as_str() {
             "upsert" => {
-                let row = local_row.unwrap_or_else(|| row_from_operation_payload(&operation));
+                let row = local_row.unwrap_or_else(|| {
+                    merged_local_row(
+                        metadata,
+                        current_row,
+                        &operation.row_id,
+                        operation.payload.as_ref(),
+                    )
+                });
                 let local_server_version = if operation_payload_has_server_merge_yjs_payload(
                     operation.payload.as_ref(),
                     metadata,
@@ -1305,7 +1337,12 @@ impl<'a> DieselSqliteTx<'a> {
                         metadata,
                     )?;
                     let local_row = local_row.unwrap_or_else(|| {
-                        merged_local_row(current_row, &mutation.row_id, operation.payload.as_ref())
+                        merged_local_row(
+                            metadata,
+                            current_row,
+                            &mutation.row_id,
+                            operation.payload.as_ref(),
+                        )
                     });
                     self.upsert_row(
                         &mutation.table,
@@ -1334,18 +1371,12 @@ impl<'a> DieselSqliteTx<'a> {
     }
 }
 
-fn row_from_operation_payload(operation: &SyncOperation) -> Value {
-    let mut row = operation
-        .payload
-        .as_ref()
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    row.insert("id".to_string(), Value::String(operation.row_id.clone()));
-    Value::Object(row)
-}
-
-fn merged_local_row(current_row: Option<Value>, row_id: &str, payload: Option<&Value>) -> Value {
+fn merged_local_row(
+    metadata: &AppTableMetadata,
+    current_row: Option<Value>,
+    row_id: &str,
+    payload: Option<&Value>,
+) -> Value {
     let mut row = current_row
         .and_then(|row| row.as_object().cloned())
         .unwrap_or_default();
@@ -1354,7 +1385,10 @@ fn merged_local_row(current_row: Option<Value>, row_id: &str, payload: Option<&V
             row.insert(key.clone(), value.clone());
         }
     }
-    row.insert("id".to_string(), Value::String(row_id.to_string()));
+    row.insert(
+        metadata.primary_key_column.to_string(),
+        Value::String(row_id.to_string()),
+    );
     Value::Object(row)
 }
 
@@ -1462,6 +1496,21 @@ fn delete_encrypted_crdt_system_row(
     Ok(())
 }
 
+fn update_encrypted_crdt_system_server_seq(
+    conn: &mut SqliteConnection,
+    table: &str,
+    row_id: &str,
+    server_seq: i64,
+) -> Result<()> {
+    let identity = encrypted_crdt_identity_column(table)?;
+    let sql = format!("update {table} set server_seq = ?1 where {identity} = ?2");
+    sql_query(sql)
+        .bind::<BigInt, _>(server_seq)
+        .bind::<Text, _>(row_id)
+        .execute(conn)?;
+    Ok(())
+}
+
 fn materialize_encrypted_crdt_system_row(
     conn: &mut SqliteConnection,
     app_schema: AppSchema,
@@ -1506,9 +1555,7 @@ fn materialize_encrypted_crdt_system_row(
         .get(metadata.server_version_column)
         .and_then(Value::as_i64)
         .or(Some(0));
-    app_schema
-        .adapter_for(app_table)?
-        .upsert_row(conn, &row, fallback_version)?;
+    upsert_app_row(conn, app_schema, app_table, &row, fallback_version)?;
     Ok(())
 }
 
@@ -1521,7 +1568,7 @@ fn current_app_row_json(
     let metadata = app_schema
         .table_metadata(table)
         .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
-    let rows = app_schema.adapter_for(table)?.list_rows_json(conn)?;
+    let rows = list_app_rows_json(conn, app_schema, table)?;
     Ok(rows.into_iter().find(|row| {
         row.get(metadata.primary_key_column)
             .and_then(Value::as_str)
@@ -1553,6 +1600,441 @@ fn clear_encrypted_crdt_system_table_for_scopes(
         }
     }
     Ok(())
+}
+
+fn list_app_rows_json(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    table: &str,
+) -> Result<Vec<Value>> {
+    let metadata = app_schema
+        .table_metadata(table)
+        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
+    match app_schema.adapter_for(table) {
+        Ok(adapter) => adapter.list_rows_json(conn),
+        Err(_) => list_rows_json_generic(conn, metadata),
+    }
+}
+
+fn clear_app_table_for_scopes(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    table: &str,
+    scopes: &ScopeValues,
+) -> Result<()> {
+    let metadata = app_schema
+        .table_metadata(table)
+        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
+    match app_schema.adapter_for(table) {
+        Ok(adapter) => adapter.clear_for_scopes(conn, scopes),
+        Err(_) => clear_table_for_scopes_generic(conn, metadata, scopes),
+    }
+}
+
+fn clear_app_table_for_scopes_preserving_local_crdt(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    table: &str,
+    scopes: &ScopeValues,
+) -> Result<()> {
+    let metadata = app_schema
+        .table_metadata(table)
+        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
+    let encrypted_fields = metadata
+        .crdt_yjs_fields
+        .iter()
+        .filter(|field| field.sync_mode == "encrypted-update-log")
+        .collect::<Vec<_>>();
+    if encrypted_fields.is_empty() {
+        return clear_app_table_for_scopes(conn, app_schema, table, scopes);
+    }
+
+    validate_app_table_metadata(metadata)?;
+    for field in &encrypted_fields {
+        validate_identifier(field.state_column)?;
+    }
+    let mut filters = scope_filters(metadata, scopes)?;
+    filters.extend(encrypted_fields.iter().map(|field| {
+        format!(
+            "({} is null or {} = '')",
+            field.state_column, field.state_column
+        )
+    }));
+    let where_clause = if filters.is_empty() {
+        String::new()
+    } else {
+        format!(" where {}", filters.join(" and "))
+    };
+    let sql = format!("delete from {table}{where_clause}", table = metadata.name);
+    sql_query(sql).execute(conn)?;
+    Ok(())
+}
+
+fn preserve_encrypted_crdt_materialized_columns(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    metadata: &'static AppTableMetadata,
+    row: Value,
+) -> Result<Value> {
+    if !metadata
+        .crdt_yjs_fields
+        .iter()
+        .any(|field| field.sync_mode == "encrypted-update-log")
+    {
+        return Ok(row);
+    }
+    let Some(mut row_object) = row.as_object().cloned() else {
+        return Ok(row);
+    };
+    let Some(row_id) = row_object
+        .get(metadata.primary_key_column)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Ok(Value::Object(row_object));
+    };
+    let Some(existing_row) = current_app_row_json(conn, app_schema, metadata.name, &row_id)? else {
+        return Ok(Value::Object(row_object));
+    };
+    let Some(existing_object) = existing_row.as_object() else {
+        return Ok(Value::Object(row_object));
+    };
+
+    for field in metadata
+        .crdt_yjs_fields
+        .iter()
+        .filter(|field| field.sync_mode == "encrypted-update-log")
+    {
+        let Some(state) = existing_object
+            .get(field.state_column)
+            .and_then(Value::as_str)
+            .filter(|state| !state.is_empty())
+        else {
+            continue;
+        };
+        row_object.insert(
+            field.state_column.to_string(),
+            Value::String(state.to_string()),
+        );
+        if let Some(value) = existing_object.get(field.field) {
+            row_object.insert(field.field.to_string(), value.clone());
+        }
+    }
+    Ok(Value::Object(row_object))
+}
+
+fn upsert_app_row(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    table: &str,
+    row: &Value,
+    fallback_version: Option<i64>,
+) -> Result<()> {
+    let metadata = app_schema
+        .table_metadata(table)
+        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
+    match app_schema.adapter_for(table) {
+        Ok(adapter) => adapter.upsert_row(conn, row, fallback_version),
+        Err(_) => upsert_row_generic(conn, metadata, row, fallback_version),
+    }
+}
+
+fn apply_app_change(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    change: &SyncChange,
+) -> Result<()> {
+    let metadata = app_schema.table_metadata(&change.table).ok_or_else(|| {
+        SyncularError::config(format!("unknown generated app table: {}", change.table))
+    })?;
+    if change.op == "upsert" && change.row_json.is_some() {
+        let mut change = change.clone();
+        let row = change.row_json.take().expect("checked row_json presence");
+        change.row_json = Some(preserve_encrypted_crdt_materialized_columns(
+            conn, app_schema, metadata, row,
+        )?);
+        return match app_schema.adapter_for(&change.table) {
+            Ok(adapter) => adapter.apply_change(conn, &change),
+            Err(_) => apply_change_generic(conn, metadata, &change),
+        };
+    }
+    match app_schema.adapter_for(&change.table) {
+        Ok(adapter) => adapter.apply_change(conn, change),
+        Err(_) => apply_change_generic(conn, metadata, change),
+    }
+}
+
+fn list_rows_json_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+) -> Result<Vec<Value>> {
+    validate_app_table_metadata(metadata)?;
+    let projection = json_object_projection(metadata)?;
+    let sql = format!(
+        "select {projection} as row_json from {table} order by {pk} asc",
+        table = metadata.name,
+        pk = metadata.primary_key_column
+    );
+    rows_from_json_query(conn, sql)
+}
+
+fn clear_table_for_scopes_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    scopes: &ScopeValues,
+) -> Result<()> {
+    validate_app_table_metadata(metadata)?;
+    let filters = scope_filters(metadata, scopes)?;
+    let where_clause = if filters.is_empty() {
+        String::new()
+    } else {
+        format!(" where {}", filters.join(" and "))
+    };
+    let sql = format!("delete from {table}{where_clause}", table = metadata.name);
+    sql_query(sql).execute(conn)?;
+    Ok(())
+}
+
+fn upsert_row_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    row: &Value,
+    fallback_version: Option<i64>,
+) -> Result<()> {
+    validate_app_table_metadata(metadata)?;
+    let row = row.as_object().ok_or_else(|| {
+        SyncularError::protocol_message(format!("row is not a JSON object: {row}"))
+    })?;
+    row.get(metadata.primary_key_column)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SyncularError::protocol_message(format!(
+                "row for table {} is missing string primary key {}",
+                metadata.name, metadata.primary_key_column
+            ))
+        })?;
+
+    let columns = syncable_columns(metadata);
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let values = columns
+        .iter()
+        .map(|column| generic_column_sql_value(metadata, row, column, fallback_version))
+        .collect::<Result<Vec<_>>>()?;
+    let update_columns = columns
+        .iter()
+        .copied()
+        .filter(|column| *column != metadata.primary_key_column)
+        .collect::<Vec<_>>();
+    let on_conflict = if update_columns.is_empty() {
+        "do nothing".to_string()
+    } else {
+        format!(
+            "do update set {}",
+            update_columns
+                .iter()
+                .map(|column| format!("{column} = excluded.{column}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    let sql = format!(
+        "insert into {table} ({columns}) values ({values}) on conflict({pk}) {on_conflict}",
+        table = metadata.name,
+        columns = columns.join(", "),
+        values = values.join(", "),
+        pk = metadata.primary_key_column,
+    );
+    sql_query(sql).execute(conn)?;
+    Ok(())
+}
+
+fn apply_change_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    change: &SyncChange,
+) -> Result<()> {
+    if change.table != metadata.name {
+        return Err(SyncularError::schema(format!(
+            "metadata for {} cannot apply change for {}",
+            metadata.name, change.table
+        )));
+    }
+    match change.op.as_str() {
+        "delete" => delete_row_generic(conn, metadata, &change.row_id),
+        "upsert" => {
+            let row = change.row_json.as_ref().ok_or_else(|| {
+                SyncularError::protocol_message(format!(
+                    "upsert change missing row_json for {}",
+                    change.row_id
+                ))
+            })?;
+            upsert_row_generic(conn, metadata, row, change.row_version)
+        }
+        op => Err(SyncularError::protocol_message(format!(
+            "unsupported sync change operation: {op}"
+        ))),
+    }
+}
+
+fn delete_row_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    row_id: &str,
+) -> Result<()> {
+    validate_app_table_metadata(metadata)?;
+    let sql = format!(
+        "delete from {table} where {pk} = {row_id}",
+        table = metadata.name,
+        pk = metadata.primary_key_column,
+        row_id = sql_string(row_id),
+    );
+    sql_query(sql).execute(conn)?;
+    Ok(())
+}
+
+fn rows_from_json_query(conn: &mut SqliteConnection, sql: String) -> Result<Vec<Value>> {
+    sql_query(sql)
+        .load::<JsonObjectRow>(conn)?
+        .into_iter()
+        .map(|row| Ok(serde_json::from_str::<Value>(&row.row_json)?))
+        .collect()
+}
+
+fn json_object_projection(metadata: &AppTableMetadata) -> Result<String> {
+    let columns = syncable_columns(metadata);
+    if columns.is_empty() {
+        return Err(SyncularError::schema(format!(
+            "app table {} has no declared columns",
+            metadata.name
+        )));
+    }
+    let pairs = columns
+        .iter()
+        .map(|column| {
+            validate_identifier(column)?;
+            Ok(format!("{label}, {column}", label = sql_string(column)))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(format!("json_object({})", pairs.join(", ")))
+}
+
+fn generic_column_sql_value(
+    metadata: &AppTableMetadata,
+    row: &Map<String, Value>,
+    column: &str,
+    fallback_version: Option<i64>,
+) -> Result<String> {
+    if column == metadata.server_version_column {
+        if let Some(version) = fallback_version {
+            return Ok(version.to_string());
+        }
+        return Ok(row
+            .get(column)
+            .map(sql_value)
+            .unwrap_or_else(|| "0".to_string()));
+    }
+
+    if let Some(value) = row.get(column) {
+        return Ok(sql_value(value));
+    }
+
+    if column == metadata.primary_key_column {
+        return Err(SyncularError::protocol_message(format!(
+            "row for table {} is missing primary key {}",
+            metadata.name, metadata.primary_key_column
+        )));
+    }
+
+    let column_metadata = metadata
+        .columns
+        .iter()
+        .find(|candidate| candidate.name == column);
+    if column_metadata.is_some_and(|column| column.notnull_required) {
+        return Err(SyncularError::protocol_message(format!(
+            "row for table {} is missing required column {}",
+            metadata.name, column
+        )));
+    }
+
+    Ok("NULL".to_string())
+}
+
+fn scope_filters(metadata: &AppTableMetadata, scopes: &ScopeValues) -> Result<Vec<String>> {
+    metadata
+        .scopes
+        .iter()
+        .filter_map(|scope| {
+            let value = scopes.get(scope.name)?;
+            Some(scope_filter(scope.column, value))
+        })
+        .collect()
+}
+
+fn scope_filter(column: &str, value: &Value) -> Result<String> {
+    validate_identifier(column)?;
+    Ok(match value {
+        Value::Null => format!("{column} is null"),
+        value => format!("{column} = {}", sql_value(value)),
+    })
+}
+
+fn syncable_columns(metadata: &AppTableMetadata) -> Vec<&'static str> {
+    let mut columns = metadata
+        .columns
+        .iter()
+        .map(|column| column.name)
+        .collect::<Vec<_>>();
+    if !columns.contains(&metadata.primary_key_column) {
+        columns.insert(0, metadata.primary_key_column);
+    }
+    if !columns.contains(&metadata.server_version_column) {
+        columns.push(metadata.server_version_column);
+    }
+    columns
+}
+
+fn validate_app_table_metadata(metadata: &AppTableMetadata) -> Result<()> {
+    validate_identifier(metadata.name)?;
+    validate_identifier(metadata.primary_key_column)?;
+    validate_identifier(metadata.server_version_column)?;
+    for column in metadata.columns {
+        validate_identifier(column.name)?;
+    }
+    for scope in metadata.scopes {
+        validate_identifier(scope.column)?;
+    }
+    Ok(())
+}
+
+fn validate_identifier(identifier: &str) -> Result<()> {
+    if !identifier.is_empty()
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        Ok(())
+    } else {
+        Err(SyncularError::schema(format!(
+            "invalid sqlite identifier: {identifier}"
+        )))
+    }
+}
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn sql_value(value: &Value) -> String {
+    match value {
+        Value::Null => "NULL".to_string(),
+        Value::Bool(value) => i32::from(*value).to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => sql_string(value),
+        Value::Array(_) | Value::Object(_) => sql_string(&value.to_string()),
+    }
 }
 
 impl SyncStoreTx for DieselSqliteTx<'_> {
@@ -1606,6 +2088,53 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
                 o::next_attempt_at.eq(0),
             ))
             .execute(self.conn)?;
+        Ok(())
+    }
+
+    fn mark_pushed_operation_server_versions(
+        &mut self,
+        outbox: &OutboxCommit,
+        response: &PushCommitResponse,
+    ) -> Result<()> {
+        let operations: Vec<SyncOperation> = serde_json::from_str(&outbox.operations_json)?;
+        if response.results.is_empty() {
+            if let Some(server_seq) = response.commit_seq {
+                for operation in &operations {
+                    if is_encrypted_crdt_system_table(&operation.table) {
+                        update_encrypted_crdt_system_server_seq(
+                            self.conn,
+                            &operation.table,
+                            &operation.row_id,
+                            server_seq,
+                        )?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        for result in &response.results {
+            if !matches!(result.status.as_str(), "applied" | "cached") {
+                continue;
+            }
+            let Some(server_seq) = result.server_version.or(response.commit_seq) else {
+                continue;
+            };
+            let operation = operations.get(result.op_index as usize).ok_or_else(|| {
+                SyncularError::protocol_message(format!(
+                    "push response op_index {} out of bounds for local outbox commit {}",
+                    result.op_index, outbox.client_commit_id
+                ))
+            })?;
+            if is_encrypted_crdt_system_table(&operation.table) {
+                update_encrypted_crdt_system_server_seq(
+                    self.conn,
+                    &operation.table,
+                    &operation.row_id,
+                    server_seq,
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -1766,9 +2295,25 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
         if is_encrypted_crdt_system_table(table) {
             return clear_encrypted_crdt_system_table_for_scopes(self.conn, table, scopes);
         }
-        self.app_schema
-            .adapter_for(table)?
-            .clear_for_scopes(self.conn, scopes)
+        clear_app_table_for_scopes(self.conn, self.app_schema, table, scopes)
+    }
+
+    fn clear_table_for_scopes_preserving_local_crdt(
+        &mut self,
+        table: &str,
+        scopes: &ScopeValues,
+    ) -> Result<()> {
+        if is_encrypted_crdt_system_table(table) {
+            return clear_encrypted_crdt_system_table_for_scopes(self.conn, table, scopes);
+        }
+        clear_app_table_for_scopes_preserving_local_crdt(self.conn, self.app_schema, table, scopes)
+    }
+
+    fn current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
+        if is_encrypted_crdt_system_table(table) {
+            return Ok(None);
+        }
+        current_app_row_json(self.conn, self.app_schema, table, row_id)
     }
 
     fn upsert_row(
@@ -1799,9 +2344,13 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
             SyncularError::config(format!("unknown generated app table: {table}"))
         })?;
         let row = materialize_row_for_metadata(table, None, row.clone(), metadata)?;
-        self.app_schema
-            .adapter_for(table)?
-            .upsert_row(self.conn, &row, fallback_version)
+        let row = preserve_encrypted_crdt_materialized_columns(
+            self.conn,
+            self.app_schema,
+            metadata,
+            row,
+        )?;
+        upsert_app_row(self.conn, self.app_schema, table, &row, fallback_version)
     }
 
     fn apply_change(&mut self, change: &SyncChange) -> Result<()> {
@@ -1829,20 +2378,44 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
                 })?;
             if let Some(row) = change.row_json.as_ref() {
                 let mut change = change.clone();
-                change.row_json = Some(materialize_row_for_metadata(
-                    &change.table,
-                    Some(&change.row_id),
-                    row.clone(),
-                    metadata,
-                )?);
-                return self
-                    .app_schema
-                    .adapter_for(&change.table)?
-                    .apply_change(self.conn, &change);
+                change.row_json = Some(if has_yjs_payload(row) {
+                    let existing_row = current_app_row_json(
+                        self.conn,
+                        self.app_schema,
+                        &change.table,
+                        &change.row_id,
+                    )?;
+                    transform_local_row_for_metadata(
+                        &change.table,
+                        &change.row_id,
+                        None,
+                        Some(row),
+                        existing_row.as_ref(),
+                        metadata,
+                    )?
+                    .ok_or_else(|| {
+                        SyncularError::protocol_message(format!(
+                            "server-merge Yjs change for {}.{} did not materialize a row",
+                            change.table, change.row_id
+                        ))
+                    })?
+                } else {
+                    materialize_row_for_metadata(
+                        &change.table,
+                        Some(&change.row_id),
+                        row.clone(),
+                        metadata,
+                    )?
+                });
+                return apply_app_change(self.conn, self.app_schema, &change);
             }
         }
-        self.app_schema
-            .adapter_for(&change.table)?
-            .apply_change(self.conn, change)
+        apply_app_change(self.conn, self.app_schema, change)
     }
+}
+
+fn has_yjs_payload(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.contains_key(YJS_PAYLOAD_KEY))
 }

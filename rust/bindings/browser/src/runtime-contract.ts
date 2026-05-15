@@ -12,6 +12,20 @@ export const SYNCULAR_V2_PACKAGE_VERSION = '0.0.0';
 export const SYNCULAR_V2_WASM_OUT_NAME = 'syncular_v2';
 export const SYNCULAR_V2_WASM_GLUE_FILE = `${SYNCULAR_V2_WASM_OUT_NAME}.js`;
 export const SYNCULAR_V2_WASM_BINARY_FILE = `${SYNCULAR_V2_WASM_OUT_NAME}_bg.wasm`;
+export const SYNCULAR_V2_WASM_ARTIFACT_FILE =
+  'syncular-v2-runtime-artifact.json';
+export const SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE =
+  'syncular-v2-runtime-artifacts.json';
+export const SYNCULAR_V2_FULL_RUNTIME_FEATURES = [
+  'web-owned-sqlite-core',
+  'web-owned-sqlite',
+  'blobs',
+  'crdt-yjs',
+  'e2ee',
+] as const;
+export const SYNCULAR_V2_CORE_RUNTIME_FEATURES = [
+  'web-owned-sqlite-core',
+] as const;
 
 export function createSyncularV2RuntimeInfo(options: {
   storage?: SyncularV2Storage;

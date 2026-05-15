@@ -2,24 +2,35 @@ import { type BlobRef, createDatabase } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../../../../../packages/dialect-bun-sqlite/src';
 import {
+  createBlobManager,
+  createDatabaseBlobStorageAdapter,
+  createHmacTokenSigner,
+  createEncryptedCrdtSystemHandlers,
   createServerHandler,
+  ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
+  type SyncBlobDb,
   type SyncAuthResult,
   type SyncCoreDb,
 } from '../../../../../../packages/server/src';
 import { createSqliteServerDialect } from '../../../../../../packages/server-dialect-sqlite/src';
+import { createBlobRoutes } from '../../../../../../packages/server-hono/src/blobs';
 import { createSyncRoutes } from '../../../../../../packages/server-hono/src/routes';
 import {
   closeNodeServer,
   createNodeHonoServer,
 } from '../../../../../../packages/testkit/src/hono-node-server';
-import { syncularGeneratedCodecs } from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
+import {
+  createSyncularAppDatabase,
+  type SyncularAppDatabase,
+  syncularGeneratedCodecs,
+} from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2AuthHeaders,
   SyncularV2Client,
+  SyncularV2ClientConfig,
 } from '../../types';
-import { createSyncularV2WorkerClient } from '../../worker-client';
 
 export interface HonoSyncActor {
   actorId: string;
@@ -31,12 +42,17 @@ export interface CreateHonoSyncHarnessOptions {
   seedTasks?: readonly HonoTaskSeed[];
   edgeGate?: (request: Request) => Response | Promise<Response> | null;
   snapshotBundleMaxBytes?: number;
+  requiredSchemaVersion?: number;
+  latestSchemaVersion?: number;
 }
 
 export interface HonoSyncHarness {
   baseUrl: string;
   db: Kysely<HonoSyncServerDb>;
   syncRouteAuthHeaders: string[];
+  openWorkerDatabase(
+    options: HonoWorkerClientOptions
+  ): Promise<SyncularAppDatabase>;
   openWorkerClient(options: HonoWorkerClientOptions): Promise<SyncularV2Client>;
   close(): Promise<void>;
 }
@@ -46,6 +62,7 @@ export interface HonoWorkerClientOptions {
   actorId: string;
   getHeaders: () => SyncularV2AuthHeaders | Promise<SyncularV2AuthHeaders>;
   authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
+  appSchema?: SyncularV2ClientConfig['appSchema'];
   fileName?: string;
   requestTimeoutMs?: number;
 }
@@ -64,7 +81,7 @@ export interface HonoTaskSeed {
 export async function createHonoSyncHarness(
   options: CreateHonoSyncHarnessOptions
 ): Promise<HonoSyncHarness> {
-  const clients: SyncularV2Client[] = [];
+  const clients: Array<{ close(): Promise<void> }> = [];
   const serverDialect = createSqliteServerDialect();
   const db = createDatabase<HonoSyncServerDb>({
     dialect: createBunSqliteDialect({ path: ':memory:' }),
@@ -74,6 +91,7 @@ export async function createHonoSyncHarness(
 
   try {
     await ensureSyncSchema(db, serverDialect);
+    await ensureBlobStorageSchemaSqlite(db);
     await ensureHonoSyncTasksTable(db);
     for (const task of options.seedTasks ?? []) {
       await db
@@ -95,7 +113,7 @@ export async function createHonoSyncHarness(
       options.actors.map((actor) => [actor.token, actor.actorId])
     );
     const syncRouteAuthHeaders: string[] = [];
-    const routes = createSyncRoutes<HonoSyncServerDb, HonoAuthContext>({
+    const syncRoutes = createSyncRoutes<HonoSyncServerDb, HonoAuthContext>({
       db,
       dialect: serverDialect,
       handlers: [
@@ -111,6 +129,15 @@ export async function createHonoSyncHarness(
           snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
           resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
         }),
+        ...createEncryptedCrdtSystemHandlers<
+          HonoSyncServerDb,
+          HonoAuthContext
+        >({
+          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+          authorizeUpdate: ({ ctx, row }) => row.scopes.user_id === ctx.actorId,
+          authorizeCheckpoint: ({ ctx, row }) =>
+            row.scopes.user_id === ctx.actorId,
+        }),
       ],
       authenticate: async (c) => {
         const authorization = c.req.header('authorization');
@@ -120,19 +147,26 @@ export async function createHonoSyncHarness(
       },
       sync: {
         rateLimit: false,
+        requiredSchemaVersion: options.requiredSchemaVersion,
+        latestSchemaVersion: options.latestSchemaVersion,
       },
     });
+    let blobRoutes: ReturnType<typeof createBlobRoutes> | undefined;
 
     const app = {
-      fetch(request: Request): Response | Promise<Response> {
+      async fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
         if (!url.pathname.startsWith('/sync')) {
           return new Response('not found', { status: 404 });
         }
-        const gated = options.edgeGate?.(request);
+        const gated = await options.edgeGate?.(request);
         if (gated) return gated;
         url.pathname = url.pathname.slice('/sync'.length) || '/';
-        return routes.fetch(new Request(url, request));
+        if (url.pathname.startsWith('/blobs')) {
+          if (!blobRoutes) return new Response('not ready', { status: 503 });
+          return blobRoutes.fetch(new Request(url, request));
+        }
+        return syncRoutes.fetch(new Request(url, request));
       },
     } as Parameters<typeof createNodeHonoServer>[0];
     server = createNodeHonoServer(app);
@@ -144,28 +178,55 @@ export async function createHonoSyncHarness(
       throw new Error('Failed to resolve Hono sync test server address');
     }
     const baseUrl = `http://127.0.0.1:${address.port}/sync`;
+    const tokenSigner = createHmacTokenSigner('syncular-rust-sync-hono-secret');
+    blobRoutes = createBlobRoutes({
+      blobManager: createBlobManager({
+        db,
+        adapter: createDatabaseBlobStorageAdapter({
+          db,
+          baseUrl,
+          tokenSigner,
+        }),
+      }),
+      authenticate: async (c) => {
+        const authorization = c.req.header('authorization');
+        const actorId = authorization ? actorByToken.get(authorization) : null;
+        return actorId ? { actorId } : null;
+      },
+      tokenSigner,
+      db,
+      canAccessBlob: async ({ actorId }) =>
+        options.actors.some((actor) => actor.actorId === actorId),
+    });
+
+    const openWorkerDatabase = async (
+      clientOptions: HonoWorkerClientOptions
+    ): Promise<SyncularAppDatabase> => {
+      const database = await createSyncularAppDatabase({
+        requestTimeoutMs: clientOptions.requestTimeoutMs ?? 10_000,
+        getHeaders: clientOptions.getHeaders,
+        authLifecycle: clientOptions.authLifecycle,
+        config: {
+          baseUrl,
+          clientId: clientOptions.clientId,
+          actorId: clientOptions.actorId,
+          fileName: clientOptions.fileName ?? `${clientOptions.clientId}.sqlite`,
+          storage: 'memory',
+          clearOnInit: true,
+          appSchema: clientOptions.appSchema,
+        },
+      });
+      clients.push(database);
+      return database;
+    };
 
     return {
       baseUrl,
       db,
       syncRouteAuthHeaders,
+      openWorkerDatabase,
       async openWorkerClient(clientOptions) {
-        const client = await createSyncularV2WorkerClient({
-          requestTimeoutMs: clientOptions.requestTimeoutMs ?? 10_000,
-          getHeaders: clientOptions.getHeaders,
-          authLifecycle: clientOptions.authLifecycle,
-          config: {
-            baseUrl,
-            clientId: clientOptions.clientId,
-            actorId: clientOptions.actorId,
-            fileName:
-              clientOptions.fileName ?? `${clientOptions.clientId}.sqlite`,
-            storage: 'memory',
-            clearOnInit: true,
-          },
-        });
-        clients.push(client);
-        return client;
+        return (await openWorkerDatabase(clientOptions)).client;
       },
       async close() {
         while (clients.length > 0) await clients.pop()!.close();
@@ -199,7 +260,7 @@ interface HonoClientTaskTable extends Omit<HonoTaskTable, 'image'> {
   image: BlobRef | null;
 }
 
-export interface HonoSyncServerDb extends SyncCoreDb {
+export interface HonoSyncServerDb extends SyncCoreDb, SyncBlobDb {
   tasks: HonoTaskTable;
 }
 

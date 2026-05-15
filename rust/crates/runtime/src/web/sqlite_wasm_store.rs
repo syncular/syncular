@@ -1,37 +1,51 @@
+use crate::app_schema::{
+    app_schema_from_config, checksum, empty_app_schema, split_sql_statements,
+    validate_app_schema_runtime_features, AppSchema, AppSchemaJson, AppTableMetadata,
+};
 use crate::client::SubscriptionSpec;
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, tombstone_table_names,
     StorageCompactionOptions, StorageCompactionReport,
 };
+use crate::crdt_field::{validate_crdt_field, CrdtField, CrdtFieldId, CrdtFieldSyncMode};
 use crate::crdt_yjs::{
     apply_yjs_envelope_to_payload_json as crdt_apply_yjs_envelope_to_payload_json,
-    apply_yjs_text_updates_json as crdt_apply_yjs_text_updates_json,
+    apply_yjs_text_updates_json as crdt_apply_yjs_text_updates_json, build_yjs_text_update,
     build_yjs_text_update_json as crdt_build_yjs_text_update_json, materialize_row_for_metadata,
-    materialize_yjs_row_json as crdt_materialize_yjs_row_json, transform_local_row_for_metadata,
+    materialize_yjs_row_json as crdt_materialize_yjs_row_json, materialize_yjs_state,
+    transform_local_row_for_metadata, yjs_state_vector_base64 as crdt_yjs_state_vector_base64,
+    BuildYjsTextUpdateArgs, YjsUpdateEnvelope, YJS_PAYLOAD_KEY,
 };
 use crate::encrypted_crdt::{
     apply_encrypted_crdt_plaintext_to_row, encrypted_crdt_identity_column,
     encrypted_crdt_normalize_row, encrypted_crdt_row_matches_scopes, encrypted_crdt_scopes_json,
-    is_encrypted_crdt_system_table, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE,
+    encrypted_crdt_stream_id, is_encrypted_crdt_system_table, BuildEncryptedCrdtCheckpointArgs,
+    BuildEncryptedCrdtTextUpdateArgs, BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdtStreamStats,
+    CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE,
 };
 use crate::encryption::encryption_helpers_json;
+use crate::encryption::FieldEncryptionContext;
 use crate::error::{ErrorKind, Result, SyncularError};
-use crate::generated;
-use crate::migrations::{checksum, current_schema_version, split_sql_statements, MIGRATIONS};
+#[cfg(feature = "web-blobs")]
+use crate::protocol::{blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef};
 use crate::protocol::{
-    blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef, OperationResult,
-    PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
+    OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange,
+    SyncOperation, SyncularMutationKind,
 };
+use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
-    next_retry_at, ConflictSummary, OutboxCommit, BLOB_UPLOAD_STALE_TIMEOUT_MS,
-    MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    next_retry_at, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
-use crate::transport::web::{AsyncBlobTransport, WebSyncTransport, WebSyncTransportConfig};
+#[cfg(feature = "web-blobs")]
+use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
+#[cfg(feature = "web-blobs")]
+use crate::transport::web::AsyncBlobTransport;
+use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
 use crate::web_client::{WebSyncularClient, WebSyncularClientConfig};
 use crate::web_store::{AsyncWebStore, WebSubscriptionState};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use sqlite_wasm_rs as ffi;
 use sqlite_wasm_vfs::relaxed_idb::{
     install as install_relaxed_idb, RelaxedIdbCfg, RelaxedIdbCfgBuilder,
@@ -57,6 +71,7 @@ struct RustOwnedSqliteConfig {
     clear_on_init: Option<bool>,
     state_id: Option<String>,
     schema_version: Option<i32>,
+    app_schema: Option<AppSchemaJson>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +86,7 @@ struct RustOwnedSqliteClientConfig {
     clear_on_init: Option<bool>,
     state_id: Option<String>,
     schema_version: Option<i32>,
+    app_schema: Option<AppSchemaJson>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +104,78 @@ struct RustOwnedLocalOperationBatchEntry {
     local_row: Option<Value>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RustOwnedCrdtFieldRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RustOwnedCrdtFieldTextRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    #[serde(alias = "next_text")]
+    next_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RustOwnedCrdtFieldYjsUpdateRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    update: YjsUpdateEnvelope,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RustOwnedCrdtFieldCompactionRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    #[serde(default, alias = "min_uncheckpointed_updates")]
+    min_uncheckpointed_updates: Option<i64>,
+}
+
+impl RustOwnedCrdtFieldRequest {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+impl RustOwnedCrdtFieldTextRequest {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+impl RustOwnedCrdtFieldYjsUpdateRequest {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+impl RustOwnedCrdtFieldCompactionRequest {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SqlExecutionMode {
+    Readonly,
+    Unchecked,
+}
+
+#[cfg(feature = "web-blobs")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RustOwnedBlobStoreOptions {
@@ -95,6 +183,7 @@ struct RustOwnedBlobStoreOptions {
     immediate: Option<bool>,
 }
 
+#[cfg(feature = "web-blobs")]
 #[derive(Debug)]
 struct PendingBlobUpload {
     hash: String,
@@ -104,6 +193,7 @@ struct PendingBlobUpload {
     attempt_count: i32,
 }
 
+#[cfg(feature = "web-blobs")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BlobUploadQueueResult {
@@ -122,11 +212,24 @@ struct SyncularV2WasmRuntimeInfo {
 
 #[wasm_bindgen(js_name = syncularV2RuntimeInfoJson)]
 pub fn syncular_v2_runtime_info_json() -> String {
+    let mut features = vec!["web-owned-sqlite-core"];
+    if cfg!(feature = "web-owned-sqlite") {
+        features.push("web-owned-sqlite");
+    }
+    if cfg!(feature = "web-blobs") {
+        features.push("blobs");
+    }
+    if cfg!(feature = "crdt-yjs") {
+        features.push("crdt-yjs");
+    }
+    if cfg!(feature = "e2ee") {
+        features.push("e2ee");
+    }
     serde_json::to_string(&SyncularV2WasmRuntimeInfo {
         crate_name: env!("CARGO_PKG_NAME"),
         crate_version: env!("CARGO_PKG_VERSION"),
-        schema_version: current_schema_version(),
-        features: vec!["web-owned-sqlite", "crdt-yjs"],
+        schema_version: runtime_schema_version(),
+        features,
     })
     .expect("runtime info serializes")
 }
@@ -196,6 +299,7 @@ pub struct SyncularRustOwnedSqlite {
     db: *mut ffi::sqlite3,
     state_id: String,
     schema_version: i32,
+    app_schema: AppSchema,
     live_queries: Vec<LiveQuery>,
     live_events: Vec<LiveQueryEvent>,
 }
@@ -284,10 +388,22 @@ impl SyncularRustOwnedSqlite {
             return Err(err);
         }
 
+        let app_schema = config
+            .app_schema
+            .map(app_schema_from_config)
+            .unwrap_or_else(|| {
+                empty_app_schema(config.schema_version.unwrap_or_else(runtime_schema_version))
+            });
+        validate_app_schema_runtime_features(&app_schema)?;
+        let schema_version = config
+            .schema_version
+            .unwrap_or_else(|| app_schema.current_schema_version());
+
         let store = Self {
             db,
             state_id: config.state_id.unwrap_or_else(|| "default".into()),
-            schema_version: config.schema_version.unwrap_or_else(current_schema_version),
+            schema_version,
+            app_schema,
             live_queries: Vec::new(),
             live_events: Vec::new(),
         };
@@ -332,6 +448,16 @@ impl SyncularRustOwnedSqlite {
         params_json: &str,
     ) -> std::result::Result<String, JsValue> {
         self.execute_sql_json_inner(sql, params_json)
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = executeUnsafeSqlJson)]
+    pub fn execute_unsafe_sql_json(
+        &mut self,
+        sql: &str,
+        params_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.execute_unsafe_sql_json_inner(sql, params_json)
             .map_err(error_to_js)
     }
 
@@ -506,6 +632,7 @@ impl SyncularRustOwnedSqliteClient {
             clear_on_init: config.clear_on_init,
             state_id: config.state_id,
             schema_version: config.schema_version,
+            app_schema: config.app_schema,
         })
         .await?;
         let inner_config = WebSyncularClientConfig {
@@ -647,6 +774,18 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = executeUnsafeSqlJson)]
+    pub fn execute_unsafe_sql_json(
+        &mut self,
+        sql: &str,
+        params_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .store_mut()
+            .execute_unsafe_sql_json_inner(sql, params_json)
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = buildYjsTextUpdateJson)]
     pub fn build_yjs_text_update_json(
         &mut self,
@@ -677,6 +816,363 @@ impl SyncularRustOwnedSqliteClient {
         args_json: &str,
     ) -> std::result::Result<String, JsValue> {
         crdt_materialize_yjs_row_json(args_json).map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = yjsStateVectorBase64)]
+    pub fn yjs_state_vector_base64(
+        &mut self,
+        state_base64: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        crdt_yjs_state_vector_base64(state_base64.as_deref()).map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = openCrdtFieldJson)]
+    pub fn open_crdt_field_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        let field = self
+            .inner
+            .store()
+            .open_crdt_field(request.id())
+            .and_then(|field| self.validate_crdt_field_encryption(field))
+            .map_err(error_to_js)?;
+        Ok(crdt_field_descriptor_json(&field).to_string())
+    }
+
+    #[wasm_bindgen(js_name = applyCrdtFieldTextJson)]
+    pub fn apply_crdt_field_text_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldTextRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.apply_crdt_field_text(request)
+            .map(|receipt| receipt.to_string())
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = applyCrdtFieldYjsUpdateJson)]
+    pub fn apply_crdt_field_yjs_update_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldYjsUpdateRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.apply_crdt_field_yjs_update(request)
+            .map(|receipt| receipt.to_string())
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = materializeCrdtFieldJson)]
+    pub fn materialize_crdt_field_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.materialize_crdt_field(request)
+            .map(|materialization| materialization.to_string())
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = snapshotCrdtFieldStateVectorJson)]
+    pub fn snapshot_crdt_field_state_vector_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.snapshot_crdt_field_state_vector(request)
+            .map(|snapshot| snapshot.to_string())
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = compactCrdtFieldJson)]
+    pub fn compact_crdt_field_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldCompactionRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.compact_crdt_field(request)
+            .map(|receipt| receipt.to_string())
+            .map_err(error_to_js)
+    }
+
+    fn validate_crdt_field_encryption(&self, field: CrdtField) -> Result<CrdtField> {
+        if field.sync_mode() == CrdtFieldSyncMode::EncryptedUpdateLog
+            && self.inner.encrypted_crdt().is_none()
+        {
+            return Err(SyncularError::config(
+                "encrypted CRDT fields require setEncryptedCrdt(...)",
+            ));
+        }
+        Ok(field)
+    }
+
+    fn open_validated_crdt_field(&self, id: CrdtFieldId) -> Result<CrdtField> {
+        self.inner
+            .store()
+            .open_crdt_field(id)
+            .and_then(|field| self.validate_crdt_field_encryption(field))
+    }
+
+    fn apply_crdt_field_text(&mut self, request: RustOwnedCrdtFieldTextRequest) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        if field.field_metadata().kind != "text" {
+            return Err(SyncularError::config(format!(
+                "applyCrdtFieldText requires a text CRDT field, got {}",
+                field.field_metadata().kind
+            )));
+        }
+
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => {
+                let current_row = self.inner.store().current_crdt_field_row(&field)?;
+                let previous_state_base64 = current_row.as_ref().and_then(|row| {
+                    row.get(field.state_column())
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                });
+                if previous_state_base64.is_none() {
+                    if let Some(existing_text) = current_row
+                        .as_ref()
+                        .and_then(|row| row.get(field.field()))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty() && *value != request.next_text)
+                    {
+                        return Err(SyncularError::config(format!(
+                            "cannot replace non-empty CRDT text field {}.{} row {} without existing Yjs state; migrate or initialize {} first (current value: {existing_text:?})",
+                            field.table(),
+                            field.field(),
+                            field.row_id(),
+                            field.state_column()
+                        )));
+                    }
+                }
+                let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
+                    previous_state_base64,
+                    next_text: request.next_text,
+                    container_key: Some(field.container_key().to_string()),
+                    update_id: None,
+                })?;
+                self.apply_crdt_field_yjs_update(RustOwnedCrdtFieldYjsUpdateRequest {
+                    table: field.table().to_string(),
+                    row_id: field.row_id().to_string(),
+                    field: field.field().to_string(),
+                    update: update.update,
+                })
+            }
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                let encryption = self.inner.encrypted_crdt().cloned().ok_or_else(|| {
+                    SyncularError::config("encrypted CRDT fields require setEncryptedCrdt(...)")
+                })?;
+                let existing_row = self.require_crdt_field_row(&field)?;
+                let mutation =
+                    encryption.build_text_update_mutation(BuildEncryptedCrdtTextUpdateArgs {
+                        ctx: self.crdt_encryption_context(),
+                        metadata: field.metadata(),
+                        field: field.field(),
+                        row_id: field.row_id(),
+                        existing_row: &existing_row,
+                        next_text: &request.next_text,
+                    })?;
+                let client_commit_id = self
+                    .inner
+                    .store_mut()
+                    .apply_pending_mutation_commit(mutation, &[field.table()])?;
+                Ok(crdt_field_write_receipt(
+                    &client_commit_id,
+                    field.sync_mode(),
+                ))
+            }
+        }
+    }
+
+    fn apply_crdt_field_yjs_update(
+        &mut self,
+        request: RustOwnedCrdtFieldYjsUpdateRequest,
+    ) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => {
+                let mut envelope = Map::new();
+                envelope.insert(
+                    field.field().to_string(),
+                    serde_json::to_value(request.update)?,
+                );
+                let mut payload = Map::new();
+                payload.insert(YJS_PAYLOAD_KEY.to_string(), Value::Object(envelope));
+                let mutation = PendingSyncularMutation {
+                    kind: SyncularMutationKind::Upsert,
+                    table: field.table().to_string(),
+                    row_id: field.row_id().to_string(),
+                    payload: Some(Value::Object(payload)),
+                    base_version: None,
+                    local_row: None,
+                };
+                let client_commit_id = self
+                    .inner
+                    .store_mut()
+                    .apply_pending_mutation_commit(mutation, &[])?;
+                Ok(crdt_field_write_receipt(
+                    &client_commit_id,
+                    field.sync_mode(),
+                ))
+            }
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                let encryption = self.inner.encrypted_crdt().cloned().ok_or_else(|| {
+                    SyncularError::config("encrypted CRDT fields require setEncryptedCrdt(...)")
+                })?;
+                let existing_row = self.require_crdt_field_row(&field)?;
+                let mutation =
+                    encryption.build_yjs_update_mutation(BuildEncryptedCrdtYjsUpdateArgs {
+                        ctx: self.crdt_encryption_context(),
+                        metadata: field.metadata(),
+                        field: field.field(),
+                        row_id: field.row_id(),
+                        existing_row: &existing_row,
+                        update: request.update,
+                    })?;
+                let client_commit_id = self
+                    .inner
+                    .store_mut()
+                    .apply_pending_mutation_commit(mutation, &[field.table()])?;
+                Ok(crdt_field_write_receipt(
+                    &client_commit_id,
+                    field.sync_mode(),
+                ))
+            }
+        }
+    }
+
+    fn materialize_crdt_field(&mut self, request: RustOwnedCrdtFieldRequest) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        let row = self.require_crdt_field_row(&field)?;
+        let state_base64 = row
+            .get(field.state_column())
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let value = match state_base64.as_deref() {
+            Some(state_base64) => materialize_yjs_state(state_base64, &field.yjs_rule()?)?,
+            None => row.get(field.field()).cloned().unwrap_or(Value::Null),
+        };
+        Ok(json!({
+            "value": value,
+            "stateBase64": state_base64,
+            "stateVectorBase64": crdt_yjs_state_vector_base64(state_base64.as_deref())?
+        }))
+    }
+
+    fn snapshot_crdt_field_state_vector(
+        &mut self,
+        request: RustOwnedCrdtFieldRequest,
+    ) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        let row = self.inner.store().current_crdt_field_row(&field)?;
+        let state_base64 = row.as_ref().and_then(|row| {
+            row.get(field.state_column())
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        });
+        Ok(json!({
+            "stateVectorBase64": crdt_yjs_state_vector_base64(state_base64)?
+        }))
+    }
+
+    fn compact_crdt_field(
+        &mut self,
+        request: RustOwnedCrdtFieldCompactionRequest,
+    ) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => Ok(json!({
+                "checkpointCreated": false,
+                "clientCommitId": Value::Null
+            })),
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                let min_uncheckpointed_updates = request.min_uncheckpointed_updates.unwrap_or(1);
+                if min_uncheckpointed_updates < 1 {
+                    return Err(SyncularError::config(
+                        "encrypted CRDT checkpoint threshold must be at least 1",
+                    ));
+                }
+                let encryption = self.inner.encrypted_crdt().cloned().ok_or_else(|| {
+                    SyncularError::config("encrypted CRDT fields require setEncryptedCrdt(...)")
+                })?;
+                let stream_id =
+                    encrypted_crdt_stream_id(field.table(), field.row_id(), field.field());
+                let stats = self
+                    .inner
+                    .store()
+                    .encrypted_crdt_stream_stats(encryption.partition_id(), &stream_id)?;
+                if stats.checkpointable_update_count < min_uncheckpointed_updates {
+                    return Ok(json!({
+                        "checkpointCreated": false,
+                        "clientCommitId": Value::Null
+                    }));
+                }
+                let Some(covers_seq) = stats.max_server_seq else {
+                    return Ok(json!({
+                        "checkpointCreated": false,
+                        "clientCommitId": Value::Null
+                    }));
+                };
+                if stats
+                    .latest_checkpoint_covers_seq
+                    .is_some_and(|latest| latest >= covers_seq)
+                {
+                    return Ok(json!({
+                        "checkpointCreated": false,
+                        "clientCommitId": Value::Null
+                    }));
+                }
+                let existing_row = self.require_crdt_field_row(&field)?;
+                let mutation =
+                    encryption.build_checkpoint_mutation(BuildEncryptedCrdtCheckpointArgs {
+                        ctx: self.crdt_encryption_context(),
+                        metadata: field.metadata(),
+                        field: field.field(),
+                        row_id: field.row_id(),
+                        existing_row: &existing_row,
+                        covers_seq,
+                    })?;
+                let client_commit_id = self
+                    .inner
+                    .store_mut()
+                    .apply_pending_mutation_commit(mutation, &[field.table()])?;
+                Ok(json!({
+                    "checkpointCreated": true,
+                    "clientCommitId": client_commit_id
+                }))
+            }
+        }
+    }
+
+    fn require_crdt_field_row(&self, field: &CrdtField) -> Result<Value> {
+        self.inner
+            .store()
+            .current_crdt_field_row(field)?
+            .ok_or_else(|| {
+                SyncularError::protocol_message(format!(
+                    "cannot update CRDT field {}.{} before local row {} exists",
+                    field.table(),
+                    field.field(),
+                    field.row_id()
+                ))
+            })
+    }
+
+    fn crdt_encryption_context(&self) -> FieldEncryptionContext {
+        FieldEncryptionContext {
+            actor_id: self.inner.config().actor_id.clone(),
+            client_id: self.inner.config().client_id.clone(),
+        }
     }
 
     #[wasm_bindgen(js_name = subscribeQueryJson)]
@@ -766,6 +1262,13 @@ impl SyncularRustOwnedSqliteClient {
         data: Vec<u8>,
         options_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            let _ = data;
+            let _ = options_json;
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         async {
             let options = parse_blob_store_options(options_json)?;
             let immediate = options.immediate.unwrap_or(false);
@@ -785,6 +1288,12 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = retrieveBlob)]
     pub async fn retrieve_blob(&mut self, ref_json: &str) -> std::result::Result<Vec<u8>, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            let _ = ref_json;
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         async {
             let blob: BlobRef = serde_json::from_str(ref_json).map_err(SyncularError::protocol)?;
             if let Some(bytes) = self.inner.store_mut().read_cached_blob(&blob.hash)? {
@@ -802,6 +1311,12 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = isBlobLocal)]
     pub fn is_blob_local(&mut self, hash: &str) -> std::result::Result<bool, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            let _ = hash;
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         self.inner
             .store_mut()
             .is_blob_local_inner(hash)
@@ -810,6 +1325,11 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = processBlobUploadQueueJson)]
     pub async fn process_blob_upload_queue_json(&mut self) -> std::result::Result<String, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         async {
             let transport = self.inner.transport().clone();
             let result = self
@@ -825,6 +1345,11 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = blobUploadQueueStatsJson)]
     pub fn blob_upload_queue_stats_json(&mut self) -> std::result::Result<String, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         self.inner
             .store_mut()
             .blob_upload_queue_stats_json_inner()
@@ -833,6 +1358,11 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = blobCacheStatsJson)]
     pub fn blob_cache_stats_json(&mut self) -> std::result::Result<String, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         self.inner
             .store_mut()
             .blob_cache_stats_json_inner()
@@ -841,6 +1371,12 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = pruneBlobCache)]
     pub fn prune_blob_cache(&mut self, max_bytes: i64) -> std::result::Result<i64, JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            let _ = max_bytes;
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         self.inner
             .store_mut()
             .prune_blob_cache_inner(max_bytes)
@@ -849,6 +1385,11 @@ impl SyncularRustOwnedSqliteClient {
 
     #[wasm_bindgen(js_name = clearBlobCache)]
     pub fn clear_blob_cache(&mut self) -> std::result::Result<(), JsValue> {
+        #[cfg(not(feature = "web-blobs"))]
+        {
+            return Err(web_blobs_feature_disabled()).map_err(error_to_js);
+        }
+        #[cfg(feature = "web-blobs")]
         self.inner
             .store_mut()
             .clear_blob_cache_inner()
@@ -882,46 +1423,45 @@ impl SyncularRustOwnedSqlite {
              applied_at BIGINT NOT NULL)",
         )?;
 
-        for migration in MIGRATIONS {
-            let applied = self.query_rows(
-                &format!(
-                    "SELECT checksum FROM sync_migrations WHERE version = {} LIMIT 1",
-                    sql_string(migration.version)
-                ),
-                |row| row.string("checksum"),
-            )?;
-            let expected_checksum = checksum(migration.up_sql);
-            if let Some(applied_checksum) = applied.first() {
-                if applied_checksum != &expected_checksum {
-                    return Err(SyncularError::schema(format!(
-                        "migration {} checksum mismatch",
-                        migration.version
-                    )));
-                }
-                continue;
+        let version = "__syncular_runtime";
+        let name = "runtime_system_schema";
+        let expected_checksum = checksum(RUNTIME_SYSTEM_SCHEMA_SQL);
+        let applied = self.query_rows(
+            &format!(
+                "SELECT checksum FROM sync_migrations WHERE version = {} LIMIT 1",
+                sql_string(version)
+            ),
+            |row| row.string("checksum"),
+        )?;
+        if let Some(applied_checksum) = applied.first() {
+            if applied_checksum != &expected_checksum {
+                return Err(SyncularError::schema(
+                    "runtime system schema checksum mismatch",
+                ));
             }
+            return Ok(());
+        }
 
-            self.exec("BEGIN IMMEDIATE")?;
-            let result = (|| {
-                for statement in split_sql_statements(migration.up_sql) {
-                    self.exec(&statement)?;
-                }
-                self.exec(&format!(
-                    "INSERT INTO sync_migrations (version, name, checksum, applied_at) \
-                     VALUES ({version}, {name}, {checksum}, {applied_at})",
-                    version = sql_string(migration.version),
-                    name = sql_string(migration.name),
-                    checksum = sql_string(&expected_checksum),
-                    applied_at = now_ms()
-                ))
-            })();
+        self.exec("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            for statement in split_sql_statements(RUNTIME_SYSTEM_SCHEMA_SQL) {
+                self.exec(&statement)?;
+            }
+            self.exec(&format!(
+                "INSERT INTO sync_migrations (version, name, checksum, applied_at) \
+                 VALUES ({version}, {name}, {checksum}, {applied_at})",
+                version = sql_string(version),
+                name = sql_string(name),
+                checksum = sql_string(&expected_checksum),
+                applied_at = now_ms()
+            ))
+        })();
 
-            match result {
-                Ok(()) => self.exec("COMMIT")?,
-                Err(err) => {
-                    let _ = self.exec("ROLLBACK");
-                    return Err(err);
-                }
+        match result {
+            Ok(()) => self.exec("COMMIT")?,
+            Err(err) => {
+                let _ = self.exec("ROLLBACK");
+                return Err(err);
             }
         }
 
@@ -935,7 +1475,6 @@ impl SyncularRustOwnedSqlite {
              schema_version INTEGER NOT NULL, \
              updated_at BIGINT NOT NULL)",
         )?;
-        self.validate_generated_app_schema()?;
         let rows = self.query_rows(
             &format!(
                 "SELECT schema_version FROM syncular_app_schema WHERE schema_id = {} LIMIT 1",
@@ -944,18 +1483,19 @@ impl SyncularRustOwnedSqlite {
             |row| row.i32("schema_version"),
         )?;
         if let Some(local_version) = rows.first().copied() {
-            let current = current_schema_version();
+            let current = self.schema_version;
             if local_version != current {
                 return Err(SyncularError::schema(format!(
-                    "Syncular app schema version mismatch: local {local_version}, generated {current}"
+                    "Syncular app schema version mismatch: local {local_version}, configured {current}"
                 )));
             }
+            self.validate_generated_app_schema()?;
         }
-        self.stamp_generated_schema_state()
+        Ok(())
     }
 
     fn validate_generated_app_schema(&self) -> Result<()> {
-        for table in generated::APP_TABLE_METADATA {
+        for table in self.app_schema.app_table_metadata {
             let actual = self.query_rows(
                 &format!(
                     "SELECT name, type, \"notnull\" AS not_null, pk FROM pragma_table_info({})",
@@ -1001,19 +1541,6 @@ impl SyncularRustOwnedSqlite {
         Ok(())
     }
 
-    fn stamp_generated_schema_state(&self) -> Result<()> {
-        self.exec(&format!(
-            "INSERT INTO syncular_app_schema (schema_id, schema_version, updated_at) \
-             VALUES ({schema_id}, {schema_version}, {updated_at}) \
-             ON CONFLICT(schema_id) DO UPDATE SET \
-               schema_version = excluded.schema_version, \
-               updated_at = excluded.updated_at",
-            schema_id = sql_string(GENERATED_SCHEMA_ID),
-            schema_version = current_schema_version(),
-            updated_at = now_ms()
-        ))
-    }
-
     fn generated_schema_state_json_inner(&self) -> Result<String> {
         let rows = self.query_rows(
             &format!(
@@ -1024,7 +1551,7 @@ impl SyncularRustOwnedSqlite {
                 Ok(serde_json::json!({
                     "schemaId": GENERATED_SCHEMA_ID,
                     "schemaVersion": row.i32("schema_version")?,
-                    "currentSchemaVersion": current_schema_version(),
+                    "currentSchemaVersion": self.schema_version,
                     "updatedAt": row.i64("updated_at")?,
                 }))
             },
@@ -1034,13 +1561,14 @@ impl SyncularRustOwnedSqlite {
                 serde_json::json!({
                     "schemaId": GENERATED_SCHEMA_ID,
                     "schemaVersion": null,
-                    "currentSchemaVersion": current_schema_version(),
+                    "currentSchemaVersion": self.schema_version,
                     "updatedAt": null,
                 })
             }),
         )?)
     }
 
+    #[cfg(feature = "web-blobs")]
     fn store_blob_inner(
         &self,
         data: &[u8],
@@ -1080,6 +1608,7 @@ impl SyncularRustOwnedSqlite {
         }
     }
 
+    #[cfg(feature = "web-blobs")]
     fn cache_blob(&self, blob: &BlobRef, data: &[u8]) -> Result<()> {
         validate_blob_bytes(blob, data)?;
         let now = now_ms();
@@ -1104,6 +1633,7 @@ impl SyncularRustOwnedSqlite {
         )
     }
 
+    #[cfg(feature = "web-blobs")]
     fn enqueue_blob_upload(&self, blob: &BlobRef, data: &[u8]) -> Result<()> {
         let now = now_ms();
         self.execute_blob_statement(
@@ -1124,6 +1654,7 @@ impl SyncularRustOwnedSqlite {
         )
     }
 
+    #[cfg(feature = "web-blobs")]
     fn read_cached_blob(&self, hash: &str) -> Result<Option<Vec<u8>>> {
         validate_blob_hash(hash)?;
         let rows = self.query_rows(
@@ -1144,6 +1675,7 @@ impl SyncularRustOwnedSqlite {
         Ok(Some(bytes))
     }
 
+    #[cfg(feature = "web-blobs")]
     fn is_blob_local_inner(&self, hash: &str) -> Result<bool> {
         validate_blob_hash(hash)?;
         let rows = self.query_rows(
@@ -1156,6 +1688,7 @@ impl SyncularRustOwnedSqlite {
         Ok(!rows.is_empty())
     }
 
+    #[cfg(feature = "web-blobs")]
     async fn process_blob_upload_queue<T: AsyncBlobTransport>(
         &self,
         transport: &T,
@@ -1206,6 +1739,7 @@ impl SyncularRustOwnedSqlite {
         Ok(result)
     }
 
+    #[cfg(feature = "web-blobs")]
     fn requeue_stale_blob_uploads(&self) -> Result<()> {
         let now = now_ms();
         let stale_before = now - BLOB_UPLOAD_STALE_TIMEOUT_MS;
@@ -1222,6 +1756,7 @@ impl SyncularRustOwnedSqlite {
         ))
     }
 
+    #[cfg(feature = "web-blobs")]
     fn pending_blob_uploads(&self, limit: i64) -> Result<Vec<PendingBlobUpload>> {
         let now = now_ms();
         self.query_rows(
@@ -1244,6 +1779,7 @@ impl SyncularRustOwnedSqlite {
         )
     }
 
+    #[cfg(feature = "web-blobs")]
     fn mark_blob_uploading(&self, hash: &str, attempt_count: i32) -> Result<()> {
         self.exec(&format!(
             "UPDATE sync_blob_outbox SET status = 'uploading', attempt_count = {attempt_count}, \
@@ -1253,6 +1789,7 @@ impl SyncularRustOwnedSqlite {
         ))
     }
 
+    #[cfg(feature = "web-blobs")]
     fn mark_blob_upload_error(
         &self,
         hash: &str,
@@ -1272,6 +1809,7 @@ impl SyncularRustOwnedSqlite {
         ))
     }
 
+    #[cfg(feature = "web-blobs")]
     fn delete_blob_upload(&self, hash: &str) -> Result<()> {
         self.exec(&format!(
             "DELETE FROM sync_blob_outbox WHERE hash = {}",
@@ -1279,6 +1817,7 @@ impl SyncularRustOwnedSqlite {
         ))
     }
 
+    #[cfg(feature = "web-blobs")]
     fn blob_upload_queue_stats_json_inner(&self) -> Result<String> {
         let rows = self.query_rows(
             "SELECT status, COUNT(hash) AS count FROM sync_blob_outbox GROUP BY status",
@@ -1302,6 +1841,7 @@ impl SyncularRustOwnedSqlite {
         }))?)
     }
 
+    #[cfg(feature = "web-blobs")]
     fn blob_cache_stats_json_inner(&self) -> Result<String> {
         let rows = self.query_rows(
             "SELECT COUNT(hash) AS count, COALESCE(SUM(size), 0) AS total_bytes FROM sync_blob_cache",
@@ -1322,6 +1862,7 @@ impl SyncularRustOwnedSqlite {
         )?)
     }
 
+    #[cfg(feature = "web-blobs")]
     fn prune_blob_cache_inner(&self, max_bytes: i64) -> Result<i64> {
         if max_bytes <= 0 {
             return Ok(0);
@@ -1354,6 +1895,7 @@ impl SyncularRustOwnedSqlite {
         Ok(freed)
     }
 
+    #[cfg(feature = "web-blobs")]
     fn clear_blob_cache_inner(&self) -> Result<()> {
         self.exec("DELETE FROM sync_blob_cache")
     }
@@ -1386,10 +1928,17 @@ impl SyncularRustOwnedSqlite {
         }
 
         if options.should_prune_failed_blob_uploads() {
-            let cutoff = required_compaction_cutoff(cutoff, "failed blob uploads")?;
-            report.failed_blob_uploads_deleted = self.exec_with_changes(&format!(
+            #[cfg(not(feature = "web-blobs"))]
+            {
+                return Err(web_blobs_feature_disabled());
+            }
+            #[cfg(feature = "web-blobs")]
+            {
+                let cutoff = required_compaction_cutoff(cutoff, "failed blob uploads")?;
+                report.failed_blob_uploads_deleted = self.exec_with_changes(&format!(
                 "DELETE FROM sync_blob_outbox WHERE status = 'failed' AND updated_at <= {cutoff}"
             ))?;
+            }
         }
 
         if options.should_prune_inactive_subscription_states() {
@@ -1405,16 +1954,28 @@ impl SyncularRustOwnedSqlite {
                     "storage compaction tombstone cleanup requires maxTombstoneServerVersion",
                 )
             })?;
-            for statement in tombstone_delete_statements(max_server_version)? {
+            for statement in
+                tombstone_delete_statements(self.app_schema.app_table_metadata, max_server_version)?
+            {
                 report.tombstone_rows_deleted += self.exec_with_changes(&statement)?;
             }
             if report.tombstone_rows_deleted > 0 {
-                self.invalidate_live_queries(&tombstone_table_names())?;
+                self.invalidate_live_queries(&tombstone_table_names(
+                    self.app_schema.app_table_metadata,
+                ))?;
             }
         }
 
         if let Some(max_bytes) = options.max_blob_cache_bytes {
-            report.blob_cache_bytes_pruned = self.prune_blob_cache_inner(max_bytes)?;
+            #[cfg(not(feature = "web-blobs"))]
+            {
+                let _ = max_bytes;
+                return Err(web_blobs_feature_disabled());
+            }
+            #[cfg(feature = "web-blobs")]
+            {
+                report.blob_cache_bytes_pruned = self.prune_blob_cache_inner(max_bytes)?;
+            }
         }
 
         if options.should_prune_encrypted_crdt_updates() {
@@ -1562,6 +2123,81 @@ impl SyncularRustOwnedSqlite {
         }
     }
 
+    fn open_crdt_field(&self, id: CrdtFieldId) -> Result<CrdtField> {
+        validate_crdt_field(self.app_schema, &id)
+    }
+
+    fn current_crdt_field_row(&self, field: &CrdtField) -> Result<Option<Value>> {
+        self.current_row_json(field.metadata(), field.table(), field.row_id())
+    }
+
+    fn apply_pending_mutation_commit(
+        &mut self,
+        mutation: PendingSyncularMutation,
+        extra_changed_tables: &[&str],
+    ) -> Result<String> {
+        let operation = mutation.operation(mutation.base_version);
+        let local_row = mutation.local_row;
+        let mut changed_tables = Vec::new();
+        push_unique_table(&mut changed_tables, &operation.table);
+        for table in extra_changed_tables {
+            push_unique_table(&mut changed_tables, table);
+        }
+
+        self.exec("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let (operation, local_row) =
+                self.transform_local_operation_entry(operation, local_row)?;
+            self.apply_local_mutation(&operation, local_row.as_ref())?;
+            self.enqueue_outbox_operations(&[operation])
+        })();
+
+        match result {
+            Ok(client_commit_id) => {
+                self.exec("COMMIT")?;
+                self.invalidate_live_queries(&changed_tables)?;
+                Ok(client_commit_id)
+            }
+            Err(err) => {
+                let _ = self.exec("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn encrypted_crdt_stream_stats(
+        &self,
+        partition_id: &str,
+        stream_id: &str,
+    ) -> Result<EncryptedCrdtStreamStats> {
+        let partition_id = sql_string(partition_id);
+        let stream_id = sql_string(stream_id);
+        self.query_rows(
+            &format!(
+                "select \
+                    (select count(*) from sync_crdt_updates where partition_id = {partition_id} and stream_id = {stream_id}) as update_count, \
+                    (select count(*) from sync_crdt_checkpoints where partition_id = {partition_id} and stream_id = {stream_id}) as checkpoint_count, \
+                    (select count(*) from sync_crdt_updates where partition_id = {partition_id} and stream_id = {stream_id} \
+                        and server_seq is not null \
+                        and server_seq > coalesce((select max(covers_seq) from sync_crdt_checkpoints where partition_id = {partition_id} and stream_id = {stream_id}), 0)) as checkpointable_update_count, \
+                    (select max(server_seq) from sync_crdt_updates where partition_id = {partition_id} and stream_id = {stream_id}) as max_server_seq, \
+                    (select max(covers_seq) from sync_crdt_checkpoints where partition_id = {partition_id} and stream_id = {stream_id}) as latest_checkpoint_covers_seq"
+            ),
+            |row| {
+                Ok(EncryptedCrdtStreamStats {
+                    update_count: row.i64("update_count")?,
+                    checkpoint_count: row.i64("checkpoint_count")?,
+                    checkpointable_update_count: row.i64("checkpointable_update_count")?,
+                    max_server_seq: row.optional_i64("max_server_seq"),
+                    latest_checkpoint_covers_seq: row.optional_i64("latest_checkpoint_covers_seq"),
+                })
+            },
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| SyncularError::storage(anyhow::anyhow!("missing encrypted CRDT stats row")))
+    }
+
     fn apply_local_mutation(
         &self,
         operation: &SyncOperation,
@@ -1587,9 +2223,12 @@ impl SyncularRustOwnedSqlite {
             };
         }
 
-        let metadata = generated::table_metadata(&operation.table).ok_or_else(|| {
-            SyncularError::config(format!("unknown generated app table: {}", operation.table))
-        })?;
+        let metadata = self
+            .app_schema
+            .table_metadata(&operation.table)
+            .ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {}", operation.table))
+            })?;
 
         match operation.op.as_str() {
             "upsert" => {
@@ -1598,6 +2237,7 @@ impl SyncularRustOwnedSqlite {
                     metadata.primary_key_column.to_string(),
                     Value::String(operation.row_id.clone()),
                 );
+                let row = self.preserve_encrypted_crdt_materialized_columns(metadata, row)?;
                 self.upsert_row_object(&operation.table, metadata.primary_key_column, &row)
             }
             "delete" => self.delete_row(
@@ -1620,9 +2260,12 @@ impl SyncularRustOwnedSqlite {
             return Ok((operation, local_row));
         }
 
-        let metadata = generated::table_metadata(&operation.table).ok_or_else(|| {
-            SyncularError::config(format!("unknown generated app table: {}", operation.table))
-        })?;
+        let metadata = self
+            .app_schema
+            .table_metadata(&operation.table)
+            .ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {}", operation.table))
+            })?;
         let current_row = self.current_row_json(metadata, &operation.table, &operation.row_id)?;
         let local_row = transform_local_row_for_metadata(
             &operation.table,
@@ -1828,6 +2471,67 @@ impl SyncularRustOwnedSqlite {
         ))
     }
 
+    fn preserve_encrypted_crdt_materialized_columns(
+        &self,
+        metadata: &'static AppTableMetadata,
+        mut row: Map<String, Value>,
+    ) -> Result<Map<String, Value>> {
+        if !metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+        {
+            return Ok(row);
+        }
+        let Some(row_id) = row
+            .get(metadata.primary_key_column)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return Ok(row);
+        };
+        let Some(existing_row) = self.current_row_json(metadata, metadata.name, &row_id)? else {
+            return Ok(row);
+        };
+        let Some(existing) = existing_row.as_object() else {
+            return Ok(row);
+        };
+        for field in metadata
+            .crdt_yjs_fields
+            .iter()
+            .filter(|field| field.sync_mode == "encrypted-update-log")
+        {
+            let Some(state) = existing
+                .get(field.state_column)
+                .and_then(Value::as_str)
+                .filter(|state| !state.is_empty())
+            else {
+                continue;
+            };
+            row.insert(
+                field.state_column.to_string(),
+                Value::String(state.to_string()),
+            );
+            if let Some(value) = existing.get(field.field) {
+                row.insert(field.field.to_string(), value.clone());
+            }
+        }
+        Ok(row)
+    }
+
+    fn update_encrypted_crdt_system_server_seq(
+        &self,
+        table: &str,
+        row_id: &str,
+        server_seq: i64,
+    ) -> Result<()> {
+        let identity = encrypted_crdt_identity_column(table)?;
+        self.exec(&format!(
+            "UPDATE {table} SET server_seq = {server_seq} WHERE {identity} = {row_id}",
+            row_id = sql_string(row_id)
+        ))
+    }
+
     fn clear_encrypted_crdt_system_table_for_scopes(
         &self,
         table: &str,
@@ -1873,7 +2577,7 @@ impl SyncularRustOwnedSqlite {
             .ok_or_else(|| {
                 SyncularError::protocol_message("encrypted CRDT row missing field_name")
             })?;
-        let Some(metadata) = generated::table_metadata(app_table) else {
+        let Some(metadata) = self.app_schema.table_metadata(app_table) else {
             return Ok(());
         };
         if !metadata
@@ -2007,16 +2711,31 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn execute_sql_json_inner(&mut self, sql: &str, params_json: &str) -> Result<String> {
+        self.execute_sql_json_inner_with_mode(sql, params_json, SqlExecutionMode::Readonly)
+    }
+
+    fn execute_unsafe_sql_json_inner(&mut self, sql: &str, params_json: &str) -> Result<String> {
+        self.execute_sql_json_inner_with_mode(sql, params_json, SqlExecutionMode::Unchecked)
+    }
+
+    fn execute_sql_json_inner_with_mode(
+        &mut self,
+        sql: &str,
+        params_json: &str,
+        mode: SqlExecutionMode,
+    ) -> Result<String> {
         let params = parse_params(params_json)?;
-        let rows = self.execute_sql(sql, &params)?;
+        let rows = self.execute_sql(sql, &params, mode)?;
         let result = serde_json::json!({
             "rows": rows,
             "numAffectedRows": unsafe { ffi::sqlite3_changes(self.db) },
             "insertId": unsafe { ffi::sqlite3_last_insert_rowid(self.db) },
         });
-        let changed_tables = changed_tables_for_sql(sql);
-        if !changed_tables.is_empty() {
-            self.invalidate_live_queries(&changed_tables)?;
+        if mode == SqlExecutionMode::Unchecked {
+            let changed_tables = changed_tables_for_sql(sql);
+            if !changed_tables.is_empty() {
+                self.invalidate_live_queries(&changed_tables)?;
+            }
         }
         Ok(serde_json::to_string(&result)?)
     }
@@ -2032,7 +2751,7 @@ impl SyncularRustOwnedSqlite {
         for table in &tables {
             validate_table_name(table)?;
         }
-        let rows = self.execute_sql(sql, &params)?;
+        let rows = self.execute_sql(sql, &params, SqlExecutionMode::Readonly)?;
         let id = Uuid::new_v4().to_string();
         self.live_queries.push(LiveQuery {
             id: id.clone(),
@@ -2047,7 +2766,12 @@ impl SyncularRustOwnedSqlite {
         }))?)
     }
 
-    fn execute_sql(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>> {
+    fn execute_sql(
+        &self,
+        sql: &str,
+        params: &[Value],
+        mode: SqlExecutionMode,
+    ) -> Result<Vec<Value>> {
         let sql = CString::new(sql).map_err(cstring_error("execute sql"))?;
         let mut stmt = ptr::null_mut();
         let rc = unsafe {
@@ -2061,6 +2785,12 @@ impl SyncularRustOwnedSqlite {
         };
         if rc != ffi::SQLITE_OK {
             return Err(sqlite_error(self.db, "prepare execute sql"));
+        }
+        if mode == SqlExecutionMode::Readonly && unsafe { ffi::sqlite3_stmt_readonly(stmt) } == 0 {
+            let _ = finalize_stmt(stmt, self.db, "finalize rejected public write sql");
+            return Err(SyncularError::protocol_message(
+                "Syncular v2 public SQL is read-only. Use generated Syncular mutations for synced writes.",
+            ));
         }
         if let Err(err) = bind_params(stmt, params) {
             let _ = finalize_stmt(stmt, self.db, "finalize execute after bind failure");
@@ -2100,7 +2830,7 @@ impl SyncularRustOwnedSqlite {
 
             let rows = {
                 let query = &self.live_queries[index];
-                self.execute_sql(&query.sql, &query.params)?
+                self.execute_sql(&query.sql, &query.params, SqlExecutionMode::Readonly)?
             };
             let hash = result_hash(&rows)?;
             if hash != self.live_queries[index].last_hash {
@@ -2254,6 +2984,53 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 now = now_ms(),
                 id = sql_string(row_id)
             ))
+        })
+    }
+
+    fn mark_pushed_operation_server_versions<'a>(
+        &'a mut self,
+        outbox: OutboxCommit,
+        response: PushCommitResponse,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            let operations: Vec<SyncOperation> = serde_json::from_str(&outbox.operations_json)?;
+            if response.results.is_empty() {
+                if let Some(server_seq) = response.commit_seq {
+                    for operation in &operations {
+                        if is_encrypted_crdt_system_table(&operation.table) {
+                            self.update_encrypted_crdt_system_server_seq(
+                                &operation.table,
+                                &operation.row_id,
+                                server_seq,
+                            )?;
+                        }
+                    }
+                }
+                return Ok(());
+            }
+
+            for result in &response.results {
+                if !matches!(result.status.as_str(), "applied" | "cached") {
+                    continue;
+                }
+                let Some(server_seq) = result.server_version.or(response.commit_seq) else {
+                    continue;
+                };
+                let operation = operations.get(result.op_index as usize).ok_or_else(|| {
+                    SyncularError::protocol_message(format!(
+                        "push response op_index {} out of bounds for local outbox commit {}",
+                        result.op_index, outbox.client_commit_id
+                    ))
+                })?;
+                if is_encrypted_crdt_system_table(&operation.table) {
+                    self.update_encrypted_crdt_system_server_seq(
+                        &operation.table,
+                        &operation.row_id,
+                        server_seq,
+                    )?;
+                }
+            }
+            Ok(())
         })
     }
 
@@ -2518,7 +3295,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
             if is_encrypted_crdt_system_table(table) {
                 return self.clear_encrypted_crdt_system_table_for_scopes(table, scopes);
             }
-            let metadata = generated::table_metadata(table).ok_or_else(|| {
+            let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
                 SyncularError::config(format!("unknown generated app table: {table}"))
             })?;
             validate_table_name(table)?;
@@ -2554,6 +3331,66 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn clear_table_for_scopes_preserving_local_crdt<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            if is_encrypted_crdt_system_table(table) {
+                return self.clear_encrypted_crdt_system_table_for_scopes(table, scopes);
+            }
+            let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
+            let encrypted_fields = metadata
+                .crdt_yjs_fields
+                .iter()
+                .filter(|field| field.sync_mode == "encrypted-update-log")
+                .collect::<Vec<_>>();
+            if encrypted_fields.is_empty() {
+                return self.clear_table_for_scopes(table, scopes).await;
+            }
+            validate_table_name(table)?;
+            let mut filters = Vec::new();
+            for (scope_name, value) in scopes {
+                let column = metadata
+                    .scopes
+                    .iter()
+                    .find(|scope| scope.name == scope_name)
+                    .map(|scope| scope.column)
+                    .unwrap_or(scope_name.as_str());
+                validate_table_name(column)?;
+                if let Value::Array(values) = value {
+                    if values.is_empty() {
+                        filters.push("0 = 1".to_string());
+                    } else {
+                        filters.push(format!(
+                            "{column} IN ({})",
+                            values.iter().map(sql_value).collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                } else {
+                    filters.push(format!("{column} = {}", sql_value(value)));
+                }
+            }
+            for field in encrypted_fields {
+                validate_table_name(field.state_column)?;
+                filters.push(format!(
+                    "({state} IS NULL OR {state} = '')",
+                    state = field.state_column
+                ));
+            }
+            if filters.is_empty() {
+                return self.exec(&format!("DELETE FROM {table}"));
+            }
+            self.exec(&format!(
+                "DELETE FROM {table} WHERE {}",
+                filters.join(" AND ")
+            ))
+        })
+    }
+
     fn upsert_row<'a>(
         &'a mut self,
         table: &'a str,
@@ -2572,11 +3409,12 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 return Ok(());
             }
 
-            let metadata = generated::table_metadata(table).ok_or_else(|| {
+            let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
                 SyncularError::config(format!("unknown generated app table: {table}"))
             })?;
             let row = materialize_row_for_metadata(table, None, row, metadata)?;
             let row = object_from_value(Some(&row))?;
+            let row = self.preserve_encrypted_crdt_materialized_columns(metadata, row)?;
             self.upsert_row_object(table, metadata.primary_key_column, &row)
         })
     }
@@ -2600,9 +3438,12 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 return Ok(());
             }
 
-            let metadata = generated::table_metadata(&change.table).ok_or_else(|| {
-                SyncularError::config(format!("unknown generated app table: {}", change.table))
-            })?;
+            let metadata = self
+                .app_schema
+                .table_metadata(&change.table)
+                .ok_or_else(|| {
+                    SyncularError::config(format!("unknown generated app table: {}", change.table))
+                })?;
             if change.op == "delete" {
                 return self.delete_row(&change.table, metadata.primary_key_column, &change.row_id);
             }
@@ -2612,12 +3453,31 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                     change.table
                 ))
             })?;
-            let row_json = materialize_row_for_metadata(
-                &change.table,
-                Some(&change.row_id),
-                row_json.clone(),
-                metadata,
-            )?;
+            let row_json = if has_yjs_payload(row_json) {
+                let existing_row =
+                    self.current_row_json(metadata, &change.table, &change.row_id)?;
+                transform_local_row_for_metadata(
+                    &change.table,
+                    &change.row_id,
+                    None,
+                    Some(row_json),
+                    existing_row.as_ref(),
+                    metadata,
+                )?
+                .ok_or_else(|| {
+                    SyncularError::protocol_message(format!(
+                        "server-merge Yjs change for {}.{} did not materialize a row",
+                        change.table, change.row_id
+                    ))
+                })?
+            } else {
+                materialize_row_for_metadata(
+                    &change.table,
+                    Some(&change.row_id),
+                    row_json.clone(),
+                    metadata,
+                )?
+            };
             let mut row = object_from_value(Some(&row_json))?;
             row.insert(
                 metadata.primary_key_column.to_string(),
@@ -2629,6 +3489,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                     Value::Number(version.into()),
                 );
             }
+            let row = self.preserve_encrypted_crdt_materialized_columns(metadata, row)?;
             self.upsert_row_object(&change.table, metadata.primary_key_column, &row)
         })
     }
@@ -2638,7 +3499,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         table: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
         Box::pin(async move {
-            if generated::table_metadata(table).is_none() {
+            if self.app_schema.table_metadata(table).is_none() {
                 return Err(SyncularError::config(format!(
                     "unknown generated app table: {table}"
                 )));
@@ -2681,6 +3542,38 @@ fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn push_unique_table(tables: &mut Vec<String>, table: &str) {
+    if !tables.iter().any(|existing| existing == table) {
+        tables.push(table.to_string());
+    }
+}
+
+fn has_yjs_payload(value: &Value) -> bool {
+    value
+        .as_object()
+        .is_some_and(|object| object.contains_key(YJS_PAYLOAD_KEY))
+}
+
+fn crdt_field_descriptor_json(field: &CrdtField) -> Value {
+    json!({
+        "table": field.table(),
+        "rowId": field.row_id(),
+        "field": field.field(),
+        "stateColumn": field.state_column(),
+        "containerKey": field.container_key(),
+        "rowIdField": field.row_id_field(),
+        "syncMode": field.sync_mode(),
+        "kind": field.field_metadata().kind,
+    })
+}
+
+fn crdt_field_write_receipt(client_commit_id: &str, sync_mode: CrdtFieldSyncMode) -> Value {
+    json!({
+        "clientCommitId": client_commit_id,
+        "syncMode": sync_mode,
+    })
+}
+
 fn optional_sql_string(value: Option<&str>) -> String {
     value.map_or_else(|| "NULL".to_string(), sql_string)
 }
@@ -2710,6 +3603,7 @@ fn bind_i64(stmt: *mut ffi::sqlite3_stmt, index: i32, value: i64) -> Result<()> 
     )
 }
 
+#[cfg(feature = "web-blobs")]
 fn bind_blob(stmt: *mut ffi::sqlite3_stmt, index: i32, value: &[u8]) -> Result<()> {
     let len = i32::try_from(value.len())
         .map_err(|_| SyncularError::protocol_message("blob parameter is too large"))?;
@@ -2795,11 +3689,17 @@ fn parse_params(params_json: &str) -> Result<Vec<Value>> {
     }
 }
 
+#[cfg(feature = "web-blobs")]
 fn parse_blob_store_options(options_json: &str) -> Result<RustOwnedBlobStoreOptions> {
     if options_json.trim().is_empty() {
         return Ok(RustOwnedBlobStoreOptions::default());
     }
     serde_json::from_str(options_json).map_err(SyncularError::protocol)
+}
+
+#[cfg(not(feature = "web-blobs"))]
+fn web_blobs_feature_disabled() -> SyncularError {
+    SyncularError::config("blob support is not enabled in this Syncular runtime build")
 }
 
 fn bind_params(stmt: *mut ffi::sqlite3_stmt, params: &[Value]) -> Result<()> {

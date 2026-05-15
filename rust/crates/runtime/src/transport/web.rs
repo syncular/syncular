@@ -1,10 +1,13 @@
 use crate::error::{ErrorKind, Result, SyncularError};
-use crate::migrations::current_schema_version;
+#[cfg(feature = "web-blobs")]
 use crate::protocol::{
     BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest,
-    BlobUploadInitResponse, CombinedRequest, CombinedResponse, PushCommitRequest, ScopeValues,
-    SnapshotChunkRef,
+    BlobUploadInitResponse,
 };
+use crate::protocol::{
+    CombinedRequest, CombinedResponse, PushCommitRequest, ScopeValues, SnapshotChunkRef,
+};
+use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use flate2::read::GzDecoder;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
@@ -55,6 +58,7 @@ pub trait AsyncSyncTransport {
     fn connect_realtime(&self) -> Result<Self::Realtime>;
 }
 
+#[cfg(feature = "web-blobs")]
 pub trait AsyncBlobTransport {
     fn upload_blob<'a>(
         &'a self,
@@ -104,7 +108,7 @@ impl AsyncSyncTransport for WebSyncTransport {
                 ("content-type".to_string(), "application/json".to_string()),
                 (
                     "x-syncular-schema-version".to_string(),
-                    current_schema_version().to_string(),
+                    runtime_schema_version().to_string(),
                 ),
                 (
                     "x-syncular-transport-path".to_string(),
@@ -151,6 +155,7 @@ impl AsyncSyncTransport for WebSyncTransport {
     }
 }
 
+#[cfg(feature = "web-blobs")]
 impl AsyncBlobTransport for WebSyncTransport {
     fn upload_blob<'a>(
         &'a self,
@@ -202,6 +207,7 @@ impl AsyncBlobTransport for WebSyncTransport {
     }
 }
 
+#[cfg(feature = "web-blobs")]
 impl WebSyncTransport {
     async fn initiate_blob_upload(
         &self,
@@ -333,6 +339,7 @@ async fn fetch_bytes(
     Ok(Uint8Array::new(&buffer).to_vec())
 }
 
+#[cfg(feature = "web-blobs")]
 async fn upload_blob_bytes(
     url: &str,
     method: &str,
@@ -400,6 +407,7 @@ async fn fetch_response(
         .map_err(|err| js_error(ErrorKind::Transport, "cast browser fetch response", err))
 }
 
+#[cfg(feature = "web-blobs")]
 async fn fetch_response_bytes_body(
     method: &str,
     url: &str,
@@ -439,6 +447,7 @@ async fn fetch_response_bytes_body(
         .map_err(|err| js_error(ErrorKind::Transport, "cast browser blob response", err))
 }
 
+#[cfg(feature = "web-blobs")]
 fn is_forbidden_fetch_upload_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -543,11 +552,12 @@ fn ws_url(base_url: &str, client_id: &str) -> Result<String> {
     url.set_pathname(&format!("{path}/realtime"));
     url.search_params().set("clientId", client_id);
     url.search_params()
-        .set("schemaVersion", &current_schema_version().to_string());
+        .set("schemaVersion", &runtime_schema_version().to_string());
     url.search_params().set("transportPath", "direct");
     Ok(url.href())
 }
 
+#[cfg(feature = "web-blobs")]
 fn blob_hash_path(hash: &str) -> Result<String> {
     let Some(hex) = hash.strip_prefix("sha256:") else {
         return Err(SyncularError::protocol_message(format!(

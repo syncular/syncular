@@ -1,5 +1,13 @@
+#[cfg(feature = "native")]
+use crate::app_schema::validate_app_schema_runtime_features;
 use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
-use crate::crdt_yjs::YjsUpdateEnvelope;
+#[cfg(feature = "native")]
+use crate::crdt_field::{validate_crdt_field, CrdtField, CrdtFieldId, CrdtFieldSyncMode};
+#[cfg(feature = "native")]
+use crate::crdt_yjs::{
+    build_yjs_text_update, materialize_yjs_state, yjs_state_vector_base64, BuildYjsTextUpdateArgs,
+};
+use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 #[cfg(feature = "native")]
 use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::EncryptedCrdt;
@@ -10,15 +18,17 @@ use crate::encrypted_crdt::{
 };
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
+#[cfg(feature = "demo-todo-native-fixture")]
+use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 use crate::protocol::*;
-#[cfg(feature = "native")]
-use crate::rusqlite_sqlite::RusqliteStore;
 #[cfg(feature = "native")]
 use crate::store::MAX_BLOB_UPLOAD_RETRIES;
 use crate::store::{
-    next_retry_at, now_ms, DemoTaskStore, OutboxCommit, SubscriptionState, SyncStateStore,
-    SyncStore, SyncStoreTx, Task, MAX_SYNC_RETRIES,
+    next_retry_at, now_ms, OutboxCommit, SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx,
+    MAX_SYNC_RETRIES,
 };
+#[cfg(feature = "demo-todo-fixture")]
+use crate::store::{DemoTaskStore, Task};
 #[cfg(feature = "native")]
 use crate::transport::BlobTransport;
 #[cfg(feature = "native")]
@@ -42,6 +52,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
+#[cfg(feature = "demo-todo-fixture")]
 use uuid::Uuid;
 
 const DEFAULT_STATE_ID: &str = "default";
@@ -103,6 +114,31 @@ pub trait SyncularEncryptedCrdtMutationExecutor {
 }
 
 #[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrdtFieldWriteReceipt {
+    pub client_commit_id: String,
+    pub sync_mode: CrdtFieldSyncMode,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrdtFieldMaterialization {
+    pub value: Value,
+    pub state_base64: Option<String>,
+    pub state_vector_base64: String,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrdtFieldCompactionReceipt {
+    pub checkpoint_created: bool,
+    pub client_commit_id: Option<String>,
+}
+
+#[cfg(feature = "native")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EncryptedCrdtUpdateJsonRequest {
@@ -136,9 +172,31 @@ pub struct SubscriptionSpec {
     pub params: Map<String, Value>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncChangedRow {
+    pub table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_id: Option<String>,
+    pub operation: String,
+    #[serde(default)]
+    pub changed_fields: Vec<String>,
+    #[serde(default)]
+    pub crdt_fields: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_seq: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
     pub changed_tables: Vec<String>,
+    pub changed_rows: Vec<SyncChangedRow>,
     pub conflicts_changed: bool,
 }
 
@@ -146,6 +204,7 @@ impl SyncReport {
     pub fn table_changed(table: impl Into<String>) -> Self {
         Self {
             changed_tables: vec![table.into()],
+            changed_rows: Vec::new(),
             conflicts_changed: false,
         }
     }
@@ -165,6 +224,7 @@ impl SyncReport {
     pub fn conflicts_changed() -> Self {
         Self {
             changed_tables: Vec::new(),
+            changed_rows: Vec::new(),
             conflicts_changed: true,
         }
     }
@@ -183,18 +243,229 @@ impl SyncReport {
         tables.into_iter().any(|table| self.changes_table(table))
     }
 
+    fn add_changed_row(&mut self, row: SyncChangedRow) {
+        self.add_changed_table(&row.table);
+        self.changed_rows.push(row);
+    }
+
     fn merge(&mut self, other: SyncReport) {
         self.conflicts_changed |= other.conflicts_changed;
         for table in other.changed_tables {
             self.add_changed_table(&table);
         }
+        self.changed_rows.extend(other.changed_rows);
     }
+}
+
+pub fn sync_changed_row_for_operation(
+    app_schema: AppSchema,
+    operation: &SyncOperation,
+    commit_id: Option<String>,
+) -> Option<SyncChangedRow> {
+    let metadata = app_schema.table_metadata(&operation.table)?;
+    let changed_fields = changed_fields_from_payload(metadata, operation.payload.as_ref());
+    Some(SyncChangedRow {
+        table: operation.table.clone(),
+        row_id: Some(operation.row_id.clone()),
+        operation: operation.op.clone(),
+        crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
+        changed_fields,
+        commit_id,
+        commit_seq: None,
+        subscription_id: None,
+        server_version: operation.base_version,
+    })
+}
+
+fn sync_changed_row_for_change(
+    app_schema: AppSchema,
+    change: &SyncChange,
+    previous_row: Option<&Value>,
+    commit_seq: i64,
+    subscription_id: &str,
+) -> Option<SyncChangedRow> {
+    let metadata = app_schema.table_metadata(&change.table)?;
+    let changed_fields = changed_fields_from_remote_change(metadata, change, previous_row);
+    Some(SyncChangedRow {
+        table: change.table.clone(),
+        row_id: Some(change.row_id.clone()),
+        operation: if change.op == "delete" {
+            "delete".to_string()
+        } else if previous_row.is_some() {
+            "update".to_string()
+        } else {
+            "insert".to_string()
+        },
+        crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
+        changed_fields,
+        commit_id: Some(commit_seq.to_string()),
+        commit_seq: Some(commit_seq),
+        subscription_id: Some(subscription_id.to_string()),
+        server_version: change.row_version,
+    })
+}
+
+fn sync_changed_row_for_snapshot(
+    app_schema: AppSchema,
+    table: &str,
+    row: &Value,
+    previous_row: Option<&Value>,
+    subscription_id: &str,
+) -> Option<SyncChangedRow> {
+    let metadata = app_schema.table_metadata(table)?;
+    let row_id = row
+        .get(metadata.primary_key_column)
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let changed_fields = changed_fields_from_row_diff(metadata, previous_row, Some(row));
+    Some(SyncChangedRow {
+        table: table.to_string(),
+        row_id,
+        operation: if previous_row.is_some() {
+            "update".to_string()
+        } else {
+            "insert".to_string()
+        },
+        crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
+        changed_fields,
+        commit_id: None,
+        commit_seq: None,
+        subscription_id: Some(subscription_id.to_string()),
+        server_version: row
+            .get(metadata.server_version_column)
+            .and_then(Value::as_i64),
+    })
+}
+
+fn changed_fields_from_remote_change(
+    metadata: &AppTableMetadata,
+    change: &SyncChange,
+    previous_row: Option<&Value>,
+) -> Vec<String> {
+    if change.op == "delete" {
+        return Vec::new();
+    }
+    let Some(row) = change.row_json.as_ref() else {
+        return Vec::new();
+    };
+    if row
+        .as_object()
+        .is_some_and(|object| object.contains_key(YJS_PAYLOAD_KEY))
+    {
+        return changed_fields_from_yjs_envelope(metadata, row);
+    }
+    changed_fields_from_row_diff(metadata, previous_row, Some(row))
+}
+
+fn changed_fields_from_row_diff(
+    metadata: &AppTableMetadata,
+    previous_row: Option<&Value>,
+    next_row: Option<&Value>,
+) -> Vec<String> {
+    let Some(next_row) = next_row.and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let previous_row = previous_row.and_then(Value::as_object);
+    metadata
+        .columns
+        .iter()
+        .filter_map(|column| {
+            if column.name == metadata.primary_key_column || !next_row.contains_key(column.name) {
+                return None;
+            }
+            match previous_row.and_then(|row| row.get(column.name)) {
+                Some(previous) if Some(previous) == next_row.get(column.name) => None,
+                _ => Some(column.name.to_string()),
+            }
+        })
+        .collect()
+}
+
+fn changed_fields_from_payload(
+    metadata: &AppTableMetadata,
+    payload: Option<&Value>,
+) -> Vec<String> {
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
+    if payload
+        .as_object()
+        .is_some_and(|object| object.contains_key(YJS_PAYLOAD_KEY))
+    {
+        return changed_fields_from_yjs_envelope(metadata, payload);
+    }
+    let Some(payload) = payload.as_object() else {
+        return Vec::new();
+    };
+    metadata
+        .columns
+        .iter()
+        .filter_map(|column| {
+            if column.name == metadata.primary_key_column || !payload.contains_key(column.name) {
+                return None;
+            }
+            Some(column.name.to_string())
+        })
+        .collect()
+}
+
+fn changed_fields_from_yjs_envelope(metadata: &AppTableMetadata, payload: &Value) -> Vec<String> {
+    let Some(envelope) = payload.get(YJS_PAYLOAD_KEY).and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    for field_name in envelope.keys() {
+        if let Some(field) = metadata
+            .crdt_yjs_fields
+            .iter()
+            .find(|candidate| candidate.field == field_name.as_str())
+        {
+            push_unique(&mut fields, field.field);
+            push_unique(&mut fields, field.state_column);
+        }
+    }
+    fields
+}
+
+fn crdt_state_columns_for_fields(
+    metadata: &AppTableMetadata,
+    changed_fields: &[String],
+) -> Vec<String> {
+    let changed = changed_fields
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    metadata
+        .crdt_yjs_fields
+        .iter()
+        .filter_map(|field| {
+            if changed.contains(field.field) || changed.contains(field.state_column) {
+                Some(field.state_column.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn row_id_for_metadata(app_schema: AppSchema, table: &str, row: &Value) -> Option<String> {
+    let metadata = app_schema.table_metadata(table)?;
+    row.get(metadata.primary_key_column)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConflictResolution {
     KeepLocal,
+    #[serde(rename = "keep-server", alias = "accept-server")]
     AcceptServer,
     Dismiss,
 }
@@ -203,7 +474,7 @@ impl ConflictResolution {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::KeepLocal => "keep-local",
-            Self::AcceptServer => "accept-server",
+            Self::AcceptServer => "keep-server",
             Self::Dismiss => "dismiss",
         }
     }
@@ -326,12 +597,13 @@ impl SyncularClient<DieselSqliteStore, HttpSyncTransport> {
     }
 
     pub fn open_with_schema(config: SyncularClientConfig, app_schema: AppSchema) -> Result<Self> {
+        validate_app_schema_runtime_features(&app_schema)?;
         let store = DieselSqliteStore::open_with_schema(&config.db_path, app_schema)?;
-        let transport = HttpSyncTransport::new(SyncTransportConfig {
-            base_url: config.base_url.clone(),
-            client_id: config.client_id.clone(),
-            actor_id: config.actor_id.clone(),
-        })
+        let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+            config.base_url.clone(),
+            config.client_id.clone(),
+            config.actor_id.clone(),
+        ))
         .with_schema_version(app_schema.current_schema_version());
         Ok(Self::with_app_schema_parts(
             config, store, transport, app_schema,
@@ -346,11 +618,11 @@ where
 {
     pub fn with_store(config: SyncularClientConfig, store: S) -> Self {
         let app_schema = default_app_schema();
-        let transport = HttpSyncTransport::new(SyncTransportConfig {
-            base_url: config.base_url.clone(),
-            client_id: config.client_id.clone(),
-            actor_id: config.actor_id.clone(),
-        })
+        let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+            config.base_url.clone(),
+            config.client_id.clone(),
+            config.actor_id.clone(),
+        ))
         .with_schema_version(app_schema.current_schema_version());
         Self::with_parts(config, store, transport)
     }
@@ -440,6 +712,24 @@ where
 
     pub fn table_metadata(&self, table: &str) -> Option<&'static AppTableMetadata> {
         self.app_schema.table_metadata(table)
+    }
+
+    pub fn app_schema(&self) -> AppSchema {
+        self.app_schema
+    }
+
+    pub fn subscriptions(&self) -> &[SubscriptionSpec] {
+        &self.subscriptions
+    }
+
+    pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) {
+        self.subscriptions = subscriptions;
+    }
+
+    pub fn set_subscriptions_json(&mut self, subscriptions_json: &str) -> Result<()> {
+        let subscriptions: Vec<SubscriptionSpec> = serde_json::from_str(subscriptions_json)?;
+        self.set_subscriptions(subscriptions);
+        Ok(())
     }
 
     pub fn sync_http(&mut self) -> Result<SyncReport> {
@@ -791,7 +1081,11 @@ where
     }
 
     pub fn readonly_query_json(&self, request_json: &str) -> Result<String> {
-        crate::sqlite_query::execute_readonly_query_json(&self.config.db_path, request_json)
+        crate::sqlite_query::execute_readonly_query_json_with_schema(
+            &self.config.db_path,
+            request_json,
+            self.app_schema,
+        )
     }
 }
 
@@ -945,6 +1239,7 @@ where
             let conflicts_changed = apply_push_commit_response(tx, outbox, &response)?;
             Ok(SyncReport {
                 changed_tables: Vec::new(),
+                changed_rows: Vec::new(),
                 conflicts_changed,
             })
         })
@@ -1098,20 +1393,62 @@ where
 
                 for (snapshot, chunk_rows) in &prepared_snapshots {
                     if snapshot.is_first_page {
-                        tx.clear_table_for_scopes(&snapshot.table, &sub.scopes)?;
+                        tx.clear_table_for_scopes_preserving_local_crdt(
+                            &snapshot.table,
+                            &sub.scopes,
+                        )?;
                     }
                     for row in &snapshot.rows {
+                        let previous_row =
+                            row_id_for_metadata(self.app_schema, &snapshot.table, row)
+                                .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
+                                .transpose()?
+                                .flatten();
                         tx.upsert_row(&snapshot.table, row, None)?;
+                        if let Some(changed_row) = sync_changed_row_for_snapshot(
+                            self.app_schema,
+                            &snapshot.table,
+                            row,
+                            previous_row.as_ref(),
+                            &sub.id,
+                        ) {
+                            report.add_changed_row(changed_row);
+                        }
                     }
                     for row in chunk_rows {
+                        let previous_row =
+                            row_id_for_metadata(self.app_schema, &snapshot.table, row)
+                                .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
+                                .transpose()?
+                                .flatten();
                         tx.upsert_row(&snapshot.table, row, None)?;
+                        if let Some(changed_row) = sync_changed_row_for_snapshot(
+                            self.app_schema,
+                            &snapshot.table,
+                            row,
+                            previous_row.as_ref(),
+                            &sub.id,
+                        ) {
+                            report.add_changed_row(changed_row);
+                        }
                     }
                 }
 
                 for commit in &sub.commits {
                     for change in &commit.changes {
-                        report.add_changed_table(&change.table);
+                        let previous_row = tx.current_row_json(&change.table, &change.row_id)?;
                         tx.apply_change(change)?;
+                        if let Some(changed_row) = sync_changed_row_for_change(
+                            self.app_schema,
+                            change,
+                            previous_row.as_ref(),
+                            commit.commit_seq,
+                            &sub.id,
+                        ) {
+                            report.add_changed_row(changed_row);
+                        } else {
+                            report.add_changed_table(&change.table);
+                        }
                     }
                 }
 
@@ -1165,7 +1502,7 @@ where
     }
 }
 
-#[cfg(feature = "native")]
+#[cfg(feature = "demo-todo-native-fixture")]
 impl<T> SyncularClient<RusqliteStore, T>
 where
     T: SyncTransport,
@@ -1307,6 +1644,187 @@ where
             &request.row_id,
             request.min_uncheckpointed_updates.unwrap_or(1),
         )
+    }
+
+    pub fn open_crdt_field(&self, id: CrdtFieldId) -> Result<CrdtField> {
+        let field = validate_crdt_field(self.app_schema, &id)?;
+        if field.sync_mode() == CrdtFieldSyncMode::EncryptedUpdateLog
+            && self.encrypted_crdt.is_none()
+        {
+            return Err(SyncularError::config(
+                "encrypted CRDT fields require set_encrypted_crdt(...)",
+            ));
+        }
+        Ok(field)
+    }
+
+    pub fn apply_crdt_field_yjs_update(
+        &mut self,
+        field: &CrdtField,
+        update: YjsUpdateEnvelope,
+    ) -> Result<CrdtFieldWriteReceipt> {
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => {
+                let mut envelope = Map::new();
+                envelope.insert(field.field().to_string(), serde_json::to_value(update)?);
+                let mut payload = Map::new();
+                payload.insert(YJS_PAYLOAD_KEY.to_string(), Value::Object(envelope));
+                let operation = SyncOperation {
+                    table: field.table().to_string(),
+                    row_id: field.row_id().to_string(),
+                    op: "upsert".to_string(),
+                    payload: Some(Value::Object(payload)),
+                    base_version: None,
+                };
+                let client_commit_id = self.store.apply_local_operation(operation, None)?;
+                Ok(CrdtFieldWriteReceipt {
+                    client_commit_id,
+                    sync_mode: field.sync_mode(),
+                })
+            }
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                let receipt = self.apply_encrypted_crdt_yjs_update(
+                    field.metadata(),
+                    field.field(),
+                    field.row_id(),
+                    update,
+                )?;
+                Ok(CrdtFieldWriteReceipt {
+                    client_commit_id: receipt.client_commit_id,
+                    sync_mode: field.sync_mode(),
+                })
+            }
+        }
+    }
+
+    pub fn apply_crdt_field_text(
+        &mut self,
+        field: &CrdtField,
+        next_text: &str,
+    ) -> Result<CrdtFieldWriteReceipt> {
+        if field.field_metadata().kind != "text" {
+            return Err(SyncularError::config(format!(
+                "apply_crdt_field_text requires a text CRDT field, got {}",
+                field.field_metadata().kind
+            )));
+        }
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => {
+                let current_row = self.store.read_row_json(field.table(), field.row_id())?;
+                let previous_state_base64 = current_row.as_ref().and_then(|row| {
+                    row.get(field.state_column())
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                });
+                if previous_state_base64.is_none() {
+                    if let Some(existing_text) = current_row
+                        .as_ref()
+                        .and_then(|row| row.get(field.field()))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty() && *value != next_text)
+                    {
+                        return Err(SyncularError::config(format!(
+                            "cannot replace non-empty CRDT text field {}.{} row {} without existing Yjs state; migrate or initialize {} first (current value: {existing_text:?})",
+                            field.table(),
+                            field.field(),
+                            field.row_id(),
+                            field.state_column()
+                        )));
+                    }
+                }
+                let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
+                    previous_state_base64,
+                    next_text: next_text.to_string(),
+                    container_key: Some(field.container_key().to_string()),
+                    update_id: None,
+                })?;
+                self.apply_crdt_field_yjs_update(field, update.update)
+            }
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                let receipt = self.apply_encrypted_crdt_text_update(
+                    field.metadata(),
+                    field.field(),
+                    field.row_id(),
+                    next_text,
+                )?;
+                Ok(CrdtFieldWriteReceipt {
+                    client_commit_id: receipt.client_commit_id,
+                    sync_mode: field.sync_mode(),
+                })
+            }
+        }
+    }
+
+    pub fn materialize_crdt_field(
+        &mut self,
+        field: &CrdtField,
+    ) -> Result<CrdtFieldMaterialization> {
+        let row = self
+            .store
+            .read_row_json(field.table(), field.row_id())?
+            .ok_or_else(|| {
+                SyncularError::protocol_message(format!(
+                    "cannot materialize CRDT field {}.{} for missing row {}",
+                    field.table(),
+                    field.field(),
+                    field.row_id()
+                ))
+            })?;
+        let state_base64 = row
+            .get(field.state_column())
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let value = match state_base64.as_deref() {
+            Some(state_base64) => materialize_yjs_state(state_base64, &field.yjs_rule()?)?,
+            None => row.get(field.field()).cloned().unwrap_or(Value::Null),
+        };
+        let state_vector_base64 = yjs_state_vector_base64(state_base64.as_deref())?;
+        Ok(CrdtFieldMaterialization {
+            value,
+            state_base64,
+            state_vector_base64,
+        })
+    }
+
+    pub fn materialize_crdt_field_json(&mut self, field: &CrdtField) -> Result<String> {
+        Ok(serde_json::to_string(&self.materialize_crdt_field(field)?)?)
+    }
+
+    pub fn snapshot_crdt_field_state_vector_base64(&mut self, field: &CrdtField) -> Result<String> {
+        let row = self.store.read_row_json(field.table(), field.row_id())?;
+        let state_base64 = row.as_ref().and_then(|row| {
+            row.get(field.state_column())
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        });
+        yjs_state_vector_base64(state_base64)
+    }
+
+    pub fn compact_crdt_field(
+        &mut self,
+        field: &CrdtField,
+        min_uncheckpointed_updates: i64,
+    ) -> Result<CrdtFieldCompactionReceipt> {
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => Ok(CrdtFieldCompactionReceipt {
+                checkpoint_created: false,
+                client_commit_id: None,
+            }),
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                let receipt = self.apply_encrypted_crdt_checkpoint(
+                    field.metadata(),
+                    field.field(),
+                    field.row_id(),
+                    min_uncheckpointed_updates,
+                )?;
+                Ok(CrdtFieldCompactionReceipt {
+                    checkpoint_created: receipt.is_some(),
+                    client_commit_id: receipt.map(|receipt| receipt.client_commit_id),
+                })
+            }
+        }
     }
 
     fn encrypted_crdt_metadata_field(
@@ -1508,6 +2026,7 @@ fn pull_response_needs_another_round(response: &PullResponse, limit_commits: i64
     total_commits >= limit_commits as usize
 }
 
+#[cfg(feature = "demo-todo-fixture")]
 impl<S, T> SyncularClient<S, T>
 where
     S: SyncStore + DemoTaskStore,
@@ -1673,7 +2192,10 @@ fn apply_push_commit_response(
 ) -> Result<bool> {
     let mut conflicts_changed = false;
     match response.status.as_str() {
-        "applied" | "cached" => tx.mark_outbox_acked(&outbox.id, response)?,
+        "applied" | "cached" => {
+            tx.mark_pushed_operation_server_versions(outbox, response)?;
+            tx.mark_outbox_acked(&outbox.id, response)?;
+        }
         _ => {
             for result in &response.results {
                 if result.status == "conflict" || result.status == "error" {

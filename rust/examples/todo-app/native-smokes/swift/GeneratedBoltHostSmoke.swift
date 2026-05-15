@@ -33,15 +33,21 @@ private enum GeneratedBoltHostSmoke {
             ?? NSTemporaryDirectory() + "/syncular-swift-bolt-host.sqlite"
         removeSqliteFiles(dbPath)
 
-        let client = try SyncularBoltClient(open: SyncularBoltClientConfig(
+        let config = SyncularBoltClientConfig(
             dbPath: dbPath,
             baseUrl: "http://127.0.0.1:9/sync",
             clientId: "swift-bolt-host",
             actorId: "user-rust",
             projectId: "project-rust",
+            appSchemaJson: syncularNativeGeneratedAppSchemaJson,
             autoSyncLocalWrites: false
-        ))
+        )
+        let client = try SyncularBoltClient(openAsync: config)
         defer { _ = try? client.shutdown() }
+        expect(try client.openCommandId()?.hasPrefix("native-open-") == true, "Swift host async open should expose command id")
+        expect(try client.finishOpenTimeout(timeoutMs: 5_000), "Swift host async open should finish")
+        expect(try client.isOpenFinished(), "Swift host async open should report finished")
+        expect(try client.openCommandId() == nil, "Swift host async open command id should clear after ready")
 
         try assertSyncularNativeRuntimeManifestJson(try client.runtimeManifestJson())
         expect(try client.setAuthHeadersJson(headersJson: #"{"authorization":"Bearer local-swift"}"#), "Swift host should accept auth headers")
@@ -65,21 +71,27 @@ private enum GeneratedBoltHostSmoke {
 
         let commitId = try client.applyNewTask(NewTask(
             id: "task-swift-bolt",
-            title: "Swift Bolt host",
+            title: "",
             completed: 1,
             userId: "user-rust",
             projectId: "project-rust"
         ))
         expect(!commitId.isEmpty, "Swift host mutation should return a commit id")
 
+        let crdtReceipt = try client.applyTaskTitleText(rowId: "task-swift-bolt", nextText: "Swift Bolt CRDT")
+        expect(crdtReceipt.syncMode == "server-merge", "Swift host CRDT text helper should return server-merge receipt")
+        let materializedTitle = try client.materializeTaskTitle(rowId: "task-swift-bolt")
+        expect(materializedTitle.value == .string("Swift Bolt CRDT"), "Swift host CRDT materialize helper should read updated title")
+
         let events = try pollEvents(from: client)
         expect(events.contains(where: { $0.kind == "RowsChanged" && $0.tables == ["tasks"] }), "Swift host should emit task rows changed")
         expect(events.contains(where: { $0.kind == "QueriesChanged" && $0.queries == ["swift-bolt-live"] }), "Swift host should emit live query changed")
+        expect(events.contains(where: { $0.kind == "CrdtFieldChanged" && $0.tables.contains("tasks") }), "Swift host should emit CRDT field changed")
 
         let rows = try query.fetch(on: client)
         expect(rows.count == 1, "Swift host query should read inserted task")
         expect(rows[0].id == "task-swift-bolt", "Swift host query should decode inserted id")
-        expect(rows[0].title == "Swift Bolt host", "Swift host query should decode inserted title")
+        expect(rows[0].title == "Swift Bolt CRDT", "Swift host query should decode CRDT title")
 
         let queryEvent = events.first { $0.kind == "QueriesChanged" }!
         let refreshedRows = try live.refreshIfChanged(event: queryEvent, on: client)

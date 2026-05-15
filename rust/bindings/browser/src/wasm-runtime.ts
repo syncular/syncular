@@ -1,4 +1,7 @@
 import {
+  SYNCULAR_V2_CORE_RUNTIME_FEATURES,
+  SYNCULAR_V2_FULL_RUNTIME_FEATURES,
+  SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE,
   SYNCULAR_V2_WASM_BINARY_FILE,
   SYNCULAR_V2_WASM_GLUE_FILE,
 } from './runtime-contract';
@@ -8,6 +11,9 @@ import type {
 } from './rust-store';
 import type {
   SyncularV2ClientConfig,
+  SyncularV2RuntimeArtifact,
+  SyncularV2RuntimeArtifactCandidate,
+  SyncularV2RuntimeArtifactCatalog,
   SyncularV2RustRuntimeInfo,
 } from './types';
 
@@ -43,6 +49,9 @@ export interface RawSyncularV2RustClient {
   syncPushJson(): Promise<string>;
   recoverSyncPushErrorJson(errorMessage: string): void;
   syncOnceJson(): Promise<string>;
+  conflictSummariesJson(): Promise<string>;
+  retryConflictKeepLocal(id: string): Promise<string>;
+  resolveConflict(id: string, resolution: string): Promise<void>;
   listTableJson(table: string): Promise<string>;
   storeBlobJson(data: Uint8Array, optionsJson: string): Promise<string>;
   retrieveBlob(refJson: string): Promise<Uint8Array>;
@@ -50,14 +59,22 @@ export interface RawSyncularV2RustClient {
   processBlobUploadQueueJson(): Promise<string>;
   blobUploadQueueStatsJson(): string;
   blobCacheStatsJson(): string;
-  pruneBlobCache(maxBytes: number): number;
+  pruneBlobCache(maxBytes: bigint): bigint;
   clearBlobCache(): void;
   compactStorageJson(optionsJson: string): string;
   executeSqlJson(sql: string, paramsJson: string): string;
+  executeUnsafeSqlJson(sql: string, paramsJson: string): string;
   buildYjsTextUpdateJson(argsJson: string): string;
   applyYjsTextUpdatesJson(argsJson: string): string;
   applyYjsEnvelopeToPayloadJson(argsJson: string): string;
   materializeYjsRowJson(argsJson: string): string;
+  yjsStateVectorBase64(stateBase64?: string | null): string;
+  openCrdtFieldJson(requestJson: string): string;
+  applyCrdtFieldTextJson(requestJson: string): string;
+  applyCrdtFieldYjsUpdateJson(requestJson: string): string;
+  materializeCrdtFieldJson(requestJson: string): string;
+  snapshotCrdtFieldStateVectorJson(requestJson: string): string;
+  compactCrdtFieldJson(requestJson: string): string;
   encryptionHelperJson(method: string, argsJson: string): string;
   generatedSchemaStateJson(): string;
   subscribeQueryJson(
@@ -72,12 +89,92 @@ export interface RawSyncularV2RustClient {
 
 let modulePromise: Promise<SyncularV2WasmGlue> | undefined;
 
+export type SyncularV2WasmArtifactVariant = 'full' | 'core';
+
 export function getSyncularV2WasmGlueUrl(): URL {
   return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE);
 }
 
 export function getSyncularV2WasmUrl(): URL {
   return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_BINARY_FILE);
+}
+
+export function getSyncularV2RuntimeArtifactCatalogUrl(): URL {
+  const runtimeUrl = new URL(import.meta.url);
+  const sourceRuntime = runtimeUrl.pathname.endsWith('/src/wasm-runtime.ts');
+  return new URL(
+    sourceRuntime
+      ? `../dist/${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`
+      : `./${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`,
+    runtimeUrl
+  );
+}
+
+export function getSyncularV2RuntimeArtifact(
+  variant: SyncularV2WasmArtifactVariant = 'full'
+): SyncularV2RuntimeArtifactCandidate {
+  const dir = variant === 'core' ? 'wasm-core' : 'wasm';
+  const features =
+    variant === 'core'
+      ? SYNCULAR_V2_CORE_RUNTIME_FEATURES
+      : SYNCULAR_V2_FULL_RUNTIME_FEATURES;
+  return {
+    name: variant,
+    features,
+    wasmGlueUrl: resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE, dir),
+    wasmUrl: resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_BINARY_FILE, dir),
+  };
+}
+
+export function getSyncularV2PackagedRuntimeArtifacts(): readonly SyncularV2RuntimeArtifactCandidate[] {
+  return [
+    getSyncularV2RuntimeArtifact('core'),
+    getSyncularV2RuntimeArtifact('full'),
+  ];
+}
+
+export function resolveSyncularV2RuntimeArtifactCatalog(
+  catalog: SyncularV2RuntimeArtifactCatalog,
+  options: { baseUrl?: string | URL } = {}
+): readonly SyncularV2RuntimeArtifactCandidate[] {
+  const baseUrl = options.baseUrl ?? getSyncularV2RuntimeArtifactCatalogUrl();
+  return catalog.artifacts.map((artifact) => ({
+    name: artifact.name,
+    features: artifact.features,
+    wasmGlueUrl: resolveCatalogAssetUrl(artifact.wasmGlueUrl, baseUrl),
+    wasmUrl: resolveCatalogAssetUrl(artifact.wasmUrl, baseUrl),
+  }));
+}
+
+export function selectSyncularV2RuntimeArtifact(
+  requiredFeatures: readonly string[] = [],
+  artifacts: readonly SyncularV2RuntimeArtifactCandidate[] = [
+    getSyncularV2RuntimeArtifact('full'),
+  ]
+): SyncularV2RuntimeArtifact {
+  const required = new Set(requiredFeatures);
+  for (const artifact of artifacts) {
+    const available = new Set(artifact.features);
+    let compatible = true;
+    for (const feature of required) {
+      if (!available.has(feature)) {
+        compatible = false;
+        break;
+      }
+    }
+    if (compatible) {
+      return {
+        wasmGlueUrl: artifact.wasmGlueUrl,
+        wasmUrl: artifact.wasmUrl,
+      };
+    }
+  }
+
+  throw new Error(
+    `No Syncular Rust runtime artifact satisfies required features: ${[
+      ...required,
+    ].join(', ')}`
+  );
 }
 
 export function loadSyncularV2WasmGlue(): Promise<SyncularV2WasmGlue> {
@@ -104,11 +201,36 @@ export function readSyncularV2RustRuntimeInfo(
   ) as SyncularV2RustRuntimeInfo;
 }
 
-function resolveSyncularV2WasmAsset(fileName: string): URL {
+function resolveSyncularV2WasmAsset(fileName: string, dir = 'wasm'): URL {
   const runtimeUrl = new URL(import.meta.url);
   const sourceRuntime = runtimeUrl.pathname.endsWith('/src/wasm-runtime.ts');
   return new URL(
-    sourceRuntime ? `../dist/wasm/${fileName}` : `./wasm/${fileName}`,
+    sourceRuntime ? `../dist/${dir}/${fileName}` : `./${dir}/${fileName}`,
     runtimeUrl
   );
+}
+
+function resolveCatalogAssetUrl(
+  value: string,
+  baseUrl: string | URL
+): string | URL {
+  if (isAbsoluteAssetUrl(value)) return value;
+  if (baseUrl instanceof URL) {
+    return new URL(value, new URL('./', baseUrl));
+  }
+  if (hasUrlProtocol(baseUrl)) {
+    return new URL(value, new URL('./', baseUrl)).href;
+  }
+  const baseDir = baseUrl.endsWith('/')
+    ? baseUrl
+    : baseUrl.slice(0, Math.max(0, baseUrl.lastIndexOf('/') + 1));
+  return `${baseDir}${value}`;
+}
+
+function isAbsoluteAssetUrl(value: string): boolean {
+  return value.startsWith('/') || hasUrlProtocol(value);
+}
+
+function hasUrlProtocol(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value);
 }

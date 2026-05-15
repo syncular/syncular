@@ -602,6 +602,7 @@ export function createServerHandler<
                 opIndex,
                 status: 'conflict',
                 message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
+                code: 'VERSION_CONFLICT',
                 server_version: existingVersion,
                 server_row: applyOutboundTransform(
                   conflictRow as Selectable<ServerDB[TableName]>

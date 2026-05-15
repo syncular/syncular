@@ -26,7 +26,7 @@ use std::fs::File;
 #[cfg(feature = "native")]
 use std::io::{Read, Write};
 #[cfg(feature = "native")]
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(feature = "native")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "native")]
@@ -38,7 +38,7 @@ use tungstenite::client::IntoClientRequest;
 #[cfg(feature = "native")]
 use tungstenite::stream::MaybeTlsStream;
 #[cfg(feature = "native")]
-use tungstenite::{connect as ws_connect, Message, WebSocket};
+use tungstenite::{client_tls_with_config, Message, WebSocket};
 #[cfg(feature = "native")]
 use uuid::Uuid;
 
@@ -74,6 +74,50 @@ pub struct SyncTransportConfig {
     pub base_url: String,
     pub client_id: String,
     pub actor_id: String,
+    pub timeouts: SyncTransportTimeouts,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncTransportTimeouts {
+    pub http_connect: Duration,
+    pub http_request: Duration,
+    pub http_response_body: Duration,
+    pub websocket_open: Duration,
+    pub websocket_idle: Duration,
+    pub websocket_push_response: Duration,
+    pub websocket_shutdown: Duration,
+}
+
+#[cfg(feature = "native")]
+impl Default for SyncTransportTimeouts {
+    fn default() -> Self {
+        Self {
+            http_connect: Duration::from_secs(10),
+            http_request: Duration::from_secs(30),
+            http_response_body: Duration::from_secs(30),
+            websocket_open: Duration::from_secs(10),
+            websocket_idle: Duration::from_secs(1),
+            websocket_push_response: Duration::from_secs(10),
+            websocket_shutdown: Duration::from_secs(2),
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+impl SyncTransportConfig {
+    pub fn new(
+        base_url: impl Into<String>,
+        client_id: impl Into<String>,
+        actor_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into(),
+            client_id: client_id.into(),
+            actor_id: actor_id.into(),
+            timeouts: SyncTransportTimeouts::default(),
+        }
+    }
 }
 
 #[cfg(feature = "native")]
@@ -88,6 +132,8 @@ pub struct HttpSyncTransport {
 #[cfg(feature = "native")]
 pub struct RealtimeSocket {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    push_response_timeout: Duration,
+    shutdown_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -137,8 +183,13 @@ pub trait RealtimeTransport {
 #[cfg(feature = "native")]
 impl HttpSyncTransport {
     pub fn new(config: SyncTransportConfig) -> Self {
+        let http = HttpClient::builder()
+            .connect_timeout(config.timeouts.http_connect)
+            .timeout(config.timeouts.http_request)
+            .build()
+            .unwrap_or_else(|_| HttpClient::new());
         Self {
-            http: HttpClient::new(),
+            http,
             config,
             auth_headers: SyncAuthHeaders::new(),
             auth_signer: None,
@@ -502,12 +553,27 @@ impl RealtimeSocket {
             schema_version.to_string().parse()?,
         );
 
-        let (mut socket, _response) = ws_connect(request)
-            .map_err(|err| SyncularError::transport(err).context("connect websocket"))?;
-        if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
-            stream.set_read_timeout(Some(Duration::from_secs(1))).ok();
-        }
-        Ok(Self { socket })
+        let stream = connect_websocket_tcp(request.uri(), config.timeouts.websocket_open)?;
+        stream.set_nodelay(true).ok();
+        stream
+            .set_read_timeout(Some(config.timeouts.websocket_open))
+            .ok();
+        stream
+            .set_write_timeout(Some(config.timeouts.websocket_open))
+            .ok();
+
+        let (mut socket, _response) = client_tls_with_config(request, stream, None, None)
+            .map_err(|err| SyncularError::transport(err).context("connect websocket handshake"))?;
+        set_websocket_stream_timeouts(
+            socket.get_mut(),
+            Some(config.timeouts.websocket_idle),
+            Some(config.timeouts.websocket_shutdown),
+        );
+        Ok(Self {
+            socket,
+            push_response_timeout: config.timeouts.websocket_push_response,
+            shutdown_timeout: config.timeouts.websocket_shutdown,
+        })
     }
 }
 
@@ -527,7 +593,7 @@ impl RealtimeTransport for RealtimeSocket {
             .send(Message::Text(message.to_string().into()))?;
 
         let deadline = SystemTime::now()
-            .checked_add(Duration::from_secs(10))
+            .checked_add(self.push_response_timeout)
             .unwrap_or_else(SystemTime::now);
 
         while SystemTime::now() < deadline {
@@ -632,6 +698,11 @@ impl RealtimeTransport for RealtimeSocket {
     }
 
     fn close(&mut self) {
+        set_websocket_stream_timeouts(
+            self.socket.get_mut(),
+            Some(self.shutdown_timeout),
+            Some(self.shutdown_timeout),
+        );
         self.socket.close(None).ok();
     }
 }
@@ -708,6 +779,68 @@ fn ws_url(base_url: &str, client_id: &str, schema_version: i32) -> Result<String
 }
 
 #[cfg(feature = "native")]
+fn connect_websocket_tcp(uri: &tungstenite::http::Uri, timeout: Duration) -> Result<TcpStream> {
+    let host = uri.host().ok_or_else(|| {
+        SyncularError::message(ErrorKind::Transport, "websocket url is missing a host")
+    })?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    let port = uri.port_u16().unwrap_or(match uri.scheme_str() {
+        Some("ws") => 80,
+        Some("wss") => 443,
+        Some(scheme) => {
+            return Err(SyncularError::message(
+                ErrorKind::Transport,
+                format!("unsupported websocket url scheme: {scheme}"),
+            ));
+        }
+        None => {
+            return Err(SyncularError::message(
+                ErrorKind::Transport,
+                "websocket url is missing a scheme",
+            ));
+        }
+    });
+
+    let mut last_error = None;
+    for address in (host, port)
+        .to_socket_addrs()
+        .map_err(|err| SyncularError::transport(err).context("resolve websocket host"))?
+    {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    let message = last_error
+        .map(|err| format!("connect websocket tcp: {err}"))
+        .unwrap_or_else(|| "connect websocket tcp: host resolved to no addresses".to_string());
+    Err(SyncularError::message(ErrorKind::Transport, message))
+}
+
+#[cfg(feature = "native")]
+fn set_websocket_stream_timeouts(
+    stream: &mut MaybeTlsStream<TcpStream>,
+    read_timeout: Option<Duration>,
+    write_timeout: Option<Duration>,
+) {
+    match stream {
+        MaybeTlsStream::Plain(stream) => {
+            stream.set_read_timeout(read_timeout).ok();
+            stream.set_write_timeout(write_timeout).ok();
+        }
+        MaybeTlsStream::Rustls(stream) => {
+            stream.sock.set_read_timeout(read_timeout).ok();
+            stream.sock.set_write_timeout(write_timeout).ok();
+        }
+        _ => {}
+    }
+}
+
+#[cfg(feature = "native")]
 fn blob_hash_path(hash: &str) -> Result<String> {
     validate_blob_hash(hash)?;
     let hex = hash
@@ -754,12 +887,29 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Instant;
 
     #[test]
     fn effective_auth_headers_are_empty_without_app_headers() {
         let headers = effective_auth_headers(&SyncAuthHeaders::new());
 
         assert_eq!(headers, Vec::<(String, String)>::new());
+    }
+
+    #[test]
+    fn transport_config_has_production_timeout_defaults() {
+        let config = SyncTransportConfig::new("https://api.example.test/sync", "client", "actor");
+
+        assert_eq!(config.timeouts.http_connect, Duration::from_secs(10));
+        assert_eq!(config.timeouts.http_request, Duration::from_secs(30));
+        assert_eq!(config.timeouts.http_response_body, Duration::from_secs(30));
+        assert_eq!(config.timeouts.websocket_open, Duration::from_secs(10));
+        assert_eq!(config.timeouts.websocket_idle, Duration::from_secs(1));
+        assert_eq!(
+            config.timeouts.websocket_push_response,
+            Duration::from_secs(10)
+        );
+        assert_eq!(config.timeouts.websocket_shutdown, Duration::from_secs(2));
     }
 
     #[test]
@@ -858,11 +1008,11 @@ mod tests {
                 "yes".to_string(),
             )]))
         });
-        let config = SyncTransportConfig {
-            base_url: format!("ws://{address}/api/sync"),
-            client_id: "flutter-shell".to_string(),
-            actor_id: "passkey:user-test".to_string(),
-        };
+        let config = SyncTransportConfig::new(
+            format!("ws://{address}/api/sync"),
+            "flutter-shell",
+            "passkey:user-test",
+        );
 
         let mut socket = RealtimeSocket::connect(&config, &SyncAuthHeaders::new(), Some(signer), 7)
             .expect("connect realtime websocket");
@@ -873,6 +1023,41 @@ mod tests {
             .expect("captured websocket headers");
         assert_eq!(signed, "yes");
         assert_eq!(schema, "7");
+        server.join().expect("websocket test server finished");
+    }
+
+    #[test]
+    fn realtime_socket_connect_uses_websocket_open_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket test server");
+        let address = listener.local_addr().expect("websocket server address");
+
+        let server = thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                thread::sleep(Duration::from_millis(350));
+                drop(stream);
+            }
+        });
+
+        let mut config = SyncTransportConfig::new(
+            format!("ws://{address}/api/sync"),
+            "flutter-shell",
+            "passkey:user-test",
+        );
+        config.timeouts.websocket_open = Duration::from_millis(75);
+
+        let started = Instant::now();
+        let result = RealtimeSocket::connect(&config, &SyncAuthHeaders::new(), None, 7);
+
+        let elapsed = started.elapsed();
+        let error = match result {
+            Ok(_) => panic!("websocket connect should time out"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::Transport);
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "websocket open ignored configured timeout: {elapsed:?}"
+        );
         server.join().expect("websocket test server finished");
     }
 }

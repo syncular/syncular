@@ -1,8 +1,8 @@
-use crate::diesel_tables::adapter_for;
+use super::diesel_tables::adapter_for;
+use super::generated::{NewTask, TaskPatch};
+use super::schema;
 use crate::error::Result;
-use crate::generated::{NewTask, TaskPatch};
 use crate::protocol::SyncOperation;
-use crate::schema;
 use crate::store::Task;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;

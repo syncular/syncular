@@ -1,11 +1,18 @@
 use crate::app_schema::{AppTableMetadata, CrdtYjsFieldMetadata};
 use crate::error::{Result, SyncularError};
-use crate::protocol::{random_syncular_id, SyncOperation};
+#[cfg(feature = "crdt-yjs")]
+use crate::protocol::random_syncular_id;
+use crate::protocol::SyncOperation;
+#[cfg(feature = "crdt-yjs")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "crdt-yjs")]
 use yrs::updates::decoder::Decode;
+#[cfg(feature = "crdt-yjs")]
+use yrs::updates::encoder::Encode;
+#[cfg(feature = "crdt-yjs")]
 use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
 
 pub const YJS_PAYLOAD_KEY: &str = "__yjs";
@@ -25,7 +32,7 @@ impl Default for YjsFieldKind {
 }
 
 impl YjsFieldKind {
-    fn from_metadata(value: &str) -> Result<Self> {
+    pub fn from_metadata(value: &str) -> Result<Self> {
         match value {
             "text" => Ok(Self::Text),
             "xml-fragment" => Ok(Self::XmlFragment),
@@ -154,6 +161,7 @@ pub struct MaterializeYjsRowResult {
     pub row: Value,
 }
 
+#[cfg(feature = "crdt-yjs")]
 pub fn build_yjs_text_update(args: BuildYjsTextUpdateArgs) -> Result<BuildYjsTextUpdateResult> {
     let container_key = args.container_key.unwrap_or_else(|| "text".to_string());
     let doc = create_doc_from_state(args.previous_state_base64.as_deref())?;
@@ -178,6 +186,12 @@ pub fn build_yjs_text_update(args: BuildYjsTextUpdateArgs) -> Result<BuildYjsTex
     })
 }
 
+#[cfg(not(feature = "crdt-yjs"))]
+pub fn build_yjs_text_update(_args: BuildYjsTextUpdateArgs) -> Result<BuildYjsTextUpdateResult> {
+    Err(crdt_yjs_feature_disabled())
+}
+
+#[cfg(feature = "crdt-yjs")]
 pub fn apply_yjs_text_updates(args: ApplyYjsTextUpdatesArgs) -> Result<ApplyYjsTextUpdatesResult> {
     let container_key = args.container_key.unwrap_or_else(|| "text".to_string());
     let doc = create_doc_from_state(args.previous_state_base64.as_deref())?;
@@ -192,6 +206,12 @@ pub fn apply_yjs_text_updates(args: ApplyYjsTextUpdatesArgs) -> Result<ApplyYjsT
     })
 }
 
+#[cfg(not(feature = "crdt-yjs"))]
+pub fn apply_yjs_text_updates(_args: ApplyYjsTextUpdatesArgs) -> Result<ApplyYjsTextUpdatesResult> {
+    Err(crdt_yjs_feature_disabled())
+}
+
+#[cfg(feature = "crdt-yjs")]
 pub fn apply_yjs_updates_to_state(
     args: ApplyYjsUpdatesToStateArgs,
 ) -> Result<ApplyYjsUpdatesToStateResult> {
@@ -206,9 +226,34 @@ pub fn apply_yjs_updates_to_state(
     })
 }
 
+#[cfg(not(feature = "crdt-yjs"))]
+pub fn apply_yjs_updates_to_state(
+    _args: ApplyYjsUpdatesToStateArgs,
+) -> Result<ApplyYjsUpdatesToStateResult> {
+    Err(crdt_yjs_feature_disabled())
+}
+
+#[cfg(feature = "crdt-yjs")]
 pub fn materialize_yjs_state(state_base64: &str, rule: &YjsFieldRule) -> Result<Value> {
     let doc = create_doc_from_state(Some(state_base64))?;
     materialize_rule_value(&doc, rule)
+}
+
+#[cfg(not(feature = "crdt-yjs"))]
+pub fn materialize_yjs_state(_state_base64: &str, _rule: &YjsFieldRule) -> Result<Value> {
+    Err(crdt_yjs_feature_disabled())
+}
+
+#[cfg(feature = "crdt-yjs")]
+pub fn yjs_state_vector_base64(state_base64: Option<&str>) -> Result<String> {
+    let doc = create_doc_from_state(state_base64)?;
+    let txn = doc.transact();
+    Ok(encode_base64(&txn.state_vector().encode_v1()))
+}
+
+#[cfg(not(feature = "crdt-yjs"))]
+pub fn yjs_state_vector_base64(_state_base64: Option<&str>) -> Result<String> {
+    Err(crdt_yjs_feature_disabled())
 }
 
 pub fn apply_yjs_envelope_to_payload(
@@ -307,15 +352,19 @@ pub fn transform_local_row_for_metadata(
             if !has_envelope(operation_payload, YJS_PAYLOAD_KEY) {
                 return Ok(None);
             }
-            let Value::Object(mut row) = operation_payload.clone() else {
-                return Ok(None);
-            };
-            strip_enveloped_materialized_fields(&mut row, metadata, YJS_PAYLOAD_KEY);
-            row.insert(
-                metadata.primary_key_column.to_string(),
-                Value::String(row_id.to_string()),
-            );
-            Value::Object(row)
+            if let Some(existing_row) = existing_row {
+                existing_row.clone()
+            } else {
+                let Value::Object(mut row) = operation_payload.clone() else {
+                    return Ok(None);
+                };
+                strip_enveloped_materialized_fields(&mut row, metadata, YJS_PAYLOAD_KEY);
+                row.insert(
+                    metadata.primary_key_column.to_string(),
+                    Value::String(row_id.to_string()),
+                );
+                Value::Object(row)
+            }
         }
     };
     let local_row =
@@ -368,6 +417,7 @@ fn rule_from_metadata(table: &str, field: &CrdtYjsFieldMetadata) -> Result<YjsFi
     })
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn transform_payload(
     table: &str,
     _row_id: Option<&str>,
@@ -443,6 +493,46 @@ fn transform_payload(
     Ok(Value::Object(payload))
 }
 
+#[cfg(not(feature = "crdt-yjs"))]
+fn transform_payload(
+    table: &str,
+    _row_id: Option<&str>,
+    payload: Value,
+    _existing_row: Option<&Value>,
+    rules: &[YjsFieldRule],
+    envelope_key: &str,
+    strict: bool,
+    strip_envelope: bool,
+) -> Result<Value> {
+    let mut payload = match payload {
+        Value::Object(payload) => payload,
+        other => return Ok(other),
+    };
+    let table_rules = table_rule_index(table, rules)?;
+    let raw_envelope = payload.get(envelope_key).cloned();
+
+    if table_rules.is_empty() {
+        if raw_envelope.is_some() && strict {
+            return Err(SyncularError::protocol_message(format!(
+                "Yjs envelope provided for table \"{table}\" without matching rules"
+            )));
+        }
+        if strip_envelope {
+            payload.remove(envelope_key);
+        }
+        return Ok(Value::Object(payload));
+    }
+
+    if raw_envelope.is_some() {
+        return Err(crdt_yjs_feature_disabled());
+    }
+    if strip_envelope {
+        payload.remove(envelope_key);
+    }
+    Ok(Value::Object(payload))
+}
+
+#[cfg(feature = "crdt-yjs")]
 fn materialize_row(
     table: &str,
     _row_id: Option<&str>,
@@ -461,6 +551,29 @@ fn materialize_row(
         };
         let doc = create_doc_from_state(Some(&state_base64))?;
         row.insert(rule.field.clone(), materialize_rule_value(&doc, rule)?);
+    }
+    if strip_envelope {
+        row.remove(envelope_key);
+    }
+    Ok(Value::Object(row))
+}
+
+#[cfg(not(feature = "crdt-yjs"))]
+fn materialize_row(
+    table: &str,
+    _row_id: Option<&str>,
+    row: Value,
+    rules: &[YjsFieldRule],
+    envelope_key: &str,
+    strip_envelope: bool,
+) -> Result<Value> {
+    let mut row = match row {
+        Value::Object(row) => row,
+        other => return Ok(other),
+    };
+    let table_rules = table_rule_index(table, rules)?;
+    if !table_rules.is_empty() {
+        return Err(crdt_yjs_feature_disabled());
     }
     if strip_envelope {
         row.remove(envelope_key);
@@ -511,6 +624,7 @@ fn table_rule_index(table: &str, rules: &[YjsFieldRule]) -> Result<BTreeMap<Stri
     Ok(out)
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn normalize_update_envelopes(value: Value, context: &str) -> Result<Vec<YjsUpdateEnvelope>> {
     match value {
         Value::Array(values) => values
@@ -522,6 +636,7 @@ fn normalize_update_envelopes(value: Value, context: &str) -> Result<Vec<YjsUpda
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn normalize_update_envelope(value: Value, context: &str) -> Result<YjsUpdateEnvelope> {
     let envelope: YjsUpdateEnvelope = serde_json::from_value(value).map_err(|err| {
         SyncularError::protocol_message(format!("{context} must be a Yjs update envelope: {err}"))
@@ -539,6 +654,7 @@ fn normalize_update_envelope(value: Value, context: &str) -> Result<YjsUpdateEnv
     Ok(envelope)
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn create_doc_from_state(state_base64: Option<&str>) -> Result<Doc> {
     let doc = Doc::new();
     if let Some(state_base64) = state_base64.filter(|value| !value.trim().is_empty()) {
@@ -552,6 +668,7 @@ fn create_doc_from_state(state_base64: Option<&str>) -> Result<Doc> {
     Ok(doc)
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
     let mut txn = doc.transact_mut();
     for update in updates {
@@ -569,6 +686,7 @@ fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn patch_text(doc: &Doc, container_key: &str, next_text: &str) {
     let text = doc.get_or_insert_text(container_key);
     let current_text = {
@@ -594,6 +712,7 @@ fn patch_text(doc: &Doc, container_key: &str, next_text: &str) {
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn common_prefix_boundary(left: &str, right: &str) -> usize {
     let mut prefix = 0;
     for ((left_index, left_char), (right_index, right_char)) in
@@ -607,6 +726,7 @@ fn common_prefix_boundary(left: &str, right: &str) -> usize {
     prefix
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn common_suffix_boundaries(left: &str, right: &str, prefix_len: usize) -> (usize, usize) {
     let mut left_start = left.len();
     let mut right_start = right.len();
@@ -626,6 +746,7 @@ fn common_suffix_boundaries(left: &str, right: &str, prefix_len: usize) -> (usiz
     (left_start, right_start)
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn seed_rule_value_from_rows(
     doc: &Doc,
     rule: &YjsFieldRule,
@@ -648,6 +769,7 @@ fn seed_rule_value_from_rows(
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn materialize_rule_value(doc: &Doc, rule: &YjsFieldRule) -> Result<Value> {
     let container_key = rule.container_key.as_deref().unwrap_or(&rule.field);
     let text_ref;
@@ -719,6 +841,7 @@ fn strip_enveloped_materialized_fields(
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn state_value_to_base64(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::String(value) if !value.is_empty() => Some(value.clone()),
@@ -726,17 +849,24 @@ fn state_value_to_base64(value: Option<&Value>) -> Option<String> {
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn encode_base64(bytes: &[u8]) -> String {
     BASE64.encode(bytes)
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn decode_base64(value: &str) -> Result<Vec<u8>> {
     BASE64
         .decode(value)
         .map_err(|err| SyncularError::protocol_message(format!("invalid base64 string: {err}")))
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "crdt-yjs"))]
+fn crdt_yjs_feature_disabled() -> SyncularError {
+    SyncularError::config("CRDT Yjs support is not enabled in this Syncular runtime build")
+}
+
+#[cfg(all(test, feature = "crdt-yjs"))]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -855,5 +985,23 @@ mod tests {
         assert!(result.payload["title_yjs_state"].as_str().is_some());
         assert!(result.payload.get(YJS_PAYLOAD_KEY).is_none());
         Ok(())
+    }
+}
+
+#[cfg(all(test, not(feature = "crdt-yjs")))]
+mod tests_without_crdt_yjs {
+    use super::*;
+
+    #[test]
+    fn yjs_operations_report_disabled_feature() {
+        let err = build_yjs_text_update(BuildYjsTextUpdateArgs {
+            previous_state_base64: None,
+            next_text: "hello".to_string(),
+            container_key: None,
+            update_id: None,
+        })
+        .expect_err("CRDT/Yjs operation should require crdt-yjs feature");
+
+        assert!(err.to_string().contains("CRDT Yjs support is not enabled"));
     }
 }

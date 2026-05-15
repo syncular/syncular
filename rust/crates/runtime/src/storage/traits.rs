@@ -31,6 +31,7 @@ pub fn next_retry_at(now: i64, attempt_count: i32) -> i64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg(feature = "demo-todo-fixture")]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -110,6 +111,13 @@ pub trait SyncStoreTx {
     fn pending_outbox(&mut self, limit: i64) -> Result<Vec<OutboxCommit>>;
     fn requeue_stale_outbox(&mut self) -> Result<()>;
     fn mark_outbox_sending(&mut self, row_id: &str) -> Result<()>;
+    fn mark_pushed_operation_server_versions(
+        &mut self,
+        _outbox: &OutboxCommit,
+        _response: &PushCommitResponse,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn mark_outbox_acked(&mut self, row_id: &str, response: &PushCommitResponse) -> Result<()>;
     fn mark_outbox_failed(
         &mut self,
@@ -135,6 +143,16 @@ pub trait SyncStoreTx {
     fn delete_subscription_state(&mut self, state_id: &str, subscription_id: &str) -> Result<()>;
 
     fn clear_table_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<()>;
+    fn clear_table_for_scopes_preserving_local_crdt(
+        &mut self,
+        table: &str,
+        scopes: &ScopeValues,
+    ) -> Result<()> {
+        self.clear_table_for_scopes(table, scopes)
+    }
+    fn current_row_json(&mut self, _table: &str, _row_id: &str) -> Result<Option<Value>> {
+        Ok(None)
+    }
     fn upsert_row(&mut self, table: &str, row: &Value, fallback_version: Option<i64>)
         -> Result<()>;
     fn apply_change(&mut self, change: &SyncChange) -> Result<()>;
@@ -152,6 +170,7 @@ pub trait SyncStateStore {
     fn retry_conflict_keep_local(&mut self, id: &str) -> Result<String>;
 }
 
+#[cfg(feature = "demo-todo-fixture")]
 pub trait DemoTaskStore {
     fn add_task(
         &mut self,

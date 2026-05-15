@@ -1,12 +1,43 @@
 import dev.syncular.client.SyncularBoltClient
 import dev.syncular.client.SyncularBoltClientConfig
 import java.io.File
+import kotlinx.serialization.json.jsonPrimitive
 
 private class BoltNativeClient(
     private val client: SyncularBoltClient,
 ) : SyncularNativeJsonClient {
     override fun applyMutationJson(mutationJson: String, localRowJson: String?): String =
         client.applyMutationJson(mutationJson, localRowJson)
+
+    override fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.enqueueMutationJson(mutationJson, localRowJson)
+
+    override fun openCrdtFieldJson(requestJson: String): String =
+        client.openCrdtFieldJson(requestJson)
+
+    override fun applyCrdtFieldTextJson(requestJson: String): String =
+        client.applyCrdtFieldTextJson(requestJson)
+
+    override fun applyCrdtFieldYjsUpdateJson(requestJson: String): String =
+        client.applyCrdtFieldYjsUpdateJson(requestJson)
+
+    override fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String =
+        client.enqueueCrdtFieldYjsUpdateJson(requestJson)
+
+    override fun enqueueCrdtFieldTextJson(requestJson: String): String =
+        client.enqueueCrdtFieldTextJson(requestJson)
+
+    override fun enqueueCrdtFieldCompactionJson(requestJson: String): String =
+        client.enqueueCrdtFieldCompactionJson(requestJson)
+
+    override fun materializeCrdtFieldJson(requestJson: String): String =
+        client.materializeCrdtFieldJson(requestJson)
+
+    override fun snapshotCrdtFieldStateVectorJson(requestJson: String): String =
+        client.snapshotCrdtFieldStateVectorJson(requestJson)
+
+    override fun compactCrdtFieldJson(requestJson: String): String =
+        client.compactCrdtFieldJson(requestJson)
 
     override fun queryJson(requestJson: String): String =
         client.queryJson(requestJson)
@@ -42,18 +73,23 @@ fun main(args: Array<String>) {
         ?: File(System.getProperty("java.io.tmpdir"), "syncular-kotlin-bolt-host.sqlite").absolutePath
     removeSqliteFiles(dbPath)
 
-    val raw = SyncularBoltClient(
-        SyncularBoltClientConfig(
-            dbPath = dbPath,
-            baseUrl = "http://127.0.0.1:9/sync",
-            clientId = "kotlin-bolt-host",
-            actorId = "user-rust",
-            projectId = "project-rust",
-            autoSyncLocalWrites = false,
-        ),
+    val config = SyncularBoltClientConfig(
+        dbPath = dbPath,
+        baseUrl = "http://127.0.0.1:9/sync",
+        clientId = "kotlin-bolt-host",
+        actorId = "user-rust",
+        projectId = "project-rust",
+        appSchemaJson = syncularNativeGeneratedAppSchemaJson,
+        autoSyncLocalWrites = false,
     )
+    val raw = SyncularBoltClient.openAsync(config)
     val client = BoltNativeClient(raw)
     try {
+        expect(raw.openCommandId()?.startsWith("native-open-") == true, "Kotlin host async open should expose command id")
+        expect(raw.finishOpenTimeout(5_000uL), "Kotlin host async open should finish")
+        expect(raw.isOpenFinished(), "Kotlin host async open should report finished")
+        expect(raw.openCommandId() == null, "Kotlin host async open command id should clear after ready")
+
         val manifest = raw.runtimeManifestJson()
         expect(manifest.contains("\"storage_backend\":\"diesel-sqlite\""), "Kotlin host should expose diesel sqlite manifest")
         expect(manifest.contains("\"query-observer-events\""), "Kotlin host manifest should expose query observer events")
@@ -79,7 +115,7 @@ fun main(args: Array<String>) {
         val commitId = client.applyNewTask(
             NewTask(
                 id = "task-kotlin-bolt",
-                title = "Kotlin Bolt host",
+                title = "",
                 completed = 1,
                 userId = "user-rust",
                 projectId = "project-rust",
@@ -87,14 +123,20 @@ fun main(args: Array<String>) {
         )
         expect(commitId.isNotEmpty(), "Kotlin host mutation should return a commit id")
 
+        val crdtReceipt = client.applyTaskTitleText(rowId = "task-kotlin-bolt", nextText = "Kotlin Bolt CRDT")
+        expect(crdtReceipt.syncMode == "server-merge", "Kotlin host CRDT text helper should return server-merge receipt")
+        val materializedTitle = client.materializeTaskTitle(rowId = "task-kotlin-bolt")
+        expect(materializedTitle.value.jsonPrimitive.content == "Kotlin Bolt CRDT", "Kotlin host CRDT materialize helper should read updated title")
+
         val events = pollEvents(raw)
         expect(events.any { it.kind == "RowsChanged" && it.tables == listOf("tasks") }, "Kotlin host should emit task rows changed")
         expect(events.any { it.kind == "QueriesChanged" && it.queries == listOf("kotlin-bolt-live") }, "Kotlin host should emit live query changed")
+        expect(events.any { it.kind == "CrdtFieldChanged" && it.tables.contains("tasks") }, "Kotlin host should emit CRDT field changed")
 
         val rows = query.fetch(client)
         expect(rows.size == 1, "Kotlin host query should read inserted task")
         expect(rows[0].id == "task-kotlin-bolt", "Kotlin host query should decode inserted id")
-        expect(rows[0].title == "Kotlin Bolt host", "Kotlin host query should decode inserted title")
+        expect(rows[0].title == "Kotlin Bolt CRDT", "Kotlin host query should decode CRDT title")
 
         val queryEvent = events.first { it.kind == "QueriesChanged" }
         val refreshedRows = live.refreshIfChanged(queryEvent, client)

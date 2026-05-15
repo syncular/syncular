@@ -4,6 +4,7 @@
 package dev.syncular.client.generated
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -16,6 +17,8 @@ import kotlinx.serialization.json.longOrNull
 const val syncularNativeExpectedFfiAbiVersion: Int = 1
 const val syncularNativeExpectedCrateVersion: String = "0.1.0"
 const val syncularNativeGeneratedSchemaVersion: Int = 5
+
+const val syncularNativeGeneratedAppSchemaJson: String = "{\"migrations\":[{\"name\":\"initial\",\"schemaVersion\":1,\"upSql\":\"CREATE TABLE IF NOT EXISTS projects (\\n  id TEXT PRIMARY KEY,\\n  name TEXT NOT NULL,\\n  owner_id TEXT NOT NULL,\\n  archived INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n);\\n\\nCREATE TABLE IF NOT EXISTS tasks (\\n  id TEXT PRIMARY KEY,\\n  title TEXT NOT NULL,\\n  completed INTEGER NOT NULL DEFAULT 0,\\n  user_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  server_version BIGINT NOT NULL DEFAULT 0,\\n  image TEXT NULL,\\n  title_yjs_state TEXT NULL\\n);\\n\\nCREATE TABLE IF NOT EXISTS comments (\\n  id TEXT PRIMARY KEY,\\n  task_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  body TEXT NOT NULL,\\n  author_id TEXT NOT NULL,\\n  deleted INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_migrations (\\n  version TEXT PRIMARY KEY,\\n  name TEXT NOT NULL,\\n  checksum TEXT NOT NULL,\\n  applied_at BIGINT NOT NULL\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_subscription_state (\\n  state_id TEXT NOT NULL,\\n  subscription_id TEXT NOT NULL,\\n  \\\"table\\\" TEXT NOT NULL,\\n  scopes_json TEXT NOT NULL DEFAULT '{}',\\n  params_json TEXT NOT NULL DEFAULT '{}',\\n  cursor BIGINT NOT NULL,\\n  bootstrap_state_json TEXT NULL,\\n  status TEXT NOT NULL,\\n  created_at BIGINT NOT NULL,\\n  updated_at BIGINT NOT NULL,\\n  PRIMARY KEY (state_id, subscription_id)\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_outbox_commits (\\n  id TEXT PRIMARY KEY,\\n  client_commit_id TEXT NOT NULL UNIQUE,\\n  status TEXT NOT NULL,\\n  operations_json TEXT NOT NULL,\\n  last_response_json TEXT NULL,\\n  error TEXT NULL,\\n  created_at BIGINT NOT NULL,\\n  updated_at BIGINT NOT NULL,\\n  attempt_count INTEGER NOT NULL DEFAULT 0,\\n  acked_commit_seq BIGINT NULL,\\n  schema_version INTEGER NOT NULL DEFAULT 1\\n);\\n\\nCREATE TABLE IF NOT EXISTS sync_conflicts (\\n  id TEXT PRIMARY KEY,\\n  outbox_commit_id TEXT NOT NULL,\\n  client_commit_id TEXT NOT NULL,\\n  op_index INTEGER NOT NULL,\\n  result_status TEXT NOT NULL,\\n  message TEXT NOT NULL,\\n  code TEXT NULL,\\n  server_version BIGINT NULL,\\n  server_row_json TEXT NULL,\\n  created_at BIGINT NOT NULL,\\n  resolved_at BIGINT NULL,\\n  resolution TEXT NULL\\n);\\n\",\"version\":\"0001\"},{\"name\":\"blob_client_tables\",\"schemaVersion\":2,\"upSql\":\"CREATE TABLE IF NOT EXISTS sync_blob_cache (\\n  hash TEXT PRIMARY KEY,\\n  size BIGINT NOT NULL,\\n  mime_type TEXT NOT NULL,\\n  body BLOB NOT NULL,\\n  encrypted INTEGER NOT NULL DEFAULT 0,\\n  key_id TEXT NULL,\\n  cached_at BIGINT NOT NULL,\\n  last_accessed_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_blob_cache_last_accessed\\n  ON sync_blob_cache (last_accessed_at);\\n\\nCREATE TABLE IF NOT EXISTS sync_blob_outbox (\\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\\n  hash TEXT NOT NULL UNIQUE,\\n  size BIGINT NOT NULL,\\n  mime_type TEXT NOT NULL,\\n  body BLOB NOT NULL,\\n  encrypted INTEGER NOT NULL DEFAULT 0,\\n  key_id TEXT NULL,\\n  status TEXT NOT NULL,\\n  attempt_count INTEGER NOT NULL DEFAULT 0,\\n  error TEXT NULL,\\n  created_at BIGINT NOT NULL,\\n  updated_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_blob_outbox_status\\n  ON sync_blob_outbox (status, created_at);\\n\",\"version\":\"0002\"},{\"name\":\"retry_backoff\",\"schemaVersion\":3,\"upSql\":\"ALTER TABLE sync_outbox_commits\\n  ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 0;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_outbox_commits_due\\n  ON sync_outbox_commits (status, next_attempt_at, created_at);\\n\\nALTER TABLE sync_blob_outbox\\n  ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 0;\\n\\nDROP INDEX IF EXISTS idx_sync_blob_outbox_status;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_blob_outbox_status\\n  ON sync_blob_outbox (status, next_attempt_at, created_at);\\n\",\"version\":\"0003\"},{\"name\":\"encrypted_crdt_tables\",\"schemaVersion\":4,\"upSql\":\"CREATE TABLE IF NOT EXISTS sync_crdt_updates (\\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\\n  partition_id TEXT NOT NULL DEFAULT 'default',\\n  stream_id TEXT NOT NULL,\\n  app_table TEXT NOT NULL,\\n  row_id TEXT NOT NULL,\\n  field_name TEXT NOT NULL,\\n  update_id TEXT NOT NULL UNIQUE,\\n  actor_id TEXT NULL,\\n  client_id TEXT NULL,\\n  key_id TEXT NOT NULL,\\n  ciphertext TEXT NOT NULL,\\n  scopes TEXT NOT NULL DEFAULT '{}',\\n  created_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_stream_seq\\n  ON sync_crdt_updates (partition_id, stream_id, seq);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_scope_table\\n  ON sync_crdt_updates (partition_id, app_table, row_id, field_name);\\n\\nCREATE TABLE IF NOT EXISTS sync_crdt_checkpoints (\\n  seq INTEGER PRIMARY KEY AUTOINCREMENT,\\n  partition_id TEXT NOT NULL DEFAULT 'default',\\n  stream_id TEXT NOT NULL,\\n  app_table TEXT NOT NULL,\\n  row_id TEXT NOT NULL,\\n  field_name TEXT NOT NULL,\\n  checkpoint_id TEXT NOT NULL UNIQUE,\\n  covers_seq BIGINT NOT NULL,\\n  actor_id TEXT NULL,\\n  client_id TEXT NULL,\\n  key_id TEXT NOT NULL,\\n  ciphertext TEXT NOT NULL,\\n  scopes TEXT NOT NULL DEFAULT '{}',\\n  created_at BIGINT NOT NULL\\n);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_stream_covers\\n  ON sync_crdt_checkpoints (partition_id, stream_id, covers_seq);\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_scope_table\\n  ON sync_crdt_checkpoints (partition_id, app_table, row_id, field_name);\\n\",\"version\":\"0004\"},{\"name\":\"encrypted_crdt_server_seq\",\"schemaVersion\":5,\"upSql\":\"ALTER TABLE sync_crdt_updates ADD COLUMN server_seq BIGINT NULL;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_updates_server_seq\\n  ON sync_crdt_updates (partition_id, stream_id, server_seq);\\n\\nALTER TABLE sync_crdt_checkpoints ADD COLUMN server_seq BIGINT NULL;\\n\\nCREATE INDEX IF NOT EXISTS idx_sync_crdt_checkpoints_server_seq\\n  ON sync_crdt_checkpoints (partition_id, stream_id, server_seq);\\n\",\"version\":\"0005\"}],\"schemaVersion\":5,\"tables\":[{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"task_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"body\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"author_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"deleted\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"comments\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"author_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":\"deleted\",\"subscriptionId\":\"sub-comments\"},{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"name\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"owner_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"archived\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"projects\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"owner_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-projects\"},{\"blobColumns\":[\"image\"],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"title\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"completed\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"user_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"image\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"title_yjs_state\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"}],\"crdtYjsFields\":[{\"containerKey\":\"title\",\"field\":\"title\",\"kind\":\"text\",\"rowIdField\":\"id\",\"stateColumn\":\"title_yjs_state\",\"syncMode\":\"server-merge\"}],\"encryptedFields\":[],\"name\":\"tasks\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"user_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-tasks\"}]}"
 
 data class SyncularNativeRuntimeManifest(
     val ffiAbiVersion: Int,
@@ -30,12 +33,13 @@ data class SyncularNativeRuntimeManifest(
 fun assertSyncularNativeRuntimeManifest(manifest: SyncularNativeRuntimeManifest) {
     require(manifest.ffiAbiVersion == syncularNativeExpectedFfiAbiVersion) { "FFI ABI version ${manifest.ffiAbiVersion} does not match generated expectation $syncularNativeExpectedFfiAbiVersion" }
     require(manifest.crateVersion == syncularNativeExpectedCrateVersion) { "Rust crate version ${manifest.crateVersion} does not match generated expectation $syncularNativeExpectedCrateVersion" }
-    require(manifest.schemaVersion == syncularNativeGeneratedSchemaVersion) { "Rust schema version ${manifest.schemaVersion} does not match generated expectation $syncularNativeGeneratedSchemaVersion" }
     require(manifest.storageBackend == "diesel-sqlite") { "Rust storage backend ${manifest.storageBackend} is not diesel-sqlite" }
     require(manifest.capabilities.contains("generated-json-local-operations")) { "Rust native runtime is missing generated-json-local-operations" }
     require(manifest.capabilities.contains("generated-json-mutations")) { "Rust native runtime is missing generated-json-mutations" }
     require(manifest.capabilities.contains("read-only-query-json")) { "Rust native runtime is missing read-only-query-json" }
     require(manifest.capabilities.contains("query-observer-events")) { "Rust native runtime is missing query-observer-events" }
+    require(manifest.capabilities.contains("generic-crdt-field-api")) { "Rust native runtime is missing generic-crdt-field-api" }
+    require(manifest.capabilities.contains("queued-crdt-field-updates")) { "Rust native runtime is missing queued-crdt-field-updates" }
 }
 
 enum class SyncularGeneratedOperationKind(val wireValue: String) {
@@ -59,6 +63,80 @@ data class SyncularGeneratedOperation(
     )
 
     fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularBlobRef(
+    val hash: String,
+    val size: Long,
+    val mimeType: String,
+    val encrypted: Boolean? = null,
+    val keyId: String? = null,
+) {
+    fun toJsonValue(): Map<String, Any?> {
+        val value = linkedMapOf<String, Any?>(
+            "hash" to hash,
+            "size" to size,
+            "mimeType" to mimeType,
+        )
+        encrypted?.let { value["encrypted"] = it }
+        keyId?.let { value["keyId"] = it }
+        return value
+    }
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularSubscriptionArgs(
+    val actorId: String,
+    val projectId: String? = null,
+)
+
+data class SyncularSubscriptionSpec(
+    val id: String,
+    val table: String,
+    val scopes: Map<String, Any?>,
+    val params: Map<String, Any?> = emptyMap(),
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "id" to id,
+        "table" to table,
+        "scopes" to scopes,
+        "params" to params,
+    )
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+fun syncularSubscriptionsJson(subscriptions: List<SyncularSubscriptionSpec>): String =
+    syncularJsonValue(subscriptions.map { it.toJsonValue() })
+
+fun syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = null): String =
+    syncularSubscriptionsJson(syncularDefaultSubscriptions(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId)))
+
+fun syncularDefaultSubscriptions(args: SyncularSubscriptionArgs): List<SyncularSubscriptionSpec> = listOf(
+    commentSubscription(args),
+    projectSubscription(args),
+    taskSubscription(args),
+)
+
+fun commentSubscription(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {
+    val scopes = linkedMapOf<String, Any?>()
+    scopes["user_id"] = args.actorId
+    args.projectId?.let { scopes["project_id"] = it }
+    return SyncularSubscriptionSpec(id = "sub-comments", table = "comments", scopes = scopes, params = emptyMap<String, Any?>())
+}
+
+fun projectSubscription(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {
+    val scopes = linkedMapOf<String, Any?>()
+    scopes["user_id"] = args.actorId
+    return SyncularSubscriptionSpec(id = "sub-projects", table = "projects", scopes = scopes, params = emptyMap<String, Any?>())
+}
+
+fun taskSubscription(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {
+    val scopes = linkedMapOf<String, Any?>()
+    scopes["user_id"] = args.actorId
+    args.projectId?.let { scopes["project_id"] = it }
+    return SyncularSubscriptionSpec(id = "sub-tasks", table = "tasks", scopes = scopes, params = emptyMap<String, Any?>())
 }
 
 data class SyncularFieldEncryptionRule(
@@ -120,23 +198,216 @@ data class SyncularLiveQueryRegistration(
     fun toJsonString(): String = syncularJsonValue(toJsonValue())
 }
 
+data class SyncularChangedRow(
+    val table: String,
+    val rowId: String? = null,
+    val operation: String,
+    val changedFields: List<String> = emptyList(),
+    val crdtFields: List<String> = emptyList(),
+    val commitId: String? = null,
+    val commitSeq: Long? = null,
+    val subscriptionId: String? = null,
+    val serverVersion: Long? = null,
+)
+
 data class SyncularNativeEvent(
+    val eventSeq: Long = 0,
     val kind: String,
     val tables: List<String> = emptyList(),
     val queries: List<String> = emptyList(),
+    val changedRows: List<SyncularChangedRow> = emptyList(),
+    val commandId: String? = null,
+    val clientCommitId: String? = null,
+    val durationMs: Long? = null,
+)
+
+data class SyncularYjsUpdateEnvelope(
+    val updateId: String,
+    val updateBase64: String,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "updateId" to updateId,
+        "updateBase64" to updateBase64,
+    )
+}
+
+data class SyncularCrdtFieldRequest(
+    val table: String,
+    val rowId: String,
+    val field: String,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "table" to table,
+        "rowId" to rowId,
+        "field" to field,
+    )
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularCrdtFieldTextRequest(
+    val table: String,
+    val rowId: String,
+    val field: String,
+    val nextText: String,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "table" to table,
+        "rowId" to rowId,
+        "field" to field,
+        "nextText" to nextText,
+    )
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularCrdtFieldYjsUpdateRequest(
+    val table: String,
+    val rowId: String,
+    val field: String,
+    val update: SyncularYjsUpdateEnvelope,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "table" to table,
+        "rowId" to rowId,
+        "field" to field,
+        "update" to update.toJsonValue(),
+    )
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularCrdtFieldCompactionRequest(
+    val table: String,
+    val rowId: String,
+    val field: String,
+    val minUncheckpointedUpdates: Long? = null,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "table" to table,
+        "rowId" to rowId,
+        "field" to field,
+        "minUncheckpointedUpdates" to minUncheckpointedUpdates,
+    ).filterValues { it != null }
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularCrdtFieldDescriptor(
+    val table: String,
+    val rowId: String,
+    val field: String,
+    val stateColumn: String,
+    val containerKey: String,
+    val rowIdField: String,
+    val syncMode: String,
+    val kind: String,
+)
+
+data class SyncularCrdtFieldWriteReceipt(
+    val clientCommitId: String,
+    val syncMode: String,
+)
+
+data class SyncularCrdtFieldMaterialization(
+    val value: JsonElement,
+    val stateBase64: String?,
+    val stateVectorBase64: String,
+)
+
+data class SyncularCrdtFieldStateVector(
+    val stateVectorBase64: String,
+)
+
+data class SyncularCrdtFieldCompactionReceipt(
+    val checkpointCreated: Boolean,
+    val clientCommitId: String?,
+)
+
+fun syncularDecodeChangedRow(row: JsonObject): SyncularChangedRow = SyncularChangedRow(
+    table = row["table"]?.jsonPrimitive?.content ?: "",
+    rowId = row["rowId"]?.jsonPrimitive?.content,
+    operation = row["operation"]?.jsonPrimitive?.content ?: "",
+    changedFields = row["changedFields"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+    crdtFields = row["crdtFields"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+    commitId = row["commitId"]?.jsonPrimitive?.content,
+    commitSeq = row["commitSeq"]?.jsonPrimitive?.longOrNull,
+    subscriptionId = row["subscriptionId"]?.jsonPrimitive?.content,
+    serverVersion = row["serverVersion"]?.jsonPrimitive?.longOrNull,
 )
 
 fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
     val event = Json.parseToJsonElement(eventJson).jsonObject
     return SyncularNativeEvent(
+        eventSeq = event["event_seq"]?.jsonPrimitive?.longOrNull ?: 0L,
         kind = event["kind"]?.jsonPrimitive?.content ?: "",
         tables = event["tables"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
         queries = event["queries"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+        changedRows = event["changedRows"]?.jsonArray?.map { syncularDecodeChangedRow(it.jsonObject) } ?: emptyList(),
+        commandId = event["command_id"]?.jsonPrimitive?.content,
+        clientCommitId = event["client_commit_id"]?.jsonPrimitive?.content,
+        durationMs = event["duration_ms"]?.jsonPrimitive?.longOrNull,
+    )
+}
+
+fun syncularDecodeCrdtFieldDescriptor(json: String): SyncularCrdtFieldDescriptor {
+    val value = Json.parseToJsonElement(json).jsonObject
+    return SyncularCrdtFieldDescriptor(
+        table = value["table"]?.jsonPrimitive?.content ?: "",
+        rowId = value["rowId"]?.jsonPrimitive?.content ?: "",
+        field = value["field"]?.jsonPrimitive?.content ?: "",
+        stateColumn = value["stateColumn"]?.jsonPrimitive?.content ?: "",
+        containerKey = value["containerKey"]?.jsonPrimitive?.content ?: "",
+        rowIdField = value["rowIdField"]?.jsonPrimitive?.content ?: "",
+        syncMode = value["syncMode"]?.jsonPrimitive?.content ?: "",
+        kind = value["kind"]?.jsonPrimitive?.content ?: "",
+    )
+}
+
+fun syncularDecodeCrdtFieldWriteReceipt(json: String): SyncularCrdtFieldWriteReceipt {
+    val value = Json.parseToJsonElement(json).jsonObject
+    return SyncularCrdtFieldWriteReceipt(
+        clientCommitId = value["clientCommitId"]?.jsonPrimitive?.content ?: "",
+        syncMode = value["syncMode"]?.jsonPrimitive?.content ?: "",
+    )
+}
+
+fun syncularDecodeCrdtFieldMaterialization(json: String): SyncularCrdtFieldMaterialization {
+    val value = Json.parseToJsonElement(json).jsonObject
+    return SyncularCrdtFieldMaterialization(
+        value = value["value"] ?: JsonNull,
+        stateBase64 = value["stateBase64"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content,
+        stateVectorBase64 = value["stateVectorBase64"]?.jsonPrimitive?.content ?: "",
+    )
+}
+
+fun syncularDecodeCrdtFieldStateVector(json: String): SyncularCrdtFieldStateVector {
+    val value = Json.parseToJsonElement(json).jsonObject
+    return SyncularCrdtFieldStateVector(
+        stateVectorBase64 = value["stateVectorBase64"]?.jsonPrimitive?.content ?: "",
+    )
+}
+
+fun syncularDecodeCrdtFieldCompactionReceipt(json: String): SyncularCrdtFieldCompactionReceipt {
+    val value = Json.parseToJsonElement(json).jsonObject
+    return SyncularCrdtFieldCompactionReceipt(
+        checkpointCreated = value["checkpointCreated"]?.jsonPrimitive?.booleanOrNull ?: false,
+        clientCommitId = value["clientCommitId"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content,
     )
 }
 
 interface SyncularNativeJsonClient {
     fun applyMutationJson(mutationJson: String, localRowJson: String? = null): String
+    fun enqueueMutationJson(mutationJson: String, localRowJson: String? = null): String
+    fun openCrdtFieldJson(requestJson: String): String
+    fun applyCrdtFieldTextJson(requestJson: String): String
+    fun applyCrdtFieldYjsUpdateJson(requestJson: String): String
+    fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String
+    fun enqueueCrdtFieldTextJson(requestJson: String): String
+    fun enqueueCrdtFieldCompactionJson(requestJson: String): String
+    fun materializeCrdtFieldJson(requestJson: String): String
+    fun snapshotCrdtFieldStateVectorJson(requestJson: String): String
+    fun compactCrdtFieldJson(requestJson: String): String
     fun queryJson(requestJson: String): String
     fun registerQueryJson(queryJson: String): String
     fun unregisterQuery(id: String): Boolean
@@ -144,6 +415,27 @@ interface SyncularNativeJsonClient {
 
 fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =
     applyMutationJson(operation.toJsonString(), localRowJson)
+
+fun SyncularNativeJsonClient.enqueue(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =
+    enqueueMutationJson(operation.toJsonString(), localRowJson)
+
+fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor =
+    syncularDecodeCrdtFieldDescriptor(openCrdtFieldJson(request.toJsonString()))
+
+fun SyncularNativeJsonClient.applyCrdtFieldText(request: SyncularCrdtFieldTextRequest): SyncularCrdtFieldWriteReceipt =
+    syncularDecodeCrdtFieldWriteReceipt(applyCrdtFieldTextJson(request.toJsonString()))
+
+fun SyncularNativeJsonClient.applyCrdtFieldYjsUpdate(request: SyncularCrdtFieldYjsUpdateRequest): SyncularCrdtFieldWriteReceipt =
+    syncularDecodeCrdtFieldWriteReceipt(applyCrdtFieldYjsUpdateJson(request.toJsonString()))
+
+fun SyncularNativeJsonClient.materializeCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldMaterialization =
+    syncularDecodeCrdtFieldMaterialization(materializeCrdtFieldJson(request.toJsonString()))
+
+fun SyncularNativeJsonClient.snapshotCrdtFieldStateVector(request: SyncularCrdtFieldRequest): SyncularCrdtFieldStateVector =
+    syncularDecodeCrdtFieldStateVector(snapshotCrdtFieldStateVectorJson(request.toJsonString()))
+
+fun SyncularNativeJsonClient.compactCrdtField(request: SyncularCrdtFieldCompactionRequest): SyncularCrdtFieldCompactionReceipt =
+    syncularDecodeCrdtFieldCompactionReceipt(compactCrdtFieldJson(request.toJsonString()))
 
 fun SyncularNativeJsonClient.query(query: SyncularReadonlyQuery): List<JsonObject> =
     syncularGeneratedQueryRows(queryJson(query.toJsonString()))
@@ -189,7 +481,13 @@ class SyncularNativeLiveQuery<Row>(
 data class SyncularQueryPredicate(
     val sql: String,
     val params: List<Any?> = emptyList(),
-)
+) {
+    infix fun and(other: SyncularQueryPredicate): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "(($sql) and (${other.sql}))", params = params + other.params)
+
+    infix fun or(other: SyncularQueryPredicate): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "(($sql) or (${other.sql}))", params = params + other.params)
+}
 
 data class SyncularQueryOrder(
     val sql: String,
@@ -202,8 +500,38 @@ class SyncularQueryColumn<T>(
     fun eq(value: T): SyncularQueryPredicate =
         SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} = ?", params = listOf(value))
 
+    fun notEq(value: T): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} != ?", params = listOf(value))
+
+    fun gt(value: T): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} > ?", params = listOf(value))
+
+    fun gte(value: T): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} >= ?", params = listOf(value))
+
+    fun lt(value: T): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} < ?", params = listOf(value))
+
+    fun lte(value: T): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} <= ?", params = listOf(value))
+
     fun isNull(): SyncularQueryPredicate =
         SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} is null")
+
+    fun isNotNull(): SyncularQueryPredicate =
+        SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} is not null")
+
+    fun isIn(values: Iterable<T>): SyncularQueryPredicate {
+        val list = values.toList()
+        if (list.isEmpty()) return SyncularQueryPredicate(sql = "0 = 1")
+        return SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} in (${list.joinToString(", ") { "?" }})", params = list)
+    }
+
+    fun notIn(values: Iterable<T>): SyncularQueryPredicate {
+        val list = values.toList()
+        if (list.isEmpty()) return SyncularQueryPredicate(sql = "1 = 1")
+        return SyncularQueryPredicate(sql = "${syncularQuoteIdentifier(name)} not in (${list.joinToString(", ") { "?" }})", params = list)
+    }
 
     fun asc(): SyncularQueryOrder = SyncularQueryOrder("${syncularQuoteIdentifier(name)} asc")
 
@@ -320,7 +648,7 @@ data class TaskRow(
     val userId: String,
     val projectId: String?,
     val serverVersion: Long,
-    val image: String?,
+    val image: SyncularBlobRef?,
     val titleYjsState: String?,
 )
 
@@ -330,7 +658,7 @@ data class NewTask(
     val completed: Long? = null,
     val userId: String,
     val projectId: String? = null,
-    val image: String? = null,
+    val image: SyncularBlobRef? = null,
     val titleYjsState: String? = null,
 )
 
@@ -339,7 +667,7 @@ data class TaskPatch(
     val completed: Long? = null,
     val userId: String? = null,
     val projectId: String? = null,
-    val image: String? = null,
+    val image: SyncularBlobRef? = null,
     val titleYjsState: String? = null,
 )
 
@@ -373,7 +701,7 @@ object TaskQuery {
     val userId = SyncularQueryColumn<String>(table = "tasks", name = "user_id")
     val projectId = SyncularQueryColumn<String>(table = "tasks", name = "project_id")
     val serverVersion = SyncularQueryColumn<Long>(table = "tasks", name = "server_version")
-    val image = SyncularQueryColumn<String>(table = "tasks", name = "image")
+    val image = SyncularQueryColumn<SyncularBlobRef>(table = "tasks", name = "image")
     val titleYjsState = SyncularQueryColumn<String>(table = "tasks", name = "title_yjs_state")
     fun select(): SyncularSelectQuery<TaskRow> = table.select()
 }
@@ -388,7 +716,7 @@ object SyncularAppOperations {
         payload["deleted"] = input.deleted ?: 0L
         return SyncularGeneratedOperation(
             table = "comments",
-            rowId = input.id.toString(),
+            rowId = input.id,
             op = SyncularGeneratedOperationKind.Upsert,
             payload = payload,
             baseVersion = baseVersion,
@@ -426,7 +754,7 @@ object SyncularAppOperations {
         payload["archived"] = input.archived ?: 0L
         return SyncularGeneratedOperation(
             table = "projects",
-            rowId = input.id.toString(),
+            rowId = input.id,
             op = SyncularGeneratedOperationKind.Upsert,
             payload = payload,
             baseVersion = baseVersion,
@@ -461,11 +789,11 @@ object SyncularAppOperations {
         payload["completed"] = input.completed ?: 0L
         payload["user_id"] = input.userId
         input.projectId?.let { payload["project_id"] = it }
-        input.image?.let { payload["image"] = it }
+        input.image?.let { payload["image"] = it.toJsonValue() }
         input.titleYjsState?.let { payload["title_yjs_state"] = it }
         return SyncularGeneratedOperation(
             table = "tasks",
-            rowId = input.id.toString(),
+            rowId = input.id,
             op = SyncularGeneratedOperationKind.Upsert,
             payload = payload,
             baseVersion = baseVersion,
@@ -478,7 +806,7 @@ object SyncularAppOperations {
         patch.completed?.let { payload["completed"] = it }
         patch.userId?.let { payload["user_id"] = it }
         patch.projectId?.let { payload["project_id"] = it }
-        patch.image?.let { payload["image"] = it }
+        patch.image?.let { payload["image"] = it.toJsonValue() }
         patch.titleYjsState?.let { payload["title_yjs_state"] = it }
         return SyncularGeneratedOperation(
             table = "tasks",
@@ -508,6 +836,15 @@ fun SyncularNativeJsonClient.applyCommentPatch(rowId: String, patch: CommentPatc
 fun SyncularNativeJsonClient.applyCommentDelete(rowId: String, baseVersion: Long? = null): String =
     apply(SyncularAppOperations.deleteComment(rowId, baseVersion))
 
+fun SyncularNativeJsonClient.enqueueNewComment(input: NewComment, baseVersion: Long? = 0, localRowJson: String? = null): String =
+    enqueue(SyncularAppOperations.newComment(input, baseVersion), localRowJson)
+
+fun SyncularNativeJsonClient.enqueueCommentPatch(rowId: String, patch: CommentPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
+    enqueue(SyncularAppOperations.patchComment(rowId, patch, baseVersion), localRowJson)
+
+fun SyncularNativeJsonClient.enqueueCommentDelete(rowId: String, baseVersion: Long? = null): String =
+    enqueue(SyncularAppOperations.deleteComment(rowId, baseVersion))
+
 fun SyncularNativeJsonClient.applyNewProject(input: NewProject, baseVersion: Long? = 0, localRowJson: String? = null): String =
     apply(SyncularAppOperations.newProject(input, baseVersion), localRowJson)
 
@@ -517,6 +854,15 @@ fun SyncularNativeJsonClient.applyProjectPatch(rowId: String, patch: ProjectPatc
 fun SyncularNativeJsonClient.applyProjectDelete(rowId: String, baseVersion: Long? = null): String =
     apply(SyncularAppOperations.deleteProject(rowId, baseVersion))
 
+fun SyncularNativeJsonClient.enqueueNewProject(input: NewProject, baseVersion: Long? = 0, localRowJson: String? = null): String =
+    enqueue(SyncularAppOperations.newProject(input, baseVersion), localRowJson)
+
+fun SyncularNativeJsonClient.enqueueProjectPatch(rowId: String, patch: ProjectPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
+    enqueue(SyncularAppOperations.patchProject(rowId, patch, baseVersion), localRowJson)
+
+fun SyncularNativeJsonClient.enqueueProjectDelete(rowId: String, baseVersion: Long? = null): String =
+    enqueue(SyncularAppOperations.deleteProject(rowId, baseVersion))
+
 fun SyncularNativeJsonClient.applyNewTask(input: NewTask, baseVersion: Long? = 0, localRowJson: String? = null): String =
     apply(SyncularAppOperations.newTask(input, baseVersion), localRowJson)
 
@@ -525,6 +871,48 @@ fun SyncularNativeJsonClient.applyTaskPatch(rowId: String, patch: TaskPatch, bas
 
 fun SyncularNativeJsonClient.applyTaskDelete(rowId: String, baseVersion: Long? = null): String =
     apply(SyncularAppOperations.deleteTask(rowId, baseVersion))
+
+fun SyncularNativeJsonClient.enqueueNewTask(input: NewTask, baseVersion: Long? = 0, localRowJson: String? = null): String =
+    enqueue(SyncularAppOperations.newTask(input, baseVersion), localRowJson)
+
+fun SyncularNativeJsonClient.enqueueTaskPatch(rowId: String, patch: TaskPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
+    enqueue(SyncularAppOperations.patchTask(rowId, patch, baseVersion), localRowJson)
+
+fun SyncularNativeJsonClient.enqueueTaskDelete(rowId: String, baseVersion: Long? = null): String =
+    enqueue(SyncularAppOperations.deleteTask(rowId, baseVersion))
+
+fun SyncularNativeJsonClient.openTaskTitleCrdtField(rowId: String): SyncularCrdtFieldDescriptor =
+    openCrdtField(SyncularCrdtFieldRequest(table = "tasks", rowId = rowId, field = "title"))
+
+fun SyncularNativeJsonClient.applyTaskTitleText(rowId: String, nextText: String): SyncularCrdtFieldWriteReceipt =
+    applyCrdtFieldText(SyncularCrdtFieldTextRequest(table = "tasks", rowId = rowId, field = "title", nextText = nextText))
+
+fun SyncularNativeJsonClient.enqueueTaskTitleText(rowId: String, nextText: String): String =
+    enqueueCrdtFieldTextJson(SyncularCrdtFieldTextRequest(table = "tasks", rowId = rowId, field = "title", nextText = nextText).toJsonString())
+
+fun SyncularNativeJsonClient.applyTaskTitleUpdate(rowId: String, update: SyncularYjsUpdateEnvelope): SyncularCrdtFieldWriteReceipt =
+    applyCrdtFieldYjsUpdate(SyncularCrdtFieldYjsUpdateRequest(table = "tasks", rowId = rowId, field = "title", update = update))
+
+fun SyncularNativeJsonClient.enqueueTaskTitleUpdate(rowId: String, update: SyncularYjsUpdateEnvelope): String =
+    enqueueCrdtFieldYjsUpdateJson(SyncularCrdtFieldYjsUpdateRequest(table = "tasks", rowId = rowId, field = "title", update = update).toJsonString())
+
+fun SyncularNativeJsonClient.materializeTaskTitle(rowId: String): SyncularCrdtFieldMaterialization =
+    materializeCrdtField(SyncularCrdtFieldRequest(table = "tasks", rowId = rowId, field = "title"))
+
+fun SyncularNativeJsonClient.materializeTaskTitleJson(rowId: String): String =
+    materializeCrdtFieldJson(SyncularCrdtFieldRequest(table = "tasks", rowId = rowId, field = "title").toJsonString())
+
+fun SyncularNativeJsonClient.snapshotTaskTitleStateVector(rowId: String): SyncularCrdtFieldStateVector =
+    snapshotCrdtFieldStateVector(SyncularCrdtFieldRequest(table = "tasks", rowId = rowId, field = "title"))
+
+fun SyncularNativeJsonClient.snapshotTaskTitleStateVectorJson(rowId: String): String =
+    snapshotCrdtFieldStateVectorJson(SyncularCrdtFieldRequest(table = "tasks", rowId = rowId, field = "title").toJsonString())
+
+fun SyncularNativeJsonClient.compactTaskTitle(rowId: String, minUncheckpointedUpdates: Long = 1): SyncularCrdtFieldCompactionReceipt =
+    compactCrdtField(SyncularCrdtFieldCompactionRequest(table = "tasks", rowId = rowId, field = "title", minUncheckpointedUpdates = minUncheckpointedUpdates))
+
+fun SyncularNativeJsonClient.enqueueTaskTitleCompaction(rowId: String, minUncheckpointedUpdates: Long = 1): String =
+    enqueueCrdtFieldCompactionJson(SyncularCrdtFieldCompactionRequest(table = "tasks", rowId = rowId, field = "title", minUncheckpointedUpdates = minUncheckpointedUpdates).toJsonString())
 
 private val syncularGeneratedJson = Json { ignoreUnknownKeys = true }
 
@@ -568,7 +956,7 @@ private fun syncularDecodeTaskRow(row: JsonObject): TaskRow = TaskRow(
     userId = row.syncularRequiredString("user_id"),
     projectId = row.syncularOptionalString("project_id"),
     serverVersion = row.syncularRequiredLong("server_version"),
-    image = row.syncularOptionalString("image"),
+    image = row.syncularOptionalBlobRef("image"),
     titleYjsState = row.syncularOptionalString("title_yjs_state"),
 )
 
@@ -579,6 +967,26 @@ private fun JsonObject.syncularOptionalString(name: String): String? {
     val element = this[name] ?: return null
     if (element is JsonNull) return null
     return element.jsonPrimitive.content
+}
+
+private fun JsonObject.syncularRequiredBlobRef(name: String): SyncularBlobRef =
+    syncularOptionalBlobRef(name) ?: error("missing blob ref field $name")
+
+private fun JsonObject.syncularOptionalBlobRef(name: String): SyncularBlobRef? {
+    val element = this[name] ?: return null
+    if (element is JsonNull) return null
+    val objectValue = runCatching {
+        syncularGeneratedJson.parseToJsonElement(element.jsonPrimitive.content).jsonObject
+    }.getOrElse {
+        element.jsonObject
+    }
+    return SyncularBlobRef(
+        hash = objectValue.syncularRequiredString("hash"),
+        size = objectValue.syncularRequiredLong("size"),
+        mimeType = objectValue.syncularRequiredString("mimeType"),
+        encrypted = objectValue.syncularOptionalBoolean("encrypted"),
+        keyId = objectValue.syncularOptionalString("keyId"),
+    )
 }
 
 private fun JsonObject.syncularRequiredLong(name: String): Long =
@@ -610,6 +1018,7 @@ private fun JsonObject.syncularOptionalBoolean(name: String): Boolean? {
 
 private fun syncularJsonValue(value: Any?): String = when (value) {
     null -> "null"
+    is SyncularBlobRef -> syncularJsonString(value.toJsonString())
     is String -> syncularJsonString(value)
     is Number -> value.toString()
     is Boolean -> value.toString()

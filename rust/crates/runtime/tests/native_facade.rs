@@ -1,20 +1,26 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
+use diesel::prelude::*;
+use diesel::sql_query;
 use serde_json::{json, Value};
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
 use syncular_runtime::error::{ErrorKind, Result};
+use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
 use syncular_runtime::native::{
     NativeClientConfig, NativeClientOptions, NativeEventKind, NativeSyncularClient,
 };
-use uuid::Uuid;
+use syncular_testkit::{
+    todo_app_schema_json, unique_temp_db_path, TestHttpResponse, TestSyncServer,
+};
 
 #[test]
 fn native_facade_auto_triggers_sync_after_local_write() -> Result<()> {
     let path = temp_db_path("syncular-native-auto-trigger");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-auto-trigger"),
         NativeClientOptions {
             auto_sync_local_writes: true,
@@ -62,7 +68,7 @@ fn native_facade_auto_triggers_sync_after_local_write() -> Result<()> {
 #[test]
 fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
     let path = temp_db_path("syncular-native-manual-trigger");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-manual-trigger"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -88,7 +94,7 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
     assert_eq!(metadata_json[0]["primary_key_column"], "id");
     assert_eq!(metadata_json[0]["server_version_column"], "server_version");
     assert_eq!(metadata_json[0]["subscription_id"], "sub-comments");
-    assert_eq!(metadata_json[0]["scopes"][0]["source"], "ActorId");
+    assert_eq!(metadata_json[0]["scopes"][0]["source"], "actorId");
     assert_eq!(metadata_json[1]["name"], "projects");
     assert_eq!(metadata_json[1]["subscription_id"], "sub-projects");
     assert_eq!(metadata_json[2]["name"], "tasks");
@@ -194,7 +200,8 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
 fn native_facade_emits_auth_expired_event_for_sync_401() -> Result<()> {
     let path = temp_db_path("syncular-native-auth-expired");
     let mut config = test_config(&path, "native-auth-expired");
-    config.base_url = spawn_status_sync_server(401, "Unauthorized", "expired token")?;
+    let server = TestSyncServer::status(401, "Unauthorized", "expired token")?;
+    config.base_url = server.url();
     let mut client = NativeSyncularClient::open_native_with_options(
         config,
         NativeClientOptions {
@@ -230,7 +237,8 @@ fn native_facade_emits_auth_expired_event_for_sync_401() -> Result<()> {
 fn native_facade_applies_dynamic_auth_headers_to_worker_sync() -> Result<()> {
     let path = temp_db_path("syncular-native-auth-headers");
     let mut config = test_config(&path, "native-auth-headers");
-    config.base_url = spawn_auth_header_sync_server("authorization", "Bearer native-test")?;
+    let server = TestSyncServer::empty_success()?;
+    config.base_url = server.url();
     let mut client = NativeSyncularClient::open_native_with_options(
         config,
         NativeClientOptions {
@@ -251,6 +259,13 @@ fn native_facade_applies_dynamic_auth_headers_to_worker_sync() -> Result<()> {
         .expect("auth header sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert!(event.error.is_none());
+    let requests = server.wait_for_requests(1, Duration::from_secs(1));
+    assert_eq!(
+        requests
+            .first()
+            .and_then(|request| request.header("authorization")),
+        Some("Bearer native-test")
+    );
 
     client.close()?;
     let _ = std::fs::remove_file(path);
@@ -261,7 +276,8 @@ fn native_facade_applies_dynamic_auth_headers_to_worker_sync() -> Result<()> {
 fn native_facade_successful_empty_sync_emits_completion_only() -> Result<()> {
     let path = temp_db_path("syncular-native-success-sync");
     let mut config = test_config(&path, "native-success-sync");
-    config.base_url = spawn_empty_success_sync_server()?;
+    let server = TestSyncServer::empty_success()?;
+    config.base_url = server.url();
     let mut client = NativeSyncularClient::open_native_with_options(
         config,
         NativeClientOptions {
@@ -290,7 +306,7 @@ fn native_facade_successful_empty_sync_emits_completion_only() -> Result<()> {
 fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed() -> Result<()> {
     let path = temp_db_path("syncular-native-pull-sync");
     let mut config = test_config(&path, "native-pull-sync");
-    config.base_url = spawn_sync_server(json!({
+    let server = TestSyncServer::spawn([TestHttpResponse::json(json!({
         "ok": true,
         "push": null,
         "pull": {
@@ -322,8 +338,9 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
                 }]
             }]
         }
-    }))?;
-    let mut client = NativeSyncularClient::open_native_with_options(
+    }))])?;
+    config.base_url = server.url();
+    let mut client = open_demo_native_with_options(
         config,
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -344,12 +361,26 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
         .expect("successful sync result event");
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
+    assert_eq!(event.changed_rows.len(), 1);
+    assert_eq!(event.changed_rows[0].row_id.as_deref(), Some("server-task"));
+    assert_eq!(event.changed_rows[0].operation, "insert");
+    assert!(event.changed_rows[0]
+        .changed_fields
+        .contains(&"title".to_string()));
 
     let event = client
         .poll_event_timeout(Duration::from_secs(5))
         .expect("post-sync rows changed event");
     assert_eq!(event.kind, NativeEventKind::RowsChanged);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
+    assert_eq!(event.changed_rows.len(), 1);
+    assert_eq!(
+        event
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("source")),
+        Some(&json!("remotePull"))
+    );
 
     let event = client
         .poll_event_timeout(Duration::from_secs(5))
@@ -357,6 +388,7 @@ fn native_facade_successful_pull_emits_completion_then_rows_and_queries_changed(
     assert_eq!(event.kind, NativeEventKind::QueriesChanged);
     assert_eq!(event.tables, vec!["tasks".to_string()]);
     assert_eq!(event.queries, vec!["task-list".to_string()]);
+    assert_eq!(event.changed_rows.len(), 1);
 
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(tasks_json.as_array().map(Vec::len), Some(1));
@@ -372,7 +404,7 @@ fn native_facade_rejected_push_emits_conflicts_changed() -> Result<()> {
     let path = temp_db_path("syncular-native-push-conflict");
     let mut config = test_config(&path, "native-push-conflict");
     config.base_url = spawn_rejecting_push_server()?;
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         config,
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -412,7 +444,7 @@ fn native_facade_rejected_push_emits_conflicts_changed() -> Result<()> {
 #[test]
 fn native_facade_applies_generic_local_operation_json() -> Result<()> {
     let path = temp_db_path("syncular-native-generic-operation");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-generic-operation"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -445,6 +477,29 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
         .expect("generic operation rows changed event");
     assert_eq!(local_event.kind, NativeEventKind::RowsChanged);
     assert_eq!(local_event.tables, vec!["tasks".to_string()]);
+    assert_eq!(local_event.changed_rows.len(), 1);
+    assert_eq!(local_event.changed_rows[0].table, "tasks");
+    assert_eq!(
+        local_event.changed_rows[0].row_id.as_deref(),
+        Some("generic-task")
+    );
+    assert_eq!(local_event.changed_rows[0].operation, "upsert");
+    assert_eq!(
+        local_event.changed_rows[0].changed_fields,
+        vec![
+            "title".to_string(),
+            "completed".to_string(),
+            "user_id".to_string(),
+            "project_id".to_string()
+        ]
+    );
+    assert_eq!(
+        local_event
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("source")),
+        Some(&json!("localWrite"))
+    );
 
     let delete = json!({
         "table": "tasks",
@@ -457,6 +512,12 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
     client.apply_local_operation_json(&delete, None)?;
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(tasks_json.as_array().map(Vec::len), Some(0));
+    let delete_event = client
+        .poll_event_timeout(Duration::from_millis(100))
+        .expect("generic delete rows changed event");
+    assert_eq!(delete_event.changed_rows.len(), 1);
+    assert_eq!(delete_event.changed_rows[0].operation, "delete");
+    assert!(delete_event.changed_rows[0].changed_fields.is_empty());
 
     let error = client
         .apply_local_operation_json(
@@ -479,9 +540,149 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
 }
 
 #[test]
+fn native_facade_opens_with_generated_app_schema_json() -> Result<()> {
+    let path = temp_db_path("syncular-native-dynamic-schema");
+    {
+        let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+        sql_query(
+            r#"
+            create table notes (
+                note_key text primary key,
+                body text not null,
+                owner_id text not null,
+                server_version bigint not null default 0
+            )
+            "#,
+        )
+        .execute(&mut conn)?;
+    }
+    let mut config = test_config(&path, "native-dynamic-schema");
+    config.project_id = None;
+    config.app_schema_json = Some(
+        json!({
+            "schemaVersion": 21,
+            "tables": [{
+                "name": "notes",
+                "primaryKeyColumn": "note_key",
+                "serverVersionColumn": "server_version",
+                "subscriptionId": "sub-notes",
+                "columns": [
+                    { "name": "note_key", "typeFamily": "text", "notnullRequired": true, "primaryKey": true },
+                    { "name": "body", "typeFamily": "text", "notnullRequired": true },
+                    { "name": "owner_id", "typeFamily": "text", "notnullRequired": true },
+                    { "name": "server_version", "typeFamily": "integer", "notnullRequired": true }
+                ],
+                "scopes": [
+                    { "name": "user_id", "column": "owner_id", "source": "actorId", "required": true }
+                ]
+            }]
+        })
+        .to_string(),
+    );
+    let mut client = NativeSyncularClient::open_native_with_options(
+        config,
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    let tables_json: Value = serde_json::from_str(&client.app_tables_json()?)?;
+    assert_eq!(tables_json, json!(["notes"]));
+
+    client.apply_local_operation_json(
+        &json!({
+            "table": "notes",
+            "row_id": "note-1",
+            "op": "upsert",
+            "payload": {
+                "body": "Native dynamic note",
+                "owner_id": "user-rust"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let notes_json: Value = serde_json::from_str(&client.list_table_json("notes")?)?;
+    assert_eq!(notes_json.as_array().map(Vec::len), Some(1));
+    assert_eq!(notes_json[0]["note_key"], "note-1");
+    assert_eq!(notes_json[0]["body"], "Native dynamic note");
+
+    client.pause_sync_worker()?;
+    client.resume_sync_worker()?;
+    client.apply_local_operation_json(
+        &json!({
+            "table": "notes",
+            "row_id": "note-1",
+            "op": "upsert",
+            "payload": { "body": "After resume" },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let notes_json: Value = serde_json::from_str(&client.list_table_json("notes")?)?;
+    assert_eq!(notes_json[0]["body"], "After resume");
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_can_open_and_migrate_on_background_task() -> Result<()> {
+    let path = temp_db_path("syncular-native-async-open");
+    let mut config = test_config(&path, "native-async-open");
+    config.app_schema_json = Some(todo_app_schema_json());
+
+    let mut task = NativeSyncularClient::open_native_async_with_options(
+        config,
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    );
+    assert!(task.command_id().starts_with("native-open-"));
+
+    let mut client = task
+        .take_client_timeout(Duration::from_secs(5))
+        .expect("async native open should finish")?;
+    assert!(task.is_finished());
+    assert!(client.sync_worker_running());
+
+    let tables_json: Value = serde_json::from_str(&client.app_tables_json()?)?;
+    assert_eq!(tables_json.as_array().map(Vec::len), Some(3));
+    assert_eq!(tables_json[0], "comments");
+    assert_eq!(tables_json[2], "tasks");
+    client.apply_local_operation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "task-async-open",
+            "op": "upsert",
+            "payload": {
+                "title": "Opened off the caller thread",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(tasks_json.as_array().map(Vec::len), Some(1));
+    assert_eq!(tasks_json[0]["id"], "task-async-open");
+    assert_eq!(tasks_json[0]["title"], "Opened off the caller thread");
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
     let path = temp_db_path("syncular-native-enqueue-operation");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-enqueue-operation"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -510,6 +711,12 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
     assert_eq!(committed.kind, NativeEventKind::LocalWriteCommitted);
     assert_eq!(committed.command_id.as_deref(), Some(command_id.as_str()));
     assert_eq!(committed.tables, vec!["tasks".to_string()]);
+    assert_eq!(committed.changed_rows.len(), 1);
+    assert_eq!(
+        committed.changed_rows[0].row_id.as_deref(),
+        Some("queued-task")
+    );
+    assert_eq!(committed.changed_rows[0].operation, "upsert");
     assert!(committed.client_commit_id.is_some());
     assert!(committed.event_seq > 0);
 
@@ -518,6 +725,8 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
         .expect("queued local rows changed event");
     assert_eq!(rows.kind, NativeEventKind::RowsChanged);
     assert_eq!(rows.tables, vec!["tasks".to_string()]);
+    assert_eq!(rows.changed_rows.len(), 1);
+    assert_eq!(rows.changed_rows[0].changed_fields[0], "title");
     assert!(rows.event_seq > committed.event_seq);
 
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
@@ -533,7 +742,7 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
 #[test]
 fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
     let path = temp_db_path("syncular-native-enqueue-yjs");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-enqueue-yjs"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -616,9 +825,450 @@ fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
 }
 
 #[test]
+fn native_facade_exposes_generic_crdt_field_api() -> Result<()> {
+    let path = temp_db_path("syncular-native-crdt-field");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-crdt-field"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    apply_task_upsert(&mut client, "native-crdt-field-task", "")?;
+    let _ = client.poll_event_timeout(Duration::from_millis(100));
+
+    let field_request = json!({
+        "table": "tasks",
+        "rowId": "native-crdt-field-task",
+        "field": "title"
+    })
+    .to_string();
+    let descriptor: Value = serde_json::from_str(&client.open_crdt_field_json(&field_request)?)?;
+    assert_eq!(descriptor["table"], "tasks");
+    assert_eq!(descriptor["field"], "title");
+    assert_eq!(descriptor["stateColumn"], "title_yjs_state");
+    assert_eq!(descriptor["syncMode"], "server-merge");
+
+    let receipt: Value = serde_json::from_str(
+        &client.apply_crdt_field_text_json(
+            &json!({
+                "table": "tasks",
+                "rowId": "native-crdt-field-task",
+                "field": "title",
+                "nextText": "Native CRDT field"
+            })
+            .to_string(),
+        )?,
+    )?;
+    assert_eq!(receipt["syncMode"], "server-merge");
+    assert!(receipt["clientCommitId"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+
+    let crdt_event = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT field changed event");
+    assert_eq!(crdt_event.kind, NativeEventKind::CrdtFieldChanged);
+    assert_eq!(crdt_event.tables, vec!["tasks".to_string()]);
+    assert_eq!(
+        crdt_event.client_commit_id,
+        receipt["clientCommitId"].as_str().map(str::to_string)
+    );
+    assert_eq!(crdt_event.payload_json.as_ref().unwrap()["table"], "tasks");
+    assert_eq!(
+        crdt_event.payload_json.as_ref().unwrap()["rowId"],
+        "native-crdt-field-task"
+    );
+    assert_eq!(crdt_event.payload_json.as_ref().unwrap()["field"], "title");
+    assert_eq!(
+        crdt_event.payload_json.as_ref().unwrap()["syncMode"],
+        "server-merge"
+    );
+    assert_eq!(crdt_event.payload_json.as_ref().unwrap()["kind"], "text");
+    assert_eq!(
+        crdt_event.payload_json.as_ref().unwrap()["stateColumn"],
+        "title_yjs_state"
+    );
+    assert_eq!(
+        crdt_event.payload_json.as_ref().unwrap()["materializationAvailable"],
+        true
+    );
+    assert_eq!(crdt_event.payload_json.as_ref().unwrap()["hasState"], true);
+    assert!(
+        crdt_event.payload_json.as_ref().unwrap()["stateVectorBase64"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+
+    let event = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT field rows changed event");
+    assert_eq!(event.kind, NativeEventKind::RowsChanged);
+    assert_eq!(event.tables, vec!["tasks".to_string()]);
+
+    let materialized: Value =
+        serde_json::from_str(&client.materialize_crdt_field_json(&field_request)?)?;
+    assert_eq!(materialized["value"], "Native CRDT field");
+    assert!(materialized["stateBase64"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    assert!(materialized["stateVectorBase64"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+
+    let snapshot: Value =
+        serde_json::from_str(&client.snapshot_crdt_field_state_vector_json(&field_request)?)?;
+    assert_eq!(
+        snapshot["stateVectorBase64"],
+        materialized["stateVectorBase64"]
+    );
+
+    let compaction: Value = serde_json::from_str(
+        &client.compact_crdt_field_json(
+            &json!({
+                "table": "tasks",
+                "rowId": "native-crdt-field-task",
+                "field": "title",
+                "minUncheckpointedUpdates": 1
+            })
+            .to_string(),
+        )?,
+    )?;
+    assert_eq!(compaction["checkpointCreated"], false);
+    assert!(compaction["clientCommitId"].is_null());
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_enqueues_generic_crdt_field_yjs_update() -> Result<()> {
+    let path = temp_db_path("syncular-native-enqueue-crdt-field");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-enqueue-crdt-field"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    apply_task_upsert(&mut client, "queued-crdt-field-task", "")?;
+    let _ = client.poll_event_timeout(Duration::from_millis(100));
+
+    let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: None,
+        next_text: "Queued generic CRDT".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("queued-crdt-field-1".to_string()),
+    })?;
+    let command_id = client.enqueue_crdt_field_yjs_update_json(
+        &json!({
+            "table": "tasks",
+            "rowId": "queued-crdt-field-task",
+            "field": "title",
+            "update": update.update
+        })
+        .to_string(),
+    )?;
+    assert!(command_id.starts_with("native-yjs-"));
+
+    let committed = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued commit event");
+    assert_eq!(committed.kind, NativeEventKind::LocalWriteCommitted);
+    assert_eq!(committed.command_id.as_deref(), Some(command_id.as_str()));
+    assert_eq!(committed.tables, vec!["tasks".to_string()]);
+
+    let rows = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued rows changed event");
+    assert_eq!(rows.kind, NativeEventKind::RowsChanged);
+    assert_eq!(rows.tables, vec!["tasks".to_string()]);
+
+    let crdt = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued field event");
+    assert_eq!(crdt.kind, NativeEventKind::CrdtFieldChanged);
+    assert_eq!(crdt.command_id.as_deref(), Some(command_id.as_str()));
+    assert_eq!(crdt.tables, vec!["tasks".to_string()]);
+    assert_eq!(crdt.payload_json.as_ref().unwrap()["table"], "tasks");
+    assert_eq!(
+        crdt.payload_json.as_ref().unwrap()["rowId"],
+        "queued-crdt-field-task"
+    );
+    assert_eq!(crdt.payload_json.as_ref().unwrap()["field"], "title");
+    assert_eq!(
+        crdt.payload_json.as_ref().unwrap()["syncMode"],
+        "server-merge"
+    );
+    assert_eq!(
+        crdt.payload_json.as_ref().unwrap()["materializationAvailable"],
+        true
+    );
+    assert_eq!(crdt.payload_json.as_ref().unwrap()["hasState"], true);
+    assert!(crdt.payload_json.as_ref().unwrap()["stateVectorBase64"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+
+    let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(tasks_json[0]["title"], "Queued generic CRDT");
+    assert!(tasks_json[0]["title_yjs_state"].as_str().is_some());
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()> {
+    let path = temp_db_path("syncular-native-enqueue-crdt-field-text");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-enqueue-crdt-field-text"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    apply_task_upsert(&mut client, "queued-crdt-field-text-task", "")?;
+    let _ = client.poll_event_timeout(Duration::from_millis(100));
+
+    let text_command_id = client.enqueue_crdt_field_text_json(
+        &json!({
+            "table": "tasks",
+            "rowId": "queued-crdt-field-text-task",
+            "field": "title",
+            "nextText": "Queued generic CRDT text"
+        })
+        .to_string(),
+    )?;
+    assert!(text_command_id.starts_with("native-crdt-text-"));
+
+    let committed = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued text commit event");
+    assert_eq!(committed.kind, NativeEventKind::LocalWriteCommitted);
+    assert_eq!(
+        committed.command_id.as_deref(),
+        Some(text_command_id.as_str())
+    );
+    assert_eq!(committed.tables, vec!["tasks".to_string()]);
+
+    let rows = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued text rows changed event");
+    assert_eq!(rows.kind, NativeEventKind::RowsChanged);
+    assert_eq!(rows.tables, vec!["tasks".to_string()]);
+
+    let crdt = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued text field event");
+    assert_eq!(crdt.kind, NativeEventKind::CrdtFieldChanged);
+    assert_eq!(crdt.command_id.as_deref(), Some(text_command_id.as_str()));
+    assert_eq!(crdt.payload_json.as_ref().unwrap()["table"], "tasks");
+    assert_eq!(
+        crdt.payload_json.as_ref().unwrap()["rowId"],
+        "queued-crdt-field-text-task"
+    );
+    assert_eq!(crdt.payload_json.as_ref().unwrap()["field"], "title");
+    assert_eq!(
+        crdt.payload_json.as_ref().unwrap()["syncMode"],
+        "server-merge"
+    );
+    assert_eq!(
+        crdt.payload_json.as_ref().unwrap()["materializationAvailable"],
+        true
+    );
+    assert_eq!(crdt.payload_json.as_ref().unwrap()["hasState"], true);
+    assert!(crdt.payload_json.as_ref().unwrap()["stateVectorBase64"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+
+    let field_request = json!({
+        "table": "tasks",
+        "rowId": "queued-crdt-field-text-task",
+        "field": "title"
+    })
+    .to_string();
+    let materialized: Value =
+        serde_json::from_str(&client.materialize_crdt_field_json(&field_request)?)?;
+    assert_eq!(materialized["value"], "Queued generic CRDT text");
+
+    let compact_command_id = client.enqueue_crdt_field_compaction_json(
+        &json!({
+            "table": "tasks",
+            "rowId": "queued-crdt-field-text-task",
+            "field": "title",
+            "minUncheckpointedUpdates": 1
+        })
+        .to_string(),
+    )?;
+    assert!(compact_command_id.starts_with("native-crdt-compact-"));
+
+    let compacted = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("server-merge CRDT queued compaction completion event");
+    assert_eq!(compacted.kind, NativeEventKind::WorkerCommandCompleted);
+    assert_eq!(
+        compacted.command_id.as_deref(),
+        Some(compact_command_id.as_str())
+    );
+    assert_eq!(
+        compacted.payload_json.as_ref().unwrap()["checkpointCreated"],
+        false
+    );
+    assert_eq!(compacted.payload_json.as_ref().unwrap()["table"], "tasks");
+    assert_eq!(
+        compacted.payload_json.as_ref().unwrap()["rowId"],
+        "queued-crdt-field-text-task"
+    );
+    assert_eq!(compacted.payload_json.as_ref().unwrap()["field"], "title");
+    assert_eq!(
+        compacted.payload_json.as_ref().unwrap()["syncMode"],
+        "server-merge"
+    );
+    assert_eq!(
+        compacted.payload_json.as_ref().unwrap()["minUncheckpointedUpdates"],
+        1
+    );
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_failed_queued_crdt_field_write_reports_field_payload() -> Result<()> {
+    let path = temp_db_path("syncular-native-failed-crdt-field");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-failed-crdt-field"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    apply_task_upsert(&mut client, "failed-crdt-field-task", "Legacy title")?;
+    let _ = client.poll_event_timeout(Duration::from_millis(100));
+
+    let command_id = client.enqueue_crdt_field_text_json(
+        &json!({
+            "table": "tasks",
+            "rowId": "failed-crdt-field-task",
+            "field": "title",
+            "nextText": "Edited title"
+        })
+        .to_string(),
+    )?;
+
+    let failed = client
+        .poll_event_timeout(Duration::from_secs(2))
+        .expect("generic CRDT queued text failure event");
+    assert_eq!(failed.kind, NativeEventKind::LocalWriteFailed);
+    assert_eq!(failed.command_id.as_deref(), Some(command_id.as_str()));
+    assert!(failed
+        .error
+        .as_ref()
+        .is_some_and(|error| error.message.contains("without existing Yjs state")));
+    let payload = failed.payload_json.as_ref().expect("failure payload");
+    assert_eq!(payload["operation"], "crdtFieldText");
+    assert_eq!(payload["table"], "tasks");
+    assert_eq!(payload["rowId"], "failed-crdt-field-task");
+    assert_eq!(payload["field"], "title");
+    assert_eq!(payload["failedBeforeCommit"], true);
+    assert_eq!(payload["retryScheduled"], false);
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_queued_crdt_field_update_does_not_wait_for_busy_worker() -> Result<()> {
+    let path = temp_db_path("syncular-native-crdt-field-nonblocking");
+    let (started_tx, started_rx) = mpsc::channel();
+    let mut config = test_config(&path, "native-crdt-field-nonblocking");
+    config.base_url = spawn_delayed_success_sync_server(Duration::from_millis(900), started_tx)?;
+    let mut client = open_demo_native_with_options(
+        config,
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    apply_task_upsert(&mut client, "nonblocking-crdt-field-task", "")?;
+    let _ = client.poll_event_timeout(Duration::from_millis(100));
+
+    let sync_command_id = client.enqueue_sync_now()?;
+    started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("slow sync server received worker request");
+
+    let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: None,
+        next_text: "Queued while sync is busy".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("queued-crdt-field-nonblocking-1".to_string()),
+    })?;
+    let request_json = json!({
+        "table": "tasks",
+        "rowId": "nonblocking-crdt-field-task",
+        "field": "title",
+        "update": update.update
+    })
+    .to_string();
+
+    let started = Instant::now();
+    let command_id = client.enqueue_crdt_field_yjs_update_json(&request_json)?;
+    let enqueue_duration = started.elapsed();
+    assert!(
+        enqueue_duration < Duration::from_millis(450),
+        "queued CRDT field update waited for busy worker for {enqueue_duration:?}"
+    );
+
+    let mut saw_sync_started = false;
+    let mut saw_sync_completed = false;
+    let mut saw_local_commit = false;
+    for _ in 0..8 {
+        let event = client
+            .poll_event_timeout(Duration::from_secs(2))
+            .expect("worker event after queued CRDT field update");
+        match event.kind {
+            NativeEventKind::SyncStarted
+                if event.command_id.as_deref() == Some(sync_command_id.as_str()) =>
+            {
+                saw_sync_started = true;
+            }
+            NativeEventKind::SyncCompleted
+                if event.command_id.as_deref() == Some(sync_command_id.as_str()) =>
+            {
+                saw_sync_completed = true;
+            }
+            NativeEventKind::LocalWriteCommitted
+                if event.command_id.as_deref() == Some(command_id.as_str()) =>
+            {
+                saw_local_commit = true;
+            }
+            _ => {}
+        }
+        if saw_sync_started && saw_sync_completed && saw_local_commit {
+            break;
+        }
+    }
+    assert!(saw_sync_started);
+    assert!(saw_sync_completed);
+    assert!(saw_local_commit);
+
+    let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(tasks_json[0]["title"], "Queued while sync is busy");
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_enqueues_snapshot_refresh_on_worker() -> Result<()> {
     let path = temp_db_path("syncular-native-enqueue-snapshot");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-enqueue-snapshot"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -659,7 +1309,7 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
     let path = temp_db_path("syncular-native-enqueue-heavy");
     let input_path = temp_db_path("syncular-native-enqueue-heavy-input");
     let output_path = temp_db_path("syncular-native-enqueue-heavy-output");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-enqueue-heavy"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -721,7 +1371,7 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
 #[test]
 fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> {
     let path = temp_db_path("syncular-native-query-observer");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-query-observer"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -819,7 +1469,7 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
 #[test]
 fn native_facade_replaces_duplicate_query_observer_dependencies() -> Result<()> {
     let path = temp_db_path("syncular-native-query-observer-replace");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-query-observer-replace"),
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -899,7 +1549,7 @@ fn native_facade_replaces_duplicate_query_observer_dependencies() -> Result<()> 
 #[test]
 fn native_facade_reports_closed_worker_as_structured_error() -> Result<()> {
     let path = temp_db_path("syncular-native-closed");
-    let mut client = NativeSyncularClient::open_native(test_config(&path, "native-closed"))?;
+    let mut client = open_demo_native(test_config(&path, "native-closed"))?;
 
     client.close()?;
     let error = client.trigger_sync().expect_err("closed client error");
@@ -912,7 +1562,7 @@ fn native_facade_reports_closed_worker_as_structured_error() -> Result<()> {
 #[test]
 fn native_facade_can_pause_and_resume_background_worker() -> Result<()> {
     let path = temp_db_path("syncular-native-worker-lifecycle");
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         test_config(&path, "native-worker-lifecycle"),
         NativeClientOptions {
             auto_sync_local_writes: true,
@@ -994,6 +1644,21 @@ fn apply_project_upsert(
     )
 }
 
+fn open_demo_native(config: NativeClientConfig) -> Result<NativeSyncularClient> {
+    open_demo_native_with_options(config, NativeClientOptions::default())
+}
+
+fn open_demo_native_with_options(
+    config: NativeClientConfig,
+    options: NativeClientOptions,
+) -> Result<NativeSyncularClient> {
+    NativeSyncularClient::open_with_options_and_schema(
+        config.into(),
+        options,
+        demo_todo_app_schema(),
+    )
+}
+
 fn test_config(path: &str, client_id: &str) -> NativeClientConfig {
     NativeClientConfig {
         db_path: path.to_string(),
@@ -1001,25 +1666,12 @@ fn test_config(path: &str, client_id: &str) -> NativeClientConfig {
         client_id: client_id.to_string(),
         actor_id: "user-rust".to_string(),
         project_id: Some("p0".to_string()),
+        app_schema_json: None,
     }
 }
 
 fn temp_db_path(prefix: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("{prefix}-{}.sqlite", Uuid::new_v4()))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn spawn_empty_success_sync_server() -> Result<String> {
-    spawn_sync_server(json!({
-        "ok": true,
-        "push": null,
-        "pull": {
-            "ok": true,
-            "subscriptions": []
-        }
-    }))
+    unique_temp_db_path(prefix)
 }
 
 fn spawn_rejecting_push_server() -> Result<String> {
@@ -1075,58 +1727,28 @@ fn spawn_rejecting_push_server() -> Result<String> {
     Ok(format!("http://{addr}/sync"))
 }
 
-fn spawn_auth_header_sync_server(
-    header_name: &'static str,
-    header_value: &'static str,
+fn spawn_delayed_success_sync_server(
+    delay: Duration,
+    started_tx: mpsc::Sender<()>,
 ) -> Result<String> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            let request = read_http_request_raw(&mut stream);
-            if request_header(&request, header_name).as_deref() == Some(header_value) {
-                write_http_json_response(
-                    &mut stream,
-                    json!({
+            let _ = read_http_request(&mut stream);
+            let _ = started_tx.send(());
+            std::thread::sleep(delay);
+            write_http_json_response(
+                &mut stream,
+                json!({
+                    "ok": true,
+                    "push": null,
+                    "pull": {
                         "ok": true,
-                        "push": null,
-                        "pull": {
-                            "ok": true,
-                            "subscriptions": []
-                        }
-                    }),
-                );
-            } else {
-                write_http_status_response(&mut stream, 401, "Unauthorized", "missing auth header");
-            }
-        }
-    });
-    Ok(format!("http://{addr}/sync"))
-}
-
-fn spawn_sync_server(body: Value) -> Result<String> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let _ = read_http_request(&mut stream);
-            write_http_json_response(&mut stream, body);
-        }
-    });
-    Ok(format!("http://{addr}/sync"))
-}
-
-fn spawn_status_sync_server(
-    status: u16,
-    reason: &'static str,
-    body: &'static str,
-) -> Result<String> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let _ = read_http_request(&mut stream);
-            write_http_status_response(&mut stream, status, reason, body);
+                        "subscriptions": []
+                    }
+                }),
+            );
         }
     });
     Ok(format!("http://{addr}/sync"))
@@ -1149,38 +1771,10 @@ fn read_http_request_raw(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8_lossy(&buffer[..n]).into_owned()
 }
 
-fn request_header(request: &str, name: &str) -> Option<String> {
-    request.lines().skip(1).find_map(|line| {
-        if line.is_empty() {
-            return None;
-        }
-        let (header_name, header_value) = line.split_once(':')?;
-        if header_name.eq_ignore_ascii_case(name) {
-            Some(header_value.trim().to_string())
-        } else {
-            None
-        }
-    })
-}
-
 fn write_http_json_response(stream: &mut std::net::TcpStream, body: Value) {
     let body = body.to_string();
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = stream.write_all(response.as_bytes());
-}
-
-fn write_http_status_response(
-    stream: &mut std::net::TcpStream,
-    status: u16,
-    reason: &str,
-    body: &str,
-) {
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
         body.len(),
         body
     );

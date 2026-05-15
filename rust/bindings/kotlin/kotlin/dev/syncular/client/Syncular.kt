@@ -574,6 +574,7 @@ data class SyncularBoltClientConfig(
     val clientId: String,
     val actorId: String,
     val projectId: String? = null,
+    val appSchemaJson: String? = null,
     val autoSyncLocalWrites: Boolean
 ) {
     companion object {
@@ -583,6 +584,7 @@ data class SyncularBoltClientConfig(
             reader.readString(),
             reader.readString(),
             reader.readOptional { reader.readString() },
+            reader.readOptional { reader.readString() },
             reader.readBool()
         )
     }
@@ -591,7 +593,8 @@ data class SyncularBoltClientConfig(
         (4 + Utf8Codec.maxBytes(baseUrl)) +
         (4 + Utf8Codec.maxBytes(clientId)) +
         (4 + Utf8Codec.maxBytes(actorId)) +
-        (projectId?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()) +
+        (projectId?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1) +
+        (appSchemaJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1) +
         1
 
     fun wireEncodeTo(wire: WireWriter) {
@@ -600,6 +603,7 @@ data class SyncularBoltClientConfig(
         wire.writeString(clientId)
         wire.writeString(actorId)
         projectId?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
+        appSchemaJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
         wire.writeBool(autoSyncLocalWrites)
     }
 }
@@ -684,6 +688,50 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
         Native.boltffi_syncular_bolt_client_free(handle)
     }
 
+    companion object {
+        fun openAsync(config: SyncularBoltClientConfig): SyncularBoltClient {
+            val wire_writer_config = WireWriterPool.acquire(config.wireEncodedSize())
+        kotlin.run {
+            val wire = wire_writer_config.writer
+            config.wireEncodeTo(wire)
+        }
+            try {
+                val handle = Native.boltffi_syncular_bolt_client_open_async(wire_writer_config.buffer)
+                if (handle == 0L) throw FfiException(1, takeLastErrorMessage())
+                return SyncularBoltClient(handle)
+            } finally {
+                wire_writer_config.close()
+            }
+        }
+    }
+
+
+    @Throws(FfiException::class)
+    fun openCommandId(): String? {
+        val buf = Native.boltffi_syncular_bolt_client_open_command_id(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readOptional { reader.readString() } }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun isOpenFinished(): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_is_open_finished(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun finishOpenTimeout(timeoutMs: ULong): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_finish_open_timeout(handle, timeoutMs.toLong())
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
 
     @Throws(FfiException::class)
     fun runtimeManifestJson(): String {
@@ -697,6 +745,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
     @Throws(FfiException::class)
     fun setAuthHeadersJson(headersJson: String): Boolean {
         val buf = Native.boltffi_syncular_bolt_client_set_auth_headers_json(handle, headersJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun setSubscriptionsJson(subscriptionsJson: String): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_set_subscriptions_json(handle, subscriptionsJson.toByteArray(Charsets.UTF_8))
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
@@ -731,8 +788,26 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun triggerSyncWebsocket(): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_trigger_sync_websocket(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun enqueueSyncNow(): String {
         val buf = Native.boltffi_syncular_bolt_client_enqueue_sync_now(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun enqueueSyncWebsocket(): String {
+        val buf = Native.boltffi_syncular_bolt_client_enqueue_sync_websocket(handle)
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
@@ -777,7 +852,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun applyLocalOperationJson(operationJson: String, localRowJson: String?): String {
-        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_local_row_json.writer
                 localRowJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -795,7 +870,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun enqueueLocalOperationJson(operationJson: String, localRowJson: String?): String {
-        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_local_row_json.writer
                 localRowJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -813,7 +888,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun applyMutationJson(mutationJson: String, localRowJson: String?): String {
-        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_local_row_json.writer
                 localRowJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -831,7 +906,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String {
-        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_local_row_json.writer
                 localRowJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -850,6 +925,87 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
     @Throws(FfiException::class)
     fun enqueueYjsUpdateJson(updateJson: String): String {
         val buf = Native.boltffi_syncular_bolt_client_enqueue_yjs_update_json(handle, updateJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun openCrdtFieldJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_open_crdt_field_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun applyCrdtFieldTextJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_apply_crdt_field_text_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun applyCrdtFieldYjsUpdateJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_apply_crdt_field_yjs_update_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_enqueue_crdt_field_yjs_update_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun enqueueCrdtFieldTextJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_enqueue_crdt_field_text_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun enqueueCrdtFieldCompactionJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_enqueue_crdt_field_compaction_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun materializeCrdtFieldJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_materialize_crdt_field_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun snapshotCrdtFieldStateVectorJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_snapshot_crdt_field_state_vector_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun compactCrdtFieldJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_compact_crdt_field_json(handle, requestJson.toByteArray(Charsets.UTF_8))
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
@@ -921,7 +1077,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun storeBlobFileJson(path: String, optionsJson: String?): String {
-        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_options_json.writer
                 optionsJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -939,7 +1095,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun enqueueStoreBlobFileJson(path: String, optionsJson: String?): String {
-        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_options_json.writer
                 optionsJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -957,7 +1113,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun retrieveBlobFileJson(refJson: String, path: String, optionsJson: String?): Boolean {
-        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_options_json.writer
                 optionsJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -975,7 +1131,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun enqueueRetrieveBlobFileJson(refJson: String, path: String, optionsJson: String?): String {
-        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_options_json.writer
                 optionsJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -1065,7 +1221,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun compactStorageJson(optionsJson: String?): String {
-        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_options_json.writer
                 optionsJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -1083,7 +1239,7 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
     @Throws(FfiException::class)
     fun enqueueCompactStorageJson(optionsJson: String?): String {
-        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1.toInt()))
+        val wire_writer_options_json = WireWriterPool.acquire((optionsJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
                 val wire = wire_writer_options_json.writer
                 optionsJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
@@ -1340,13 +1496,20 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_yjs_materialize_row_json(args_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_encryption_helper_json(method: ByteArray, args_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_open(config: ByteBuffer): Long
+    @JvmStatic external fun boltffi_syncular_bolt_client_open_async(config: ByteBuffer): Long
     @JvmStatic external fun boltffi_syncular_bolt_client_free(handle: Long)
+    @JvmStatic external fun boltffi_syncular_bolt_client_open_command_id(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_is_open_finished(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_finish_open_timeout(handle: Long, timeout_ms: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_runtime_manifest_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_auth_headers_json(handle: Long, headers_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_set_subscriptions_json(handle: Long, subscriptions_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_field_encryption_json(handle: Long, config_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_encrypted_crdt_json(handle: Long, config_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_trigger_sync(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_trigger_sync_websocket(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_sync_now(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_sync_websocket(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_pause_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resume_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_sync_worker_running(handle: Long): ByteArray?
@@ -1356,6 +1519,15 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_yjs_update_json(handle: Long, update_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_open_crdt_field_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_apply_crdt_field_text_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_apply_crdt_field_yjs_update_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_crdt_field_yjs_update_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_crdt_field_text_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_crdt_field_compaction_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_materialize_crdt_field_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_snapshot_crdt_field_state_vector_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_compact_crdt_field_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_encrypted_crdt_update_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_encrypted_crdt_update_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_encrypted_crdt_checkpoint_json(handle: Long, request_json: ByteArray): ByteArray?

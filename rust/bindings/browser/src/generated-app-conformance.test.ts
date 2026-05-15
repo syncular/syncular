@@ -1,55 +1,68 @@
 import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import { Kysely } from 'kysely';
+import { readFileSync } from 'node:fs';
 import {
   deleteTaskOperation,
   newTaskOperation,
   patchTaskOperation,
   type SyncularAppDb,
+  syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedTableConfig,
   taskSubscription,
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
 import { createSyncularV2Commit, createSyncularV2Dialect } from './database';
 import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
 
+const conformance = JSON.parse(
+  readFileSync(
+    new URL('../../../examples/todo-app/conformance/generated-client.json', import.meta.url),
+    'utf8'
+  )
+) as {
+  task: {
+    newInput: {
+      id: string;
+      title: string;
+      completed: number;
+      user_id: string;
+      project_id: string;
+    };
+    newOperation: unknown;
+    patchOperation: unknown;
+    deleteOperation: unknown;
+    subscription: unknown;
+    typescriptKyselyQuery: {
+      sql: string;
+      params: unknown[];
+    };
+  };
+};
+
+const syncScenarios = JSON.parse(
+  readFileSync(
+    new URL('../../../examples/todo-app/conformance/sync-scenarios.json', import.meta.url),
+    'utf8'
+  )
+) as {
+  e2ee: {
+    keyBase64: string;
+    envelopePrefix: string;
+    rule: {
+      scope: string;
+      table: string;
+      fields: string[];
+    };
+  };
+};
+
 describe('generated app conformance', () => {
   it('keeps TypeScript task operation semantics aligned with native generated clients', () => {
-    expect(
-      newTaskOperation({
-        id: 'task-native',
-        title: 'Native smoke',
-        completed: 1,
-        user_id: 'user-rust',
-        project_id: 'project-rust',
-      })
-    ).toEqual({
-      table: 'tasks',
-      row_id: 'task-native',
-      op: 'upsert',
-      payload: {
-        title: 'Native smoke',
-        completed: 1,
-        user_id: 'user-rust',
-        project_id: 'project-rust',
-      },
-      base_version: 0,
-    });
-
-    expect(patchTaskOperation('task-native', { completed: 0 }, 11)).toEqual({
-      table: 'tasks',
-      row_id: 'task-native',
-      op: 'upsert',
-      payload: { completed: 0 },
-      base_version: 11,
-    });
-
-    expect(deleteTaskOperation('task-native', 12)).toEqual({
-      table: 'tasks',
-      row_id: 'task-native',
-      op: 'delete',
-      payload: null,
-      base_version: 12,
-    });
+    expect(newTaskOperation(conformance.task.newInput)).toEqual(conformance.task.newOperation);
+    expect(patchTaskOperation('task-native', { completed: 0 }, 11)).toEqual(
+      conformance.task.patchOperation
+    );
+    expect(deleteTaskOperation('task-native', 12)).toEqual(conformance.task.deleteOperation);
   });
 
   it('keeps TypeScript subscriptions and Kysely reads on the shared table contract', () => {
@@ -58,15 +71,7 @@ describe('generated app conformance', () => {
         actorId: 'user-rust',
         projectId: 'project-rust',
       })
-    ).toEqual({
-      id: 'sub-tasks',
-      table: 'tasks',
-      scopes: {
-        user_id: 'user-rust',
-        project_id: 'project-rust',
-      },
-      params: {},
-    });
+    ).toEqual(conformance.task.subscription);
 
     const client = fakeClient();
     const db = new Kysely<SyncularAppDb>({
@@ -90,10 +95,22 @@ describe('generated app conformance', () => {
       .limit(5)
       .compile();
 
-    expect(compiled.sql).toBe(
-      'select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state" from "tasks" where "user_id" = ? order by "server_version" desc limit ?'
-    );
-    expect(compiled.parameters).toEqual(['user-rust', 5]);
+    expect(compiled.sql).toBe(conformance.task.typescriptKyselyQuery.sql);
+    expect(compiled.parameters).toEqual(conformance.task.typescriptKyselyQuery.params);
+  });
+
+  it('keeps generated field-encryption config aligned with the shared sync scenarios', () => {
+    expect(
+      syncularGeneratedFieldEncryptionConfig({
+        keys: { default: syncScenarios.e2ee.keyBase64 },
+        envelopePrefix: syncScenarios.e2ee.envelopePrefix,
+        rules: [syncScenarios.e2ee.rule],
+      })
+    ).toEqual({
+      keys: { default: syncScenarios.e2ee.keyBase64 },
+      envelopePrefix: syncScenarios.e2ee.envelopePrefix,
+      rules: [syncScenarios.e2ee.rule],
+    });
   });
 
   it('keeps Yjs envelopes in outbox operations while materializing local rows', async () => {
@@ -195,6 +212,13 @@ function fakeClient(): SyncularV2Client {
     async syncOnce() {
       return {};
     },
+    async conflictSummaries() {
+      return [];
+    },
+    async retryConflictKeepLocal() {
+      return 'conflict-retry';
+    },
+    async resolveConflict() {},
     async listTable() {
       return [];
     },

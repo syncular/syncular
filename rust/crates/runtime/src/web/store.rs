@@ -1,9 +1,8 @@
 use crate::error::{Result, SyncularError};
-use crate::generated;
-use crate::migrations::current_schema_version;
 use crate::protocol::{
     BootstrapState, OperationResult, PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
 };
+use crate::runtime_schema::runtime_schema_version;
 use crate::store::{
     now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
@@ -46,6 +45,14 @@ pub trait AsyncWebStore {
         &'a mut self,
         row_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    fn mark_pushed_operation_server_versions<'a>(
+        &'a mut self,
+        _outbox: OutboxCommit,
+        _response: PushCommitResponse,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 
     fn mark_outbox_acked<'a>(
         &'a mut self,
@@ -109,6 +116,14 @@ pub trait AsyncWebStore {
         table: &'a str,
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    fn clear_table_for_scopes_preserving_local_crdt<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        self.clear_table_for_scopes(table, scopes)
+    }
 
     fn upsert_row<'a>(
         &'a mut self,
@@ -182,13 +197,6 @@ impl AsyncWebStore for WebMemoryStore {
         local_row: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
         Box::pin(async move {
-            if generated::table_metadata(&operation.table).is_none() {
-                return Err(SyncularError::config(format!(
-                    "unknown generated app table: {}",
-                    operation.table
-                )));
-            }
-
             match operation.op.as_str() {
                 "upsert" => {
                     let row = local_row.unwrap_or_else(|| row_from_operation_payload(&operation));
@@ -557,12 +565,6 @@ impl AsyncWebStore for WebMemoryStore {
         table: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
         Box::pin(async move {
-            if generated::table_metadata(table).is_none() {
-                return Err(SyncularError::config(format!(
-                    "unknown generated app table: {table}"
-                )));
-            }
-
             let rows = self
                 .rows
                 .get(table)
@@ -588,7 +590,7 @@ impl WebMemoryStore {
             updated_at: now,
             attempt_count: 0,
             acked_commit_seq: None,
-            schema_version: current_schema_version(),
+            schema_version: runtime_schema_version(),
             next_attempt_at: 0,
         });
         Ok(client_commit_id)
@@ -596,15 +598,12 @@ impl WebMemoryStore {
 }
 
 fn row_id_for_table(table: &str, row: &Value) -> Result<String> {
-    let metadata = generated::table_metadata(table)
-        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
-    row.get(metadata.primary_key_column)
+    row.get("id")
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| {
             SyncularError::protocol_message(format!(
-                "row for table {table} is missing string primary key {}",
-                metadata.primary_key_column
+                "row for table {table} is missing string primary key id"
             ))
         })
 }
@@ -616,12 +615,8 @@ fn row_from_operation_payload(operation: &SyncOperation) -> Value {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if let Some(metadata) = generated::table_metadata(&operation.table) {
-        row.insert(
-            metadata.primary_key_column.to_string(),
-            Value::String(operation.row_id.clone()),
-        );
-    }
+    row.entry("id".to_string())
+        .or_insert_with(|| Value::String(operation.row_id.clone()));
     Value::Object(row)
 }
 
@@ -727,7 +722,7 @@ mod tests {
         assert_eq!(pending[0].status, "pending");
         assert_eq!(
             pending[0].schema_version,
-            crate::migrations::current_schema_version()
+            crate::runtime_schema::runtime_schema_version()
         );
 
         block_on(store.mark_outbox_sending(&pending[0].id))?;

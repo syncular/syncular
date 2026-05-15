@@ -1960,7 +1960,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde",
+ "serde_json",
  "syncular-runtime",
+ "syncular-testkit",
+ "tungstenite",
 ]
 
 [[package]]
@@ -1999,6 +2003,7 @@ dependencies = [
  "sha2",
  "sqlite-wasm-rs",
  "sqlite-wasm-vfs",
+ "syncular-testkit",
  "tungstenite",
  "uuid",
  "wasm-bindgen",
@@ -2007,6 +2012,15 @@ dependencies = [
  "x25519-dalek",
  "yrs",
  "zeroize",
+]
+
+[[package]]
+name = "syncular-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "syncular-runtime",
+ "uuid",
 ]
 
 [[package]]

@@ -12,17 +12,20 @@ import {
   getSyncularV2RustRuntimeInfo,
   getSyncularV2WasmGlueUrl,
   getSyncularV2WasmUrl,
+  type SyncularV2WasmGlue,
 } from './wasm-runtime';
 import type {
   SyncularV2WorkerErrorPayload,
   SyncularV2WorkerRequest,
   SyncularV2WorkerResponse,
+  SyncularV2WorkerRuntimeArtifact,
 } from './worker-protocol';
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 import { SyncularV2WorkerRealtimeController } from './worker-realtime';
 
 let client: SyncularV2RustClient | undefined;
 let openedConfig: SyncularV2ClientConfig | undefined;
+let openedRuntime: SyncularV2WorkerRuntimeArtifact | undefined;
 const canceledRequests = new Set<number>();
 const abortControllers = new Map<number, AbortController>();
 const realtime = new SyncularV2WorkerRealtimeController({
@@ -128,8 +131,18 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
         client?.close();
         client = undefined;
         openedConfig = undefined;
-        client = await openSyncularV2RustClient({ config });
+        openedRuntime = undefined;
+        const runtime = request.runtime;
+        client = await openSyncularV2RustClient({
+          config,
+          module: runtime?.wasmGlueUrl
+            ? loadWorkerWasmGlue(runtime.wasmGlueUrl)
+            : undefined,
+          wasmGlueUrl: runtime?.wasmGlueUrl,
+          wasmUrl: runtime?.wasmUrl,
+        });
         openedConfig = config;
+        openedRuntime = runtime;
       }
       return true;
     case 'setSubscriptions':
@@ -148,6 +161,8 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return true;
     case 'executeSql':
       return requireClient().executeSql(request.sql, request.params);
+    case 'executeUnsafeSql':
+      return requireClient().executeUnsafeSql(request.sql, request.params);
     case 'subscribeQuery':
       return requireClient().subscribeQuery(
         request.sql,
@@ -174,6 +189,15 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().syncPush();
     case 'syncOnce':
       return requireClient().syncOnce();
+    case 'conflictSummaries':
+      return requireClient().conflictSummaries();
+    case 'retryConflictKeepLocal':
+      return requireClient().retryConflictKeepLocal(request.conflictId);
+    case 'resolveConflict':
+      return requireClient().resolveConflict(
+        request.conflictId,
+        request.resolution
+      );
     case 'listTable':
       return requireClient().listTable(request.table);
     case 'storeBlob':
@@ -202,6 +226,18 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().applyYjsTextUpdates(request.args);
     case 'applyYjsEnvelopeToPayload':
       return requireClient().applyYjsEnvelopeToPayload(request.args);
+    case 'openCrdtField':
+      return requireClient().openCrdtField(request.request);
+    case 'applyCrdtFieldText':
+      return requireClient().applyCrdtFieldText(request.request);
+    case 'applyCrdtFieldYjsUpdate':
+      return requireClient().applyCrdtFieldYjsUpdate(request.request);
+    case 'materializeCrdtField':
+      return requireClient().materializeCrdtField(request.request);
+    case 'snapshotCrdtFieldStateVector':
+      return requireClient().snapshotCrdtFieldStateVector(request.request);
+    case 'compactCrdtField':
+      return requireClient().compactCrdtField(request.request);
     case 'encryptionHelper':
       return requireClient().encryptionHelper(request.method, request.args);
     case 'runtimeInfo':
@@ -211,6 +247,7 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       client?.close();
       client = undefined;
       openedConfig = undefined;
+      openedRuntime = undefined;
       return true;
   }
 }
@@ -219,13 +256,26 @@ async function runtimeInfo(): Promise<
   ReturnType<typeof createSyncularV2RuntimeInfo>
 > {
   const wasmUrl = getSyncularV2WasmUrl();
+  const selectedWasmUrl = openedRuntime?.wasmUrl ?? wasmUrl;
+  const selectedWasmGlueUrl =
+    openedRuntime?.wasmGlueUrl ?? getSyncularV2WasmGlueUrl();
   return createSyncularV2RuntimeInfo({
     storage: openedConfig?.storage,
-    workerUrl: self.location.href,
-    wasmGlueUrl: getSyncularV2WasmGlueUrl(),
-    wasmUrl,
-    rust: await getSyncularV2RustRuntimeInfo(undefined, wasmUrl),
+    workerUrl:
+      typeof self.location?.href === 'string' ? self.location.href : '',
+    wasmGlueUrl: selectedWasmGlueUrl,
+    wasmUrl: selectedWasmUrl,
+    rust: await getSyncularV2RustRuntimeInfo(
+      openedRuntime?.wasmGlueUrl
+        ? loadWorkerWasmGlue(openedRuntime.wasmGlueUrl)
+        : undefined,
+      selectedWasmUrl
+    ),
   });
+}
+
+function loadWorkerWasmGlue(wasmGlueUrl: string): Promise<SyncularV2WasmGlue> {
+  return import(/* @vite-ignore */ wasmGlueUrl) as Promise<SyncularV2WasmGlue>;
 }
 
 function requireClient(): SyncularV2RustClient {

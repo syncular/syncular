@@ -1,5 +1,5 @@
+use crate::app_schema::{default_app_schema, AppSchema};
 use crate::error::{Result, SyncularError};
-use crate::generated::table_metadata;
 use libsqlite3_sys as sqlite;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
@@ -60,7 +60,17 @@ impl Drop for SqliteStatement {
 
 pub fn execute_readonly_query_json(db_path: &str, request_json: &str) -> Result<String> {
     let request: ReadonlySqlQueryRequest = serde_json::from_str(request_json)?;
-    let result = execute_readonly_query(db_path, request)?;
+    let result = execute_readonly_query_with_schema(db_path, request, default_app_schema())?;
+    Ok(serde_json::to_string(&result)?)
+}
+
+pub fn execute_readonly_query_json_with_schema(
+    db_path: &str,
+    request_json: &str,
+    app_schema: AppSchema,
+) -> Result<String> {
+    let request: ReadonlySqlQueryRequest = serde_json::from_str(request_json)?;
+    let result = execute_readonly_query_with_schema(db_path, request, app_schema)?;
     Ok(serde_json::to_string(&result)?)
 }
 
@@ -68,11 +78,19 @@ pub fn execute_readonly_query(
     db_path: &str,
     request: ReadonlySqlQueryRequest,
 ) -> Result<ReadonlySqlQueryResult> {
+    execute_readonly_query_with_schema(db_path, request, default_app_schema())
+}
+
+pub fn execute_readonly_query_with_schema(
+    db_path: &str,
+    request: ReadonlySqlQueryRequest,
+    app_schema: AppSchema,
+) -> Result<ReadonlySqlQueryResult> {
     if request.sql.trim().is_empty() {
         return Err(SyncularError::config("query SQL must not be empty"));
     }
 
-    let allowed_tables = validate_tables(&request.tables)?;
+    let allowed_tables = validate_tables(&request.tables, app_schema)?;
     let db = open_db(db_path)?;
     let mut authorizer = AuthorizerContext {
         allowed_tables,
@@ -112,14 +130,14 @@ pub fn execute_readonly_query(
     Ok(ReadonlySqlQueryResult { rows })
 }
 
-fn validate_tables(tables: &[String]) -> Result<BTreeSet<String>> {
+fn validate_tables(tables: &[String], app_schema: AppSchema) -> Result<BTreeSet<String>> {
     let mut allowed = BTreeSet::new();
     for table in tables {
         let table = table.trim();
         if table.is_empty() {
             return Err(SyncularError::config("query table dependency is empty"));
         }
-        if table_metadata(table).is_none() {
+        if app_schema.table_metadata(table).is_none() {
             return Err(SyncularError::config(format!(
                 "queryJson can only read generated app tables; unknown table: {table}"
             )));

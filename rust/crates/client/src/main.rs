@@ -1,9 +1,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use syncular_client::client::{SyncularClient, SyncularClientConfig};
-use syncular_client::rusqlite_sqlite::RusqliteStore;
+use syncular_client::diesel_sqlite::DieselSqliteStore;
+use syncular_client::fixtures::todo::app_schema as demo_todo_app_schema;
+use syncular_client::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 use syncular_client::store::{DemoTaskStore, SyncStateStore, SyncStore};
 use syncular_client::transport::RealtimeEvent;
+use syncular_client::transport::{HttpSyncTransport, SyncTransportConfig};
 
 #[derive(Parser, Debug)]
 #[command(about = "Syncular native client storage POC")]
@@ -77,10 +80,33 @@ fn main() -> Result<()> {
     let config = cli.into_config();
 
     match cli.store {
-        StoreBackend::Diesel => run_client(SyncularClient::open(config)?, cli.command),
+        StoreBackend::Diesel => {
+            let app_schema = demo_todo_app_schema();
+            let store = DieselSqliteStore::open_with_schema(&config.db_path, app_schema)?;
+            let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+                config.base_url.clone(),
+                config.client_id.clone(),
+                config.actor_id.clone(),
+            ))
+            .with_schema_version(app_schema.current_schema_version());
+            run_client(
+                SyncularClient::with_app_schema_parts(config, store, transport, app_schema),
+                cli.command,
+            )
+        }
         StoreBackend::Rusqlite => {
             let store = RusqliteStore::open(&config.db_path)?;
-            run_client(SyncularClient::with_store(config, store), cli.command)
+            let app_schema = demo_todo_app_schema();
+            let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+                config.base_url.clone(),
+                config.client_id.clone(),
+                config.actor_id.clone(),
+            ))
+            .with_schema_version(app_schema.current_schema_version());
+            run_client(
+                SyncularClient::with_app_schema_parts(config, store, transport, app_schema),
+                cli.command,
+            )
         }
     }
 }
