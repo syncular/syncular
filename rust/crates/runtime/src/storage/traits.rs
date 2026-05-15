@@ -15,6 +15,7 @@ pub const MAX_SYNC_RETRIES: i32 = 5;
 pub const SYNC_SENDING_TIMEOUT_MS: i64 = 30_000;
 pub const MAX_BLOB_UPLOAD_RETRIES: i32 = 3;
 pub const BLOB_UPLOAD_STALE_TIMEOUT_MS: i64 = 30_000;
+pub const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
 
 const RETRY_BASE_DELAY_MS: i64 = 1_000;
 const RETRY_MAX_DELAY_MS: i64 = 30_000;
@@ -162,6 +163,14 @@ pub trait SyncStateStore {
     fn applied_migrations(&mut self) -> Result<Vec<AppliedMigration>>;
 
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>>;
+
+    fn next_outbox_retry_at(&mut self) -> Result<Option<i64>> {
+        Ok(None)
+    }
+
+    fn next_blob_upload_retry_at(&mut self) -> Result<Option<i64>> {
+        Ok(None)
+    }
 
     fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>>;
 

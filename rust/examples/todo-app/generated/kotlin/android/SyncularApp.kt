@@ -219,7 +219,11 @@ data class SyncularNativeEvent(
     val commandId: String? = null,
     val clientCommitId: String? = null,
     val durationMs: Long? = null,
-)
+    val droppedCount: Long? = null,
+    val resyncRequired: Boolean = false,
+) {
+    val eventStreamLost: Boolean get() = kind == "EventsOverflowed" || resyncRequired
+}
 
 data class SyncularYjsUpdateEnvelope(
     val updateId: String,
@@ -347,8 +351,13 @@ fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
         commandId = event["command_id"]?.jsonPrimitive?.content,
         clientCommitId = event["client_commit_id"]?.jsonPrimitive?.content,
         durationMs = event["duration_ms"]?.jsonPrimitive?.longOrNull,
+        droppedCount = event["droppedCount"]?.jsonPrimitive?.longOrNull,
+        resyncRequired = event["resyncRequired"]?.jsonPrimitive?.booleanOrNull ?: (event["kind"]?.jsonPrimitive?.content == "EventsOverflowed"),
     )
 }
+
+fun syncularNativeEventRequiresFullRefresh(event: SyncularNativeEvent): Boolean =
+    event.eventStreamLost
 
 data class CommentChangedFields(val raw: Set<String>) {
     constructor(fields: List<String>) : this(fields.toSet())
@@ -603,6 +612,7 @@ class SyncularNativeLiveQuery<Row>(
     fun matches(queryIds: Iterable<String>): Boolean = queryIds.any { it == id }
 
     fun refreshIfChanged(event: SyncularNativeEvent, client: SyncularNativeJsonClient): List<Row>? {
+        if (syncularNativeEventRequiresFullRefresh(event)) return refresh(client)
         if (event.kind != "QueriesChanged" || !matches(event.queries)) return null
         return refresh(client)
     }

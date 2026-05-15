@@ -15,3 +15,12 @@ The Rust API shape is intentionally query-builder-first:
 - conflicts are handled through `client.conflicts()` helpers.
 - live reads use `client.live_query(["table"], || query)` and refresh from
   table-level `SyncReport` invalidation.
+
+Native apps should depend on the SDK with explicit features, for example:
+
+```toml
+syncular-client = { default-features = false, features = ["native", "crdt-yjs"] }
+```
+
+That profile avoids CLI/testkit dependencies while keeping native SQLite,
+sync transport, and CRDT/Yjs support.

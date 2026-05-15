@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::params;
 use serde_json::{json, Map, Value};
@@ -23,7 +23,7 @@ use syncular_runtime::store::SyncStore;
 use syncular_runtime::transport::{
     RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders, SyncTransport,
 };
-use syncular_runtime::worker::SyncWorker;
+use syncular_runtime::worker::{PersistentRealtimeWorker, SyncWorker, SyncWorkerEvent};
 use syncular_testkit::{
     combined_not_ok_response, commits_combined_response, default_combined_response,
     pull_not_ok_response, push_conflict_response, push_not_ok_response,
@@ -1199,6 +1199,211 @@ fn sync_worker_coalesces_triggers_while_sync_is_running() -> Result<()> {
         .is_none());
     assert_eq!(shared.request_count(), 2);
 
+    worker.stop()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn sync_worker_event_subscriptions_are_fanout_streams() -> Result<()> {
+    let path = temp_db_path("syncular-worker-event-fanout");
+    let config = test_config(&path, "client-worker-event-fanout");
+    let store = RusqliteStore::open(&path)?;
+    let client = demo_client(config, store, TestTransport::new());
+    let worker = SyncWorker::start(client);
+    let first = worker.subscribe_events(8);
+    let second = worker.subscribe_events(8);
+
+    worker.trigger_sync()?;
+
+    let first_event = first
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("first worker subscriber event");
+    let second_event = second
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("second worker subscriber event");
+
+    assert!(matches!(
+        first_event,
+        SyncWorkerEvent::SyncCompleted { .. } | SyncWorkerEvent::SyncFailed { .. }
+    ));
+    assert!(matches!(
+        second_event,
+        SyncWorkerEvent::SyncCompleted { .. } | SyncWorkerEvent::SyncFailed { .. }
+    ));
+
+    worker.stop()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn sync_worker_event_subscription_close_wakes_blocked_reader() -> Result<()> {
+    let path = temp_db_path("syncular-worker-event-close");
+    let config = test_config(&path, "client-worker-event-close");
+    let store = RusqliteStore::open(&path)?;
+    let client = demo_client(config, store, TestTransport::new());
+    let worker = SyncWorker::start(client);
+    let subscription = Arc::new(worker.subscribe_events(1));
+    let reader = Arc::clone(&subscription);
+    let join = std::thread::spawn(move || reader.next_event().is_none());
+
+    std::thread::sleep(Duration::from_millis(25));
+    subscription.close();
+    assert!(join
+        .join()
+        .expect("event subscription reader should not panic"));
+
+    worker.stop()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn sync_worker_event_subscription_overflow_reports_resync_required() -> Result<()> {
+    let path = temp_db_path("syncular-worker-event-overflow");
+    let config = test_config(&path, "client-worker-event-overflow");
+    let store = RusqliteStore::open(&path)?;
+    let client = demo_client(config, store, TestTransport::new());
+    let worker = SyncWorker::start(client);
+    let slow = worker.subscribe_events(1);
+    let control = worker.subscribe_events(8);
+
+    worker.enqueue_local_operation_json(
+        "overflow-write".to_string(),
+        json!({
+            "table": "tasks",
+            "row_id": "overflow-task",
+            "op": "upsert",
+            "payload": {
+                "title": "Overflow task",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+        true,
+    )?;
+
+    let mut saw_sync_result = false;
+    for _ in 0..4 {
+        match control
+            .next_event_timeout(Duration::from_secs(2))
+            .expect("control subscriber should keep receiving worker events")
+        {
+            SyncWorkerEvent::SyncCompleted { .. } | SyncWorkerEvent::SyncFailed { .. } => {
+                saw_sync_result = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_sync_result);
+
+    let overflow_event = slow
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("slow subscriber should receive overflow event");
+    assert!(matches!(
+        overflow_event,
+        SyncWorkerEvent::EventsOverflowed { dropped_count } if dropped_count >= 2
+    ));
+    assert!(slow
+        .next_event_timeout(Duration::from_millis(100))
+        .is_none());
+
+    worker.stop()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn sync_worker_wakes_when_outbox_retry_becomes_due() -> Result<()> {
+    let path = temp_db_path("syncular-worker-retry-wakeup");
+    let config = test_config(&path, "client-worker-retry-wakeup");
+    let store = RusqliteStore::open(&path)?;
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    transport.push_http_response_fn(|_| {
+        Err(SyncularError::message(
+            ErrorKind::Transport,
+            "test retry wakeup",
+        ))
+    });
+    let client = demo_client(config, store, transport);
+    let worker = SyncWorker::start(client);
+    let events = worker.subscribe_events(16);
+
+    worker.enqueue_local_operation_json(
+        "retry-wakeup-write".to_string(),
+        json!({
+            "table": "tasks",
+            "row_id": "retry-wakeup-task",
+            "op": "upsert",
+            "payload": {
+                "title": "Retry wakeup task",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+        true,
+    )?;
+
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut saw_retry_scheduled = false;
+    let mut saw_retry_success = false;
+    while Instant::now() < deadline {
+        let Some(event) = events.next_event_timeout(Duration::from_millis(250)) else {
+            continue;
+        };
+        match event {
+            SyncWorkerEvent::SyncFailed {
+                retry_scheduled, ..
+            } => {
+                saw_retry_scheduled = retry_scheduled;
+            }
+            SyncWorkerEvent::SyncCompleted { .. } => {
+                saw_retry_success = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(saw_retry_scheduled);
+    assert!(saw_retry_success);
+    assert_eq!(handle.requests().len(), 2);
+
+    worker.stop()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn persistent_realtime_worker_feeds_sync_worker_wakeups() -> Result<()> {
+    let path = temp_db_path("syncular-worker-persistent-realtime");
+    let config = test_config(&path, "client-worker-persistent-realtime");
+    let store = RusqliteStore::open(&path)?;
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    let client = demo_client(config, store, transport.clone());
+    let worker = SyncWorker::start(client);
+    let mut realtime = PersistentRealtimeWorker::start(transport.clone(), worker.trigger_handle());
+
+    transport.push_realtime_event(RealtimeEvent::Sync);
+
+    worker
+        .recv_result_timeout(Duration::from_secs(2))
+        .expect("persistent realtime worker should trigger sync")?;
+    assert_eq!(handle.requests().len(), 1);
+
+    realtime.stop()?;
     worker.stop()?;
     let _ = std::fs::remove_file(path);
     Ok(())

@@ -77,6 +77,21 @@ fn diesel_store_applies_migrations_and_stamps_outbox_schema_version() -> Result<
 }
 
 #[test]
+fn diesel_store_applies_sqlite_runtime_pragmas() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-pragmas");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+
+    let pragmas = store.runtime_pragma_report()?;
+    assert_eq!(pragmas.journal_mode, "wal");
+    assert_eq!(pragmas.foreign_keys, 1);
+    assert_eq!(pragmas.busy_timeout, 5_000);
+    assert_eq!(pragmas.synchronous, 1);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Result<()> {
     let path = temp_db_path("syncular-diesel-default-schema");
     let mut store = DieselSqliteStore::open(&path)?;

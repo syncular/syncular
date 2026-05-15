@@ -12,16 +12,20 @@ use crate::encryption::{encryption_helpers_json, FieldEncryption};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::BlobRef;
 use crate::runtime_schema::runtime_schema_version;
-use crate::sqlite_query::execute_readonly_query_json_with_schema;
+use crate::sqlite_query::ReadonlySqlQueryExecutor;
 use crate::store::{now_ms, ConflictSummary, OutboxSummary};
-use crate::transport::{HttpSyncTransport, SyncAuthHeaders};
-use crate::worker::{SyncWorker, SyncWorkerEvent, SyncWorkerEvents};
+use crate::transport::{
+    HttpSyncTransport, SyncAuthHeaderStore, SyncAuthHeaders, SyncTransportConfig,
+};
+use crate::worker::{
+    PersistentRealtimeWorker, SyncWorker, SyncWorkerEvent, SyncWorkerEventSubscription,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use uuid::Uuid;
@@ -55,6 +59,7 @@ pub struct NativeSyncularClient {
     writer: SyncularClient<DieselSqliteStore, HttpSyncTransport>,
     worker: Option<SyncWorker>,
     worker_event_pump: Option<JoinHandle<()>>,
+    realtime_worker: Option<PersistentRealtimeWorker>,
     auth_headers: SyncAuthHeaders,
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
@@ -62,6 +67,7 @@ pub struct NativeSyncularClient {
     command_seq: Mutex<u64>,
     events: NativeEventHub,
     default_events: NativeEventSubscription,
+    read_executor: Mutex<ReadonlySqlQueryExecutor>,
 }
 
 pub struct NativeClientOpenTask {
@@ -109,6 +115,7 @@ pub enum NativeEventKind {
     RowsChanged,
     QueriesChanged,
     ConflictsChanged,
+    EventsOverflowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +144,18 @@ pub struct NativeEvent {
     pub retry_scheduled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(
+        default,
+        rename = "droppedCount",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dropped_count: Option<usize>,
+    #[serde(
+        default,
+        rename = "resyncRequired",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resync_required: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<NativeAuthInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,14 +198,25 @@ pub struct NativeObservedQuery {
 struct NativeEventHub {
     event_seq: Arc<Mutex<u64>>,
     subscriber_seq: Arc<Mutex<u64>>,
-    subscribers: Arc<Mutex<BTreeMap<u64, SyncSender<NativeEvent>>>>,
+    subscribers: Arc<Mutex<BTreeMap<u64, Arc<NativeEventQueue>>>>,
     query_observers: Arc<Mutex<BTreeMap<String, NativeObservedQuery>>>,
 }
 
 pub struct NativeEventSubscription {
     hub: NativeEventHub,
     subscriber_id: u64,
-    event_rx: Mutex<Receiver<NativeEvent>>,
+    queue: Arc<NativeEventQueue>,
+}
+
+struct NativeEventQueue {
+    capacity: usize,
+    state: Mutex<NativeEventQueueState>,
+    ready: Condvar,
+}
+
+struct NativeEventQueueState {
+    events: VecDeque<NativeEvent>,
+    closed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -361,12 +391,14 @@ impl NativeSyncularClient {
             events.clone(),
             worker.event_source(),
         ));
+        let read_executor = ReadonlySqlQueryExecutor::open(&config.db_path, app_schema, 64)?;
 
         Ok(Self {
             config,
             writer,
             worker: Some(worker),
             worker_event_pump,
+            realtime_worker: None,
             auth_headers: SyncAuthHeaders::new(),
             field_encryption: None,
             encrypted_crdt: None,
@@ -374,6 +406,7 @@ impl NativeSyncularClient {
             command_seq: Mutex::new(0),
             events,
             default_events,
+            read_executor: Mutex::new(read_executor),
         })
     }
 
@@ -560,6 +593,9 @@ impl NativeSyncularClient {
         if let Some(worker) = &self.worker {
             worker.set_auth_headers(headers)?;
         }
+        if let Some(realtime_worker) = &self.realtime_worker {
+            realtime_worker.set_auth_headers(self.auth_headers.clone())?;
+        }
         Ok(())
     }
 
@@ -612,6 +648,7 @@ impl NativeSyncularClient {
     }
 
     pub fn pause_sync_worker(&mut self) -> Result<()> {
+        self.stop_realtime_worker()?;
         if let Some(worker) = self.worker.take() {
             worker.stop()?;
         }
@@ -635,6 +672,29 @@ impl NativeSyncularClient {
             worker.event_source(),
         ));
         self.worker = Some(worker);
+        Ok(())
+    }
+
+    pub fn start_realtime_worker(&mut self) -> Result<()> {
+        if self.realtime_worker.is_some() {
+            return Ok(());
+        }
+        let trigger = self.worker()?.trigger_handle();
+        let mut transport = HttpSyncTransport::new(SyncTransportConfig::new(
+            self.config.base_url.clone(),
+            self.config.client_id.clone(),
+            self.config.actor_id.clone(),
+        ))
+        .with_schema_version(self.writer.app_schema().current_schema_version());
+        transport.set_auth_headers(self.auth_headers.clone());
+        self.realtime_worker = Some(PersistentRealtimeWorker::start(transport, trigger));
+        Ok(())
+    }
+
+    pub fn stop_realtime_worker(&mut self) -> Result<()> {
+        if let Some(mut realtime_worker) = self.realtime_worker.take() {
+            realtime_worker.stop()?;
+        }
         Ok(())
     }
 
@@ -812,11 +872,12 @@ impl NativeSyncularClient {
     }
 
     pub fn query_json(&self, request_json: &str) -> Result<String> {
-        execute_readonly_query_json_with_schema(
-            &self.config.db_path,
-            request_json,
-            self.writer.app_schema(),
-        )
+        self.read_executor
+            .lock()
+            .map_err(|_| {
+                SyncularError::message(ErrorKind::Internal, "native read executor lock poisoned")
+            })?
+            .execute_json(request_json)
     }
 
     pub fn store_blob_file_json(
@@ -981,6 +1042,7 @@ impl NativeSyncularClient {
     }
 
     pub fn close(&mut self) -> Result<()> {
+        self.stop_realtime_worker()?;
         if let Some(worker) = self.worker.take() {
             worker.stop()?;
         }
@@ -1145,17 +1207,11 @@ impl NativeCrdtFieldCompactionRequest {
 
 impl NativeEventSubscription {
     pub fn next_event(&self) -> Option<NativeEvent> {
-        self.event_rx
-            .lock()
-            .ok()
-            .and_then(|event_rx| event_rx.recv().ok())
+        self.queue.next_event()
     }
 
     pub fn next_event_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
-        self.event_rx
-            .lock()
-            .ok()
-            .and_then(|event_rx| event_rx.recv_timeout(timeout).ok())
+        self.queue.next_event_timeout(timeout)
     }
 
     pub fn next_event_json(&self) -> Option<Result<String>> {
@@ -1172,6 +1228,7 @@ impl NativeEventSubscription {
         if let Ok(mut subscribers) = self.hub.subscribers.lock() {
             subscribers.remove(&self.subscriber_id);
         }
+        self.queue.close();
     }
 }
 
@@ -1181,12 +1238,91 @@ impl Drop for NativeEventSubscription {
     }
 }
 
+impl NativeEventQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            state: Mutex::new(NativeEventQueueState {
+                events: VecDeque::new(),
+                closed: false,
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn push(&self, event: NativeEvent, overflow_event: impl FnOnce(usize) -> NativeEvent) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.closed {
+            return;
+        }
+        if state.events.len() >= self.capacity {
+            let dropped_count = state.events.len().saturating_add(1);
+            state.events.clear();
+            state.events.push_back(overflow_event(dropped_count));
+            state.closed = true;
+        } else {
+            state.events.push_back(event);
+        }
+        self.ready.notify_one();
+    }
+
+    fn next_event(&self) -> Option<NativeEvent> {
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(event) = state.events.pop_front() {
+                return Some(event);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.ready.wait(state).ok()?;
+        }
+    }
+
+    fn next_event_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
+        let deadline = std::time::Instant::now().checked_add(timeout)?;
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(event) = state.events.pop_front() {
+                return Some(event);
+            }
+            if state.closed {
+                return None;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let wait = deadline.saturating_duration_since(now);
+            let (next_state, timeout) = self.ready.wait_timeout(state, wait).ok()?;
+            state = next_state;
+            if timeout.timed_out() && state.events.is_empty() {
+                return None;
+            }
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            state.events.clear();
+            self.ready.notify_all();
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.state.lock().map(|state| state.closed).unwrap_or(true)
+    }
+}
+
 fn start_worker_event_pump(
     events: NativeEventHub,
-    worker_events: SyncWorkerEvents,
+    worker_events: SyncWorkerEventSubscription,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        while let Some(event) = worker_events.recv_event() {
+        while let Some(event) = worker_events.next_event() {
             events.publish_worker_event(event);
         }
     })
@@ -1194,16 +1330,15 @@ fn start_worker_event_pump(
 
 impl NativeEventHub {
     fn subscribe(&self, capacity: usize) -> NativeEventSubscription {
-        let capacity = capacity.max(1);
-        let (event_tx, event_rx) = mpsc::sync_channel(capacity);
+        let queue = Arc::new(NativeEventQueue::new(capacity));
         let subscriber_id = self.next_subscriber_id();
         if let Ok(mut subscribers) = self.subscribers.lock() {
-            subscribers.insert(subscriber_id, event_tx);
+            subscribers.insert(subscriber_id, queue.clone());
         }
         NativeEventSubscription {
             hub: self.clone(),
             subscriber_id,
-            event_rx: Mutex::new(event_rx),
+            queue,
         }
     }
 
@@ -1213,18 +1348,12 @@ impl NativeEventHub {
             return;
         };
 
-        let mut disconnected = Vec::new();
-        for (subscriber_id, event_tx) in subscribers.iter() {
-            match event_tx.try_send(event.clone()) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                    disconnected.push(*subscriber_id);
-                }
-            }
-        }
-        for subscriber_id in disconnected {
-            subscribers.remove(&subscriber_id);
-        }
+        subscribers.retain(|_, queue| {
+            queue.push(event.clone(), |dropped_count| {
+                self.stamp_event(events_overflowed_event(dropped_count))
+            });
+            !queue.is_closed()
+        });
     }
 
     fn publish_worker_event(&self, event: SyncWorkerEvent) {
@@ -1485,8 +1614,63 @@ impl NativeEventHub {
                 operation,
                 duration_ms,
             )],
+            SyncWorkerEvent::EventsOverflowed { dropped_count } => {
+                vec![events_overflowed_event(dropped_count)]
+            }
         }
     }
+}
+
+#[derive(Clone, Default)]
+pub struct NativeWorkerEventConverter {
+    hub: NativeEventHub,
+}
+
+impl NativeWorkerEventConverter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_observed_queries(&self, observed_queries: &[NativeObservedQuery]) {
+        if let Ok(mut observers) = self.hub.query_observers.lock() {
+            observers.clear();
+            for query in observed_queries {
+                observers.insert(query.id.clone(), query.clone());
+            }
+        }
+    }
+
+    pub fn convert(&self, event: SyncWorkerEvent) -> Vec<NativeEvent> {
+        self.hub
+            .events_from_worker_event(event)
+            .into_iter()
+            .map(|event| self.hub.stamp_event(event))
+            .collect()
+    }
+
+    pub fn convert_json(&self, event: SyncWorkerEvent) -> Result<Vec<String>> {
+        self.convert(event)
+            .into_iter()
+            .map(|event| serde_json::to_string(&event).map_err(Into::into))
+            .collect()
+    }
+}
+
+pub fn native_events_from_worker_event(event: SyncWorkerEvent) -> Vec<NativeEvent> {
+    NativeWorkerEventConverter::new().convert(event)
+}
+
+pub fn native_events_from_worker_event_with_observed_queries(
+    event: SyncWorkerEvent,
+    observed_queries: &[NativeObservedQuery],
+) -> Vec<NativeEvent> {
+    let converter = NativeWorkerEventConverter::new();
+    converter.set_observed_queries(observed_queries);
+    converter.convert(event)
+}
+
+pub fn native_event_json_from_worker_event(event: SyncWorkerEvent) -> Result<Vec<String>> {
+    NativeWorkerEventConverter::new().convert_json(event)
 }
 
 impl NativeObservedQueryRegistration {
@@ -1880,6 +2064,31 @@ fn conflicts_changed_event() -> NativeEvent {
     )
 }
 
+fn events_overflowed_event(dropped_count: usize) -> NativeEvent {
+    let mut event = native_event(
+        NativeEventKind::EventsOverflowed,
+        Vec::new(),
+        Some(native_diagnostic(
+            "warn",
+            "events",
+            "events.overflowed",
+            "Native Syncular event stream overflowed",
+            [
+                ("droppedCount", json!(dropped_count)),
+                ("resyncRequired", json!(true)),
+            ],
+        )),
+    );
+    event.dropped_count = Some(dropped_count);
+    event.resync_required = Some(true);
+    event.payload_json = Some(json!({
+        "type": "eventsOverflowed",
+        "droppedCount": dropped_count,
+        "resyncRequired": true
+    }));
+    event
+}
+
 fn sync_started_event(command_id: Option<String>) -> NativeEvent {
     let mut event = native_event(
         NativeEventKind::SyncStarted,
@@ -2190,6 +2399,8 @@ fn native_event(
         conflict_count: None,
         retry_scheduled: None,
         duration_ms: None,
+        dropped_count: None,
+        resync_required: None,
         auth: None,
         diagnostic,
         tables,

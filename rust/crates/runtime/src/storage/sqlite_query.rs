@@ -1,9 +1,11 @@
 use crate::app_schema::{default_app_schema, AppSchema};
-use crate::error::{Result, SyncularError};
+use crate::error::{ErrorKind, Result, SyncularError};
+use crate::store::SQLITE_BUSY_TIMEOUT_MS;
 use libsqlite3_sys as sqlite;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 use std::collections::BTreeSet;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
@@ -31,6 +33,18 @@ struct SqliteDb {
 
 struct SqliteStatement {
     raw: *mut sqlite::sqlite3_stmt,
+}
+
+unsafe impl Send for SqliteDb {}
+unsafe impl Send for SqliteStatement {}
+
+pub struct ReadonlySqlQueryExecutor {
+    db: SqliteDb,
+    app_schema: AppSchema,
+    schema_version: i32,
+    capacity: usize,
+    statements: BTreeMap<String, SqliteStatement>,
+    statement_order: VecDeque<String>,
 }
 
 struct AuthorizerContext {
@@ -90,44 +104,66 @@ pub fn execute_readonly_query_with_schema(
         return Err(SyncularError::config("query SQL must not be empty"));
     }
 
-    let allowed_tables = validate_tables(&request.tables, app_schema)?;
     let db = open_db(db_path)?;
-    let mut authorizer = AuthorizerContext {
-        allowed_tables,
-        denied: None,
-    };
-    install_authorizer(&db, &mut authorizer)?;
-
-    let stmt = match prepare_single_statement(&db, &request.sql) {
-        Ok(stmt) => stmt,
-        Err(error) => {
-            if let Some(message) = authorizer.denied {
-                return Err(SyncularError::config(message));
-            }
-            return Err(error);
-        }
-    };
-    if unsafe { sqlite::sqlite3_stmt_readonly(stmt.raw) } == 0 {
-        return Err(SyncularError::config(
-            "queryJson only accepts read-only SQL; use applyLocalOperationJson for Syncular writes",
-        ));
-    }
+    let allowed_tables = validate_tables(&request.tables, app_schema)?;
+    let stmt = prepare_authorized_statement(&db, &request.sql, allowed_tables)?;
 
     bind_params(&db, &stmt, &request.params)?;
-    let rows = match read_rows(&db, &stmt) {
-        Ok(rows) => rows,
-        Err(error) => {
-            if let Some(message) = authorizer.denied {
-                return Err(SyncularError::config(message));
-            }
-            return Err(error);
-        }
-    };
-    if let Some(message) = authorizer.denied {
-        return Err(SyncularError::config(message));
-    }
+    let rows = read_rows(&db, &stmt)?;
 
     Ok(ReadonlySqlQueryResult { rows })
+}
+
+impl ReadonlySqlQueryExecutor {
+    pub fn open(db_path: &str, app_schema: AppSchema, capacity: usize) -> Result<Self> {
+        Ok(Self {
+            db: open_db(db_path)?,
+            app_schema,
+            schema_version: app_schema.current_schema_version(),
+            capacity: capacity.max(1),
+            statements: BTreeMap::new(),
+            statement_order: VecDeque::new(),
+        })
+    }
+
+    pub fn execute_json(&mut self, request_json: &str) -> Result<String> {
+        let request: ReadonlySqlQueryRequest = serde_json::from_str(request_json)?;
+        let result = self.execute(request)?;
+        Ok(serde_json::to_string(&result)?)
+    }
+
+    pub fn execute(&mut self, request: ReadonlySqlQueryRequest) -> Result<ReadonlySqlQueryResult> {
+        if request.sql.trim().is_empty() {
+            return Err(SyncularError::config("query SQL must not be empty"));
+        }
+
+        let allowed_tables = validate_tables(&request.tables, self.app_schema)?;
+        let cache_key =
+            readonly_query_cache_key(&request.sql, &allowed_tables, self.schema_version);
+        if !self.statements.contains_key(&cache_key) {
+            let statement = prepare_authorized_statement(&self.db, &request.sql, allowed_tables)?;
+            self.insert_statement(cache_key.clone(), statement);
+        }
+
+        let stmt = self
+            .statements
+            .get_mut(&cache_key)
+            .ok_or_else(|| SyncularError::message(ErrorKind::Internal, "query cache miss"))?;
+        let result =
+            bind_params(&self.db, stmt, &request.params).and_then(|_| read_rows(&self.db, stmt));
+        reset_statement(&self.db, stmt)?;
+        Ok(ReadonlySqlQueryResult { rows: result? })
+    }
+
+    fn insert_statement(&mut self, cache_key: String, statement: SqliteStatement) {
+        if self.statements.len() >= self.capacity {
+            if let Some(oldest) = self.statement_order.pop_front() {
+                self.statements.remove(&oldest);
+            }
+        }
+        self.statement_order.push_back(cache_key.clone());
+        self.statements.insert(cache_key, statement);
+    }
 }
 
 fn validate_tables(tables: &[String], app_schema: AppSchema) -> Result<BTreeSet<String>> {
@@ -145,6 +181,19 @@ fn validate_tables(tables: &[String], app_schema: AppSchema) -> Result<BTreeSet<
         allowed.insert(table.to_string());
     }
     Ok(allowed)
+}
+
+fn readonly_query_cache_key(
+    sql: &str,
+    allowed_tables: &BTreeSet<String>,
+    schema_version: i32,
+) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        schema_version,
+        sql,
+        allowed_tables.iter().cloned().collect::<Vec<_>>().join(",")
+    )
 }
 
 fn open_db(db_path: &str) -> Result<SqliteDb> {
@@ -169,6 +218,10 @@ fn open_db(db_path: &str) -> Result<SqliteDb> {
         return Err(message);
     }
 
+    unsafe {
+        sqlite::sqlite3_busy_timeout(raw, SQLITE_BUSY_TIMEOUT_MS);
+    }
+
     Ok(SqliteDb { raw })
 }
 
@@ -184,6 +237,47 @@ fn install_authorizer(db: &SqliteDb, context: &mut AuthorizerContext) -> Result<
         return Err(sqlite_message(db.raw, "install query authorizer"));
     }
     Ok(())
+}
+
+fn clear_authorizer(db: &SqliteDb) {
+    unsafe {
+        sqlite::sqlite3_set_authorizer(db.raw, None, ptr::null_mut());
+    }
+}
+
+fn prepare_authorized_statement(
+    db: &SqliteDb,
+    sql: &str,
+    allowed_tables: BTreeSet<String>,
+) -> Result<SqliteStatement> {
+    let mut authorizer = AuthorizerContext {
+        allowed_tables,
+        denied: None,
+    };
+    install_authorizer(db, &mut authorizer)?;
+    let result = prepare_single_statement(db, sql);
+    clear_authorizer(db);
+
+    match result {
+        Ok(stmt) => {
+            if unsafe { sqlite::sqlite3_stmt_readonly(stmt.raw) } == 0 {
+                return Err(SyncularError::config(
+                    "queryJson only accepts read-only SQL; use applyLocalOperationJson for Syncular writes",
+                ));
+            }
+            if let Some(message) = authorizer.denied {
+                return Err(SyncularError::config(message));
+            }
+            Ok(stmt)
+        }
+        Err(error) => {
+            if let Some(message) = authorizer.denied {
+                Err(SyncularError::config(message))
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 fn prepare_single_statement(db: &SqliteDb, sql: &str) -> Result<SqliteStatement> {
@@ -216,6 +310,18 @@ fn prepare_single_statement(db: &SqliteDb, sql: &str) -> Result<SqliteStatement>
     }
 
     Ok(SqliteStatement { raw })
+}
+
+fn reset_statement(db: &SqliteDb, stmt: &SqliteStatement) -> Result<()> {
+    let reset = unsafe { sqlite::sqlite3_reset(stmt.raw) };
+    let clear = unsafe { sqlite::sqlite3_clear_bindings(stmt.raw) };
+    if reset != sqlite::SQLITE_OK {
+        return Err(sqlite_message(db.raw, "reset read-only query"));
+    }
+    if clear != sqlite::SQLITE_OK {
+        return Err(sqlite_message(db.raw, "clear read-only query bindings"));
+    }
+    Ok(())
 }
 
 fn bind_params(db: &SqliteDb, stmt: &SqliteStatement, params: &[Value]) -> Result<()> {

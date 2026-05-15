@@ -490,6 +490,35 @@ Progress:
   BoltFFI `openAsync`/`finishOpenTimeout` wrappers so Swift, Kotlin, JVM, and C
   hosts can open, migrate, and validate schema off UI-critical paths before
   using the normal native client.
+- `SyncWorker` now exposes the same canonical event stream as the native
+  facade through `subscribe_events(capacity)`. Each subscription is a fan-out
+  stream with blocking `next_event()`, timeout `next_event_timeout(...)`, and
+  `close()` wakeup semantics; slow bounded subscribers are closed instead of
+  blocking the worker. The native facade event pump now consumes this worker
+  subscription instead of owning the only clean event bus.
+- Added `NativeWorkerEventConverter` plus helper functions for converting
+  `SyncWorkerEvent` into the stable `NativeEvent`/JSON shape used by native
+  bindings. This lets app-specific Rust wrappers keep their own worker layer
+  while still using Syncular's ordered row/query/conflict/CRDT event contract.
+- Added worker-owned retry wakeups for persisted outbox/blob retry timestamps.
+  The worker computes the next due retry and arms `recv_timeout` for that exact
+  wakeup, so retryable transport/blob failures no longer need an app-side
+  manual trigger or polling loop.
+- Added native SQLite runtime pragmas at connection open: WAL, busy timeout,
+  foreign keys, and `synchronous=NORMAL`. Read-only query connections also set
+  the busy timeout so UI reads wait briefly instead of failing immediately
+  during writer activity.
+- Native events now have explicit overflow semantics. Bounded worker/native
+  event queues emit `EventsOverflowed` with `droppedCount` and
+  `resyncRequired=true`, then close the overflowing subscription after that
+  recovery event is delivered. Hosts must resubscribe and force a full
+  live-query/bootstrap refresh before trusting incremental events again.
+- Added a persistent realtime worker that owns websocket wakeups, reconnects
+  with backoff, accepts auth header refreshes, and feeds `SyncWorkerTrigger`.
+- Native `query_json` now uses a read-only executor with a persistent SQLite
+  connection and a small prepared statement cache keyed by SQL, schema version,
+  and declared table dependencies. The authorizer still runs when statements
+  are prepared.
 
 Done when:
 
@@ -1325,6 +1354,11 @@ Progress:
   schemas that require unavailable `blobs`, `crdt-yjs`, or `e2ee` features
   during open, and generated TypeScript clients assert schema-derived required
   features from `syncularGeneratedRequiredRuntimeFeatures`.
+- Added explicit native app feature-profile coverage for
+  `syncular-client = { default-features = false, features = ["native", "crdt-yjs"] }`.
+  `syncular-testkit` is absent from that profile; client-only perf runner
+  dependencies are gated by the CLI feature while native transport dependencies
+  remain owned by `syncular-runtime`.
 - Added generator-selected browser artifact loading. Generated TypeScript app
   clients pass `requiredRuntimeFeatures`; the browser package exposes
   `runtimeArtifacts` selection and forwards the chosen WASM glue/WASM URLs into

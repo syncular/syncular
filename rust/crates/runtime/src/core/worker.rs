@@ -17,19 +17,24 @@ use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 #[cfg(feature = "native")]
 use crate::protocol::BlobRef;
 use crate::protocol::SyncOperation;
-use crate::store::{SyncStateStore, SyncStore};
-use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders, SyncTransport};
+use crate::store::{now_ms, retry_backoff_delay_ms, SyncStateStore, SyncStore};
+#[cfg(feature = "native")]
+use crate::transport::BlobTransport;
+use crate::transport::{
+    RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders, SyncTransport,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 #[cfg(feature = "native")]
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const DEFAULT_COMMAND_QUEUE_CAPACITY: usize = 1024;
+const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1024;
 const YJS_FLUSH_WINDOW: Duration = Duration::from_millis(12);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +222,161 @@ pub enum SyncWorkerEvent {
         error: SyncularError,
         duration_ms: u64,
     },
+    EventsOverflowed {
+        dropped_count: usize,
+    },
+}
+
+impl Clone for SyncWorkerEvent {
+    fn clone(&self) -> Self {
+        match self {
+            Self::SyncStarted { command_id } => Self::SyncStarted {
+                command_id: command_id.clone(),
+            },
+            Self::SyncCompleted {
+                command_id,
+                report,
+                outbox_count,
+                conflict_count,
+                duration_ms,
+            } => Self::SyncCompleted {
+                command_id: command_id.clone(),
+                report: report.clone(),
+                outbox_count: *outbox_count,
+                conflict_count: *conflict_count,
+                duration_ms: *duration_ms,
+            },
+            Self::SyncFailed {
+                command_id,
+                error,
+                retry_scheduled,
+                duration_ms,
+            } => Self::SyncFailed {
+                command_id: command_id.clone(),
+                error: clone_worker_error(error),
+                retry_scheduled: *retry_scheduled,
+                duration_ms: *duration_ms,
+            },
+            Self::LocalWriteCommitted {
+                command_id,
+                client_commit_id,
+                changed_tables,
+                changed_rows,
+                duration_ms,
+            } => Self::LocalWriteCommitted {
+                command_id: command_id.clone(),
+                client_commit_id: client_commit_id.clone(),
+                changed_tables: changed_tables.clone(),
+                changed_rows: changed_rows.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::CrdtFieldChanged {
+                command_id,
+                client_commit_id,
+                table,
+                row_id,
+                field,
+                changed_tables,
+                payload_json,
+                duration_ms,
+            } => Self::CrdtFieldChanged {
+                command_id: command_id.clone(),
+                client_commit_id: client_commit_id.clone(),
+                table: table.clone(),
+                row_id: row_id.clone(),
+                field: field.clone(),
+                changed_tables: changed_tables.clone(),
+                payload_json: payload_json.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::CrdtFieldCompacted {
+                command_id,
+                client_commit_id,
+                table,
+                row_id,
+                field,
+                changed_tables,
+                payload_json,
+                duration_ms,
+            } => Self::CrdtFieldCompacted {
+                command_id: command_id.clone(),
+                client_commit_id: client_commit_id.clone(),
+                table: table.clone(),
+                row_id: row_id.clone(),
+                field: field.clone(),
+                changed_tables: changed_tables.clone(),
+                payload_json: payload_json.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::LocalWriteFailed {
+                command_id,
+                error,
+                payload_json,
+                duration_ms,
+            } => Self::LocalWriteFailed {
+                command_id: command_id.clone(),
+                error: clone_worker_error(error),
+                payload_json: payload_json.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::ConflictResolutionCompleted {
+                command_id,
+                retry_client_commit_id,
+                duration_ms,
+            } => Self::ConflictResolutionCompleted {
+                command_id: command_id.clone(),
+                retry_client_commit_id: retry_client_commit_id.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::ConflictResolutionFailed {
+                command_id,
+                error,
+                duration_ms,
+            } => Self::ConflictResolutionFailed {
+                command_id: command_id.clone(),
+                error: clone_worker_error(error),
+                duration_ms: *duration_ms,
+            },
+            Self::SnapshotReady {
+                command_id,
+                payload_json,
+                duration_ms,
+            } => Self::SnapshotReady {
+                command_id: command_id.clone(),
+                payload_json: payload_json.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::WorkerCommandCompleted {
+                command_id,
+                operation,
+                payload_json,
+                duration_ms,
+            } => Self::WorkerCommandCompleted {
+                command_id: command_id.clone(),
+                operation: *operation,
+                payload_json: payload_json.clone(),
+                duration_ms: *duration_ms,
+            },
+            Self::WorkerCommandFailed {
+                command_id,
+                operation,
+                error,
+                duration_ms,
+            } => Self::WorkerCommandFailed {
+                command_id: command_id.clone(),
+                operation: *operation,
+                error: clone_worker_error(error),
+                duration_ms: *duration_ms,
+            },
+            Self::EventsOverflowed { dropped_count } => Self::EventsOverflowed {
+                dropped_count: *dropped_count,
+            },
+        }
+    }
+}
+
+fn clone_worker_error(error: &SyncularError) -> SyncularError {
+    SyncularError::message(error.kind(), error.to_string())
 }
 
 pub trait SyncWorkerClientExt {
@@ -325,6 +485,18 @@ pub trait SyncWorkerClientExt {
             "worker-owned blob cache clearing is not available for this client",
         ))
     }
+
+    fn worker_process_blob_upload_queue_json(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn worker_next_outbox_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        Ok(None)
+    }
+
+    fn worker_next_blob_upload_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        Ok(None)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,7 +510,7 @@ pub struct WorkerLocalWriteReceipt {
 #[cfg(feature = "native")]
 impl<T> SyncWorkerClientExt for SyncularClient<DieselSqliteStore, T>
 where
-    T: SyncTransport,
+    T: SyncTransport + BlobTransport,
 {
     fn apply_worker_local_operation_json(
         &mut self,
@@ -536,6 +708,20 @@ where
         self.clear_blob_cache()?;
         Ok(serde_json::to_string(&json!({ "ok": true }))?)
     }
+
+    fn worker_process_blob_upload_queue_json(&mut self) -> Result<Option<String>> {
+        Ok(Some(serde_json::to_string(
+            &self.process_blob_upload_queue()?,
+        )?))
+    }
+
+    fn worker_next_outbox_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        self.next_outbox_retry_at_ms()
+    }
+
+    fn worker_next_blob_upload_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        self.next_blob_upload_retry_at_ms()
+    }
 }
 
 #[cfg(feature = "demo-todo-native-fixture")]
@@ -564,38 +750,233 @@ where
     fn worker_current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
         self.current_row_json(table, row_id)
     }
+
+    fn worker_next_outbox_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        self.next_outbox_retry_at_ms()
+    }
 }
 
 pub struct SyncWorker {
     command_tx: SyncSender<WorkerCommand>,
-    events: SyncWorkerEvents,
+    events: SyncWorkerEventHub,
+    default_events: SyncWorkerEventSubscription,
     join: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone)]
-pub struct SyncWorkerEvents {
-    event_rx: Arc<Mutex<Receiver<SyncWorkerEvent>>>,
+struct SyncWorkerEventHub {
+    subscriber_seq: Arc<Mutex<u64>>,
+    subscribers: Arc<Mutex<BTreeMap<u64, Arc<WorkerEventQueue>>>>,
 }
 
-impl SyncWorkerEvents {
-    pub fn recv_event(&self) -> Option<SyncWorkerEvent> {
-        self.event_rx
-            .lock()
-            .ok()
-            .and_then(|event_rx| event_rx.recv().ok())
+pub struct SyncWorkerEventSubscription {
+    hub: SyncWorkerEventHub,
+    subscriber_id: u64,
+    queue: Arc<WorkerEventQueue>,
+}
+
+struct WorkerEventQueue {
+    capacity: usize,
+    state: Mutex<WorkerEventQueueState>,
+    ready: Condvar,
+}
+
+struct WorkerEventQueueState {
+    events: VecDeque<SyncWorkerEvent>,
+    closed: bool,
+}
+
+impl Default for SyncWorkerEventHub {
+    fn default() -> Self {
+        Self {
+            subscriber_seq: Arc::new(Mutex::new(0)),
+            subscribers: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+}
+
+impl SyncWorkerEventSubscription {
+    pub fn next_event(&self) -> Option<SyncWorkerEvent> {
+        self.queue.next_event()
     }
 
-    pub fn recv_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
-        self.event_rx
-            .lock()
-            .ok()
-            .and_then(|event_rx| event_rx.recv_timeout(timeout).ok())
+    pub fn next_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
+        self.queue.next_event_timeout(timeout)
     }
+
+    pub fn close(&self) {
+        if let Ok(mut subscribers) = self.hub.subscribers.lock() {
+            subscribers.remove(&self.subscriber_id);
+        }
+        self.queue.close();
+    }
+}
+
+impl Drop for SyncWorkerEventSubscription {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl SyncWorkerEventHub {
+    fn subscribe(&self, capacity: usize) -> SyncWorkerEventSubscription {
+        let queue = Arc::new(WorkerEventQueue::new(capacity));
+        let subscriber_id = self.next_subscriber_id();
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.insert(subscriber_id, queue.clone());
+        }
+        SyncWorkerEventSubscription {
+            hub: self.clone(),
+            subscriber_id,
+            queue,
+        }
+    }
+
+    fn publish_event(&self, event: SyncWorkerEvent) {
+        let Ok(mut subscribers) = self.subscribers.lock() else {
+            return;
+        };
+
+        subscribers.retain(|_, queue| {
+            queue.push(event.clone());
+            !queue.is_closed()
+        });
+    }
+
+    fn close_all(&self) {
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            for queue in subscribers.values() {
+                queue.close_after_drain();
+            }
+            subscribers.clear();
+        }
+    }
+
+    fn next_subscriber_id(&self) -> u64 {
+        if let Ok(mut seq) = self.subscriber_seq.lock() {
+            *seq = seq.saturating_add(1);
+            *seq
+        } else {
+            0
+        }
+    }
+}
+
+impl WorkerEventQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            state: Mutex::new(WorkerEventQueueState {
+                events: VecDeque::new(),
+                closed: false,
+            }),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn push(&self, event: SyncWorkerEvent) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state.closed {
+            return;
+        }
+        if state.events.len() >= self.capacity {
+            let dropped_count = state.events.len().saturating_add(1);
+            state.events.clear();
+            state
+                .events
+                .push_back(SyncWorkerEvent::EventsOverflowed { dropped_count });
+            state.closed = true;
+        } else {
+            state.events.push_back(event);
+        }
+        self.ready.notify_one();
+    }
+
+    fn next_event(&self) -> Option<SyncWorkerEvent> {
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(event) = state.events.pop_front() {
+                return Some(event);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.ready.wait(state).ok()?;
+        }
+    }
+
+    fn next_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
+        let deadline = Instant::now().checked_add(timeout)?;
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(event) = state.events.pop_front() {
+                return Some(event);
+            }
+            if state.closed {
+                return None;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let wait = deadline.saturating_duration_since(now);
+            let (next_state, timeout) = self.ready.wait_timeout(state, wait).ok()?;
+            state = next_state;
+            if timeout.timed_out() && state.events.is_empty() {
+                return None;
+            }
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            state.events.clear();
+            self.ready.notify_all();
+        }
+    }
+
+    fn close_after_drain(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            self.ready.notify_all();
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.state.lock().map(|state| state.closed).unwrap_or(true)
+    }
+}
+
+struct CloseWorkerEventsOnDrop(SyncWorkerEventHub);
+
+impl Drop for CloseWorkerEventsOnDrop {
+    fn drop(&mut self) {
+        self.0.close_all();
+    }
+}
+
+enum WorkerWake {
+    Command(WorkerCommand),
+    FlushYjs,
+    Retry,
 }
 
 #[derive(Clone)]
 pub struct SyncWorkerTrigger {
     command_tx: SyncSender<WorkerCommand>,
+}
+
+pub struct PersistentRealtimeWorker {
+    command_tx: SyncSender<RealtimeWorkerCommand>,
+    join: Option<JoinHandle<()>>,
+}
+
+enum RealtimeWorkerCommand {
+    Stop,
+    SetAuthHeaders(SyncAuthHeaders),
 }
 
 impl SyncWorkerTrigger {
@@ -612,6 +993,162 @@ impl SyncWorkerTrigger {
                     SyncularError::message(ErrorKind::Internal, "sync worker is not running")
                 }
             })
+    }
+}
+
+impl PersistentRealtimeWorker {
+    pub fn start<T>(transport: T, trigger: SyncWorkerTrigger) -> Self
+    where
+        T: SyncTransport + SyncAuthHeaderStore + Send + 'static,
+    {
+        let (command_tx, command_rx) = mpsc::sync_channel(32);
+        let join =
+            thread::spawn(move || run_persistent_realtime_worker(transport, trigger, command_rx));
+        Self {
+            command_tx,
+            join: Some(join),
+        }
+    }
+
+    pub fn set_auth_headers(&self, headers: SyncAuthHeaders) -> Result<()> {
+        self.command_tx
+            .try_send(RealtimeWorkerCommand::SetAuthHeaders(headers))
+            .map_err(|err| match err {
+                TrySendError::Full(_) => {
+                    SyncularError::busy("realtime worker command queue is full")
+                }
+                TrySendError::Disconnected(_) => {
+                    SyncularError::message(ErrorKind::Internal, "realtime worker is not running")
+                }
+            })
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        let _ = self.command_tx.send(RealtimeWorkerCommand::Stop);
+        if let Some(join) = self.join.take() {
+            join.join().map_err(|_| {
+                SyncularError::message(ErrorKind::Internal, "realtime worker panicked")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PersistentRealtimeWorker {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+fn run_persistent_realtime_worker<T>(
+    mut transport: T,
+    trigger: SyncWorkerTrigger,
+    command_rx: Receiver<RealtimeWorkerCommand>,
+) where
+    T: SyncTransport + SyncAuthHeaderStore,
+{
+    let mut reconnect_attempt: i32 = 0;
+    loop {
+        if drain_realtime_commands(&mut transport, &command_rx).is_none() {
+            return;
+        }
+
+        match transport.connect_realtime() {
+            Ok(mut socket) => {
+                reconnect_attempt = 0;
+                if !run_connected_realtime_socket(
+                    &mut transport,
+                    &mut socket,
+                    &trigger,
+                    &command_rx,
+                ) {
+                    return;
+                }
+            }
+            Err(_) => {
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+            }
+        }
+
+        let delay =
+            Duration::from_millis(retry_backoff_delay_ms(reconnect_attempt).max(250) as u64);
+        match command_rx.recv_timeout(delay) {
+            Ok(RealtimeWorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => return,
+            Ok(RealtimeWorkerCommand::SetAuthHeaders(headers)) => {
+                transport.set_auth_headers(headers);
+                reconnect_attempt = 0;
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn run_connected_realtime_socket<T>(
+    transport: &mut T,
+    socket: &mut T::Realtime,
+    trigger: &SyncWorkerTrigger,
+    command_rx: &Receiver<RealtimeWorkerCommand>,
+) -> bool
+where
+    T: SyncTransport + SyncAuthHeaderStore,
+{
+    loop {
+        match drain_realtime_commands(transport, command_rx) {
+            Some(true) => {
+                socket.close();
+                return true;
+            }
+            Some(false) => {}
+            None => {
+                socket.close();
+                return false;
+            }
+        }
+
+        match socket.read_event() {
+            Ok(Some(RealtimeEvent::Sync)) => {
+                let _ = trigger.trigger_sync();
+            }
+            Ok(Some(RealtimeEvent::Other(_))) => {}
+            Ok(None) => match command_rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(RealtimeWorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                    socket.close();
+                    return false;
+                }
+                Ok(RealtimeWorkerCommand::SetAuthHeaders(headers)) => {
+                    transport.set_auth_headers(headers);
+                    socket.close();
+                    return true;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            },
+            Err(_) => {
+                socket.close();
+                return true;
+            }
+        }
+    }
+}
+
+fn drain_realtime_commands<T>(
+    transport: &mut T,
+    command_rx: &Receiver<RealtimeWorkerCommand>,
+) -> Option<bool>
+where
+    T: SyncAuthHeaderStore,
+{
+    let mut reconnect = false;
+    loop {
+        match command_rx.try_recv() {
+            Ok(RealtimeWorkerCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                return None;
+            }
+            Ok(RealtimeWorkerCommand::SetAuthHeaders(headers)) => {
+                transport.set_auth_headers(headers);
+                reconnect = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => return Some(reconnect),
+        }
     }
 }
 
@@ -635,55 +1172,78 @@ impl SyncWorker {
         SyncularClient<S, T>: SyncWorkerClientExt,
     {
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_queue_capacity);
-        let (event_tx, event_rx) = mpsc::channel();
+        let events = SyncWorkerEventHub::default();
+        let default_events = events.subscribe(DEFAULT_EVENT_QUEUE_CAPACITY);
+        let worker_events = events.clone();
         let join = thread::spawn(move || {
+            let _close_events = CloseWorkerEventsOnDrop(worker_events.clone());
             let mut pending_yjs = BTreeMap::new();
             loop {
-                let command = if pending_yjs.is_empty() {
-                    match command_rx.recv() {
-                        Ok(command) => command,
-                        Err(_) => return,
+                let wake = if pending_yjs.is_empty() {
+                    match next_retry_timeout(&mut client) {
+                        Some(timeout) => match command_rx.recv_timeout(timeout) {
+                            Ok(command) => WorkerWake::Command(command),
+                            Err(RecvTimeoutError::Timeout) => WorkerWake::Retry,
+                            Err(RecvTimeoutError::Disconnected) => return,
+                        },
+                        None => match command_rx.recv() {
+                            Ok(command) => WorkerWake::Command(command),
+                            Err(_) => return,
+                        },
                     }
                 } else {
                     match command_rx.recv_timeout(config.yjs_flush_window) {
-                        Ok(command) => command,
-                        Err(RecvTimeoutError::Timeout) => {
-                            if flush_pending_yjs(&mut client, &mut pending_yjs, &event_tx) {
-                                if !run_until_settled(
-                                    &mut client,
-                                    &command_rx,
-                                    &event_tx,
-                                    &mut pending_yjs,
-                                    None,
-                                    false,
-                                    WorkerSyncTransport::Http,
-                                ) {
-                                    return;
-                                }
-                            }
-                            continue;
-                        }
+                        Ok(command) => WorkerWake::Command(command),
+                        Err(RecvTimeoutError::Timeout) => WorkerWake::FlushYjs,
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 };
 
-                if !handle_command(
-                    &mut client,
-                    &command_rx,
-                    &event_tx,
-                    &mut pending_yjs,
-                    command,
-                ) {
-                    return;
+                match wake {
+                    WorkerWake::FlushYjs => {
+                        if flush_pending_yjs(&mut client, &mut pending_yjs, &worker_events) {
+                            if !run_until_settled(
+                                &mut client,
+                                &command_rx,
+                                &worker_events,
+                                &mut pending_yjs,
+                                None,
+                                false,
+                                WorkerSyncTransport::Http,
+                            ) {
+                                return;
+                            }
+                        }
+                    }
+                    WorkerWake::Retry => {
+                        if !run_due_retry_work(
+                            &mut client,
+                            &command_rx,
+                            &worker_events,
+                            &mut pending_yjs,
+                        ) {
+                            return;
+                        }
+                    }
+                    WorkerWake::Command(command) => {
+                        if !handle_command(
+                            &mut client,
+                            &command_rx,
+                            &worker_events,
+                            &mut pending_yjs,
+                            command,
+                        ) {
+                            return;
+                        }
+                    }
                 }
             }
         });
 
         Self {
             command_tx,
-            events: SyncWorkerEvents {
-                event_rx: Arc::new(Mutex::new(event_rx)),
-            },
+            events,
+            default_events,
             join: Some(join),
         }
     }
@@ -702,8 +1262,12 @@ impl SyncWorker {
         }
     }
 
-    pub fn event_source(&self) -> SyncWorkerEvents {
-        self.events.clone()
+    pub fn subscribe_events(&self, capacity: usize) -> SyncWorkerEventSubscription {
+        self.events.subscribe(capacity)
+    }
+
+    pub fn event_source(&self) -> SyncWorkerEventSubscription {
+        self.subscribe_events(DEFAULT_EVENT_QUEUE_CAPACITY)
     }
 
     pub fn enqueue_sync_now(&self, command_id: String) -> Result<()> {
@@ -887,7 +1451,7 @@ impl SyncWorker {
     }
 
     pub fn recv_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
-        self.events.recv_event_timeout(timeout)
+        self.default_events.next_event_timeout(timeout)
     }
 
     pub fn recv_result_timeout(&self, timeout: Duration) -> Option<Result<SyncReport>> {
@@ -960,7 +1524,7 @@ impl Drop for SyncWorker {
 fn handle_command<S, T>(
     client: &mut SyncularClient<S, T>,
     command_rx: &Receiver<WorkerCommand>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     pending_yjs: &mut BTreeMap<YjsBatchKey, PendingYjsBatch>,
     command: WorkerCommand,
 ) -> bool
@@ -1320,10 +1884,72 @@ where
     }
 }
 
+fn run_due_retry_work<S, T>(
+    client: &mut SyncularClient<S, T>,
+    command_rx: &Receiver<WorkerCommand>,
+    event_tx: &SyncWorkerEventHub,
+    pending_yjs: &mut BTreeMap<YjsBatchKey, PendingYjsBatch>,
+) -> bool
+where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport + SyncAuthHeaderStore,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    if due_now(client.worker_next_blob_upload_retry_at_ms()) {
+        process_due_blob_upload_queue(client, event_tx);
+    }
+
+    if due_now(client.worker_next_outbox_retry_at_ms()) {
+        run_until_settled(
+            client,
+            command_rx,
+            event_tx,
+            pending_yjs,
+            None,
+            false,
+            WorkerSyncTransport::Http,
+        )
+    } else {
+        true
+    }
+}
+
+fn process_due_blob_upload_queue<S, T>(
+    client: &mut SyncularClient<S, T>,
+    event_tx: &SyncWorkerEventHub,
+) where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    let command_id = retry_wakeup_command_id("blob-retry");
+    let started = Instant::now();
+    match client.worker_process_blob_upload_queue_json() {
+        Ok(Some(payload_json)) => {
+            let payload_json = serde_json::from_str(&payload_json).ok();
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandCompleted {
+                command_id,
+                operation: "processBlobUploadQueue",
+                payload_json,
+                duration_ms: duration_ms(started),
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandFailed {
+                command_id,
+                operation: "processBlobUploadQueue",
+                error,
+                duration_ms: duration_ms(started),
+            });
+        }
+    }
+}
+
 fn run_until_settled<S, T>(
     client: &mut SyncularClient<S, T>,
     command_rx: &Receiver<WorkerCommand>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     pending_yjs: &mut BTreeMap<YjsBatchKey, PendingYjsBatch>,
     initial_command_id: Option<String>,
     initial_emit_started: bool,
@@ -1588,7 +2214,7 @@ where
 
 fn run_sync<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: Option<String>,
     emit_started: bool,
     transport: WorkerSyncTransport,
@@ -1597,7 +2223,7 @@ fn run_sync<S, T>(
     T: SyncTransport,
 {
     if emit_started {
-        let _ = event_tx.send(SyncWorkerEvent::SyncStarted {
+        let _ = event_tx.publish_event(SyncWorkerEvent::SyncStarted {
             command_id: command_id.clone(),
         });
     }
@@ -1610,7 +2236,7 @@ fn run_sync<S, T>(
     match result {
         Ok(report) => {
             let (outbox_count, conflict_count) = worker_counts(client).unwrap_or((0, 0));
-            let _ = event_tx.send(SyncWorkerEvent::SyncCompleted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::SyncCompleted {
                 command_id,
                 report,
                 outbox_count,
@@ -1620,7 +2246,7 @@ fn run_sync<S, T>(
         }
         Err(error) => {
             let retry_scheduled = retry_scheduled_after_error(client);
-            let _ = event_tx.send(SyncWorkerEvent::SyncFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::SyncFailed {
                 command_id,
                 error,
                 retry_scheduled,
@@ -1632,7 +2258,7 @@ fn run_sync<S, T>(
 
 fn apply_local_operation_json<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     operation_json: &str,
     local_row_json: Option<&str>,
@@ -1675,7 +2301,7 @@ where
                 })
                 .into_iter()
                 .collect();
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id,
                 client_commit_id,
                 changed_tables: vec![table],
@@ -1685,7 +2311,7 @@ where
             auto_sync
         }
         Err(error) => {
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
                 payload_json: None,
@@ -1698,7 +2324,7 @@ where
 
 fn apply_encrypted_crdt_update_json<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     request_json: &str,
     auto_sync: bool,
@@ -1712,7 +2338,7 @@ where
     match client.apply_worker_encrypted_crdt_update_json(request_json) {
         Ok(receipt) => {
             let crdt_event = WorkerEncryptedCrdtRequest::from_json(request_json).ok();
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
@@ -1720,7 +2346,7 @@ where
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
-                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldChanged {
+                let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldChanged {
                     command_id,
                     client_commit_id: receipt.client_commit_id,
                     table: request.table,
@@ -1735,7 +2361,7 @@ where
         }
         Err(error) => {
             let payload_json = crdt_field_failure_payload_json("encryptedCrdtUpdate", request_json);
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
                 payload_json: Some(payload_json),
@@ -1748,7 +2374,7 @@ where
 
 fn apply_encrypted_crdt_checkpoint_json<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     request_json: &str,
     auto_sync: bool,
@@ -1762,7 +2388,7 @@ where
     match client.apply_worker_encrypted_crdt_checkpoint_json(request_json) {
         Ok(Some(receipt)) => {
             let crdt_event = WorkerEncryptedCrdtRequest::from_json(request_json).ok();
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
@@ -1770,7 +2396,7 @@ where
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
-                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldCompacted {
+                let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldCompacted {
                     command_id,
                     client_commit_id: receipt.client_commit_id,
                     table: request.table,
@@ -1784,7 +2410,7 @@ where
             auto_sync
         }
         Ok(None) => {
-            let _ = event_tx.send(SyncWorkerEvent::WorkerCommandCompleted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandCompleted {
                 command_id,
                 operation: "encryptedCrdtCheckpoint",
                 payload_json: Some(json!({ "checkpointed": false })),
@@ -1795,7 +2421,7 @@ where
         Err(error) => {
             let payload_json =
                 crdt_field_failure_payload_json("encryptedCrdtCheckpoint", request_json);
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
                 payload_json: Some(payload_json),
@@ -1808,7 +2434,7 @@ where
 
 fn apply_crdt_field_text_json<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     request_json: &str,
     auto_sync: bool,
@@ -1822,7 +2448,7 @@ where
     match client.apply_worker_crdt_field_text_json(request_json) {
         Ok(receipt) => {
             let crdt_event = WorkerCrdtFieldTextRequest::from_json(request_json).ok();
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
@@ -1830,7 +2456,7 @@ where
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event {
-                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldChanged {
+                let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldChanged {
                     command_id,
                     client_commit_id: receipt.client_commit_id,
                     table: request.table,
@@ -1845,7 +2471,7 @@ where
         }
         Err(error) => {
             let payload_json = crdt_field_failure_payload_json("crdtFieldText", request_json);
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
                 payload_json: Some(payload_json),
@@ -1858,7 +2484,7 @@ where
 
 fn compact_crdt_field_json<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     request_json: &str,
     auto_sync: bool,
@@ -1872,7 +2498,7 @@ where
     match client.compact_worker_crdt_field_json(request_json) {
         Ok(Some(receipt)) => {
             let crdt_event = WorkerCrdtFieldCompactionRequest::from_json(request_json).ok();
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
@@ -1880,7 +2506,7 @@ where
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event {
-                let _ = event_tx.send(SyncWorkerEvent::CrdtFieldCompacted {
+                let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldCompacted {
                     command_id,
                     client_commit_id: receipt.client_commit_id,
                     table: request.table,
@@ -1895,7 +2521,7 @@ where
         }
         Ok(None) => {
             let payload_json = compact_crdt_field_skipped_payload(client, request_json);
-            let _ = event_tx.send(SyncWorkerEvent::WorkerCommandCompleted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandCompleted {
                 command_id,
                 operation: "compactCrdtField",
                 payload_json: Some(payload_json),
@@ -1905,7 +2531,7 @@ where
         }
         Err(error) => {
             let payload_json = crdt_field_failure_payload_json("compactCrdtField", request_json);
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
                 payload_json: Some(payload_json),
@@ -1918,7 +2544,7 @@ where
 
 fn resolve_conflict<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     conflict_id: &str,
     resolution: &str,
@@ -1940,7 +2566,7 @@ where
     match result {
         Ok(retry_client_commit_id) => {
             let should_sync = retry_client_commit_id.is_some() && auto_sync;
-            let _ = event_tx.send(SyncWorkerEvent::ConflictResolutionCompleted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::ConflictResolutionCompleted {
                 command_id,
                 retry_client_commit_id,
                 duration_ms: duration_ms(started),
@@ -1948,7 +2574,7 @@ where
             should_sync
         }
         Err(error) => {
-            let _ = event_tx.send(SyncWorkerEvent::ConflictResolutionFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::ConflictResolutionFailed {
                 command_id,
                 error,
                 duration_ms: duration_ms(started),
@@ -1960,7 +2586,7 @@ where
 
 fn refresh_snapshot_json<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     request_json: &str,
 ) where
@@ -1974,14 +2600,14 @@ fn refresh_snapshot_json<S, T>(
         .and_then(|json| serde_json::from_str::<Value>(&json).map_err(Into::into))
     {
         Ok(payload_json) => {
-            let _ = event_tx.send(SyncWorkerEvent::SnapshotReady {
+            let _ = event_tx.publish_event(SyncWorkerEvent::SnapshotReady {
                 command_id,
                 payload_json,
                 duration_ms: duration_ms(started),
             });
         }
         Err(error) => {
-            let _ = event_tx.send(SyncWorkerEvent::WorkerCommandFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandFailed {
                 command_id,
                 operation: "refreshSnapshot",
                 error,
@@ -2096,7 +2722,7 @@ fn copy_crdt_request_field(
 
 fn run_worker_json_command<S, T>(
     client: &mut SyncularClient<S, T>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     operation: &'static str,
     f: impl FnOnce(&mut SyncularClient<S, T>) -> Result<String>,
@@ -2115,7 +2741,7 @@ fn run_worker_json_command<S, T>(
         }
     }) {
         Ok(payload_json) => {
-            let _ = event_tx.send(SyncWorkerEvent::WorkerCommandCompleted {
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandCompleted {
                 command_id,
                 operation,
                 payload_json,
@@ -2123,7 +2749,7 @@ fn run_worker_json_command<S, T>(
             });
         }
         Err(error) => {
-            let _ = event_tx.send(SyncWorkerEvent::WorkerCommandFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandFailed {
                 command_id,
                 operation,
                 error,
@@ -2135,7 +2761,7 @@ fn run_worker_json_command<S, T>(
 
 fn queue_yjs_update_json(
     pending_yjs: &mut BTreeMap<YjsBatchKey, PendingYjsBatch>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
     command_id: String,
     update_json: &str,
     auto_sync: bool,
@@ -2162,7 +2788,7 @@ fn queue_yjs_update_json(
         }
         Err(error) => {
             let payload_json = crdt_field_failure_payload_json("crdtFieldYjsUpdate", update_json);
-            let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+            let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                 command_id,
                 error,
                 payload_json: Some(payload_json),
@@ -2175,7 +2801,7 @@ fn queue_yjs_update_json(
 fn flush_pending_yjs<S, T>(
     client: &mut SyncularClient<S, T>,
     pending_yjs: &mut BTreeMap<YjsBatchKey, PendingYjsBatch>,
-    event_tx: &mpsc::Sender<SyncWorkerEvent>,
+    event_tx: &SyncWorkerEventHub,
 ) -> bool
 where
     S: SyncStore + SyncStateStore,
@@ -2196,7 +2822,7 @@ where
                     let message = error.message_text();
                     let kind = error.kind();
                     for command_id in batch.command_ids {
-                        let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+                        let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                             command_id,
                             error: SyncularError::message(kind, &message),
                             payload_json: Some(crdt_field_failure_payload_from_parts(
@@ -2232,7 +2858,7 @@ where
                     .ok()
                     .flatten();
                 for command_id in batch.command_ids {
-                    let _ = event_tx.send(SyncWorkerEvent::LocalWriteCommitted {
+                    let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                         command_id: command_id.clone(),
                         client_commit_id: client_commit_id.clone(),
                         changed_tables: vec![key.table.clone()],
@@ -2249,7 +2875,7 @@ where
                         }],
                         duration_ms: duration_ms(started),
                     });
-                    let _ = event_tx.send(SyncWorkerEvent::CrdtFieldChanged {
+                    let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldChanged {
                         command_id,
                         client_commit_id: client_commit_id.clone(),
                         table: key.table.clone(),
@@ -2265,7 +2891,7 @@ where
                 let message = error.message_text();
                 let kind = error.kind();
                 for command_id in batch.command_ids {
-                    let _ = event_tx.send(SyncWorkerEvent::LocalWriteFailed {
+                    let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteFailed {
                         command_id,
                         error: SyncularError::message(kind, &message),
                         payload_json: Some(crdt_field_failure_payload_from_parts(
@@ -2310,6 +2936,41 @@ where
                 .any(|item| item.status == "pending" || item.status == "sending")
         })
         .unwrap_or(false)
+}
+
+fn next_retry_timeout<S, T>(client: &mut SyncularClient<S, T>) -> Option<Duration>
+where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    let next = [
+        client.worker_next_outbox_retry_at_ms().ok().flatten(),
+        client.worker_next_blob_upload_retry_at_ms().ok().flatten(),
+    ]
+    .into_iter()
+    .flatten()
+    .min()?;
+    Some(duration_until_ms(next))
+}
+
+fn due_now(next: Result<Option<i64>>) -> bool {
+    next.ok()
+        .flatten()
+        .is_some_and(|next_attempt_at| next_attempt_at <= now_ms())
+}
+
+fn duration_until_ms(timestamp_ms: i64) -> Duration {
+    let now = now_ms();
+    if timestamp_ms <= now {
+        Duration::ZERO
+    } else {
+        Duration::from_millis((timestamp_ms - now) as u64)
+    }
+}
+
+fn retry_wakeup_command_id(prefix: &str) -> String {
+    format!("{prefix}-{}", now_ms())
 }
 
 fn duration_ms(started: Instant) -> u64 {

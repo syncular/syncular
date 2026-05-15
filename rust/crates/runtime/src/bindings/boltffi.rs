@@ -194,6 +194,14 @@ impl SyncularBoltClient {
         self.with_client(|client| Ok(client.sync_worker_running()))
     }
 
+    pub fn start_realtime_worker(&self) -> Result<bool, String> {
+        self.with_client_mut(|client| client.start_realtime_worker().map(|_| true))
+    }
+
+    pub fn stop_realtime_worker(&self) -> Result<bool, String> {
+        self.with_client_mut(|client| client.stop_realtime_worker().map(|_| true))
+    }
+
     pub fn start_event_stream(&self, capacity: u64) -> Result<bool, String> {
         let subscription =
             Arc::new(self.with_client(|client| Ok(client.subscribe_events(capacity as usize)))?);

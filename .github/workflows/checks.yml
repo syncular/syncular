@@ -181,6 +181,7 @@ jobs:
           cargo fmt --manifest-path rust/Cargo.toml --all -- --check
           cargo test --manifest-path rust/Cargo.toml --workspace
           cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features
+          cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs
           cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check
 
   rust-browser-wasm:

@@ -655,6 +655,19 @@ where
 
 impl<S, T> SyncularClient<S, T>
 where
+    S: SyncStateStore,
+{
+    pub fn next_outbox_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        self.store.next_outbox_retry_at()
+    }
+
+    pub fn next_blob_upload_retry_at_ms(&mut self) -> Result<Option<i64>> {
+        self.store.next_blob_upload_retry_at()
+    }
+}
+
+impl<S, T> SyncularClient<S, T>
+where
     S: SyncStore,
     T: SyncTransport,
 {
@@ -909,7 +922,10 @@ where
 }
 
 #[cfg(feature = "native")]
-impl SyncularClient<DieselSqliteStore, HttpSyncTransport> {
+impl<T> SyncularClient<DieselSqliteStore, T>
+where
+    T: SyncTransport + BlobTransport,
+{
     pub fn store_blob_bytes(
         &mut self,
         data: &[u8],

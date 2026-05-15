@@ -5,7 +5,7 @@ use crate::protocol::*;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, DemoTaskStore, OutboxCommit, OutboxSummary,
     SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, Task, MAX_SYNC_RETRIES,
-    SYNC_SENDING_TIMEOUT_MS,
+    SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -25,6 +25,7 @@ impl RusqliteStore {
         let conn = Connection::open(path).map_err(|err| {
             SyncularError::storage(err).context(format!("open sqlite database at {path}"))
         })?;
+        apply_sqlite_runtime_pragmas(&conn)?;
         let store = Self { conn };
         store.ensure_schema()?;
         Ok(store)
@@ -137,6 +138,18 @@ impl RusqliteStore {
     }
 }
 
+fn apply_sqlite_runtime_pragmas(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        r#"
+        pragma busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};
+        pragma foreign_keys = on;
+        pragma journal_mode = wal;
+        pragma synchronous = normal;
+        "#
+    ))?;
+    Ok(())
+}
+
 fn quote_sqlite_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -222,6 +235,18 @@ impl SyncStateStore for RusqliteStore {
         let rows = statement.query_map([], outbox_summary_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    fn next_outbox_retry_at(&mut self) -> Result<Option<i64>> {
+        Ok(self.conn.query_row(
+            r#"
+            select min(next_attempt_at)
+            from sync_outbox_commits
+            where status = 'pending' and attempt_count > 0 and attempt_count < ?1
+            "#,
+            params![MAX_SYNC_RETRIES],
+            |row| row.get(0),
+        )?)
     }
 
     fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>> {
