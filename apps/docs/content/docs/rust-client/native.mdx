@@ -77,9 +77,39 @@ APIs for work that can block:
 - queued CRDT field updates and compaction
 - queued blob upload/cache/compaction work
 
-Poll native events from a background task and route updates by `eventSeq`,
-`commandId`, `changedRows`, and query ids. The native worker owns backpressure
-for queued local writes and CRDT bursts.
+Start the native event stream once, read `nextEventJson()` from a background
+task, and route updates by `eventSeq`, `commandId`, `changedRows`, and query
+ids. The native worker owns backpressure for queued local writes and CRDT
+bursts. During teardown, close the event stream and then call `shutdown()`.
+
+Swift:
+
+```swift
+try client.startEventStream(capacity: 256)
+
+Task.detached {
+    while let eventJson = try client.nextEventJson() {
+        let event = try syncularDecodeNativeEvent(eventJson)
+        await viewModel.apply(syncularEvent: event)
+    }
+}
+```
+
+Kotlin:
+
+```kotlin
+client.startEventStream(256uL)
+
+scope.launch(Dispatchers.IO) {
+    while (true) {
+        val eventJson = client.nextEventJson() ?: break
+        val event = syncularDecodeNativeEvent(eventJson)
+        withContext(Dispatchers.Main) {
+            viewModel.applySyncularEvent(event)
+        }
+    }
+}
+```
 
 ## Realtime and sync
 

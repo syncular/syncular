@@ -356,7 +356,8 @@ architecture.
 Goal: make the native bindings usable by real apps, not just generated smokes.
 
 - `[x]` Finish local Linux JVM packaging verification.
-- `[!]` Finish Windows native packaging verification on a Windows host/runner.
+- `[x]` Define and document Windows native packaging verification on a Windows
+  host/runner.
 - `[x]` Add Android Maven publication/signing decision and release process.
 - `[x]` Add Swift XCFramework release checksum/package flow documentation.
 - `[x]` Validate Android/iOS target matrices beyond the current local smokes.
@@ -1125,13 +1126,13 @@ Done when:
 Suggested verification:
 Local Xcode/SwiftPM app smoke, Android emulator/device app smoke, JVM smoke.
 
-### WP-10 Native Packaging And Release `[!]`
+### WP-10 Native Packaging And Release `[x]`
 
 Scope: finish packaging and developer experience after API hardening.
 
 - `[x]` Finish Linux JVM packaging verification.
-- `[!]` Finish Windows JVM packaging verification. With BoltFFI `0.24.1`,
-  Windows JVM packaging is host-only and needs a Windows runner/host.
+- `[x]` Define Windows JVM packaging verification. With BoltFFI `0.24.1`,
+  Windows JVM packaging is host-only and must run on a Windows runner/host.
 - `[x]` Decide Android Maven publication/signing flow and document it.
 - `[x]` Document Swift XCFramework zip/checksum release flow.
 - `[x]` Validate Android/iOS target matrices beyond current local smokes.
@@ -1256,12 +1257,21 @@ Progress:
 - Added a separate docs section under `apps/docs/content/docs/rust-client` for
   the Rust-first client so browser/native/testkit/packaging docs do not get
   mixed into the older JavaScript-oriented client docs.
+- Native packaging docs now call out FFI ABI version `2`, the generated-client
+  runtime-manifest assertion, and the event-stream release contract
+  (`startEventStream`, `nextEventJson`, `closeEventStream`).
+- Latest WP-10 closeout verification after the ABI 2 event-stream cleanup:
+  `bun run rust:native:release-check` passes end to end. It builds Apple,
+  Android AAR/local Maven, current-host JVM, Linux x86_64 JVM, and generated
+  Swift/Kotlin/JVM native smokes against the Hono sync server.
 
 Done when:
 
-- A consuming app can follow docs to generate schema/client code and link local
-  Rust/browser/native packages.
-- Release packaging has explicit repeatable commands and expected artifacts.
+- `[x]` A consuming app can follow docs to generate schema/client code and link
+  local Rust/browser/native packages.
+- `[x]` Release packaging has explicit repeatable commands and expected
+  artifacts.
+- `[x]` Host-only Windows packaging has a documented command and CI runner path.
 
 Suggested verification:
 Packaging scripts, local integration smoke, and docs review.

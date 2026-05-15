@@ -4,6 +4,10 @@ The native packages must be generated from the current Rust runtime, generated
 headers, and JNI glue in one pass. Do not rely on checked-in binary artifacts as
 the source of truth; they can drift from the current BoltFFI surface.
 
+The current native FFI ABI version is `2`. Generated Swift/Kotlin app clients
+assert this against `runtimeManifestJson()` before using a native host, so
+runtime/binding changes and app-client generation must be released together.
+
 Run from the repo root:
 
 ```bash
@@ -21,6 +25,10 @@ current-host JVM package, Linux x86_64 JVM package, and the generated
 Swift/Kotlin/JVM native smoke. Windows JVM packaging is still a Windows
 host/runner check because BoltFFI `0.24.1` does not cross-package that target
 from macOS.
+
+The native smoke validates the current event-stream contract:
+`startEventStream(...)`, `nextEventJson()`, and `closeEventStream()`. The old
+host-facing event wait API is intentionally not part of the release surface.
 
 By default this writes fresh artifacts under `.context/native-packages`:
 
