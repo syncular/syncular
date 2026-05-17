@@ -19,6 +19,7 @@ import {
   ScopeValuesSchema,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
+  type SyncChange,
   SyncCombinedRequestSchema,
   type SyncCombinedResponse,
   SyncCombinedResponseSchema,
@@ -1346,11 +1347,32 @@ export function createSyncRoutes<
     }
 
     const combinedScopeKeys = Array.from(scopeKeys);
-    const canInlineChanges = combinedScopeKeys.length === 1;
-    let syncPack: Uint8Array | undefined;
-    if (canInlineChanges && emittedChanges.length > 0) {
+    const changesWithScopeKeys = emittedChanges.map((change) => ({
+      change,
+      scopeKeys: applyPartitionToScopeKeys(
+        ctx.partitionId,
+        scopeValuesToScopeKeys(change.scopes)
+      ),
+    }));
+    const filterChangesForConnection = (
+      connection: WebSocketConnection
+    ): SyncChange[] =>
+      changesWithScopeKeys
+        .filter(({ scopeKeys }) =>
+          scopeKeys.some((scopeKey) =>
+            wsConnectionManager?.isConnectionSubscribedToScopeKey(
+              connection.ownerKey,
+              scopeKey
+            )
+          )
+        )
+        .map(({ change }) => change);
+    const encodeRealtimeSyncPack = (
+      changes: readonly SyncChange[]
+    ): Uint8Array | undefined => {
+      if (changes.length === 0) return undefined;
       try {
-        syncPack = encodeBinarySyncPack(
+        return encodeBinarySyncPack(
           {
             ok: true as const,
             pull: {
@@ -1368,7 +1390,7 @@ export function createSyncRoutes<
                       commitSeq: latestCommitSeq,
                       createdAt: latestCreatedAt ?? new Date().toISOString(),
                       actorId: latestActorId,
-                      changes: emittedChanges,
+                      changes: [...changes],
                     },
                   ],
                 },
@@ -1387,13 +1409,43 @@ export function createSyncRoutes<
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    }
+      return undefined;
+    };
+
+    const canUseSharedInlinePayload = combinedScopeKeys.length === 1;
+    const syncPack = canUseSharedInlinePayload
+      ? encodeRealtimeSyncPack(emittedChanges)
+      : undefined;
+    const scopedSyncPackCache = new Map<string, Uint8Array | undefined>();
+    const scopedChangesCache = new Map<string, SyncChange[]>();
+
+    const changesForConnection = (connection: WebSocketConnection) => {
+      const cached = scopedChangesCache.get(connection.ownerKey);
+      if (cached) return cached;
+      const filtered = filterChangesForConnection(connection);
+      scopedChangesCache.set(connection.ownerKey, filtered);
+      return filtered;
+    };
+
+    const syncPackForConnection = (connection: WebSocketConnection) => {
+      const cached = scopedSyncPackCache.get(connection.ownerKey);
+      if (scopedSyncPackCache.has(connection.ownerKey)) return cached;
+      const encoded = encodeRealtimeSyncPack(changesForConnection(connection));
+      scopedSyncPackCache.set(connection.ownerKey, encoded);
+      return encoded;
+    };
 
     if (wsConnectionManager) {
       wsConnectionManager.notifyScopeKeys(combinedScopeKeys, latestCommitSeq, {
         excludeClientIds: [ctx.clientId],
-        changes: canInlineChanges ? emittedChanges : undefined,
+        changes: canUseSharedInlinePayload ? emittedChanges : undefined,
         syncPack,
+        changesForConnection: canUseSharedInlinePayload
+          ? undefined
+          : changesForConnection,
+        syncPackForConnection: canUseSharedInlinePayload
+          ? undefined
+          : syncPackForConnection,
         actorId: latestActorId,
         createdAt: latestCreatedAt,
       });
