@@ -156,19 +156,25 @@ fn read_changes_v4(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChan
                 decoded.table
             )));
         }
-        group_rows.push(decoded.rows);
+        group_rows.push(decoded.rows.into_iter().map(Some).collect::<Vec<_>>());
     }
 
     for row_ref in row_refs {
-        let Some(rows) = group_rows.get(row_ref.group_index) else {
+        let Some(rows) = group_rows.get_mut(row_ref.group_index) else {
             return Err(SyncularError::protocol_message(format!(
                 "binary sync pack change row ref has invalid group index: {}",
                 row_ref.group_index
             )));
         };
-        let Some(row) = rows.get(row_ref.row_index) else {
+        let Some(row) = rows.get_mut(row_ref.row_index) else {
             return Err(SyncularError::protocol_message(format!(
                 "binary sync pack change row ref has invalid row index: group={}, row={}",
+                row_ref.group_index, row_ref.row_index
+            )));
+        };
+        let Some(row) = row.take() else {
+            return Err(SyncularError::protocol_message(format!(
+                "binary sync pack change row ref was already consumed: group={}, row={}",
                 row_ref.group_index, row_ref.row_index
             )));
         };
@@ -183,7 +189,7 @@ fn read_changes_v4(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChan
                 "binary sync pack row ref table mismatch",
             ));
         }
-        change.row_json = Some(Value::Object(row.clone()));
+        change.row_json = Some(Value::Object(row));
     }
 
     Ok(changes)

@@ -1462,6 +1462,15 @@ client. Overflow should close or resync the session deliberately.
   - Conclusion: after incremental apply batching, the next meaningful browser
     target is the incremental sync-pack row decode/materialization path, not
     another tiny SQLite apply cleanup.
+- Retained binary sync-pack decode cleanup: generated v4 row-group payloads now
+  move decoded row maps into their matching `SyncChange` instead of cloning
+  each row map after decode.
+  - 100k bootstrap rows + 5k incremental rows:
+    `rust_incremental_pull_ms` `53.32 -> 50.86`,
+    request `34 -> 32`, sync-pack decode `11 -> 9`, apply stayed `18`,
+    response bytes unchanged (`1,091,633`).
+  - Complexity check: this is a net simplification of ownership in the decoder,
+    so the modest gain is acceptable.
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 
