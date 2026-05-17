@@ -9,6 +9,8 @@ function createConn(args: {
   actorId: string;
   clientId: string;
   onSync: (cursor: number) => void;
+  onSyncPack?: (bytes: Uint8Array) => void;
+  syncPackEncoding?: WebSocketConnection['syncPackEncoding'];
 }): WebSocketConnection {
   let open = true;
 
@@ -24,9 +26,14 @@ function createConn(args: {
       clientId: args.clientId,
     }),
     transportPath: 'direct',
+    syncPackEncoding: args.syncPackEncoding ?? null,
     sendSync(cursor) {
       if (!open) return;
       args.onSync(cursor);
+    },
+    sendSyncPack(bytes) {
+      if (!open) return;
+      args.onSyncPack?.(bytes);
     },
     sendHeartbeat() {},
     sendPresence() {},
@@ -118,6 +125,38 @@ describe('WebSocketConnectionManager (scopes)', () => {
 
     mgr.notifyScopeKeys(['s'], 123, { excludeClientIds: ['c1'] });
     expect(seen).toEqual(['c2']);
+  });
+
+  it('sends binary sync packs only to connections that negotiated them', () => {
+    const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
+    const seen: Array<{ clientId: string; kind: 'json' | 'binary' }> = [];
+    const syncPack = new Uint8Array([0x53, 0x53, 0x50, 0x31]);
+
+    const binary = createConn({
+      actorId: 'u1',
+      clientId: 'binary',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: () => seen.push({ clientId: 'binary', kind: 'json' }),
+      onSyncPack: () => seen.push({ clientId: 'binary', kind: 'binary' }),
+    });
+    const json = createConn({
+      actorId: 'u1',
+      clientId: 'json',
+      onSync: () => seen.push({ clientId: 'json', kind: 'json' }),
+      onSyncPack: () => seen.push({ clientId: 'json', kind: 'binary' }),
+    });
+
+    mgr.register(binary, ['s']);
+    mgr.register(json, ['s']);
+    mgr.notifyScopeKeys(['s'], 123, {
+      changes: [{ table: 'tasks', row_id: 'task-1' }],
+      syncPack,
+    });
+
+    expect(seen).toEqual([
+      { clientId: 'binary', kind: 'binary' },
+      { clientId: 'json', kind: 'json' },
+    ]);
   });
 
   it('stops notifying after unregister', () => {

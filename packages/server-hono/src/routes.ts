@@ -18,6 +18,7 @@ import {
   prefersBinarySyncPack,
   ScopeValuesSchema,
   SYNC_PACK_CONTENT_TYPE,
+  SYNC_PACK_ENCODING_BINARY_V1,
   SyncCombinedRequestSchema,
   type SyncCombinedResponse,
   SyncCombinedResponseSchema,
@@ -90,7 +91,8 @@ export interface SyncAuthResult extends SyncServerAuth {}
 /**
  * WebSocket configuration for realtime sync.
  *
- * Note: this endpoint is only a "wake up" mechanism; clients must still pull.
+ * Note: this endpoint may send bounded inline deltas, but clients must still
+ * support HTTP pull for recovery and large payloads.
  */
 export interface SyncWebSocketConfig {
   enabled?: boolean;
@@ -1344,11 +1346,54 @@ export function createSyncRoutes<
     }
 
     const combinedScopeKeys = Array.from(scopeKeys);
+    const canInlineChanges = combinedScopeKeys.length === 1;
+    let syncPack: Uint8Array | undefined;
+    if (canInlineChanges && emittedChanges.length > 0) {
+      try {
+        syncPack = encodeBinarySyncPack(
+          {
+            ok: true as const,
+            pull: {
+              ok: true as const,
+              subscriptions: [
+                {
+                  id: '__syncular_realtime__',
+                  status: 'active',
+                  scopes: {},
+                  bootstrap: false,
+                  bootstrapState: null,
+                  nextCursor: latestCommitSeq,
+                  commits: [
+                    {
+                      commitSeq: latestCommitSeq,
+                      createdAt: latestCreatedAt ?? new Date().toISOString(),
+                      actorId: latestActorId,
+                      changes: emittedChanges,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          {
+            changeRowEncoders: binarySyncPackChangeRowEncoders,
+          }
+        );
+      } catch (error) {
+        logAsyncFailureOnce('sync.realtime.binary_pack_encode_failed', {
+          event: 'sync.realtime.binary_pack_encode_failed',
+          userId: ctx.auth.actorId,
+          clientId: ctx.clientId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     if (wsConnectionManager) {
       wsConnectionManager.notifyScopeKeys(combinedScopeKeys, latestCommitSeq, {
         excludeClientIds: [ctx.clientId],
-        changes: emittedChanges,
+        changes: canInlineChanges ? emittedChanges : undefined,
+        syncPack,
         actorId: latestActorId,
         createdAt: latestCreatedAt,
       });
@@ -2556,6 +2601,10 @@ export function createSyncRoutes<
         c,
         c.req.query('transportPath')
       );
+      const syncPackEncoding =
+        c.req.query('syncPackEncoding') === SYNC_PACK_ENCODING_BINARY_V1
+          ? SYNC_PACK_ENCODING_BINARY_V1
+          : null;
       const connectionOwnerKey = createWebSocketConnectionOwnerKey({
         partitionId,
         actorId: auth.actorId,
@@ -2712,6 +2761,7 @@ export function createSyncRoutes<
             clientId,
             ownerKey: connectionOwnerKey,
             transportPath: realtimeTransportPath,
+            syncPackEncoding,
           });
           connRef = conn;
           sessionStartedAtMs = Date.now();

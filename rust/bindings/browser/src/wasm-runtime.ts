@@ -47,6 +47,7 @@ export interface RawSyncularV2RustClient {
   applyLocalOperationsCommitJson(operationsJson: string): Promise<string>;
   syncPullJson(): Promise<string>;
   applyRealtimeChangesJson(requestJson: string): Promise<string>;
+  applyRealtimeSyncPackBytes(bytes: Uint8Array): Promise<string>;
   syncPushJson(): Promise<string>;
   recoverSyncPushErrorJson(errorMessage: string): void;
   syncOnceJson(): Promise<string>;
