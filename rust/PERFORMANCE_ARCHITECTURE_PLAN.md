@@ -1111,6 +1111,22 @@ client. Overflow should close or resync the session deliberately.
   was worse (`rust_bootstrap_ms` `1034.53`) and query improvement shrank
   (`229 -> 223`). Reverted. Scope indexes still need a separate real
   multi-tenant workload before being promoted into generated migrations.
+- Retained an ASCII fast path for server binary snapshot string writes. The
+  binary writer now emits ASCII `string` cells directly into its output buffer
+  and falls back to `TextEncoder` for Unicode, with coverage proving the
+  fallback round-trips non-ASCII content.
+  - Same-session 500k bootstrap-only, release-WASM, battery saver, compared
+    against a temporary no-ASCII baseline on the same tree:
+    `rust_bootstrap_ms` `1034.62 -> 928.49`,
+    `rust_pull_request_ms` `492 -> 412`,
+    `rust_server_bootstrap_row_frame_encode_ms` `139 -> 69`,
+    `rust_pull_apply_ms` `537 -> 511`,
+    `rust_cached_bootstrap_ms` `535.23 -> 508.54`.
+  - 100k full scoreboard guardrail stayed acceptable:
+    `rust_bootstrap_ms` `217.00 -> 212.56`,
+    `rust_pull_request_ms` `106 -> 94`,
+    `rust_server_bootstrap_row_frame_encode_ms` `34 -> 19`.
+    Local read metrics were noisy and not affected by this server-side path.
 
 ### Phase 4: Worker Default
 
