@@ -2,12 +2,16 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import {
   type BinarySnapshotColumn,
+  decodeBinarySnapshotTable,
+  decodeSnapshotRows,
   encodeBinarySnapshotTable,
+  encodeSnapshotRows,
 } from '../../packages/core/src/snapshot-chunks';
 import {
   decodeBinarySyncPack,
   encodeBinarySyncPack,
 } from '../../packages/core/src/sync-packs';
+import { gunzipBytes, gzipBytes } from '../../packages/core/src/utils';
 import {
   type BenchmarkResult,
   benchmark,
@@ -83,6 +87,7 @@ const itBrowserBenchmark =
 const itBrowserE2eScoreboard =
   Bun.env.PERF_RUST_BROWSER_E2E_SCOREBOARD === 'true' ? it : it.skip;
 let syncPackBenchmarkSink = 0;
+let snapshotChunkBenchmarkSink = 0;
 
 describe('rust client performance', () => {
   afterAll(async () => {
@@ -208,6 +213,129 @@ describe('rust client performance', () => {
     expect(binary.byteLength).toBeGreaterThan(0);
     expect(binaryGenerated.byteLength).toBeLessThan(binary.byteLength);
     expect(syncPackBenchmarkSink).toBeGreaterThan(0);
+  });
+
+  it('tracks snapshot chunk encoding and gzip policy cost', async () => {
+    const rowCount = readPositiveIntEnv('PERF_SNAPSHOT_CHUNK_ROWS', 50_000);
+    const rounds = readPositiveIntEnv('PERF_SNAPSHOT_CHUNK_ROUNDS', 5);
+    const warmup = readPositiveIntEnv('PERF_SNAPSHOT_CHUNK_WARMUP', 2);
+    const rows = makeBenchmarkTaskRows(rowCount);
+    const jsonChunk = encodeSnapshotRows(rows);
+    const binaryChunk = encodeBenchmarkTaskRows(rows);
+    const jsonGzipLevel1 = await gzipBytes(jsonChunk, { level: 1 });
+    const binaryGzipLevel1 = await gzipBytes(binaryChunk, { level: 1 });
+    const jsonGzipLevel6 = await gzipBytes(jsonChunk, { level: 6 });
+    const binaryGzipLevel6 = await gzipBytes(binaryChunk, { level: 6 });
+
+    results.push(
+      await benchmark(
+        `snapshot_chunk_json_encode_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += encodeSnapshotRows(rows).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_binary_encode_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink +=
+            encodeBenchmarkTaskRows(rows).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_json_gzip_level_1_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += (
+            await gzipBytes(jsonChunk, { level: 1 })
+          ).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_binary_gzip_level_1_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += (
+            await gzipBytes(binaryChunk, { level: 1 })
+          ).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_json_gzip_level_6_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += (
+            await gzipBytes(jsonChunk, { level: 6 })
+          ).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_binary_gzip_level_6_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += (
+            await gzipBytes(binaryChunk, { level: 6 })
+          ).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_json_gunzip_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += (await gunzipBytes(jsonGzipLevel1))
+            .byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_binary_gunzip_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += (await gunzipBytes(binaryGzipLevel1))
+            .byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_json_decode_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink += decodeSnapshotRows(jsonChunk).length;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `snapshot_chunk_binary_decode_${rowCount}`,
+        async () => {
+          snapshotChunkBenchmarkSink +=
+            decodeBinarySnapshotTable(binaryChunk).rows.length;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      bytesMetric(`snapshot_chunk_json_raw_${rowCount}_kib`, jsonChunk.length),
+      bytesMetric(
+        `snapshot_chunk_binary_raw_${rowCount}_kib`,
+        binaryChunk.length
+      ),
+      bytesMetric(
+        `snapshot_chunk_json_gzip_level_1_${rowCount}_kib`,
+        jsonGzipLevel1.length
+      ),
+      bytesMetric(
+        `snapshot_chunk_binary_gzip_level_1_${rowCount}_kib`,
+        binaryGzipLevel1.length
+      ),
+      bytesMetric(
+        `snapshot_chunk_json_gzip_level_6_${rowCount}_kib`,
+        jsonGzipLevel6.length
+      ),
+      bytesMetric(
+        `snapshot_chunk_binary_gzip_level_6_${rowCount}_kib`,
+        binaryGzipLevel6.length
+      )
+    );
+
+    expect(binaryChunk.byteLength).toBeLessThan(jsonChunk.byteLength);
+    expect(binaryGzipLevel1.byteLength).toBeLessThan(jsonGzipLevel1.byteLength);
+    expect(snapshotChunkBenchmarkSink).toBeGreaterThan(0);
   });
 
   itBrowserBenchmark(
@@ -407,20 +535,11 @@ function browserE2eMetric(
 }
 
 function makeIncrementalSyncPackResponse(changeCount: number) {
-  const changes = Array.from({ length: changeCount }, (_, index) => ({
+  const changes = makeBenchmarkTaskRows(changeCount).map((row, index) => ({
     table: 'tasks',
-    row_id: `task-${index}`,
+    row_id: row.id,
     op: 'upsert' as const,
-    row_json: {
-      id: `task-${index}`,
-      title: `Task ${index}`,
-      completed: index % 2 === 0 ? 1 : 0,
-      user_id: 'browser-e2e-user',
-      project_id: index % 5 === 0 ? 'p1' : null,
-      server_version: index + 1,
-      image: null,
-      title_yjs_state: null,
-    },
+    row_json: row,
     row_version: index + 1,
     scopes: { user_id: 'browser-e2e-user' },
   }));
@@ -449,6 +568,30 @@ function makeIncrementalSyncPackResponse(changeCount: number) {
       ],
     },
   };
+}
+
+function makeBenchmarkTaskRows(rowCount: number): BenchmarkTaskRow[] {
+  return Array.from({ length: rowCount }, (_, index) => ({
+    id: `task-${index}`,
+    title: `Task ${index}`,
+    completed: index % 2 === 0 ? 1 : 0,
+    user_id: 'browser-e2e-user',
+    project_id: index % 5 === 0 ? 'p1' : null,
+    server_version: index + 1,
+    image: null,
+    title_yjs_state: null,
+  }));
+}
+
+interface BenchmarkTaskRow {
+  id: string;
+  title: string;
+  completed: number;
+  user_id: string;
+  project_id: string | null;
+  server_version: number;
+  image: null;
+  title_yjs_state: null;
 }
 
 const benchmarkTaskBinaryColumns = [
