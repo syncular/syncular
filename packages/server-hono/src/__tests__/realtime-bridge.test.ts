@@ -115,7 +115,10 @@ describe('realtime broadcaster bridge', () => {
     });
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(onSync).toHaveBeenCalledWith(commitSeq);
+    expect(onSync).toHaveBeenCalledWith(commitSeq, undefined, {
+      reason: 'server-wakeup',
+      requiresPull: true,
+    });
 
     // Echo suppression: instance2 ignores events it originated.
     onSync.mockClear();
