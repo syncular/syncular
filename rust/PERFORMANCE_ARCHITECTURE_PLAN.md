@@ -1099,6 +1099,12 @@ client. Overflow should close or resync the session deliberately.
   `rust_bootstrap_ms` `984.02 -> 1115.91`,
   `rust_pull_apply_ms` `501 -> 629`,
   `rust_cached_pull_apply_ms` `493 -> 615`. Reverted.
+- Rejected manual little-endian byte reads in the Rust binary snapshot cursor.
+  Replacing slice `try_into()` with explicit byte arrays looked cheaper, but
+  release-WASM got slower:
+  `rust_bootstrap_ms` `984.02 -> 1015.20`,
+  `rust_pull_apply_ms` `501 -> 530`,
+  `rust_cached_pull_apply_ms` `493 -> 509`. Reverted.
 
 ### Phase 4: Worker Default
 
