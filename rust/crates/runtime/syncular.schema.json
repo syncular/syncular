@@ -162,7 +162,8 @@
       "subscription": {
         "id": "sub-comments",
         "params": {}
-      }
+      },
+      "sqliteWithoutRowid": true
     },
     {
       "name": "projects",
@@ -260,7 +261,8 @@
       "subscription": {
         "id": "sub-projects",
         "params": {}
-      }
+      },
+      "sqliteWithoutRowid": true
     },
     {
       "name": "tasks",
@@ -420,7 +422,8 @@
       "subscription": {
         "id": "sub-tasks",
         "params": {}
-      }
+      },
+      "sqliteWithoutRowid": true
     }
   ]
 }

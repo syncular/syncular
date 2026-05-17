@@ -17,7 +17,8 @@
           "required": true
         }
       ],
-      "serverVersionColumn": "server_version"
+      "serverVersionColumn": "server_version",
+      "sqliteWithoutRowid": true
     },
     "tasks": {
       "subscriptionId": "sub-tasks",
@@ -36,6 +37,7 @@
         }
       ],
       "serverVersionColumn": "server_version",
+      "sqliteWithoutRowid": true,
       "blobColumns": ["image"],
       "crdtYjsFields": [
         {
@@ -63,7 +65,8 @@
         }
       ],
       "serverVersionColumn": "server_version",
-      "softDeleteColumn": "deleted"
+      "softDeleteColumn": "deleted",
+      "sqliteWithoutRowid": true
     }
   }
 }
