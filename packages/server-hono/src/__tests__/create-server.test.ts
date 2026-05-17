@@ -213,6 +213,26 @@ describe('createSyncServer console configuration', () => {
     });
   }
 
+  function createEmptyPullRequest(args: {
+    clientId: string;
+    userId: string;
+  }): Request {
+    return new Request('http://localhost/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': args.userId,
+      },
+      body: JSON.stringify({
+        clientId: args.clientId,
+        pull: {
+          limitCommits: 10,
+          subscriptions: [],
+        },
+      }),
+    });
+  }
+
   function parseSnapshotValue(value: unknown): unknown {
     if (typeof value !== 'string') {
       return value;
@@ -1043,6 +1063,78 @@ describe('createSyncServer console configuration', () => {
         requiresSync: true,
       }),
     });
+  });
+
+  it('updates active realtime scope membership after pull subscription changes', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const manager = getSyncWebSocketConnectionManager(server.syncRoutes);
+    if (!manager) {
+      throw new Error('Expected websocket manager to be enabled.');
+    }
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-scope-update'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    manager.notifyScopeKeys(['default::user:u1'], 1);
+    expect(
+      upstream.messages.filter((message) => message.event === 'sync')
+    ).toEqual([]);
+
+    const subscribed = await app.request(
+      createPullRequest({
+        clientId: 'client-scope-update',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(subscribed.status).toBe(200);
+
+    manager.notifyScopeKeys(['default::user:u1'], 2);
+    expect(
+      upstream.messages
+        .filter((message) => message.event === 'sync')
+        .map((message) =>
+          isRecord(message.data) ? message.data.cursor : undefined
+        )
+    ).toEqual([2]);
+
+    const cleared = await app.request(
+      createEmptyPullRequest({
+        clientId: 'client-scope-update',
+        userId: 'u1',
+      })
+    );
+    expect(cleared.status).toBe(200);
+
+    manager.notifyScopeKeys(['default::user:u1'], 3);
+    expect(
+      upstream.messages
+        .filter((message) => message.event === 'sync')
+        .map((message) =>
+          isRecord(message.data) ? message.data.cursor : undefined
+        )
+    ).toEqual([2]);
   });
 
   it('enforces inbound websocket message rate limits on console live route', async () => {
