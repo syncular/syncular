@@ -174,6 +174,37 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .columns(['partition_id', 'commit_seq'])
       .execute();
 
+    await db.schema
+      .createTable('sync_scope_commits')
+      .ifNotExists()
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('table', 'text', (col) => col.notNull())
+      .addColumn('scope_key', 'text', (col) => col.notNull())
+      .addColumn('commit_seq', 'bigint', (col) =>
+        col.notNull().references('sync_commits.commit_seq').onDelete('cascade')
+      )
+      .addPrimaryKeyConstraint('sync_scope_commits_pk', [
+        'partition_id',
+        'table',
+        'scope_key',
+        'commit_seq',
+      ])
+      .execute();
+
+    await sql`ALTER TABLE sync_scope_commits
+      ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+
+    await db.schema
+      .createIndex('idx_sync_scope_commits_commit_seq')
+      .ifNotExists()
+      .on('sync_scope_commits')
+      .columns(['partition_id', 'commit_seq'])
+      .execute();
+
     // Changes table with JSONB scopes
     await db.schema
       .createTable('sync_changes')
@@ -579,6 +610,71 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       args.scopes
     );
 
+    const scopeIndexedCommitSeqs = await this.readScopeIndexedCommitSeqsForPull(
+      db,
+      {
+        partitionId,
+        table: args.table,
+        scopes: args.scopes,
+        cursor: args.cursor,
+        limitCommits,
+      }
+    );
+    if (scopeIndexedCommitSeqs.length > 0) {
+      const commitSeqsFilter = this.buildNumberListFilter(
+        scopeIndexedCommitSeqs
+      );
+      const scannedMaxCommitSeq =
+        scopeIndexedCommitSeqs[scopeIndexedCommitSeqs.length - 1] ??
+        args.cursor;
+      const res = await sql<{
+        commit_seq: unknown;
+        actor_id: string;
+        created_at: unknown;
+        change_id: unknown;
+        table: string;
+        row_id: string;
+        op: string;
+        row_json: unknown | null;
+        row_version: unknown | null;
+        scopes: unknown;
+      }>`
+        SELECT
+          cm.commit_seq,
+          cm.actor_id,
+          cm.created_at,
+          c.change_id,
+          c."table",
+          c.row_id,
+          c.op,
+          c.row_json,
+          c.row_version,
+          c.scopes
+        FROM sync_commits cm
+        JOIN sync_changes c ON c.commit_seq = cm.commit_seq
+        WHERE cm.commit_seq ${commitSeqsFilter}
+          AND cm.partition_id = ${partitionId}
+          AND c.partition_id = ${partitionId}
+          AND c."table" = ${args.table}
+          AND (${scopeFilter})
+        ORDER BY cm.commit_seq ASC, c.change_id ASC
+      `.execute(db);
+
+      return res.rows.map((row) => ({
+        commit_seq: coerceNumber(row.commit_seq) ?? 0,
+        scanned_max_commit_seq: scannedMaxCommitSeq,
+        actor_id: row.actor_id,
+        created_at: coerceIsoString(row.created_at),
+        change_id: coerceNumber(row.change_id) ?? 0,
+        table: row.table,
+        row_id: row.row_id,
+        op: row.op as SyncOp,
+        row_json: row.row_json ?? null,
+        row_version: coerceNumber(row.row_version),
+        scopes: parseScopes(row.scopes),
+      }));
+    }
+
     const res = await sql<{
       commit_seq: unknown;
       scanned_max_commit_seq: unknown;
@@ -680,6 +776,21 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     const deletedChanges = Number(res.numAffectedRows ?? 0);
 
     // Remove routing index entries that no longer have any remaining changes
+    await sql`
+      DELETE FROM sync_scope_commits sc
+      USING sync_commits cm
+        WHERE cm.commit_seq = sc.commit_seq
+          AND cm.partition_id = sc.partition_id
+          AND cm.created_at < ${cutoffIso}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sync_changes c
+          WHERE c.commit_seq = sc.commit_seq
+            AND c.partition_id = sc.partition_id
+            AND c."table" = sc."table"
+        )
+    `.execute(db);
+
     await sql`
       DELETE FROM sync_table_commits tc
       USING sync_commits cm

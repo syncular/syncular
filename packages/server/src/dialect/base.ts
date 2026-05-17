@@ -8,6 +8,7 @@
 import type { ScopeValues, SqlFamily, StoredScopes } from '@syncular/core';
 import type { Kysely, RawBuilder, Transaction } from 'kysely';
 import { sql } from 'kysely';
+import { scopeKeysFromScopeValues } from '../helpers/scope-commit-index';
 import type { SyncChangeRow, SyncCommitRow, SyncCoreDb } from '../schema';
 import { coerceIsoString, coerceNumber, parseScopes } from './helpers';
 import type {
@@ -57,6 +58,40 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
   protected abstract buildStringListFilter(
     values: string[]
   ): RawBuilder<unknown>;
+
+  protected async readScopeIndexedCommitSeqsForPull<DB extends SyncCoreDb>(
+    db: Kysely<DB> | Transaction<DB>,
+    args: {
+      cursor: number;
+      limitCommits: number;
+      table: string;
+      scopes: ScopeValues;
+      partitionId?: string;
+    }
+  ): Promise<number[]> {
+    const partitionId = args.partitionId ?? 'default';
+    const scopeKeys = scopeKeysFromScopeValues(args.scopes);
+    if (scopeKeys.length === 0) return [];
+    const scopeKeysFilter = this.buildStringListFilter(scopeKeys);
+
+    const res = await sql<{ commit_seq: unknown }>`
+      SELECT DISTINCT commit_seq
+      FROM sync_scope_commits
+      WHERE partition_id = ${partitionId}
+        AND "table" = ${args.table}
+        AND scope_key ${scopeKeysFilter}
+        AND commit_seq > ${args.cursor}
+      ORDER BY commit_seq ASC
+      LIMIT ${args.limitCommits}
+    `.execute(db);
+
+    return res.rows
+      .map((r) => coerceNumber(r.commit_seq))
+      .filter(
+        (n): n is number =>
+          typeof n === 'number' && Number.isFinite(n) && n > args.cursor
+      );
+  }
 
   // ===========================================================================
   // Abstract methods (genuinely different implementations)

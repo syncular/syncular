@@ -5,6 +5,7 @@
  * - sync_commits: one row per committed push
  * - sync_changes: one row per emitted change, stamped with scopes
  * - sync_table_commits: commit routing index for fast pull
+ * - sync_scope_commits: scope routing index for scoped incremental pull
  */
 
 import type { SyncOp } from '@syncular/core';
@@ -187,6 +188,20 @@ export interface SyncTableCommitsTable {
 }
 
 /**
+ * Index table: which commits affect which table/scope route keys.
+ *
+ * Used to avoid scanning table-level commits that cannot match a scoped
+ * subscription. JSON scope filtering still validates exact multi-scope matches.
+ */
+export interface SyncScopeCommitsTable {
+  /** Logical partition key (tenant / demo / workspace) */
+  partition_id: string;
+  table: string;
+  scope_key: string;
+  commit_seq: number;
+}
+
+/**
  * Database interface for sync infrastructure tables
  * Merge this with your app's database interface
  */
@@ -197,6 +212,7 @@ export interface SyncCoreDb {
   sync_crdt_updates: SyncCrdtUpdatesTable;
   sync_crdt_checkpoints: SyncCrdtCheckpointsTable;
   sync_table_commits: SyncTableCommitsTable;
+  sync_scope_commits: SyncScopeCommitsTable;
   sync_snapshot_chunks: SyncSnapshotChunksTable;
 }
 
