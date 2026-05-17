@@ -275,6 +275,89 @@ describe('rust client performance', () => {
     }
   });
 
+  it('tracks dense incremental pull build and binary encode cost', async () => {
+    const totalCommits = readPositiveIntEnv('PERF_SERVER_DENSE_COMMITS', 5_000);
+    const limitCommits = readPositiveIntEnv(
+      'PERF_SERVER_DENSE_LIMIT_COMMITS',
+      500
+    );
+    const rounds = readPositiveIntEnv('PERF_SERVER_DENSE_ROUNDS', 3);
+    const warmup = readPositiveIntEnv('PERF_SERVER_DENSE_WARMUP', 1);
+    const context = await createScopedPullBenchmarkContext({
+      totalCommits,
+      fanoutUsers: 1,
+    });
+
+    try {
+      let buildSummary = await runScopedIncrementalPullCatchup(context, {
+        limitCommits,
+      });
+      let genericSummary = await runScopedIncrementalPullCatchup(context, {
+        limitCommits,
+        encodeBinary: 'generic',
+      });
+      let generatedSummary = await runScopedIncrementalPullCatchup(context, {
+        limitCommits,
+        encodeBinary: 'generated',
+      });
+
+      results.push(
+        await benchmark(
+          `server_dense_incremental_pull_build_${totalCommits}_${limitCommits}`,
+          async () => {
+            buildSummary = await runScopedIncrementalPullCatchup(context, {
+              limitCommits,
+            });
+          },
+          { iterations: rounds, warmup, trackMemory: false }
+        ),
+        await benchmark(
+          `server_dense_incremental_pull_build_binary_encode_${totalCommits}_${limitCommits}`,
+          async () => {
+            genericSummary = await runScopedIncrementalPullCatchup(context, {
+              limitCommits,
+              encodeBinary: 'generic',
+            });
+          },
+          { iterations: rounds, warmup, trackMemory: false }
+        ),
+        await benchmark(
+          `server_dense_incremental_pull_build_generated_binary_encode_${totalCommits}_${limitCommits}`,
+          async () => {
+            generatedSummary = await runScopedIncrementalPullCatchup(context, {
+              limitCommits,
+              encodeBinary: 'generated',
+            });
+          },
+          { iterations: rounds, warmup, trackMemory: false }
+        ),
+        countMetric(
+          `server_dense_incremental_pull_requests_${totalCommits}_${limitCommits}`,
+          buildSummary.requests
+        ),
+        countMetric(
+          `server_dense_incremental_pull_changes_${totalCommits}_${limitCommits}`,
+          buildSummary.changes
+        ),
+        bytesMetric(
+          `server_dense_incremental_pull_binary_response_${totalCommits}_${limitCommits}_kib`,
+          genericSummary.encodedBytes
+        ),
+        bytesMetric(
+          `server_dense_incremental_pull_generated_binary_response_${totalCommits}_${limitCommits}_kib`,
+          generatedSummary.encodedBytes
+        )
+      );
+
+      expect(buildSummary.cursor).toBe(totalCommits);
+      expect(buildSummary.changes).toBe(totalCommits);
+      expect(genericSummary.encodedBytes).toBeGreaterThan(0);
+      expect(generatedSummary.encodedBytes).toBeGreaterThan(0);
+    } finally {
+      await context.db.destroy();
+    }
+  });
+
   it('tracks snapshot chunk encoding and gzip policy cost', async () => {
     const rowCount = readPositiveIntEnv('PERF_SNAPSHOT_CHUNK_ROWS', 50_000);
     const rounds = readPositiveIntEnv('PERF_SNAPSHOT_CHUNK_ROUNDS', 5);
@@ -544,6 +627,8 @@ interface ServerScopedPullTaskTable {
   user_id: string;
   project_id: string | null;
   server_version: number;
+  image: string | null;
+  title_yjs_state: string | null;
 }
 
 interface ServerScopedPullDb extends SyncCoreDb {
@@ -586,6 +671,8 @@ async function createScopedPullBenchmarkContext(args: {
     .addColumn('user_id', 'text', (col) => col.notNull())
     .addColumn('project_id', 'text')
     .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('image', 'text')
+    .addColumn('title_yjs_state', 'text')
     .execute();
 
   await seedScopedPullCommits(db, dialect, args);
@@ -636,6 +723,8 @@ async function seedScopedPullCommits(
         user_id: userId,
         project_id: 'p1',
         server_version: seq,
+        image: null,
+        title_yjs_state: null,
       };
       commits.push({
         commit_seq: seq,
@@ -698,17 +787,19 @@ async function seedScopedPullCommits(
 
 async function runScopedIncrementalPullCatchup(
   context: ServerScopedPullContext,
-  args: { limitCommits: number }
+  args: { limitCommits: number; encodeBinary?: 'generic' | 'generated' }
 ): Promise<{
   cursor: number;
   requests: number;
   commits: number;
   changes: number;
+  encodedBytes: number;
 }> {
   let cursor = 0;
   let requests = 0;
   let commits = 0;
   let changes = 0;
+  let encodedBytes = 0;
 
   while (cursor < context.totalCommits) {
     const result = await pull({
@@ -732,6 +823,24 @@ async function runScopedIncrementalPullCatchup(
         ],
       },
     });
+
+    if (args.encodeBinary) {
+      const encoded = encodeBinarySyncPack(
+        {
+          ok: true as const,
+          pull: result.response,
+        },
+        args.encodeBinary === 'generated'
+          ? {
+              changeRowEncoders: {
+                tasks: encodeBenchmarkTaskRows,
+              },
+            }
+          : undefined
+      );
+      encodedBytes += encoded.byteLength;
+    }
+
     const subscription = result.response.subscriptions[0];
     if (!subscription) {
       throw new Error('Scoped pull benchmark returned no subscription');
@@ -751,7 +860,7 @@ async function runScopedIncrementalPullCatchup(
     cursor = nextCursor;
   }
 
-  return { cursor, requests, commits, changes };
+  return { cursor, requests, commits, changes, encodedBytes };
 }
 
 function bytesMetric(name: string, bytes: number): BenchmarkResult {
