@@ -142,6 +142,35 @@ The 1k smoke reported:
 - local search p50: TS `1.18ms`, Rust `0.48ms`.
 - aggregate p50: TS `1.35ms`, Rust `0.76ms`.
 
+Architecture iteration: cleared binary snapshot row-delta fast path.
+
+- Rejected experiment: increasing browser snapshot apply batches from 256 to
+  512 rows did not move the 10k target. Rust bootstrap went
+  `35.19ms -> 36.73ms`, and Rust local apply stayed `14ms -> 14ms`, so the
+  runtime change was discarded.
+- Baseline without row-delta collection, 100k rows:
+  Rust bootstrap `203.28ms`, pull request `123ms`, snapshot fetch `12ms`,
+  local apply `77ms`, JS heap delta `2.18MiB`.
+- Baseline with `--rust-collect-changed-rows=true`, 100k rows:
+  Rust bootstrap `622.19ms`, pull request `126ms`, snapshot fetch `13ms`,
+  local apply `234ms`, JS heap delta `129.61MiB`.
+- After reusing the binary chunk changed-row helper for cleared snapshots when
+  snapshot rows are not included:
+  Rust bootstrap `523.34ms`, pull request `128ms`, snapshot fetch `14ms`,
+  local apply `132ms`, JS heap delta `129.69MiB`.
+- A borrowed-payload extractor variant measured similarly (`528.82ms`
+  bootstrap, `127ms` apply) but added more WASM bytes, so the smaller decoded
+  chunk helper version was retained.
+- A value-projection fast path was smaller again but too weak for the target:
+  Rust bootstrap `596.79ms`, local apply `198ms`, served Rust WASM
+  `3191.0KiB`. It was discarded because the decoded chunk helper keeps most of
+  the package-size saving while preserving the apply-path win.
+- Same-code no-row-delta control, 100k rows:
+  Rust bootstrap `213.51ms`, pull request `131ms`, snapshot fetch `14ms`,
+  local apply `79ms`, JS heap delta `5.61MiB`. This is within the expected
+  run-to-run variance for the untargeted path; the retained improvement is the
+  `collectChangedRows` path apps need for live row/field events.
+
 It should ultimately emit at least:
 
 - `ts_bootstrap_100k_ms`, `rust_bootstrap_100k_ms`

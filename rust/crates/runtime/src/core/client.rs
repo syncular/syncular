@@ -363,7 +363,7 @@ pub fn sync_changed_row_for_snapshot(
     })
 }
 
-fn sync_changed_rows_for_cleared_snapshot_chunk(
+pub(crate) fn sync_changed_rows_for_cleared_snapshot_chunk(
     app_schema: AppSchema,
     table: &str,
     rows: &SnapshotChunkRows,
@@ -468,6 +468,142 @@ fn binary_snapshot_cell_i64(cell: &BinarySnapshotCell) -> Option<i64> {
         BinarySnapshotCell::Integer(value) => Some(*value),
         BinarySnapshotCell::String(value) => value.parse().ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod changed_rows_tests {
+    use super::*;
+    use crate::app_schema::{ColumnMetadata, EmbeddedMigration};
+    use crate::binary_snapshot::decode_binary_snapshot_payload;
+
+    static TEST_COLUMNS: [ColumnMetadata; 3] = [
+        ColumnMetadata {
+            name: "id",
+            type_family: "text",
+            notnull_required: true,
+            primary_key: true,
+        },
+        ColumnMetadata {
+            name: "title",
+            type_family: "text",
+            notnull_required: false,
+            primary_key: false,
+        },
+        ColumnMetadata {
+            name: "server_version",
+            type_family: "integer",
+            notnull_required: true,
+            primary_key: false,
+        },
+    ];
+
+    static TEST_TABLES: [&str; 1] = ["tasks"];
+    static TEST_TABLE_METADATA: [AppTableMetadata; 1] = [AppTableMetadata {
+        name: "tasks",
+        primary_key_column: "id",
+        server_version_column: "server_version",
+        soft_delete_column: None,
+        subscription_id: "tasks",
+        columns: &TEST_COLUMNS,
+        blob_columns: &[],
+        crdt_yjs_fields: &[],
+        encrypted_fields: &[],
+        scopes: &[],
+    }];
+    static TEST_MIGRATIONS: [EmbeddedMigration; 0] = [];
+
+    fn default_subscriptions(_: &SyncularClientConfig) -> Vec<SubscriptionSpec> {
+        Vec::new()
+    }
+
+    #[cfg(feature = "native")]
+    fn adapter_for(_: &str) -> Result<&'static dyn crate::app_schema::DieselTableAdapter> {
+        Err(SyncularError::config("test schema has no diesel adapter"))
+    }
+
+    fn test_schema() -> AppSchema {
+        AppSchema {
+            app_tables: &TEST_TABLES,
+            app_table_metadata: &TEST_TABLE_METADATA,
+            migrations: &TEST_MIGRATIONS,
+            schema_version: Some(1),
+            default_subscriptions,
+            #[cfg(feature = "native")]
+            adapter_for,
+        }
+    }
+
+    #[test]
+    fn builds_changed_rows_from_binary_snapshot_payload() {
+        let payload = decode_binary_snapshot_payload(binary_snapshot_bytes()).unwrap();
+        let rows = sync_changed_rows_for_cleared_snapshot_chunk(
+            test_schema(),
+            "tasks",
+            &SnapshotChunkRows::BinaryPayload(payload),
+            "sub-tasks",
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].row_id.as_deref(), Some("task-1"));
+        assert_eq!(rows[0].operation, "insert");
+        assert_eq!(rows[0].changed_fields, vec!["title", "server_version"]);
+        assert_eq!(rows[0].server_version, Some(41));
+        assert_eq!(rows[0].subscription_id.as_deref(), Some("sub-tasks"));
+        assert_eq!(rows[1].row_id.as_deref(), Some("task-2"));
+        assert_eq!(rows[1].server_version, Some(42));
+    }
+
+    fn binary_snapshot_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SBT1");
+        push_u16(&mut bytes, 1);
+        push_u16(&mut bytes, 0);
+        push_string16(&mut bytes, "tasks");
+        push_u16(&mut bytes, 3);
+        for (name, tag, flags) in [
+            ("id", 1u8, 0u8),
+            ("title", 1u8, 0u8),
+            ("server_version", 2u8, 0u8),
+        ] {
+            push_string16(&mut bytes, name);
+            bytes.push(tag);
+            bytes.push(flags);
+        }
+        push_u32(&mut bytes, 2);
+
+        bytes.push(0);
+        push_string32(&mut bytes, "task-1");
+        push_string32(&mut bytes, "First");
+        push_i64(&mut bytes, 41);
+
+        bytes.push(0);
+        push_string32(&mut bytes, "task-2");
+        push_string32(&mut bytes, "Second");
+        push_i64(&mut bytes, 42);
+        bytes
+    }
+
+    fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_i64(bytes: &mut Vec<u8>, value: i64) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_string16(bytes: &mut Vec<u8>, value: &str) {
+        push_u16(bytes, value.len() as u16);
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn push_string32(bytes: &mut Vec<u8>, value: &str) {
+        push_u32(bytes, value.len() as u32);
+        bytes.extend_from_slice(value.as_bytes());
     }
 }
 

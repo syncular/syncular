@@ -31,6 +31,8 @@ interface ScoreboardWindow {
       rows: number;
       queryIterations: number;
       rustStorage: 'memory' | 'indexedDb' | 'opfsSahPool';
+      rustIncludeSnapshotRows: boolean;
+      rustCollectChangedRows: boolean;
     }): Promise<ScoreboardResult>;
   };
 }
@@ -60,6 +62,8 @@ const rows = numberArg(
 );
 const queryIterations = numberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
+const rustIncludeSnapshotRows = booleanArg('--rust-include-snapshot-rows', false);
+const rustCollectChangedRows = booleanArg('--rust-collect-changed-rows', false);
 const wasmProfile = wasmProfileArg(
   '--wasm-profile',
   process.env.SYNCULAR_BROWSER_WASM_PROFILE ?? 'release'
@@ -131,6 +135,8 @@ try {
       rows,
       queryIterations,
       rustStorage,
+      rustIncludeSnapshotRows,
+      rustCollectChangedRows,
     }
   );
 
@@ -160,7 +166,12 @@ try {
       name: 'chromium',
       userAgent: await page.evaluate(() => navigator.userAgent),
     },
-    options: { rows, queryIterations },
+    options: {
+      rows,
+      queryIterations,
+      rustIncludeSnapshotRows,
+      rustCollectChangedRows,
+    },
     metrics,
     comparisons: buildComparisons(metrics),
   };
@@ -177,6 +188,9 @@ try {
     console.log('Browser E2E TS vs Rust scoreboard');
     console.log(
       `rows=${rows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage}`
+    );
+    console.log(
+      `rust-include-snapshot-rows=${rustIncludeSnapshotRows} rust-collect-changed-rows=${rustCollectChangedRows}`
     );
     console.log('');
     console.log(formatMetrics(report.metrics));
@@ -532,6 +546,15 @@ function stringArg(name: string): string | undefined {
   const value = raw.slice(name.length + 1);
   if (value.length === 0) throw new Error(`Invalid ${name}: ${raw}`);
   return path.resolve(value);
+}
+
+function booleanArg(name: string, fallback: boolean): boolean {
+  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  const value = raw?.slice(name.length + 1);
+  if (value == null) return fallback;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`Invalid ${name}: ${raw}`);
 }
 
 function formatNumber(value: number): string {
