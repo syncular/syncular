@@ -45,6 +45,9 @@ export const SYNC_PACK_CONTENT_TYPE =
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
 const VERSION = 4;
 const FLAG_NONE = 0;
+// Row-group framing carries table/schema overhead; small commits are
+// cheaper inline.
+const MIN_BINARY_CHANGE_ROW_GROUP_ROWS = 8;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -336,6 +339,16 @@ function writeChanges(
   changes: readonly SyncChange[],
   options: BinarySyncPackEncodeOptions
 ): void {
+  const encodedRowCountsByTable = new Map<string, number>();
+  for (const change of changes) {
+    if (change.op === 'delete' || change.row_json == null) continue;
+    if (!options.changeRowEncoders?.[change.table]) continue;
+    encodedRowCountsByTable.set(
+      change.table,
+      (encodedRowCountsByTable.get(change.table) ?? 0) + 1
+    );
+  }
+
   const rowRefs = new Map<number, BinaryChangeRowRef>();
   const groups: BinaryChangeRowGroup[] = [];
   const groupIndexesByTable = new Map<string, number>();
@@ -345,6 +358,12 @@ function writeChanges(
     if (change.op === 'delete' || change.row_json == null) continue;
     const encoder = options.changeRowEncoders?.[change.table];
     if (!encoder) continue;
+    if (
+      (encodedRowCountsByTable.get(change.table) ?? 0) <
+      MIN_BINARY_CHANGE_ROW_GROUP_ROWS
+    ) {
+      continue;
+    }
     let groupIndex = groupIndexesByTable.get(change.table);
     if (groupIndex === undefined) {
       groupIndex = groups.length;
