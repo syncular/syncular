@@ -1788,6 +1788,28 @@ client. Overflow should close or resync the session deliberately.
     `rust_browser_e2e_browser_served_syncular_worker_js_kib` `43.7`.
 - Define which state lives in the sequencer, D1-like SQL storage, and R2-like
   object storage.
+- Decision:
+  - Sequencer / Durable Object owns hot websocket session state for one shard:
+    connected sessions, negotiated capabilities, per-session subscriptions,
+    last acked cursor, bounded replay-window metadata, in-flight pack limits,
+    reconnect backoff hints, slow-client overflow decisions, and wakeup fanout.
+    It may cache small recent binary packs, but it is not the source of truth
+    for committed app data.
+  - D1-like SQL storage owns durable truth: app tables, `sync_commits`,
+    `sync_changes`, client cursors/effective scopes, CRDT update indexes,
+    conflict records, blob metadata, snapshot-chunk metadata, schema manifests,
+    and the durable subscription/scope routing indexes. HTTP pull/recovery must
+    work from this state even if every websocket session is lost.
+  - R2-like object storage owns large immutable artifacts: binary snapshot
+    chunks, blob payloads, encrypted CRDT checkpoints, large replay artifacts,
+    and historical debug/export bundles. SQL stores only metadata, digests,
+    byte lengths, encoding/compression, expiration, and object keys.
+  - Stateless Worker routes authenticate, validate, execute push/pull against
+    SQL/object storage, and publish compact shard wakeups. They do not own
+    long-lived client state.
+  - Client recovery rule: any sequencer overflow, missed replay window, auth
+    restart, schema mismatch, or object digest failure degrades to HTTP pull
+    from durable SQL/object state.
 - Add deterministic tests for reconnect, resume, auth refresh, slow client
   overflow, and subscription changes.
 - Done: added a Hono realtime integration guard for subscription changes. A
