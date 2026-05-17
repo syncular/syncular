@@ -55,7 +55,10 @@ import { installSilentSyncTelemetry } from './telemetry';
 
 const REPO_ROOT = path.resolve(import.meta.dir, '..', '..');
 const BASELINE_PATH = path.join(import.meta.dir, 'baseline.json');
-const OPTIONAL_METRIC_PREFIXES = ['rust_browser_local_'];
+const OPTIONAL_METRIC_PREFIXES = [
+  'rust_browser_local_',
+  'rust_browser_e2e_',
+];
 
 function createSingleCommitPush(
   clientCommitId: string,

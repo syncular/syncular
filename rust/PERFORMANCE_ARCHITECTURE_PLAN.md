@@ -98,6 +98,29 @@ decompress/hash/decode, local apply, request count, payload bytes, and
 JSON-vs-binary chunk counts. It still needs TS bucket parity, realtime,
 reconnect, and memory capture.
 
+The E2E scoreboard is also wired into `tests/perf/rust-client.perf.test.ts`
+behind `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`, so it can participate in the
+same baseline/regression reporting as the Rust perf lane. Its metrics are
+optional until stable 100k/500k baselines are established.
+
+Validated perf-lane smoke:
+
+```bash
+PERF_RUST_NATIVE_ROUNDS=1 \
+PERF_RUST_NATIVE_WARMUP=1 \
+PERF_RUST_BROWSER_E2E_SCOREBOARD=true \
+PERF_RUST_BROWSER_E2E_ROWS=100 \
+PERF_RUST_BROWSER_E2E_QUERY_ITERATIONS=3 \
+bun run test:perf:rust
+```
+
+This emitted `rust_browser_e2e_*` metrics through the normal perf regression
+table. The 100-row smoke reported TS bootstrap `32.8ms`, Rust bootstrap
+`14.3ms`, Rust pull request `8.0ms`, Rust snapshot fetch `3.0ms`, Rust local
+apply `5.0ms`, Rust response `1.2KiB`, local list p50 TS/Rust
+`1.3ms` / `0.3ms`, local search p50 TS/Rust `1.0ms` / `0.3ms`, and aggregate
+p50 TS/Rust `0.9ms` / `0.3ms`.
+
 Validated smoke:
 
 ```bash

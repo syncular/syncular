@@ -27,7 +27,10 @@ const PERF_TEST_PATHS = [
   'tests/perf/rust-client.perf.test.ts',
 ];
 const RUST_PERF_TEST_PATHS = ['tests/perf/rust-client.perf.test.ts'];
-const OPTIONAL_METRIC_PREFIXES = ['rust_browser_local_'];
+const OPTIONAL_METRIC_PREFIXES = [
+  'rust_browser_local_',
+  'rust_browser_e2e_',
+];
 const RUST_METRIC_PREFIXES = [
   'rust_native_',
   'rust_e2e_',
