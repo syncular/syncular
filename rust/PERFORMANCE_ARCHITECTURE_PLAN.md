@@ -1367,8 +1367,26 @@ client. Overflow should close or resync the session deliberately.
   response. Defaults are 50k changes, with `PERF_SYNC_PACK_CHANGES`,
   `PERF_SYNC_PACK_ROUNDS`, and `PERF_SYNC_PACK_WARMUP` overrides for local
   iteration.
-- Next target: define schema-generated binary row payload/delta encoders inside
-  the pack, then wire websocket delivery to carry the same pack format.
+- Added `binary-sync-pack-v1` wire version 4 for grouped generated binary row
+  payloads in incremental commits. Commit/change metadata still preserves row
+  order and scopes, but upsert row bodies can now be grouped by table and
+  encoded with generated `binary-table-v1` row encoders. The Rust decoder
+  understands v4 and expands grouped binary rows back into ordinary
+  `SyncChange.row_json` values before apply. Hono passes generated table
+  snapshot encoders as change-row encoders when available.
+  - 50k generated incremental-change perf lane:
+    JSON encode/decode `15.9ms` / `39.9ms`;
+    v4 binary inline JSON encode/decode `29.7ms` / `51.4ms`;
+    v4 generated row-group encode/decode `26.1ms` / `50.2ms`.
+  - Response size moved from JSON `13910.9KiB` to binary inline JSON
+    `11138.4KiB` to generated row groups `6764.6KiB`.
+  - Browser 100k release-WASM bootstrap guardrail stayed neutral:
+    `rust_bootstrap_ms` `185.04 -> 182.82`,
+    `rust_pull_request_ms` stayed `87`,
+    `rust_pull_apply_ms` `94 -> 93`, and response bytes stayed `765,774`.
+- Next target: measure real incremental pull/client-to-client catchup with v4
+  generated row groups, then wire websocket delivery to carry the same pack
+  format instead of using realtime only as a pull wakeup.
 
 ### Phase 7: Delta WebSocket Runtime
 

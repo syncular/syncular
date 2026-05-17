@@ -5,6 +5,10 @@ import {
   encodeBinarySyncPack,
 } from '../../packages/core/src/sync-packs';
 import {
+  encodeBinarySnapshotTable,
+  type BinarySnapshotColumn,
+} from '../../packages/core/src/snapshot-chunks';
+import {
   benchmark,
   type BenchmarkResult,
   formatBenchmarkTable,
@@ -132,6 +136,11 @@ describe('rust client performance', () => {
     const response = makeIncrementalSyncPackResponse(changeCount);
     const json = JSON.stringify(response);
     const binary = encodeBinarySyncPack(response);
+    const binaryGenerated = encodeBinarySyncPack(response, {
+      changeRowEncoders: {
+        tasks: encodeBenchmarkTaskRows,
+      },
+    });
 
     results.push(
       await benchmark(
@@ -163,14 +172,39 @@ describe('rust client performance', () => {
         },
         { iterations: rounds, warmup, trackMemory: false }
       ),
+      await benchmark(
+        `sync_pack_binary_generated_encode_${changeCount}`,
+        async () => {
+          syncPackBenchmarkSink += encodeBinarySyncPack(response, {
+            changeRowEncoders: {
+              tasks: encodeBenchmarkTaskRows,
+            },
+          }).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `sync_pack_binary_generated_decode_${changeCount}`,
+        async () => {
+          syncPackBenchmarkSink +=
+            decodeBinarySyncPack(binaryGenerated).pull?.subscriptions.length ??
+            0;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
       bytesMetric(`sync_pack_json_response_${changeCount}_kib`, json.length),
       bytesMetric(
         `sync_pack_binary_response_${changeCount}_kib`,
         binary.byteLength
+      ),
+      bytesMetric(
+        `sync_pack_binary_generated_response_${changeCount}_kib`,
+        binaryGenerated.byteLength
       )
     );
 
     expect(binary.byteLength).toBeGreaterThan(0);
+    expect(binaryGenerated.byteLength).toBeLessThan(binary.byteLength);
     expect(syncPackBenchmarkSink).toBeGreaterThan(0);
   });
 
@@ -348,10 +382,10 @@ function makeIncrementalSyncPackResponse(changeCount: number) {
     table: 'tasks',
     row_id: `task-${index}`,
     op: 'upsert' as const,
-    row_json: {
-      id: `task-${index}`,
-      title: `Task ${index}`,
-      completed: index % 2 === 0,
+      row_json: {
+        id: `task-${index}`,
+        title: `Task ${index}`,
+        completed: index % 2 === 0 ? 1 : 0,
       user_id: 'browser-e2e-user',
       project_id: index % 5 === 0 ? 'p1' : null,
       server_version: index + 1,
@@ -386,6 +420,25 @@ function makeIncrementalSyncPackResponse(changeCount: number) {
       ],
     },
   };
+}
+
+const benchmarkTaskBinaryColumns = [
+  { name: 'id', type: 'string' },
+  { name: 'title', type: 'string' },
+  { name: 'completed', type: 'integer' },
+  { name: 'user_id', type: 'string' },
+  { name: 'project_id', type: 'string', nullable: true },
+  { name: 'server_version', type: 'integer' },
+  { name: 'image', type: 'json', nullable: true },
+  { name: 'title_yjs_state', type: 'string', nullable: true },
+] satisfies readonly BinarySnapshotColumn[];
+
+function encodeBenchmarkTaskRows(rows: readonly unknown[]): Uint8Array {
+  return encodeBinarySnapshotTable({
+    table: 'tasks',
+    columns: benchmarkTaskBinaryColumns,
+    rows: rows as readonly Record<string, unknown>[],
+  });
 }
 
 async function runJsonCommand<T>(cmd: string[], label: string): Promise<T> {
