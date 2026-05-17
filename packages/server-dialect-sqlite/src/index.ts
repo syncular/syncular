@@ -281,6 +281,35 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
     await sql`CREATE INDEX IF NOT EXISTS idx_sync_table_commits_commit_seq
       ON sync_table_commits(partition_id, commit_seq)`.execute(db);
 
+    // sync_scope_commits table (index of which commits affect table/scope routes)
+    await db.schema
+      .createTable('sync_scope_commits')
+      .ifNotExists()
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('table', 'text', (col) => col.notNull())
+      .addColumn('scope_key', 'text', (col) => col.notNull())
+      .addColumn('commit_seq', 'integer', (col) =>
+        col.notNull().references('sync_commits.commit_seq').onDelete('cascade')
+      )
+      .addPrimaryKeyConstraint('sync_scope_commits_pk', [
+        'partition_id',
+        'table',
+        'scope_key',
+        'commit_seq',
+      ])
+      .execute();
+    await ensurePartitionColumn(db, 'sync_scope_commits');
+
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_scope_commits_partition_pk
+      ON sync_scope_commits(partition_id, "table", scope_key, commit_seq)`.execute(
+      db
+    );
+
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_scope_commits_commit_seq
+      ON sync_scope_commits(partition_id, commit_seq)`.execute(db);
+
     // sync_changes table - uses JSON for scopes
     await db.schema
       .createTable('sync_changes')
@@ -547,26 +576,35 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
     const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
     const scopeFilter = buildScopeFilterSql(args.scopes, 'c.scopes');
 
-    // Get commit_seqs for this table
-    const commitSeqsRes = await sql<{ commit_seq: unknown }>`
-      SELECT commit_seq
-      FROM sync_table_commits
-      WHERE partition_id = ${partitionId}
-        AND "table" = ${args.table}
-        AND commit_seq > ${args.cursor}
-        AND EXISTS (
-          SELECT 1
-          FROM sync_commits cm
-          WHERE cm.commit_seq = sync_table_commits.commit_seq
-            AND cm.partition_id = ${partitionId}
-        )
-      ORDER BY commit_seq ASC
-      LIMIT ${limitCommits}
-    `.execute(db);
+    let commitSeqs = await this.readScopeIndexedCommitSeqsForPull(db, {
+      partitionId,
+      table: args.table,
+      scopes: args.scopes,
+      cursor: args.cursor,
+      limitCommits,
+    });
+    if (commitSeqs.length === 0) {
+      // Legacy fallback for existing databases/tests that predate sync_scope_commits.
+      const commitSeqsRes = await sql<{ commit_seq: unknown }>`
+        SELECT commit_seq
+        FROM sync_table_commits
+        WHERE partition_id = ${partitionId}
+          AND "table" = ${args.table}
+          AND commit_seq > ${args.cursor}
+          AND EXISTS (
+            SELECT 1
+            FROM sync_commits cm
+            WHERE cm.commit_seq = sync_table_commits.commit_seq
+              AND cm.partition_id = ${partitionId}
+          )
+        ORDER BY commit_seq ASC
+        LIMIT ${limitCommits}
+      `.execute(db);
 
-    const commitSeqs = commitSeqsRes.rows
-      .map((r) => coerceNumber(r.commit_seq))
-      .filter((n): n is number => n !== null);
+      commitSeqs = commitSeqsRes.rows
+        .map((r) => coerceNumber(r.commit_seq))
+        .filter((n): n is number => n !== null);
+    }
 
     if (commitSeqs.length === 0) return [];
     const scannedMaxCommitSeq =
@@ -652,6 +690,23 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
     const deleted = Number(res.numAffectedRows ?? 0);
 
     // Remove routing index entries that no longer have any remaining changes
+    await sql`
+      DELETE FROM sync_scope_commits
+      WHERE commit_seq IN (
+        SELECT commit_seq
+        FROM sync_commits
+        WHERE created_at < ${cutoffIso}
+          AND partition_id = sync_scope_commits.partition_id
+      )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sync_changes c
+          WHERE c.commit_seq = sync_scope_commits.commit_seq
+            AND c.partition_id = sync_scope_commits.partition_id
+            AND c."table" = sync_scope_commits."table"
+        )
+    `.execute(db);
+
     await sql`
       DELETE FROM sync_table_commits
       WHERE commit_seq IN (

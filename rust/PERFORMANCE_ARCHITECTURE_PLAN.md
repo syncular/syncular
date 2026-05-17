@@ -1836,6 +1836,15 @@ client. Overflow should close or resync the session deliberately.
     `server_scoped_incremental_pull_fanout_1000_10` `6.9ms`,
     `server_scoped_incremental_pull_requests_1000_10` `10`,
     `server_scoped_incremental_pull_changes_1000_10` `100`.
+- Done: added durable `sync_scope_commits` routing indexes and switched
+  incremental pull to use them before falling back to legacy table-window scans.
+  Push, external row notifications, and proxy oplog writes now populate the
+  index; prune/compaction clean it with the rest of the commit log.
+  - Measured before/after, same battery-saver environment:
+    `server_scoped_incremental_pull_fanout_20000_100` `587.4ms -> 8.1ms`,
+    requests `200 -> 2`, changes `200`.
+  - Small guard moved from `server_scoped_incremental_pull_fanout_1000_10`
+    `6.9ms -> 1.8ms`, requests `10 -> 2`.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 

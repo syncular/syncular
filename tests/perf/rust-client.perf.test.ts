@@ -15,6 +15,7 @@ import {
 import { gunzipBytes, gzipBytes } from '../../packages/core/src/utils';
 import { createBunSqliteDialect } from '../../packages/dialect-bun-sqlite/src';
 import {
+  createScopeCommitIndexEntries,
   createServerHandler,
   createServerHandlerCollection,
   ensureSyncSchema,
@@ -623,6 +624,7 @@ async function seedScopedPullCommits(
     const commits = [];
     const changes = [];
     const tableCommits = [];
+    const scopeCommitSources = [];
 
     for (let seq = start; seq <= end; seq++) {
       const userIndex = (seq - 1) % args.fanoutUsers;
@@ -657,6 +659,11 @@ async function seedScopedPullCommits(
         row_version: seq,
         scopes: dialect.scopesToDb({ user_id: userId }),
       });
+      scopeCommitSources.push({
+        table: 'tasks',
+        scopes: { user_id: userId },
+        commit_seq: seq,
+      });
       tableCommits.push({
         partition_id: 'server-scope-perf',
         table: 'tasks',
@@ -673,6 +680,19 @@ async function seedScopedPullCommits(
       .values(changes as never)
       .execute();
     await db.insertInto('sync_table_commits').values(tableCommits).execute();
+    await db
+      .insertInto('sync_scope_commits')
+      .values(
+        scopeCommitSources.flatMap((source) =>
+          createScopeCommitIndexEntries([source]).map((entry) => ({
+            partition_id: 'server-scope-perf',
+            table: entry.table,
+            scope_key: entry.scopeKey,
+            commit_seq: source.commit_seq,
+          }))
+        )
+      )
+      .execute();
   }
 }
 

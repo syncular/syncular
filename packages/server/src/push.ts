@@ -18,6 +18,10 @@ import type { DbExecutor, ServerSyncDialect } from './dialect/types';
 import type { ServerHandlerCollection } from './handlers/collection';
 import type { SyncServerAuth } from './handlers/types';
 import {
+  createScopeCommitIndexEntries,
+  scopeKeysFromScopeValues,
+} from './helpers/scope-commit-index';
+import {
   type SyncServerPushPlugin,
   sortServerPushPlugins,
 } from './plugins/types';
@@ -133,10 +137,8 @@ function scopeKeysFromEmitted(
 ): string[] {
   const keys = new Set<string>();
   for (const c of emitted) {
-    for (const [key, value] of Object.entries(c.scopes)) {
-      if (!value) continue;
-      const prefix = key.replace(/_id$/, '');
-      keys.add(`${prefix}:${value}`);
+    for (const scopeKey of scopeKeysFromScopeValues(c.scopes)) {
+      keys.add(scopeKey);
     }
   }
   return Array.from(keys);
@@ -293,6 +295,26 @@ async function persistEmittedChanges<DB extends SyncCoreDb>(args: {
     }));
 
   await syncTrx.insertInto('sync_changes').values(changeRows).execute();
+
+  const scopeEntries = createScopeCommitIndexEntries(args.emittedChanges);
+  if (scopeEntries.length > 0) {
+    await syncTrx
+      .insertInto('sync_scope_commits')
+      .values(
+        scopeEntries.map((entry) => ({
+          partition_id: args.partitionId,
+          table: entry.table,
+          scope_key: entry.scopeKey,
+          commit_seq: args.commitSeq,
+        }))
+      )
+      .onConflict((oc) =>
+        oc
+          .columns(['partition_id', 'table', 'scope_key', 'commit_seq'])
+          .doNothing()
+      )
+      .execute();
+  }
 }
 
 async function persistCommitOutcome<DB extends SyncCoreDb>(args: {

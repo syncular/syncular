@@ -155,6 +155,17 @@ export async function pruneSync<DB extends SyncCoreDb>(
   // Delete dependent rows explicitly to be robust across dialects and older
   // schemas that may not have FK cascade enabled.
   await (
+    syncDb.deleteFrom('sync_scope_commits') as DeleteQueryBuilder<
+      SyncCoreDb,
+      'sync_scope_commits',
+      DeleteResult
+    >
+  )
+    .where(sql<SqlBool>`partition_id = ${partitionId}`)
+    .where(sql<SqlBool>`commit_seq <= ${pruneUpTo}`)
+    .executeTakeFirst();
+
+  await (
     syncDb.deleteFrom('sync_table_commits') as DeleteQueryBuilder<
       SyncCoreDb,
       'sync_table_commits',

@@ -611,6 +611,19 @@ describe('notifyExternalRowChanges', () => {
     expect(result.changeCount).toBe(1);
     expect(result.tables).toEqual(['tasks']);
 
+    const scopeRows = await db
+      .selectFrom('sync_scope_commits')
+      .select(['partition_id', 'table', 'scope_key', 'commit_seq'])
+      .execute();
+    expect(scopeRows).toEqual([
+      {
+        partition_id: 'default',
+        table: 'tasks',
+        scope_key: 'user:u1',
+        commit_seq: result.commitSeq,
+      },
+    ]);
+
     const incrementalPull = await pull({
       db,
       dialect,
