@@ -30,6 +30,7 @@ interface ScoreboardWindow {
       projectId: string;
       rows: number;
       incrementalRows: number;
+      realtimeIterations: number;
       queryIterations: number;
       rustStorage: 'memory' | 'indexedDb' | 'opfsSahPool';
       rustIncludeSnapshotRows: boolean;
@@ -67,6 +68,10 @@ const scopeFanoutUsers = numberArg(
   Number(process.env.SYNCULAR_BROWSER_PERF_SCOPE_FANOUT_USERS ?? 1)
 );
 const incrementalRows = nonNegativeNumberArg('--incremental-rows', 0);
+const realtimeIterations = numberArg(
+  '--realtime-iterations',
+  Number(process.env.SYNCULAR_BROWSER_E2E_REALTIME_ITERATIONS ?? 1)
+);
 const queryIterations = nonNegativeNumberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
 const rustIncludeSnapshotRows = booleanArg(
@@ -148,6 +153,7 @@ try {
       projectId: 'p1',
       rows,
       incrementalRows,
+      realtimeIterations,
       queryIterations,
       rustStorage,
       rustIncludeSnapshotRows,
@@ -189,6 +195,7 @@ try {
       seedRows: rows * scopeFanoutUsers,
       scopeFanoutUsers,
       incrementalRows,
+      realtimeIterations,
       queryIterations,
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
@@ -211,6 +218,9 @@ try {
     console.log(
       `rows=${rows} incremental-rows=${incrementalRows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage}`
     );
+    if (incrementalRows > 0) {
+      console.log(`realtime-iterations=${realtimeIterations}`);
+    }
     if (scopeFanoutUsers > 1) {
       console.log(
         `scope-fanout-users=${scopeFanoutUsers} seed-rows=${rows * scopeFanoutUsers}`
