@@ -5,7 +5,7 @@ interface BunCryptoHasher {
 
 interface BunRuntime {
   CryptoHasher?: new (algorithm: string) => BunCryptoHasher;
-  gzipSync?: (data: Uint8Array) => Uint8Array;
+  gzipSync?: (data: Uint8Array, options?: { level?: number }) => Uint8Array;
   gunzipSync?: (data: Uint8Array) => Uint8Array;
   readableStreamToBytes?: (
     stream: ReadableStream<Uint8Array>

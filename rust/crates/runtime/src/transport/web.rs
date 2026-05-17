@@ -1,3 +1,5 @@
+use crate::binary_snapshot::{decode_binary_snapshot_payload, SnapshotChunkRows};
+use crate::binary_sync_pack::{decode_binary_sync_pack, is_binary_sync_pack_content_type};
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{
@@ -6,16 +8,20 @@ use crate::protocol::{
 };
 use crate::protocol::{
     CombinedRequest, CombinedResponse, PushCommitRequest, ScopeValues, SnapshotChunkRef,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use flate2::read::GzDecoder;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::future::Future;
 use std::io::Read;
 use std::pin::Pin;
+use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
@@ -35,6 +41,23 @@ pub struct WebSyncTransport {
     config: WebSyncTransportConfig,
     auth_headers: SyncAuthHeaders,
     abort_signal: Option<JsValue>,
+    stats: Rc<RefCell<WebTransportStats>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebTransportStats {
+    pub request_count: u64,
+    pub request_bytes: u64,
+    pub response_bytes: u64,
+    pub snapshot_chunk_count: u64,
+    pub snapshot_chunk_json_count: u64,
+    pub snapshot_chunk_binary_count: u64,
+    pub snapshot_chunk_row_count: u64,
+    pub snapshot_chunk_fetch_ms: f64,
+    pub snapshot_chunk_decompress_ms: f64,
+    pub snapshot_chunk_hash_ms: f64,
+    pub snapshot_chunk_decode_ms: f64,
 }
 
 pub struct WebRealtimeSocket {
@@ -53,7 +76,7 @@ pub trait AsyncSyncTransport {
         &'a self,
         chunk: &'a SnapshotChunkRef,
         scopes: &'a ScopeValues,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>>;
 
     fn connect_realtime(&self) -> Result<Self::Realtime>;
 }
@@ -78,6 +101,7 @@ impl WebSyncTransport {
             config,
             auth_headers: SyncAuthHeaders::new(),
             abort_signal: None,
+            stats: Rc::new(RefCell::new(WebTransportStats::default())),
         }
     }
 
@@ -87,6 +111,18 @@ impl WebSyncTransport {
 
     pub fn set_abort_signal(&mut self, signal: Option<JsValue>) {
         self.abort_signal = signal;
+    }
+
+    pub fn stats(&self) -> WebTransportStats {
+        self.stats.borrow().clone()
+    }
+
+    pub fn stats_json(&self) -> Result<String> {
+        Ok(serde_json::to_string(&self.stats())?)
+    }
+
+    pub fn reset_stats(&self) {
+        *self.stats.borrow_mut() = WebTransportStats::default();
     }
 }
 
@@ -116,16 +152,15 @@ impl AsyncSyncTransport for WebSyncTransport {
                 ),
             ];
             headers.extend(effective_auth_headers(&self.auth_headers));
-            let response = fetch_json(
+            fetch_sync_response_metered(
                 "POST",
                 &self.config.base_url,
                 Some(serde_json::to_string(request)?),
                 &headers,
                 self.abort_signal.as_ref(),
+                &self.stats,
             )
-            .await?;
-            serde_wasm_bindgen::from_value(response)
-                .map_err(|err| SyncularError::protocol(err).context("decode browser sync response"))
+            .await
         })
     }
 
@@ -133,8 +168,12 @@ impl AsyncSyncTransport for WebSyncTransport {
         &'a self,
         chunk: &'a SnapshotChunkRef,
         scopes: &'a ScopeValues,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
         Box::pin(async move {
+            if let Some(compressed) = chunk.body.as_ref() {
+                record_snapshot_chunk_fetch(&self.stats, 0.0);
+                return decode_snapshot_rows(chunk, compressed, &self.stats).await;
+            }
             let url = format!(
                 "{}/snapshot-chunks/{}",
                 self.config.base_url.trim_end_matches('/'),
@@ -145,8 +184,12 @@ impl AsyncSyncTransport for WebSyncTransport {
                 serde_json::to_string(scopes)?,
             )];
             headers.extend(effective_auth_headers(&self.auth_headers));
-            let compressed = fetch_bytes(&url, &headers, self.abort_signal.as_ref()).await?;
-            decode_snapshot_rows(chunk, &compressed)
+            let fetch_started_at = timing_now_ms();
+            let compressed =
+                fetch_bytes_metered(&url, &headers, self.abort_signal.as_ref(), &self.stats)
+                    .await?;
+            record_snapshot_chunk_fetch(&self.stats, elapsed_ms_since(fetch_started_at));
+            decode_snapshot_rows(chunk, &compressed, &self.stats).await
         })
     }
 
@@ -308,12 +351,9 @@ async fn fetch_json(
             format!("browser fetch failed with HTTP {status}: {body}"),
         ));
     }
-    let json = response
-        .json()
-        .map_err(|err| js_error(ErrorKind::Transport, "read browser response json", err))?;
-    JsFuture::from(json)
-        .await
-        .map_err(|err| js_error(ErrorKind::Transport, "await browser response json", err))
+    let text = response_text(&response).await?;
+    js_sys::JSON::parse(&text)
+        .map_err(|err| js_error(ErrorKind::Transport, "parse browser response json", err))
 }
 
 async fn fetch_bytes(
@@ -337,6 +377,95 @@ async fn fetch_bytes(
         .await
         .map_err(|err| js_error(ErrorKind::Transport, "await browser response bytes", err))?;
     Ok(Uint8Array::new(&buffer).to_vec())
+}
+
+async fn fetch_json_metered(
+    method: &str,
+    url: &str,
+    body: Option<String>,
+    headers: &[(String, String)],
+    abort_signal: Option<&JsValue>,
+    stats: &Rc<RefCell<WebTransportStats>>,
+) -> Result<JsValue> {
+    record_request(
+        stats,
+        body.as_ref().map_or(0, |value| value.as_bytes().len()),
+    );
+    let response = fetch_response(method, url, body, headers, abort_signal).await?;
+    let status = response.status();
+    if !response.ok() {
+        let body = response_text(&response).await.unwrap_or_default();
+        record_response(stats, body.as_bytes().len());
+        return Err(SyncularError::message(
+            ErrorKind::Transport,
+            format!("browser fetch failed with HTTP {status}: {body}"),
+        ));
+    }
+    let text = response_text(&response).await?;
+    record_response(stats, text.as_bytes().len());
+    js_sys::JSON::parse(&text)
+        .map_err(|err| js_error(ErrorKind::Transport, "parse browser response json", err))
+}
+
+async fn fetch_sync_response_metered(
+    method: &str,
+    url: &str,
+    body: Option<String>,
+    headers: &[(String, String)],
+    abort_signal: Option<&JsValue>,
+    stats: &Rc<RefCell<WebTransportStats>>,
+) -> Result<CombinedResponse> {
+    record_request(
+        stats,
+        body.as_ref().map_or(0, |value| value.as_bytes().len()),
+    );
+    let response = fetch_response(method, url, body, headers, abort_signal).await?;
+    let status = response.status();
+    if !response.ok() {
+        let body = response_text(&response).await.unwrap_or_default();
+        record_response(stats, body.as_bytes().len());
+        return Err(SyncularError::message(
+            ErrorKind::Transport,
+            format!("browser fetch failed with HTTP {status}: {body}"),
+        ));
+    }
+
+    let content_type = response_content_type(&response)?;
+    if is_binary_sync_pack_content_type(content_type.as_deref()) {
+        let buffer = response
+            .array_buffer()
+            .map_err(|err| js_error(ErrorKind::Transport, "read browser sync pack bytes", err))?;
+        let buffer = JsFuture::from(buffer)
+            .await
+            .map_err(|err| js_error(ErrorKind::Transport, "await browser sync pack bytes", err))?;
+        let bytes = Uint8Array::new(&buffer).to_vec();
+        record_response(stats, bytes.len());
+        return decode_binary_sync_pack(&bytes);
+    }
+
+    let text = response_text(&response).await?;
+    record_response(stats, text.as_bytes().len());
+    serde_json::from_str(&text)
+        .map_err(|err| SyncularError::protocol(err).context("decode browser sync response"))
+}
+
+async fn fetch_bytes_metered(
+    url: &str,
+    headers: &[(String, String)],
+    abort_signal: Option<&JsValue>,
+    stats: &Rc<RefCell<WebTransportStats>>,
+) -> Result<Vec<u8>> {
+    record_request(stats, 0);
+    let bytes = fetch_bytes(url, headers, abort_signal).await?;
+    record_response(stats, bytes.len());
+    Ok(bytes)
+}
+
+fn response_content_type(response: &Response) -> Result<Option<String>> {
+    response
+        .headers()
+        .get("content-type")
+        .map_err(|err| js_error(ErrorKind::Transport, "read response content-type", err))
 }
 
 #[cfg(feature = "web-blobs")]
@@ -405,6 +534,45 @@ async fn fetch_response(
     response
         .dyn_into::<Response>()
         .map_err(|err| js_error(ErrorKind::Transport, "cast browser fetch response", err))
+}
+
+fn record_request(stats: &Rc<RefCell<WebTransportStats>>, request_bytes: usize) {
+    let mut stats = stats.borrow_mut();
+    stats.request_count += 1;
+    stats.request_bytes += request_bytes as u64;
+}
+
+fn record_response(stats: &Rc<RefCell<WebTransportStats>>, response_bytes: usize) {
+    stats.borrow_mut().response_bytes += response_bytes as u64;
+}
+
+fn record_snapshot_chunk_fetch(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    let mut stats = stats.borrow_mut();
+    stats.snapshot_chunk_count += 1;
+    stats.snapshot_chunk_fetch_ms += elapsed_ms;
+}
+
+fn record_snapshot_chunk_rows(stats: &Rc<RefCell<WebTransportStats>>, rows: &SnapshotChunkRows) {
+    let mut stats = stats.borrow_mut();
+    match rows {
+        SnapshotChunkRows::Json(_) => stats.snapshot_chunk_json_count += 1,
+        SnapshotChunkRows::Binary(_) | SnapshotChunkRows::BinaryPayload(_) => {
+            stats.snapshot_chunk_binary_count += 1
+        }
+    }
+    stats.snapshot_chunk_row_count += rows.row_count() as u64;
+}
+
+fn record_snapshot_chunk_decompress(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    stats.borrow_mut().snapshot_chunk_decompress_ms += elapsed_ms;
+}
+
+fn record_snapshot_chunk_hash(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    stats.borrow_mut().snapshot_chunk_hash_ms += elapsed_ms;
+}
+
+fn record_snapshot_chunk_decode(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    stats.borrow_mut().snapshot_chunk_decode_ms += elapsed_ms;
 }
 
 #[cfg(feature = "web-blobs")]
@@ -479,30 +647,113 @@ async fn response_text(response: &Response) -> Result<String> {
     Ok(text.as_string().unwrap_or_default())
 }
 
-fn decode_snapshot_rows(chunk: &SnapshotChunkRef, compressed: &[u8]) -> Result<Vec<Value>> {
-    if chunk.encoding != "json-row-frame-v1" || chunk.compression != "gzip" {
+fn timing_now_ms() -> f64 {
+    js_sys::Date::now()
+}
+
+fn elapsed_ms_since(started_at: f64) -> f64 {
+    js_sys::Date::now() - started_at
+}
+
+async fn sha256_digest(bytes: &[u8]) -> Result<Vec<u8>> {
+    match sha256_digest_webcrypto(bytes).await {
+        Ok(Some(digest)) => Ok(digest),
+        Ok(None) => Ok(Sha256::digest(bytes).to_vec()),
+        Err(_) => Ok(Sha256::digest(bytes).to_vec()),
+    }
+}
+
+async fn sha256_digest_webcrypto(bytes: &[u8]) -> Result<Option<Vec<u8>>> {
+    let global = js_sys::global();
+    let crypto = Reflect::get(&global, &JsValue::from_str("crypto"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read global crypto", err))?;
+    if crypto.is_undefined() || crypto.is_null() {
+        return Ok(None);
+    }
+    let subtle = Reflect::get(&crypto, &JsValue::from_str("subtle"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read crypto.subtle", err))?;
+    if subtle.is_undefined() || subtle.is_null() {
+        return Ok(None);
+    }
+    let digest = Reflect::get(&subtle, &JsValue::from_str("digest"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read crypto.subtle.digest", err))?
+        .dyn_into::<Function>()
+        .map_err(|err| js_error(ErrorKind::Transport, "cast crypto.subtle.digest", err))?;
+    let data = Uint8Array::from(bytes);
+    let promise = digest
+        .call2(&subtle, &JsValue::from_str("SHA-256"), data.as_ref())
+        .map_err(|err| js_error(ErrorKind::Transport, "call crypto.subtle.digest", err))?;
+    let digest = JsFuture::from(Promise::from(promise))
+        .await
+        .map_err(|err| js_error(ErrorKind::Transport, "await crypto.subtle.digest", err))?;
+    Ok(Some(Uint8Array::new(&digest).to_vec()))
+}
+
+async fn decode_snapshot_rows(
+    chunk: &SnapshotChunkRef,
+    compressed: &[u8],
+    stats: &Rc<RefCell<WebTransportStats>>,
+) -> Result<SnapshotChunkRows> {
+    let decoded = decode_snapshot_chunk_bytes(chunk, compressed, stats).await?;
+    let decode_started_at = timing_now_ms();
+    let rows = match chunk.encoding.as_str() {
+        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 => {
+            decode_srf1_rows(&decoded).map(SnapshotChunkRows::Json)
+        }
+        SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
+            let payload = decode_binary_snapshot_payload(decoded)?;
+            Ok(SnapshotChunkRows::BinaryPayload(payload))
+        }
+        encoding => Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot chunk encoding: {encoding}"
+        ))),
+    };
+    record_snapshot_chunk_decode(stats, elapsed_ms_since(decode_started_at));
+    if let Ok(rows) = &rows {
+        record_snapshot_chunk_rows(stats, rows);
+    }
+    rows
+}
+
+async fn decode_snapshot_chunk_bytes(
+    chunk: &SnapshotChunkRef,
+    compressed: &[u8],
+    stats: &Rc<RefCell<WebTransportStats>>,
+) -> Result<Vec<u8>> {
+    if chunk.compression != "gzip"
+        || (chunk.encoding != SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
+            && chunk.encoding != SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1)
+    {
         return Err(SyncularError::protocol_message(format!(
             "unsupported snapshot chunk format: encoding={} compression={}",
             chunk.encoding, chunk.compression
         )));
     }
 
+    let decompress_started_at = timing_now_ms();
     let mut decoder = GzDecoder::new(compressed);
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded)?;
+    record_snapshot_chunk_decompress(stats, elapsed_ms_since(decompress_started_at));
 
-    let actual_hash = hex::encode(Sha256::digest(&decoded));
-    if actual_hash != chunk.sha256 {
+    let hash_started_at = timing_now_ms();
+    let actual_hash = sha256_digest(&decoded).await?;
+    record_snapshot_chunk_hash(stats, elapsed_ms_since(hash_started_at));
+    let expected_hash = hex::decode(&chunk.sha256).map_err(|err| {
+        SyncularError::protocol(err).context("decode snapshot chunk expected hash")
+    })?;
+    if actual_hash.as_slice() != expected_hash.as_slice() {
         return Err(SyncularError::message(
             ErrorKind::Protocol,
             format!(
                 "snapshot chunk hash mismatch: expected {}, got {}",
-                chunk.sha256, actual_hash
+                chunk.sha256,
+                hex::encode(actual_hash)
             ),
         ));
     }
 
-    decode_srf1_rows(&decoded)
+    Ok(decoded)
 }
 
 fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
@@ -513,7 +764,7 @@ fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
     }
 
     let mut offset = 4usize;
-    let mut rows = Vec::new();
+    let mut rows = Vec::with_capacity(estimated_snapshot_row_count(bytes.len()));
     while offset < bytes.len() {
         if offset + 4 > bytes.len() {
             return Err(SyncularError::protocol_message(
@@ -527,12 +778,16 @@ fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
                 "snapshot frame ended mid-body",
             ));
         }
-        let row: Value = serde_json::from_slice(&bytes[offset..offset + len])?;
-        rows.push(row);
+        let row: Map<String, Value> = serde_json::from_slice(&bytes[offset..offset + len])?;
+        rows.push(Value::Object(row));
         offset += len;
     }
 
     Ok(rows)
+}
+
+fn estimated_snapshot_row_count(byte_len: usize) -> usize {
+    (byte_len / 160).clamp(1, 20_000)
 }
 
 fn ws_url(base_url: &str, client_id: &str) -> Result<String> {

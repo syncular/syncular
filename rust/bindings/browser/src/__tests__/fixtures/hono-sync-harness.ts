@@ -24,12 +24,14 @@ import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
   syncularGeneratedCodecs,
+  syncularGeneratedSnapshotBinaryColumns,
 } from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2AuthHeaders,
   SyncularV2Client,
   SyncularV2ClientConfig,
+  SyncularV2PullOptions,
 } from '../../types';
 
 export interface HonoSyncActor {
@@ -63,6 +65,7 @@ export interface HonoWorkerClientOptions {
   getHeaders: () => SyncularV2AuthHeaders | Promise<SyncularV2AuthHeaders>;
   authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
   appSchema?: SyncularV2ClientConfig['appSchema'];
+  pull?: SyncularV2PullOptions;
   fileName?: string;
   requestTimeoutMs?: number;
 }
@@ -127,6 +130,7 @@ export async function createHonoSyncHarness(
           scopes: ['user:{user_id}'],
           codecs: syncularGeneratedCodecs,
           snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
+          snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns.tasks,
           resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
         }),
         ...createEncryptedCrdtSystemHandlers<
@@ -214,6 +218,7 @@ export async function createHonoSyncHarness(
           storage: 'memory',
           clearOnInit: true,
           appSchema: clientOptions.appSchema,
+          pull: clientOptions.pull,
         },
       });
       clients.push(database);

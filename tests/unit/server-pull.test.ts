@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
-import { createDatabase, decodeSnapshotRows } from '@syncular/core';
+import {
+  createDatabase,
+  decodeBinarySnapshotTable,
+  decodeSnapshotRows,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+} from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   createServerHandler,
@@ -187,6 +193,172 @@ describe('pull', () => {
     expect(snapshot.table).toBe('tasks');
     const rows = await readSnapshotRows(db, snapshot);
     expect(rows.length).toBe(2);
+  });
+
+  it('emits binary snapshot chunks when the client requests them', async () => {
+    const handlers = makeHandlers();
+
+    await pushTask(handlers, 'task-1', 'First Task');
+    await pushTask(handlers, 'task-2', 'Second Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 10,
+        snapshotEncodings: [
+          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+        ],
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    const snapshot = res.response.subscriptions[0]!.snapshots![0]!;
+    const chunkRef = snapshot.chunks?.[0];
+    expect(chunkRef?.encoding).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+
+    const chunk = await readSnapshotChunk(db, chunkRef!.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+    expect(decoded.table).toBe('tasks');
+    expect(decoded.columns.map((column) => column.name).sort()).toEqual([
+      'id',
+      'server_version',
+      'title',
+      'user_id',
+    ]);
+    expect(decoded.rows.map((row) => row.title).sort()).toEqual([
+      'First Task',
+      'Second Task',
+    ]);
+  });
+
+  it('uses handler-provided binary snapshot columns when available', async () => {
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+    });
+
+    await pushTask(handlers, 'task-1', 'First Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 10,
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+    const chunk = await readSnapshotChunk(db, chunkRef.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+
+    expect(decoded.columns).toEqual([
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ]);
+    expect(decoded.rows).toEqual([
+      {
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'First Task',
+        server_version: 1,
+      },
+    ]);
+  });
+
+  it('keeps snapshot chunk cache entries separate by gzip level', async () => {
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+    });
+
+    for (let index = 0; index < 40; index += 1) {
+      await pushTask(
+        handlers,
+        `task-${index}`,
+        `Repeated title ${'x'.repeat(512)}`
+      );
+    }
+
+    const pullSnapshot = async (clientId: string, gzipLevel?: number) => {
+      const res = await pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        snapshotChunkGzipLevel: gzipLevel,
+        request: {
+          clientId,
+          limitCommits: 10,
+          snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+            },
+          ],
+        },
+      });
+      const chunkRef =
+        res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+      const chunk = await readSnapshotChunk(db, chunkRef.id);
+      if (!chunk) throw new Error('Expected stored snapshot chunk');
+      return chunk;
+    };
+
+    const compressed = await pullSnapshot('c-gzip-default');
+    const uncompressedGzip = await pullSnapshot('c-gzip-zero', 0);
+    const snapshotChunkCountRow = await db
+      .selectFrom('sync_snapshot_chunks')
+      .select(({ fn }) => fn.countAll().as('count'))
+      .executeTakeFirstOrThrow();
+
+    expect(Number(snapshotChunkCountRow.count)).toBe(2);
+    expect(uncompressedGzip.body.length).toBeGreaterThan(
+      compressed.body.length
+    );
+    expect(
+      decodeBinarySnapshotTable(gunzipSync(uncompressedGzip.body)).rows
+    ).toHaveLength(40);
   });
 
   // -----------------------------------------------------------

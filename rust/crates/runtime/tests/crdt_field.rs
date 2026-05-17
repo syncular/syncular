@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use syncular_runtime::app_schema::{
     app_schema_from_json, AppSchema, AppTableMetadata, CrdtYjsFieldMetadata,
 };
+use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::compaction::{StorageCompactionOptions, StorageCompactionReport};
 use syncular_runtime::crdt_field::{validate_crdt_field, CrdtFieldId, CrdtFieldSyncMode};
@@ -1261,7 +1262,7 @@ impl SyncTransport for SharedCrdtServer {
         &self,
         _: &SnapshotChunkRef,
         _: &ScopeValues,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         Err(SyncularError::config(
             "CRDT conformance test server does not use snapshot chunks",
         ))
@@ -1311,7 +1312,7 @@ impl SyncTransport for NoopTransport {
         &self,
         _: &SnapshotChunkRef,
         _: &ScopeValues,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         Err(SyncularError::config(
             "noop transport does not fetch snapshots",
         ))

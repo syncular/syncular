@@ -1,3 +1,4 @@
+use crate::binary_snapshot::SnapshotChunkRows;
 use crate::error::Result;
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,26 @@ pub trait SyncStoreTx {
     }
     fn upsert_row(&mut self, table: &str, row: &Value, fallback_version: Option<i64>)
         -> Result<()>;
+    fn upsert_rows(
+        &mut self,
+        table: &str,
+        rows: &[Value],
+        fallback_version: Option<i64>,
+    ) -> Result<()> {
+        for row in rows {
+            self.upsert_row(table, row, fallback_version)?;
+        }
+        Ok(())
+    }
+    fn upsert_snapshot_chunk_rows(
+        &mut self,
+        table: &str,
+        rows: &SnapshotChunkRows,
+        fallback_version: Option<i64>,
+    ) -> Result<()> {
+        let rows = rows.clone().try_into_value_rows()?;
+        self.upsert_rows(table, &rows, fallback_version)
+    }
     fn apply_change(&mut self, change: &SyncChange) -> Result<()>;
 }
 

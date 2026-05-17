@@ -125,6 +125,7 @@ interface LocalMutationBenchmarkOptions {
   rounds?: number;
   warmupOperations?: number;
   preferOPFS?: boolean;
+  includeDirectRustOwned?: boolean;
 }
 
 interface LocalMutationBenchmarkStats {
@@ -1468,6 +1469,7 @@ async function runLocalMutationBenchmark(
   operations?: number;
   rounds?: number;
   preferOPFS?: boolean;
+  includeDirectRustOwned?: boolean;
   js?: LocalMutationBenchmarkStats;
   jsBatch?: LocalMutationBenchmarkStats;
   rustOwnedSqliteIdb?: LocalMutationBenchmarkStats;
@@ -1480,6 +1482,7 @@ async function runLocalMutationBenchmark(
   const rounds = options.rounds ?? 5;
   const warmupOperations = options.warmupOperations ?? 10;
   const preferOPFS = options.preferOPFS ?? true;
+  const includeDirectRustOwned = options.includeDirectRustOwned ?? false;
   const actorId = 'browser-bench-user';
   const jsDb = createDb<RuntimeClientDb>(`bench-js-${Date.now()}.sqlite`, {
     preferOPFS,
@@ -1496,15 +1499,19 @@ async function runLocalMutationBenchmark(
     await ensureSyncularAppSchema(jsDb);
     await ensureClientSyncSchema(jsBatchDb);
     await ensureSyncularAppSchema(jsBatchDb);
-    const rustOwnedSqliteIdb = await createSyncularRustOwnedSqlite({
-      config: {
-        fileName: `bench-rust-owned-idb-${Date.now()}.sqlite`,
-        storage: 'indexedDb',
-        clearOnInit: true,
-        appSchema: syncularGeneratedAppSchema,
-      },
-    });
-    await ensureRustOwnedBenchmarkSchema(rustOwnedSqliteIdb);
+    const rustOwnedSqliteIdb = includeDirectRustOwned
+      ? await createSyncularRustOwnedSqlite({
+          config: {
+            fileName: `bench-rust-owned-idb-${Date.now()}.sqlite`,
+            storage: 'indexedDb',
+            clearOnInit: true,
+            appSchema: syncularGeneratedAppSchema,
+          },
+        })
+      : undefined;
+    if (rustOwnedSqliteIdb) {
+      await ensureRustOwnedBenchmarkSchema(rustOwnedSqliteIdb);
+    }
     const rustOwnedSqliteOpfsWorker = await RustOwnedSqliteWorkerClient.open({
       fileName: `bench-rust-owned-opfs-${Date.now()}.sqlite`,
       storage: 'opfsSahPool',
@@ -1537,22 +1544,27 @@ async function runLocalMutationBenchmark(
           )
         ),
     });
-    const rustOwnedSqliteIdbStats =
-      await measureExternalLocalMutationBatchCalls({
-        label: 'Rust-owned sqlite-wasm-rs (IndexedDB)',
-        operations,
-        rounds,
-        warmupOperations,
-        countRows: (table) => rustOwnedSqliteIdb.countRows(table),
-        applyBatch: (prefix, startIndex, count) => {
-          rustOwnedSqliteIdb.applyLocalOperationsBatch(
-            Array.from({ length: count }, (_, index) => ({
-              operation: makeTaskOperation(prefix, startIndex + index, actorId),
-            }))
-          );
-          return Promise.resolve();
-        },
-      });
+    const rustOwnedSqliteIdbStats = rustOwnedSqliteIdb
+      ? await measureExternalLocalMutationBatchCalls({
+          label: 'Rust-owned sqlite-wasm-rs (IndexedDB)',
+          operations,
+          rounds,
+          warmupOperations,
+          countRows: (table) => rustOwnedSqliteIdb.countRows(table),
+          applyBatch: (prefix, startIndex, count) => {
+            rustOwnedSqliteIdb.applyLocalOperationsBatch(
+              Array.from({ length: count }, (_, index) => ({
+                operation: makeTaskOperation(
+                  prefix,
+                  startIndex + index,
+                  actorId
+                ),
+              }))
+            );
+            return Promise.resolve();
+          },
+        })
+      : undefined;
     const rustOwnedSqliteOpfsWorkerStats =
       await measureExternalLocalMutationBatchCalls({
         label: 'Rust-owned sqlite-wasm-rs (OPFS Worker)',
@@ -1573,7 +1585,7 @@ async function runLocalMutationBenchmark(
             )
             .then(() => undefined),
       });
-    rustOwnedSqliteIdb.close();
+    rustOwnedSqliteIdb?.close();
     await rustOwnedSqliteOpfsWorker.close();
 
     return {
@@ -1581,12 +1593,14 @@ async function runLocalMutationBenchmark(
       operations,
       rounds,
       preferOPFS,
+      includeDirectRustOwned,
       js,
       jsBatch,
       rustOwnedSqliteIdb: rustOwnedSqliteIdbStats,
       rustOwnedSqliteOpfsWorker: rustOwnedSqliteOpfsWorkerStats,
-      ratioRustOwnedSqliteIdbToJsBatch:
-        rustOwnedSqliteIdbStats.medianMs / jsBatch.medianMs,
+      ratioRustOwnedSqliteIdbToJsBatch: rustOwnedSqliteIdbStats
+        ? rustOwnedSqliteIdbStats.medianMs / jsBatch.medianMs
+        : undefined,
       ratioRustOwnedSqliteOpfsWorkerToJsBatch:
         rustOwnedSqliteOpfsWorkerStats.medianMs / jsBatch.medianMs,
     };

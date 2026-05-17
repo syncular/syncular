@@ -186,6 +186,48 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     expect(typeof row.commitId).toBe('string');
   });
 
+  it('keeps readonly executeSql results correct across repeated parameterized reads', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'readonly-cache-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    const firstTask = {
+      id: 'readonly-cache-task-1',
+      title: 'First cached read task',
+      completed: 0,
+      user_id: ACTOR_A,
+      project_id: null,
+    };
+    const secondTask = {
+      id: 'readonly-cache-task-2',
+      title: 'Second cached read task',
+      completed: 0,
+      user_id: ACTOR_A,
+      project_id: null,
+    };
+
+    await client.applyLocalOperation(newTaskOperation(firstTask), firstTask);
+    await client.applyLocalOperation(newTaskOperation(secondTask), secondTask);
+
+    const sql = 'select id, title from tasks where id = ?';
+    await expect(client.executeSql(sql, [firstTask.id])).resolves.toMatchObject(
+      {
+        rows: [{ id: firstTask.id, title: firstTask.title }],
+      }
+    );
+    await expect(client.executeSql(sql, [secondTask.id])).resolves.toMatchObject(
+      {
+        rows: [{ id: secondTask.id, title: secondTask.title }],
+      }
+    );
+  });
+
   it('surfaces revoked sessions when auth refresh declines retry', async () => {
     const scenario = syncConformance.revokedSession;
     const sync = await createHonoSyncHarness({
@@ -441,6 +483,71 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     expect(cursorRows.rows).toEqual([
       { cursor: scenario.expectedBrowserCursor },
     ]);
+  });
+
+  it('reports and applies binary snapshot chunks on the browser fast path', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      snapshotBundleMaxBytes: 1,
+      seedTasks: [
+        {
+          id: 'binary-browser-task-1',
+          title: 'Binary Browser Task 1',
+          actorId: ACTOR_A,
+        },
+        {
+          id: 'binary-browser-task-2',
+          title: 'Binary Browser Task 2',
+          actorId: ACTOR_A,
+        },
+      ],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'binary-browser-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      pull: {
+        includeSnapshotRows: false,
+        collectChangedRows: false,
+        limitSnapshotRows: 1,
+        maxSnapshotPages: 10,
+      },
+    });
+    const diagnostics = client as unknown as {
+      resetTransportStats(): Promise<void>;
+      transportStats(): Promise<{
+        snapshotChunkBinaryCount: number;
+        snapshotChunkJsonCount: number;
+        snapshotChunkRowCount: number;
+      }>;
+    };
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    await diagnostics.resetTransportStats();
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      subscriptions: [
+        {
+          id: syncConformance.subscription.id,
+          snapshotRows: [],
+        },
+      ],
+    });
+
+    const stats = await diagnostics.transportStats();
+    expect(stats.snapshotChunkBinaryCount).toBeGreaterThan(0);
+    expect(stats.snapshotChunkJsonCount).toBe(0);
+    expect(stats.snapshotChunkRowCount).toBe(2);
+
+    const rows = await client.listTable('tasks');
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'binary-browser-task-1' }),
+        expect.objectContaining({ id: 'binary-browser-task-2' }),
+      ])
+    );
   });
 
   it('emits ordered live-query refreshes after sync pulls and ignores duplicate unsubscribe', async () => {

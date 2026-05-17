@@ -1,6 +1,7 @@
 #[cfg(feature = "native")]
 use crate::app_schema::validate_app_schema_runtime_features;
 use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
+use crate::binary_snapshot::{BinarySnapshotCell, DecodedBinarySnapshotRows, SnapshotChunkRows};
 #[cfg(feature = "native")]
 use crate::crdt_field::{validate_crdt_field, CrdtField, CrdtFieldId, CrdtFieldSyncMode};
 #[cfg(feature = "native")]
@@ -362,6 +363,114 @@ pub fn sync_changed_row_for_snapshot(
     })
 }
 
+fn sync_changed_rows_for_cleared_snapshot_chunk(
+    app_schema: AppSchema,
+    table: &str,
+    rows: &SnapshotChunkRows,
+    subscription_id: &str,
+) -> Vec<SyncChangedRow> {
+    match rows {
+        SnapshotChunkRows::Json(rows) => rows
+            .iter()
+            .filter_map(|row| {
+                sync_changed_row_for_snapshot(app_schema, table, row, None, subscription_id)
+            })
+            .collect(),
+        SnapshotChunkRows::Binary(rows) => sync_changed_rows_for_cleared_binary_snapshot_chunk(
+            app_schema,
+            table,
+            rows,
+            subscription_id,
+        ),
+        SnapshotChunkRows::BinaryPayload(rows) => rows
+            .clone()
+            .into_decoded_rows()
+            .ok()
+            .map(|rows| {
+                sync_changed_rows_for_cleared_binary_snapshot_chunk(
+                    app_schema,
+                    table,
+                    &rows,
+                    subscription_id,
+                )
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn sync_changed_rows_for_cleared_binary_snapshot_chunk(
+    app_schema: AppSchema,
+    table: &str,
+    rows: &DecodedBinarySnapshotRows,
+    subscription_id: &str,
+) -> Vec<SyncChangedRow> {
+    let Some(metadata) = app_schema.table_metadata(table) else {
+        return Vec::new();
+    };
+    let Some(primary_key_index) = rows
+        .columns
+        .iter()
+        .position(|column| column.name == metadata.primary_key_column)
+    else {
+        return Vec::new();
+    };
+    let server_version_index = rows
+        .columns
+        .iter()
+        .position(|column| column.name == metadata.server_version_column);
+    let present_columns = rows
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<HashSet<_>>();
+    let changed_fields = metadata
+        .columns
+        .iter()
+        .filter_map(|column| {
+            if column.name == metadata.primary_key_column || !present_columns.contains(column.name)
+            {
+                return None;
+            }
+            Some(column.name.to_string())
+        })
+        .collect::<Vec<_>>();
+    let crdt_fields = crdt_state_columns_for_fields(metadata, &changed_fields);
+    rows.rows
+        .iter()
+        .map(|row| SyncChangedRow {
+            table: table.to_string(),
+            row_id: row
+                .get(primary_key_index)
+                .and_then(binary_snapshot_cell_row_id),
+            operation: "insert".to_string(),
+            crdt_fields: crdt_fields.clone(),
+            changed_fields: changed_fields.clone(),
+            commit_id: None,
+            commit_seq: None,
+            subscription_id: Some(subscription_id.to_string()),
+            server_version: server_version_index
+                .and_then(|index| row.get(index))
+                .and_then(binary_snapshot_cell_i64),
+        })
+        .collect()
+}
+
+fn binary_snapshot_cell_row_id(cell: &BinarySnapshotCell) -> Option<String> {
+    match cell {
+        BinarySnapshotCell::String(value) => Some(value.clone()),
+        BinarySnapshotCell::Integer(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn binary_snapshot_cell_i64(cell: &BinarySnapshotCell) -> Option<i64> {
+    match cell {
+        BinarySnapshotCell::Integer(value) => Some(*value),
+        BinarySnapshotCell::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
 fn changed_fields_from_remote_change(
     metadata: &AppTableMetadata,
     change: &SyncChange,
@@ -484,6 +593,15 @@ fn row_id_for_metadata(app_schema: AppSchema, table: &str, row: &Value) -> Optio
     row.get(metadata.primary_key_column)
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+fn snapshot_clear_removes_all_rows(app_schema: AppSchema, table: &str) -> bool {
+    app_schema.table_metadata(table).is_some_and(|metadata| {
+        !metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1194,6 +1312,14 @@ where
                 limit_snapshot_rows: 1000,
                 max_snapshot_pages: 4,
                 dedupe_rows: None,
+                snapshot_encodings: vec![
+                    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
+                    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
+                ],
+                sync_pack_encodings: vec![
+                    SYNC_PACK_ENCODING_BINARY_V1.to_string(),
+                    SYNC_PACK_ENCODING_JSON_V1.to_string(),
+                ],
                 subscriptions,
             })
         })
@@ -1266,6 +1392,21 @@ where
         } else {
             Ok(row)
         }
+    }
+
+    fn transform_snapshot_chunk_rows(
+        &self,
+        snapshot_table: &str,
+        rows: SnapshotChunkRows,
+    ) -> Result<SnapshotChunkRows> {
+        if self.field_encryption.is_none() {
+            return Ok(rows);
+        }
+        rows.try_into_value_rows()?
+            .into_iter()
+            .map(|row| self.transform_snapshot_row(snapshot_table, row))
+            .collect::<Result<Vec<_>>>()
+            .map(SnapshotChunkRows::Json)
     }
 
     fn encryption_context(&self) -> FieldEncryptionContext {
@@ -1409,73 +1550,120 @@ where
             let mut prepared_snapshots = Vec::new();
             if let Some(snapshots) = sub.snapshots.as_ref() {
                 for snapshot in snapshots {
-                    let mut chunk_rows = Vec::new();
+                    let mut chunk_batches = Vec::new();
                     if let Some(chunks) = &snapshot.chunks {
                         for chunk in chunks {
-                            for row in self
+                            let rows = self
                                 .transport
-                                .fetch_snapshot_chunk_rows(chunk, &sub.scopes)?
-                            {
-                                chunk_rows.push(self.transform_snapshot_row(&snapshot.table, row)?);
-                            }
+                                .fetch_snapshot_chunk_rows(chunk, &sub.scopes)?;
+                            chunk_batches
+                                .push(self.transform_snapshot_chunk_rows(&snapshot.table, rows)?);
                         }
                     }
-                    if snapshot.is_first_page || !snapshot.rows.is_empty() || !chunk_rows.is_empty()
+                    if snapshot.is_first_page
+                        || !snapshot.rows.is_empty()
+                        || chunk_batches.iter().any(|rows| !rows.is_empty())
                     {
                         report.add_changed_table(&snapshot.table);
                     }
-                    prepared_snapshots.push((snapshot.clone(), chunk_rows));
+                    prepared_snapshots.push((snapshot.clone(), chunk_batches));
                 }
             }
 
             self.store.transaction(|tx| {
-                if let Some(prev) = tx.subscription_state(DEFAULT_STATE_ID, &sub.id)? {
+                let previous_state = tx.subscription_state(DEFAULT_STATE_ID, &sub.id)?;
+                let mut previous_scopes_match = false;
+                if let Some(prev) = &previous_state {
                     let previous_scopes: ScopeValues = serde_json::from_str(&prev.scopes_json)?;
                     if previous_scopes != sub.scopes {
                         tx.clear_table_for_scopes(&prev.table, &previous_scopes)?;
                         report.add_changed_table(&prev.table);
+                    } else {
+                        previous_scopes_match = true;
                     }
                 }
 
-                for (snapshot, chunk_rows) in &prepared_snapshots {
+                let mut snapshot_cleared_tables = HashSet::new();
+                if let Some(prev) = previous_state.as_ref() {
+                    if prev.bootstrap_state_json.is_some()
+                        && previous_scopes_match
+                        && snapshot_clear_removes_all_rows(self.app_schema, &prev.table)
+                    {
+                        snapshot_cleared_tables.insert(prev.table.clone());
+                    }
+                }
+                for (snapshot, chunk_batches) in &prepared_snapshots {
                     if snapshot.is_first_page {
                         tx.clear_table_for_scopes_preserving_local_crdt(
                             &snapshot.table,
                             &sub.scopes,
                         )?;
-                    }
-                    for row in &snapshot.rows {
-                        let previous_row =
-                            row_id_for_metadata(self.app_schema, &snapshot.table, row)
-                                .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
-                                .transpose()?
-                                .flatten();
-                        tx.upsert_row(&snapshot.table, row, None)?;
-                        if let Some(changed_row) = sync_changed_row_for_snapshot(
-                            self.app_schema,
-                            &snapshot.table,
-                            row,
-                            previous_row.as_ref(),
-                            &sub.id,
-                        ) {
-                            report.add_changed_row(changed_row);
+                        if snapshot_clear_removes_all_rows(self.app_schema, &snapshot.table) {
+                            snapshot_cleared_tables.insert(snapshot.table.clone());
                         }
                     }
-                    for row in chunk_rows {
-                        let previous_row =
-                            row_id_for_metadata(self.app_schema, &snapshot.table, row)
-                                .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
-                                .transpose()?
-                                .flatten();
-                        tx.upsert_row(&snapshot.table, row, None)?;
-                        if let Some(changed_row) = sync_changed_row_for_snapshot(
-                            self.app_schema,
-                            &snapshot.table,
-                            row,
-                            previous_row.as_ref(),
-                            &sub.id,
-                        ) {
-                            report.add_changed_row(changed_row);
+                    if snapshot_cleared_tables.contains(&snapshot.table) {
+                        tx.upsert_rows(&snapshot.table, &snapshot.rows, None)?;
+                        for row in &snapshot.rows {
+                            if let Some(changed_row) = sync_changed_row_for_snapshot(
+                                self.app_schema,
+                                &snapshot.table,
+                                row,
+                                None,
+                                &sub.id,
+                            ) {
+                                report.add_changed_row(changed_row);
+                            }
+                        }
+
+                        for chunk_rows in chunk_batches {
+                            tx.upsert_snapshot_chunk_rows(&snapshot.table, chunk_rows, None)?;
+                            for changed_row in sync_changed_rows_for_cleared_snapshot_chunk(
+                                self.app_schema,
+                                &snapshot.table,
+                                chunk_rows,
+                                &sub.id,
+                            ) {
+                                report.add_changed_row(changed_row);
+                            }
+                        }
+                    } else {
+                        for row in &snapshot.rows {
+                            let previous_row =
+                                row_id_for_metadata(self.app_schema, &snapshot.table, row)
+                                    .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
+                                    .transpose()?
+                                    .flatten();
+                            tx.upsert_row(&snapshot.table, row, None)?;
+                            if let Some(changed_row) = sync_changed_row_for_snapshot(
+                                self.app_schema,
+                                &snapshot.table,
+                                row,
+                                previous_row.as_ref(),
+                                &sub.id,
+                            ) {
+                                report.add_changed_row(changed_row);
+                            }
+                        }
+                        for chunk_rows in chunk_batches {
+                            let chunk_rows = chunk_rows.clone().try_into_value_rows()?;
+                            for row in &chunk_rows {
+                                let previous_row =
+                                    row_id_for_metadata(self.app_schema, &snapshot.table, row)
+                                        .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
+                                        .transpose()?
+                                        .flatten();
+                                tx.upsert_row(&snapshot.table, row, None)?;
+                                if let Some(changed_row) = sync_changed_row_for_snapshot(
+                                    self.app_schema,
+                                    &snapshot.table,
+                                    row,
+                                    previous_row.as_ref(),
+                                    &sub.id,
+                                ) {
+                                    report.add_changed_row(changed_row);
+                                }
+                            }
                         }
                     }
                 }

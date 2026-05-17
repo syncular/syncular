@@ -49,6 +49,8 @@ export interface RawSyncularV2RustClient {
   syncPushJson(): Promise<string>;
   recoverSyncPushErrorJson(errorMessage: string): void;
   syncOnceJson(): Promise<string>;
+  transportStatsJson(): string;
+  resetTransportStats(): void;
   conflictSummariesJson(): Promise<string>;
   retryConflictKeepLocal(id: string): Promise<string>;
   resolveConflict(id: string, resolution: string): Promise<void>;

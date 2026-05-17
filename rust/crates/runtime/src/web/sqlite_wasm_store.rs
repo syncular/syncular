@@ -2,6 +2,10 @@ use crate::app_schema::{
     app_schema_from_config, checksum, empty_app_schema, split_sql_statements,
     validate_app_schema_runtime_features, AppSchema, AppSchemaJson, AppTableMetadata,
 };
+use crate::binary_snapshot::{
+    BinarySnapshotCell, BinarySnapshotPayload, BinarySnapshotRowCursor, BorrowedBinarySnapshotCell,
+    BorrowedBinarySnapshotCellVisitor, DecodedBinarySnapshotRows, SnapshotChunkRows,
+};
 use crate::client::{sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow};
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, tombstone_table_names,
@@ -42,9 +46,9 @@ use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
 use crate::transport::web::AsyncBlobTransport;
 use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
-use crate::web_client::{WebSyncularClient, WebSyncularClientConfig};
+use crate::web_client::{WebSyncPullOptions, WebSyncularClient, WebSyncularClientConfig};
 use crate::web_store::{AsyncWebStore, WebSubscriptionState};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
 use sqlite_wasm_rs as ffi;
 use sqlite_wasm_vfs::relaxed_idb::{
@@ -62,6 +66,9 @@ use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 
 const GENERATED_SCHEMA_ID: &str = "syncular-app";
+const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 256;
+const QUERY_STATEMENT_CACHE_CAPACITY: usize = 64;
+const SNAPSHOT_STATEMENT_CACHE_CAPACITY: usize = 16;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +88,8 @@ struct RustOwnedSqliteClientConfig {
     client_id: String,
     actor_id: String,
     project_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_pull_options")]
+    pull: WebSyncPullOptions,
     file_name: Option<String>,
     storage: Option<RustOwnedSqliteStorage>,
     clear_on_init: Option<bool>,
@@ -89,7 +98,16 @@ struct RustOwnedSqliteClientConfig {
     app_schema: Option<AppSchemaJson>,
 }
 
-#[derive(Debug, Deserialize)]
+fn deserialize_pull_options<'de, D>(
+    deserializer: D,
+) -> std::result::Result<WebSyncPullOptions, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<WebSyncPullOptions>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum RustOwnedSqliteStorage {
     Memory,
@@ -173,6 +191,12 @@ impl RustOwnedCrdtFieldCompactionRequest {
 enum SqlExecutionMode {
     Readonly,
     Unchecked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BinarySnapshotWriteMode {
+    Upsert,
+    Insert,
 }
 
 #[cfg(feature = "web-blobs")]
@@ -300,18 +324,42 @@ pub struct SyncularRustOwnedSqlite {
     state_id: String,
     schema_version: i32,
     app_schema: AppSchema,
+    query_statement_cache: Vec<QueryStatementCacheEntry>,
+    query_statement_cache_tick: u64,
+    snapshot_statement_cache: Vec<SnapshotStatementCacheEntry>,
+    snapshot_statement_cache_tick: u64,
     live_queries: Vec<LiveQuery>,
     live_events: Vec<LiveQueryEvent>,
     row_events: Vec<RowsChangedEvent>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+struct QueryStatementCacheEntry {
+    sql: String,
+    stmt: *mut ffi::sqlite3_stmt,
+    last_used: u64,
+}
+
+#[derive(Debug)]
+struct SnapshotStatementCacheEntry {
+    table: String,
+    primary_key_column: String,
+    columns: Vec<String>,
+    on_conflict: Option<String>,
+    row_count: usize,
+    mode: BinarySnapshotWriteMode,
+    stmt: *mut ffi::sqlite3_stmt,
+    last_used: u64,
+}
+
+#[derive(Debug)]
 struct LiveQuery {
     id: String,
     sql: String,
     params: Vec<Value>,
     tables: Vec<String>,
     last_hash: String,
+    stmt: *mut ffi::sqlite3_stmt,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -414,10 +462,15 @@ impl SyncularRustOwnedSqlite {
             state_id: config.state_id.unwrap_or_else(|| "default".into()),
             schema_version,
             app_schema,
+            query_statement_cache: Vec::new(),
+            query_statement_cache_tick: 0,
+            snapshot_statement_cache: Vec::new(),
+            snapshot_statement_cache_tick: 0,
             live_queries: Vec::new(),
             live_events: Vec::new(),
             row_events: Vec::new(),
         };
+        store.configure_sqlite_pragmas(storage)?;
         store.ensure_internal_migrations()?;
         store.ensure_generated_schema_state()?;
         Ok(store)
@@ -485,7 +538,10 @@ impl SyncularRustOwnedSqlite {
 
     #[wasm_bindgen(js_name = unsubscribeQuery)]
     pub fn unsubscribe_query(&mut self, id: &str) {
-        self.live_queries.retain(|query| query.id != id);
+        if let Some(index) = self.live_queries.iter().position(|query| query.id == id) {
+            let query = self.live_queries.remove(index);
+            let _ = finalize_stmt(query.stmt, self.db, "finalize live query");
+        }
         self.live_events.retain(|event| event.query_id != id);
     }
 
@@ -659,6 +715,7 @@ impl SyncularRustOwnedSqliteClient {
             client_id: config.client_id,
             actor_id: config.actor_id,
             project_id: config.project_id,
+            pull: config.pull,
         };
         let transport = WebSyncTransport::new(WebSyncTransportConfig {
             base_url: inner_config.base_url.clone(),
@@ -698,6 +755,16 @@ impl SyncularRustOwnedSqliteClient {
             .await
             .and_then(|result| Ok(serde_json::to_string(&result)?))
             .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = transportStatsJson)]
+    pub fn transport_stats_json(&self) -> std::result::Result<String, JsValue> {
+        self.inner.transport().stats_json().map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = resetTransportStats)]
+    pub fn reset_transport_stats(&self) {
+        self.inner.transport().reset_stats();
     }
 
     #[wasm_bindgen(js_name = applyLocalOperationJson)]
@@ -1438,6 +1505,24 @@ impl SyncularRustOwnedSqliteClient {
 }
 
 impl SyncularRustOwnedSqlite {
+    fn configure_sqlite_pragmas(&self, storage: RustOwnedSqliteStorage) -> Result<()> {
+        self.exec("PRAGMA foreign_keys = ON")?;
+        self.exec("PRAGMA busy_timeout = 5000")?;
+        self.exec("PRAGMA temp_store = MEMORY")?;
+        match storage {
+            RustOwnedSqliteStorage::Memory => {
+                self.exec("PRAGMA locking_mode = EXCLUSIVE")?;
+                self.exec("PRAGMA journal_mode = MEMORY")?;
+                self.exec("PRAGMA synchronous = OFF")?;
+            }
+            RustOwnedSqliteStorage::IndexedDb | RustOwnedSqliteStorage::OpfsSahPool => {
+                let _ = self.exec("PRAGMA journal_mode = WAL");
+                let _ = self.exec("PRAGMA synchronous = NORMAL");
+            }
+        }
+        Ok(())
+    }
+
     fn ensure_internal_migrations(&self) -> Result<()> {
         self.exec(
             "CREATE TABLE IF NOT EXISTS sync_migrations (\
@@ -2077,7 +2162,7 @@ impl SyncularRustOwnedSqlite {
         let mut changed_tables = Vec::new();
         let mut changed_rows = Vec::new();
 
-        self.exec("BEGIN IMMEDIATE")?;
+        self.begin_write_transaction()?;
         let result = (|| {
             for entry in operations {
                 let (operation, local_row) =
@@ -2132,7 +2217,7 @@ impl SyncularRustOwnedSqlite {
         let mut sync_operations = Vec::with_capacity(operations.len());
         let mut changed_rows = Vec::new();
 
-        self.exec("BEGIN IMMEDIATE")?;
+        self.begin_write_transaction()?;
         let result = (|| {
             for entry in operations {
                 let (operation, local_row) =
@@ -2200,7 +2285,7 @@ impl SyncularRustOwnedSqlite {
             push_unique_table(&mut changed_tables, table);
         }
 
-        self.exec("BEGIN IMMEDIATE")?;
+        self.begin_write_transaction()?;
         let result = (|| {
             let (operation, local_row) =
                 self.transform_local_operation_entry(operation, local_row)?;
@@ -2591,6 +2676,313 @@ impl SyncularRustOwnedSqlite {
         Ok(row)
     }
 
+    fn materialize_app_row_object(
+        &self,
+        table: &str,
+        row: Value,
+        metadata: &'static AppTableMetadata,
+    ) -> Result<Map<String, Value>> {
+        if metadata.crdt_yjs_fields.is_empty() {
+            return object_from_owned_value(row);
+        }
+        let row = materialize_row_for_metadata(table, None, row, metadata)?;
+        let row = object_from_owned_value(row)?;
+        self.preserve_encrypted_crdt_materialized_columns(metadata, row)
+    }
+
+    fn write_app_rows(&mut self, table: &str, rows: Vec<Value>) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+        validate_table_name(table)?;
+        validate_table_name(metadata.primary_key_column)?;
+
+        let columns = metadata
+            .columns
+            .iter()
+            .map(|column| column.name.to_string())
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            return Ok(());
+        }
+        for column in &columns {
+            validate_table_name(column)?;
+        }
+        let update_columns = columns
+            .iter()
+            .map(String::as_str)
+            .filter(|column| *column != metadata.primary_key_column)
+            .collect::<Vec<_>>();
+        let on_conflict = if update_columns.is_empty() {
+            "DO NOTHING".to_string()
+        } else {
+            format!(
+                "DO UPDATE SET {}",
+                update_columns
+                    .iter()
+                    .map(|column| format!("{column} = excluded.{column}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let mut batch = Vec::with_capacity(SNAPSHOT_UPSERT_BATCH_ROWS);
+        let mut full_batch_stmt: *mut ffi::sqlite3_stmt = ptr::null_mut();
+        let write_result = (|| -> Result<()> {
+            for row in rows {
+                let row = self.materialize_app_row_object(table, row, metadata)?;
+                batch.push(row);
+                if batch.len() == SNAPSHOT_UPSERT_BATCH_ROWS {
+                    if full_batch_stmt.is_null() {
+                        full_batch_stmt = prepare_multirow_upsert(
+                            self.db,
+                            table,
+                            metadata.primary_key_column,
+                            &columns,
+                            &on_conflict,
+                            SNAPSHOT_UPSERT_BATCH_ROWS,
+                        )?;
+                    }
+                    execute_prepared_multirow_upsert(self.db, full_batch_stmt, &batch, &columns)?;
+                    batch.clear();
+                }
+            }
+            if !batch.is_empty() {
+                execute_multirow_upsert(
+                    self.db,
+                    table,
+                    metadata.primary_key_column,
+                    &columns,
+                    &on_conflict,
+                    &batch,
+                )?;
+            }
+            Ok(())
+        })();
+        if !full_batch_stmt.is_null() {
+            let finalize_result = finalize_stmt(
+                full_batch_stmt,
+                self.db,
+                "finalize reusable multirow row write",
+            );
+            if write_result.is_ok() {
+                finalize_result?;
+            }
+        }
+        write_result
+    }
+
+    fn write_binary_snapshot_rows(
+        &mut self,
+        table: &str,
+        rows: DecodedBinarySnapshotRows,
+        mode: BinarySnapshotWriteMode,
+    ) -> Result<()> {
+        if rows.rows.is_empty() {
+            return Ok(());
+        }
+        if rows.table != table {
+            return Err(SyncularError::protocol_message(format!(
+                "binary snapshot table mismatch: expected {table}, got {}",
+                rows.table
+            )));
+        }
+
+        let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+        if metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+        {
+            return self.write_app_rows(table, rows.into_value_rows());
+        }
+        validate_table_name(table)?;
+        validate_table_name(metadata.primary_key_column)?;
+
+        let columns = rows
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        if !columns
+            .iter()
+            .any(|column| column == metadata.primary_key_column)
+        {
+            return Err(SyncularError::protocol_message(format!(
+                "binary snapshot for table {table} is missing primary key {}",
+                metadata.primary_key_column
+            )));
+        }
+        for column in &columns {
+            validate_table_name(column)?;
+        }
+        if rows.rows.iter().any(|row| row.len() != columns.len()) {
+            return Err(SyncularError::protocol_message(format!(
+                "binary snapshot for table {table} has a row with the wrong column count"
+            )));
+        }
+        let on_conflict = if mode == BinarySnapshotWriteMode::Upsert {
+            let update_columns = columns
+                .iter()
+                .map(String::as_str)
+                .filter(|column| *column != metadata.primary_key_column)
+                .collect::<Vec<_>>();
+            Some(if update_columns.is_empty() {
+                "DO NOTHING".to_string()
+            } else {
+                format!(
+                    "DO UPDATE SET {}",
+                    update_columns
+                        .iter()
+                        .map(|column| format!("{column} = excluded.{column}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+        } else {
+            None
+        };
+
+        let write_result = (|| -> Result<()> {
+            for batch in rows.rows.chunks(SNAPSHOT_UPSERT_BATCH_ROWS) {
+                if batch.len() == SNAPSHOT_UPSERT_BATCH_ROWS {
+                    let full_batch_stmt = self.cached_binary_snapshot_statement(
+                        table,
+                        metadata.primary_key_column,
+                        &columns,
+                        on_conflict.as_deref(),
+                        SNAPSHOT_UPSERT_BATCH_ROWS,
+                        mode,
+                    )?;
+                    execute_prepared_binary_multirow_upsert(self.db, full_batch_stmt, batch)?;
+                } else {
+                    execute_binary_snapshot_write(
+                        self.db,
+                        table,
+                        metadata.primary_key_column,
+                        &columns,
+                        on_conflict.as_deref(),
+                        mode,
+                        batch,
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        write_result
+    }
+
+    fn write_binary_snapshot_payload(
+        &mut self,
+        table: &str,
+        payload: BinarySnapshotPayload,
+        mode: BinarySnapshotWriteMode,
+    ) -> Result<()> {
+        if payload.row_count() == 0 {
+            return Ok(());
+        }
+        if payload.table != table {
+            return Err(SyncularError::protocol_message(format!(
+                "binary snapshot table mismatch: expected {table}, got {}",
+                payload.table
+            )));
+        }
+
+        let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+        if metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+        {
+            return self.write_app_rows(table, payload.into_value_rows()?);
+        }
+        validate_table_name(table)?;
+        validate_table_name(metadata.primary_key_column)?;
+
+        let columns = payload
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        if !columns
+            .iter()
+            .any(|column| column == metadata.primary_key_column)
+        {
+            return Err(SyncularError::protocol_message(format!(
+                "binary snapshot for table {table} is missing primary key {}",
+                metadata.primary_key_column
+            )));
+        }
+        for column in &columns {
+            validate_table_name(column)?;
+        }
+        let on_conflict = if mode == BinarySnapshotWriteMode::Upsert {
+            let update_columns = columns
+                .iter()
+                .map(String::as_str)
+                .filter(|column| *column != metadata.primary_key_column)
+                .collect::<Vec<_>>();
+            Some(if update_columns.is_empty() {
+                "DO NOTHING".to_string()
+            } else {
+                format!(
+                    "DO UPDATE SET {}",
+                    update_columns
+                        .iter()
+                        .map(|column| format!("{column} = excluded.{column}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+        } else {
+            None
+        };
+
+        let write_result = (|| -> Result<()> {
+            let mut cursor = payload.row_cursor();
+            let mut remaining = payload.row_count();
+            while remaining >= SNAPSHOT_UPSERT_BATCH_ROWS {
+                let full_batch_stmt = self.cached_binary_snapshot_statement(
+                    table,
+                    metadata.primary_key_column,
+                    &columns,
+                    on_conflict.as_deref(),
+                    SNAPSHOT_UPSERT_BATCH_ROWS,
+                    mode,
+                )?;
+                execute_prepared_binary_payload_batch(
+                    self.db,
+                    full_batch_stmt,
+                    &mut cursor,
+                    SNAPSHOT_UPSERT_BATCH_ROWS,
+                )?;
+                remaining -= SNAPSHOT_UPSERT_BATCH_ROWS;
+            }
+            if remaining > 0 {
+                execute_binary_snapshot_payload_write(
+                    self.db,
+                    table,
+                    metadata.primary_key_column,
+                    &columns,
+                    on_conflict.as_deref(),
+                    mode,
+                    &mut cursor,
+                    remaining,
+                )?;
+            }
+            cursor.assert_done()?;
+            Ok(())
+        })();
+        write_result
+    }
+
     fn update_encrypted_crdt_system_server_seq(
         &self,
         table: &str,
@@ -2804,6 +3196,8 @@ impl SyncularRustOwnedSqlite {
             "insertId": unsafe { ffi::sqlite3_last_insert_rowid(self.db) },
         });
         if mode == SqlExecutionMode::Unchecked {
+            self.clear_query_statement_cache();
+            self.clear_snapshot_statement_cache();
             let changed_tables = changed_tables_for_sql(sql);
             if !changed_tables.is_empty() {
                 self.invalidate_live_queries(&changed_tables)?;
@@ -2823,14 +3217,23 @@ impl SyncularRustOwnedSqlite {
         for table in &tables {
             validate_table_name(table)?;
         }
-        let rows = self.execute_sql(sql, &params, SqlExecutionMode::Readonly)?;
+        let stmt = prepare_sql_statement(self.db, sql, SqlExecutionMode::Readonly)?;
+        let rows = match execute_prepared_sql(self.db, stmt, &params, "live query") {
+            Ok(rows) => rows,
+            Err(err) => {
+                let _ = finalize_stmt(stmt, self.db, "finalize live query after initial failure");
+                return Err(err);
+            }
+        };
         let id = Uuid::new_v4().to_string();
+        let last_hash = result_hash(&rows)?;
         self.live_queries.push(LiveQuery {
             id: id.clone(),
             sql: sql.to_string(),
             params,
             tables,
-            last_hash: result_hash(&rows)?,
+            last_hash,
+            stmt,
         });
         Ok(serde_json::to_string(&serde_json::json!({
             "id": id,
@@ -2839,50 +3242,156 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn execute_sql(
-        &self,
+        &mut self,
         sql: &str,
         params: &[Value],
         mode: SqlExecutionMode,
     ) -> Result<Vec<Value>> {
-        let sql = CString::new(sql).map_err(cstring_error("execute sql"))?;
-        let mut stmt = ptr::null_mut();
-        let rc = unsafe {
-            ffi::sqlite3_prepare_v2(
-                self.db,
-                sql.as_ptr(),
-                -1,
-                &mut stmt as *mut _,
-                ptr::null_mut(),
-            )
-        };
-        if rc != ffi::SQLITE_OK {
-            return Err(sqlite_error(self.db, "prepare execute sql"));
-        }
-        if mode == SqlExecutionMode::Readonly && unsafe { ffi::sqlite3_stmt_readonly(stmt) } == 0 {
-            let _ = finalize_stmt(stmt, self.db, "finalize rejected public write sql");
-            return Err(SyncularError::protocol_message(
-                "Syncular v2 public SQL is read-only. Use generated Syncular mutations for synced writes.",
-            ));
-        }
-        if let Err(err) = bind_params(stmt, params) {
-            let _ = finalize_stmt(stmt, self.db, "finalize execute after bind failure");
-            return Err(err);
+        if mode == SqlExecutionMode::Readonly {
+            return self.execute_cached_readonly_sql(sql, params);
         }
 
-        let mut rows = Vec::new();
-        loop {
-            match unsafe { ffi::sqlite3_step(stmt) } {
-                ffi::SQLITE_ROW => rows.push(SqliteRow::new(stmt).to_json()?),
-                ffi::SQLITE_DONE => break,
-                _ => {
-                    let err = sqlite_error(self.db, "step execute sql");
-                    let _ = finalize_stmt(stmt, self.db, "finalize execute after step failure");
+        let stmt = prepare_sql_statement(self.db, sql, mode)?;
+        let rows = match execute_prepared_sql(self.db, stmt, params, "execute sql") {
+            Ok(rows) => rows,
+            Err(err) => {
+                let _ = finalize_stmt(stmt, self.db, "finalize execute after failure");
+                return Err(err);
+            }
+        };
+        finalize_stmt(stmt, self.db, "finalize execute sql")?;
+        Ok(rows)
+    }
+
+    fn execute_cached_readonly_sql(&mut self, sql: &str, params: &[Value]) -> Result<Vec<Value>> {
+        self.query_statement_cache_tick = self.query_statement_cache_tick.wrapping_add(1);
+        let now = self.query_statement_cache_tick;
+        if let Some(index) = self
+            .query_statement_cache
+            .iter()
+            .position(|entry| entry.sql == sql)
+        {
+            let stmt = self.query_statement_cache[index].stmt;
+            match execute_prepared_sql(self.db, stmt, params, "cached execute sql") {
+                Ok(rows) => {
+                    self.query_statement_cache[index].last_used = now;
+                    return Ok(rows);
+                }
+                Err(err) => {
+                    let entry = self.query_statement_cache.remove(index);
+                    let _ = finalize_stmt(entry.stmt, self.db, "finalize failed cached query");
                     return Err(err);
                 }
             }
         }
-        finalize_stmt(stmt, self.db, "finalize execute sql")?;
+
+        let stmt = prepare_sql_statement(self.db, sql, SqlExecutionMode::Readonly)?;
+        let rows = match execute_prepared_sql(self.db, stmt, params, "execute sql") {
+            Ok(rows) => rows,
+            Err(err) => {
+                let _ = finalize_stmt(stmt, self.db, "finalize execute after failure");
+                return Err(err);
+            }
+        };
+        self.insert_cached_query_statement(QueryStatementCacheEntry {
+            sql: sql.to_string(),
+            stmt,
+            last_used: now,
+        });
         Ok(rows)
+    }
+
+    fn insert_cached_query_statement(&mut self, entry: QueryStatementCacheEntry) {
+        if self.query_statement_cache.len() >= QUERY_STATEMENT_CACHE_CAPACITY {
+            if let Some(index) = self
+                .query_statement_cache
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(index, _)| index)
+            {
+                let evicted = self.query_statement_cache.remove(index);
+                let _ = finalize_stmt(evicted.stmt, self.db, "finalize evicted cached query");
+            }
+        }
+        self.query_statement_cache.push(entry);
+    }
+
+    fn cached_binary_snapshot_statement(
+        &mut self,
+        table: &str,
+        primary_key_column: &str,
+        columns: &[String],
+        on_conflict: Option<&str>,
+        row_count: usize,
+        mode: BinarySnapshotWriteMode,
+    ) -> Result<*mut ffi::sqlite3_stmt> {
+        self.snapshot_statement_cache_tick = self.snapshot_statement_cache_tick.wrapping_add(1);
+        let now = self.snapshot_statement_cache_tick;
+        if let Some(index) = self.snapshot_statement_cache.iter().position(|entry| {
+            entry.table == table
+                && entry.primary_key_column == primary_key_column
+                && entry.columns == columns
+                && entry.on_conflict.as_deref() == on_conflict
+                && entry.row_count == row_count
+                && entry.mode == mode
+        }) {
+            self.snapshot_statement_cache[index].last_used = now;
+            return Ok(self.snapshot_statement_cache[index].stmt);
+        }
+
+        let stmt = prepare_binary_snapshot_write(
+            self.db,
+            table,
+            primary_key_column,
+            columns,
+            on_conflict,
+            row_count,
+            mode,
+        )?;
+        self.insert_cached_snapshot_statement(SnapshotStatementCacheEntry {
+            table: table.to_string(),
+            primary_key_column: primary_key_column.to_string(),
+            columns: columns.to_vec(),
+            on_conflict: on_conflict.map(str::to_string),
+            row_count,
+            mode,
+            stmt,
+            last_used: now,
+        });
+        Ok(stmt)
+    }
+
+    fn insert_cached_snapshot_statement(&mut self, entry: SnapshotStatementCacheEntry) {
+        if self.snapshot_statement_cache.len() >= SNAPSHOT_STATEMENT_CACHE_CAPACITY {
+            if let Some(index) = self
+                .snapshot_statement_cache
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(index, _)| index)
+            {
+                let evicted = self.snapshot_statement_cache.remove(index);
+                let _ = finalize_stmt(
+                    evicted.stmt,
+                    self.db,
+                    "finalize evicted cached snapshot statement",
+                );
+            }
+        }
+        self.snapshot_statement_cache.push(entry);
+    }
+
+    fn clear_query_statement_cache(&mut self) {
+        for entry in self.query_statement_cache.drain(..) {
+            let _ = finalize_stmt(entry.stmt, self.db, "finalize cached query");
+        }
+    }
+
+    fn clear_snapshot_statement_cache(&mut self) {
+        for entry in self.snapshot_statement_cache.drain(..) {
+            let _ = finalize_stmt(entry.stmt, self.db, "finalize cached snapshot statement");
+        }
     }
 
     fn invalidate_live_queries(&mut self, changed_tables: &[String]) -> Result<()> {
@@ -2934,10 +3443,12 @@ impl SyncularRustOwnedSqlite {
                 continue;
             }
 
-            let rows = {
-                let query = &self.live_queries[index];
-                self.execute_sql(&query.sql, &query.params, SqlExecutionMode::Readonly)?
-            };
+            let rows = execute_prepared_sql(
+                self.db,
+                self.live_queries[index].stmt,
+                &self.live_queries[index].params,
+                "live query rerun",
+            )?;
             let hash = result_hash(&rows)?;
             if hash != self.live_queries[index].last_hash {
                 self.live_queries[index].last_hash = hash;
@@ -2981,8 +3492,14 @@ impl SyncularRustOwnedSqlite {
         result
     }
 
+    fn begin_write_transaction(&mut self) -> Result<()> {
+        self.clear_query_statement_cache();
+        self.exec("BEGIN IMMEDIATE")
+    }
+
     fn exec(&self, sql: &str) -> Result<()> {
-        let sql = CString::new(sql).map_err(cstring_error("sqlite exec sql"))?;
+        let sql_text = sql;
+        let sql = CString::new(sql_text).map_err(cstring_error("sqlite exec sql"))?;
         let rc = unsafe {
             ffi::sqlite3_exec(
                 self.db,
@@ -2995,7 +3512,10 @@ impl SyncularRustOwnedSqlite {
         if rc == ffi::SQLITE_OK {
             Ok(())
         } else {
-            Err(sqlite_error(self.db, "execute sqlite sql"))
+            Err(sqlite_error(
+                self.db,
+                &format!("execute sqlite sql `{sql_text}`"),
+            ))
         }
     }
 
@@ -3010,13 +3530,25 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         self.app_schema
     }
 
+    fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move { self.begin_write_transaction() })
+    }
+
+    fn commit_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move { self.exec("COMMIT") })
+    }
+
+    fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move { self.exec("ROLLBACK") })
+    }
+
     fn apply_local_operation<'a>(
         &'a mut self,
         operation: SyncOperation,
         local_row: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
         Box::pin(async move {
-            self.exec("BEGIN IMMEDIATE")?;
+            self.begin_write_transaction()?;
             let result = (|| {
                 let (operation, local_row) =
                     self.transform_local_operation_entry(operation, local_row)?;
@@ -3315,7 +3847,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
             operation.base_version = Some(server_version);
             let retry_operation = operation.clone();
 
-            self.exec("BEGIN IMMEDIATE")?;
+            self.begin_write_transaction()?;
             let result = (|| {
                 let client_commit_id = self.enqueue_outbox_operations(&[retry_operation])?;
                 self.exec(&format!(
@@ -3543,6 +4075,59 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn upsert_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: Vec<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            if is_encrypted_crdt_system_table(table) {
+                for row in rows {
+                    self.upsert_row(table, row).await?;
+                }
+                return Ok(());
+            }
+
+            self.write_app_rows(table, rows)
+        })
+    }
+
+    fn upsert_snapshot_chunk_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: SnapshotChunkRows,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            match rows {
+                SnapshotChunkRows::Json(rows) => self.upsert_rows(table, rows).await,
+                SnapshotChunkRows::Binary(rows) => {
+                    self.write_binary_snapshot_rows(table, rows, BinarySnapshotWriteMode::Upsert)
+                }
+                SnapshotChunkRows::BinaryPayload(rows) => {
+                    self.write_binary_snapshot_payload(table, rows, BinarySnapshotWriteMode::Upsert)
+                }
+            }
+        })
+    }
+
+    fn insert_cleared_snapshot_chunk_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: SnapshotChunkRows,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            match rows {
+                SnapshotChunkRows::Json(rows) => self.upsert_rows(table, rows).await,
+                SnapshotChunkRows::Binary(rows) => {
+                    self.write_binary_snapshot_rows(table, rows, BinarySnapshotWriteMode::Insert)
+                }
+                SnapshotChunkRows::BinaryPayload(rows) => {
+                    self.write_binary_snapshot_payload(table, rows, BinarySnapshotWriteMode::Insert)
+                }
+            }
+        })
+    }
+
     fn apply_change<'a>(
         &'a mut self,
         change: SyncChange,
@@ -3670,6 +4255,11 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
 
 impl Drop for SyncularRustOwnedSqlite {
     fn drop(&mut self) {
+        self.clear_query_statement_cache();
+        self.clear_snapshot_statement_cache();
+        for query in self.live_queries.drain(..) {
+            let _ = finalize_stmt(query.stmt, self.db, "finalize live query on close");
+        }
         close_db(self.db);
         self.db = ptr::null_mut();
     }
@@ -3686,6 +4276,98 @@ fn validate_table_name(table: &str) -> Result<()> {
             "invalid sqlite table identifier: {table}"
         )))
     }
+}
+
+fn prepare_sql_statement(
+    db: *mut ffi::sqlite3,
+    sql: &str,
+    mode: SqlExecutionMode,
+) -> Result<*mut ffi::sqlite3_stmt> {
+    let sql = CString::new(sql).map_err(cstring_error("sqlite sql"))?;
+    let mut stmt: *mut ffi::sqlite3_stmt = ptr::null_mut();
+    let mut tail: *const c_char = ptr::null();
+    let rc = unsafe {
+        ffi::sqlite3_prepare_v3(
+            db,
+            sql.as_ptr(),
+            -1,
+            ffi::SQLITE_PREPARE_PERSISTENT,
+            &mut stmt as *mut _,
+            &mut tail as *mut _,
+        )
+    };
+    if rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, "prepare sqlite statement"));
+    }
+    if stmt.is_null() {
+        return Err(SyncularError::config("SQL statement must not be empty"));
+    }
+    if c_tail_has_statement(tail) {
+        let _ = finalize_stmt(stmt, db, "finalize multi-statement sql");
+        return Err(SyncularError::config(
+            "executeSqlJson only accepts one SQL statement",
+        ));
+    }
+    if mode == SqlExecutionMode::Readonly && unsafe { ffi::sqlite3_stmt_readonly(stmt) } == 0 {
+        let _ = finalize_stmt(stmt, db, "finalize non-read-only sql");
+        return Err(SyncularError::config(
+            "executeSqlJson only accepts read-only SQL; use Syncular mutations for writes",
+        ));
+    }
+    Ok(stmt)
+}
+
+fn c_tail_has_statement(mut tail: *const c_char) -> bool {
+    if tail.is_null() {
+        return false;
+    }
+    loop {
+        let byte = unsafe { *tail as u8 };
+        if byte == 0 {
+            return false;
+        }
+        if !byte.is_ascii_whitespace() && byte != b';' {
+            return true;
+        }
+        tail = unsafe { tail.add(1) };
+    }
+}
+
+fn execute_prepared_sql(
+    db: *mut ffi::sqlite3,
+    stmt: *mut ffi::sqlite3_stmt,
+    params: &[Value],
+    context: &str,
+) -> Result<Vec<Value>> {
+    let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
+    if reset_rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, &format!("reset {context}")));
+    }
+    let clear_rc = unsafe { ffi::sqlite3_clear_bindings(stmt) };
+    if clear_rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, &format!("clear bindings for {context}")));
+    }
+    bind_params(stmt, params)?;
+
+    let mut rows = Vec::new();
+    loop {
+        match unsafe { ffi::sqlite3_step(stmt) } {
+            ffi::SQLITE_ROW => match SqliteRow::new(stmt).to_json() {
+                Ok(row) => rows.push(row),
+                Err(err) => {
+                    let _ = unsafe { ffi::sqlite3_reset(stmt) };
+                    return Err(err);
+                }
+            },
+            ffi::SQLITE_DONE => break,
+            _ => {
+                let err = sqlite_error(db, &format!("step {context}"));
+                let _ = unsafe { ffi::sqlite3_reset(stmt) };
+                return Err(err);
+            }
+        }
+    }
+    Ok(rows)
 }
 
 fn sql_string(value: &str) -> String {
@@ -3733,9 +4415,7 @@ fn optional_sql_number(value: Option<i64>) -> String {
 }
 
 fn bind_text(stmt: *mut ffi::sqlite3_stmt, index: i32, value: &str) -> Result<()> {
-    let value = CString::new(value).map_err(cstring_error("blob text parameter"))?;
-    let rc =
-        unsafe { ffi::sqlite3_bind_text(stmt, index, value.as_ptr(), -1, ffi::SQLITE_TRANSIENT()) };
+    let rc = bind_text_bytes(stmt, index, value.as_bytes())?;
     bind_result(rc, index)
 }
 
@@ -3819,6 +4499,15 @@ fn object_from_value(value: Option<&Value>) -> Result<Map<String, Value>> {
     }
 }
 
+fn object_from_owned_value(value: Value) -> Result<Map<String, Value>> {
+    match value {
+        Value::Object(row) => Ok(row),
+        _ => Err(SyncularError::protocol_message(
+            "row payload must be a JSON object",
+        )),
+    }
+}
+
 fn parse_scope_values(value: &str) -> Result<ScopeValues> {
     let value: Value = serde_json::from_str(value)?;
     match value {
@@ -3853,59 +4542,485 @@ fn web_blobs_feature_disabled() -> SyncularError {
 }
 
 fn bind_params(stmt: *mut ffi::sqlite3_stmt, params: &[Value]) -> Result<()> {
-    let mut strings = Vec::new();
     for (index, value) in params.iter().enumerate() {
         let index = i32::try_from(index + 1)
             .map_err(|_| SyncularError::protocol_message("too many SQL parameters"))?;
-        let rc = match value {
-            Value::Null => unsafe { ffi::sqlite3_bind_null(stmt, index) },
-            Value::Bool(value) => unsafe { ffi::sqlite3_bind_int(stmt, index, i32::from(*value)) },
-            Value::Number(value) => {
-                if let Some(value) = value.as_i64() {
-                    unsafe { ffi::sqlite3_bind_int64(stmt, index, value) }
-                } else if let Some(value) = value.as_f64() {
-                    unsafe { ffi::sqlite3_bind_double(stmt, index, value) }
-                } else {
-                    return Err(SyncularError::protocol_message(
-                        "unsupported JSON number parameter",
-                    ));
-                }
+        bind_json_value(stmt, index, value)?;
+    }
+    Ok(())
+}
+
+fn bind_json_value(stmt: *mut ffi::sqlite3_stmt, index: i32, value: &Value) -> Result<()> {
+    let rc = match value {
+        Value::Null => unsafe { ffi::sqlite3_bind_null(stmt, index) },
+        Value::Bool(value) => unsafe { ffi::sqlite3_bind_int(stmt, index, i32::from(*value)) },
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                unsafe { ffi::sqlite3_bind_int64(stmt, index, value) }
+            } else if let Some(value) = value.as_f64() {
+                unsafe { ffi::sqlite3_bind_double(stmt, index, value) }
+            } else {
+                return Err(SyncularError::protocol_message(
+                    "unsupported JSON number parameter",
+                ));
             }
-            Value::String(value) => {
-                strings.push(
-                    CString::new(value.as_str()).map_err(cstring_error("SQL string parameter"))?,
-                );
-                unsafe {
-                    ffi::sqlite3_bind_text(
-                        stmt,
-                        index,
-                        strings.last().expect("just pushed").as_ptr(),
-                        -1,
-                        ffi::SQLITE_TRANSIENT(),
-                    )
-                }
-            }
-            Value::Array(_) | Value::Object(_) => {
-                let text = value.to_string();
-                strings.push(CString::new(text).map_err(cstring_error("SQL JSON parameter"))?);
-                unsafe {
-                    ffi::sqlite3_bind_text(
-                        stmt,
-                        index,
-                        strings.last().expect("just pushed").as_ptr(),
-                        -1,
-                        ffi::SQLITE_TRANSIENT(),
-                    )
-                }
-            }
-        };
-        if rc != ffi::SQLITE_OK {
-            return Err(SyncularError::storage(anyhow::anyhow!(
-                "bind SQL parameter {index} failed with sqlite code {rc}"
-            )));
+        }
+        Value::String(value) => bind_text_bytes(stmt, index, value.as_bytes())?,
+        Value::Array(_) | Value::Object(_) => {
+            let text = value.to_string();
+            bind_text_bytes(stmt, index, text.as_bytes())?
+        }
+    };
+    bind_sqlite_parameter_result(rc, index)
+}
+
+fn bind_binary_snapshot_cell(
+    stmt: *mut ffi::sqlite3_stmt,
+    index: i32,
+    value: &BinarySnapshotCell,
+) -> Result<()> {
+    let rc = match value {
+        BinarySnapshotCell::Null => unsafe { ffi::sqlite3_bind_null(stmt, index) },
+        BinarySnapshotCell::String(value) => bind_text_bytes_static(stmt, index, value.as_bytes())?,
+        BinarySnapshotCell::Integer(value) => unsafe {
+            ffi::sqlite3_bind_int64(stmt, index, *value)
+        },
+        BinarySnapshotCell::Float(value) => unsafe {
+            ffi::sqlite3_bind_double(stmt, index, *value)
+        },
+        BinarySnapshotCell::Boolean(value) => unsafe {
+            ffi::sqlite3_bind_int(stmt, index, i32::from(*value))
+        },
+        BinarySnapshotCell::Json(value) => {
+            bind_json_value(stmt, index, value).map(|_| ffi::SQLITE_OK)?
+        }
+        BinarySnapshotCell::Bytes(value) => bind_blob_bytes_static(stmt, index, value)?,
+    };
+    bind_sqlite_parameter_result(rc, index)
+}
+
+fn bind_borrowed_binary_snapshot_cell(
+    stmt: *mut ffi::sqlite3_stmt,
+    index: i32,
+    value: BorrowedBinarySnapshotCell<'_>,
+) -> Result<()> {
+    let rc = match value {
+        BorrowedBinarySnapshotCell::Null => unsafe { ffi::sqlite3_bind_null(stmt, index) },
+        BorrowedBinarySnapshotCell::String(value) => {
+            bind_text_bytes_static(stmt, index, value.as_bytes())?
+        }
+        BorrowedBinarySnapshotCell::Integer(value) => unsafe {
+            ffi::sqlite3_bind_int64(stmt, index, value)
+        },
+        BorrowedBinarySnapshotCell::Float(value) => unsafe {
+            ffi::sqlite3_bind_double(stmt, index, value)
+        },
+        BorrowedBinarySnapshotCell::Boolean(value) => unsafe {
+            ffi::sqlite3_bind_int(stmt, index, i32::from(value))
+        },
+        BorrowedBinarySnapshotCell::Json(value) => {
+            bind_text_bytes_static(stmt, index, value.as_bytes())?
+        }
+        BorrowedBinarySnapshotCell::Bytes(value) => bind_blob_bytes_static(stmt, index, value)?,
+    };
+    bind_sqlite_parameter_result(rc, index)
+}
+
+fn bind_text_bytes(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]) -> Result<i32> {
+    let len = i32::try_from(bytes.len())
+        .map_err(|_| SyncularError::protocol_message("SQL text parameter is too large"))?;
+    Ok(unsafe {
+        ffi::sqlite3_bind_text(
+            stmt,
+            index,
+            bytes.as_ptr() as *const c_char,
+            len,
+            ffi::SQLITE_TRANSIENT(),
+        )
+    })
+}
+
+fn bind_text_bytes_static(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]) -> Result<i32> {
+    let len = i32::try_from(bytes.len())
+        .map_err(|_| SyncularError::protocol_message("SQL text parameter is too large"))?;
+    Ok(unsafe {
+        ffi::sqlite3_bind_text(
+            stmt,
+            index,
+            bytes.as_ptr() as *const c_char,
+            len,
+            ffi::SQLITE_STATIC(),
+        )
+    })
+}
+
+fn bind_blob_bytes(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]) -> Result<i32> {
+    let len = i32::try_from(bytes.len())
+        .map_err(|_| SyncularError::protocol_message("SQL blob parameter is too large"))?;
+    Ok(unsafe {
+        ffi::sqlite3_bind_blob(
+            stmt,
+            index,
+            bytes.as_ptr().cast::<c_void>(),
+            len,
+            ffi::SQLITE_TRANSIENT(),
+        )
+    })
+}
+
+fn bind_blob_bytes_static(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]) -> Result<i32> {
+    let len = i32::try_from(bytes.len())
+        .map_err(|_| SyncularError::protocol_message("SQL blob parameter is too large"))?;
+    Ok(unsafe {
+        ffi::sqlite3_bind_blob(
+            stmt,
+            index,
+            bytes.as_ptr().cast::<c_void>(),
+            len,
+            ffi::SQLITE_STATIC(),
+        )
+    })
+}
+
+fn bind_null_value(stmt: *mut ffi::sqlite3_stmt, index: i32) -> Result<()> {
+    bind_sqlite_parameter_result(unsafe { ffi::sqlite3_bind_null(stmt, index) }, index)
+}
+
+fn bind_sqlite_parameter_result(rc: i32, index: i32) -> Result<()> {
+    if rc == ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "bind SQL parameter {index} failed with sqlite code {rc}"
+        )))
+    }
+}
+
+fn execute_multirow_upsert(
+    db: *mut ffi::sqlite3,
+    table: &str,
+    primary_key_column: &str,
+    columns: &[String],
+    on_conflict: &str,
+    rows: &[Map<String, Value>],
+) -> Result<()> {
+    let stmt = prepare_multirow_upsert(
+        db,
+        table,
+        primary_key_column,
+        columns,
+        on_conflict,
+        rows.len(),
+    )?;
+    if let Err(err) = execute_prepared_multirow_upsert(db, stmt, rows, columns) {
+        let _ = finalize_stmt(stmt, db, "finalize multirow upsert after step failure");
+        return Err(err);
+    }
+    finalize_stmt(stmt, db, "finalize multirow upsert")
+}
+
+fn execute_binary_snapshot_write(
+    db: *mut ffi::sqlite3,
+    table: &str,
+    primary_key_column: &str,
+    columns: &[String],
+    on_conflict: Option<&str>,
+    mode: BinarySnapshotWriteMode,
+    rows: &[Vec<BinarySnapshotCell>],
+) -> Result<()> {
+    let stmt = prepare_binary_snapshot_write(
+        db,
+        table,
+        primary_key_column,
+        columns,
+        on_conflict,
+        rows.len(),
+        mode,
+    )?;
+    if let Err(err) = execute_prepared_binary_multirow_upsert(db, stmt, rows) {
+        let _ = finalize_stmt(
+            stmt,
+            db,
+            "finalize binary multirow upsert after step failure",
+        );
+        return Err(err);
+    }
+    finalize_stmt(stmt, db, "finalize binary multirow upsert")
+}
+
+fn execute_binary_snapshot_payload_write(
+    db: *mut ffi::sqlite3,
+    table: &str,
+    primary_key_column: &str,
+    columns: &[String],
+    on_conflict: Option<&str>,
+    mode: BinarySnapshotWriteMode,
+    cursor: &mut BinarySnapshotRowCursor<'_>,
+    row_count: usize,
+) -> Result<()> {
+    let stmt = prepare_binary_snapshot_write(
+        db,
+        table,
+        primary_key_column,
+        columns,
+        on_conflict,
+        row_count,
+        mode,
+    )?;
+    if let Err(err) = execute_prepared_binary_payload_batch(db, stmt, cursor, row_count) {
+        let _ = finalize_stmt(
+            stmt,
+            db,
+            "finalize binary payload multirow upsert after step failure",
+        );
+        return Err(err);
+    }
+    finalize_stmt(stmt, db, "finalize binary payload multirow upsert")
+}
+
+fn prepare_multirow_upsert(
+    db: *mut ffi::sqlite3,
+    table: &str,
+    primary_key_column: &str,
+    columns: &[String],
+    on_conflict: &str,
+    row_count: usize,
+) -> Result<*mut ffi::sqlite3_stmt> {
+    let row_placeholders = format!(
+        "({})",
+        (0..columns.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let placeholders = (0..row_count)
+        .map(|_| row_placeholders.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = CString::new(format!(
+        "INSERT INTO {table} ({columns}) VALUES {placeholders} ON CONFLICT({primary_key_column}) {on_conflict}",
+        columns = columns.join(", "),
+    ))
+    .map_err(cstring_error("multirow upsert sql"))?;
+    let mut stmt = ptr::null_mut();
+    let rc = unsafe {
+        ffi::sqlite3_prepare_v3(
+            db,
+            sql.as_ptr(),
+            -1,
+            ffi::SQLITE_PREPARE_PERSISTENT,
+            &mut stmt as *mut _,
+            ptr::null_mut(),
+        )
+    };
+    if rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, "prepare multirow upsert"));
+    }
+    Ok(stmt)
+}
+
+fn prepare_binary_snapshot_write(
+    db: *mut ffi::sqlite3,
+    table: &str,
+    primary_key_column: &str,
+    columns: &[String],
+    on_conflict: Option<&str>,
+    row_count: usize,
+    mode: BinarySnapshotWriteMode,
+) -> Result<*mut ffi::sqlite3_stmt> {
+    if mode == BinarySnapshotWriteMode::Upsert {
+        return prepare_multirow_upsert(
+            db,
+            table,
+            primary_key_column,
+            columns,
+            on_conflict.unwrap_or("DO NOTHING"),
+            row_count,
+        );
+    }
+
+    let row_placeholders = format!(
+        "({})",
+        (0..columns.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let placeholders = (0..row_count)
+        .map(|_| row_placeholders.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = CString::new(format!(
+        "INSERT INTO {table} ({columns}) VALUES {placeholders}",
+        columns = columns.join(", "),
+    ))
+    .map_err(cstring_error("binary snapshot insert sql"))?;
+    let mut stmt = ptr::null_mut();
+    let rc = unsafe {
+        ffi::sqlite3_prepare_v3(
+            db,
+            sql.as_ptr(),
+            -1,
+            ffi::SQLITE_PREPARE_PERSISTENT,
+            &mut stmt as *mut _,
+            ptr::null_mut(),
+        )
+    };
+    if rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, "prepare binary snapshot insert"));
+    }
+    Ok(stmt)
+}
+
+fn execute_prepared_multirow_upsert(
+    db: *mut ffi::sqlite3,
+    stmt: *mut ffi::sqlite3_stmt,
+    rows: &[Map<String, Value>],
+    columns: &[String],
+) -> Result<()> {
+    let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
+    if reset_rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, "reset multirow upsert"));
+    }
+    if let Err(err) = bind_multirow_upsert(stmt, rows, columns) {
+        return Err(err);
+    }
+    match unsafe { ffi::sqlite3_step(stmt) } {
+        ffi::SQLITE_DONE => {}
+        _ => {
+            let err = sqlite_error(db, "step multirow upsert");
+            return Err(err);
         }
     }
     Ok(())
+}
+
+fn execute_prepared_binary_multirow_upsert(
+    db: *mut ffi::sqlite3,
+    stmt: *mut ffi::sqlite3_stmt,
+    rows: &[Vec<BinarySnapshotCell>],
+) -> Result<()> {
+    let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
+    if reset_rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, "reset binary multirow upsert"));
+    }
+    bind_binary_multirow_upsert(stmt, rows)?;
+    match unsafe { ffi::sqlite3_step(stmt) } {
+        ffi::SQLITE_DONE => Ok(()),
+        _ => Err(sqlite_error(db, "step binary multirow upsert")),
+    }
+}
+
+fn execute_prepared_binary_payload_batch(
+    db: *mut ffi::sqlite3,
+    stmt: *mut ffi::sqlite3_stmt,
+    cursor: &mut BinarySnapshotRowCursor<'_>,
+    row_count: usize,
+) -> Result<()> {
+    let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
+    if reset_rc != ffi::SQLITE_OK {
+        return Err(sqlite_error(db, "reset binary payload multirow upsert"));
+    }
+    bind_binary_payload_multirow_upsert(stmt, cursor, row_count)?;
+    match unsafe { ffi::sqlite3_step(stmt) } {
+        ffi::SQLITE_DONE => Ok(()),
+        _ => Err(sqlite_error(db, "step binary payload multirow upsert")),
+    }
+}
+
+fn bind_multirow_upsert(
+    stmt: *mut ffi::sqlite3_stmt,
+    rows: &[Map<String, Value>],
+    columns: &[String],
+) -> Result<()> {
+    let mut index = 1_i32;
+    for row in rows {
+        for column in columns {
+            match row.get(column) {
+                Some(value) => bind_json_value(stmt, index, value)?,
+                None => bind_null_value(stmt, index)?,
+            }
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn bind_binary_multirow_upsert(
+    stmt: *mut ffi::sqlite3_stmt,
+    rows: &[Vec<BinarySnapshotCell>],
+) -> Result<()> {
+    let mut index = 1_i32;
+    for row in rows {
+        for value in row {
+            bind_binary_snapshot_cell(stmt, index, value)?;
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn bind_binary_payload_multirow_upsert(
+    stmt: *mut ffi::sqlite3_stmt,
+    cursor: &mut BinarySnapshotRowCursor<'_>,
+    row_count: usize,
+) -> Result<()> {
+    let mut binder = BorrowedSqliteCellBinder { stmt, index: 1 };
+    for _ in 0..row_count {
+        let read = cursor.read_next_row_with_visitor(&mut binder)?;
+        if !read {
+            return Err(SyncularError::protocol_message(
+                "binary snapshot ended before expected row count",
+            ));
+        }
+    }
+    Ok(())
+}
+
+struct BorrowedSqliteCellBinder {
+    stmt: *mut ffi::sqlite3_stmt,
+    index: i32,
+}
+
+impl<'a> BorrowedBinarySnapshotCellVisitor<'a> for BorrowedSqliteCellBinder {
+    fn visit_null(&mut self) -> Result<()> {
+        self.bind_rc(unsafe { ffi::sqlite3_bind_null(self.stmt, self.index) })
+    }
+
+    fn visit_string(&mut self, value: &'a str) -> Result<()> {
+        let rc = bind_text_bytes_static(self.stmt, self.index, value.as_bytes())?;
+        self.bind_rc(rc)
+    }
+
+    fn visit_integer(&mut self, value: i64) -> Result<()> {
+        self.bind_rc(unsafe { ffi::sqlite3_bind_int64(self.stmt, self.index, value) })
+    }
+
+    fn visit_float(&mut self, value: f64) -> Result<()> {
+        self.bind_rc(unsafe { ffi::sqlite3_bind_double(self.stmt, self.index, value) })
+    }
+
+    fn visit_boolean(&mut self, value: bool) -> Result<()> {
+        self.bind_rc(unsafe { ffi::sqlite3_bind_int(self.stmt, self.index, i32::from(value)) })
+    }
+
+    fn visit_json(&mut self, value: &'a str) -> Result<()> {
+        let rc = bind_text_bytes_static(self.stmt, self.index, value.as_bytes())?;
+        self.bind_rc(rc)
+    }
+
+    fn visit_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+        let rc = bind_blob_bytes_static(self.stmt, self.index, value)?;
+        self.bind_rc(rc)
+    }
+}
+
+impl BorrowedSqliteCellBinder {
+    fn bind_rc(&mut self, rc: i32) -> Result<()> {
+        bind_sqlite_parameter_result(rc, self.index)?;
+        self.index += 1;
+        Ok(())
+    }
 }
 
 fn changed_tables_for_sql(sql: &str) -> Vec<String> {

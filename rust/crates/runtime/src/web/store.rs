@@ -1,4 +1,5 @@
 use crate::app_schema::{default_app_schema, AppSchema};
+use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::SyncChangedRow;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
@@ -117,6 +118,18 @@ pub trait AsyncWebStore {
         subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
+    fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn commit_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn clear_table_for_scopes<'a>(
         &'a mut self,
         table: &'a str,
@@ -144,6 +157,35 @@ pub trait AsyncWebStore {
         table: &'a str,
         row: Value,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    fn upsert_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: Vec<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            for row in rows {
+                self.upsert_row(table, row).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn upsert_snapshot_chunk_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: SnapshotChunkRows,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move { self.upsert_rows(table, rows.try_into_value_rows()?).await })
+    }
+
+    fn insert_cleared_snapshot_chunk_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        rows: SnapshotChunkRows,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        self.upsert_snapshot_chunk_rows(table, rows)
+    }
 
     fn apply_change<'a>(
         &'a mut self,

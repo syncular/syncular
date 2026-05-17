@@ -38,6 +38,7 @@ import type {
   SyncularV2StorageCompactionReport,
   SyncularV2SubscriptionSpec,
   SyncularV2SyncResult,
+  SyncularV2TransportStats,
 } from './types';
 import {
   getSyncularV2WasmGlueUrl,
@@ -69,6 +70,16 @@ type RawSyncResult = {
     commits?: unknown[];
   }>;
   pushed_commits?: number;
+  timings?: {
+    total_ms?: number;
+    push_ms?: number;
+    pull_ms?: number;
+    pull_request_ms?: number;
+    pull_transform_ms?: number;
+    snapshot_fetch_ms?: number;
+    pull_apply_ms?: number;
+    notify_ms?: number;
+  };
 };
 
 type RawConflictSummary = {
@@ -211,6 +222,14 @@ export class SyncularV2RustClient {
       this.raw.recoverSyncPushErrorJson(String(error));
       throw error;
     }
+  }
+
+  transportStats(): SyncularV2TransportStats {
+    return parseJson(this.raw.transportStatsJson());
+  }
+
+  resetTransportStats(): void {
+    this.raw.resetTransportStats();
   }
 
   async conflictSummaries(): Promise<SyncularV2ConflictSummary[]> {
@@ -475,6 +494,16 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
       commits: subscription.commits ?? [],
     })),
     pushedCommits: raw.pushed_commits ?? 0,
+    timings: {
+      totalMs: raw.timings?.total_ms ?? 0,
+      pushMs: raw.timings?.push_ms ?? 0,
+      pullMs: raw.timings?.pull_ms ?? 0,
+      pullRequestMs: raw.timings?.pull_request_ms ?? 0,
+      pullTransformMs: raw.timings?.pull_transform_ms ?? 0,
+      snapshotFetchMs: raw.timings?.snapshot_fetch_ms ?? 0,
+      pullApplyMs: raw.timings?.pull_apply_ms ?? 0,
+      notifyMs: raw.timings?.notify_ms ?? 0,
+    },
   };
 }
 

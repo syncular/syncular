@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use syncular_runtime::app_schema::{
     app_schema_from_json, AppSchema, AppTableMetadata, CrdtYjsFieldMetadata,
 };
+use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::client::SyncularEncryptedCrdtMutationExecutor;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::compaction::{StorageCompactionOptions, StorageCompactionReport};
@@ -1318,7 +1319,7 @@ impl SyncTransport for EncryptedCrdtPullTransport {
         &self,
         _chunk: &SnapshotChunkRef,
         _scopes: &ScopeValues,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         Err(SyncularError::message(
             ErrorKind::Internal,
             "snapshot chunks are not used in encrypted CRDT tests",
@@ -1405,7 +1406,7 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
         &self,
         _chunk: &SnapshotChunkRef,
         _scopes: &ScopeValues,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         Err(SyncularError::message(
             ErrorKind::Internal,
             "snapshot chunks are not used in encrypted CRDT checkpoint tests",
