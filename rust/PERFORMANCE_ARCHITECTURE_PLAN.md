@@ -51,6 +51,63 @@ branch:
 - Negative experiments stay documented only as measurements and rationale, not
   as retained runtime code.
 
+### Required Benchmark Scoreboard
+
+The current gate is policy, not enough coverage by itself. The Rust rewrite
+needs a maintained TS-vs-Rust scoreboard that runs the same app schema,
+server, dataset, and browser profile for both clients. Every performance
+change must identify which scoreboard rows it is expected to move.
+
+Required first-class metrics:
+
+| Area | Required metrics | Current state |
+| --- | --- | --- |
+| Bootstrap | 100k and 500k wall time | Partly measured ad hoc; not yet a stable Rust-vs-TS gate. |
+| Bootstrap buckets | pull request, snapshot fetch, chunk decompress/hash/decode, local apply | Rust exposes buckets; TS comparison is not yet canonical in one report. |
+| Payload shape | JSON chunk count, binary chunk count, request count, response bytes | Rust browser harness records this; needs scoreboard output and gating. |
+| Local reads | list p50/p95, search p50/p95, aggregate/read-model p50/p95 | Feature benchmark exists for Rust; needs direct TS baseline and identical query definitions. |
+| Mutations | local insert/update batch latency, outbox rows, sync push batch latency | Rust native/browser covered partly; needs TS comparison and browser buckets. |
+| Realtime | WS propagation p50/p95/p99, ordered wakeup-to-apply latency | Stress and smoke tests exist; not yet a TS-vs-Rust scoreboard lane. |
+| Reconnect | reconnect 25/100/250 clients, catchup rows, missed wakeups | TS perf has reconnect lanes; Rust stress exists, but scenarios are not aligned. |
+| Memory/package | peak browser memory during 500k bootstrap, WASM raw/gzip, loaded JS bytes | WASM size gated; peak memory and total loaded bytes need automated capture. |
+| Correctness during perf | final row counts, query result equality, event overflow/recovery count | Some checks exist; scoreboard must make them mandatory for every run. |
+
+Minimum commands after a perf change:
+
+```bash
+bun --cwd tests/perf stable-ci
+PERF_RUST_ONLY=true PERF_STABLE_RUNS=5 bun --cwd tests/perf stable-ci
+PERF_RUST_BROWSER_BENCHMARK=true PERF_RUST_BROWSER_OPERATIONS=50 PERF_RUST_BROWSER_ROUNDS=3 bun run test:perf:rust
+bun --cwd rust/bindings/browser run benchmark:browser --wasm-profile=release --feature-workloads --output=.context/benchmarks/browser-feature-workloads.json
+```
+
+Large/bootstrap changes additionally require a dedicated browser scoreboard run
+that emits TS and Rust rows side by side:
+
+```bash
+SYNCULAR_BROWSER_PERF_REQUIRE_RELEASE=true \
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+bun --cwd rust/bindings/browser run benchmark:browser:e2e
+```
+
+That `benchmark:browser:e2e` lane is still missing and should be built before
+the next round of serious hot-path work. It should emit at least:
+
+- `ts_bootstrap_100k_ms`, `rust_bootstrap_100k_ms`
+- `ts_bootstrap_500k_ms`, `rust_bootstrap_500k_ms`
+- `rust_pull_request_ms`, `rust_snapshot_fetch_ms`,
+  `rust_snapshot_chunk_decode_ms`, `rust_pull_apply_ms`
+- matching TS bucket names where available
+- `ts_local_list_p50_ms`, `rust_local_list_p50_ms`
+- `ts_local_search_p50_ms`, `rust_local_search_p50_ms`
+- `ts_aggregate_p50_ms`, `rust_aggregate_p50_ms`,
+  `rust_aggregate_read_model_p50_ms`
+- `ts_ws_p50_ms`, `rust_ws_p50_ms`, `ts_ws_p95_ms`, `rust_ws_p95_ms`
+- `ts_reconnect_25_ms`, `rust_reconnect_25_ms`,
+  `ts_reconnect_100_ms`, `rust_reconnect_100_ms`,
+  `ts_reconnect_250_ms`, `rust_reconnect_250_ms`
+- peak memory and loaded asset bytes
+
 ## Architecture Direction
 
 This section covers client-owned changes. The server/protocol changes below
