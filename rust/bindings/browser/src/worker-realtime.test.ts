@@ -79,6 +79,7 @@ describe('Syncular v2 worker realtime', () => {
       data: {
         protocolVersion: 1,
         sessionId: 'session-1',
+        shardKey: 'sync-realtime-v1:default:default:default',
         cursor: 3,
         latestCursor: 5,
         scopeCount: 2,
@@ -96,6 +97,7 @@ describe('Syncular v2 worker realtime', () => {
         code: 'realtime.hello',
         details: expect.objectContaining({
           sessionId: 'session-1',
+          shardKey: 'sync-realtime-v1:default:default:default',
           cursor: 3,
           latestCursor: 5,
           requiresSync: true,

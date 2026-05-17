@@ -1034,6 +1034,7 @@ describe('createSyncServer console configuration', () => {
         protocolVersion: 1,
         actorId: 'u1',
         clientId: 'client-hello',
+        shardKey: 'sync-realtime-v1:default:default:default',
         transportPath: 'direct',
         syncPackEncoding: 'binary-sync-pack-v1',
         cursor: 0,

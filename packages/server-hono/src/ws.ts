@@ -42,6 +42,7 @@ export type WebSocketSyncPackEncoding = 'binary-sync-pack-v1';
 export interface WsHelloData {
   protocolVersion: 1;
   sessionId: string;
+  shardKey: string;
   actorId: string;
   clientId: string;
   transportPath: 'direct' | 'relay';
@@ -83,6 +84,8 @@ export interface SyncWebSocketEvent {
     protocolVersion?: number;
     /** Server-generated websocket session id (for hello events) */
     sessionId?: string;
+    /** Stable sequencer/fanout shard key (for hello events) */
+    shardKey?: string;
     /** New cursor position (for sync events) */
     cursor?: number;
     /** Latest server cursor known when the session was accepted */
