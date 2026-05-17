@@ -1105,6 +1105,12 @@ client. Overflow should close or resync the session deliberately.
   `rust_bootstrap_ms` `984.02 -> 1015.20`,
   `rust_pull_apply_ms` `501 -> 530`,
   `rust_cached_pull_apply_ms` `493 -> 509`. Reverted.
+- Rejected adding a benchmark-only `tasks(user_id, id)` server scope index.
+  The first run improved `rust_server_bootstrap_snapshot_query_ms`
+  `229 -> 214` but total Rust bootstrap regressed `984.02 -> 992.75`; repeat
+  was worse (`rust_bootstrap_ms` `1034.53`) and query improvement shrank
+  (`229 -> 223`). Reverted. Scope indexes still need a separate real
+  multi-tenant workload before being promoted into generated migrations.
 
 ### Phase 4: Worker Default
 
