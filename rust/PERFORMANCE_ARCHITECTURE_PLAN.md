@@ -1142,6 +1142,12 @@ client. Overflow should close or resync the session deliberately.
     `rust_pull_request_ms` `94 -> 89`,
     `rust_pull_apply_ms` `115 -> 107`,
     `rust_snapshot_chunk_binary_count` `4 -> 2`.
+- Rejected pushing Rust snapshot pages further to `100_000` rows x `5` pages.
+  It halved chunk count again, but the measured win was too small and uneven:
+  500k `rust_bootstrap_ms` only moved `899.87 -> 893.85`, while
+  `rust_server_bootstrap_row_frame_encode_ms` regressed `68 -> 73`; the 100k
+  guardrail regressed `198.23 -> 199.61`. Keep `50_000` x `10` as the better
+  default until a streaming/manifests design changes the memory tradeoff.
 
 ### Phase 4: Worker Default
 
