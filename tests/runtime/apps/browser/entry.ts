@@ -195,6 +195,7 @@ interface RustE2eTransportStats {
   snapshotChunkDecompressMs: number;
   snapshotChunkHashMs: number;
   snapshotChunkDecodeMs: number;
+  syncPackDecodeMs: number;
   serverBootstrapSnapshotQueryMs: number;
   serverBootstrapRowFrameEncodeMs: number;
   serverBootstrapChunkCacheLookupMs: number;
@@ -1134,6 +1135,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       'rust_snapshot_chunk_decode_ms',
       rustStats.snapshotChunkDecodeMs
     );
+    pushMetric('rust_sync_pack_decode_ms', rustStats.syncPackDecodeMs);
     pushMetric(
       'rust_snapshot_chunk_decompress_ms',
       rustStats.snapshotChunkDecompressMs
@@ -1235,6 +1237,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_cached_snapshot_chunk_decode_ms',
       cachedRustStats.snapshotChunkDecodeMs
+    );
+    pushMetric(
+      'rust_cached_sync_pack_decode_ms',
+      cachedRustStats.syncPackDecodeMs
     );
     pushMetric(
       'rust_cached_server_bootstrap_snapshot_query_ms',
@@ -1344,6 +1350,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       pushMetric(
         'rust_incremental_snapshot_chunk_decode_ms',
         incrementalRustStats.snapshotChunkDecodeMs
+      );
+      pushMetric(
+        'rust_incremental_sync_pack_decode_ms',
+        incrementalRustStats.syncPackDecodeMs
       );
       pushMetric('rust_incremental_rows', incrementalRustRun.rowCount, 'rows');
     }

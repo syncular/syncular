@@ -1453,6 +1453,15 @@ client. Overflow should close or resync the session deliberately.
   - 100k bootstrap rows + 200 incremental rows:
     local apply improved `4 -> 2`; total moved `12.62 -> 15.17` due request
     noise (`8 -> 13`), while bootstrap/apply guardrails stayed neutral.
+- Added browser transport instrumentation for binary sync-pack decode time. This
+  keeps request latency honest by separating server/fetch time from client-side
+  binary-pack decode cost.
+  - 100k bootstrap rows + 5k incremental rows:
+    `rust_incremental_pull_ms` `53.32`, request `34`,
+    apply `18`, sync-pack decode `11`, response bytes `1,091,633`.
+  - Conclusion: after incremental apply batching, the next meaningful browser
+    target is the incremental sync-pack row decode/materialization path, not
+    another tiny SQLite apply cleanup.
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 

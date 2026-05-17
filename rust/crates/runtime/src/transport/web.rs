@@ -59,6 +59,7 @@ pub struct WebTransportStats {
     pub snapshot_chunk_decompress_ms: f64,
     pub snapshot_chunk_hash_ms: f64,
     pub snapshot_chunk_decode_ms: f64,
+    pub sync_pack_decode_ms: f64,
     pub server_bootstrap_snapshot_query_ms: f64,
     pub server_bootstrap_row_frame_encode_ms: f64,
     pub server_bootstrap_chunk_cache_lookup_ms: f64,
@@ -462,7 +463,10 @@ async fn fetch_sync_response_metered(
             .map_err(|err| js_error(ErrorKind::Transport, "await browser sync pack bytes", err))?;
         let bytes = Uint8Array::new(&buffer).to_vec();
         record_response(stats, bytes.len());
-        return decode_binary_sync_pack(&bytes);
+        let decode_started_at = timing_now_ms();
+        let response = decode_binary_sync_pack(&bytes);
+        record_sync_pack_decode(stats, elapsed_ms_since(decode_started_at));
+        return response;
     }
 
     let text = response_text(&response).await?;
@@ -595,6 +599,10 @@ fn record_snapshot_chunk_hash(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms
 
 fn record_snapshot_chunk_decode(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
     stats.borrow_mut().snapshot_chunk_decode_ms += elapsed_ms;
+}
+
+fn record_sync_pack_decode(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    stats.borrow_mut().sync_pack_decode_ms += elapsed_ms;
 }
 
 fn record_server_bootstrap_timings(
