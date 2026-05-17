@@ -80,6 +80,7 @@
     "rust:browser:catalog:wasm": "bun --cwd rust/bindings/browser catalog:wasm",
     "rust:browser:size": "bun --cwd rust/bindings/browser size:wasm:check",
     "rust:browser:size:core": "bun --cwd rust/bindings/browser size:wasm:core",
+    "rust:browser:benchmark:e2e": "bun --cwd rust/bindings/browser benchmark:browser:e2e",
     "rust:browser:benchmark:features": "bun --cwd rust/bindings/browser benchmark:browser:features",
     "rust:crdt-adapters:test": "bun test rust/examples/crdt-adapters/yjs-document-field-adapter.test.ts",
     "rust:native-smoke": "bash rust/examples/todo-app/native-smokes/run-local.sh",

@@ -113,6 +113,18 @@ The browser Rust benchmark uses the worker runtime by default. To include the
 old direct IndexedDB Rust-owned storage diagnostic in the standalone benchmark,
 run `bun --cwd rust/bindings/browser run benchmark:browser --include-direct-rust`.
 
+Run the browser E2E TS-vs-Rust scoreboard for bootstrap and local-query
+comparisons:
+
+```bash
+bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-iterations=25 --wasm-profile=release
+SYNCULAR_BROWSER_PERF_ROWS=500000 bun --cwd rust/bindings/browser run benchmark:browser:e2e --query-iterations=25 --wasm-profile=release
+```
+
+This scoreboard seeds a same-origin sync server, runs Chromium against the
+release WASM browser runtime, and emits TS/Rust bootstrap, Rust transport/apply
+buckets, payload/chunk counts, and local list/search/aggregate p50/p95 metrics.
+
 Operation counts are part of the metric name. For example,
 `PERF_RUST_NATIVE_OPERATIONS=200` emits `rust_native_insert_batch_200`, which
 will require its own baseline instead of being compared against the default

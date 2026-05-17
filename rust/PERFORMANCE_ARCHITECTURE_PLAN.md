@@ -90,8 +90,31 @@ SYNCULAR_BROWSER_PERF_ROWS=500000 \
 bun --cwd rust/bindings/browser run benchmark:browser:e2e
 ```
 
-That `benchmark:browser:e2e` lane is still missing and should be built before
-the next round of serious hot-path work. It should emit at least:
+The first `benchmark:browser:e2e` lane now exists. It seeds a same-origin sync
+server, runs release-WASM Chromium, bootstraps TS and Rust clients against the
+same app table, and emits side-by-side bootstrap, payload, local list/search,
+and aggregate metrics. The Rust side also emits pull request, snapshot fetch,
+decompress/hash/decode, local apply, request count, payload bytes, and
+JSON-vs-binary chunk counts. It still needs TS bucket parity, realtime,
+reconnect, and memory capture.
+
+Validated smoke:
+
+```bash
+bun --cwd rust/bindings/browser benchmark:browser:e2e --rows=100 --query-iterations=3 --wasm-profile=release --json
+bun --cwd rust/bindings/browser benchmark:browser:e2e --rows=1000 --query-iterations=5 --wasm-profile=release --output=../../../.context/benchmarks/browser-e2e-scoreboard-1k.json
+```
+
+The 1k smoke reported:
+
+- TS bootstrap `48.16ms`, Rust bootstrap `19.77ms`.
+- Rust pull request `11ms`, snapshot fetch `2ms`, local apply `7ms`.
+- Rust binary chunks `1`, JSON chunks `0`, row count `1000`.
+- local list p50: TS `1.38ms`, Rust `0.42ms`.
+- local search p50: TS `1.18ms`, Rust `0.48ms`.
+- aggregate p50: TS `1.35ms`, Rust `0.76ms`.
+
+It should ultimately emit at least:
 
 - `ts_bootstrap_100k_ms`, `rust_bootstrap_100k_ms`
 - `ts_bootstrap_500k_ms`, `rust_bootstrap_500k_ms`

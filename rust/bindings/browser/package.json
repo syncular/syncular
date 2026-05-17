@@ -59,6 +59,7 @@
     "build:wasm:dev": "bun scripts/build-syncular-v2-wasm.ts --dev",
     "catalog:wasm": "bun scripts/write-syncular-v2-wasm-catalog.ts --artifact dist/wasm-core --artifact dist/wasm",
     "benchmark:browser": "bun ../../../tests/runtime/scripts/browser-wasm-vs-js-benchmark.ts",
+    "benchmark:browser:e2e": "bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts",
     "benchmark:browser:features": "bun ../../../tests/runtime/scripts/browser-wasm-vs-js-benchmark.ts --feature-workloads --feature-operations=50 --feature-rounds=5 --feature-warmup=5 --output=../../../.context/benchmarks/browser-feature-workloads.json",
     "size:wasm": "bun scripts/size-syncular-v2-wasm.ts",
     "size:wasm:check": "bun scripts/size-syncular-v2-wasm.ts --check --attribution --report ../../../.context/wasm-size/syncular-v2-wasm-size.txt",
