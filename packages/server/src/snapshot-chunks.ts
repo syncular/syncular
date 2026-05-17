@@ -6,12 +6,12 @@
  */
 
 import {
+  isSyncSnapshotChunkEncoding,
   type ScopeValues,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   type SyncSnapshotChunkCompression,
   type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
-  isSyncSnapshotChunkEncoding,
   sha256Hex,
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
@@ -28,6 +28,12 @@ export interface SnapshotChunkPageKey {
   compression: SyncSnapshotChunkCompression;
 }
 
+export type SnapshotChunkRefWithContinuation = SyncSnapshotChunkRef & {
+  nextRowCursor: string | null;
+  isLastPage: boolean;
+  body?: Uint8Array;
+};
+
 export interface SnapshotChunkRow {
   chunkId: string;
   partitionId: string;
@@ -36,12 +42,23 @@ export interface SnapshotChunkRow {
   asOfCommitSeq: number;
   rowCursor: string;
   rowLimit: number;
+  nextRowCursor: string | null;
+  isLastPage: boolean;
   encoding: SyncSnapshotChunkEncoding;
   compression: SyncSnapshotChunkCompression;
   sha256: string;
   byteLength: number;
   body: Uint8Array | ReadableStream<Uint8Array>;
   expiresAt: string;
+}
+
+function coerceOptionalString(value: unknown): string | null {
+  if (value == null) return null;
+  return String(value);
+}
+
+function coerceFlag(value: unknown): boolean {
+  return value === true || value === 1 || value === '1';
 }
 
 /**
@@ -81,32 +98,68 @@ function coerceIsoString(value: unknown): string {
 
 export async function readSnapshotChunkRefByPageKey<DB extends SyncCoreDb>(
   db: Kysely<DB>,
-  args: SnapshotChunkPageKey & { nowIso?: string }
-): Promise<SyncSnapshotChunkRef | null> {
+  args: SnapshotChunkPageKey & { nowIso?: string; includeBody?: boolean }
+): Promise<SnapshotChunkRefWithContinuation | null> {
   const nowIso = args.nowIso ?? new Date().toISOString();
   const rowCursorKey = args.rowCursor ?? '';
 
-  const rowResult = await sql<{
+  type PageKeyRow = {
     chunk_id: string;
     sha256: string;
     byte_length: number;
+    next_row_cursor: unknown;
+    is_last_page: unknown;
     encoding: string;
     compression: string;
-  }>`
-    select chunk_id, sha256, byte_length, encoding, compression
-    from ${sql.table('sync_snapshot_chunks')}
-    where
-      partition_id = ${args.partitionId}
-      and scope_key = ${args.scopeKey}
-      and scope = ${args.scope}
-      and as_of_commit_seq = ${args.asOfCommitSeq}
-      and row_cursor = ${rowCursorKey}
-      and row_limit = ${args.rowLimit}
-      and encoding = ${args.encoding}
-      and compression = ${args.compression}
-      and expires_at > ${nowIso}
-    limit 1
-  `.execute(db);
+    body?: unknown;
+  };
+
+  const rowResult = args.includeBody
+    ? await sql<PageKeyRow>`
+        select
+          chunk_id,
+          sha256,
+          byte_length,
+          next_row_cursor,
+          is_last_page,
+          encoding,
+          compression,
+          body
+        from ${sql.table('sync_snapshot_chunks')}
+        where
+          partition_id = ${args.partitionId}
+          and scope_key = ${args.scopeKey}
+          and scope = ${args.scope}
+          and as_of_commit_seq = ${args.asOfCommitSeq}
+          and row_cursor = ${rowCursorKey}
+          and row_limit = ${args.rowLimit}
+          and encoding = ${args.encoding}
+          and compression = ${args.compression}
+          and expires_at > ${nowIso}
+        limit 1
+      `.execute(db)
+    : await sql<PageKeyRow>`
+        select
+          chunk_id,
+          sha256,
+          byte_length,
+          next_row_cursor,
+          is_last_page,
+          encoding,
+          compression
+        from ${sql.table('sync_snapshot_chunks')}
+        where
+          partition_id = ${args.partitionId}
+          and scope_key = ${args.scopeKey}
+          and scope = ${args.scope}
+          and as_of_commit_seq = ${args.asOfCommitSeq}
+          and row_cursor = ${rowCursorKey}
+          and row_limit = ${args.rowLimit}
+          and encoding = ${args.encoding}
+          and compression = ${args.compression}
+          and expires_at > ${nowIso}
+        limit 1
+      `.execute(db);
   const row = rowResult.rows[0];
 
   if (!row) return null;
@@ -122,13 +175,19 @@ export async function readSnapshotChunkRefByPageKey<DB extends SyncCoreDb>(
     );
   }
 
-  return {
+  const ref: SnapshotChunkRefWithContinuation = {
     id: row.chunk_id,
     sha256: row.sha256,
     byteLength: Number(row.byte_length ?? 0),
+    nextRowCursor: coerceOptionalString(row.next_row_cursor),
+    isLastPage: coerceFlag(row.is_last_page),
     encoding: args.encoding,
     compression: row.compression,
   };
+  if (args.includeBody && row.body) {
+    ref.body = coerceChunkRow(row.body);
+  }
+  return ref;
 }
 
 export async function insertSnapshotChunk<DB extends SyncCoreDb>(
@@ -141,13 +200,15 @@ export async function insertSnapshotChunk<DB extends SyncCoreDb>(
     asOfCommitSeq: number;
     rowCursor: string | null;
     rowLimit: number;
+    nextRowCursor?: string | null;
+    isLastPage?: boolean;
     encoding: SyncSnapshotChunkEncoding;
     compression: SyncSnapshotChunkCompression;
     sha256: string;
     body: Uint8Array;
     expiresAt: string;
   }
-): Promise<SyncSnapshotChunkRef> {
+): Promise<SnapshotChunkRefWithContinuation> {
   const now = new Date().toISOString();
   const rowCursorKey = args.rowCursor ?? '';
 
@@ -163,6 +224,8 @@ export async function insertSnapshotChunk<DB extends SyncCoreDb>(
       as_of_commit_seq,
       row_cursor,
       row_limit,
+      next_row_cursor,
+      is_last_page,
       encoding,
       compression,
       sha256,
@@ -180,6 +243,8 @@ export async function insertSnapshotChunk<DB extends SyncCoreDb>(
       ${args.asOfCommitSeq},
       ${rowCursorKey},
       ${args.rowLimit},
+      ${args.nextRowCursor ?? null},
+      ${args.isLastPage ? 1 : 0},
       ${args.encoding},
       ${args.compression},
       ${args.sha256},
@@ -201,6 +266,8 @@ export async function insertSnapshotChunk<DB extends SyncCoreDb>(
     )
     do update set
       expires_at = ${args.expiresAt},
+      next_row_cursor = ${args.nextRowCursor ?? null},
+      is_last_page = ${args.isLastPage ? 1 : 0},
       blob_hash = ${blobHash}
   `.execute(db);
 
@@ -213,6 +280,7 @@ export async function insertSnapshotChunk<DB extends SyncCoreDb>(
     rowLimit: args.rowLimit,
     encoding: args.encoding,
     compression: args.compression,
+    includeBody: true,
   });
 
   if (!ref) {
@@ -243,6 +311,8 @@ export async function readSnapshotChunk<DB extends SyncCoreDb>(
     as_of_commit_seq: number;
     row_cursor: string;
     row_limit: number;
+    next_row_cursor: unknown;
+    is_last_page: unknown;
     encoding: string;
     compression: string;
     sha256: string;
@@ -259,6 +329,8 @@ export async function readSnapshotChunk<DB extends SyncCoreDb>(
       as_of_commit_seq,
       row_cursor,
       row_limit,
+      next_row_cursor,
+      is_last_page,
       encoding,
       compression,
       sha256,
@@ -325,6 +397,8 @@ export async function readSnapshotChunk<DB extends SyncCoreDb>(
     asOfCommitSeq: Number(row.as_of_commit_seq ?? 0),
     rowCursor: row.row_cursor,
     rowLimit: Number(row.row_limit ?? 0),
+    nextRowCursor: coerceOptionalString(row.next_row_cursor),
+    isLastPage: coerceFlag(row.is_last_page),
     encoding: row.encoding,
     compression: row.compression,
     sha256: row.sha256,

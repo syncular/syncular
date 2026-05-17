@@ -12,19 +12,19 @@ import {
   countSyncMetric,
   createSyncTimer,
   distributionSyncMetric,
-  encodeBinarySyncPack,
   ErrorResponseSchema,
+  encodeBinarySyncPack,
   logSyncEvent,
   prefersBinarySyncPack,
   ScopeValuesSchema,
-  SyncCombinedRequestSchema,
-  SyncCombinedResponseSchema,
   SYNC_PACK_CONTENT_TYPE,
+  SyncCombinedRequestSchema,
   type SyncCombinedResponse,
-  type SyncSnapshotChunkRef,
+  SyncCombinedResponseSchema,
   type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
   type SyncPushResponse,
+  type SyncSnapshotChunkRef,
 } from '@syncular/core';
 import type {
   ScopeCacheBackend,
@@ -2469,10 +2469,14 @@ export function createSyncRoutes<
           return c.json({ error: 'FORBIDDEN' }, 403);
         }
 
-        const scopeKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
-          scopeAuth.scopes
-        )}`;
-        if (scopeKey !== chunk.scopeKey) {
+        const scopeHash = await scopesToSnapshotChunkScopeKey(scopeAuth.scopes);
+        const legacyScopeKey = `${partitionId}:${scopeHash}`;
+        const gzipScopedPrefix = `${partitionId}:gzip-level-`;
+        const scopedChunkKeyMatches =
+          chunk.scopeKey === legacyScopeKey ||
+          (chunk.scopeKey.startsWith(gzipScopedPrefix) &&
+            chunk.scopeKey.endsWith(`:${scopeHash}`));
+        if (!scopedChunkKeyMatches) {
           return c.json({ error: 'FORBIDDEN' }, 403);
         }
       } catch (error) {

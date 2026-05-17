@@ -36,6 +36,8 @@ export interface SnapshotChunkMetadata {
   asOfCommitSeq: number;
   rowCursor: string | null;
   rowLimit: number;
+  nextRowCursor?: string | null;
+  isLastPage?: boolean;
   encoding: SyncSnapshotChunkEncoding;
   compression: SyncSnapshotChunkCompression;
   sha256: string;

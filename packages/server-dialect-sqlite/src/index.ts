@@ -166,6 +166,23 @@ async function ensureConsoleEventColumns<DB extends SyncCoreDb>(
   }
 }
 
+async function ensureSnapshotChunkContinuationColumns<DB extends SyncCoreDb>(
+  db: Kysely<DB>
+): Promise<void> {
+  const alterStatements = [
+    'ALTER TABLE sync_snapshot_chunks ADD COLUMN next_row_cursor TEXT',
+    'ALTER TABLE sync_snapshot_chunks ADD COLUMN is_last_page INTEGER NOT NULL DEFAULT 0',
+  ];
+
+  for (const statement of alterStatements) {
+    try {
+      await sql.raw(statement).execute(db);
+    } catch {
+      // Ignore when column already exists.
+    }
+  }
+}
+
 export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
   readonly family = 'sqlite' as const;
   readonly supportsForUpdate = false;
@@ -338,6 +355,8 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       .addColumn('as_of_commit_seq', 'integer', (col) => col.notNull())
       .addColumn('row_cursor', 'text', (col) => col.notNull().defaultTo(''))
       .addColumn('row_limit', 'integer', (col) => col.notNull())
+      .addColumn('next_row_cursor', 'text')
+      .addColumn('is_last_page', 'integer', (col) => col.notNull().defaultTo(0))
       .addColumn('encoding', 'text', (col) => col.notNull())
       .addColumn('compression', 'text', (col) => col.notNull())
       .addColumn('sha256', 'text', (col) => col.notNull())
@@ -348,6 +367,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       .addColumn('expires_at', 'text', (col) => col.notNull())
       .execute();
     await ensurePartitionColumn(db, 'sync_snapshot_chunks');
+    await ensureSnapshotChunkContinuationColumns(db);
 
     await sql`CREATE INDEX IF NOT EXISTS idx_sync_snapshot_chunks_expires_at
       ON sync_snapshot_chunks(expires_at)`.execute(db);

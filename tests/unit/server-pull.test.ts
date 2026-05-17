@@ -246,6 +246,83 @@ describe('pull', () => {
     ]);
   });
 
+  it('uses binary snapshot chunk continuation metadata to skip cached snapshot queries', async () => {
+    let snapshotQueryCount = 0;
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+      snapshot: async (ctx) => {
+        snapshotQueryCount += 1;
+        let query = ctx.db
+          .selectFrom('tasks')
+          .selectAll()
+          .where('user_id', '=', ctx.actorId);
+        if (ctx.cursor !== null) {
+          query = query.where('id', '>', ctx.cursor);
+        }
+        const rows = await query
+          .orderBy('id', 'asc')
+          .limit(ctx.limit + 1)
+          .execute();
+        const pageRows = rows.slice(0, ctx.limit);
+        const hasMore = rows.length > ctx.limit;
+        const nextCursor = hasMore
+          ? (pageRows[pageRows.length - 1]?.id ?? null)
+          : null;
+        return { rows: pageRows, nextCursor };
+      },
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      await pushTask(handlers, `task-${index}`, `Task ${index}`);
+    }
+
+    const pullRequest = (clientId: string) =>
+      pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        request: {
+          clientId,
+          limitCommits: 10,
+          limitSnapshotRows: 2,
+          maxSnapshotPages: 3,
+          snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+            },
+          ],
+        },
+      });
+
+    await pullRequest('c-cache-warm');
+    expect(snapshotQueryCount).toBe(3);
+
+    snapshotQueryCount = 0;
+    const cached = await pullRequest('c-cache-hit');
+    expect(snapshotQueryCount).toBe(0);
+
+    const snapshot = cached.response.subscriptions[0]!.snapshots![0]!;
+    expect(snapshot.isLastPage).toBe(true);
+    const chunkRef = snapshot.chunks?.[0];
+    expect(chunkRef?.encoding).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+    const chunk = await readSnapshotChunk(db, chunkRef!.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+    expect(decoded.rows).toHaveLength(5);
+  });
+
   it('uses handler-provided binary snapshot columns when available', async () => {
     const handlers = makeHandlers({
       snapshotBinaryColumns: [

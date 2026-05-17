@@ -179,7 +179,15 @@ export function createDbMetadataChunkStorage(
     const rowCursorKey = args.rowCursor ?? '';
     const baseQuery = db
       .selectFrom('sync_snapshot_chunks')
-      .select(['chunk_id', 'sha256', 'byte_length', 'encoding', 'compression'])
+      .select([
+        'chunk_id',
+        'sha256',
+        'byte_length',
+        'next_row_cursor',
+        'is_last_page',
+        'encoding',
+        'compression',
+      ])
       .where('partition_id', '=', args.partitionId)
       .where('scope_key', '=', args.scopeKey)
       .where('scope', '=', args.scope)
@@ -210,9 +218,12 @@ export function createDbMetadataChunkStorage(
       id: row.chunk_id,
       sha256: row.sha256,
       byteLength: Number(row.byte_length ?? 0),
+      nextRowCursor:
+        row.next_row_cursor == null ? null : String(row.next_row_cursor),
+      isLastPage: Number(row.is_last_page ?? 0) === 1,
       encoding: args.encoding,
       compression: row.compression,
-    };
+    } as SyncSnapshotChunkRef;
   }
 
   async function readBlobHash(chunkId: string): Promise<string | null> {
@@ -244,6 +255,8 @@ export function createDbMetadataChunkStorage(
         as_of_commit_seq: metadata.asOfCommitSeq,
         row_cursor: metadata.rowCursor ?? '',
         row_limit: metadata.rowLimit,
+        next_row_cursor: metadata.nextRowCursor ?? null,
+        is_last_page: metadata.isLastPage ? 1 : 0,
         encoding: metadata.encoding,
         compression: metadata.compression,
         sha256: metadata.sha256,
@@ -269,6 +282,8 @@ export function createDbMetadataChunkStorage(
             blob_hash: args.blobHash,
             sha256: metadata.sha256,
             byte_length: args.byteLength,
+            next_row_cursor: metadata.nextRowCursor ?? null,
+            is_last_page: metadata.isLastPage ? 1 : 0,
             row_cursor: metadata.rowCursor ?? '',
           })
       )

@@ -23,8 +23,8 @@ import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import { createSyncRoutes } from '@syncular/server-hono';
 import {
   syncularGeneratedCodecs,
-  syncularGeneratedSnapshotBinaryEncoders,
   syncularGeneratedSnapshotBinaryColumns,
+  syncularGeneratedSnapshotBinaryEncoders,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 
 const portArg = process.argv.find((a) => a.startsWith('--port='));
@@ -278,7 +278,9 @@ function readWasmProfile(): 'dev' | 'release' {
 
 function readPositiveIntArg(name: string, fallback: number): number {
   const arg = process.argv.find((a) => a.startsWith(`${name}=`));
-  const raw = arg?.split('=')[1] ?? process.env[name.slice(2).replaceAll('-', '_').toUpperCase()];
+  const raw =
+    arg?.split('=')[1] ??
+    process.env[name.slice(2).replaceAll('-', '_').toUpperCase()];
   if (raw == null || raw === '') return fallback;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {
@@ -330,6 +332,7 @@ async function createBenchmarkSyncRoute(
     },
     sync: {
       rateLimit: false,
+      maxPullMaxSnapshotPages: 100,
     },
   });
   return async (request: Request) => {

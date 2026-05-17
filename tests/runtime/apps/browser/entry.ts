@@ -11,12 +11,21 @@ import {
   enqueueOutboxCommit,
   ensureClientSyncSchema,
   type SyncClientDb,
+  type SyncPullOnceOptions,
+  type SyncPullResponse,
+  type SyncTransport,
   syncPullOnce,
   syncPushOnce,
 } from '../../../../packages/client/src/index';
 import { codecs, createDatabase } from '../../../../packages/core/src/index';
 import { createWaSqliteDialect } from '../../../../packages/dialect-wa-sqlite/src/index';
 import { createHttpTransport } from '../../../../packages/transport-http/src/index';
+import type {
+  SyncularV2AppSchema,
+  SyncularV2PullOptions,
+  SyncularV2SyncResult,
+  SyncularV2SyncTimings,
+} from '../../../../rust/bindings/browser/src/index';
 import {
   createSyncularRustOwnedSqlite,
   createSyncularV2Dialect,
@@ -33,13 +42,9 @@ import {
   syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
-  taskSubscription,
   taskPatchPayload,
+  taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import type {
-  SyncularV2AppSchema,
-  SyncularV2PullOptions,
-} from '../../../../rust/bindings/browser/src/index';
 import type {
   ConformanceDb,
   RuntimeClientDb,
@@ -831,9 +836,103 @@ async function runBootstrap(params: {
   }
 }
 
-async function runE2eScoreboard(
-  options: E2eScoreboardOptions
-): Promise<{
+async function syncPullUntilBootstrapComplete<DB extends SyncClientDb>(
+  db: Kysely<DB>,
+  transport: SyncTransport,
+  handlers: ClientHandlerCollection<DB>,
+  options: SyncPullOnceOptions,
+  maxRounds = 32
+): Promise<SyncPullResponse> {
+  let lastResponse: SyncPullResponse | null = null;
+  for (let round = 0; round < maxRounds; round += 1) {
+    lastResponse = await syncPullOnce(db, transport, handlers, options);
+    const hasBootstrapContinuation = lastResponse.subscriptions.some(
+      (subscription) => subscription.bootstrapState != null
+    );
+    if (!hasBootstrapContinuation) {
+      return lastResponse;
+    }
+  }
+  throw new Error(
+    `TS bootstrap did not complete after ${maxRounds} pull rounds`
+  );
+}
+
+interface RustBootstrapRun {
+  sync: SyncularV2SyncResult;
+  rowCount: number;
+  rounds: number;
+  wallMs: number;
+  timings: SyncularV2SyncTimings;
+}
+
+const rustTimingKeys: Array<keyof SyncularV2SyncTimings> = [
+  'totalMs',
+  'pushMs',
+  'pullMs',
+  'pullRequestMs',
+  'pullTransformMs',
+  'snapshotFetchMs',
+  'pullApplyMs',
+  'notifyMs',
+];
+
+function emptyRustTimings(): SyncularV2SyncTimings {
+  return {
+    totalMs: 0,
+    pushMs: 0,
+    pullMs: 0,
+    pullRequestMs: 0,
+    pullTransformMs: 0,
+    snapshotFetchMs: 0,
+    pullApplyMs: 0,
+    notifyMs: 0,
+  };
+}
+
+async function countBenchmarkRows(db: Kysely<any>): Promise<number> {
+  const rows = await db
+    .selectFrom('tasks')
+    .select(({ fn }) => fn.count<number>('id').as('count'))
+    .executeTakeFirstOrThrow();
+  return Number(rows.count);
+}
+
+async function syncRustUntilRows(
+  database: SyncularAppDatabase,
+  expectedRows: number,
+  maxRounds = 32
+): Promise<RustBootstrapRun> {
+  const timings = emptyRustTimings();
+  let wallMs = 0;
+  let lastSync: SyncularV2SyncResult | null = null;
+  let rowCount = 0;
+
+  for (let round = 0; round < maxRounds; round += 1) {
+    const startedAt = performance.now();
+    lastSync = await database.client.syncPull();
+    wallMs += performance.now() - startedAt;
+    for (const key of rustTimingKeys) {
+      timings[key] += lastSync.timings[key];
+    }
+    rowCount = await countBenchmarkRows(database.db as unknown as Kysely<any>);
+    if (rowCount === expectedRows) {
+      return {
+        sync: lastSync,
+        rowCount,
+        rounds: round + 1,
+        wallMs,
+        timings,
+      };
+    }
+  }
+
+  throw new Error(
+    `Rust bootstrap row count mismatch: expected ${expectedRows}, got ${rowCount}`
+  );
+}
+
+async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
   ok: boolean;
   rows?: number;
   queryIterations?: number;
@@ -867,18 +966,23 @@ async function runE2eScoreboard(
     }
 
     const tsBootstrapStartedAt = performance.now();
-    await syncPullOnce(tsClient.db, tsClient.transport, tsClient.handlers, {
-      clientId: `ts-e2e-${Date.now()}`,
-      subscriptions: [
-        {
-          id: 'sub-tasks',
-          table: 'tasks',
-          scopes: { user_id: actorId },
-        },
-      ],
-      limitSnapshotRows: 5_000,
-      maxSnapshotPages: 100,
-    });
+    await syncPullUntilBootstrapComplete(
+      tsClient.db,
+      tsClient.transport,
+      tsClient.handlers,
+      {
+        clientId: `ts-e2e-${Date.now()}`,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: actorId },
+          },
+        ],
+        limitSnapshotRows: 5_000,
+        maxSnapshotPages: 100,
+      }
+    );
     pushMetric('ts_bootstrap_ms', performance.now() - tsBootstrapStartedAt);
     const tsRows = await tsClient.db
       .selectFrom('tasks')
@@ -905,20 +1009,17 @@ async function runE2eScoreboard(
         pull: rustPullOptions,
       },
     });
-    await rustDatabase.client.setSubscriptions([
-      taskSubscription({ actorId }),
-    ]);
-    const rustDiagnostics = rustDatabase.client as unknown as RustE2eDiagnostics;
+    await rustDatabase.client.setSubscriptions([taskSubscription({ actorId })]);
+    const rustDiagnostics =
+      rustDatabase.client as unknown as RustE2eDiagnostics;
     await rustDiagnostics.resetTransportStats();
-    const rustBootstrapStartedAt = performance.now();
-    const rustSync = await rustDatabase.client.syncPull();
-    pushMetric(
-      'rust_bootstrap_ms',
-      performance.now() - rustBootstrapStartedAt
-    );
-    pushMetric('rust_pull_request_ms', rustSync.timings.pullRequestMs);
-    pushMetric('rust_snapshot_fetch_ms', rustSync.timings.snapshotFetchMs);
-    pushMetric('rust_pull_apply_ms', rustSync.timings.pullApplyMs);
+    const rustRun = await syncRustUntilRows(rustDatabase, options.rows);
+    const rustSync = rustRun.sync;
+    pushMetric('rust_bootstrap_ms', rustRun.wallMs);
+    pushMetric('rust_pull_rounds', rustRun.rounds, 'count');
+    pushMetric('rust_pull_request_ms', rustRun.timings.pullRequestMs);
+    pushMetric('rust_snapshot_fetch_ms', rustRun.timings.snapshotFetchMs);
+    pushMetric('rust_pull_apply_ms', rustRun.timings.pullApplyMs);
     pushMetric('rust_changed_row_count', rustSync.changedRows.length, 'count');
     pushMetric(
       'rust_changed_rows_truncated',
@@ -977,11 +1078,7 @@ async function runE2eScoreboard(
       rustStats.snapshotChunkRowCount,
       'rows'
     );
-    const rustRows = await rustDatabase.db
-      .selectFrom('tasks')
-      .select(({ fn }) => fn.count<number>('id').as('count'))
-      .executeTakeFirstOrThrow();
-    pushMetric('rust_rows', Number(rustRows.count), 'rows');
+    pushMetric('rust_rows', rustRun.rowCount, 'rows');
 
     cachedRustDatabase = await createSyncularAppDatabase({
       worker: () =>
@@ -1008,24 +1105,21 @@ async function runE2eScoreboard(
     const cachedRustDiagnostics =
       cachedRustDatabase.client as unknown as RustE2eDiagnostics;
     await cachedRustDiagnostics.resetTransportStats();
-    const cachedRustBootstrapStartedAt = performance.now();
-    const cachedRustSync = await cachedRustDatabase.client.syncPull();
-    pushMetric(
-      'rust_cached_bootstrap_ms',
-      performance.now() - cachedRustBootstrapStartedAt
+    const cachedRustRun = await syncRustUntilRows(
+      cachedRustDatabase,
+      options.rows
     );
+    pushMetric('rust_cached_bootstrap_ms', cachedRustRun.wallMs);
+    pushMetric('rust_cached_pull_rounds', cachedRustRun.rounds, 'count');
     pushMetric(
       'rust_cached_pull_request_ms',
-      cachedRustSync.timings.pullRequestMs
+      cachedRustRun.timings.pullRequestMs
     );
     pushMetric(
       'rust_cached_snapshot_fetch_ms',
-      cachedRustSync.timings.snapshotFetchMs
+      cachedRustRun.timings.snapshotFetchMs
     );
-    pushMetric(
-      'rust_cached_pull_apply_ms',
-      cachedRustSync.timings.pullApplyMs
-    );
+    pushMetric('rust_cached_pull_apply_ms', cachedRustRun.timings.pullApplyMs);
     const cachedRustStats = await cachedRustDiagnostics.transportStats();
     pushMetric(
       'rust_cached_snapshot_chunk_decompress_ms',
@@ -1078,35 +1172,34 @@ async function runE2eScoreboard(
       cachedRustStats.snapshotChunkBinaryCount,
       'count'
     );
-    const cachedRustRows = await cachedRustDatabase.db
-      .selectFrom('tasks')
-      .select(({ fn }) => fn.count<number>('id').as('count'))
-      .executeTakeFirstOrThrow();
-    pushMetric('rust_cached_rows', Number(cachedRustRows.count), 'rows');
-
-    await collectLocalQueryMetrics({
-      prefix: 'ts',
-      db: tsClient.db as unknown as Kysely<any>,
-      actorId,
-      projectId,
-      iterations: queryIterations,
-      pushMetric,
-    });
-    await collectLocalQueryMetrics({
-      prefix: 'rust',
-      db: rustDatabase.db as unknown as Kysely<any>,
-      actorId,
-      projectId,
-      iterations: queryIterations,
-      pushMetric,
-    });
+    pushMetric('rust_cached_rows', cachedRustRun.rowCount, 'rows');
 
     assert(Number(tsRows.count) === options.rows, 'TS row count mismatch');
-    assert(Number(rustRows.count) === options.rows, 'Rust row count mismatch');
+    assert(rustRun.rowCount === options.rows, 'Rust row count mismatch');
     assert(
-      Number(cachedRustRows.count) === options.rows,
+      cachedRustRun.rowCount === options.rows,
       'Cached Rust row count mismatch'
     );
+
+    if (queryIterations > 0) {
+      await collectLocalQueryMetrics({
+        prefix: 'ts',
+        db: tsClient.db as unknown as Kysely<any>,
+        actorId,
+        projectId,
+        iterations: queryIterations,
+        pushMetric,
+      });
+      await collectLocalQueryMetrics({
+        prefix: 'rust',
+        db: rustDatabase.db as unknown as Kysely<any>,
+        actorId,
+        projectId,
+        iterations: queryIterations,
+        pushMetric,
+      });
+    }
+
     return { ok: true, rows: options.rows, queryIterations, metrics };
   } catch (err) {
     return {
@@ -1164,10 +1257,7 @@ async function collectLocalQueryMetrics(args: {
   const aggregate = await measureSamples(args.iterations, async () => {
     const rows = await args.db
       .selectFrom('tasks')
-      .select(({ fn }) => [
-        'completed',
-        fn.count<number>('id').as('count'),
-      ])
+      .select(({ fn }) => ['completed', fn.count<number>('id').as('count')])
       .where('user_id', '=', args.actorId)
       .where('project_id', '=', args.projectId)
       .groupBy('completed')
@@ -1212,7 +1302,10 @@ function emitTimedSamples(
   pushMetric(`${prefix}_max_ms`, samples.max);
 }
 
-function percentile(samples: readonly number[], percentileValue: number): number {
+function percentile(
+  samples: readonly number[],
+  percentileValue: number
+): number {
   if (samples.length === 0) return 0;
   const index = Math.min(
     samples.length - 1,
