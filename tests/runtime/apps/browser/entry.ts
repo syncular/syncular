@@ -173,6 +173,7 @@ interface E2eScoreboardOptions {
   projectId?: string;
   rows: number;
   incrementalRows?: number;
+  realtimeIterations?: number;
   queryIterations?: number;
   rustStorage?: 'memory' | 'indexedDb' | 'opfsSahPool';
   rustIncludeSnapshotRows?: boolean;
@@ -1095,6 +1096,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
   const actorId = options.actorId;
   const projectId = options.projectId ?? 'p1';
   const incrementalRows = Math.max(0, options.incrementalRows ?? 0);
+  const realtimeIterations = Math.max(1, options.realtimeIterations ?? 1);
   const queryIterations = options.queryIterations ?? 25;
   const metrics: E2eScoreboardMetric[] = [];
   const tsClient = await createSyncClient(options.serverUrl, actorId);
@@ -1413,8 +1415,6 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       const realtimeSnapshot = await rustDatabase.client.subscribeQuery<{
         count: number;
       }>('select count(*) as count from tasks', [], ['tasks']);
-      const expectedRealtimeRows =
-        options.rows + incrementalRows + realtimeRows;
       const realtimeDiagnosticStart = rustDiagnosticEvents.length;
       try {
         await rustDatabase.client.startRealtime({
@@ -1430,25 +1430,41 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         );
 
         await rustDiagnostics.resetTransportStats();
-        const realtimeStartedAt = performance.now();
-        const liveCountPromise = waitForLiveQueryCount(
-          rustDatabase.client,
-          realtimeSnapshot.id,
-          expectedRealtimeRows
-        );
-        const realtimePushPromise = pushIncrementalRowsFromTsClient({
-          db: tsClient.db,
-          transport: tsClient.transport,
-          actorId,
-          clientId: `ts-e2e-realtime-${Date.now()}`,
-          projectId,
-          rows: realtimeRows,
-          idPrefix: 'browser-e2e-realtime-task',
-        });
-        const [realtimePush, liveCount] = await Promise.all([
-          realtimePushPromise,
-          liveCountPromise,
-        ]);
+        const realtimeLiveSamples: number[] = [];
+        const realtimePushSamples: number[] = [];
+        let expectedRealtimeRows = options.rows + incrementalRows;
+        let pushedRealtimeCommits = 0;
+        let liveCount = { count: expectedRealtimeRows };
+        for (
+          let iteration = 0;
+          iteration < realtimeIterations;
+          iteration += 1
+        ) {
+          expectedRealtimeRows += realtimeRows;
+          const realtimeStartedAt = performance.now();
+          const liveCountPromise = waitForLiveQueryCount(
+            rustDatabase.client,
+            realtimeSnapshot.id,
+            expectedRealtimeRows
+          );
+          const realtimePushPromise = pushIncrementalRowsFromTsClient({
+            db: tsClient.db,
+            transport: tsClient.transport,
+            actorId,
+            clientId: `ts-e2e-realtime-${Date.now()}-${iteration}`,
+            projectId,
+            rows: realtimeRows,
+            idPrefix: `browser-e2e-realtime-task-${iteration}`,
+          });
+          const [realtimePush, nextLiveCount] = await Promise.all([
+            realtimePushPromise,
+            liveCountPromise,
+          ]);
+          realtimePushSamples.push(realtimePush.pushMs);
+          realtimeLiveSamples.push(nextLiveCount.at - realtimeStartedAt);
+          pushedRealtimeCommits += realtimePush.pushedCommits;
+          liveCount = nextLiveCount;
+        }
         const realtimeRustStats = await rustDiagnostics.transportStats();
         const realtimeDiagnostics = rustDiagnosticEvents.slice(
           realtimeDiagnosticStart
@@ -1460,14 +1476,21 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           (sum, event) => sum + Number(event.details?.bytes ?? 0),
           0
         );
-        pushMetric('realtime_rows', realtimeRows, 'rows');
-        pushMetric('ts_realtime_push_ms', realtimePush.pushMs);
+        const realtimeLive = summarizeSamples(realtimeLiveSamples);
+        const realtimePush = summarizeSamples(realtimePushSamples);
+        pushMetric('realtime_rows', realtimeRows * realtimeIterations, 'rows');
+        pushMetric('realtime_iterations', realtimeIterations, 'count');
+        pushMetric('ts_realtime_push_ms', realtimePush.p50);
+        pushMetric('ts_realtime_push_p95_ms', realtimePush.p95);
         pushMetric(
-          'ts_realtime_push_commits',
-          realtimePush.pushedCommits,
-          'count'
+          'ts_realtime_push_total_ms',
+          realtimePushSamples.reduce((sum, value) => sum + value, 0)
         );
-        pushMetric('rust_realtime_live_ms', liveCount.at - realtimeStartedAt);
+        pushMetric('ts_realtime_push_commits', pushedRealtimeCommits, 'count');
+        pushMetric('rust_realtime_live_ms', realtimeLive.p50);
+        pushMetric('rust_realtime_live_p95_ms', realtimeLive.p95);
+        pushMetric('rust_realtime_live_min_ms', realtimeLive.min);
+        pushMetric('rust_realtime_live_max_ms', realtimeLive.max);
         pushMetric(
           'rust_realtime_http_request_count',
           realtimeRustStats.requestCount,
@@ -1620,6 +1643,16 @@ function emitTimedSamples(
   pushMetric(`${prefix}_p95_ms`, samples.p95);
   pushMetric(`${prefix}_min_ms`, samples.min);
   pushMetric(`${prefix}_max_ms`, samples.max);
+}
+
+function summarizeSamples(samples: readonly number[]): TimedSamples {
+  const sorted = [...samples].sort((left, right) => left - right);
+  return {
+    p50: percentile(sorted, 0.5),
+    p95: percentile(sorted, 0.95),
+    min: sorted[0] ?? 0,
+    max: sorted[sorted.length - 1] ?? 0,
+  };
 }
 
 function percentile(

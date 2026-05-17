@@ -71,6 +71,7 @@ interface BrowserE2eScoreboardReport {
   options?: {
     rows?: number;
     incrementalRows?: number;
+    realtimeIterations?: number;
     queryIterations?: number;
   };
   metrics: BrowserE2eScoreboardMetric[];
@@ -276,6 +277,10 @@ describe('rust client performance', () => {
         'PERF_RUST_BROWSER_E2E_INCREMENTAL_ROWS',
         0
       );
+      const realtimeIterations = readPositiveIntEnv(
+        'PERF_RUST_BROWSER_E2E_REALTIME_ITERATIONS',
+        1
+      );
       const queryIterations = readPositiveIntEnv(
         'PERF_RUST_BROWSER_E2E_QUERY_ITERATIONS',
         10
@@ -287,6 +292,7 @@ describe('rust client performance', () => {
           '--json',
           `--rows=${rows}`,
           `--incremental-rows=${incrementalRows}`,
+          `--realtime-iterations=${realtimeIterations}`,
           `--query-iterations=${queryIterations}`,
           '--wasm-profile=release',
         ],
@@ -305,8 +311,15 @@ describe('rust client performance', () => {
       expect(rowMetrics.get('rust_rows')).toBe(rows);
       if (incrementalRows > 0) {
         expect(rowMetrics.get('incremental_rows')).toBe(incrementalRows);
+        expect(rowMetrics.get('realtime_iterations')).toBe(realtimeIterations);
+        expect(rowMetrics.get('realtime_rows')).toBe(
+          incrementalRows * realtimeIterations
+        );
         expect(rowMetrics.get('rust_incremental_rows')).toBe(
           rows + incrementalRows
+        );
+        expect(rowMetrics.get('rust_realtime_rows')).toBe(
+          rows + incrementalRows + incrementalRows * realtimeIterations
         );
       }
       expect(scoreboard.runtime?.wasmProfile).toBe('release');

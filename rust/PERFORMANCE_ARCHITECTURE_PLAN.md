@@ -135,6 +135,10 @@ outbox/server path, waits for the live query count to update, and records
 event count, and binary realtime bytes. This is the required guardrail before
 any further websocket tuning.
 
+The realtime lane also supports `--realtime-iterations=N` and emits
+`rust_realtime_live_p95_ms`, min/max, total TS push time, commit count, binary
+event count, and HTTP fallback counters across the repeated pushes.
+
 Measured scoped-server lane:
 
 - No-index scoped baseline, 50k visible rows / 500k seeded rows /
@@ -1551,12 +1555,32 @@ client. Overflow should close or resync the session deliberately.
     `rust_realtime_rows` `120`.
   - Normal perf-harness smoke with the same 100 + 10 lane also passes and now
     keeps `count` metrics instead of dropping them:
-    `rust_browser_e2e_rust_realtime_live_ms` `13.7`,
+    `rust_browser_e2e_realtime_iterations` `2.0`,
+    `rust_browser_e2e_rust_realtime_live_ms` `10.0`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `13.6`,
     `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
     `rust_browser_e2e_rust_realtime_http_request_kib` `0.0`,
     `rust_browser_e2e_rust_realtime_http_response_kib` `0.0`,
-    `rust_browser_e2e_rust_realtime_binary_events` `1.0`,
-    and `rust_browser_e2e_rust_realtime_binary_kib` `2.2`.
+    `rust_browser_e2e_rust_realtime_binary_events` `2.0`,
+    and `rust_browser_e2e_rust_realtime_binary_kib` `4.5`.
+  - Larger release-WASM single-iteration lane:
+    `SYNCULAR_BROWSER_WASM_PROFILE=release bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --query-iterations=0 --wasm-profile=release --json --output=.context/benchmarks/browser-e2e-realtime-lane-10k-1k-release.json`
+  - Result: `rust_realtime_live_ms` `91.55`,
+    `ts_realtime_push_ms` `74.03`,
+    `rust_realtime_http_request_count` `0`,
+    `rust_realtime_binary_events` `5`,
+    `rust_realtime_binary_bytes` `207005`. The measured websocket/apply/live
+    remainder is roughly `17.5ms` after subtracting the TS push portion.
+  - Larger release-WASM repeated lane:
+    `SYNCULAR_BROWSER_WASM_PROFILE=release bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=release --json --output=.context/benchmarks/browser-e2e-realtime-lane-10k-1k-x3-release.json`
+  - Result: `rust_realtime_live_ms` `93.86`,
+    `rust_realtime_live_p95_ms` `99.82`,
+    `ts_realtime_push_ms` `75.44`,
+    `ts_realtime_push_p95_ms` `78.31`,
+    `ts_realtime_push_total_ms` `229.18`,
+    `rust_realtime_http_request_count` `0`,
+    `rust_realtime_binary_events` `15`,
+    `rust_realtime_binary_bytes` `639015`.
   - Complexity check: this is benchmark instrumentation and reuses the same
     Hono websocket route/runtime path as the product tests; it is retained as
     a measurement gate, not as a runtime optimization.
