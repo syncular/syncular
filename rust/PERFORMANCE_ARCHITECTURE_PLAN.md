@@ -1885,6 +1885,16 @@ client. Overflow should close or resync the session deliberately.
     `sync_pack_binary_generated_response_50000_kib` `6764.6KiB` vs generic
     binary `11138.4KiB`; generated decode `46.6ms` vs generic binary decode
     `57.9ms`.
+- Done: added an indexed realtime change-scope selector and switched
+  mixed-scope websocket inline delta filtering to use it. The connection
+  registry already indexed scope keys to target connections; this removes the
+  remaining per-connection full change scan when a commit touches many scopes.
+  - Measurement gate:
+    `realtime_fanout_filter_scan_5000_1000_500` `43.4ms`,
+    `realtime_fanout_filter_indexed_5000_1000_500` `0.7ms`.
+  - Correctness guard: the selector preserves source change order and dedupes
+    changes that match multiple subscribed scopes. Existing Hono realtime
+    connection/scope-change tests still pass.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 

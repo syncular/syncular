@@ -11,11 +11,13 @@ import {
   captureSyncException,
   countSyncMetric,
   createSyncTimer,
+  createRealtimeChangeScopeIndex,
   distributionSyncMetric,
   ErrorResponseSchema,
   encodeBinarySyncPack,
   logSyncEvent,
   prefersBinarySyncPack,
+  type RealtimeChangeScopeIndex,
   ScopeValuesSchema,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
@@ -1349,26 +1351,41 @@ export function createSyncRoutes<
     }
 
     const combinedScopeKeys = Array.from(scopeKeys);
-    const changesWithScopeKeys = emittedChanges.map((change) => ({
-      change,
-      scopeKeys: applyPartitionToScopeKeys(
-        ctx.partitionId,
-        scopeValuesToScopeKeys(change.scopes)
-      ),
-    }));
+    const canUseSharedInlinePayload = combinedScopeKeys.length === 1;
+    let changeScopeIndex: RealtimeChangeScopeIndex<SyncChange> | undefined;
+    const getChangeScopeIndex = () => {
+      changeScopeIndex ??= createRealtimeChangeScopeIndex(
+        emittedChanges.map((change) => ({
+          item: change,
+          scopeKeys: applyPartitionToScopeKeys(
+            ctx.partitionId,
+            scopeValuesToScopeKeys(change.scopes)
+          ),
+        }))
+      );
+      return changeScopeIndex;
+    };
+    const changedScopeKeySet = new Set(combinedScopeKeys);
+    const connectionScopeKeysCache = new Map<string, string[]>();
+    const changedScopeKeysForConnection = (
+      connection: WebSocketConnection
+    ): string[] => {
+      const cached = connectionScopeKeysCache.get(connection.ownerKey);
+      if (cached) return cached;
+      const scopeKeys = wsConnectionManager
+        ? wsConnectionManager
+            .getConnectionScopeKeys(connection.ownerKey)
+            .filter((scopeKey) => changedScopeKeySet.has(scopeKey))
+        : [];
+      connectionScopeKeysCache.set(connection.ownerKey, scopeKeys);
+      return scopeKeys;
+    };
     const filterChangesForConnection = (
       connection: WebSocketConnection
     ): SyncChange[] =>
-      changesWithScopeKeys
-        .filter(({ scopeKeys }) =>
-          scopeKeys.some((scopeKey) =>
-            wsConnectionManager?.isConnectionSubscribedToScopeKey(
-              connection.ownerKey,
-              scopeKey
-            )
-          )
-        )
-        .map(({ change }) => change);
+      getChangeScopeIndex().selectForScopeKeys(
+        changedScopeKeysForConnection(connection)
+      );
     const encodeRealtimeSyncPack = (
       changes: readonly SyncChange[]
     ): Uint8Array | undefined => {
@@ -1414,7 +1431,6 @@ export function createSyncRoutes<
       return undefined;
     };
 
-    const canUseSharedInlinePayload = combinedScopeKeys.length === 1;
     const syncPack = canUseSharedInlinePayload
       ? encodeRealtimeSyncPack(emittedChanges)
       : undefined;

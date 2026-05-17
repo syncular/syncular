@@ -393,6 +393,10 @@ export class WebSocketConnectionManager {
     return this.registry.isOwnerSubscribedToScopeKey(ownerKey, scopeKey);
   }
 
+  getConnectionScopeKeys(ownerKey: string): readonly string[] {
+    return this.registry.getScopeKeysForOwner(ownerKey);
+  }
+
   // =========================================================================
   // Presence Tracking
   // =========================================================================
