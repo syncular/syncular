@@ -68,7 +68,7 @@ Required first-class metrics:
 | Payload shape | JSON chunk count, binary chunk count, request count, response bytes | Rust browser harness records this; needs scoreboard output and gating. |
 | Local reads | list p50/p95, search p50/p95, aggregate/read-model p50/p95 | Feature benchmark exists for Rust; needs direct TS baseline and identical query definitions. |
 | Mutations | local insert/update batch latency, outbox rows, sync push batch latency | Rust native/browser covered partly; needs TS comparison and browser buckets. |
-| Realtime | WS propagation p50/p95/p99, ordered wakeup-to-apply latency | Stress and smoke tests exist; not yet a TS-vs-Rust scoreboard lane. |
+| Realtime | WS propagation p50/p95/p99, ordered wakeup-to-apply latency, HTTP fallback count, binary bytes | Browser E2E scoreboard now has a same-server Rust websocket lane; still needs larger p50/p95/p99 runs and TS-aligned realtime comparison. |
 | Reconnect | reconnect 25/100/250 clients, catchup rows, missed wakeups | TS perf has reconnect lanes; Rust stress exists, but scenarios are not aligned. |
 | Memory/package | peak browser memory during 500k bootstrap, WASM raw/gzip, loaded JS bytes | WASM size is gated; browser page resource, served asset, and JS heap snapshots now flow through the E2E scoreboard. Peak/worker memory still needs deeper capture. |
 | Correctness during perf | final row counts, query result equality, event overflow/recovery count | Some checks exist; scoreboard must make them mandatory for every run. |
@@ -100,7 +100,7 @@ JSON-vs-binary chunk counts. The harness now records page ResourceTiming
 asset/sync bytes, explicit served asset byte sizes for Rust/WASM/wa-sqlite
 files, Chromium JS heap snapshots before/after the run, and opt-in server
 bootstrap timing buckets from the Hono route. It still needs TS bucket parity,
-realtime, reconnect, and deeper worker/WASM memory capture.
+reconnect, and deeper worker/WASM memory capture.
 
 The E2E scoreboard is also wired into `tests/perf/rust-client.perf.test.ts`
 behind `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`, so it can participate in the
@@ -126,6 +126,14 @@ from the server. The same lane is exposed through
 `PERF_RUST_BROWSER_E2E_INCREMENTAL_ROWS` in `tests/perf/rust-client.perf.test.ts`.
 This is the required guardrail for sync-pack/delta protocol work because
 synthetic codec benches alone do not prove the actual pull/apply path moved.
+
+The same `--incremental-rows=N` lane now also measures steady-state Rust
+websocket propagation after the HTTP incremental catch-up. It subscribes a Rust
+live query, starts realtime, pushes another `N` rows through the TS
+outbox/server path, waits for the live query count to update, and records
+`rust_realtime_live_ms`, HTTP fallback request/byte counts, binary realtime
+event count, and binary realtime bytes. This is the required guardrail before
+any further websocket tuning.
 
 Measured scoped-server lane:
 
@@ -1528,8 +1536,33 @@ client. Overflow should close or resync the session deliberately.
     sync-pack encoder/decoder and removes protocol divergence between HTTP and
     realtime. It is not yet a measured latency win beyond avoiding the HTTP
     pull; future work needs a dedicated realtime latency/bytes lane.
-- Next target: add that dedicated realtime latency/bytes lane before tuning
-  binary websocket internals further.
+- Retained browser realtime measurement lane: the browser E2E scoreboard now
+  enables the benchmark Hono websocket route, opens a Rust live query, pushes a
+  TS outbox commit, and measures binary websocket delivery to Rust-owned SQLite
+  with explicit HTTP fallback counters.
+  - Local dev-WASM smoke:
+    `SYNCULAR_BROWSER_WASM_PROFILE=dev bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100 --incremental-rows=10 --query-iterations=1 --wasm-profile=dev --json --output=.context/benchmarks/browser-e2e-realtime-lane-100-10.json`
+  - Result: `rust_realtime_live_ms` `16.50`,
+    `rust_realtime_http_request_count` `0`,
+    `rust_realtime_http_request_bytes` `0`,
+    `rust_realtime_http_response_bytes` `0`,
+    `rust_realtime_binary_events` `1`,
+    `rust_realtime_binary_bytes` `2267`,
+    `rust_realtime_rows` `120`.
+  - Normal perf-harness smoke with the same 100 + 10 lane also passes and now
+    keeps `count` metrics instead of dropping them:
+    `rust_browser_e2e_rust_realtime_live_ms` `13.7`,
+    `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
+    `rust_browser_e2e_rust_realtime_http_request_kib` `0.0`,
+    `rust_browser_e2e_rust_realtime_http_response_kib` `0.0`,
+    `rust_browser_e2e_rust_realtime_binary_events` `1.0`,
+    and `rust_browser_e2e_rust_realtime_binary_kib` `2.2`.
+  - Complexity check: this is benchmark instrumentation and reuses the same
+    Hono websocket route/runtime path as the product tests; it is retained as
+    a measurement gate, not as a runtime optimization.
+- Next target: run a larger realtime lane and only then decide whether the
+  next runtime change should be websocket pack filtering, ack/resume, or apply
+  path cleanup.
 
 ### Phase 7: Delta WebSocket Runtime
 
@@ -1537,10 +1570,12 @@ client. Overflow should close or resync the session deliberately.
 - Done: websocket negotiation advertises binary sync-pack support for the
   browser worker.
 - Done: bounded binary delta packs stream over websocket for negotiated clients.
+- Done: browser E2E scoreboard has a Rust realtime latency/bytes lane with
+  HTTP fallback counters.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
-- Next: add a dedicated steady-state realtime latency/bytes lane before further
-  websocket tuning.
+- Next: expand the realtime lane to larger batches and p50/p95/p99 runs before
+  keeping any further websocket runtime optimization.
 
 ### Phase 8: Compression And Cache Policy
 

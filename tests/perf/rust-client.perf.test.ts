@@ -372,9 +372,10 @@ function browserMetric(
 function browserE2eMetric(
   metric: BrowserE2eScoreboardMetric
 ): BenchmarkResult | null {
-  if (metric.unit === 'count' || metric.unit === 'rows') return null;
+  if (metric.unit === 'rows') return null;
   const value = metric.unit === 'bytes' ? metric.value / 1024 : metric.value;
-  const unit: BenchmarkResult['unit'] = metric.unit === 'bytes' ? 'KiB' : 'ms';
+  const unit: BenchmarkResult['unit'] =
+    metric.unit === 'bytes' ? 'KiB' : metric.unit === 'count' ? 'count' : 'ms';
   return {
     name:
       metric.unit === 'bytes'

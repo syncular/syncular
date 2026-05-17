@@ -21,11 +21,15 @@ import {
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import { createSyncRoutes } from '@syncular/server-hono';
+import { Hono } from 'hono';
+import { upgradeWebSocket, websocket } from 'hono/bun';
 import {
   syncularGeneratedCodecs,
   syncularGeneratedSnapshotBinaryColumns,
   syncularGeneratedSnapshotBinaryEncoders,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+
+type BunServer = ReturnType<typeof Bun.serve>;
 
 const portArg = process.argv.find((a) => a.startsWith('--port='));
 const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
@@ -151,7 +155,7 @@ const HTML = `<!DOCTYPE html>
 
 const server = Bun.serve({
   port,
-  fetch(req) {
+  fetch(req, server) {
     const url = new URL(req.url);
 
     if (url.pathname === '/health') {
@@ -161,12 +165,12 @@ const server = Bun.serve({
     }
 
     if (url.pathname === '/sync' && req.method === 'POST') {
-      if (benchmarkSyncRoute) return benchmarkSyncRoute(req);
+      if (benchmarkSyncRoute) return benchmarkSyncRoute(req, server);
       return benchmarkSyncResponse(req);
     }
 
     if (url.pathname.startsWith('/sync/') && benchmarkSyncRoute) {
-      return benchmarkSyncRoute(req);
+      return benchmarkSyncRoute(req, server);
     }
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
@@ -251,6 +255,7 @@ const server = Bun.serve({
 
     return new Response('Not found', { status: 404 });
   },
+  websocket,
 });
 
 console.log(`READY:${server.port}`);
@@ -295,7 +300,7 @@ function readPositiveIntArg(name: string, fallback: number): number {
 async function createBenchmarkSyncRoute(
   rows: number,
   users: number
-): Promise<(request: Request) => Promise<Response>> {
+): Promise<(request: Request, server: BunServer) => Promise<Response>> {
   const dialect = createSqliteServerDialect();
   const db = createDatabase<BenchmarkSyncServerDb>({
     dialect: createBunSqliteDialect({ path: ':memory:' }),
@@ -337,9 +342,16 @@ async function createBenchmarkSyncRoute(
     sync: {
       rateLimit: false,
       maxPullMaxSnapshotPages: 100,
+      websocket: {
+        enabled: true,
+        upgradeWebSocket,
+        heartbeatIntervalMs: 0,
+        allowedOrigins: '*',
+      },
     },
   });
-  return async (request: Request) => {
+  const app = new Hono().route('/sync', syncRoutes);
+  return async (request: Request, server) => {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/sync/snapshot-chunks/')) {
       const chunkId = decodeURIComponent(
@@ -359,8 +371,7 @@ async function createBenchmarkSyncRoute(
         },
       });
     }
-    url.pathname = url.pathname.slice('/sync'.length) || '/';
-    return syncRoutes.fetch(new Request(url, request));
+    return app.fetch(request, server);
   };
 }
 

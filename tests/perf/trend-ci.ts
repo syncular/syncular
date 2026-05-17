@@ -16,7 +16,7 @@ import {
 interface StableMetricSummary {
   metric: string;
   suite?: string;
-  unit?: 'ms' | 'KiB';
+  unit?: 'ms' | 'KiB' | 'count';
   baseline: number | null;
   aggregatedMedian: number;
   min: number;
@@ -36,7 +36,7 @@ interface StablePerfSummary {
 interface TrendMetricResult {
   metric: string;
   suite: string;
-  unit: 'ms' | 'KiB';
+  unit: 'ms' | 'KiB' | 'count';
   current: number;
   historyCount: number;
   historyMedian: number | null;
@@ -230,7 +230,10 @@ async function main() {
   }
 }
 
-function formatMetricValue(value: number | null, unit: 'ms' | 'KiB'): string {
+function formatMetricValue(
+  value: number | null,
+  unit: 'ms' | 'KiB' | 'count'
+): string {
   if (value == null) return 'N/A';
   return `${value.toFixed(1)}${unit}`;
 }
@@ -245,7 +248,10 @@ function metricSuite(metric: string): string {
   return 'sync';
 }
 
-function metricUnit(metric: string): 'ms' | 'KiB' {
+function metricUnit(metric: string): 'ms' | 'KiB' | 'count' {
+  if (metric.endsWith('_count') || metric.endsWith('_events')) {
+    return 'count';
+  }
   if (metric.startsWith('rust_browser_wasm_') && metric.endsWith('_kib')) {
     return 'KiB';
   }

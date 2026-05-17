@@ -22,6 +22,9 @@ import { createWaSqliteDialect } from '../../../../packages/dialect-wa-sqlite/sr
 import { createHttpTransport } from '../../../../packages/transport-http/src/index';
 import type {
   SyncularV2AppSchema,
+  SyncularV2Client,
+  SyncularV2DiagnosticEvent,
+  SyncularV2LiveQueryEvent,
   SyncularV2PullOptions,
   SyncularV2SyncResult,
   SyncularV2SyncTimings,
@@ -954,13 +957,15 @@ async function pushIncrementalRowsFromTsClient(args: {
   clientId: string;
   projectId: string;
   rows: number;
+  idPrefix?: string;
+  startIndex?: number;
 }): Promise<{ pushMs: number; pushedCommits: number }> {
   if (args.rows <= 0) return { pushMs: 0, pushedCommits: 0 };
 
   const operations = Array.from({ length: args.rows }, (_, index) =>
     makeTaskOperation(
-      'browser-e2e-incremental-task',
-      index,
+      args.idPrefix ?? 'browser-e2e-incremental-task',
+      (args.startIndex ?? 0) + index,
       args.actorId,
       args.projectId
     )
@@ -1035,6 +1040,51 @@ async function pushIncrementalRowsFromTsClient(args: {
   return { pushMs: performance.now() - pushStartedAt, pushedCommits };
 }
 
+async function waitForDiagnostic(
+  events: readonly SyncularV2DiagnosticEvent[],
+  startIndex: number,
+  predicate: (event: SyncularV2DiagnosticEvent) => boolean,
+  timeoutMs = 5_000
+): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    for (let index = startIndex; index < events.length; index += 1) {
+      const event = events[index];
+      if (event && predicate(event)) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for realtime diagnostic event');
+}
+
+function waitForLiveQueryCount(
+  client: SyncularV2Client,
+  queryId: string,
+  expectedRows: number,
+  timeoutMs = 5_000
+): Promise<{ at: number; count: number }> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      client.removeLiveQueryListener(queryId);
+      reject(
+        new Error(
+          `Timed out waiting for realtime live query count ${expectedRows}`
+        )
+      );
+    }, timeoutMs);
+    client.addLiveQueryListener(
+      queryId,
+      (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => {
+        const count = Number(event.rows[0]?.count ?? 0);
+        if (count !== expectedRows) return;
+        clearTimeout(timeout);
+        client.removeLiveQueryListener(queryId);
+        resolve({ at: performance.now(), count });
+      }
+    );
+  });
+}
+
 async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
   ok: boolean;
   rows?: number;
@@ -1048,6 +1098,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
   const queryIterations = options.queryIterations ?? 25;
   const metrics: E2eScoreboardMetric[] = [];
   const tsClient = await createSyncClient(options.serverUrl, actorId);
+  const rustDiagnosticEvents: SyncularV2DiagnosticEvent[] = [];
   let rustDatabase: SyncularAppDatabase | undefined;
   let cachedRustDatabase: SyncularAppDatabase | undefined;
 
@@ -1101,6 +1152,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           credentials: 'same-origin',
         }),
       getHeaders: () => ({ 'x-actor-id': actorId }),
+      diagnostics: (event) => rustDiagnosticEvents.push(event),
       subscriptions: false,
       config: {
         baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
@@ -1356,6 +1408,97 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         incrementalRustStats.syncPackDecodeMs
       );
       pushMetric('rust_incremental_rows', incrementalRustRun.rowCount, 'rows');
+
+      const realtimeRows = incrementalRows;
+      const realtimeSnapshot = await rustDatabase.client.subscribeQuery<{
+        count: number;
+      }>('select count(*) as count from tasks', [], ['tasks']);
+      const expectedRealtimeRows =
+        options.rows + incrementalRows + realtimeRows;
+      const realtimeDiagnosticStart = rustDiagnosticEvents.length;
+      try {
+        await rustDatabase.client.startRealtime({
+          heartbeatTimeoutMs: 0,
+          initialReconnectDelayMs: 50,
+        });
+        await waitForDiagnostic(
+          rustDiagnosticEvents,
+          realtimeDiagnosticStart,
+          (event) =>
+            event.code === 'realtime.state' &&
+            event.details?.state === 'connected'
+        );
+
+        await rustDiagnostics.resetTransportStats();
+        const realtimeStartedAt = performance.now();
+        const liveCountPromise = waitForLiveQueryCount(
+          rustDatabase.client,
+          realtimeSnapshot.id,
+          expectedRealtimeRows
+        );
+        const realtimePushPromise = pushIncrementalRowsFromTsClient({
+          db: tsClient.db,
+          transport: tsClient.transport,
+          actorId,
+          clientId: `ts-e2e-realtime-${Date.now()}`,
+          projectId,
+          rows: realtimeRows,
+          idPrefix: 'browser-e2e-realtime-task',
+        });
+        const [realtimePush, liveCount] = await Promise.all([
+          realtimePushPromise,
+          liveCountPromise,
+        ]);
+        const realtimeRustStats = await rustDiagnostics.transportStats();
+        const realtimeDiagnostics = rustDiagnosticEvents.slice(
+          realtimeDiagnosticStart
+        );
+        const binaryEvents = realtimeDiagnostics.filter(
+          (event) => event.code === 'realtime.binary_applied'
+        );
+        const binaryBytes = binaryEvents.reduce(
+          (sum, event) => sum + Number(event.details?.bytes ?? 0),
+          0
+        );
+        pushMetric('realtime_rows', realtimeRows, 'rows');
+        pushMetric('ts_realtime_push_ms', realtimePush.pushMs);
+        pushMetric(
+          'ts_realtime_push_commits',
+          realtimePush.pushedCommits,
+          'count'
+        );
+        pushMetric('rust_realtime_live_ms', liveCount.at - realtimeStartedAt);
+        pushMetric(
+          'rust_realtime_http_request_count',
+          realtimeRustStats.requestCount,
+          'count'
+        );
+        pushMetric(
+          'rust_realtime_http_request_bytes',
+          realtimeRustStats.requestBytes,
+          'bytes'
+        );
+        pushMetric(
+          'rust_realtime_http_response_bytes',
+          realtimeRustStats.responseBytes,
+          'bytes'
+        );
+        pushMetric('rust_realtime_binary_events', binaryEvents.length, 'count');
+        pushMetric('rust_realtime_binary_bytes', binaryBytes, 'bytes');
+        pushMetric('rust_realtime_rows', liveCount.count, 'rows');
+        assert(
+          realtimeRustStats.requestCount === 0,
+          'realtime delta should not use HTTP pull'
+        );
+        assert(
+          binaryEvents.length > 0,
+          'expected binary realtime apply diagnostic'
+        );
+      } finally {
+        rustDatabase.client.removeLiveQueryListener(realtimeSnapshot.id);
+        await rustDatabase.client.unsubscribeQuery(realtimeSnapshot.id);
+        await rustDatabase.client.stopRealtime();
+      }
     }
 
     if (queryIterations > 0) {

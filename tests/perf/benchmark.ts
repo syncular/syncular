@@ -8,7 +8,7 @@
 export interface BenchmarkResult {
   name: string;
   iterations: number;
-  unit?: 'ms' | 'KiB';
+  unit?: 'ms' | 'KiB' | 'count';
   mean: number;
   median: number;
   p95: number;
@@ -117,7 +117,7 @@ export function parseBenchmarkTable(output: string): BenchmarkResult[] {
     }
 
     const match =
-      /^\|\s([a-z0-9_:-]+)\s\|\s([0-9.]+)(ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|\s([0-9.]+)(?:ms|KiB)\s\|/i.exec(
+      /^\|\s([a-z0-9_:-]+)\s\|\s([0-9.]+)(ms|KiB|count)\s\|\s([0-9.]+)(?:ms|KiB|count)\s\|\s([0-9.]+)(?:ms|KiB|count)\s\|\s([0-9.]+)(?:ms|KiB|count)\s\|\s([0-9.]+)(?:ms|KiB|count)\s\|\s([0-9.]+)(?:ms|KiB|count)\s\|/i.exec(
         line
       );
     if (!match) continue;
