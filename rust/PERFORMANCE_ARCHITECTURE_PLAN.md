@@ -962,6 +962,28 @@ client. Overflow should close or resync the session deliberately.
   schema is known, temporary index/foreign-key policy for trusted bootstrap
   phases, or read-model paths that avoid replaying large snapshots into generic
   query tables when a product only needs derived local views.
+- Added a Rust-owned browser SQLite binary apply shortcut that binds trusted
+  binary snapshot string/JSON cells as raw text bytes instead of validating
+  UTF-8 for every cell before immediately rebinding the same bytes into SQLite.
+  The normal decoded-row/materialization paths still validate UTF-8.
+  Release-WASM battery-saver validation, before vs after:
+  - 100k full scoreboard:
+    `rust_bootstrap_ms` `301.47 -> 282.35`,
+    `rust_cached_bootstrap_ms` `114.75 -> 110.16`,
+    `rust_pull_apply_ms` `118 -> 114`,
+    `rust_cached_pull_apply_ms` `108 -> 104`.
+  - 500k bootstrap-only:
+    `rust_bootstrap_ms` `1401.60 -> 1371.38`,
+    `rust_cached_bootstrap_ms` `552.25 -> 519.69`,
+    `rust_pull_apply_ms` `543 -> 519`,
+    `rust_cached_pull_apply_ms` `529 -> 498`.
+  - Kept because the target 500k cached apply path improved by `31ms`
+    (`5.9%`) and cached bootstrap improved by `32.56ms` (`5.9%`) without
+    changing wire bytes or server behavior.
+- Next target after the raw-byte shortcut: remaining apply cost is SQLite bind
+  and execute work across generic runtime metadata. Only keep additional
+  experiments that show a measured 500k `rust_cached_pull_apply_ms` win against
+  the latest committed release-WASM baseline.
 
 ### Phase 4: Worker Default
 
