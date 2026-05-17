@@ -1,6 +1,7 @@
 import {
   type BinarySnapshotColumn,
   type BinarySnapshotColumnType,
+  type BinarySnapshotRowsEncoder,
   bytesToReadableStream,
   captureSyncException,
   concatByteChunks,
@@ -805,6 +806,7 @@ export async function pull<
                       payloadByteLength: number;
                       payloadParts: Uint8Array[];
                       binaryColumns?: readonly BinarySnapshotColumn[];
+                      binaryEncoder?: BinarySnapshotRowsEncoder;
                       binaryRows: unknown[];
                       inlineRows: unknown[] | null;
                     }
@@ -813,7 +815,8 @@ export async function pull<
                       table: string,
                       rowCursor: string | null,
                       ttlMs: number,
-                      binaryColumns?: readonly BinarySnapshotColumn[]
+                      binaryColumns?: readonly BinarySnapshotColumn[],
+                      binaryEncoder?: BinarySnapshotRowsEncoder
                     ): SnapshotBundle => {
                       const payloadParts =
                         snapshotChunkEncoding ===
@@ -833,6 +836,7 @@ export async function pull<
                         ),
                         payloadParts,
                         binaryColumns,
+                        binaryEncoder,
                         binaryRows: [],
                         inlineRows: null,
                       };
@@ -848,11 +852,13 @@ export async function pull<
                         return [...bundle.payloadParts];
                       }
                       const encodeStartedAt = Date.now();
-                      const payload = encodeBinarySnapshotRows(
-                        bundle.table,
-                        bundle.binaryRows,
-                        bundle.binaryColumns
-                      );
+                      const payload = bundle.binaryEncoder
+                        ? bundle.binaryEncoder(bundle.binaryRows)
+                        : encodeBinarySnapshotRows(
+                            bundle.table,
+                            bundle.binaryRows,
+                            bundle.binaryColumns
+                          );
                       bootstrapTimings.rowFrameEncodeMs += Math.max(
                         0,
                         Date.now() - encodeStartedAt
@@ -1006,7 +1012,8 @@ export async function pull<
                           nextState.rowCursor,
                           tableHandler.snapshotChunkTtlMs ??
                             24 * 60 * 60 * 1000,
-                          tableHandler.snapshotBinaryColumns
+                          tableHandler.snapshotBinaryColumns,
+                          tableHandler.snapshotBinaryEncoder
                         );
                       }
 
@@ -1071,7 +1078,8 @@ export async function pull<
                             nextState.rowCursor,
                             tableHandler.snapshotChunkTtlMs ??
                               24 * 60 * 60 * 1000,
-                            tableHandler.snapshotBinaryColumns
+                            tableHandler.snapshotBinaryColumns,
+                            tableHandler.snapshotBinaryEncoder
                           );
                         }
                       }

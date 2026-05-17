@@ -4,6 +4,7 @@
 
 import type {
   BinarySnapshotColumn,
+  BinarySnapshotRowsEncoder,
   ScopeValues,
   ScopeValuesFromPatterns,
   ScopeDefinition as SimpleScopeDefinition,
@@ -130,6 +131,13 @@ export interface CreateServerHandlerOptions<
    * Stable binary snapshot column metadata used by binary bootstrap chunks.
    */
   snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+
+  /**
+   * Optional generated binary snapshot encoder used by binary bootstrap chunks.
+   */
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder<
+    Selectable<ClientDB[TableName]>
+  >;
 
   /**
    * Resolve allowed scope values for the current actor.
@@ -274,6 +282,7 @@ export function createServerHandler<
     snapshotChunkTtlMs,
     snapshotBundleMaxBytes,
     snapshotBinaryColumns,
+    snapshotBinaryEncoder,
     resolveScopes,
     transformInbound,
     transformOutbound,
@@ -886,6 +895,9 @@ export function createServerHandler<
     snapshotChunkTtlMs,
     snapshotBundleMaxBytes,
     snapshotBinaryColumns,
+    snapshotBinaryEncoder: snapshotBinaryEncoder as
+      | BinarySnapshotRowsEncoder
+      | undefined,
     canRejectSingleOperationWithoutSavepoint:
       options.canRejectSingleOperationWithoutSavepoint ??
       options.applyOperation === undefined,

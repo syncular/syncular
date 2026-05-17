@@ -971,8 +971,25 @@ client. Overflow should close or resync the session deliberately.
   - generated columns: wall `77.6-79.6ms`, `rowFrameEncodeMs=53-54ms`.
   - generated metadata removed about `18-19ms` of encode work and
     `34-38ms` wall time in this local run.
-- Generate `snapshotBinaryColumns` and table-specific `binary-table-v1`
-  encoders for the benchmark schema.
+- Added generated table-specific `binary-table-v1` encoders. Server handlers
+  can now provide `snapshotBinaryEncoder`; generated TypeScript emits
+  `syncularGeneratedSnapshotBinaryEncoders`, and the browser Hono benchmark
+  harness uses the generated tasks encoder. The generic object-row encoder
+  remains the fallback.
+- Isolated binary encode benchmark using the generated tasks rows:
+  - 100k rows: generic median `43.25ms`, generated median `33.46ms`,
+    same `7,077,900` byte payload.
+  - 500k rows: generic median `218.18ms`, generated median `163.23ms`,
+    same `36,277,900` byte payload.
+  - This removes roughly 22-25% of local table encoding time by avoiding the
+    generic per-cell `row[column.name]` loop and type switch.
+- Browser E2E 100k release-WASM before/after on the same harness:
+  - before: Rust bootstrap `207.99ms`, pull request `124ms`, apply `81ms`.
+  - after first run: Rust bootstrap `200.75ms`, pull request `117ms`,
+    apply `81ms`.
+  - after second run was globally noisy (`TS 747ms -> 1015ms`, Rust
+    `200.75ms -> 278.13ms`) and is not used as a reject signal. The isolated
+    encoder benchmark is the reliable signal for this server-side slice.
 - Cache binary chunks in final compressed wire format.
 - Measure server encode time, chunk size, client decode time, SQLite apply
   time, and peak memory against `json-row-frame-v1`.

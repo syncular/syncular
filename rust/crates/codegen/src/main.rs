@@ -1363,6 +1363,19 @@ fn ts_binary_snapshot_column_type(column: &ColumnRow, config: &TableCodegenConfi
     }
 }
 
+fn ts_binary_snapshot_writer_method(
+    column: &ColumnRow,
+    config: &TableCodegenConfig,
+) -> &'static str {
+    match ts_binary_snapshot_column_type(column, config) {
+        "integer" => "writeInteger",
+        "float" => "writeFloat",
+        "bytes" => "writeBytes",
+        "json" => "writeJson",
+        _ => "writeString",
+    }
+}
+
 fn schema_app_type(column: &ColumnRow, config: &TableCodegenConfig) -> &'static str {
     if is_blob_ref_column(column, config) {
         return "blobRef";
@@ -3846,7 +3859,7 @@ fn generate_typescript_module(
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
     out.push_str(
-        "import { codecs, type BinarySnapshotColumn, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
+        "import { BinarySnapshotTableWriter, codecs, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
     );
     out.push_str("export interface SyncularGeneratedOperation {\n");
     out.push_str("  table: string;\n");
@@ -4121,6 +4134,60 @@ fn generate_typescript_module(
         out.push_str("  ],\n");
     }
     out.push_str("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;\n\n");
+    for table in &user_tables {
+        let row_name = format!("{}Row", singular_pascal_case(&table.name));
+        let encoder_name = format!("encode{}BinarySnapshotRows", pascal_case(&table.name));
+        out.push_str(&format!(
+            "export function {encoder_name}(rows: readonly {row_name}[]): Uint8Array {{\n"
+        ));
+        out.push_str(&format!(
+            "  const writer = new BinarySnapshotTableWriter({}, syncularGeneratedSnapshotBinaryColumns.{}, rows.length);\n",
+            ts_string(&table.name),
+            ts_property_name(&table.name)
+        ));
+        out.push_str("  for (const row of rows) {\n");
+        out.push_str("    writer.beginRow();\n");
+        for (index, column) in table.columns.iter().enumerate() {
+            let method = ts_binary_snapshot_writer_method(column, &config.table(&table.name));
+            let value = ts_member("row", &column.name);
+            let label = ts_string(&format!("binary snapshot {}.{}", table.name, column.name));
+            if is_nullable(column) {
+                out.push_str(&format!("    const value{index} = {value};\n"));
+                out.push_str(&format!("    if (value{index} == null) {{\n"));
+                out.push_str(&format!("      writer.writeNull({index});\n"));
+                out.push_str("    } else {\n");
+                if method == "writeBytes" {
+                    out.push_str(&format!(
+                        "      writer.{method}(value{index}, {});\n",
+                        ts_string(&column.name)
+                    ));
+                } else {
+                    out.push_str(&format!("      writer.{method}(value{index}, {label});\n"));
+                }
+                out.push_str("    }\n");
+            } else if method == "writeBytes" {
+                out.push_str(&format!(
+                    "    writer.{method}({value}, {});\n",
+                    ts_string(&column.name)
+                ));
+            } else {
+                out.push_str(&format!("    writer.{method}({value}, {label});\n"));
+            }
+        }
+        out.push_str("  }\n");
+        out.push_str("  return writer.finish();\n");
+        out.push_str("}\n\n");
+    }
+    out.push_str("export const syncularGeneratedSnapshotBinaryEncoders = {\n");
+    for table in &user_tables {
+        out.push_str(&format!(
+            "  {}: (rows) => encode{}BinarySnapshotRows(rows as readonly {}Row[]),\n",
+            ts_property_name(&table.name),
+            pascal_case(&table.name),
+            singular_pascal_case(&table.name)
+        ));
+    }
+    out.push_str("} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;\n\n");
     out.push_str("export const syncularGeneratedFieldEncryptionRules = [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -8298,7 +8365,7 @@ mod tests {
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
-            "import { codecs, type BinarySnapshotColumn, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
+            "import { BinarySnapshotTableWriter, codecs, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
         ));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains(
@@ -8365,6 +8432,22 @@ mod tests {
         assert!(output.contains("export const syncularGeneratedSnapshotBinaryColumns = {"));
         assert!(output
             .contains("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;"));
+        assert!(output.contains(
+            "export function encodeTasksBinarySnapshotRows(rows: readonly TaskRow[]): Uint8Array {"
+        ));
+        assert!(output.contains(
+            "  const writer = new BinarySnapshotTableWriter('tasks', syncularGeneratedSnapshotBinaryColumns.tasks, rows.length);"
+        ));
+        assert!(output.contains(
+            "    writer.writeInteger(row.completed, 'binary snapshot tasks.completed');"
+        ));
+        assert!(output.contains("export const syncularGeneratedSnapshotBinaryEncoders = {"));
+        assert!(output.contains(
+            "  tasks: (rows) => encodeTasksBinarySnapshotRows(rows as readonly TaskRow[]),"
+        ));
+        assert!(
+            output.contains("} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;")
+        );
         assert!(output.contains("    { name: 'image', type: 'json', nullable: true },"));
         assert!(output.contains("    { name: 'completed', type: 'integer' },"));
         assert!(output.contains("    primaryKeyColumn: 'id',"));
