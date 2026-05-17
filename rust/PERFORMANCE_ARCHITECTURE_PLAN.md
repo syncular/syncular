@@ -1155,6 +1155,14 @@ client. Overflow should close or resync the session deliberately.
   was worse (`rust_bootstrap_ms` `1034.53`) and query improvement shrank
   (`229 -> 223`). Reverted. Scope indexes still need a separate real
   multi-tenant workload before being promoted into generated migrations.
+- Rejected changing the benchmark server `tasks` table to `WITHOUT ROWID`.
+  The 100k release-WASM guardrail regressed against both the retained baseline
+  and a same-session reverted control. Same-session numbers:
+  `rust_bootstrap_ms` `176.55 -> 198.00`,
+  `rust_pull_request_ms` `84 -> 104`,
+  `rust_server_bootstrap_snapshot_query_ms` `43 -> 61`, and cached bootstrap
+  `93.94 -> 97.68`. The experiment was reverted without running 500k because
+  the target server-query bucket got worse.
 - Retained an ASCII fast path for server binary snapshot string writes. The
   binary writer now emits ASCII `string` cells directly into its output buffer
   and falls back to `TextEncoder` for Unicode, with coverage proving the
@@ -1339,6 +1347,20 @@ client. Overflow should close or resync the session deliberately.
   - Conclusion: v3 is useful mainly for response size and envelope structure,
     not encode/decode CPU. The next CPU win must come from generated
     table-specific binary deltas.
+- Retained a streaming `binary-sync-pack-v1` writer for the TypeScript core
+  encoder. The old writer allocated one `Uint8Array` per scalar and copied all
+  chunks at finish; the new writer grows one buffer, writes numeric fields
+  directly, and uses an ASCII string fast path with UTF-8 fallback.
+  - Valid 50k incremental-change microbench:
+    `binaryEncodeMs` `135.31 -> 39.36`, `binaryDecodeMs` `77.87 -> 63.67`,
+    with identical binary bytes (`11,580,698`).
+  - Same-session 100k release-WASM bootstrap A/B was neutral:
+    before `rust_bootstrap_ms` `185.04`, after `184.00-184.44`; cached
+    bootstrap stayed in the same small noise band (`96.50` before,
+    `97.40-98.35` after).
+  - 500k release-WASM bootstrap guardrail stayed acceptable against the
+    retained baseline: first bootstrap `828.21 -> 842.65`, cached bootstrap
+    `459.20 -> 438.19`, response bytes unchanged (`3,777,162`).
 - Next target: define schema-generated binary row payload/delta encoders inside
   the pack, then wire websocket delivery to carry the same pack format.
 
