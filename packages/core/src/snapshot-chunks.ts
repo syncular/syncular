@@ -182,7 +182,9 @@ export function decodeSnapshotRows(bytes: Uint8Array): unknown[] {
 export function encodeBinarySnapshotTable(
   table: BinarySnapshotTable
 ): Uint8Array {
-  const writer = new BinarySnapshotWriter(estimateBinarySnapshotTableSize(table));
+  const writer = new BinarySnapshotWriter(
+    estimateBinarySnapshotTableSize(table)
+  );
   writeBinarySnapshotTableHeader(
     writer,
     table.table,
@@ -483,17 +485,6 @@ function assertUint32(value: number, label: string): void {
   }
 }
 
-function concatUint8Arrays(chunks: readonly Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
 function estimateBinarySnapshotTableSize(table: BinarySnapshotTable): number {
   return estimateBinarySnapshotStaticSize(
     table.table,
@@ -583,11 +574,27 @@ class BinarySnapshotWriter {
 
   writeInt64(value: unknown, label: string): void {
     this.ensure(8);
-    this.view.setBigInt64(
-      this.offset,
-      binarySnapshotInt64(value, label),
-      true
-    );
+    if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value)) {
+        throw new Error(`${label} expected a safe integer or bigint`);
+      }
+      if (value >= 0) {
+        this.view.setUint32(this.offset, value >>> 0, true);
+        this.view.setUint32(
+          this.offset + 4,
+          Math.floor(value / 0x1_0000_0000),
+          true
+        );
+      } else {
+        this.view.setBigInt64(this.offset, BigInt(value), true);
+      }
+    } else {
+      this.view.setBigInt64(
+        this.offset,
+        binarySnapshotInt64(value, label),
+        true
+      );
+    }
     this.offset += 8;
   }
 

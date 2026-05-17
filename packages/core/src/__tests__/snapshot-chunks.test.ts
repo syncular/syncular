@@ -82,6 +82,26 @@ describe('snapshot chunk protocol negotiation', () => {
 });
 
 describe('binary snapshot table format', () => {
+  it('round-trips integer edge values', () => {
+    const encoded = encodeBinarySnapshotTable({
+      table: 'numbers',
+      columns: [{ name: 'value', type: 'integer' }],
+      rows: [
+        { value: 0 },
+        { value: 0xffff_ffff },
+        { value: Number.MAX_SAFE_INTEGER },
+        { value: -1 },
+      ],
+    });
+
+    expect(decodeBinarySnapshotTable(encoded).rows).toEqual([
+      { value: 0 },
+      { value: 0xffff_ffff },
+      { value: Number.MAX_SAFE_INTEGER },
+      { value: -1 },
+    ]);
+  });
+
   it('round-trips typed table rows', () => {
     const encoded = encodeBinarySnapshotTable({
       table: 'tasks',
