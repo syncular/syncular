@@ -395,6 +395,21 @@ async function materializeSnapshotChunkRows(
   ) {
     try {
       let bytes = await transport.fetchSnapshotChunk(request);
+      if (expectedHash) {
+        const actualHash = await computeSha256Hex(bytes, sha256Override);
+        if (actualHash !== expectedHash) {
+          throw new SyncClientStageError(
+            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`,
+            {
+              stage: 'snapshot-integrity',
+              stateId: trace?.stateId,
+              subscriptionId: trace?.subscriptionId,
+              table: trace?.table,
+              chunkId: request.chunkId,
+            }
+          );
+        }
+      }
       if (isGzipBytes(bytes)) {
         try {
           bytes = await gunzipBytes(bytes);
@@ -409,21 +424,6 @@ async function materializeSnapshotChunkRows(
               chunkId: request.chunkId,
             },
             `Failed to gunzip snapshot chunk "${request.chunkId}"`
-          );
-        }
-      }
-      if (expectedHash) {
-        const actualHash = await computeSha256Hex(bytes, sha256Override);
-        if (actualHash !== expectedHash) {
-          throw new SyncClientStageError(
-            `Snapshot chunk integrity check failed: expected sha256 ${expectedHash}, got ${actualHash}`,
-            {
-              stage: 'snapshot-integrity',
-              stateId: trace?.stateId,
-              subscriptionId: trace?.subscriptionId,
-              table: trace?.table,
-              chunkId: request.chunkId,
-            }
           );
         }
       }
@@ -470,27 +470,26 @@ async function materializeSnapshotChunkRows(
   }
 
   try {
-    const rawStream = await fetchSnapshotChunkStream(transport, request, {
+    let rawStream = await fetchSnapshotChunkStream(transport, request, {
       stateId: trace?.stateId,
       subscriptionId: trace?.subscriptionId,
       table: trace?.table,
     });
-    const decodedStream = await maybeGunzipStream(rawStream, {
+    let chunkHashPromise: Promise<string> | null = null;
+
+    if (expectedHash) {
+      const [hashStream, decodeStream] = rawStream.tee();
+      rawStream = decodeStream;
+      chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
+        computeSha256Hex(bytes, sha256Override)
+      );
+    }
+    const streamForDecode = await maybeGunzipStream(rawStream, {
       stateId: trace?.stateId,
       subscriptionId: trace?.subscriptionId,
       table: trace?.table,
       chunkId: request.chunkId,
     });
-    let streamForDecode = decodedStream;
-    let chunkHashPromise: Promise<string> | null = null;
-
-    if (expectedHash) {
-      const [hashStream, decodeStream] = decodedStream.tee();
-      streamForDecode = decodeStream;
-      chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
-        computeSha256Hex(bytes, sha256Override)
-      );
-    }
 
     const rows: unknown[] = [];
     let materializeError: unknown = null;
@@ -683,22 +682,22 @@ async function applyChunkedSnapshot<DB extends SyncClientDb>(
           table: snapshot.table,
         }
       );
-      const decodedStream = await maybeGunzipStream(rawStream, {
+      let streamForDecodeInput = rawStream;
+      let chunkHashPromise: Promise<string> | null = null;
+
+      if (chunk.sha256) {
+        const [hashStream, decodeStream] = rawStream.tee();
+        streamForDecodeInput = decodeStream;
+        chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
+          computeSha256Hex(bytes, sha256Override)
+        );
+      }
+      const streamForDecode = await maybeGunzipStream(streamForDecodeInput, {
         stateId: trace?.stateId,
         subscriptionId: trace?.subscriptionId,
         table: snapshot.table,
         chunkId: chunk.id,
       });
-      let streamForDecode = decodedStream;
-      let chunkHashPromise: Promise<string> | null = null;
-
-      if (chunk.sha256) {
-        const [hashStream, decodeStream] = decodedStream.tee();
-        streamForDecode = decodeStream;
-        chunkHashPromise = readAllBytesFromStream(hashStream).then((bytes) =>
-          computeSha256Hex(bytes, sha256Override)
-        );
-      }
 
       const rowBatchIterator = decodeSnapshotRowStreamBatches(
         streamForDecode,

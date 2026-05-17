@@ -1148,6 +1148,21 @@ client. Overflow should close or resync the session deliberately.
   `rust_server_bootstrap_row_frame_encode_ms` regressed `68 -> 73`; the 100k
   guardrail regressed `198.23 -> 199.61`. Keep `50_000` x `10` as the better
   default until a streaming/manifests design changes the memory tradeoff.
+- Retained compressed-body snapshot chunk hashes. Chunk `sha256` now identifies
+  the transported gzip body rather than the uncompressed table payload, so the
+  client validates roughly `3.8MB` instead of `36MB` on the 500k benchmark
+  while preserving wire integrity.
+  - 500k bootstrap-only, release-WASM, battery saver:
+    `rust_bootstrap_ms` `899.87 -> 879.14`,
+    `rust_pull_request_ms` `406 -> 390`,
+    `rust_snapshot_fetch_ms` `83 -> 62`,
+    `rust_snapshot_chunk_hash_ms` `26 -> 2`,
+    `rust_server_bootstrap_chunk_hash_ms` `19 -> 1`.
+  - 100k full scoreboard guardrail:
+    `rust_bootstrap_ms` `198.23 -> 191.02`,
+    `rust_pull_request_ms` `89 -> 85`,
+    `rust_snapshot_fetch_ms` `19 -> 15`,
+    `rust_cached_bootstrap_ms` `106.23 -> 101.41`.
 
 ### Phase 4: Worker Default
 

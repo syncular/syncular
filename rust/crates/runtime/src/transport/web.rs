@@ -775,14 +775,8 @@ async fn decode_snapshot_chunk_bytes(
         )));
     }
 
-    let decompress_started_at = timing_now_ms();
-    let mut decoder = GzDecoder::new(compressed);
-    let mut decoded = Vec::new();
-    decoder.read_to_end(&mut decoded)?;
-    record_snapshot_chunk_decompress(stats, elapsed_ms_since(decompress_started_at));
-
     let hash_started_at = timing_now_ms();
-    let actual_hash = sha256_digest(&decoded).await?;
+    let actual_hash = sha256_digest(compressed).await?;
     record_snapshot_chunk_hash(stats, elapsed_ms_since(hash_started_at));
     let expected_hash = hex::decode(&chunk.sha256).map_err(|err| {
         SyncularError::protocol(err).context("decode snapshot chunk expected hash")
@@ -797,6 +791,12 @@ async fn decode_snapshot_chunk_bytes(
             ),
         ));
     }
+
+    let decompress_started_at = timing_now_ms();
+    let mut decoder = GzDecoder::new(compressed);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
+    record_snapshot_chunk_decompress(stats, elapsed_ms_since(decompress_started_at));
 
     Ok(decoded)
 }

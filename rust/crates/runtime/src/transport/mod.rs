@@ -858,11 +858,7 @@ fn decode_compressed_snapshot_chunk_rows(
     compressed: &[u8],
 ) -> Result<SnapshotChunkRows> {
     validate_snapshot_chunk_format(chunk)?;
-    let mut decoder = GzDecoder::new(compressed);
-    let mut decoded = Vec::new();
-    decoder.read_to_end(&mut decoded)?;
-
-    let actual_hash = hex::encode(Sha256::digest(&decoded));
+    let actual_hash = hex::encode(Sha256::digest(compressed));
     if actual_hash != chunk.sha256 {
         return Err(SyncularError::message(
             ErrorKind::Protocol,
@@ -872,6 +868,10 @@ fn decode_compressed_snapshot_chunk_rows(
             ),
         ));
     }
+
+    let mut decoder = GzDecoder::new(compressed);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
 
     decode_snapshot_chunk_rows(chunk, &decoded)
 }

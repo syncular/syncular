@@ -34,7 +34,7 @@ Server selection rules:
 `binary-table-v1` uses the same outer chunk contract as `json-row-frame-v1`:
 
 - `compression`: `gzip`
-- `sha256`: SHA-256 of the uncompressed binary payload
+- `sha256`: SHA-256 of the compressed chunk body
 - `byteLength`: compressed byte length in the chunk reference
 
 The payload described below is the uncompressed body.
