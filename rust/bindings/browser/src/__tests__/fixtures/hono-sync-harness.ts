@@ -24,6 +24,7 @@ import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
   syncularGeneratedCodecs,
+  syncularGeneratedSnapshotBinaryEncoders,
   syncularGeneratedSnapshotBinaryColumns,
 } from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
 import type {
@@ -131,6 +132,7 @@ export async function createHonoSyncHarness(
           codecs: syncularGeneratedCodecs,
           snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
           snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns.tasks,
+          snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders.tasks,
           resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
         }),
         ...createEncryptedCrdtSystemHandlers<

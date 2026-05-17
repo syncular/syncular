@@ -1,5 +1,6 @@
 import type {
   BinarySnapshotColumn,
+  BinarySnapshotRowsEncoder,
   ScopePattern,
   ScopeValues,
   ScopeValuesForKeys,
@@ -221,6 +222,12 @@ export interface ServerHandlerOptions<
   snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
 
   /**
+   * Optional generated binary snapshot encoder. When present, binary bootstrap
+   * chunks use this instead of the generic object-row encoder.
+   */
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
+
+  /**
    * Transform client payload → server row on writes.
    */
   transformInbound?: (
@@ -287,6 +294,11 @@ export interface ServerTableHandler<
    * Stable binary snapshot column metadata used by binary bootstrap chunks.
    */
   snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+
+  /**
+   * Optional generated binary snapshot encoder used by binary bootstrap chunks.
+   */
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
 
   /**
    * Hint for push engine savepoint optimization on single-op commits.

@@ -4,6 +4,7 @@ import {
   SyncSnapshotChunkRefSchema,
 } from '../schemas/sync';
 import {
+  BinarySnapshotTableWriter,
   decodeBinarySnapshotTable,
   encodeBinarySnapshotTable,
   isSyncSnapshotChunkEncoding,
@@ -42,6 +43,41 @@ describe('snapshot chunk protocol negotiation', () => {
 
     expect(parsed.encoding).toBe(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1);
     expect(isSyncSnapshotChunkEncoding(parsed.encoding)).toBe(true);
+  });
+
+  it('supports generated table writers without generic row lookups', () => {
+    const columns = [
+      { name: 'id', type: 'string' },
+      { name: 'completed', type: 'integer' },
+      { name: 'metadata', type: 'json', nullable: true },
+    ] as const;
+    const writer = new BinarySnapshotTableWriter('tasks', columns, 2);
+
+    writer.beginRow();
+    writer.writeString('task-1', 'binary snapshot tasks.id');
+    writer.writeInteger(0, 'binary snapshot tasks.completed');
+    writer.writeJson({ priority: 'high' }, 'binary snapshot tasks.metadata');
+
+    writer.beginRow();
+    writer.writeString('task-2', 'binary snapshot tasks.id');
+    writer.writeInteger(1, 'binary snapshot tasks.completed');
+    writer.writeNull(2);
+
+    const encoded = writer.finish();
+    const generic = encodeBinarySnapshotTable({
+      table: 'tasks',
+      columns,
+      rows: [
+        { id: 'task-1', completed: 0, metadata: { priority: 'high' } },
+        { id: 'task-2', completed: 1, metadata: null },
+      ],
+    });
+
+    expect(Array.from(encoded)).toEqual(Array.from(generic));
+    expect(decodeBinarySnapshotTable(encoded).rows).toEqual([
+      { id: 'task-1', completed: 0, metadata: { priority: 'high' } },
+      { id: 'task-2', completed: 1, metadata: null },
+    ]);
   });
 });
 

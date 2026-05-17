@@ -57,6 +57,10 @@ export interface BinarySnapshotTable {
   rows: readonly Record<string, unknown>[];
 }
 
+export type BinarySnapshotRowsEncoder<Row = unknown> = (
+  rows: readonly Row[]
+) => Uint8Array;
+
 export interface DecodedBinarySnapshotTable {
   table: string;
   columns: BinarySnapshotColumn[];
@@ -178,23 +182,13 @@ export function decodeSnapshotRows(bytes: Uint8Array): unknown[] {
 export function encodeBinarySnapshotTable(
   table: BinarySnapshotTable
 ): Uint8Array {
-  assertUint16(table.columns.length, 'binary snapshot column count');
-  assertUint32(table.rows.length, 'binary snapshot row count');
-
   const writer = new BinarySnapshotWriter(estimateBinarySnapshotTableSize(table));
-  writer.writeBytes(SNAPSHOT_BINARY_TABLE_MAGIC);
-  writer.writeUint16(BINARY_TABLE_VERSION);
-  writer.writeUint16(BINARY_TABLE_FLAG_NONE);
-  writer.writeString16(table.table, 'binary snapshot table name');
-  writer.writeUint16(table.columns.length);
-
-  for (const column of table.columns) {
-    writer.writeString16(column.name, 'binary snapshot column name');
-    writer.writeUint8(BINARY_TYPE_TAGS[column.type]);
-    writer.writeUint8(column.nullable ? BINARY_COLUMN_FLAG_NULLABLE : 0);
-  }
-
-  writer.writeUint32(table.rows.length);
+  writeBinarySnapshotTableHeader(
+    writer,
+    table.table,
+    table.columns,
+    table.rows.length
+  );
 
   const nullBitmapBytes = Math.ceil(table.columns.length / 8);
   for (const row of table.rows) {
@@ -220,6 +214,125 @@ export function encodeBinarySnapshotTable(
   }
 
   return writer.toUint8Array();
+}
+
+export class BinarySnapshotTableWriter {
+  private readonly writer: BinarySnapshotWriter;
+  private readonly nullBitmapBytes: number;
+  private readonly expectedRows: number;
+  private rowsWritten = 0;
+  private nullBitmapOffset: number | null = null;
+
+  constructor(
+    table: string,
+    private readonly columns: readonly BinarySnapshotColumn[],
+    rowCount: number,
+    initialCapacity?: number
+  ) {
+    this.expectedRows = rowCount;
+    this.nullBitmapBytes = Math.ceil(columns.length / 8);
+    this.writer = new BinarySnapshotWriter(
+      initialCapacity ??
+        estimateBinarySnapshotStaticSize(table, columns, rowCount)
+    );
+    writeBinarySnapshotTableHeader(this.writer, table, columns, rowCount);
+  }
+
+  beginRow(): void {
+    if (this.rowsWritten >= this.expectedRows) {
+      throw new Error('Binary snapshot writer received too many rows');
+    }
+    this.nullBitmapOffset = this.writer.writeZeroes(this.nullBitmapBytes);
+    this.rowsWritten += 1;
+  }
+
+  writeNull(columnIndex: number): void {
+    const column = this.column(columnIndex);
+    if (!column.nullable) {
+      throw new Error(`Binary snapshot column ${column.name} is not nullable`);
+    }
+    const nullBitmapOffset = this.currentNullBitmapOffset();
+    const bitmapIndex = nullBitmapOffset + Math.floor(columnIndex / 8);
+    this.writer.patchUint8(
+      bitmapIndex,
+      this.writer.readUint8(bitmapIndex) | (1 << (columnIndex % 8))
+    );
+  }
+
+  writeString(value: string, label: string): void {
+    this.currentNullBitmapOffset();
+    if (typeof value !== 'string') {
+      throw new Error(`${label} expected string`);
+    }
+    this.writer.writeString32(value, label);
+  }
+
+  writeInteger(value: number | bigint, label: string): void {
+    this.currentNullBitmapOffset();
+    this.writer.writeInt64(value, label);
+  }
+
+  writeFloat(value: number, label: string): void {
+    this.currentNullBitmapOffset();
+    if (typeof value !== 'number') {
+      throw new Error(`${label} expected number`);
+    }
+    this.writer.writeFloat64(value);
+  }
+
+  writeBoolean(value: boolean, label: string): void {
+    this.currentNullBitmapOffset();
+    if (typeof value !== 'boolean') {
+      throw new Error(`${label} expected boolean`);
+    }
+    this.writer.writeUint8(value ? 1 : 0);
+  }
+
+  writeJson(value: unknown, label: string): void {
+    this.currentNullBitmapOffset();
+    this.writer.writeString32(normalizeRowJson(value), label);
+  }
+
+  writeBytes(value: Uint8Array | ArrayBuffer, columnName: string): void {
+    this.currentNullBitmapOffset();
+    const bytes = coerceBinaryBytes(value, columnName);
+    this.writer.writeUint32(bytes.length);
+    this.writer.writeBytes(bytes);
+  }
+
+  writeValue(columnIndex: number, value: unknown): void {
+    const column = this.column(columnIndex);
+    if (value == null) {
+      this.writeNull(columnIndex);
+      return;
+    }
+    this.currentNullBitmapOffset();
+    writeBinarySnapshotValue(this.writer, column, value);
+  }
+
+  finish(): Uint8Array {
+    if (this.rowsWritten !== this.expectedRows) {
+      throw new Error(
+        `Binary snapshot writer expected ${this.expectedRows} rows, received ${this.rowsWritten}`
+      );
+    }
+    return this.writer.toUint8Array();
+  }
+
+  private column(columnIndex: number): BinarySnapshotColumn {
+    const column = this.columns[columnIndex];
+    if (!column) {
+      throw new Error(`Binary snapshot column index ${columnIndex} is invalid`);
+    }
+    return column;
+  }
+
+  private currentNullBitmapOffset(): number {
+    if (this.nullBitmapOffset == null) {
+      throw new Error('Binary snapshot writer has no active row');
+    }
+    return this.nullBitmapOffset;
+  }
 }
 
 export function decodeBinarySnapshotTable(
@@ -382,21 +495,56 @@ function concatUint8Arrays(chunks: readonly Uint8Array[]): Uint8Array {
 }
 
 function estimateBinarySnapshotTableSize(table: BinarySnapshotTable): number {
-  const columnHeaderBytes = table.columns.reduce(
+  return estimateBinarySnapshotStaticSize(
+    table.table,
+    table.columns,
+    table.rows.length
+  );
+}
+
+function estimateBinarySnapshotStaticSize(
+  table: string,
+  columns: readonly BinarySnapshotColumn[],
+  rowCount: number
+): number {
+  const columnHeaderBytes = columns.reduce(
     (sum, column) => sum + 4 + column.name.length * 4,
     0
   );
-  const rowOverhead =
-    table.rows.length * Math.max(1, Math.ceil(table.columns.length / 8));
-  const scalarBytes = table.rows.length * table.columns.length * 16;
+  const rowOverhead = rowCount * Math.max(1, Math.ceil(columns.length / 8));
+  const scalarBytes = rowCount * columns.length * 16;
   return (
     SNAPSHOT_BINARY_TABLE_MAGIC.length +
     10 +
-    table.table.length * 4 +
+    table.length * 4 +
     columnHeaderBytes +
     rowOverhead +
     scalarBytes
   );
+}
+
+function writeBinarySnapshotTableHeader(
+  writer: BinarySnapshotWriter,
+  table: string,
+  columns: readonly BinarySnapshotColumn[],
+  rowCount: number
+): void {
+  assertUint16(columns.length, 'binary snapshot column count');
+  assertUint32(rowCount, 'binary snapshot row count');
+
+  writer.writeBytes(SNAPSHOT_BINARY_TABLE_MAGIC);
+  writer.writeUint16(BINARY_TABLE_VERSION);
+  writer.writeUint16(BINARY_TABLE_FLAG_NONE);
+  writer.writeString16(table, 'binary snapshot table name');
+  writer.writeUint16(columns.length);
+
+  for (const column of columns) {
+    writer.writeString16(column.name, 'binary snapshot column name');
+    writer.writeUint8(BINARY_TYPE_TAGS[column.type]);
+    writer.writeUint8(column.nullable ? BINARY_COLUMN_FLAG_NULLABLE : 0);
+  }
+
+  writer.writeUint32(rowCount);
 }
 
 class BinarySnapshotWriter {

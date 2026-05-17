@@ -23,6 +23,7 @@ import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import { createSyncRoutes } from '@syncular/server-hono';
 import {
   syncularGeneratedCodecs,
+  syncularGeneratedSnapshotBinaryEncoders,
   syncularGeneratedSnapshotBinaryColumns,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 
@@ -315,6 +316,7 @@ async function createBenchmarkSyncRoute(
         codecs: syncularGeneratedCodecs,
         snapshotBundleMaxBytes: Number.MAX_SAFE_INTEGER,
         snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns.tasks,
+        snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders.tasks,
         resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
       }),
     ],
