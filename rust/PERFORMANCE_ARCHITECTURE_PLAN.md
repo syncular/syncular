@@ -1662,7 +1662,7 @@ client. Overflow should close or resync the session deliberately.
 
 ### Phase 8: Compression And Cache Policy
 
-- Status: in progress.
+- Status: complete for current gzip/cache policy decisions.
 - Keep snapshot chunks gzip-only.
 - Benchmark binary snapshot chunk size and gzip CPU cost on native and
   browser/WASM.
@@ -1685,8 +1685,48 @@ client. Overflow should close or resync the session deliberately.
     `rust_browser_e2e_rust_cached_snapshot_chunk_binary_count` `1.0`, and
     realtime remains no-HTTP-fallback with `rust_browser_e2e_rust_realtime_live_ms`
     `12.6` / p95 `15.4`.
-- Next: benchmark binary snapshot chunk size and gzip CPU cost on native and
-  browser/WASM before changing compression or cache persistence policy.
+- Done: added a dedicated snapshot chunk perf lane for raw size, gzip size,
+  gzip CPU, gunzip CPU, and decode CPU across JSON row-frame and binary table
+  chunks.
+  - 50k row default measurement:
+    `snapshot_chunk_json_raw_50000_kib` `7975.3`,
+    `snapshot_chunk_binary_raw_50000_kib` `3210.8`,
+    `snapshot_chunk_json_gzip_level_1_50000_kib` `526.4`,
+    `snapshot_chunk_binary_gzip_level_1_50000_kib` `367.0`,
+    `snapshot_chunk_json_gzip_level_6_50000_kib` `435.6`,
+    `snapshot_chunk_binary_gzip_level_6_50000_kib` `341.8`.
+  - CPU measurement at 50k rows:
+    `snapshot_chunk_json_encode_50000` `15.5ms`,
+    `snapshot_chunk_binary_encode_50000` `12.8ms`,
+    `snapshot_chunk_json_gzip_level_1_50000` `11.3ms`,
+    `snapshot_chunk_binary_gzip_level_1_50000` `6.4ms`,
+    `snapshot_chunk_json_gzip_level_6_50000` `18.2ms`,
+    `snapshot_chunk_binary_gzip_level_6_50000` `24.8ms`,
+    `snapshot_chunk_json_gunzip_50000` `4.1ms`,
+    `snapshot_chunk_binary_gunzip_50000` `2.2ms`,
+    `snapshot_chunk_json_decode_50000` `28.1ms`,
+    `snapshot_chunk_binary_decode_50000` `26.4ms`.
+  - Complexity check: keep gzip level 1 as the default. For binary chunks,
+    level 6 saves only about 25 KiB per 50k rows over level 1 while adding
+    roughly 18ms server CPU in this local run.
+  - Browser/WASM snapshot lane, 10k rows, release build:
+    `rust_bootstrap_ms` `41.34`,
+    `rust_pull_request_ms` `19`,
+    `rust_snapshot_fetch_ms` `2`,
+    `rust_pull_apply_ms` `20`,
+    `rust_snapshot_chunk_decompress_ms` `1`,
+    `rust_snapshot_chunk_hash_ms` `0`,
+    `rust_snapshot_chunk_decode_ms` `1`,
+    `rust_server_bootstrap_chunk_gzip_ms` `2`,
+    `rust_server_bootstrap_row_frame_encode_ms` `5`,
+    `rust_snapshot_chunk_binary_count` `1`,
+    `rust_snapshot_chunk_json_count` `0`,
+    `rust_response_bytes` `76572`.
+- Decision: do not add another compression algorithm and do not raise the
+  default gzip level. The measured win is too small relative to the CPU cost.
+- Next: move to Phase 9 websocket-first session/sequencer work, then revisit
+  cache persistence only if the session protocol needs resumable snapshot
+  manifests.
 
 ### Phase 9: Sync Session And Sequencer Design
 
