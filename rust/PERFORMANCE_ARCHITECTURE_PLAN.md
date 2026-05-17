@@ -1092,6 +1092,13 @@ client. Overflow should close or resync the session deliberately.
   `rust_bootstrap_ms` `984.02 -> 1003.40`,
   `rust_pull_apply_ms` `501 -> 515`,
   `rust_cached_pull_apply_ms` `493 -> 521`. Reverted; keep `2048`.
+- Rejected client-side all-null column projection for cleared binary snapshot
+  inserts. It safely omitted all-null nullable/no-default columns from the
+  SQLite insert statement, but required a full payload pre-scan and extra
+  projected cursor path. The pre-scan cost dominated:
+  `rust_bootstrap_ms` `984.02 -> 1115.91`,
+  `rust_pull_apply_ms` `501 -> 629`,
+  `rust_cached_pull_apply_ms` `493 -> 615`. Reverted.
 
 ### Phase 4: Worker Default
 
