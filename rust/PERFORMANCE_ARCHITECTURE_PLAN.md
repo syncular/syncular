@@ -1361,6 +1361,12 @@ client. Overflow should close or resync the session deliberately.
   - 500k release-WASM bootstrap guardrail stayed acceptable against the
     retained baseline: first bootstrap `828.21 -> 842.65`, cached bootstrap
     `459.20 -> 438.19`, response bytes unchanged (`3,777,162`).
+- Added a maintained perf lane for the sync-pack codec in
+  `tests/perf/rust-client.perf.test.ts`. It emits JSON encode/decode, binary
+  encode/decode, and response-size metrics for a generated incremental-change
+  response. Defaults are 50k changes, with `PERF_SYNC_PACK_CHANGES`,
+  `PERF_SYNC_PACK_ROUNDS`, and `PERF_SYNC_PACK_WARMUP` overrides for local
+  iteration.
 - Next target: define schema-generated binary row payload/delta encoders inside
   the pack, then wire websocket delivery to carry the same pack format.
 
