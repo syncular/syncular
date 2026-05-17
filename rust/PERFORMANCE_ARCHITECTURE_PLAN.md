@@ -1080,6 +1080,12 @@ client. Overflow should close or resync the session deliberately.
     `rust_bootstrap_ms` `220.10 -> 217.00`,
     `rust_pull_request_ms` `108 -> 106`,
     `rust_pull_apply_ms` `108 -> 107`; local read p50s stayed neutral.
+- Rejected removing the duplicate `writeString32` length check in the binary
+  snapshot writer. It was theoretically cheaper per string cell, but the 500k
+  browser run regressed overall:
+  `rust_bootstrap_ms` `984.02 -> 1026.36`,
+  `rust_server_bootstrap_row_frame_encode_ms` `135 -> 140`,
+  `rust_pull_apply_ms` `501 -> 521`. Reverted.
 
 ### Phase 4: Worker Default
 
