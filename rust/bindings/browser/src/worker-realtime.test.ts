@@ -131,6 +131,53 @@ describe('Syncular v2 worker realtime', () => {
     client.resolvePull();
   });
 
+  it('surfaces cursor-only recovery diagnostics before pulling', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const controller = new SyncularV2WorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    sockets[0]!.message({
+      event: 'sync',
+      data: {
+        cursor: 55,
+        reason: 'payload-too-large',
+        requiresPull: true,
+      },
+    });
+
+    await waitFor(() => client.syncPulls === 1);
+    client.resolvePull();
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'realtime.sync_wakeup',
+        details: expect.objectContaining({
+          inlineChanges: 0,
+          reason: 'payload-too-large',
+          requiresPull: true,
+        }),
+      })
+    );
+  });
+
   it('applies inline websocket changes without an HTTP pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];

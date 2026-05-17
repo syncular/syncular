@@ -1752,6 +1752,22 @@ client. Overflow should close or resync the session deliberately.
     session/capability contract needed for replay windows and explicit
     overflow handling. The observed cost is a small fixed frame plus roughly
     1.2 KiB worker JS growth.
+- Done: cursor-only websocket sync notifications now carry explicit recovery
+  semantics. Payload overflow, reconnect catch-up, and generic wakeups mark the
+  sync frame with `requiresPull` and a reason instead of relying on an opaque
+  cursor-only message. The browser worker includes those fields in realtime
+  diagnostics before using the existing HTTP pull recovery path.
+  - Correctness guard: manager coverage asserts oversized websocket payloads
+    become `payload-too-large` recovery frames; Hono coverage asserts reconnect
+    catch-up frames are explicit; browser worker coverage asserts recovery
+    diagnostics are emitted before pulling.
+  - Perf guard after the change:
+    `rust_browser_e2e_rust_realtime_live_ms` `10.6`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `13.3`,
+    `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
+    `rust_browser_e2e_rust_realtime_binary_events` `2.0`,
+    `rust_browser_e2e_browser_page_sync_encoded_kib` `101.0`,
+    `rust_browser_e2e_browser_served_syncular_worker_js_kib` `43.6`.
 - Pick the Cloudflare-compatible sequencer/fanout shard key
   `(tenant/workspace/partition)`.
 - Define which state lives in the sequencer, D1-like SQL storage, and R2-like

@@ -3,12 +3,17 @@ import {
   createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
   WebSocketConnectionManager,
+  type WebSocketSyncMetadata,
 } from '../ws';
 
 function createConn(args: {
   actorId: string;
   clientId: string;
-  onSync: (cursor: number, changes?: unknown[]) => void;
+  onSync: (
+    cursor: number,
+    changes?: unknown[],
+    metadata?: WebSocketSyncMetadata
+  ) => void;
   onSyncPack?: (bytes: Uint8Array) => void;
   syncPackEncoding?: WebSocketConnection['syncPackEncoding'];
 }): WebSocketConnection {
@@ -28,9 +33,9 @@ function createConn(args: {
     transportPath: 'direct',
     syncPackEncoding: args.syncPackEncoding ?? null,
     sendHello() {},
-    sendSync(cursor, changes) {
+    sendSync(cursor, changes, metadata) {
       if (!open) return;
-      args.onSync(cursor, changes);
+      args.onSync(cursor, changes, metadata);
     },
     sendSyncPack(bytes) {
       if (!open) return;
@@ -225,6 +230,40 @@ describe('WebSocketConnectionManager (scopes)', () => {
         clientId: 'json',
         kind: 'json',
         value: [{ row_id: 'row-json' }],
+      },
+    ]);
+  });
+
+  it('marks cursor-only recovery when websocket payloads are too large', () => {
+    const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
+    const seen: Array<{
+      cursor: number;
+      changes?: unknown[];
+      metadata?: WebSocketSyncMetadata;
+    }> = [];
+    const json = createConn({
+      actorId: 'u1',
+      clientId: 'json',
+      onSync: (cursor, changes, metadata) =>
+        seen.push({ cursor, changes, metadata }),
+    });
+
+    mgr.register(json, ['s']);
+    mgr.notifyScopeKeys(['s'], 123, {
+      changes: [
+        {
+          table: 'tasks',
+          row_id: 'large',
+          row_json: { title: 'x'.repeat(80 * 1024) },
+        },
+      ],
+    });
+
+    expect(seen).toEqual([
+      {
+        cursor: 123,
+        changes: undefined,
+        metadata: { reason: 'payload-too-large', requiresPull: true },
       },
     ]);
   });
