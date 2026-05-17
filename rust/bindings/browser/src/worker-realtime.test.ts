@@ -75,6 +75,77 @@ describe('Syncular v2 worker realtime', () => {
     client.resolvePull();
   });
 
+  it('applies inline websocket changes without an HTTP pull', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const events: SyncularV2WorkerEvent[] = [];
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const controller = new SyncularV2WorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: (event) => events.push(event),
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    client.queueDrain([
+      {
+        queryId: 'query-1',
+        version: 1,
+        changedRows: [],
+        rows: [{ id: 'inline' }],
+      },
+    ]);
+    sockets[0]!.message({
+      event: 'sync',
+      data: {
+        cursor: 12,
+        actorId: 'server',
+        createdAt: '2026-05-17T00:00:00.000Z',
+        changes: [
+          {
+            table: 'tasks',
+            row_id: 'task-inline',
+            op: 'upsert',
+            row_json: { id: 'task-inline', title: 'Inline' },
+            row_version: 12,
+            scopes: {},
+          },
+        ],
+      },
+    });
+
+    await waitFor(() => client.realtimeApplies === 1);
+    expect(client.syncPulls).toBe(0);
+    expect(client.appliedRealtime[0]).toMatchObject({
+      cursor: 12,
+      changes: [{ table: 'tasks', row_id: 'task-inline' }],
+    });
+    await waitFor(() => liveEventVersions(events).length === 1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'rowsChanged',
+        source: 'remotePull',
+        changedTables: ['tasks'],
+      })
+    );
+    expect(diagnostics.map((event) => event.code)).toContain(
+      'realtime.inline_applied'
+    );
+  });
+
   it('emits structured diagnostics for reconnect scheduling', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
@@ -268,6 +339,13 @@ describe('Syncular v2 worker realtime', () => {
 
 class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
   syncPulls = 0;
+  realtimeApplies = 0;
+  appliedRealtime: Array<{
+    cursor: number;
+    changes: unknown[];
+    actorId?: string | null;
+    createdAt?: string | null;
+  }> = [];
   #pullResolvers: Array<() => void> = [];
   #drains: Array<Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>> = [];
 
@@ -283,6 +361,22 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
         })
       );
     });
+  }
+
+  async applyRealtimeChanges(request: {
+    cursor: number;
+    changes: unknown[];
+    actorId?: string | null;
+    createdAt?: string | null;
+  }): Promise<SyncularV2SyncResult> {
+    this.realtimeApplies += 1;
+    this.appliedRealtime.push(request);
+    return {
+      changedTables: ['tasks'],
+      changedRows: [],
+      subscriptions: [],
+      pushedCommits: 0,
+    };
   }
 
   drainLiveQueryEvents<

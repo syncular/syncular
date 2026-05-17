@@ -755,6 +755,17 @@ impl SyncularRustOwnedSqliteClient {
         self.inner.sync_pull_json().await.map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = applyRealtimeChangesJson)]
+    pub async fn apply_realtime_changes_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .apply_realtime_changes_json(request_json)
+            .await
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = syncPushJson)]
     pub async fn sync_push_json(&mut self) -> std::result::Result<String, JsValue> {
         self.inner.sync_push_json().await.map_err(error_to_js)

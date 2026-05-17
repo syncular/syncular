@@ -13,9 +13,26 @@ import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export interface SyncularV2WorkerRealtimeClient {
   syncPull(): Promise<SyncularV2SyncResult>;
+  applyRealtimeChanges?(
+    request: SyncularV2RealtimeChangesRequest
+  ): Promise<SyncularV2SyncResult>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<SyncularV2LiveQueryEvent<Row>>;
+}
+
+export interface SyncularV2RealtimeChangesRequest {
+  cursor: number;
+  changes: unknown[];
+  actorId?: string | null;
+  createdAt?: string | null;
+}
+
+interface SyncularV2RealtimeSyncMessage {
+  cursor?: number;
+  changes?: unknown[];
+  actorId?: string | null;
+  createdAt?: string | null;
 }
 
 export interface SyncularV2WorkerRealtimeSocket {
@@ -151,13 +168,17 @@ export class SyncularV2WorkerRealtimeController {
     } catch {
       return;
     }
-    if (isSyncularV2RealtimeSyncMessage(message)) {
+    const syncMessage = readSyncularV2RealtimeSyncMessage(message);
+    if (syncMessage) {
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.sync_wakeup',
         message: 'Syncular v2 realtime sync wakeup received',
+        details: {
+          inlineChanges: syncMessage.changes?.length ?? 0,
+        },
       });
-      this.#scheduleSyncPull();
+      this.#scheduleSync(syncMessage);
     }
   }
 
@@ -188,18 +209,18 @@ export class SyncularV2WorkerRealtimeController {
     this.#reconnectTimer = this.#setTimeout(() => this.#connect(), delay);
   }
 
-  #scheduleSyncPull(): void {
+  #scheduleSync(message?: SyncularV2RealtimeSyncMessage): void {
     if (this.#stopped) return;
     if (this.#syncInFlight) {
       this.#syncAgain = true;
       return;
     }
-    this.#syncInFlight = this.#runSyncPull();
+    this.#syncInFlight = this.#runSync(message);
   }
 
-  async #runSyncPull(): Promise<void> {
+  async #runSync(message?: SyncularV2RealtimeSyncMessage): Promise<void> {
     try {
-      const result = await this.controllerOptions.getClient().syncPull();
+      const result = await this.#syncForMessage(message);
       if (this.#stopped) return;
       if (result.changedTables.length > 0 || result.changedRows.length > 0) {
         this.controllerOptions.postEvent({
@@ -231,9 +252,52 @@ export class SyncularV2WorkerRealtimeController {
       this.#syncInFlight = undefined;
       if (this.#syncAgain && !this.#stopped) {
         this.#syncAgain = false;
-        this.#scheduleSyncPull();
+        this.#scheduleSync();
       }
     }
+  }
+
+  async #syncForMessage(
+    message: SyncularV2RealtimeSyncMessage | undefined
+  ): Promise<SyncularV2SyncResult> {
+    const client = this.controllerOptions.getClient();
+    if (
+      message?.changes &&
+      message.changes.length > 0 &&
+      Number.isFinite(message.cursor) &&
+      typeof client.applyRealtimeChanges === 'function'
+    ) {
+      try {
+        const result = await client.applyRealtimeChanges({
+          cursor: message.cursor!,
+          changes: message.changes,
+          actorId: message.actorId ?? null,
+          createdAt: message.createdAt ?? null,
+        });
+        this.#diagnostic({
+          level: 'debug',
+          code: 'realtime.inline_applied',
+          message: 'Syncular v2 realtime inline changes applied',
+          details: {
+            cursor: message.cursor,
+            changes: message.changes.length,
+          },
+        });
+        return result;
+      } catch {
+        this.#diagnostic({
+          level: 'warn',
+          code: 'realtime.inline_fallback',
+          message:
+            'Syncular v2 realtime inline apply failed; falling back to pull',
+          details: {
+            cursor: message.cursor,
+            changes: message.changes.length,
+          },
+        });
+      }
+    }
+    return client.syncPull();
   }
 
   #clearReconnectTimer(): void {
@@ -313,12 +377,23 @@ export function resolveSyncularV2RealtimeUrl(
 }
 
 export function isSyncularV2RealtimeSyncMessage(value: unknown): boolean {
-  return Boolean(
-    value &&
-      typeof value === 'object' &&
-      'event' in value &&
-      (value as { event?: unknown }).event === 'sync'
-  );
+  return readSyncularV2RealtimeSyncMessage(value) !== null;
+}
+
+function readSyncularV2RealtimeSyncMessage(
+  value: unknown
+): SyncularV2RealtimeSyncMessage | null {
+  if (!value || typeof value !== 'object') return null;
+  if ((value as { event?: unknown }).event !== 'sync') return null;
+  const data = (value as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return {};
+  const record = data as Record<string, unknown>;
+  const cursor = typeof record.cursor === 'number' ? record.cursor : undefined;
+  const changes = Array.isArray(record.changes) ? record.changes : undefined;
+  const actorId = typeof record.actorId === 'string' ? record.actorId : null;
+  const createdAt =
+    typeof record.createdAt === 'string' ? record.createdAt : null;
+  return { cursor, changes, actorId, createdAt };
 }
 
 async function readRealtimeMessageText(
