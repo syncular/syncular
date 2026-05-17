@@ -1790,6 +1790,11 @@ client. Overflow should close or resync the session deliberately.
   object storage.
 - Add deterministic tests for reconnect, resume, auth refresh, slow client
   overflow, and subscription changes.
+- Done: added a Hono realtime integration guard for subscription changes. A
+  connected websocket starts with no scope membership, receives scope wakeups
+  after a pull subscription records effective scopes, then stops receiving that
+  scope after a pull clears subscriptions. This keeps realtime fanout tied to
+  the authoritative pull/subscription state instead of stale connection state.
 
 ### Phase 10: Binary Commit Log And Subscription Indexes
 
