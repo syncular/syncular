@@ -13,7 +13,7 @@ use crate::protocol::{
 use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use flate2::read::GzDecoder;
-use js_sys::{Function, Promise, Reflect, Uint8Array};
+use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -793,12 +793,64 @@ async fn decode_snapshot_chunk_bytes(
     }
 
     let decompress_started_at = timing_now_ms();
-    let mut decoder = GzDecoder::new(compressed);
-    let mut decoded = Vec::new();
-    decoder.read_to_end(&mut decoded)?;
+    let decoded = match decompress_gzip_with_browser(compressed).await {
+        Ok(Some(decoded)) => decoded,
+        Ok(None) | Err(_) => {
+            let mut decoder = GzDecoder::new(compressed);
+            let mut decoded = Vec::new();
+            decoder.read_to_end(&mut decoded)?;
+            decoded
+        }
+    };
     record_snapshot_chunk_decompress(stats, elapsed_ms_since(decompress_started_at));
 
     Ok(decoded)
+}
+
+async fn decompress_gzip_with_browser(compressed: &[u8]) -> Result<Option<Vec<u8>>> {
+    let global = js_sys::global();
+    let ctor = Reflect::get(&global, &JsValue::from_str("DecompressionStream"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read DecompressionStream", err))?;
+    if !ctor.is_function() {
+        return Ok(None);
+    }
+    let ctor = ctor
+        .dyn_into::<Function>()
+        .map_err(|err| js_error(ErrorKind::Transport, "cast DecompressionStream", err))?;
+    let stream = Reflect::construct(&ctor, &Array::of1(&JsValue::from_str("gzip")))
+        .map_err(|err| js_error(ErrorKind::Transport, "construct DecompressionStream", err))?;
+
+    let input = Uint8Array::from(compressed);
+    let response = Response::new_with_opt_js_u8_array(Some(&input))
+        .map_err(|err| js_error(ErrorKind::Transport, "construct gzip input response", err))?;
+    let body = Reflect::get(response.as_ref(), &JsValue::from_str("body"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read response body", err))?;
+    if body.is_null() || body.is_undefined() {
+        return Ok(None);
+    }
+    let pipe_through = Reflect::get(&body, &JsValue::from_str("pipeThrough"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read pipeThrough", err))?
+        .dyn_into::<Function>()
+        .map_err(|err| js_error(ErrorKind::Transport, "cast pipeThrough", err))?;
+    let decoded_stream = pipe_through
+        .call1(&body, &stream)
+        .map_err(|err| js_error(ErrorKind::Transport, "pipe gzip stream", err))?;
+
+    let response_ctor = Reflect::get(&global, &JsValue::from_str("Response"))
+        .map_err(|err| js_error(ErrorKind::Transport, "read Response constructor", err))?
+        .dyn_into::<Function>()
+        .map_err(|err| js_error(ErrorKind::Transport, "cast Response constructor", err))?;
+    let decoded_response = Reflect::construct(&response_ctor, &Array::of1(&decoded_stream))
+        .map_err(|err| js_error(ErrorKind::Transport, "construct gzip output response", err))?
+        .dyn_into::<Response>()
+        .map_err(|err| js_error(ErrorKind::Transport, "cast gzip output response", err))?;
+    let buffer = decoded_response
+        .array_buffer()
+        .map_err(|err| js_error(ErrorKind::Transport, "read gzip output array buffer", err))?;
+    let buffer = JsFuture::from(buffer)
+        .await
+        .map_err(|err| js_error(ErrorKind::Transport, "await gzip output array buffer", err))?;
+    Ok(Some(Uint8Array::new(&buffer).to_vec()))
 }
 
 fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
