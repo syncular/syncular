@@ -2,7 +2,8 @@ use crate::app_schema::AppSchema;
 use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::{
     sync_changed_row_for_change, sync_changed_row_for_local_operation,
-    sync_changed_row_for_snapshot, SubscriptionSpec, SyncChangedRow,
+    sync_changed_row_for_snapshot, sync_changed_rows_for_cleared_snapshot_chunk, SubscriptionSpec,
+    SyncChangedRow,
 };
 use crate::encrypted_crdt::EncryptedCrdt;
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
@@ -378,6 +379,22 @@ where
                             .await?;
 
                         for batch in chunk_batches {
+                            if scope_cleared_for_snapshot && !include_snapshot_rows {
+                                if collect_changed_rows {
+                                    result.changed_rows.extend(
+                                        sync_changed_rows_for_cleared_snapshot_chunk(
+                                            app_schema,
+                                            &snapshot_table,
+                                            &batch,
+                                            &sub.id,
+                                        ),
+                                    );
+                                }
+                                self.store
+                                    .insert_cleared_snapshot_chunk_rows(&snapshot_table, batch)
+                                    .await?;
+                                continue;
+                            }
                             let chunk_rows = batch.try_into_value_rows()?;
                             let mut chunk_rows_to_upsert = Vec::with_capacity(chunk_rows.len());
                             for row in chunk_rows {

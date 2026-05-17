@@ -132,12 +132,16 @@ comparisons:
 ```bash
 bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-iterations=25 --wasm-profile=release
 SYNCULAR_BROWSER_PERF_ROWS=500000 bun --cwd rust/bindings/browser run benchmark:browser:e2e --query-iterations=25 --wasm-profile=release
+bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-iterations=25 --wasm-profile=release --rust-collect-changed-rows=true
 ```
 
 This scoreboard seeds a same-origin sync server, runs Chromium against the
 release WASM browser runtime, and emits TS/Rust bootstrap, Rust transport/apply
 buckets, payload/chunk counts, local list/search/aggregate p50/p95 metrics,
 page resource bytes, served asset sizes, and JS heap snapshots.
+Use `--rust-collect-changed-rows=true` to measure the row/field event path
+used by live UI refreshes, and `--rust-include-snapshot-rows=true` when a
+host needs materialized snapshot rows in the sync result.
 
 Operation counts are part of the metric name. For example,
 `PERF_RUST_NATIVE_OPERATIONS=200` emits `rust_native_insert_batch_200`, which

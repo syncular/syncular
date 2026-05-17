@@ -158,6 +158,8 @@ interface E2eScoreboardOptions {
   rows: number;
   queryIterations?: number;
   rustStorage?: 'memory' | 'indexedDb' | 'opfsSahPool';
+  rustIncludeSnapshotRows?: boolean;
+  rustCollectChangedRows?: boolean;
 }
 
 interface E2eScoreboardMetric {
@@ -860,8 +862,8 @@ async function runE2eScoreboard(
         storage: options.rustStorage ?? 'memory',
         clearOnInit: true,
         pull: {
-          includeSnapshotRows: false,
-          collectChangedRows: false,
+          includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
+          collectChangedRows: options.rustCollectChangedRows ?? false,
           limitSnapshotRows: 5_000,
           maxSnapshotPages: 100,
         },
