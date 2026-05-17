@@ -60,6 +60,7 @@ export interface CreateSyncularV2RustClientOptions {
 type RawSyncResult = {
   changed_tables?: string[];
   changed_rows?: SyncularV2ChangedRow[];
+  changed_rows_truncated?: boolean;
   subscriptions?: Array<{
     id: string;
     table: string;
@@ -445,6 +446,7 @@ export class SyncularV2RustClient {
           source,
           changedTables: result.changedTables,
           changedRows: result.changedRows,
+          changedRowsTruncated: result.changedRowsTruncated,
         });
       } catch {
         // Row-change listeners must never break client control flow.
@@ -484,6 +486,7 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
   return {
     changedTables: raw.changed_tables ?? [],
     changedRows: raw.changed_rows ?? [],
+    changedRowsTruncated: raw.changed_rows_truncated ?? false,
     subscriptions: (raw.subscriptions ?? []).map((subscription) => ({
       id: subscription.id,
       table: subscription.table,

@@ -305,6 +305,7 @@ function attachRowsChangedListener(nextClient: SyncularV2RustClient): void {
       source: event.source,
       changedTables: event.changedTables,
       changedRows: event.changedRows,
+      changedRowsTruncated: event.changedRowsTruncated,
     });
   });
 }
@@ -502,6 +503,7 @@ function syncResultDetails(value: unknown): Record<string, unknown> {
   return {
     changedTables,
     changedRows,
+    changedRowsTruncated: result.changedRowsTruncated === true,
     changedTableCount: changedTables.length,
     changedRowCount: changedRows.length,
     pushedCommits:

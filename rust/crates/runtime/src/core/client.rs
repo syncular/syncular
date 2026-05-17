@@ -1,7 +1,10 @@
 #[cfg(feature = "native")]
 use crate::app_schema::validate_app_schema_runtime_features;
 use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
-use crate::binary_snapshot::{BinarySnapshotCell, DecodedBinarySnapshotRows, SnapshotChunkRows};
+use crate::binary_snapshot::{
+    BinarySnapshotCell, BinarySnapshotPayload, BorrowedBinarySnapshotCell,
+    DecodedBinarySnapshotRows, SnapshotChunkRows,
+};
 #[cfg(feature = "native")]
 use crate::crdt_field::{validate_crdt_field, CrdtField, CrdtFieldId, CrdtFieldSyncMode};
 #[cfg(feature = "native")]
@@ -369,32 +372,49 @@ pub(crate) fn sync_changed_rows_for_cleared_snapshot_chunk(
     rows: &SnapshotChunkRows,
     subscription_id: &str,
 ) -> Vec<SyncChangedRow> {
+    sync_changed_rows_for_cleared_snapshot_chunk_limited(
+        app_schema,
+        table,
+        rows,
+        subscription_id,
+        usize::MAX,
+    )
+    .0
+}
+
+pub(crate) fn sync_changed_rows_for_cleared_snapshot_chunk_limited(
+    app_schema: AppSchema,
+    table: &str,
+    rows: &SnapshotChunkRows,
+    subscription_id: &str,
+    limit: usize,
+) -> (Vec<SyncChangedRow>, bool) {
     match rows {
-        SnapshotChunkRows::Json(rows) => rows
-            .iter()
-            .filter_map(|row| {
-                sync_changed_row_for_snapshot(app_schema, table, row, None, subscription_id)
-            })
-            .collect(),
+        SnapshotChunkRows::Json(rows) => (
+            rows.iter()
+                .take(limit)
+                .filter_map(|row| {
+                    sync_changed_row_for_snapshot(app_schema, table, row, None, subscription_id)
+                })
+                .collect(),
+            rows.len() > limit,
+        ),
         SnapshotChunkRows::Binary(rows) => sync_changed_rows_for_cleared_binary_snapshot_chunk(
             app_schema,
             table,
             rows,
             subscription_id,
+            limit,
         ),
-        SnapshotChunkRows::BinaryPayload(rows) => rows
-            .clone()
-            .into_decoded_rows()
-            .ok()
-            .map(|rows| {
-                sync_changed_rows_for_cleared_binary_snapshot_chunk(
-                    app_schema,
-                    table,
-                    &rows,
-                    subscription_id,
-                )
-            })
-            .unwrap_or_default(),
+        SnapshotChunkRows::BinaryPayload(rows) => {
+            sync_changed_rows_for_cleared_binary_snapshot_payload(
+                app_schema,
+                table,
+                rows,
+                subscription_id,
+                limit,
+            )
+        }
     }
 }
 
@@ -403,16 +423,34 @@ fn sync_changed_rows_for_cleared_binary_snapshot_chunk(
     table: &str,
     rows: &DecodedBinarySnapshotRows,
     subscription_id: &str,
-) -> Vec<SyncChangedRow> {
+    limit: usize,
+) -> (Vec<SyncChangedRow>, bool) {
+    sync_changed_rows_for_cleared_binary_snapshot_chunk_limited(
+        app_schema,
+        table,
+        rows,
+        subscription_id,
+        limit,
+    )
+    .unwrap_or_default()
+}
+
+fn sync_changed_rows_for_cleared_binary_snapshot_chunk_limited(
+    app_schema: AppSchema,
+    table: &str,
+    rows: &DecodedBinarySnapshotRows,
+    subscription_id: &str,
+    limit: usize,
+) -> Result<(Vec<SyncChangedRow>, bool)> {
     let Some(metadata) = app_schema.table_metadata(table) else {
-        return Vec::new();
+        return Ok((Vec::new(), false));
     };
     let Some(primary_key_index) = rows
         .columns
         .iter()
         .position(|column| column.name == metadata.primary_key_column)
     else {
-        return Vec::new();
+        return Ok((Vec::new(), false));
     };
     let server_version_index = rows
         .columns
@@ -435,24 +473,28 @@ fn sync_changed_rows_for_cleared_binary_snapshot_chunk(
         })
         .collect::<Vec<_>>();
     let crdt_fields = crdt_state_columns_for_fields(metadata, &changed_fields);
-    rows.rows
-        .iter()
-        .map(|row| SyncChangedRow {
-            table: table.to_string(),
-            row_id: row
-                .get(primary_key_index)
-                .and_then(binary_snapshot_cell_row_id),
-            operation: "insert".to_string(),
-            crdt_fields: crdt_fields.clone(),
-            changed_fields: changed_fields.clone(),
-            commit_id: None,
-            commit_seq: None,
-            subscription_id: Some(subscription_id.to_string()),
-            server_version: server_version_index
-                .and_then(|index| row.get(index))
-                .and_then(binary_snapshot_cell_i64),
-        })
-        .collect()
+    Ok((
+        rows.rows
+            .iter()
+            .take(limit)
+            .map(|row| SyncChangedRow {
+                table: table.to_string(),
+                row_id: row
+                    .get(primary_key_index)
+                    .and_then(binary_snapshot_cell_row_id),
+                operation: "insert".to_string(),
+                crdt_fields: crdt_fields.clone(),
+                changed_fields: changed_fields.clone(),
+                commit_id: None,
+                commit_seq: None,
+                subscription_id: Some(subscription_id.to_string()),
+                server_version: server_version_index
+                    .and_then(|index| row.get(index))
+                    .and_then(binary_snapshot_cell_i64),
+            })
+            .collect(),
+        rows.rows.len() > limit,
+    ))
 }
 
 fn binary_snapshot_cell_row_id(cell: &BinarySnapshotCell) -> Option<String> {
@@ -467,6 +509,117 @@ fn binary_snapshot_cell_i64(cell: &BinarySnapshotCell) -> Option<i64> {
     match cell {
         BinarySnapshotCell::Integer(value) => Some(*value),
         BinarySnapshotCell::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn sync_changed_rows_for_cleared_binary_snapshot_payload(
+    app_schema: AppSchema,
+    table: &str,
+    payload: &BinarySnapshotPayload,
+    subscription_id: &str,
+    limit: usize,
+) -> (Vec<SyncChangedRow>, bool) {
+    sync_changed_rows_for_cleared_binary_snapshot_payload_limited(
+        app_schema,
+        table,
+        payload,
+        subscription_id,
+        limit,
+    )
+    .unwrap_or_default()
+}
+
+fn sync_changed_rows_for_cleared_binary_snapshot_payload_limited(
+    app_schema: AppSchema,
+    table: &str,
+    payload: &BinarySnapshotPayload,
+    subscription_id: &str,
+    limit: usize,
+) -> Result<(Vec<SyncChangedRow>, bool)> {
+    let truncated = payload.row_count() > limit;
+    if limit == 0 {
+        return Ok((Vec::new(), truncated));
+    }
+    let Some(metadata) = app_schema.table_metadata(table) else {
+        return Ok((Vec::new(), false));
+    };
+    let Some(primary_key_index) = payload
+        .columns
+        .iter()
+        .position(|column| column.name == metadata.primary_key_column)
+    else {
+        return Ok((Vec::new(), false));
+    };
+    let server_version_index = payload
+        .columns
+        .iter()
+        .position(|column| column.name == metadata.server_version_column);
+    let present_columns = payload
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<HashSet<_>>();
+    let changed_fields = metadata
+        .columns
+        .iter()
+        .filter_map(|column| {
+            if column.name == metadata.primary_key_column || !present_columns.contains(column.name)
+            {
+                return None;
+            }
+            Some(column.name.to_string())
+        })
+        .collect::<Vec<_>>();
+    let crdt_fields = crdt_state_columns_for_fields(metadata, &changed_fields);
+    let mut cursor = payload.row_cursor();
+    let row_limit = payload.row_count().min(limit);
+    let mut rows = Vec::with_capacity(row_limit);
+    for _ in 0..row_limit {
+        let mut row_id = None;
+        let mut server_version = None;
+        let read = cursor.read_next_row(|column_index, _column, cell| {
+            if column_index == primary_key_index {
+                row_id = borrowed_binary_snapshot_cell_row_id(cell);
+            }
+            if Some(column_index) == server_version_index {
+                server_version = borrowed_binary_snapshot_cell_i64(cell);
+            }
+            Ok(())
+        })?;
+        if !read {
+            break;
+        }
+        rows.push(SyncChangedRow {
+            table: table.to_string(),
+            row_id,
+            operation: "insert".to_string(),
+            crdt_fields: crdt_fields.clone(),
+            changed_fields: changed_fields.clone(),
+            commit_id: None,
+            commit_seq: None,
+            subscription_id: Some(subscription_id.to_string()),
+            server_version,
+        });
+    }
+    if !truncated {
+        cursor.assert_done()?;
+    }
+    Ok((rows, truncated))
+}
+
+fn borrowed_binary_snapshot_cell_row_id(cell: BorrowedBinarySnapshotCell<'_>) -> Option<String> {
+    match cell {
+        BorrowedBinarySnapshotCell::String(value) => Some(value.to_string()),
+        BorrowedBinarySnapshotCell::Integer(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn borrowed_binary_snapshot_cell_i64(cell: BorrowedBinarySnapshotCell<'_>) -> Option<i64> {
+    match cell {
+        BorrowedBinarySnapshotCell::Integer(value) => Some(value),
+        BorrowedBinarySnapshotCell::String(value) => value.parse().ok(),
         _ => None,
     }
 }
@@ -552,6 +705,18 @@ mod changed_rows_tests {
         assert_eq!(rows[0].subscription_id.as_deref(), Some("sub-tasks"));
         assert_eq!(rows[1].row_id.as_deref(), Some("task-2"));
         assert_eq!(rows[1].server_version, Some(42));
+
+        let payload = decode_binary_snapshot_payload(binary_snapshot_bytes()).unwrap();
+        let (limited, truncated) = sync_changed_rows_for_cleared_snapshot_chunk_limited(
+            test_schema(),
+            "tasks",
+            &SnapshotChunkRows::BinaryPayload(payload),
+            "sub-tasks",
+            1,
+        );
+        assert!(truncated);
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].row_id.as_deref(), Some("task-1"));
     }
 
     fn binary_snapshot_bytes() -> Vec<u8> {

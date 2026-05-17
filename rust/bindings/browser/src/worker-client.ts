@@ -843,6 +843,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
             source: event.source,
             changedTables: event.changedTables,
             changedRows: event.changedRows,
+            changedRowsTruncated: event.changedRowsTruncated,
           });
         } catch {
           // Row-change listeners must never break worker event handling.
