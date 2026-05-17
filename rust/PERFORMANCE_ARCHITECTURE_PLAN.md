@@ -129,6 +129,17 @@ Measured scoped-server lane:
   `59ms`.
 - Single-user guardrails stayed neutral after rerun: 100k Rust bootstrap
   `191.02ms -> 190.61ms`; 500k Rust bootstrap `879.14ms -> 869.34ms`.
+- Rejected experiment: setting browser SQLite `page_size = 32768` and
+  `cache_size = -65536` before schema creation did not help the release-WASM
+  in-memory path. The 100k guardrail moved Rust bootstrap
+  `190.61ms -> 194.12ms` and local apply `103ms -> 107ms`, so the runtime
+  pragma change was discarded.
+- Retained change: browser snapshot chunks now use the native
+  `DecompressionStream` gzip path when available, with the existing Rust
+  `GzDecoder` path as fallback. At 100k, decompression moved `13ms -> 7ms`
+  and snapshot fetch `15ms -> 9ms`. At 500k, Rust bootstrap moved
+  `869.34ms -> 836.25ms`, snapshot fetch `61ms -> 37ms`, decompression
+  `57ms -> 34ms`, and cached bootstrap `492.42ms -> 459.25ms`.
 
 Validated perf-lane smoke:
 
