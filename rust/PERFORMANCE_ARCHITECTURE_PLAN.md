@@ -1049,6 +1049,21 @@ client. Overflow should close or resync the session deliberately.
     `rust_pull_request_ms` `166 -> 118`,
     `rust_pull_apply_ms` stayed `111 -> 111`; local read p50s were in the
     expected noise band.
+- Retained a binary snapshot writer fast path for non-negative safe JS integer
+  values. The writer now emits those int64 values with two little-endian
+  `Uint32` writes instead of converting every positive integer through
+  `BigInt`; negative numbers and caller-provided `bigint` values keep the
+  checked BigInt path.
+  - 500k bootstrap-only, release-WASM, battery saver:
+    `rust_bootstrap_ms` `1096.17 -> 1054.49`,
+    `rust_pull_request_ms` `594 -> 557`,
+    `rust_server_bootstrap_row_frame_encode_ms` `240 -> 208`,
+    `rust_response_bytes` unchanged.
+  - 100k full scoreboard guardrail:
+    `rust_bootstrap_ms` `232.85 -> 220.10`,
+    `rust_server_bootstrap_row_frame_encode_ms` `39 -> 32`,
+    `rust_pull_apply_ms` stayed flat/noisy (`111 -> 108`), and local read
+    p50s stayed neutral.
 
 ### Phase 4: Worker Default
 
