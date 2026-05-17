@@ -270,6 +270,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .addColumn('as_of_commit_seq', 'bigint', (col) => col.notNull())
       .addColumn('row_cursor', 'text', (col) => col.notNull().defaultTo(''))
       .addColumn('row_limit', 'integer', (col) => col.notNull())
+      .addColumn('next_row_cursor', 'text')
+      .addColumn('is_last_page', 'integer', (col) => col.notNull().defaultTo(0))
       .addColumn('encoding', 'text', (col) => col.notNull())
       .addColumn('compression', 'text', (col) => col.notNull())
       .addColumn('sha256', 'text', (col) => col.notNull())
@@ -284,6 +286,12 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
 
     await sql`ALTER TABLE sync_snapshot_chunks
       ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+    await sql`ALTER TABLE sync_snapshot_chunks
+      ADD COLUMN IF NOT EXISTS next_row_cursor text`.execute(db);
+    await sql`ALTER TABLE sync_snapshot_chunks
+      ADD COLUMN IF NOT EXISTS is_last_page integer NOT NULL DEFAULT 0`.execute(
       db
     );
 

@@ -105,6 +105,10 @@ export interface SyncSnapshotChunksTable {
   row_cursor: string;
   /** Snapshot row limit used to produce this chunk */
   row_limit: number;
+  /** Cursor after this chunk; null means no next row for this table */
+  next_row_cursor?: string | null;
+  /** 1 when this chunk reaches the end of the table snapshot */
+  is_last_page?: number;
   /** Row encoding (e.g. 'json-row-frame-v1') */
   encoding: string;
   /** Compression algorithm (e.g. 'gzip') */

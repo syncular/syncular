@@ -935,6 +935,27 @@ client. Overflow should close or resync the session deliberately.
     chunks, but cache hits still query rows to rediscover continuation
     metadata. Next retained runtime optimization must target query skipping,
     not another encode/gzip tweak.
+- Added snapshot chunk continuation metadata (`next_row_cursor`,
+  `is_last_page`) and a binary cache-hit shortcut that can return cached chunk
+  refs without rereading app rows. The browser E2E harness now loops TS and
+  Rust bootstrap pulls until completion, supports `query-iterations=0` for
+  bootstrap-only large runs, and configures the test Hono route for 100
+  snapshot pages so 500k runs are explicit.
+  - 100k release-WASM, battery saver, before/after:
+    `rust_cached_bootstrap_ms` `205.80 -> 114.75`,
+    `rust_cached_pull_request_ms` `99 -> 5`,
+    `rust_cached_server_bootstrap_snapshot_query_ms` `93 -> 0`.
+    First Rust bootstrap stayed in the same band (`283.36 -> 301.47`) and
+    apply stayed flat (`116 -> 118`), which is the expected target isolation.
+  - 500k release-WASM bootstrap-only, battery saver, continuation cache before
+    allowing continuation-round hits vs after:
+    `rust_cached_bootstrap_ms` `854.35 -> 552.25`,
+    `rust_cached_pull_request_ms` `328 -> 14`,
+    `rust_cached_server_bootstrap_snapshot_query_ms` `237 -> 0`,
+    `rust_cached_server_bootstrap_row_frame_encode_ms` `73 -> 0`.
+    Apply stayed flat (`518 -> 529`) and the cached response size stayed
+    unchanged (`3,782,404` bytes). This confirms the change removes server CPU
+    on cached binary bootstraps without changing client apply behavior.
 - Next target: the remaining SQLite apply cost is mostly structural. The
   generic prepared statement path still binds every cell through runtime table
   metadata. The likely next wins are generated table binders where the app

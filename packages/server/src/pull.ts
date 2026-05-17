@@ -23,9 +23,9 @@ import {
   type SyncPullRequest,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
-  type SyncSnapshotChunkRef,
   type SyncSnapshot,
   type SyncSnapshotChunkEncoding,
+  type SyncSnapshotChunkRef,
   sha256Hex,
   startSyncSpan,
 } from '@syncular/core';
@@ -45,6 +45,7 @@ import type { SyncCoreDb } from './schema';
 import {
   insertSnapshotChunk,
   readSnapshotChunkRefByPageKey,
+  type SnapshotChunkRefWithContinuation,
   scopesToSnapshotChunkScopeKey,
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
@@ -83,6 +84,20 @@ interface SnapshotChunkEncodeResult {
 type InlineSnapshotChunkRef = SyncSnapshotChunkRef & {
   body?: Uint8Array;
 };
+
+function toResponseChunkRef(
+  ref: SyncSnapshotChunkRef & { body?: Uint8Array }
+): SyncSnapshotChunkRef {
+  const response: InlineSnapshotChunkRef = {
+    id: ref.id,
+    byteLength: ref.byteLength,
+    sha256: ref.sha256,
+    encoding: ref.encoding,
+    compression: ref.compression,
+  };
+  if (ref.body) response.body = ref.body;
+  return response;
+}
 
 function resolveSnapshotChunkEncoding(
   requested: readonly SyncSnapshotChunkEncoding[] | undefined
@@ -343,6 +358,8 @@ interface PendingExternalChunkWrite {
     asOfCommitSeq: number;
     rowCursor: string | null;
     rowLimit: number;
+    nextRowCursor: string | null;
+    isLastPage: boolean;
   };
   payloadParts: Uint8Array[];
   expiresAt: string;
@@ -799,6 +816,7 @@ export async function pull<
                     interface SnapshotBundle {
                       table: string;
                       startCursor: string | null;
+                      nextRowCursor: string | null;
                       isFirstPage: boolean;
                       isLastPage: boolean;
                       pageCount: number;
@@ -826,6 +844,7 @@ export async function pull<
                       return {
                         table,
                         startCursor: rowCursor,
+                        nextRowCursor: null,
                         isFirstPage: rowCursor == null,
                         isLastPage: false,
                         pageCount: 0,
@@ -896,13 +915,15 @@ export async function pull<
                         encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         nowIso,
+                        includeBody:
+                          args.inlineSnapshotChunkBodies && !args.chunkStorage,
                       });
                       bootstrapTimings.chunkCacheLookupMs += Math.max(
                         0,
                         Date.now() - cacheLookupStartedAt
                       );
 
-                      let chunkRef = cached;
+                      let chunkRef: SyncSnapshotChunkRef | null = cached;
                       if (!chunkRef) {
                         const expiresAt = new Date(
                           Date.now() + Math.max(1000, bundle.ttlMs)
@@ -926,6 +947,8 @@ export async function pull<
                               asOfCommitSeq: effectiveState.asOfCommitSeq,
                               rowCursor: bundle.startCursor,
                               rowLimit: bundleRowLimit,
+                              nextRowCursor: bundle.nextRowCursor,
+                              isLastPage: bundle.isLastPage,
                             },
                             payloadParts: encodeSnapshotBundlePayload(bundle),
                             expiresAt,
@@ -949,6 +972,8 @@ export async function pull<
                           asOfCommitSeq: effectiveState.asOfCommitSeq,
                           rowCursor: bundle.startCursor,
                           rowLimit: bundleRowLimit,
+                          nextRowCursor: bundle.nextRowCursor,
+                          isLastPage: bundle.isLastPage,
                           encoding: snapshotChunkEncoding,
                           compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                           sha256: encodedChunk.sha256,
@@ -968,7 +993,7 @@ export async function pull<
                       snapshots.push({
                         table: bundle.table,
                         rows: [],
-                        chunks: [chunkRef],
+                        chunks: [toResponseChunkRef(chunkRef)],
                         isFirstPage: bundle.isFirstPage,
                         isLastPage: bundle.isLastPage,
                       });
@@ -1017,6 +1042,83 @@ export async function pull<
                         );
                       }
 
+                      if (
+                        snapshotChunkEncoding ===
+                          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 &&
+                        activeBundle.pageCount === 0
+                      ) {
+                        const pagesRemaining = Math.max(
+                          1,
+                          maxSnapshotPages - pageIndex
+                        );
+                        const cachedRowLimit = Math.max(
+                          1,
+                          Math.min(
+                            DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS,
+                            limitSnapshotRows * pagesRemaining
+                          )
+                        );
+                        const cacheLookupStartedAt = Date.now();
+                        const cached: SnapshotChunkRefWithContinuation | null =
+                          await readSnapshotChunkRefByPageKey(trx, {
+                            partitionId,
+                            scopeKey: cacheKey,
+                            scope: nextTableName,
+                            asOfCommitSeq: effectiveState.asOfCommitSeq,
+                            rowCursor: nextState.rowCursor,
+                            rowLimit: cachedRowLimit,
+                            encoding: snapshotChunkEncoding,
+                            compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                            includeBody:
+                              args.inlineSnapshotChunkBodies &&
+                              !args.chunkStorage,
+                          });
+                        bootstrapTimings.chunkCacheLookupMs += Math.max(
+                          0,
+                          Date.now() - cacheLookupStartedAt
+                        );
+
+                        if (
+                          cached &&
+                          (cached.isLastPage || cached.nextRowCursor !== null)
+                        ) {
+                          snapshots.push({
+                            table: nextTableName,
+                            rows: [],
+                            chunks: [toResponseChunkRef(cached)],
+                            isFirstPage: nextState.rowCursor == null,
+                            isLastPage: cached.isLastPage,
+                          });
+                          activeBundle = null;
+                          pageIndex +=
+                            Math.max(
+                              1,
+                              Math.ceil(cachedRowLimit / limitSnapshotRows)
+                            ) - 1;
+
+                          if (cached.isLastPage) {
+                            if (
+                              nextState.tableIndex + 1 <
+                              nextState.tables.length
+                            ) {
+                              nextState = {
+                                ...nextState,
+                                tableIndex: nextState.tableIndex + 1,
+                                rowCursor: null,
+                              };
+                            } else {
+                              nextState = null;
+                            }
+                          } else {
+                            nextState = {
+                              ...nextState,
+                              rowCursor: cached.nextRowCursor,
+                            };
+                          }
+                          continue;
+                        }
+                      }
+
                       const snapshotQueryStartedAt = Date.now();
                       const page: {
                         rows: unknown[];
@@ -1038,6 +1140,7 @@ export async function pull<
                       );
 
                       const pageRows = page.rows ?? [];
+                      activeBundle.nextRowCursor = page.nextCursor;
                       let rowFrames: Uint8Array | null = null;
                       if (
                         snapshotChunkEncoding ===
@@ -1383,16 +1486,17 @@ export async function pull<
                 4,
                 async (pending) => {
                   const cacheLookupStartedAt = Date.now();
-                  let chunkRef = await readSnapshotChunkRefByPageKey(db, {
-                    partitionId: pending.cacheLookup.partitionId,
-                    scopeKey: pending.cacheLookup.scopeKey,
-                    scope: pending.cacheLookup.scope,
-                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                    rowCursor: pending.cacheLookup.rowCursor,
-                    rowLimit: pending.cacheLookup.rowLimit,
-                    encoding: snapshotChunkEncoding,
-                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                  });
+                  let chunkRef: SyncSnapshotChunkRef | null =
+                    await readSnapshotChunkRefByPageKey(db, {
+                      partitionId: pending.cacheLookup.partitionId,
+                      scopeKey: pending.cacheLookup.scopeKey,
+                      scope: pending.cacheLookup.scope,
+                      asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                      rowCursor: pending.cacheLookup.rowCursor,
+                      rowLimit: pending.cacheLookup.rowLimit,
+                      encoding: snapshotChunkEncoding,
+                      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                    });
                   bootstrapTimings.chunkCacheLookupMs += Math.max(
                     0,
                     Date.now() - cacheLookupStartedAt
@@ -1420,6 +1524,8 @@ export async function pull<
                         asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
                         rowCursor: pending.cacheLookup.rowCursor,
                         rowLimit: pending.cacheLookup.rowLimit,
+                        nextRowCursor: pending.cacheLookup.nextRowCursor,
+                        isLastPage: pending.cacheLookup.isLastPage,
                         encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         sha256,
@@ -1446,6 +1552,8 @@ export async function pull<
                         asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
                         rowCursor: pending.cacheLookup.rowCursor,
                         rowLimit: pending.cacheLookup.rowLimit,
+                        nextRowCursor: pending.cacheLookup.nextRowCursor,
+                        isLastPage: pending.cacheLookup.isLastPage,
                         encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         sha256: encodedChunk.sha256,
@@ -1463,7 +1571,7 @@ export async function pull<
                     }
                   }
 
-                  pending.snapshot.chunks = [chunkRef];
+                  pending.snapshot.chunks = [toResponseChunkRef(chunkRef)];
                 }
               );
             }

@@ -61,9 +61,12 @@ const rows = numberArg(
   '--rows',
   Number(process.env.SYNCULAR_BROWSER_PERF_ROWS ?? 100_000)
 );
-const queryIterations = numberArg('--query-iterations', 25);
+const queryIterations = nonNegativeNumberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
-const rustIncludeSnapshotRows = booleanArg('--rust-include-snapshot-rows', false);
+const rustIncludeSnapshotRows = booleanArg(
+  '--rust-include-snapshot-rows',
+  false
+);
 const rustCollectChangedRows = booleanArg('--rust-collect-changed-rows', false);
 const rustMaxSnapshotChangedRows = optionalNumberArg(
   '--rust-max-snapshot-changed-rows'
@@ -129,9 +132,9 @@ try {
 
   const result = await page.evaluate(
     (options) =>
-      (
-        window as unknown as ScoreboardWindow
-      ).__runtime.benchmarkE2eScoreboard(options),
+      (window as unknown as ScoreboardWindow).__runtime.benchmarkE2eScoreboard(
+        options
+      ),
     {
       serverUrl: assetUrl,
       actorId: 'browser-e2e-user',
@@ -199,7 +202,9 @@ try {
       `rust-include-snapshot-rows=${rustIncludeSnapshotRows} rust-collect-changed-rows=${rustCollectChangedRows}`
     );
     if (rustMaxSnapshotChangedRows != null) {
-      console.log(`rust-max-snapshot-changed-rows=${rustMaxSnapshotChangedRows}`);
+      console.log(
+        `rust-max-snapshot-changed-rows=${rustMaxSnapshotChangedRows}`
+      );
     }
     console.log('');
     console.log(formatMetrics(report.metrics));
@@ -417,11 +422,7 @@ function memoryMetrics(
   }
   if (isFiniteNumber(after.jsHeapUsedBytes)) {
     metrics.push(
-      metric(
-        'browser_js_heap_used_after_bytes',
-        after.jsHeapUsedBytes,
-        'bytes'
-      )
+      metric('browser_js_heap_used_after_bytes', after.jsHeapUsedBytes, 'bytes')
     );
   }
   if (
@@ -499,7 +500,12 @@ function formatMetrics(metrics: ScoreboardMetric[]): string {
 }
 
 function formatComparisons(
-  comparisons: Array<{ name: string; ts: number; rust: number; rustToTs: number }>
+  comparisons: Array<{
+    name: string;
+    ts: number;
+    rust: number;
+    rustToTs: number;
+  }>
 ): string {
   const header = '| Compare | TS | Rust | Rust / TS |';
   const separator = '|---------|----|------|-----------|';
@@ -524,6 +530,16 @@ function numberArg(name: string, fallback: number): number {
   if (!raw) return fallback;
   const value = Number(raw.slice(name.length + 1));
   if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+  return Math.floor(value);
+}
+
+function nonNegativeNumberArg(name: string, fallback: number): number {
+  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  if (!raw) return fallback;
+  const value = Number(raw.slice(name.length + 1));
+  if (!Number.isFinite(value) || value < 0) {
     throw new Error(`Invalid ${name}: ${raw}`);
   }
   return Math.floor(value);
