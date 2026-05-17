@@ -3,6 +3,7 @@
  */
 
 import type {
+  BinarySnapshotColumn,
   ScopeValues,
   ScopeValuesFromPatterns,
   ScopeDefinition as SimpleScopeDefinition,
@@ -124,6 +125,11 @@ export interface CreateServerHandlerOptions<
    * cost of higher transient memory and chunk sizes.
    */
   snapshotBundleMaxBytes?: number;
+
+  /**
+   * Stable binary snapshot column metadata used by binary bootstrap chunks.
+   */
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
 
   /**
    * Resolve allowed scope values for the current actor.
@@ -267,6 +273,7 @@ export function createServerHandler<
     dependsOn,
     snapshotChunkTtlMs,
     snapshotBundleMaxBytes,
+    snapshotBinaryColumns,
     resolveScopes,
     transformInbound,
     transformOutbound,
@@ -878,6 +885,7 @@ export function createServerHandler<
     dependsOn,
     snapshotChunkTtlMs,
     snapshotBundleMaxBytes,
+    snapshotBinaryColumns,
     canRejectSingleOperationWithoutSavepoint:
       options.canRejectSingleOperationWithoutSavepoint ??
       options.applyOperation === undefined,

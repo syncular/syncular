@@ -11,7 +11,6 @@ import {
   randomId,
   readAllBytesFromStream,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-  SYNC_SNAPSHOT_CHUNK_ENCODING,
   type SyncSnapshotChunkCompression,
   type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
@@ -196,7 +195,7 @@ export function createDbMetadataChunkStorage(
 
     if (!row) return null;
 
-    if (row.encoding !== SYNC_SNAPSHOT_CHUNK_ENCODING) {
+    if (row.encoding !== args.encoding) {
       throw new Error(
         `Unexpected snapshot chunk encoding: ${String(row.encoding)}`
       );
@@ -211,7 +210,7 @@ export function createDbMetadataChunkStorage(
       id: row.chunk_id,
       sha256: row.sha256,
       byteLength: Number(row.byte_length ?? 0),
-      encoding: row.encoding,
+      encoding: args.encoding,
       compression: row.compression,
     };
   }

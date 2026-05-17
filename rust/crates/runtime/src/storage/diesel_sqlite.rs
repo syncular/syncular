@@ -1,6 +1,7 @@
 use crate::app_schema::{
     checksum, default_app_schema, split_sql_statements, AppSchema, AppTableMetadata,
 };
+use crate::binary_snapshot::{BinarySnapshotCell, DecodedBinarySnapshotRows, SnapshotChunkRows};
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, StorageCompactionOptions,
     StorageCompactionReport,
@@ -35,6 +36,8 @@ use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
+
+const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 128;
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = schema::sync_outbox_commits)]
@@ -1966,6 +1969,172 @@ fn upsert_row_generic(
     Ok(())
 }
 
+fn upsert_rows_generic_batch(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    rows: &[Map<String, Value>],
+    fallback_version: Option<i64>,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    validate_app_table_metadata(metadata)?;
+
+    let columns = syncable_columns(metadata);
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let update_columns = columns
+        .iter()
+        .copied()
+        .filter(|column| *column != metadata.primary_key_column)
+        .collect::<Vec<_>>();
+    let on_conflict = if update_columns.is_empty() {
+        "do nothing".to_string()
+    } else {
+        format!(
+            "do update set {}",
+            update_columns
+                .iter()
+                .map(|column| format!("{column} = excluded.{column}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    for batch in rows.chunks(SNAPSHOT_UPSERT_BATCH_ROWS) {
+        let value_groups = batch
+            .iter()
+            .map(|row| {
+                row.get(metadata.primary_key_column)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        SyncularError::protocol_message(format!(
+                            "row for table {} is missing string primary key {}",
+                            metadata.name, metadata.primary_key_column
+                        ))
+                    })?;
+                let values = columns
+                    .iter()
+                    .map(|column| generic_column_sql_value(metadata, row, column, fallback_version))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(format!("({})", values.join(", ")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sql = format!(
+            "insert into {table} ({columns}) values {values} on conflict({pk}) {on_conflict}",
+            table = metadata.name,
+            columns = columns.join(", "),
+            values = value_groups.join(", "),
+            pk = metadata.primary_key_column,
+        );
+        sql_query(sql).execute(conn)?;
+    }
+
+    Ok(())
+}
+
+fn upsert_binary_snapshot_rows_batch(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    rows: &DecodedBinarySnapshotRows,
+) -> Result<()> {
+    if rows.rows.is_empty() {
+        return Ok(());
+    }
+    if rows.table != metadata.name {
+        return Err(SyncularError::protocol_message(format!(
+            "binary snapshot table mismatch: expected {}, got {}",
+            metadata.name, rows.table
+        )));
+    }
+    validate_app_table_metadata(metadata)?;
+
+    let columns = rows
+        .columns
+        .iter()
+        .map(|column| {
+            validate_identifier(&column.name)?;
+            Ok(column.name.as_str())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if !columns.contains(&metadata.primary_key_column) {
+        return Err(SyncularError::protocol_message(format!(
+            "binary snapshot for table {} is missing primary key {}",
+            metadata.name, metadata.primary_key_column
+        )));
+    }
+    if rows.rows.iter().any(|row| row.len() != columns.len()) {
+        return Err(SyncularError::protocol_message(format!(
+            "binary snapshot for table {} has a row with the wrong column count",
+            metadata.name
+        )));
+    }
+
+    let update_columns = columns
+        .iter()
+        .copied()
+        .filter(|column| *column != metadata.primary_key_column)
+        .collect::<Vec<_>>();
+    let on_conflict = if update_columns.is_empty() {
+        "do nothing".to_string()
+    } else {
+        format!(
+            "do update set {}",
+            update_columns
+                .iter()
+                .map(|column| format!("{column} = excluded.{column}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+
+    for batch in rows.rows.chunks(SNAPSHOT_UPSERT_BATCH_ROWS) {
+        let value_groups = batch
+            .iter()
+            .map(|row| {
+                let values = row
+                    .iter()
+                    .map(binary_snapshot_cell_sql_value)
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(format!("({})", values.join(", ")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let sql = format!(
+            "insert into {table} ({columns}) values {values} on conflict({pk}) {on_conflict}",
+            table = metadata.name,
+            columns = columns.join(", "),
+            values = value_groups.join(", "),
+            pk = metadata.primary_key_column,
+        );
+        sql_query(sql).execute(conn)?;
+    }
+
+    Ok(())
+}
+
+fn binary_snapshot_cell_sql_value(value: &BinarySnapshotCell) -> Result<String> {
+    Ok(match value {
+        BinarySnapshotCell::Null => "NULL".to_string(),
+        BinarySnapshotCell::String(value) => sql_string(value),
+        BinarySnapshotCell::Integer(value) => value.to_string(),
+        BinarySnapshotCell::Float(value) => {
+            if value.is_finite() {
+                value.to_string()
+            } else {
+                return Err(SyncularError::protocol_message(
+                    "binary snapshot float value must be finite",
+                ));
+            }
+        }
+        BinarySnapshotCell::Boolean(value) => i32::from(*value).to_string(),
+        BinarySnapshotCell::Json(value) => sql_string(&value.to_string()),
+        BinarySnapshotCell::Bytes(value) => {
+            format!("X'{}'", hex::encode(value))
+        }
+    })
+}
+
 fn apply_change_generic(
     conn: &mut SqliteConnection,
     metadata: &AppTableMetadata,
@@ -2466,6 +2635,101 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
             row,
         )?;
         upsert_app_row(self.conn, self.app_schema, table, &row, fallback_version)
+    }
+
+    fn upsert_rows(
+        &mut self,
+        table: &str,
+        rows: &[Value],
+        fallback_version: Option<i64>,
+    ) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if is_encrypted_crdt_system_table(table) {
+            for row in rows {
+                self.upsert_row(table, row, fallback_version)?;
+            }
+            return Ok(());
+        }
+
+        let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+        if metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+        {
+            for row in rows {
+                self.upsert_row(table, row, fallback_version)?;
+            }
+            return Ok(());
+        }
+
+        let row_objects = rows
+            .iter()
+            .map(|row| {
+                let row = materialize_row_for_metadata(table, None, row.clone(), metadata)?;
+                row.as_object().cloned().ok_or_else(|| {
+                    SyncularError::protocol_message(format!("row is not a JSON object: {row}"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        upsert_rows_generic_batch(self.conn, metadata, &row_objects, fallback_version)
+    }
+
+    fn upsert_snapshot_chunk_rows(
+        &mut self,
+        table: &str,
+        rows: &SnapshotChunkRows,
+        fallback_version: Option<i64>,
+    ) -> Result<()> {
+        match rows {
+            SnapshotChunkRows::Json(rows) => self.upsert_rows(table, rows, fallback_version),
+            SnapshotChunkRows::Binary(rows) => {
+                if fallback_version.is_some() || is_encrypted_crdt_system_table(table) {
+                    let rows = rows.clone().into_value_rows();
+                    return self.upsert_rows(table, &rows, fallback_version);
+                }
+
+                let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+                    SyncularError::config(format!("unknown generated app table: {table}"))
+                })?;
+                if metadata
+                    .crdt_yjs_fields
+                    .iter()
+                    .any(|field| field.sync_mode == "encrypted-update-log")
+                {
+                    let rows = rows.clone().into_value_rows();
+                    return self.upsert_rows(table, &rows, fallback_version);
+                }
+
+                upsert_binary_snapshot_rows_batch(self.conn, metadata, rows)
+            }
+            SnapshotChunkRows::BinaryPayload(rows) => {
+                let rows = rows.clone().into_decoded_rows()?;
+                if fallback_version.is_some() || is_encrypted_crdt_system_table(table) {
+                    let rows = rows.into_value_rows();
+                    return self.upsert_rows(table, &rows, fallback_version);
+                }
+
+                let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+                    SyncularError::config(format!("unknown generated app table: {table}"))
+                })?;
+                if metadata
+                    .crdt_yjs_fields
+                    .iter()
+                    .any(|field| field.sync_mode == "encrypted-update-log")
+                {
+                    let rows = rows.into_value_rows();
+                    return self.upsert_rows(table, &rows, fallback_version);
+                }
+
+                upsert_binary_snapshot_rows_batch(self.conn, metadata, &rows)
+            }
+        }
     }
 
     fn apply_change(&mut self, change: &SyncChange) -> Result<()> {

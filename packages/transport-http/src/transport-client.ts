@@ -4,6 +4,10 @@ import type {
   SyncCombinedRequest,
   SyncCombinedResponse,
 } from '@syncular/core';
+import {
+  decodeBinarySyncPack,
+  isBinarySyncPackContentType,
+} from '@syncular/core';
 import type { SyncClient } from './api-client';
 import {
   type ApiResult,
@@ -190,6 +194,15 @@ function createFetchApiClient(baseOptions: ClientOptions): TransportApiClient {
       return {
         response,
         data: (await response.blob()) as T,
+      };
+    }
+
+    if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+      return {
+        response,
+        data: decodeBinarySyncPack(
+          new Uint8Array(await response.arrayBuffer())
+        ) as T,
       };
     }
 

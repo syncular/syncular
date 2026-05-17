@@ -85,7 +85,8 @@ Run only the Rust client perf slice from repo root:
 bun run test:perf:rust
 ```
 
-Run the Rust HTTP and WebSocket stress slice separately from the regression gate:
+Run the Rust HTTP, WebSocket, and long-lived realtime stress slice separately
+from the regression gate:
 
 ```bash
 bun run test:perf:rust:stress
@@ -93,9 +94,10 @@ bun run test:perf:rust:stress
 
 The stress slice drives multiple Rust writer clients through the production
 HTTP transport and native WebSocket realtime transport into a deterministic
-Rust stateful server, then syncs multiple Rust reader clients and asserts that
-every reader converges to the server row count. It prints push, pull, and full
-client-server-client timings, but does not compare against `baseline.json`.
+Rust stateful server. It also keeps reader WebSocket connections open, consumes
+server `sync` wakeups, pulls from those wakeups, and asserts that every reader
+converges to the server row count. It prints push, pull, wakeup catchup, and
+full client-server-client timings, but does not compare against `baseline.json`.
 
 Useful knobs:
 
@@ -104,7 +106,12 @@ PERF_RUST_NATIVE_OPERATIONS=200 PERF_RUST_NATIVE_ROUNDS=7 bun run test:perf:rust
 PERF_RUST_BROWSER_BENCHMARK=true PERF_RUST_BROWSER_OPERATIONS=50 PERF_RUST_BROWSER_ROUNDS=3 bun run test:perf:rust
 PERF_RUST_STRESS_WRITERS=4 PERF_RUST_STRESS_READERS=4 PERF_RUST_STRESS_BATCHES=20 PERF_RUST_STRESS_BATCH_SIZE=250 bun run test:perf:rust:stress
 PERF_RUST_STRESS_TRANSPORT=ws bun run test:perf:rust:stress
+PERF_RUST_STRESS_REALTIME=false bun run test:perf:rust:stress
 ```
+
+The browser Rust benchmark uses the worker runtime by default. To include the
+old direct IndexedDB Rust-owned storage diagnostic in the standalone benchmark,
+run `bun --cwd rust/bindings/browser run benchmark:browser --include-direct-rust`.
 
 Operation counts are part of the metric name. For example,
 `PERF_RUST_NATIVE_OPERATIONS=200` emits `rust_native_insert_batch_200`, which

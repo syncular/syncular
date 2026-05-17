@@ -45,6 +45,7 @@ import type {
   SyncularV2StorageFallbackInfo,
   SyncularV2SubscriptionSpec,
   SyncularV2SyncResult,
+  SyncularV2TransportStats,
 } from './types';
 import { selectSyncularV2RuntimeArtifact } from './wasm-runtime';
 import type {
@@ -398,6 +399,14 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   async syncOnce(): Promise<SyncularV2SyncResult> {
     return this.#syncWithAuthRetry({ type: 'syncOnce' });
+  }
+
+  transportStats(): Promise<SyncularV2TransportStats> {
+    return this.#request({ type: 'transportStats' });
+  }
+
+  async resetTransportStats(): Promise<void> {
+    await this.#request({ type: 'resetTransportStats' });
   }
 
   conflictSummaries(): Promise<SyncularV2ConflictSummary[]> {

@@ -13,16 +13,20 @@ import {
 
 const portArg = process.argv.find((a) => a.startsWith('--port='));
 const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
+const wasmProfile = readWasmProfile();
 const repoRoot = path.resolve(import.meta.dir, '../../../..');
 const rustPackageRoot = path.join(repoRoot, 'rust/bindings/browser');
 const rustPackageWasmDir = path.join(rustPackageRoot, 'dist/wasm');
 
-const rustWasmBuild = Bun.spawnSync(['bun', 'run', 'build:wasm:dev'], {
-  cwd: rustPackageRoot,
-  env: process.env,
-  stdout: 'pipe',
-  stderr: 'pipe',
-});
+const rustWasmBuild = Bun.spawnSync(
+  ['bun', 'run', wasmProfile === 'release' ? 'build:wasm' : 'build:wasm:dev'],
+  {
+    cwd: rustPackageRoot,
+    env: process.env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  }
+);
 
 if (rustWasmBuild.exitCode !== 0) {
   console.error('Failed to build Syncular Rust WASM client:');
@@ -236,6 +240,16 @@ function assertSingleWorkerBundle(outputPaths: readonly string[]): void {
     `[runtime-browser] wa-sqlite worker build produced split artifacts (${extraOutputs.join(', ')}). ` +
       'This can trigger Bun ESM duplicate-export crashes in module workers. Keep worker bundling unsplit.'
   );
+}
+
+function readWasmProfile(): 'dev' | 'release' {
+  const profileArg = process.argv.find((a) => a.startsWith('--wasm-profile='));
+  const raw =
+    profileArg?.split('=')[1] ??
+    process.env.SYNCULAR_BROWSER_WASM_PROFILE ??
+    'dev';
+  if (raw === 'dev' || raw === 'release') return raw;
+  throw new Error(`Invalid --wasm-profile value: ${raw}`);
 }
 
 async function benchmarkSyncResponse(req: Request): Promise<Response> {

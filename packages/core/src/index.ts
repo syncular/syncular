@@ -32,6 +32,8 @@ export * from './schemas';
 export * from './scopes';
 // Snapshot chunk encoding helpers
 export * from './snapshot-chunks';
+// Sync response pack encoding helpers
+export * from './sync-packs';
 // Telemetry abstraction
 export * from './telemetry';
 // Data transformation hooks

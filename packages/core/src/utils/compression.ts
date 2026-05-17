@@ -9,6 +9,11 @@ interface NodeZlibModule {
     payload: Uint8Array,
     callback: (error: Error | null, compressed: CompressionResult) => void
   ): void;
+  gzip(
+    payload: Uint8Array,
+    options: { level?: number },
+    callback: (error: Error | null, compressed: CompressionResult) => void
+  ): void;
   gunzip(
     payload: Uint8Array,
     callback: (error: Error | null, decompressed: CompressionResult) => void
@@ -16,6 +21,10 @@ interface NodeZlibModule {
 }
 
 let nodeZlibModulePromise: Promise<NodeZlibModule | null> | null = null;
+
+export interface GzipBytesOptions {
+  level?: number;
+}
 
 function importNodeModule(specifier: string): Promise<object> {
   return new Function('specifier', 'return import(specifier);')(
@@ -69,22 +78,30 @@ async function getNodeZlibModule(): Promise<NodeZlibModule | null> {
  * Gzip-compress a byte array using the fastest native implementation available
  * in the current runtime.
  */
-export async function gzipBytes(payload: Uint8Array): Promise<Uint8Array> {
+export async function gzipBytes(
+  payload: Uint8Array,
+  options: GzipBytesOptions = {}
+): Promise<Uint8Array> {
   const bun = getBunRuntime();
   if (bun?.gzipSync) {
-    return bun.gzipSync(payload);
+    return bun.gzipSync(payload, options);
   }
 
   const nodeZlib = await getNodeZlibModule();
   if (nodeZlib?.gzip) {
     return await new Promise<Uint8Array>((resolve, reject) => {
-      nodeZlib.gzip(payload, (error, compressed) => {
+      const callback = (error: Error | null, compressed: CompressionResult) => {
         if (error) {
           reject(error);
           return;
         }
         resolve(toUint8Array(compressed));
-      });
+      };
+      if (options.level !== undefined) {
+        nodeZlib.gzip(payload, { level: options.level }, callback);
+      } else {
+        nodeZlib.gzip(payload, callback);
+      }
     });
   }
 

@@ -7,6 +7,11 @@ use uuid::Uuid;
 
 pub type ScopeValues = Map<String, Value>;
 
+pub const SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1: &str = "json-row-frame-v1";
+pub const SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1: &str = "binary-table-v1";
+pub const SYNC_PACK_ENCODING_JSON_V1: &str = "json-v1";
+pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncOperation {
     pub table: String,
@@ -173,6 +178,18 @@ pub struct PullRequest {
     pub max_snapshot_pages: i64,
     #[serde(rename = "dedupeRows", skip_serializing_if = "Option::is_none")]
     pub dedupe_rows: Option<bool>,
+    #[serde(
+        rename = "snapshotEncodings",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub snapshot_encodings: Vec<String>,
+    #[serde(
+        rename = "syncPackEncodings",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub sync_pack_encodings: Vec<String>,
     pub subscriptions: Vec<SubscriptionRequest>,
 }
 
@@ -292,6 +309,8 @@ pub struct SnapshotChunkRef {
     pub sha256: String,
     pub encoding: String,
     pub compression: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

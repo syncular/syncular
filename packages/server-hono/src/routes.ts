@@ -12,11 +12,16 @@ import {
   countSyncMetric,
   createSyncTimer,
   distributionSyncMetric,
+  encodeBinarySyncPack,
   ErrorResponseSchema,
   logSyncEvent,
+  prefersBinarySyncPack,
   ScopeValuesSchema,
   SyncCombinedRequestSchema,
   SyncCombinedResponseSchema,
+  SYNC_PACK_CONTENT_TYPE,
+  type SyncCombinedResponse,
+  type SyncSnapshotChunkRef,
   type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
   type SyncPushResponse,
@@ -201,9 +206,16 @@ export interface SyncRoutesConfigWithRateLimit {
   maxPullLimitSnapshotRows?: number;
   /**
    * Max snapshot pages per subscription per pull response.
-   * Default: 10
+   * Default: 50
    */
   maxPullMaxSnapshotPages?: number;
+  /**
+   * Gzip compression level for generated snapshot chunks.
+   *
+   * Default: 1, range: 0-9. Lower values reduce CPU and browser inflate time
+   * but increase response size.
+   */
+  snapshotChunkGzipLevel?: number;
   /**
    * Max operations per pushed commit.
    * Default: 200
@@ -878,6 +890,27 @@ function emitConsoleLiveEvent(
   });
 }
 
+type InlineSnapshotChunkRef = SyncSnapshotChunkRef & {
+  body?: Uint8Array;
+};
+
+async function inlineSnapshotChunkBodies<DB extends SyncCoreDb>(
+  db: Kysely<DB>,
+  response: SyncCombinedResponse,
+  chunkStorage?: SnapshotChunkStorage
+): Promise<void> {
+  for (const subscription of response.pull?.subscriptions ?? []) {
+    for (const snapshot of subscription.snapshots ?? []) {
+      for (const chunk of snapshot.chunks ?? []) {
+        if ((chunk as InlineSnapshotChunkRef).body) continue;
+        const stored = await readSnapshotChunk(db, chunk.id, { chunkStorage });
+        if (!stored || !(stored.body instanceof Uint8Array)) continue;
+        (chunk as InlineSnapshotChunkRef).body = stored.body;
+      }
+    }
+  }
+}
+
 export function createSyncRoutes<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
@@ -936,7 +969,7 @@ export function createSyncRoutes<
   const maxPullLimitCommits = config.maxPullLimitCommits ?? 100;
   const maxSubscriptionsPerPull = config.maxSubscriptionsPerPull ?? 200;
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 5000;
-  const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 10;
+  const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 50;
   const maxOperationsPerPush = config.maxOperationsPerPush ?? 200;
   const requiredSchemaVersion = readOptionalPositiveInteger(
     config.requiredSchemaVersion
@@ -1934,6 +1967,9 @@ export function createSyncRoutes<
             'application/json': {
               schema: resolver(SyncCombinedResponseSchema),
             },
+            [SYNC_PACK_CONTENT_TYPE]: {
+              schema: { type: 'string', format: 'binary' },
+            },
           },
         },
         400: {
@@ -2024,6 +2060,11 @@ export function createSyncRoutes<
       let pullResponse: undefined | PullResult['response'];
       const exposeBenchPullTimings =
         c.req.header('x-syncular-bench-timings') === '1';
+      const requestedSyncPackEncodings =
+        body.syncPackEncodings ?? body.pull?.syncPackEncodings;
+      const shouldInlineSnapshotChunkBodies = prefersBinarySyncPack(
+        requestedSyncPackEncodings
+      );
 
       // --- Push phase ---
       if (body.push) {
@@ -2141,6 +2182,8 @@ export function createSyncRoutes<
             maxPullMaxSnapshotPages
           ),
           dedupeRows: body.pull.dedupeRows === true,
+          snapshotEncodings: body.pull.snapshotEncodings,
+          syncPackEncodings: body.pull.syncPackEncodings,
           subscriptions: body.pull.subscriptions.map((sub) => ({
             id: sub.id,
             table: sub.table,
@@ -2163,6 +2206,8 @@ export function createSyncRoutes<
             request,
             chunkStorage: options.chunkStorage,
             scopeCache: options.scopeCache,
+            inlineSnapshotChunkBodies: shouldInlineSnapshotChunkBodies,
+            snapshotChunkGzipLevel: options.sync?.snapshotChunkGzipLevel,
           });
         } catch (err) {
           if (err instanceof InvalidSubscriptionScopeError) {
@@ -2301,16 +2346,30 @@ export function createSyncRoutes<
         partitionId,
       });
 
-      return c.json(
-        {
-          ok: true as const,
-          ...(requiredSchemaVersion ? { requiredSchemaVersion } : {}),
-          ...(latestSchemaVersion ? { latestSchemaVersion } : {}),
-          ...(pushResponse ? { push: pushResponse } : {}),
-          ...(pullResponse ? { pull: pullResponse } : {}),
-        },
-        200
-      );
+      const combinedResponse: SyncCombinedResponse = {
+        ok: true as const,
+        ...(requiredSchemaVersion ? { requiredSchemaVersion } : {}),
+        ...(latestSchemaVersion ? { latestSchemaVersion } : {}),
+        ...(pushResponse ? { push: pushResponse } : {}),
+        ...(pullResponse ? { pull: pullResponse } : {}),
+      };
+
+      if (shouldInlineSnapshotChunkBodies) {
+        await inlineSnapshotChunkBodies(
+          options.db,
+          combinedResponse,
+          options.chunkStorage
+        );
+        const encoded = encodeBinarySyncPack(combinedResponse);
+        const body = encoded.buffer.slice(
+          encoded.byteOffset,
+          encoded.byteOffset + encoded.byteLength
+        ) as ArrayBuffer;
+        c.header('content-type', SYNC_PACK_CONTENT_TYPE);
+        return c.body(body, 200);
+      }
+
+      return c.json(combinedResponse, 200);
     }
   );
 

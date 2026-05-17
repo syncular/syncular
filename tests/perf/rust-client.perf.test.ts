@@ -39,8 +39,11 @@ interface BrowserBenchmarkStats {
 }
 
 interface BrowserBenchmarkReport {
+  runtime?: {
+    wasmProfile?: string;
+  };
   results: {
-    rustOwnedSqliteIndexedDb: BrowserBenchmarkStats;
+    rustOwnedSqliteIndexedDb?: BrowserBenchmarkStats;
     rustOwnedSqliteOpfsWorker: BrowserBenchmarkStats;
   };
 }
@@ -107,25 +110,30 @@ describe('rust client performance', () => {
           `--operations=${readPositiveIntEnv('PERF_RUST_BROWSER_OPERATIONS', 50)}`,
           `--rounds=${readPositiveIntEnv('PERF_RUST_BROWSER_ROUNDS', 3)}`,
           `--warmup=${readPositiveIntEnv('PERF_RUST_BROWSER_WARMUP', 5)}`,
+          '--wasm-profile=release',
         ],
         'rust browser local mutation perf'
       );
 
+      if (browser.results.rustOwnedSqliteIndexedDb) {
+        results.push(
+          browserMetric(
+            `rust_browser_local_mutations_indexeddb_${browser.results.rustOwnedSqliteIndexedDb.operations}`,
+            browser.results.rustOwnedSqliteIndexedDb
+          )
+        );
+      }
       results.push(
-        browserMetric(
-          `rust_browser_local_mutations_indexeddb_${browser.results.rustOwnedSqliteIndexedDb.operations}`,
-          browser.results.rustOwnedSqliteIndexedDb
-        ),
         browserMetric(
           `rust_browser_local_mutations_opfs_worker_${browser.results.rustOwnedSqliteOpfsWorker.operations}`,
           browser.results.rustOwnedSqliteOpfsWorker
         )
       );
 
-      expect(browser.results.rustOwnedSqliteIndexedDb.medianMs).toBeGreaterThan(0);
       expect(browser.results.rustOwnedSqliteOpfsWorker.medianMs).toBeGreaterThan(
         0
       );
+      expect(browser.runtime?.wasmProfile).toBe('release');
     },
     180_000
   );

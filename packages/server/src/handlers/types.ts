@@ -1,4 +1,5 @@
 import type {
+  BinarySnapshotColumn,
   ScopePattern,
   ScopeValues,
   ScopeValuesForKeys,
@@ -213,6 +214,13 @@ export interface ServerHandlerOptions<
   snapshotBundleMaxBytes?: number;
 
   /**
+   * Stable binary snapshot column metadata. Generators should provide this for
+   * Rust/native clients so the server does not need to infer column order and
+   * value types from every snapshot chunk at runtime.
+   */
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+
+  /**
    * Transform client payload → server row on writes.
    */
   transformInbound?: (
@@ -274,6 +282,11 @@ export interface ServerTableHandler<
    * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
    */
   snapshotBundleMaxBytes?: number;
+
+  /**
+   * Stable binary snapshot column metadata used by binary bootstrap chunks.
+   */
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
 
   /**
    * Hint for push engine savepoint optimization on single-op commits.

@@ -1,5 +1,10 @@
 #[cfg(feature = "native")]
 use crate::app_schema::default_app_schema;
+#[cfg(feature = "native")]
+use crate::binary_snapshot::decode_binary_snapshot_rows;
+use crate::binary_snapshot::SnapshotChunkRows;
+#[cfg(feature = "native")]
+use crate::binary_sync_pack::{decode_binary_sync_pack, is_binary_sync_pack_content_type};
 use crate::error::Result;
 #[cfg(feature = "native")]
 use crate::error::{ErrorKind, SyncularError};
@@ -12,8 +17,6 @@ use reqwest::blocking::Body as BlockingBody;
 use reqwest::blocking::Client as HttpClient;
 #[cfg(feature = "native")]
 use reqwest::Method;
-#[cfg(not(feature = "native"))]
-use serde_json::Value;
 #[cfg(feature = "native")]
 use serde_json::{json, Value};
 #[cfg(feature = "native")]
@@ -150,7 +153,7 @@ pub trait SyncTransport {
         &self,
         chunk: &SnapshotChunkRef,
         scopes: &ScopeValues,
-    ) -> Result<Vec<Value>>;
+    ) -> Result<SnapshotChunkRows>;
     fn connect_realtime(&self) -> Result<Self::Realtime>;
 }
 
@@ -246,6 +249,16 @@ impl SyncTransport for HttpSyncTransport {
             ));
         }
 
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if is_binary_sync_pack_content_type(content_type.as_deref()) {
+            let bytes = response.bytes()?.to_vec();
+            return decode_binary_sync_pack(&bytes);
+        }
+
         Ok(response.json()?)
     }
 
@@ -253,7 +266,11 @@ impl SyncTransport for HttpSyncTransport {
         &self,
         chunk: &SnapshotChunkRef,
         scopes: &ScopeValues,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
+        if let Some(compressed) = chunk.body.as_ref() {
+            let _ = scopes;
+            return decode_compressed_snapshot_chunk_rows(chunk, compressed);
+        }
         let url = format!(
             "{}/snapshot-chunks/{}",
             self.config.base_url.trim_end_matches('/'),
@@ -275,23 +292,9 @@ impl SyncTransport for HttpSyncTransport {
                 format!("snapshot chunk failed with HTTP {status}: {body}"),
             ));
         }
+        validate_snapshot_chunk_format(chunk)?;
         let compressed = response.bytes()?.to_vec();
-        let mut decoder = GzDecoder::new(compressed.as_slice());
-        let mut decoded = Vec::new();
-        decoder.read_to_end(&mut decoded)?;
-
-        let actual_hash = hex::encode(Sha256::digest(&decoded));
-        if actual_hash != chunk.sha256 {
-            return Err(SyncularError::message(
-                ErrorKind::Protocol,
-                format!(
-                    "snapshot chunk hash mismatch: expected {}, got {}",
-                    chunk.sha256, actual_hash
-                ),
-            ));
-        }
-
-        decode_snapshot_rows(&decoded)
+        decode_compressed_snapshot_chunk_rows(chunk, &compressed)
     }
 
     fn connect_realtime(&self) -> Result<RealtimeSocket> {
@@ -850,6 +853,65 @@ fn blob_hash_path(hash: &str) -> Result<String> {
 }
 
 #[cfg(feature = "native")]
+fn decode_compressed_snapshot_chunk_rows(
+    chunk: &SnapshotChunkRef,
+    compressed: &[u8],
+) -> Result<SnapshotChunkRows> {
+    validate_snapshot_chunk_format(chunk)?;
+    let mut decoder = GzDecoder::new(compressed);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
+
+    let actual_hash = hex::encode(Sha256::digest(&decoded));
+    if actual_hash != chunk.sha256 {
+        return Err(SyncularError::message(
+            ErrorKind::Protocol,
+            format!(
+                "snapshot chunk hash mismatch: expected {}, got {}",
+                chunk.sha256, actual_hash
+            ),
+        ));
+    }
+
+    decode_snapshot_chunk_rows(chunk, &decoded)
+}
+
+#[cfg(feature = "native")]
+fn validate_snapshot_chunk_format(chunk: &SnapshotChunkRef) -> Result<()> {
+    if chunk.compression != "gzip" {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot chunk compression: {}",
+            chunk.compression
+        )));
+    }
+    match chunk.encoding.as_str() {
+        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 | SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
+            Ok(())
+        }
+        encoding => Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot chunk encoding: {encoding}"
+        ))),
+    }
+}
+
+#[cfg(feature = "native")]
+fn decode_snapshot_chunk_rows(chunk: &SnapshotChunkRef, bytes: &[u8]) -> Result<SnapshotChunkRows> {
+    validate_snapshot_chunk_format(chunk)?;
+
+    match chunk.encoding.as_str() {
+        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 => {
+            decode_snapshot_rows(bytes).map(SnapshotChunkRows::Json)
+        }
+        SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
+            decode_binary_snapshot_rows(bytes).map(SnapshotChunkRows::Binary)
+        }
+        encoding => Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot chunk encoding: {encoding}"
+        ))),
+    }
+}
+
+#[cfg(feature = "native")]
 fn decode_snapshot_rows(bytes: &[u8]) -> Result<Vec<Value>> {
     if bytes.len() < 4 || &bytes[0..4] != b"SRF1" {
         return Err(SyncularError::protocol_message(
@@ -858,7 +920,7 @@ fn decode_snapshot_rows(bytes: &[u8]) -> Result<Vec<Value>> {
     }
 
     let mut offset = 4usize;
-    let mut rows = Vec::new();
+    let mut rows = Vec::with_capacity(estimated_snapshot_row_count(bytes.len()));
     while offset < bytes.len() {
         if offset + 4 > bytes.len() {
             return Err(SyncularError::protocol_message(
@@ -878,6 +940,11 @@ fn decode_snapshot_rows(bytes: &[u8]) -> Result<Vec<Value>> {
     }
 
     Ok(rows)
+}
+
+#[cfg(feature = "native")]
+fn estimated_snapshot_row_count(byte_len: usize) -> usize {
+    (byte_len / 160).clamp(1, 20_000)
 }
 
 #[cfg(all(test, feature = "native"))]

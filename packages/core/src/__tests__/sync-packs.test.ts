@@ -1,0 +1,159 @@
+import { describe, expect, it } from 'bun:test';
+import {
+  SyncCombinedRequestSchema,
+  SyncPullRequestSchema,
+} from '../schemas/sync';
+import {
+  decodeBinarySyncPack,
+  encodeBinarySyncPack,
+  isBinarySyncPackContentType,
+  isSyncPackEncoding,
+  SYNC_PACK_CONTENT_TYPE,
+  SYNC_PACK_ENCODING_BINARY_V1,
+  SYNC_PACK_ENCODING_JSON_V1,
+} from '../sync-packs';
+import { SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 } from '../snapshot-chunks';
+import type { SyncCombinedResponse, SyncSnapshotChunkRef } from '../schemas/sync';
+
+describe('sync pack protocol negotiation', () => {
+  it('accepts advertised JSON and binary pack encodings on pull requests', () => {
+    const parsed = SyncPullRequestSchema.parse({
+      clientId: 'client-1',
+      limitCommits: 50,
+      limitSnapshotRows: 1000,
+      syncPackEncodings: [
+        SYNC_PACK_ENCODING_BINARY_V1,
+        SYNC_PACK_ENCODING_JSON_V1,
+      ],
+      subscriptions: [],
+    });
+
+    expect(parsed.syncPackEncodings).toEqual([
+      SYNC_PACK_ENCODING_BINARY_V1,
+      SYNC_PACK_ENCODING_JSON_V1,
+    ]);
+    expect(isSyncPackEncoding(parsed.syncPackEncodings[0])).toBe(true);
+  });
+
+  it('accepts root-level pack negotiation for combined push/pull responses', () => {
+    const parsed = SyncCombinedRequestSchema.parse({
+      clientId: 'client-1',
+      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
+      pull: {
+        limitCommits: 50,
+        limitSnapshotRows: 1000,
+        subscriptions: [],
+      },
+    });
+
+    expect(parsed.syncPackEncodings).toEqual([SYNC_PACK_ENCODING_BINARY_V1]);
+    expect(isBinarySyncPackContentType(`${SYNC_PACK_CONTENT_TYPE}; charset=binary`)).toBe(true);
+  });
+});
+
+describe('binary sync pack format', () => {
+  it('round-trips combined push and pull responses without JSON envelope fields', () => {
+    const chunkBody = new Uint8Array([1, 2, 3, 4]);
+    const chunk = {
+      id: 'chunk-1',
+      byteLength: 128,
+      sha256: '0'.repeat(64),
+      encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+      compression: 'gzip',
+      body: chunkBody,
+    } satisfies SyncSnapshotChunkRef & { body: Uint8Array };
+    const response: SyncCombinedResponse = {
+      ok: true,
+      requiredSchemaVersion: 2,
+      latestSchemaVersion: 3,
+      push: {
+        ok: true,
+        commits: [
+          {
+            ok: true,
+            clientCommitId: 'local-commit-1',
+            status: 'applied',
+            commitSeq: 41,
+            results: [{ opIndex: 0, status: 'applied' }],
+          },
+          {
+            ok: true,
+            clientCommitId: 'local-commit-2',
+            status: 'rejected',
+            results: [
+              {
+                opIndex: 0,
+                status: 'conflict',
+                message: 'server row changed',
+                code: 'CONFLICT',
+                server_version: 7,
+                server_row: { id: 'task-2', title: 'Server' },
+              },
+            ],
+          },
+        ],
+      },
+      pull: {
+        ok: true,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            status: 'active',
+            scopes: { user_id: 'user-1' },
+            bootstrap: false,
+            bootstrapState: null,
+            nextCursor: 42,
+            commits: [
+              {
+                commitSeq: 42,
+                createdAt: '2026-05-17T10:00:00.000Z',
+                actorId: 'user-2',
+                changes: [
+                  {
+                    table: 'tasks',
+                    row_id: 'task-1',
+                    op: 'upsert',
+                    row_json: {
+                      id: 'task-1',
+                      title: 'Remote',
+                      server_version: 42,
+                      rank: 1.25,
+                      done: false,
+                      labels: ['inbox', 'rust'],
+                      metadata: {
+                        nullable: null,
+                        nested: { priority: 3 },
+                      },
+                    },
+                    row_version: 42,
+                    scopes: { user_id: 'user-1' },
+                  },
+                ],
+              },
+            ],
+            snapshots: [
+              {
+                table: 'tasks',
+                rows: [],
+                chunks: [
+                  chunk,
+                ],
+                isFirstPage: true,
+                isLastPage: true,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    const encoded = encodeBinarySyncPack(response);
+    expect(encoded[0]).toBe(0x53);
+    expect(encoded[4]).toBe(3);
+    expect(encoded[5]).toBe(0);
+
+    const decoded = decodeBinarySyncPack(encoded);
+    expect(decoded).toEqual(response);
+    expect(encoded.length).toBeLessThan(JSON.stringify(response).length);
+  });
+});

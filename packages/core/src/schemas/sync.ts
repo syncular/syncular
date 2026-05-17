@@ -10,8 +10,9 @@
 import { z } from 'zod';
 import {
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-  SYNC_SNAPSHOT_CHUNK_ENCODING,
+  SYNC_SNAPSHOT_CHUNK_ENCODINGS,
 } from '../snapshot-chunks';
+import { SYNC_PACK_ENCODINGS } from '../sync-packs';
 
 // ============================================================================
 // Operation Types
@@ -161,12 +162,19 @@ export type SyncSubscriptionRequest = z.infer<
   typeof SyncSubscriptionRequestSchema
 >;
 
+export const SyncSnapshotChunkEncodingSchema = z.enum(
+  SYNC_SNAPSHOT_CHUNK_ENCODINGS
+);
+export const SyncPackEncodingSchema = z.enum(SYNC_PACK_ENCODINGS);
+
 export const SyncPullRequestSchema = z.object({
   clientId: z.string().min(1),
   limitCommits: z.number().int().min(1),
   limitSnapshotRows: z.number().int().min(1).optional(),
   maxSnapshotPages: z.number().int().min(1).optional(),
   dedupeRows: z.boolean().optional(),
+  snapshotEncodings: z.array(SyncSnapshotChunkEncodingSchema).optional(),
+  syncPackEncodings: z.array(SyncPackEncodingSchema).optional(),
   subscriptions: z.array(SyncSubscriptionRequestSchema),
 });
 
@@ -196,7 +204,7 @@ export const SyncSnapshotChunkRefSchema = z.object({
   id: z.string(),
   byteLength: z.number().int(),
   sha256: z.string(),
-  encoding: z.literal(SYNC_SNAPSHOT_CHUNK_ENCODING),
+  encoding: SyncSnapshotChunkEncodingSchema,
   compression: z.literal(SYNC_SNAPSHOT_CHUNK_COMPRESSION),
 });
 
@@ -240,6 +248,7 @@ export type SyncPullResponse = z.infer<typeof SyncPullResponseSchema>;
 
 export const SyncCombinedRequestSchema = z.object({
   clientId: z.string().min(1),
+  syncPackEncodings: z.array(SyncPackEncodingSchema).optional(),
   push: SyncPushBatchRequestSchema.omit({ clientId: true }).optional(),
   pull: SyncPullRequestSchema.omit({ clientId: true }).optional(),
 });

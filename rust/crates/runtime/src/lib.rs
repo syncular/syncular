@@ -2,6 +2,10 @@ extern crate self as syncular_runtime;
 
 #[path = "core/app_schema.rs"]
 pub mod app_schema;
+#[path = "core/binary_snapshot.rs"]
+pub mod binary_snapshot;
+#[path = "core/binary_sync_pack.rs"]
+pub mod binary_sync_pack;
 #[cfg(all(feature = "boltffi-bindings", feature = "native"))]
 #[path = "bindings/boltffi.rs"]
 pub mod boltffi_bindings;

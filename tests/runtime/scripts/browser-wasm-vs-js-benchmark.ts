@@ -27,6 +27,7 @@ interface BenchmarkResult {
   operations?: number;
   rounds?: number;
   preferOPFS?: boolean;
+  includeDirectRustOwned?: boolean;
   js?: BenchmarkStats;
   jsBatch?: BenchmarkStats;
   rustOwnedSqliteIdb?: BenchmarkStats;
@@ -60,6 +61,7 @@ interface BenchmarkRuntimeWindow {
       rounds: number;
       warmupOperations: number;
       preferOPFS: boolean;
+      includeDirectRustOwned: boolean;
     }): Promise<BenchmarkResult>;
     benchmarkFeatureWorkloads(options: {
       operations: number;
@@ -79,6 +81,11 @@ const featureRounds = numberArg('--feature-rounds', 5);
 const featureWarmupOperations = numberArg('--feature-warmup', 5);
 const featureStorage = storageArg('--feature-storage', 'indexedDb');
 const preferOPFS = !process.argv.includes('--indexeddb');
+const includeDirectRustOwned = process.argv.includes('--include-direct-rust');
+const wasmProfile = wasmProfileArg(
+  '--wasm-profile',
+  process.env.SYNCULAR_BROWSER_WASM_PROFILE ?? 'release'
+);
 const jsonOutput = process.argv.includes('--json');
 const outputPath = stringArg('--output');
 
@@ -97,16 +104,19 @@ try {
 
   assetPort = await pickFreePort();
   const servePath = path.resolve(import.meta.dir, '../apps/browser/serve.ts');
-  assetProc = Bun.spawn(['bun', servePath, `--port=${assetPort}`], {
-    cwd: path.resolve(import.meta.dir, '..'),
-    env: { ...process.env },
-    stdin: 'ignore',
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+  assetProc = Bun.spawn(
+    ['bun', servePath, `--port=${assetPort}`, `--wasm-profile=${wasmProfile}`],
+    {
+      cwd: path.resolve(import.meta.dir, '..'),
+      env: { ...process.env, SYNCULAR_BROWSER_WASM_PROFILE: wasmProfile },
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    }
+  );
 
   const assetUrl = `http://127.0.0.1:${assetPort}`;
-  await waitForHealthy(assetUrl, 30_000);
+  await waitForHealthy(assetUrl, wasmProfile === 'release' ? 120_000 : 30_000);
 
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
@@ -122,7 +132,13 @@ try {
       (
         window as unknown as BenchmarkRuntimeWindow
       ).__runtime.benchmarkLocalMutations(options),
-    { operations, rounds, warmupOperations, preferOPFS }
+    {
+      operations,
+      rounds,
+      warmupOperations,
+      preferOPFS,
+      includeDirectRustOwned,
+    }
   );
   const featureResult = featureWorkloads
     ? await page.evaluate(
@@ -144,7 +160,6 @@ try {
     !result.ok ||
     !result.js ||
     !result.jsBatch ||
-    !result.rustOwnedSqliteIdb ||
     !result.rustOwnedSqliteOpfsWorker
   ) {
     throw new Error(
@@ -168,11 +183,15 @@ try {
       name: 'chromium',
       userAgent: await page.evaluate(() => navigator.userAgent),
     },
+    runtime: {
+      wasmProfile,
+    },
     options: {
       operations,
       rounds,
       warmupOperations,
       preferOPFS,
+      includeDirectRustOwned,
     },
     results: {
       legacyJsHostStoreSingle: result.js,
@@ -182,13 +201,12 @@ try {
     },
     ratios: {
       rustOwnedSqliteIndexedDbMedianToLegacyJsBatch:
-        result.ratioRustOwnedSqliteIdbToJsBatch ?? 0,
+        result.ratioRustOwnedSqliteIdbToJsBatch,
       rustOwnedSqliteOpfsWorkerMedianToLegacyJsBatch:
         result.ratioRustOwnedSqliteOpfsWorkerToJsBatch ?? 0,
-      rustOwnedSqliteIndexedDbSpeedupVsLegacyJsBatch: speedup(
-        result.jsBatch,
-        result.rustOwnedSqliteIdb
-      ),
+      rustOwnedSqliteIndexedDbSpeedupVsLegacyJsBatch: result.rustOwnedSqliteIdb
+        ? speedup(result.jsBatch, result.rustOwnedSqliteIdb)
+        : undefined,
       rustOwnedSqliteOpfsWorkerSpeedupVsLegacyJsBatch: speedup(
         result.jsBatch,
         result.rustOwnedSqliteOpfsWorker
@@ -220,7 +238,7 @@ try {
     console.log(
       `operations=${operations} rounds=${rounds} warmup=${warmupOperations} preferred-storage=${
         preferOPFS ? 'OPFS' : 'IndexedDB'
-      }`
+      } wasm-profile=${wasmProfile} direct-rust=${includeDirectRustOwned ? 'included' : 'skipped'}`
     );
     console.log(
       'Legacy JS/wa-sqlite rows are benchmark baselines only; v2 runtime remains Rust-owned SQLite.'
@@ -232,16 +250,18 @@ try {
         result.jsBatch,
         result.rustOwnedSqliteIdb,
         result.rustOwnedSqliteOpfsWorker,
-      ])
+      ].filter((row): row is BenchmarkStats => row != null))
     );
     console.log('');
-    console.log(
-      `Rust-owned IndexedDB median / legacy JS batch median: ${formatNumber(
-        report.ratios.rustOwnedSqliteIndexedDbMedianToLegacyJsBatch
-      )}x (${formatNumber(
-        report.ratios.rustOwnedSqliteIndexedDbSpeedupVsLegacyJsBatch
-      )}x speedup)`
-    );
+    if (result.rustOwnedSqliteIdb) {
+      console.log(
+        `Rust-owned IndexedDB median / legacy JS batch median: ${formatNumber(
+          report.ratios.rustOwnedSqliteIndexedDbMedianToLegacyJsBatch ?? 0
+        )}x (${formatNumber(
+          report.ratios.rustOwnedSqliteIndexedDbSpeedupVsLegacyJsBatch ?? 0
+        )}x speedup)`
+      );
+    }
     console.log(
       `Rust-owned OPFS Worker median / legacy JS batch median: ${formatNumber(
         report.ratios.rustOwnedSqliteOpfsWorkerMedianToLegacyJsBatch
@@ -255,7 +275,7 @@ try {
       console.log('');
       console.log('Browser Rust-owned SQLite feature workload benchmark');
       console.log(
-        `operations=${featureOperations} rounds=${featureRounds} warmup=${featureWarmupOperations} storage=${featureStorage}`
+        `operations=${featureOperations} rounds=${featureRounds} warmup=${featureWarmupOperations} storage=${featureStorage} wasm-profile=${wasmProfile}`
       );
       console.log('');
       console.log(formatTable(featureRows));
@@ -302,6 +322,13 @@ function storageArg(
     return value;
   }
   throw new Error(`Invalid ${name}: ${raw}`);
+}
+
+function wasmProfileArg(name: string, fallback: string): 'dev' | 'release' {
+  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  const value = raw?.slice(name.length + 1) ?? fallback;
+  if (value === 'dev' || value === 'release') return value;
+  throw new Error(`Invalid ${name}: ${raw ?? value}`);
 }
 
 function stringArg(name: string): string | undefined {

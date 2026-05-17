@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::{Map, Value};
+use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
 use syncular_runtime::protocol::{
     BlobRef, CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushBatchResponse,
@@ -42,7 +43,7 @@ struct TestTransportState {
     realtime_events: VecDeque<RealtimeEvent>,
     http_responses: VecDeque<QueuedHttpResponse>,
     ws_push_responses: VecDeque<PushCommitResponse>,
-    chunk_rows: VecDeque<Vec<Value>>,
+    chunk_rows: VecDeque<SnapshotChunkRows>,
     blob_uploads: Vec<BlobUploadRecord>,
     blobs: BTreeMap<String, Vec<u8>>,
     closed_realtime_count: usize,
@@ -114,7 +115,7 @@ impl TestTransport {
             .lock()
             .expect("test transport state")
             .chunk_rows
-            .push_back(rows);
+            .push_back(SnapshotChunkRows::Json(rows));
     }
 
     pub fn seed_blob(&self, blob: &BlobRef, bytes: Vec<u8>) {
@@ -224,13 +225,16 @@ impl SyncTransport for TestTransport {
         &self,
         chunk: &SnapshotChunkRef,
         scopes: &Map<String, Value>,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         let mut state = self.state.lock().expect("test transport state");
         state.chunk_fetches.push(SnapshotChunkFetch {
             chunk: chunk.clone(),
             scopes: scopes.clone(),
         });
-        Ok(state.chunk_rows.pop_front().unwrap_or_default())
+        Ok(state
+            .chunk_rows
+            .pop_front()
+            .unwrap_or_else(|| SnapshotChunkRows::Json(Vec::new())))
     }
 
     fn connect_realtime(&self) -> Result<Self::Realtime> {
@@ -493,7 +497,7 @@ where
         &self,
         chunk: &SnapshotChunkRef,
         scopes: &Map<String, Value>,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         apply_fault(
             &self.state,
             FaultPhase::Before,

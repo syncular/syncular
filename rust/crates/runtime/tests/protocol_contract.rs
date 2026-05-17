@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::params;
 use serde_json::{json, Map, Value};
+use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::encryption::{
@@ -926,6 +927,7 @@ fn snapshot_chunk_rows_are_fetched_with_subscription_scopes() -> Result<()> {
                 .as_str()
                 .expect("snapshot chunk compression")
                 .to_string(),
+            body: None,
         }],
         scopes(),
         42,
@@ -1808,20 +1810,20 @@ impl SyncTransport for MockTransport {
         &self,
         chunk: &SnapshotChunkRef,
         scopes: &Map<String, Value>,
-    ) -> Result<Vec<Value>> {
+    ) -> Result<SnapshotChunkRows> {
         self.shared
             .lock()
             .unwrap()
             .chunk_fetches
             .push((chunk.id.clone(), scopes.clone()));
         if matches!(self.mode, MockMode::EncryptedChunkedSnapshot) {
-            Ok(vec![encrypted_task_row()])
+            Ok(SnapshotChunkRows::Json(vec![encrypted_task_row()]))
         } else {
-            Ok(vec![task_row(
+            Ok(SnapshotChunkRows::Json(vec![task_row(
                 &sync_conformance_str(&["snapshotChunk", "serverTask", "id"]),
                 &sync_conformance_str(&["snapshotChunk", "serverTask", "title"]),
                 sync_conformance_i64(&["snapshotChunk", "serverTask", "serverVersion"]),
-            )])
+            )]))
         }
     }
 
@@ -1877,8 +1879,8 @@ impl SyncTransport for ReentrantTransport {
         &self,
         _chunk: &SnapshotChunkRef,
         _scopes: &Map<String, Value>,
-    ) -> Result<Vec<Value>> {
-        Ok(Vec::new())
+    ) -> Result<SnapshotChunkRows> {
+        Ok(SnapshotChunkRows::Json(Vec::new()))
     }
 
     fn connect_realtime(&self) -> Result<Self::Realtime> {
@@ -1927,8 +1929,8 @@ impl SyncTransport for BlockingTransport {
         &self,
         _chunk: &SnapshotChunkRef,
         _scopes: &Map<String, Value>,
-    ) -> Result<Vec<Value>> {
-        Ok(Vec::new())
+    ) -> Result<SnapshotChunkRows> {
+        Ok(SnapshotChunkRows::Json(Vec::new()))
     }
 
     fn connect_realtime(&self) -> Result<Self::Realtime> {
@@ -2018,6 +2020,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
                 sha256: sync_conformance_str(&["snapshotChunk", "sha256"]),
                 encoding: sync_conformance_str(&["snapshotChunk", "encoding"]),
                 compression: sync_conformance_str(&["snapshotChunk", "compression"]),
+                body: None,
             }]),
             is_first_page: true,
             is_last_page: true,

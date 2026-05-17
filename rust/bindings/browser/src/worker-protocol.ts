@@ -22,6 +22,7 @@ import type {
   SyncularV2RuntimeInfo,
   SyncularV2StorageCompactionOptions,
   SyncularV2SubscriptionSpec,
+  SyncularV2TransportStats,
 } from './types';
 
 export const SYNCULAR_V2_WORKER_PROTOCOL_VERSION = 1;
@@ -159,6 +160,16 @@ export type SyncularV2WorkerRequest =
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'syncPull' | 'syncPush' | 'syncOnce';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'transportStats';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'resetTransportStats';
     }
   | {
       id: number;
@@ -331,3 +342,4 @@ export type SyncularV2WorkerOutboundMessage =
   | SyncularV2WorkerEvent;
 
 export type SyncularV2WorkerRuntimeInfoResponse = SyncularV2RuntimeInfo;
+export type SyncularV2WorkerTransportStatsResponse = SyncularV2TransportStats;

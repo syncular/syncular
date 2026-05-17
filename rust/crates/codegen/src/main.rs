@@ -1350,6 +1350,19 @@ fn ts_sqlite_column_type(column: &ColumnRow) -> &'static str {
     }
 }
 
+fn ts_binary_snapshot_column_type(column: &ColumnRow, config: &TableCodegenConfig) -> &'static str {
+    if is_blob_ref_column(column, config) {
+        return "json";
+    }
+
+    match ts_sqlite_column_type(column) {
+        "integer" => "integer",
+        "real" => "float",
+        "blob" => "bytes",
+        _ => "string",
+    }
+}
+
 fn schema_app_type(column: &ColumnRow, config: &TableCodegenConfig) -> &'static str {
     if is_blob_ref_column(column, config) {
         return "blobRef";
@@ -3574,7 +3587,7 @@ fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInf
     out.push_str("  isDelete: boolean;\n");
     out.push_str("}\n\n");
     out.push_str("function syncularRowsFromChangedInput(input: SyncularChangedRowsInput): readonly SyncularV2ChangedRow[] {\n");
-    out.push_str("  return Array.isArray(input) ? input : input.changedRows ?? [];\n");
+    out.push_str("  return Array.isArray(input) ? input : (input as { changedRows?: readonly SyncularV2ChangedRow[] }).changedRows ?? [];\n");
     out.push_str("}\n\n");
     out.push_str("function syncularColumnFlags<Field extends string>(fields: readonly string[], allFields: readonly Field[]): Record<Field, boolean> {\n");
     out.push_str("  const changed = new Set(fields);\n");
@@ -3833,7 +3846,7 @@ fn generate_typescript_module(
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
     out.push_str(
-        "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
+        "import { codecs, type BinarySnapshotColumn, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
     );
     out.push_str("export interface SyncularGeneratedOperation {\n");
     out.push_str("  table: string;\n");
@@ -4089,6 +4102,25 @@ fn generate_typescript_module(
     }
     out.push_str("  ],\n");
     out.push_str("} satisfies SyncularV2AppSchema;\n\n");
+    out.push_str("export const syncularGeneratedSnapshotBinaryColumns = {\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!("  {}: [\n", ts_property_name(&table.name)));
+        for column in &table.columns {
+            out.push_str(&format!(
+                "    {{ name: {}, type: {}{} }},\n",
+                ts_string(&column.name),
+                ts_string(ts_binary_snapshot_column_type(column, &table_config)),
+                if is_nullable(column) {
+                    ", nullable: true"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.push_str("  ],\n");
+    }
+    out.push_str("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;\n\n");
     out.push_str("export const syncularGeneratedFieldEncryptionRules = [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -8266,7 +8298,7 @@ mod tests {
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
-            "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
+            "import { codecs, type BinarySnapshotColumn, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
         ));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains(
@@ -8330,6 +8362,11 @@ mod tests {
         assert!(output.contains("export const syncularGeneratedTableConfig = {"));
         assert!(output.contains("export const syncularGeneratedAppSchema = {"));
         assert!(output.contains("} satisfies SyncularV2AppSchema;"));
+        assert!(output.contains("export const syncularGeneratedSnapshotBinaryColumns = {"));
+        assert!(output
+            .contains("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;"));
+        assert!(output.contains("    { name: 'image', type: 'json', nullable: true },"));
+        assert!(output.contains("    { name: 'completed', type: 'integer' },"));
         assert!(output.contains("    primaryKeyColumn: 'id',"));
         assert!(output.contains("    serverVersionColumn: 'server_version',"));
         assert!(output.contains("    softDeleteColumn: 'deleted',"));

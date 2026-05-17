@@ -84,6 +84,17 @@ pub trait DieselTableAdapter: Sync {
         row: &Value,
         fallback_version: Option<i64>,
     ) -> Result<()>;
+    fn upsert_rows(
+        &self,
+        conn: &mut SqliteConnection,
+        rows: &[Value],
+        fallback_version: Option<i64>,
+    ) -> Result<()> {
+        for row in rows {
+            self.upsert_row(conn, row, fallback_version)?;
+        }
+        Ok(())
+    }
     fn apply_change(&self, conn: &mut SqliteConnection, change: &SyncChange) -> Result<()>;
 }
 

@@ -4,9 +4,9 @@ use crate::error::SyncularError;
 use crate::protocol::SyncOperation;
 use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
-use crate::web_client::{WebSyncularClient, WebSyncularClientConfig};
+use crate::web_client::{WebSyncPullOptions, WebSyncularClient, WebSyncularClientConfig};
 use crate::web_host_store::{WebHostLocalOperation, WebHostStore};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
@@ -17,6 +17,17 @@ struct WasmClientConfig {
     client_id: String,
     actor_id: String,
     project_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_pull_options")]
+    pull: WebSyncPullOptions,
+}
+
+fn deserialize_pull_options<'de, D>(
+    deserializer: D,
+) -> std::result::Result<WebSyncPullOptions, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<WebSyncPullOptions>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +54,7 @@ impl SyncularWasmClient {
             client_id: config.client_id,
             actor_id: config.actor_id,
             project_id: config.project_id,
+            pull: config.pull,
         };
         let transport = WebSyncTransport::new(WebSyncTransportConfig {
             base_url: inner_config.base_url.clone(),
@@ -71,6 +83,16 @@ impl SyncularWasmClient {
             .await
             .and_then(|result| Ok(serde_json::to_string(&result)?))
             .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = transportStatsJson)]
+    pub fn transport_stats_json(&self) -> std::result::Result<String, JsValue> {
+        self.inner.transport().stats_json().map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = resetTransportStats)]
+    pub fn reset_transport_stats(&self) {
+        self.inner.transport().reset_stats();
     }
 
     #[wasm_bindgen(js_name = applyLocalOperationJson)]

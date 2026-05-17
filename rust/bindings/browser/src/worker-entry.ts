@@ -192,6 +192,11 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().syncPush();
     case 'syncOnce':
       return requireClient().syncOnce();
+    case 'transportStats':
+      return requireClient().transportStats();
+    case 'resetTransportStats':
+      requireClient().resetTransportStats();
+      return true;
     case 'conflictSummaries':
       return requireClient().conflictSummaries();
     case 'retryConflictKeepLocal':

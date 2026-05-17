@@ -734,7 +734,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     clientId: string;
@@ -759,6 +759,7 @@ export interface operations {
                         limitSnapshotRows?: number;
                         maxSnapshotPages?: number;
                         dedupeRows?: boolean;
+                        snapshotEncodings?: ("json-row-frame-v1" | "binary-table-v1")[];
                         subscriptions: {
                             id: string;
                             table: string;
@@ -865,8 +866,8 @@ export interface operations {
                                         id: string;
                                         byteLength: number;
                                         sha256: string;
-                                        /** @constant */
-                                        encoding: "json-row-frame-v1";
+                                        /** @enum {string} */
+                                        encoding: "json-row-frame-v1" | "binary-table-v1";
                                         /** @constant */
                                         compression: "gzip";
                                     }[];
@@ -1601,7 +1602,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     tables: string[];
@@ -2062,7 +2063,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     name: string;
@@ -2226,7 +2227,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     keyIds: string[];
@@ -2533,7 +2534,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     hash: string;

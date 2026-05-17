@@ -5,7 +5,7 @@ import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORK
 import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../bindings/browser/src';
 
 import { sql, type Kysely } from 'kysely';
-import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
+import { codecs, type BinarySnapshotColumn, type BlobRef, type ColumnCodecSource } from '@syncular/core';
 
 export interface SyncularGeneratedOperation {
   table: string;
@@ -163,6 +163,35 @@ export const syncularGeneratedAppSchema = {
   ],
 } satisfies SyncularV2AppSchema;
 
+export const syncularGeneratedSnapshotBinaryColumns = {
+  comments: [
+    { name: 'id', type: 'string' },
+    { name: 'task_id', type: 'string' },
+    { name: 'project_id', type: 'string', nullable: true },
+    { name: 'body', type: 'string' },
+    { name: 'author_id', type: 'string' },
+    { name: 'deleted', type: 'integer' },
+    { name: 'server_version', type: 'integer' },
+  ],
+  projects: [
+    { name: 'id', type: 'string' },
+    { name: 'name', type: 'string' },
+    { name: 'owner_id', type: 'string' },
+    { name: 'archived', type: 'integer' },
+    { name: 'server_version', type: 'integer' },
+  ],
+  tasks: [
+    { name: 'id', type: 'string' },
+    { name: 'title', type: 'string' },
+    { name: 'completed', type: 'integer' },
+    { name: 'user_id', type: 'string' },
+    { name: 'project_id', type: 'string', nullable: true },
+    { name: 'server_version', type: 'integer' },
+    { name: 'image', type: 'json', nullable: true },
+    { name: 'title_yjs_state', type: 'string', nullable: true },
+  ],
+} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;
+
 export const syncularGeneratedFieldEncryptionRules = [
 ] satisfies readonly SyncularV2FieldEncryptionRule[];
 
@@ -203,7 +232,7 @@ export interface SyncularGeneratedChangedRowBase<Table extends keyof SyncularApp
 }
 
 function syncularRowsFromChangedInput(input: SyncularChangedRowsInput): readonly SyncularV2ChangedRow[] {
-  return Array.isArray(input) ? input : input.changedRows ?? [];
+  return Array.isArray(input) ? input : (input as { changedRows?: readonly SyncularV2ChangedRow[] }).changedRows ?? [];
 }
 
 function syncularColumnFlags<Field extends string>(fields: readonly string[], allFields: readonly Field[]): Record<Field, boolean> {

@@ -11,12 +11,36 @@ export interface SyncularV2ClientConfig {
   clientId: string;
   actorId: string;
   projectId?: string | null;
+  pull?: SyncularV2PullOptions;
   fileName?: string;
   storage?: SyncularV2Storage;
   clearOnInit?: boolean;
   stateId?: string;
   schemaVersion?: number;
   appSchema?: SyncularV2AppSchema;
+}
+
+export interface SyncularV2PullOptions {
+  limitCommits?: number;
+  limitSnapshotRows?: number;
+  maxSnapshotPages?: number;
+  dedupeRows?: boolean | null;
+  includeSnapshotRows?: boolean;
+  collectChangedRows?: boolean;
+}
+
+export interface SyncularV2TransportStats {
+  requestCount: number;
+  requestBytes: number;
+  responseBytes: number;
+  snapshotChunkCount: number;
+  snapshotChunkJsonCount: number;
+  snapshotChunkBinaryCount: number;
+  snapshotChunkRowCount: number;
+  snapshotChunkFetchMs: number;
+  snapshotChunkDecompressMs: number;
+  snapshotChunkHashMs: number;
+  snapshotChunkDecodeMs: number;
 }
 
 export type SyncularV2Storage = 'memory' | 'indexedDb' | 'opfsSahPool';
@@ -350,6 +374,18 @@ export interface SyncularV2SyncResult {
   changedRows: SyncularV2ChangedRow[];
   subscriptions: SyncularV2SubscriptionResult[];
   pushedCommits: number;
+  timings: SyncularV2SyncTimings;
+}
+
+export interface SyncularV2SyncTimings {
+  totalMs: number;
+  pushMs: number;
+  pullMs: number;
+  pullRequestMs: number;
+  pullTransformMs: number;
+  snapshotFetchMs: number;
+  pullApplyMs: number;
+  notifyMs: number;
 }
 
 export interface SyncularV2ConflictSummary {

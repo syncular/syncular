@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use syncular_runtime::app_schema::{AppSchema, AppTableMetadata};
+use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::crdt_yjs::{transform_operation_payload_for_metadata, YJS_PAYLOAD_KEY};
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
 use syncular_runtime::protocol::{
@@ -617,8 +618,8 @@ impl SyncTransport for AppTestServer {
         &self,
         _chunk: &SnapshotChunkRef,
         _scopes: &Map<String, Value>,
-    ) -> Result<Vec<Value>> {
-        Ok(Vec::new())
+    ) -> Result<SnapshotChunkRows> {
+        Ok(SnapshotChunkRows::Json(Vec::new()))
     }
 
     fn connect_realtime(&self) -> Result<Self::Realtime> {

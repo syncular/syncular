@@ -1,4 +1,5 @@
 use crate::app_schema::AppSchema;
+use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::{
     sync_changed_row_for_change, sync_changed_row_for_local_operation,
     sync_changed_row_for_snapshot, SubscriptionSpec, SyncChangedRow,
@@ -7,8 +8,10 @@ use crate::encrypted_crdt::EncryptedCrdt;
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
-    CombinedRequest, PullRequest, PushBatchRequest, PushCommitRequest, ScopeValues,
-    SubscriptionRequest, SyncCommit, SyncOperation,
+    CombinedRequest, PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
+    SubscriptionRequest, SyncCommit, SyncOperation, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1, SYNC_PACK_ENCODING_BINARY_V1,
+    SYNC_PACK_ENCODING_JSON_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
@@ -26,6 +29,58 @@ pub struct WebSyncularClientConfig {
     pub client_id: String,
     pub actor_id: String,
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub pull: WebSyncPullOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSyncPullOptions {
+    #[serde(default = "default_limit_commits")]
+    pub limit_commits: i64,
+    #[serde(default = "default_limit_snapshot_rows")]
+    pub limit_snapshot_rows: i64,
+    #[serde(default = "default_max_snapshot_pages")]
+    pub max_snapshot_pages: i64,
+    #[serde(default)]
+    pub dedupe_rows: Option<bool>,
+    #[serde(default = "default_include_snapshot_rows")]
+    pub include_snapshot_rows: bool,
+    #[serde(default = "default_collect_changed_rows")]
+    pub collect_changed_rows: bool,
+}
+
+impl Default for WebSyncPullOptions {
+    fn default() -> Self {
+        Self {
+            limit_commits: 50,
+            limit_snapshot_rows: 1000,
+            max_snapshot_pages: 4,
+            dedupe_rows: None,
+            include_snapshot_rows: true,
+            collect_changed_rows: true,
+        }
+    }
+}
+
+fn default_limit_commits() -> i64 {
+    50
+}
+
+fn default_limit_snapshot_rows() -> i64 {
+    1000
+}
+
+fn default_max_snapshot_pages() -> i64 {
+    4
+}
+
+fn default_include_snapshot_rows() -> bool {
+    true
+}
+
+fn default_collect_changed_rows() -> bool {
+    true
 }
 
 pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
@@ -43,6 +98,19 @@ pub struct WebSyncResult {
     pub changed_rows: Vec<SyncChangedRow>,
     pub subscriptions: Vec<WebSubscriptionResult>,
     pub pushed_commits: usize,
+    pub timings: WebSyncTimings,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebSyncTimings {
+    pub total_ms: f64,
+    pub push_ms: f64,
+    pub pull_ms: f64,
+    pub pull_request_ms: f64,
+    pub pull_transform_ms: f64,
+    pub snapshot_fetch_ms: f64,
+    pub pull_apply_ms: f64,
+    pub notify_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,12 +202,15 @@ where
     }
 
     pub async fn sync_pull(&mut self) -> Result<WebSyncResult> {
+        let total_started_at = timing_now_ms();
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
             push: None,
             pull: Some(self.build_pull_request().await?),
         };
+        let request_started_at = timing_now_ms();
         let response = self.transport.post_sync(&request).await?;
+        let pull_request_ms = elapsed_ms_since(request_started_at);
         validate_server_schema_version(
             response.required_schema_version,
             response.latest_schema_version,
@@ -151,9 +222,15 @@ where
         }
 
         let Some(pull) = response.pull else {
-            return Ok(WebSyncResult::default());
+            let mut result = WebSyncResult::default();
+            result.timings.total_ms = elapsed_ms_since(total_started_at);
+            result.timings.pull_ms = result.timings.total_ms;
+            result.timings.pull_request_ms = pull_request_ms;
+            return Ok(result);
         };
+        let transform_started_at = timing_now_ms();
         let pull = self.transform_pull_response(pull)?;
+        let pull_transform_ms = elapsed_ms_since(transform_started_at);
         if !pull.ok {
             return Err(SyncularError::protocol_message(
                 "browser pull response was not ok",
@@ -161,7 +238,38 @@ where
         }
 
         let mut result = WebSyncResult::default();
+        self.store.begin_apply_batch().await?;
+        let apply_started_at = timing_now_ms();
+        let apply_result = self.apply_pull_response(pull, &mut result).await;
+        result.timings.pull_apply_ms = elapsed_ms_since(apply_started_at);
+        match apply_result {
+            Ok(()) => self.store.commit_apply_batch().await?,
+            Err(error) => {
+                let _ = self.store.rollback_apply_batch().await;
+                return Err(error);
+            }
+        }
+
+        let notify_started_at = timing_now_ms();
+        self.store
+            .notify_tables_changed_with_rows(&result.changed_tables, &result.changed_rows)
+            .await?;
+        result.timings.notify_ms = elapsed_ms_since(notify_started_at);
+        result.timings.pull_request_ms = pull_request_ms;
+        result.timings.pull_transform_ms = pull_transform_ms;
+        result.timings.total_ms = elapsed_ms_since(total_started_at);
+        result.timings.pull_ms = result.timings.total_ms;
+        Ok(result)
+    }
+
+    async fn apply_pull_response(
+        &mut self,
+        pull: PullResponse,
+        result: &mut WebSyncResult,
+    ) -> Result<()> {
         let app_schema = self.store.app_schema();
+        let include_snapshot_rows = self.config.pull.include_snapshot_rows;
+        let collect_changed_rows = self.config.pull.collect_changed_rows;
         for sub in pull.subscriptions {
             let previous_state = self.store.subscription_state(&sub.id).await?;
             let table = self
@@ -174,75 +282,136 @@ where
 
             let mut snapshot_rows = Vec::new();
             if let Some(snapshots) = &sub.snapshots {
-                let mut prepared_snapshots = Vec::new();
+                let continuing_cleared_snapshot = previous_state.as_ref().is_some_and(|state| {
+                    state.bootstrap_state.is_some()
+                        && state.scopes == sub.scopes
+                        && snapshot_clear_removes_all_rows(app_schema, &table)
+                });
+                let mut scope_cleared_for_snapshot = continuing_cleared_snapshot;
                 for snapshot in snapshots {
-                    let mut chunk_rows = Vec::new();
+                    let snapshot_table = snapshot.table.clone();
+                    let mut chunk_batches = Vec::new();
                     if let Some(chunks) = &snapshot.chunks {
                         for chunk in chunks {
-                            for row in self
+                            let snapshot_fetch_started_at = timing_now_ms();
+                            let fetched = self
                                 .transport
                                 .fetch_snapshot_chunk_rows(chunk, &sub.scopes)
-                                .await?
-                            {
-                                chunk_rows.push(self.transform_snapshot_row(&snapshot.table, row)?);
+                                .await?;
+                            if self.field_encryption.is_some() {
+                                let rows = fetched
+                                    .try_into_value_rows()?
+                                    .into_iter()
+                                    .map(|row| self.transform_snapshot_row(&snapshot_table, row))
+                                    .collect::<Result<Vec<_>>>()?;
+                                chunk_batches.push(SnapshotChunkRows::Json(rows));
+                            } else {
+                                chunk_batches.push(fetched);
                             }
+                            result.timings.snapshot_fetch_ms +=
+                                elapsed_ms_since(snapshot_fetch_started_at);
                         }
                     }
-                    if snapshot.is_first_page || !snapshot.rows.is_empty() || !chunk_rows.is_empty()
-                    {
-                        add_changed_table(&mut result.changed_tables, &snapshot.table);
+                    let chunk_row_count = chunk_batches
+                        .iter()
+                        .map(SnapshotChunkRows::row_count)
+                        .sum::<usize>();
+                    if snapshot.is_first_page || !snapshot.rows.is_empty() || chunk_row_count > 0 {
+                        add_changed_table(&mut result.changed_tables, &snapshot_table);
                     }
-                    prepared_snapshots.push((snapshot.clone(), chunk_rows));
-                }
 
-                for (snapshot, chunk_rows) in prepared_snapshots {
+                    let inline_rows = snapshot.rows.clone();
                     if snapshot.is_first_page {
                         self.store
                             .clear_table_for_scopes_preserving_local_crdt(
-                                &snapshot.table,
+                                &snapshot_table,
                                 &sub.scopes,
                             )
                             .await?;
+                        scope_cleared_for_snapshot = true;
                     }
-                    snapshot_rows.extend(snapshot.rows.clone());
-                    for row in &snapshot.rows {
-                        let previous_row = previous_web_snapshot_row(
-                            &mut self.store,
-                            app_schema,
-                            &snapshot.table,
-                            row,
-                        )
-                        .await?;
-                        self.store.upsert_row(&snapshot.table, row.clone()).await?;
-                        if let Some(changed_row) = sync_changed_row_for_snapshot(
-                            app_schema,
-                            &snapshot.table,
-                            row,
-                            previous_row.as_ref(),
-                            &sub.id,
-                        ) {
-                            result.changed_rows.push(changed_row);
-                        }
+                    if include_snapshot_rows {
+                        snapshot_rows.extend(inline_rows.clone());
                     }
-                    for row in chunk_rows {
-                        let previous_row = previous_web_snapshot_row(
-                            &mut self.store,
-                            app_schema,
-                            &snapshot.table,
-                            &row,
-                        )
-                        .await?;
-                        self.store.upsert_row(&snapshot.table, row.clone()).await?;
-                        if let Some(changed_row) = sync_changed_row_for_snapshot(
-                            app_schema,
-                            &snapshot.table,
-                            &row,
-                            previous_row.as_ref(),
-                            &sub.id,
-                        ) {
-                            result.changed_rows.push(changed_row);
+                    if !collect_changed_rows && !include_snapshot_rows {
+                        self.store.upsert_rows(&snapshot_table, inline_rows).await?;
+                        for rows in chunk_batches {
+                            if scope_cleared_for_snapshot {
+                                self.store
+                                    .insert_cleared_snapshot_chunk_rows(&snapshot_table, rows)
+                                    .await?;
+                            } else {
+                                self.store
+                                    .upsert_snapshot_chunk_rows(&snapshot_table, rows)
+                                    .await?;
+                            }
                         }
-                        snapshot_rows.push(row);
+                    } else {
+                        let mut rows_to_upsert = Vec::with_capacity(inline_rows.len());
+                        for row in inline_rows {
+                            let previous_row = if scope_cleared_for_snapshot {
+                                None
+                            } else {
+                                previous_web_snapshot_row(
+                                    &mut self.store,
+                                    app_schema,
+                                    &snapshot_table,
+                                    &row,
+                                )
+                                .await?
+                            };
+                            if collect_changed_rows {
+                                if let Some(changed_row) = sync_changed_row_for_snapshot(
+                                    app_schema,
+                                    &snapshot_table,
+                                    &row,
+                                    previous_row.as_ref(),
+                                    &sub.id,
+                                ) {
+                                    result.changed_rows.push(changed_row);
+                                }
+                            }
+                            rows_to_upsert.push(row);
+                        }
+                        self.store
+                            .upsert_rows(&snapshot_table, rows_to_upsert)
+                            .await?;
+
+                        for batch in chunk_batches {
+                            let chunk_rows = batch.try_into_value_rows()?;
+                            let mut chunk_rows_to_upsert = Vec::with_capacity(chunk_rows.len());
+                            for row in chunk_rows {
+                                let previous_row = if scope_cleared_for_snapshot {
+                                    None
+                                } else {
+                                    previous_web_snapshot_row(
+                                        &mut self.store,
+                                        app_schema,
+                                        &snapshot_table,
+                                        &row,
+                                    )
+                                    .await?
+                                };
+                                if collect_changed_rows {
+                                    if let Some(changed_row) = sync_changed_row_for_snapshot(
+                                        app_schema,
+                                        &snapshot_table,
+                                        &row,
+                                        previous_row.as_ref(),
+                                        &sub.id,
+                                    ) {
+                                        result.changed_rows.push(changed_row);
+                                    }
+                                }
+                                if include_snapshot_rows {
+                                    snapshot_rows.push(row.clone());
+                                }
+                                chunk_rows_to_upsert.push(row);
+                            }
+                            self.store
+                                .upsert_rows(&snapshot_table, chunk_rows_to_upsert)
+                                .await?;
+                        }
                     }
                 }
             }
@@ -254,14 +423,16 @@ where
                         .current_row_json(&change.table, &change.row_id)
                         .await?;
                     self.store.apply_change(change.clone()).await?;
-                    if let Some(changed_row) = sync_changed_row_for_change(
-                        app_schema,
-                        change,
-                        previous_row.as_ref(),
-                        commit.commit_seq,
-                        &sub.id,
-                    ) {
-                        result.changed_rows.push(changed_row);
+                    if collect_changed_rows {
+                        if let Some(changed_row) = sync_changed_row_for_change(
+                            app_schema,
+                            change,
+                            previous_row.as_ref(),
+                            commit.commit_seq,
+                            &sub.id,
+                        ) {
+                            result.changed_rows.push(changed_row);
+                        }
                     }
                 }
             }
@@ -305,11 +476,7 @@ where
                 commits: sub.commits,
             });
         }
-
-        self.store
-            .notify_tables_changed_with_rows(&result.changed_tables, &result.changed_rows)
-            .await?;
-        Ok(result)
+        Ok(())
     }
 
     pub async fn sync_pull_json(&mut self) -> Result<String> {
@@ -317,9 +484,13 @@ where
     }
 
     pub async fn sync_push(&mut self) -> Result<WebSyncResult> {
+        let total_started_at = timing_now_ms();
         let pending = self.prepare_push().await?;
         if pending.is_empty() {
-            return Ok(WebSyncResult::default());
+            let mut result = WebSyncResult::default();
+            result.timings.total_ms = elapsed_ms_since(total_started_at);
+            result.timings.push_ms = result.timings.total_ms;
+            return Ok(result);
         }
 
         let request = CombinedRequest {
@@ -393,10 +564,13 @@ where
             }
         }
 
-        Ok(WebSyncResult {
+        let mut result = WebSyncResult {
             pushed_commits,
             ..WebSyncResult::default()
-        })
+        };
+        result.timings.total_ms = elapsed_ms_since(total_started_at);
+        result.timings.push_ms = result.timings.total_ms;
+        Ok(result)
     }
 
     pub async fn sync_push_json(&mut self) -> Result<String> {
@@ -414,13 +588,20 @@ where
     }
 
     pub async fn sync_once(&mut self) -> Result<WebSyncResult> {
+        let total_started_at = timing_now_ms();
         let mut result = self.sync_push().await?;
+        let push_ms = result.timings.total_ms;
         let pull_result = self.sync_pull().await?;
+        let pull_ms = pull_result.timings.total_ms;
         for table in pull_result.changed_tables {
             add_changed_table(&mut result.changed_tables, &table);
         }
         result.changed_rows = pull_result.changed_rows;
         result.subscriptions = pull_result.subscriptions;
+        result.timings = pull_result.timings;
+        result.timings.push_ms = push_ms;
+        result.timings.pull_ms = pull_ms;
+        result.timings.total_ms = elapsed_ms_since(total_started_at);
         Ok(result)
     }
 
@@ -523,10 +704,18 @@ where
         }
 
         Ok(PullRequest {
-            limit_commits: 50,
-            limit_snapshot_rows: 1000,
-            max_snapshot_pages: 4,
-            dedupe_rows: None,
+            limit_commits: self.config.pull.limit_commits,
+            limit_snapshot_rows: self.config.pull.limit_snapshot_rows,
+            max_snapshot_pages: self.config.pull.max_snapshot_pages,
+            dedupe_rows: self.config.pull.dedupe_rows,
+            snapshot_encodings: vec![
+                SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
+                SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
+            ],
+            sync_pack_encodings: vec![
+                SYNC_PACK_ENCODING_BINARY_V1.to_string(),
+                SYNC_PACK_ENCODING_JSON_V1.to_string(),
+            ],
             subscriptions,
         })
     }
@@ -700,6 +889,20 @@ fn add_changed_table(tables: &mut Vec<String>, table: &str) {
     }
 }
 
+fn elapsed_ms_since(started_at: i64) -> f64 {
+    timing_now_ms().saturating_sub(started_at) as f64
+}
+
+#[cfg(target_arch = "wasm32")]
+fn timing_now_ms() -> i64 {
+    js_sys::Date::now() as i64
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn timing_now_ms() -> i64 {
+    now_ms()
+}
+
 async fn previous_web_snapshot_row<S>(
     store: &mut S,
     app_schema: AppSchema,
@@ -720,6 +923,15 @@ where
         return Ok(None);
     };
     store.current_row_json(table, &row_id).await
+}
+
+fn snapshot_clear_removes_all_rows(app_schema: AppSchema, table: &str) -> bool {
+    app_schema.table_metadata(table).is_some_and(|metadata| {
+        !metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+    })
 }
 
 fn validate_outbox_schema_version(commit: &OutboxCommit) -> Result<()> {
@@ -820,6 +1032,7 @@ mod tests {
                                     sha256: "unused".to_string(),
                                     encoding: "json-row-frame-v1".to_string(),
                                     compression: "gzip".to_string(),
+                                    body: None,
                                 }]),
                                 is_first_page: true,
                                 is_last_page: true,
@@ -834,7 +1047,7 @@ mod tests {
             &'a self,
             _chunk: &'a SnapshotChunkRef,
             _scopes: &'a ScopeValues,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
             Box::pin(async move {
                 Err(SyncularError::message(
                     ErrorKind::Transport,

@@ -15,12 +15,14 @@ interface RustStressReport {
     batches: number;
     batchSize: number;
     totalRows: number;
+    realtime: boolean;
   };
   checks: {
     totalRows: number;
     serverRows: number;
     readerRows: number[];
     writerOutboxCommits: number;
+    realtimeEvents: number;
   };
   metrics: Array<
     BenchmarkResult & {
@@ -34,12 +36,18 @@ describe('rust client stress', () => {
   it('sustains multi-client HTTP and WebSocket client-server-client sync', async () => {
     const transports = readStressTransports();
     for (const transport of transports) {
-      await runStressTransport(transport);
+      await runStressTransport(transport, false);
+    }
+    if (Bun.env.PERF_RUST_STRESS_REALTIME !== 'false') {
+      await runStressTransport('ws', true);
     }
   }, 300_000);
 });
 
-async function runStressTransport(transport: 'http' | 'ws'): Promise<void> {
+async function runStressTransport(
+  transport: 'http' | 'ws',
+  realtime: boolean
+): Promise<void> {
     const report = await runJsonCommand<RustStressReport>(
       [
         'cargo',
@@ -54,6 +62,7 @@ async function runStressTransport(transport: 'http' | 'ws'): Promise<void> {
         '--',
         '--json',
         '--stress',
+        ...(realtime ? ['--realtime-stress'] : []),
         `--stress-writers=${readPositiveIntEnv('PERF_RUST_STRESS_WRITERS', 4)}`,
         `--stress-readers=${readPositiveIntEnv('PERF_RUST_STRESS_READERS', 4)}`,
         `--stress-batches=${readPositiveIntEnv('PERF_RUST_STRESS_BATCHES', 12)}`,
@@ -75,13 +84,18 @@ async function runStressTransport(transport: 'http' | 'ws'): Promise<void> {
       stdDev: metric.stdDev,
     }));
 
-    console.log(`\n## Rust Client Stress (${transport})`);
+    console.log(
+      `\n## Rust Client Stress (${realtime ? `realtime ${transport}` : transport})`
+    );
     console.log(
       `- writers: ${report.options.writers}, readers: ${report.options.readers}, batches: ${report.options.batches}, batch size: ${report.options.batchSize}`
     );
     console.log(
       `- rows: server ${report.checks.serverRows}, readers ${report.checks.readerRows.join(', ')}`
     );
+    if (report.options.realtime) {
+      console.log(`- realtime events: ${report.checks.realtimeEvents}`);
+    }
     console.log(
       `- throughput: ${formatRowsPerSecond(report.options.totalRows, results.find((result) => result.name.includes('_e2e_'))?.median ?? 0)}`
     );
@@ -91,6 +105,11 @@ async function runStressTransport(transport: 'http' | 'ws'): Promise<void> {
     expect(report.checks.readerRows).toHaveLength(report.options.readers);
     for (const rows of report.checks.readerRows) {
       expect(rows).toBe(report.checks.totalRows);
+    }
+    if (report.options.realtime) {
+      expect(report.checks.realtimeEvents).toBe(
+        report.options.readers * report.options.batches
+      );
     }
     expect(report.metrics.length).toBeGreaterThanOrEqual(3);
 }
