@@ -114,6 +114,117 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     expect(httpPullCount()).toBe(pullCountBeforeRealtimePush);
   });
 
+  it('filters mixed-scope websocket binary deltas per subscribed client', async () => {
+    const actorA = syncConformance.actors.ownerA;
+    const actorB = syncConformance.actors.ownerB;
+    const { baseUrl, connectionCount, httpPullCount } =
+      await openRealtimeServer();
+    const clientA = await openClient({
+      baseUrl,
+      clientId: 'mixed-scope-client-a',
+      actorId: actorA.actorId,
+      authorization: actorA.token,
+    });
+    const clientB = await openClient({
+      baseUrl,
+      clientId: 'mixed-scope-client-b',
+      actorId: actorB.actorId,
+      authorization: actorB.token,
+    });
+    await clientA.setSubscriptions([
+      taskSubscription({ actorId: actorA.actorId }),
+    ]);
+    await clientB.setSubscriptions([
+      taskSubscription({ actorId: actorB.actorId }),
+    ]);
+    await clientA.syncOnce();
+    await clientB.syncOnce();
+
+    const snapshotA = await clientA.subscribeQuery<{
+      id: string;
+      user_id: string;
+    }>('select id, user_id from tasks order by id', [], ['tasks']);
+    const snapshotB = await clientB.subscribeQuery<{
+      id: string;
+      user_id: string;
+    }>('select id, user_id from tasks order by id', [], ['tasks']);
+    expect(snapshotA.rows).toEqual([]);
+    expect(snapshotB.rows).toEqual([]);
+
+    await clientA.startRealtime({
+      wsUrl: `${baseUrl.replace(/^http:/, 'ws:')}/realtime`,
+      params: { token: actorA.token },
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 50,
+    });
+    await clientB.startRealtime({
+      wsUrl: `${baseUrl.replace(/^http:/, 'ws:')}/realtime`,
+      params: { token: actorB.token },
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 50,
+    });
+    await waitFor(() => connectionCount() === 2);
+    const pullCountBeforeRealtimePush = httpPullCount();
+    const liveEventA = waitForLiveEvent(clientA, snapshotA.id);
+    const liveEventB = waitForLiveEvent(clientB, snapshotB.id);
+
+    const writer = await openClient({
+      baseUrl,
+      clientId: 'mixed-scope-writer',
+      actorId: actorA.actorId,
+      authorization: actorA.token,
+    });
+    await writer.applyLocalOperationsCommit([
+      {
+        operation: newTaskOperation({
+          id: 'mixed-scope-a',
+          title: 'Mixed Scope A',
+          user_id: actorA.actorId,
+        }),
+        localRow: {
+          id: 'mixed-scope-a',
+          title: 'Mixed Scope A',
+          completed: 0,
+          user_id: actorA.actorId,
+          project_id: null,
+          server_version: 0,
+          image: null,
+          title_yjs_state: null,
+        },
+      },
+      {
+        operation: newTaskOperation({
+          id: 'mixed-scope-b',
+          title: 'Mixed Scope B',
+          user_id: actorB.actorId,
+        }),
+        localRow: {
+          id: 'mixed-scope-b',
+          title: 'Mixed Scope B',
+          completed: 0,
+          user_id: actorB.actorId,
+          project_id: null,
+          server_version: 0,
+          image: null,
+          title_yjs_state: null,
+        },
+      },
+    ]);
+    await expect(writer.syncPush()).resolves.toMatchObject({
+      pushedCommits: 1,
+    });
+
+    await expect(liveEventA).resolves.toMatchObject({
+      queryId: snapshotA.id,
+      rows: [{ id: 'mixed-scope-a', user_id: actorA.actorId }],
+    });
+    await expect(liveEventB).resolves.toMatchObject({
+      queryId: snapshotB.id,
+      rows: [{ id: 'mixed-scope-b', user_id: actorB.actorId }],
+    });
+    expect(httpPullCount()).toBe(pullCountBeforeRealtimePush);
+  });
+
   it('reconnects websocket with fresh params after auth headers change', async () => {
     const scenario = syncConformance.realtime;
     const { baseUrl, connectionCount, websocketAuthTokens } =
@@ -164,6 +275,21 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     await ensureSyncSchema(db, dialect);
     await ensureHonoSyncTasksTable(db);
     const realtimeTokens = new Set(options.realtimeTokens ?? [REALTIME_TOKEN]);
+    const tokenActors = new Map<string, string>([
+      [AUTHORIZATION, ACTOR_ID],
+      [REALTIME_TOKEN, ACTOR_ID],
+      [
+        syncConformance.actors.ownerA.token,
+        syncConformance.actors.ownerA.actorId,
+      ],
+      [
+        syncConformance.actors.ownerB.token,
+        syncConformance.actors.ownerB.actorId,
+      ],
+    ]);
+    for (const token of realtimeTokens) {
+      if (!tokenActors.has(token)) tokenActors.set(token, ACTOR_ID);
+    }
     const websocketAuthTokens: string[] = [];
     const websocketSyncPackEncodings: string[] = [];
     let httpPullCount = 0;
@@ -192,11 +318,10 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
         if (token && syncPackEncoding) {
           websocketSyncPackEncodings.push(syncPackEncoding);
         }
-        if (
-          authorization === AUTHORIZATION ||
-          realtimeTokens.has(token ?? '')
-        ) {
-          return { actorId: ACTOR_ID };
+        const actorId =
+          tokenActors.get(authorization ?? '') ?? tokenActors.get(token ?? '');
+        if (actorId) {
+          return { actorId };
         }
         return null;
       },
@@ -252,14 +377,18 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
   async function openClient(options: {
     baseUrl: string;
     clientId: string;
+    actorId?: string;
+    authorization?: string;
   }): Promise<SyncularV2Client> {
     const database = await createSyncularAppDatabase({
       requestTimeoutMs: 10_000,
-      getHeaders: () => ({ authorization: AUTHORIZATION }),
+      getHeaders: () => ({
+        authorization: options.authorization ?? AUTHORIZATION,
+      }),
       config: {
         baseUrl: options.baseUrl,
         clientId: options.clientId,
-        actorId: ACTOR_ID,
+        actorId: options.actorId ?? ACTOR_ID,
         fileName: `${options.clientId}.sqlite`,
         storage: 'memory',
         clearOnInit: true,

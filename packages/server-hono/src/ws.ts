@@ -623,6 +623,10 @@ export class WebSocketConnectionManager {
       excludeClientIds?: string[];
       changes?: unknown[];
       syncPack?: Uint8Array;
+      changesForConnection?: (connection: WebSocketConnection) => unknown[];
+      syncPackForConnection?: (
+        connection: WebSocketConnection
+      ) => Uint8Array | undefined;
       actorId?: string;
       createdAt?: string;
     }
@@ -644,12 +648,26 @@ export class WebSocketConnectionManager {
     this.registry.forEachConnectionInScopeKeys(
       scopeKeys,
       (conn) => {
-        if (inlineSyncPack && conn.syncPackEncoding === 'binary-sync-pack-v1') {
-          conn.sendSyncPack(inlineSyncPack);
+        const connectionSyncPack =
+          opts?.syncPackForConnection?.(conn) ?? inlineSyncPack;
+        if (
+          connectionSyncPack &&
+          connectionSyncPack.byteLength <=
+            WebSocketConnectionManager.WS_INLINE_MAX_BYTES &&
+          conn.syncPackEncoding === 'binary-sync-pack-v1'
+        ) {
+          conn.sendSyncPack(connectionSyncPack);
           return;
         }
-        if (inlineChanges) {
-          conn.sendSync(cursor, inlineChanges, {
+        const connectionChanges =
+          opts?.changesForConnection?.(conn) ?? inlineChanges;
+        const canSendConnectionChanges =
+          connectionChanges &&
+          connectionChanges.length > 0 &&
+          JSON.stringify(connectionChanges).length <=
+            WebSocketConnectionManager.WS_INLINE_MAX_BYTES;
+        if (canSendConnectionChanges) {
+          conn.sendSync(cursor, connectionChanges, {
             actorId: opts?.actorId,
             createdAt: opts?.createdAt,
           });

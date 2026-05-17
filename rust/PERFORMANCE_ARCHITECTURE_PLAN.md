@@ -1584,9 +1584,35 @@ client. Overflow should close or resync the session deliberately.
   - Complexity check: this is benchmark instrumentation and reuses the same
     Hono websocket route/runtime path as the product tests; it is retained as
     a measurement gate, not as a runtime optimization.
-- Next target: run a larger realtime lane and only then decide whether the
-  next runtime change should be websocket pack filtering, ack/resume, or apply
-  path cleanup.
+- Retained mixed-scope websocket filtering: Hono no longer falls back to
+  cursor-only wakeups just because one pushed commit touches multiple scopes.
+  The websocket manager now accepts per-connection bounded inline deltas, and
+  the Hono route filters emitted changes by each connection's effective
+  subscription scopes before encoding a binary sync-pack.
+  - Correctness guard: the browser/Hono WASM realtime test now pushes one
+    mixed-scope commit and proves two connected clients receive only their own
+    scoped rows while `httpPullCount()` does not increase.
+  - Single-scope perf guard after the change, same 10k + 1k x3 release lane:
+    `rust_realtime_live_ms` `87.04`,
+    `rust_realtime_live_p95_ms` `88.82`,
+    `ts_realtime_push_ms` `70.84`,
+    `rust_realtime_http_request_count` `0`,
+    `rust_realtime_binary_events` `15`,
+    `rust_realtime_binary_bytes` `639015`. This is neutral/slightly faster
+    than the pre-change measurement (`93.86` p50 / `99.82` p95), within local
+    run noise.
+  - Normal perf-harness smoke after the change also passes with
+    `rust_browser_e2e_rust_realtime_live_ms` `12.4`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `14.9`,
+    `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
+    and `rust_browser_e2e_rust_realtime_binary_events` `2.0`.
+  - Complexity check: this is not a micro-optimization. It removes a real
+    correctness/perf fallback for multi-tenant or multi-scope commits while
+    preserving bounded payload fallback and the shared-pack fast path for
+    single-scope commits.
+- Next target: ack/resume semantics for websocket delta delivery. The current
+  realtime path is fast enough in the measured single-scope lane; reliability
+  around missed frames/reconnect is the next higher-value runtime foundation.
 
 ### Phase 7: Delta WebSocket Runtime
 
@@ -1596,10 +1622,12 @@ client. Overflow should close or resync the session deliberately.
 - Done: bounded binary delta packs stream over websocket for negotiated clients.
 - Done: browser E2E scoreboard has a Rust realtime latency/bytes lane with
   HTTP fallback counters.
+- Done: mixed-scope commits can still use inline websocket deltas by filtering
+  per connected client's effective scopes.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
-- Next: expand the realtime lane to larger batches and p50/p95/p99 runs before
-  keeping any further websocket runtime optimization.
+- Next: add explicit ack/resume behavior so reconnecting clients can detect and
+  recover missed websocket delta frames without app-layer babysitting.
 
 ### Phase 8: Compression And Cache Policy
 

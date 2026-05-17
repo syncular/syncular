@@ -8,7 +8,7 @@ import {
 function createConn(args: {
   actorId: string;
   clientId: string;
-  onSync: (cursor: number) => void;
+  onSync: (cursor: number, changes?: unknown[]) => void;
   onSyncPack?: (bytes: Uint8Array) => void;
   syncPackEncoding?: WebSocketConnection['syncPackEncoding'];
 }): WebSocketConnection {
@@ -27,9 +27,9 @@ function createConn(args: {
     }),
     transportPath: 'direct',
     syncPackEncoding: args.syncPackEncoding ?? null,
-    sendSync(cursor) {
+    sendSync(cursor, changes) {
       if (!open) return;
-      args.onSync(cursor);
+      args.onSync(cursor, changes);
     },
     sendSyncPack(bytes) {
       if (!open) return;
@@ -156,6 +156,75 @@ describe('WebSocketConnectionManager (scopes)', () => {
     expect(seen).toEqual([
       { clientId: 'binary', kind: 'binary' },
       { clientId: 'json', kind: 'json' },
+    ]);
+  });
+
+  it('supports per-connection inline deltas for mixed scopes', () => {
+    const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
+    const seen: Array<{
+      clientId: string;
+      kind: 'json' | 'binary';
+      value: unknown;
+    }> = [];
+
+    const binary1 = createConn({
+      actorId: 'u1',
+      clientId: 'binary-1',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: (_cursor, changes) =>
+        seen.push({ clientId: 'binary-1', kind: 'json', value: changes }),
+      onSyncPack: (bytes) =>
+        seen.push({
+          clientId: 'binary-1',
+          kind: 'binary',
+          value: Array.from(bytes),
+        }),
+    });
+    const binary2 = createConn({
+      actorId: 'u2',
+      clientId: 'binary-2',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: (_cursor, changes) =>
+        seen.push({ clientId: 'binary-2', kind: 'json', value: changes }),
+      onSyncPack: (bytes) =>
+        seen.push({
+          clientId: 'binary-2',
+          kind: 'binary',
+          value: Array.from(bytes),
+        }),
+    });
+    const json = createConn({
+      actorId: 'u2',
+      clientId: 'json',
+      onSync: (_cursor, changes) =>
+        seen.push({ clientId: 'json', kind: 'json', value: changes }),
+      onSyncPack: (bytes) =>
+        seen.push({ clientId: 'json', kind: 'binary', value: bytes }),
+    });
+
+    mgr.register(binary1, ['s1']);
+    mgr.register(binary2, ['s2']);
+    mgr.register(json, ['s2']);
+    mgr.notifyScopeKeys(['s1', 's2'], 123, {
+      changesForConnection: (connection) => [
+        { row_id: `row-${connection.clientId}` },
+      ],
+      syncPackForConnection: (connection) =>
+        connection.clientId === 'binary-1'
+          ? new Uint8Array([1])
+          : connection.clientId === 'binary-2'
+            ? new Uint8Array([2])
+            : undefined,
+    });
+
+    expect(seen).toEqual([
+      { clientId: 'binary-1', kind: 'binary', value: [1] },
+      { clientId: 'binary-2', kind: 'binary', value: [2] },
+      {
+        clientId: 'json',
+        kind: 'json',
+        value: [{ row_id: 'row-json' }],
+      },
     ]);
   });
 
