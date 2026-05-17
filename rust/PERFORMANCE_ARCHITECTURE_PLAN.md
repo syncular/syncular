@@ -1873,6 +1873,18 @@ client. Overflow should close or resync the session deliberately.
   - Sparse scope-index lane stayed stable:
     `server_scoped_incremental_pull_fanout_20000_100` `8.1ms`, requests `2`,
     changes `200`.
+- Done: made generated binary row groups conditional on enough same-table rows
+  in a single commit. This keeps row-group encoding for large commit packs but
+  avoids the schema/framing overhead for common one-row commits and realtime
+  updates.
+  - Dense lane after the row-group threshold:
+    `server_dense_incremental_pull_build_generated_binary_encode_5000_500`
+    `43.4ms -> 36.1ms`,
+    generated response bytes `1579.7KiB -> 1349.1KiB`.
+  - Large synthetic one-commit row pack still keeps the generated win:
+    `sync_pack_binary_generated_response_50000_kib` `6764.6KiB` vs generic
+    binary `11138.4KiB`; generated decode `46.6ms` vs generic binary decode
+    `57.9ms`.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 
