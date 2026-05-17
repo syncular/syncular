@@ -48,9 +48,29 @@ interface BrowserBenchmarkReport {
   };
 }
 
+interface BrowserE2eScoreboardMetric {
+  name: string;
+  value: number;
+  unit: 'ms' | 'rows' | 'bytes' | 'count';
+}
+
+interface BrowserE2eScoreboardReport {
+  runtime?: {
+    wasmProfile?: string;
+    rustStorage?: string;
+  };
+  options?: {
+    rows?: number;
+    queryIterations?: number;
+  };
+  metrics: BrowserE2eScoreboardMetric[];
+}
+
 const results: BenchmarkResult[] = [];
 const itBrowserBenchmark =
   Bun.env.PERF_RUST_BROWSER_BENCHMARK === 'true' ? it : it.skip;
+const itBrowserE2eScoreboard =
+  Bun.env.PERF_RUST_BROWSER_E2E_SCOREBOARD === 'true' ? it : it.skip;
 
 describe('rust client performance', () => {
   afterAll(async () => {
@@ -153,6 +173,41 @@ describe('rust client performance', () => {
     expect(size.rawBytes).toBeGreaterThan(0);
     expect(size.gzipBytes).toBeGreaterThan(0);
   }, 120_000);
+
+  itBrowserE2eScoreboard(
+    'tracks browser E2E TS-vs-Rust bootstrap and local-query scoreboard',
+    async () => {
+      const rows = readPositiveIntEnv('PERF_RUST_BROWSER_E2E_ROWS', 1_000);
+      const queryIterations = readPositiveIntEnv(
+        'PERF_RUST_BROWSER_E2E_QUERY_ITERATIONS',
+        10
+      );
+      const scoreboard = await runJsonCommand<BrowserE2eScoreboardReport>(
+        [
+          'bun',
+          'tests/runtime/scripts/browser-e2e-scoreboard.ts',
+          '--json',
+          `--rows=${rows}`,
+          `--query-iterations=${queryIterations}`,
+          '--wasm-profile=release',
+        ],
+        'rust browser e2e scoreboard'
+      );
+
+      for (const metric of scoreboard.metrics) {
+        const result = browserE2eMetric(metric);
+        if (result) results.push(result);
+      }
+
+      const rowMetrics = new Map(
+        scoreboard.metrics.map((metric) => [metric.name, metric.value])
+      );
+      expect(rowMetrics.get('ts_rows')).toBe(rows);
+      expect(rowMetrics.get('rust_rows')).toBe(rows);
+      expect(scoreboard.runtime?.wasmProfile).toBe('release');
+    },
+    300_000
+  );
 });
 
 async function ensureBrowserReleaseWasmBuilt(): Promise<void> {
@@ -205,6 +260,30 @@ function browserMetric(
     p99: metric.p95Ms,
     min: metric.minMs,
     max: metric.maxMs,
+    stdDev: 0,
+  };
+}
+
+function browserE2eMetric(
+  metric: BrowserE2eScoreboardMetric
+): BenchmarkResult | null {
+  if (metric.unit === 'count' || metric.unit === 'rows') return null;
+  const value = metric.unit === 'bytes' ? metric.value / 1024 : metric.value;
+  const unit: BenchmarkResult['unit'] =
+    metric.unit === 'bytes' ? 'KiB' : 'ms';
+  return {
+    name:
+      metric.unit === 'bytes'
+        ? `rust_browser_e2e_${metric.name.replace(/_bytes$/, '_kib')}`
+        : `rust_browser_e2e_${metric.name}`,
+    unit,
+    iterations: 1,
+    mean: value,
+    median: value,
+    p95: value,
+    p99: value,
+    min: value,
+    max: value,
     stdDev: 0,
   };
 }

@@ -79,6 +79,16 @@ Nightly-only browser latency metrics can be enabled with
 - `rust_browser_local_mutations_indexeddb_50`: Rust-owned browser SQLite local mutation batches with IndexedDB storage.
 - `rust_browser_local_mutations_opfs_worker_50`: Rust-owned browser SQLite local mutation batches through the OPFS worker path.
 
+The TS-vs-Rust browser E2E scoreboard can be included in the Rust perf lane
+with `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`:
+
+- `rust_browser_e2e_ts_bootstrap_ms` and `rust_browser_e2e_rust_bootstrap_ms`.
+- Rust sync buckets such as `rust_browser_e2e_rust_pull_request_ms`,
+  `rust_browser_e2e_rust_snapshot_fetch_ms`, and
+  `rust_browser_e2e_rust_pull_apply_ms`.
+- TS/Rust local list, search, and aggregate p50/p95 metrics.
+- Request/response bytes are emitted as KiB metrics.
+
 Run only the Rust client perf slice from repo root:
 
 ```bash
@@ -104,6 +114,7 @@ Useful knobs:
 ```bash
 PERF_RUST_NATIVE_OPERATIONS=200 PERF_RUST_NATIVE_ROUNDS=7 bun run test:perf:rust
 PERF_RUST_BROWSER_BENCHMARK=true PERF_RUST_BROWSER_OPERATIONS=50 PERF_RUST_BROWSER_ROUNDS=3 bun run test:perf:rust
+PERF_RUST_BROWSER_E2E_SCOREBOARD=true PERF_RUST_BROWSER_E2E_ROWS=1000 PERF_RUST_BROWSER_E2E_QUERY_ITERATIONS=10 bun run test:perf:rust
 PERF_RUST_STRESS_WRITERS=4 PERF_RUST_STRESS_READERS=4 PERF_RUST_STRESS_BATCHES=20 PERF_RUST_STRESS_BATCH_SIZE=250 bun run test:perf:rust:stress
 PERF_RUST_STRESS_TRANSPORT=ws bun run test:perf:rust:stress
 PERF_RUST_STRESS_REALTIME=false bun run test:perf:rust:stress
