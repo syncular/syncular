@@ -1845,6 +1845,9 @@ client. Overflow should close or resync the session deliberately.
     requests `200 -> 2`, changes `200`.
   - Small guard moved from `server_scoped_incremental_pull_fanout_1000_10`
     `6.9ms -> 1.8ms`, requests `10 -> 2`.
+  - Follow-up: cross-instance realtime fallback scope lookup now reads
+    `sync_scope_commits` before falling back to legacy `sync_changes` scope
+    extraction.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 

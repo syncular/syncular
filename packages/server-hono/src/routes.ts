@@ -3368,6 +3368,22 @@ async function readCommitScopeKeys<DB extends SyncCoreDb>(
   commitSeq: number,
   partitionId: string
 ): Promise<string[]> {
+  const indexedRows = await sql<{ scope_key: string }>`
+    select distinct scope_key
+    from ${sql.table('sync_scope_commits')}
+    where commit_seq = ${commitSeq}
+      and partition_id = ${partitionId}
+  `.execute(db);
+  const indexedScopeKeys = indexedRows.rows
+    .map((row) => row.scope_key)
+    .filter(
+      (scopeKey): scopeKey is string =>
+        typeof scopeKey === 'string' && scopeKey.length > 0
+    );
+  if (indexedScopeKeys.length > 0) {
+    return applyPartitionToScopeKeys(partitionId, indexedScopeKeys);
+  }
+
   // Read scopes from the JSONB column and convert to scope strings
   const rowsResult = await sql<{ scopes: unknown }>`
     select scopes
