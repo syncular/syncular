@@ -1483,6 +1483,15 @@ client. Overflow should close or resync the session deliberately.
   - Complexity check: the branch documents the real semantic boundary between
     ordinary rows and CRDT rows, so this is a foundation cleanup rather than a
     benchmark-only special case.
+- Rejected conditional row key/version replacement in incremental apply. It
+  avoided replacing primary-key and server-version map entries when the row
+  already contained matching values, but it added branches without improving
+  the measured hot path:
+  - 100k bootstrap rows + 5k incremental rows:
+    `rust_incremental_pull_ms` `48.40 -> 48.14`,
+    `rust_incremental_pull_apply_ms` stayed `14`,
+    sync-pack decode noise `9 -> 10`.
+  - Decision: reverted; not enough signal for the extra conditional logic.
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 
