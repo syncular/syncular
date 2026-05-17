@@ -1413,6 +1413,19 @@ client. Overflow should close or resync the session deliberately.
     `PERF_RUST_BROWSER_E2E_INCREMENTAL_ROWS=10` reported
     `rust_browser_e2e_rust_incremental_pull_ms` `7.7`,
     request `5.0`, apply `2.0`, response `2.3KiB`.
+- Retained browser incremental apply cleanup: when `collectChangedRows=false`,
+  the web client no longer reads the previous row for each snapshot/include-row
+  or commit change only to discard it. The previous-row read stays enabled for
+  row/field-delta collection.
+  - 1k bootstrap rows + 200 incremental rows:
+    `rust_incremental_pull_ms` `17.62 -> 15.80`,
+    `rust_incremental_pull_apply_ms` `7 -> 5`, response bytes unchanged
+    (`42,953`).
+  - 100k bootstrap rows + 200 incremental rows:
+    `rust_incremental_pull_ms` `14.79 -> 13.99`,
+    `rust_incremental_pull_apply_ms` `7 -> 5`, bootstrap/apply guardrails
+    stayed neutral (`rust_bootstrap_ms` `181.28 -> 180.15`,
+    `rust_pull_apply_ms` `90 -> 90`), response bytes unchanged (`42,953`).
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 

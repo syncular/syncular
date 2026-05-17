@@ -364,17 +364,18 @@ where
                     } else {
                         let mut rows_to_upsert = Vec::with_capacity(inline_rows.len());
                         for row in inline_rows {
-                            let previous_row = if scope_cleared_for_snapshot {
-                                None
-                            } else {
-                                previous_web_snapshot_row(
-                                    &mut self.store,
-                                    app_schema,
-                                    &snapshot_table,
-                                    &row,
-                                )
-                                .await?
-                            };
+                            let previous_row =
+                                if !collect_changed_rows || scope_cleared_for_snapshot {
+                                    None
+                                } else {
+                                    previous_web_snapshot_row(
+                                        &mut self.store,
+                                        app_schema,
+                                        &snapshot_table,
+                                        &row,
+                                    )
+                                    .await?
+                                };
                             if collect_changed_rows {
                                 if let Some(changed_row) = sync_changed_row_for_snapshot(
                                     app_schema,
@@ -427,17 +428,18 @@ where
                             let chunk_rows = batch.try_into_value_rows()?;
                             let mut chunk_rows_to_upsert = Vec::with_capacity(chunk_rows.len());
                             for row in chunk_rows {
-                                let previous_row = if scope_cleared_for_snapshot {
-                                    None
-                                } else {
-                                    previous_web_snapshot_row(
-                                        &mut self.store,
-                                        app_schema,
-                                        &snapshot_table,
-                                        &row,
-                                    )
-                                    .await?
-                                };
+                                let previous_row =
+                                    if !collect_changed_rows || scope_cleared_for_snapshot {
+                                        None
+                                    } else {
+                                        previous_web_snapshot_row(
+                                            &mut self.store,
+                                            app_schema,
+                                            &snapshot_table,
+                                            &row,
+                                        )
+                                        .await?
+                                    };
                                 if collect_changed_rows {
                                     if let Some(changed_row) = sync_changed_row_for_snapshot(
                                         app_schema,
@@ -469,10 +471,13 @@ where
             for commit in &sub.commits {
                 for change in &commit.changes {
                     add_changed_table(&mut result.changed_tables, &change.table);
-                    let previous_row = self
-                        .store
-                        .current_row_json(&change.table, &change.row_id)
-                        .await?;
+                    let previous_row = if collect_changed_rows {
+                        self.store
+                            .current_row_json(&change.table, &change.row_id)
+                            .await?
+                    } else {
+                        None
+                    };
                     self.store.apply_change(change.clone()).await?;
                     if collect_changed_rows {
                         if let Some(changed_row) = sync_changed_row_for_change(
