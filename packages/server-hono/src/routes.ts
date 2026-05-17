@@ -2857,7 +2857,10 @@ export function createSyncRoutes<
           });
           conn.sendHeartbeat();
           if (requiresInitialSync) {
-            conn.sendSync(latestCommitSeq);
+            conn.sendSync(latestCommitSeq, undefined, {
+              reason: 'reconnect-catchup',
+              requiresPull: true,
+            });
           }
           emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
             action: 'realtime_connected',

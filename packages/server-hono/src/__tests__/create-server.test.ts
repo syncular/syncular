@@ -967,7 +967,11 @@ describe('createSyncServer console configuration', () => {
     );
     expect(syncMessage).toMatchObject({
       event: 'sync',
-      data: expect.objectContaining({ cursor: 1 }),
+      data: expect.objectContaining({
+        cursor: 1,
+        reason: 'reconnect-catchup',
+        requiresPull: true,
+      }),
     });
   });
 

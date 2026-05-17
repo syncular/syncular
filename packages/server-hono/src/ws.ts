@@ -52,6 +52,19 @@ export interface WsHelloData {
   requiresSync: boolean;
 }
 
+export type WebSocketSyncReason =
+  | 'commit'
+  | 'payload-too-large'
+  | 'reconnect-catchup'
+  | 'server-wakeup';
+
+export interface WebSocketSyncMetadata {
+  actorId?: string;
+  createdAt?: string;
+  reason?: WebSocketSyncReason;
+  requiresPull?: boolean;
+}
+
 /**
  * WebSocket event data for sync notifications
  */
@@ -78,6 +91,10 @@ export interface SyncWebSocketEvent {
     scopeCount?: number;
     /** Whether the client should run catch-up sync */
     requiresSync?: boolean;
+    /** Whether this notification intentionally requires HTTP pull recovery */
+    requiresPull?: boolean;
+    /** Why the server sent this sync notification */
+    reason?: WebSocketSyncReason;
     /** Negotiated binary sync-pack encoding, if any */
     syncPackEncoding?: WebSocketSyncPackEncoding | null;
     /** Commit actor metadata (for sync events with inline changes) */
@@ -121,7 +138,7 @@ export interface WebSocketConnection {
   sendSync(
     cursor: number,
     changes?: unknown[],
-    metadata?: { actorId?: string; createdAt?: string }
+    metadata?: WebSocketSyncMetadata
   ): void;
   /** Send an encoded binary sync-pack delta */
   sendSyncPack(bytes: Uint8Array): void;
@@ -208,7 +225,7 @@ export function createWebSocketConnection(
     sendSync(
       cursor: number,
       changes?: unknown[],
-      metadata?: { actorId?: string; createdAt?: string }
+      metadata?: WebSocketSyncMetadata
     ) {
       if (!connection.isOpen) return;
       const payload: Record<string, unknown> = {
@@ -223,6 +240,12 @@ export function createWebSocketConnection(
       }
       if (metadata?.createdAt) {
         payload.createdAt = metadata.createdAt;
+      }
+      if (metadata?.reason) {
+        payload.reason = metadata.reason;
+      }
+      if (metadata?.requiresPull) {
+        payload.requiresPull = true;
       }
       const ok = safeSend(ws, JSON.stringify({ event: 'sync', data: payload }));
       if (!ok) closed = true;
@@ -687,6 +710,7 @@ export class WebSocketConnectionManager {
   ): void {
     // Size guard: only deliver inline changes if under threshold
     let inlineChanges: unknown[] | undefined;
+    const hasSharedChanges = (opts?.changes?.length ?? 0) > 0;
     if (opts?.changes && opts.changes.length > 0) {
       const serialized = JSON.stringify(opts.changes);
       if (serialized.length <= WebSocketConnectionManager.WS_INLINE_MAX_BYTES) {
@@ -724,9 +748,18 @@ export class WebSocketConnectionManager {
           conn.sendSync(cursor, connectionChanges, {
             actorId: opts?.actorId,
             createdAt: opts?.createdAt,
+            reason: 'commit',
           });
         } else {
-          conn.sendSync(cursor);
+          conn.sendSync(cursor, undefined, {
+            reason:
+              connectionSyncPack ||
+              connectionChanges?.length ||
+              hasSharedChanges
+                ? 'payload-too-large'
+                : 'server-wakeup',
+            requiresPull: true,
+          });
         }
       },
       { excludeClientIds: opts?.excludeClientIds }
@@ -739,7 +772,10 @@ export class WebSocketConnectionManager {
    */
   notifyAllClients(cursor: number): void {
     this.registry.forEachConnection((conn) => {
-      conn.sendSync(cursor);
+      conn.sendSync(cursor, undefined, {
+        reason: 'server-wakeup',
+        requiresPull: true,
+      });
     });
   }
 

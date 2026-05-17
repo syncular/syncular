@@ -34,6 +34,8 @@ interface SyncularV2RealtimeSyncMessage {
   changes?: unknown[];
   actorId?: string | null;
   createdAt?: string | null;
+  reason?: string | null;
+  requiresPull?: boolean;
   syncPackBytes?: Uint8Array;
 }
 
@@ -215,6 +217,8 @@ export class SyncularV2WorkerRealtimeController {
         message: 'Syncular v2 realtime sync wakeup received',
         details: {
           inlineChanges: syncMessage.changes?.length ?? 0,
+          reason: syncMessage.reason ?? null,
+          requiresPull: syncMessage.requiresPull === true,
         },
       });
       this.#scheduleSync(syncMessage);
@@ -536,7 +540,10 @@ function readSyncularV2RealtimeSyncMessage(
   const actorId = typeof record.actorId === 'string' ? record.actorId : null;
   const createdAt =
     typeof record.createdAt === 'string' ? record.createdAt : null;
-  return { cursor, changes, actorId, createdAt };
+  const reason = typeof record.reason === 'string' ? record.reason : null;
+  const requiresPull =
+    typeof record.requiresPull === 'boolean' ? record.requiresPull : undefined;
+  return { cursor, changes, actorId, createdAt, reason, requiresPull };
 }
 
 async function readRealtimeMessageBytes(
