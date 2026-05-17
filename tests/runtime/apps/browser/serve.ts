@@ -6,14 +6,30 @@
  */
 
 import path from 'node:path';
+import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   getWaSqliteWasmPaths,
   getWaSqliteWorkerEntrypointPaths,
 } from '@syncular/dialect-wa-sqlite';
+import {
+  createServerHandler,
+  ensureSyncSchema,
+  readSnapshotChunk,
+  type SyncCoreDb,
+  type SyncServerAuth,
+} from '@syncular/server';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createSyncRoutes } from '@syncular/server-hono';
+import {
+  syncularGeneratedCodecs,
+  syncularGeneratedSnapshotBinaryColumns,
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 
 const portArg = process.argv.find((a) => a.startsWith('--port='));
 const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
 const wasmProfile = readWasmProfile();
+const syncSeedRows = readPositiveIntArg('--sync-seed-rows', 0);
 const repoRoot = path.resolve(import.meta.dir, '../../../..');
 const rustPackageRoot = path.join(repoRoot, 'rust/bindings/browser');
 const rustPackageWasmDir = path.join(rustPackageRoot, 'dist/wasm');
@@ -118,6 +134,8 @@ const COOP_COEP_HEADERS = {
 };
 
 let syncCommitSeq = 1;
+const benchmarkSyncRoute =
+  syncSeedRows > 0 ? await createBenchmarkSyncRoute(syncSeedRows) : null;
 
 const HTML = `<!DOCTYPE html>
 <html>
@@ -139,7 +157,12 @@ const server = Bun.serve({
     }
 
     if (url.pathname === '/sync' && req.method === 'POST') {
+      if (benchmarkSyncRoute) return benchmarkSyncRoute(req);
       return benchmarkSyncResponse(req);
+    }
+
+    if (url.pathname.startsWith('/sync/') && benchmarkSyncRoute) {
+      return benchmarkSyncRoute(req);
     }
 
     if (url.pathname === '/' || url.pathname === '/index.html') {
@@ -252,6 +275,129 @@ function readWasmProfile(): 'dev' | 'release' {
   throw new Error(`Invalid --wasm-profile value: ${raw}`);
 }
 
+function readPositiveIntArg(name: string, fallback: number): number {
+  const arg = process.argv.find((a) => a.startsWith(`${name}=`));
+  const raw = arg?.split('=')[1] ?? process.env[name.slice(2).replaceAll('-', '_').toUpperCase()];
+  if (raw == null || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${name} value: ${raw}`);
+  }
+  return parsed;
+}
+
+async function createBenchmarkSyncRoute(
+  rows: number
+): Promise<(request: Request) => Promise<Response>> {
+  const dialect = createSqliteServerDialect();
+  const db = createDatabase<BenchmarkSyncServerDb>({
+    dialect: createBunSqliteDialect({ path: ':memory:' }),
+    family: 'sqlite',
+  });
+  await ensureSyncSchema(db, dialect);
+  await ensureBenchmarkTasksTable(db);
+  await seedBenchmarkTasks(db, rows);
+  const syncRoutes = createSyncRoutes<
+    BenchmarkSyncServerDb,
+    BenchmarkSyncAuthContext
+  >({
+    db,
+    dialect,
+    handlers: [
+      createServerHandler<
+        BenchmarkSyncServerDb,
+        BenchmarkSyncClientDb,
+        'tasks',
+        BenchmarkSyncAuthContext
+      >({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        codecs: syncularGeneratedCodecs,
+        snapshotBundleMaxBytes: Number.MAX_SAFE_INTEGER,
+        snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns.tasks,
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      }),
+    ],
+    authenticate: async (c) => {
+      const actorId =
+        c.req.header('x-actor-id') ??
+        c.req.header('x-syncular-actor-id') ??
+        c.req.header('authorization') ??
+        'browser-e2e-user';
+      return { actorId, partitionId: 'browser-e2e' };
+    },
+    sync: {
+      rateLimit: false,
+    },
+  });
+  return async (request: Request) => {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith('/sync/snapshot-chunks/')) {
+      const chunkId = decodeURIComponent(
+        url.pathname.slice('/sync/snapshot-chunks/'.length)
+      );
+      const chunk = await readSnapshotChunk(db, chunkId);
+      if (!chunk) return new Response('not found', { status: 404 });
+      return new Response(chunk.body as BodyInit, {
+        headers: {
+          ...COOP_COEP_HEADERS,
+          'content-type': 'application/octet-stream',
+          'content-length': String(chunk.byteLength),
+          'x-sync-chunk-id': chunk.chunkId,
+          'x-sync-chunk-sha256': chunk.sha256,
+          'x-sync-chunk-encoding': chunk.encoding,
+          'x-sync-chunk-compression': chunk.compression,
+        },
+      });
+    }
+    url.pathname = url.pathname.slice('/sync'.length) || '/';
+    return syncRoutes.fetch(new Request(url, request));
+  };
+}
+
+async function ensureBenchmarkTasksTable(
+  db: ReturnType<typeof createDatabase<BenchmarkSyncServerDb>>
+): Promise<void> {
+  await db.schema
+    .createTable('tasks')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('project_id', 'text')
+    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('image', 'text')
+    .addColumn('title_yjs_state', 'text')
+    .execute();
+}
+
+async function seedBenchmarkTasks(
+  db: ReturnType<typeof createDatabase<BenchmarkSyncServerDb>>,
+  rows: number
+): Promise<void> {
+  const chunkSize = 1_000;
+  for (let start = 0; start < rows; start += chunkSize) {
+    const values = Array.from(
+      { length: Math.min(chunkSize, rows - start) },
+      (_, offset) => {
+        const index = start + offset;
+        return {
+          id: `task-${index}`,
+          title: `Task ${index}`,
+          completed: index % 2,
+          user_id: 'browser-e2e-user',
+          project_id: 'p1',
+          server_version: index + 1,
+          image: null,
+          title_yjs_state: null,
+        };
+      }
+    );
+    await db.insertInto('tasks').values(values).execute();
+  }
+}
+
 async function benchmarkSyncResponse(req: Request): Promise<Response> {
   const request = (await req.json()) as {
     push?: {
@@ -319,4 +465,27 @@ async function benchmarkSyncResponse(req: Request): Promise<Response> {
       'content-type': 'application/json',
     },
   });
+}
+
+interface BenchmarkTaskTable {
+  id: string;
+  title: string;
+  completed: number;
+  user_id: string;
+  project_id: string | null;
+  server_version: number;
+  image: string | null;
+  title_yjs_state: string | null;
+}
+
+interface BenchmarkSyncServerDb extends SyncCoreDb {
+  tasks: BenchmarkTaskTable;
+}
+
+interface BenchmarkSyncClientDb {
+  tasks: BenchmarkTaskTable;
+}
+
+interface BenchmarkSyncAuthContext extends SyncServerAuth {
+  actorId: string;
 }

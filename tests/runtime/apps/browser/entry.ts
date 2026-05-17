@@ -33,6 +33,7 @@ import {
   syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
+  taskSubscription,
   taskPatchPayload,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import type { SyncularV2AppSchema } from '../../../../rust/bindings/browser/src/index';
@@ -148,6 +149,28 @@ interface FeatureWorkloadBenchmarkOptions {
   rounds?: number;
   warmupOperations?: number;
   storage?: 'memory' | 'indexedDb' | 'opfsSahPool';
+}
+
+interface E2eScoreboardOptions {
+  serverUrl: string;
+  actorId: string;
+  projectId?: string;
+  rows: number;
+  queryIterations?: number;
+  rustStorage?: 'memory' | 'indexedDb' | 'opfsSahPool';
+}
+
+interface E2eScoreboardMetric {
+  name: string;
+  value: number;
+  unit: 'ms' | 'rows' | 'bytes' | 'count';
+}
+
+interface TimedSamples {
+  p50: number;
+  p95: number;
+  min: number;
+  max: number;
 }
 
 type RustOwnedWorkerRequest =
@@ -775,6 +798,265 @@ async function runBootstrap(params: {
   } finally {
     await client.db.destroy();
   }
+}
+
+async function runE2eScoreboard(
+  options: E2eScoreboardOptions
+): Promise<{
+  ok: boolean;
+  rows?: number;
+  queryIterations?: number;
+  metrics?: E2eScoreboardMetric[];
+  error?: string;
+}> {
+  const actorId = options.actorId;
+  const projectId = options.projectId ?? 'p1';
+  const queryIterations = options.queryIterations ?? 25;
+  const metrics: E2eScoreboardMetric[] = [];
+  const tsClient = await createSyncClient(options.serverUrl, actorId);
+  let rustDatabase: SyncularAppDatabase | undefined;
+
+  try {
+    const pushMetric = (
+      name: string,
+      value: number,
+      unit: E2eScoreboardMetric['unit'] = 'ms'
+    ) => metrics.push({ name, value, unit });
+
+    const tsBootstrapStartedAt = performance.now();
+    await syncPullOnce(tsClient.db, tsClient.transport, tsClient.handlers, {
+      clientId: `ts-e2e-${Date.now()}`,
+      subscriptions: [
+        {
+          id: 'sub-tasks',
+          table: 'tasks',
+          scopes: { user_id: actorId },
+        },
+      ],
+      limitSnapshotRows: 5_000,
+      maxSnapshotPages: 100,
+    });
+    pushMetric('ts_bootstrap_ms', performance.now() - tsBootstrapStartedAt);
+    const tsRows = await tsClient.db
+      .selectFrom('tasks')
+      .select(({ fn }) => fn.count<number>('id').as('count'))
+      .executeTakeFirstOrThrow();
+    pushMetric('ts_rows', Number(tsRows.count), 'rows');
+
+    rustDatabase = await createSyncularAppDatabase({
+      worker: () =>
+        new Worker('/syncular-v2-worker.js', {
+          type: 'module',
+          credentials: 'same-origin',
+        }),
+      getHeaders: () => ({ 'x-actor-id': actorId }),
+      subscriptions: false,
+      config: {
+        baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
+        actorId,
+        clientId: `rust-e2e-${Date.now()}`,
+        projectId,
+        fileName: `rust-e2e-${Date.now()}.sqlite`,
+        storage: options.rustStorage ?? 'memory',
+        clearOnInit: true,
+        pull: {
+          includeSnapshotRows: false,
+          collectChangedRows: false,
+          limitSnapshotRows: 5_000,
+          maxSnapshotPages: 100,
+        },
+      },
+    });
+    await rustDatabase.client.setSubscriptions([
+      taskSubscription({ actorId }),
+    ]);
+    const rustDiagnostics = rustDatabase.client as unknown as {
+      resetTransportStats(): Promise<void>;
+      transportStats(): Promise<{
+        requestCount: number;
+        requestBytes: number;
+        responseBytes: number;
+        snapshotChunkCount: number;
+        snapshotChunkJsonCount: number;
+        snapshotChunkBinaryCount: number;
+        snapshotChunkRowCount: number;
+        snapshotChunkFetchMs: number;
+        snapshotChunkDecompressMs: number;
+        snapshotChunkHashMs: number;
+        snapshotChunkDecodeMs: number;
+      }>;
+    };
+    await rustDiagnostics.resetTransportStats();
+    const rustBootstrapStartedAt = performance.now();
+    const rustSync = await rustDatabase.client.syncPull();
+    pushMetric(
+      'rust_bootstrap_ms',
+      performance.now() - rustBootstrapStartedAt
+    );
+    pushMetric('rust_pull_request_ms', rustSync.timings.pullRequestMs);
+    pushMetric('rust_snapshot_fetch_ms', rustSync.timings.snapshotFetchMs);
+    pushMetric('rust_pull_apply_ms', rustSync.timings.pullApplyMs);
+    const rustStats = await rustDiagnostics.transportStats();
+    pushMetric(
+      'rust_snapshot_chunk_decode_ms',
+      rustStats.snapshotChunkDecodeMs
+    );
+    pushMetric(
+      'rust_snapshot_chunk_decompress_ms',
+      rustStats.snapshotChunkDecompressMs
+    );
+    pushMetric('rust_snapshot_chunk_hash_ms', rustStats.snapshotChunkHashMs);
+    pushMetric('rust_request_count', rustStats.requestCount, 'count');
+    pushMetric('rust_request_bytes', rustStats.requestBytes, 'bytes');
+    pushMetric('rust_response_bytes', rustStats.responseBytes, 'bytes');
+    pushMetric(
+      'rust_snapshot_chunk_binary_count',
+      rustStats.snapshotChunkBinaryCount,
+      'count'
+    );
+    pushMetric(
+      'rust_snapshot_chunk_json_count',
+      rustStats.snapshotChunkJsonCount,
+      'count'
+    );
+    pushMetric(
+      'rust_snapshot_chunk_row_count',
+      rustStats.snapshotChunkRowCount,
+      'rows'
+    );
+    const rustRows = await rustDatabase.db
+      .selectFrom('tasks')
+      .select(({ fn }) => fn.count<number>('id').as('count'))
+      .executeTakeFirstOrThrow();
+    pushMetric('rust_rows', Number(rustRows.count), 'rows');
+
+    await collectLocalQueryMetrics({
+      prefix: 'ts',
+      db: tsClient.db as unknown as Kysely<any>,
+      actorId,
+      projectId,
+      iterations: queryIterations,
+      pushMetric,
+    });
+    await collectLocalQueryMetrics({
+      prefix: 'rust',
+      db: rustDatabase.db as unknown as Kysely<any>,
+      actorId,
+      projectId,
+      iterations: queryIterations,
+      pushMetric,
+    });
+
+    assert(Number(tsRows.count) === options.rows, 'TS row count mismatch');
+    assert(Number(rustRows.count) === options.rows, 'Rust row count mismatch');
+    return { ok: true, rows: options.rows, queryIterations, metrics };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    await Promise.all([tsClient.db.destroy(), rustDatabase?.close()]);
+  }
+}
+
+async function collectLocalQueryMetrics(args: {
+  prefix: 'ts' | 'rust';
+  db: Kysely<any>;
+  actorId: string;
+  projectId: string;
+  iterations: number;
+  pushMetric(
+    name: string,
+    value: number,
+    unit?: E2eScoreboardMetric['unit']
+  ): void;
+}): Promise<void> {
+  const list = await measureSamples(args.iterations, async () => {
+    const rows = await args.db
+      .selectFrom('tasks')
+      .select(['id', 'title', 'server_version'])
+      .where('user_id', '=', args.actorId)
+      .where('project_id', '=', args.projectId)
+      .orderBy('id')
+      .limit(50)
+      .execute();
+    assert(rows.length > 0, `${args.prefix} list query returned no rows`);
+  });
+  emitTimedSamples(args.pushMetric, `${args.prefix}_local_list`, list);
+
+  const search = await measureSamples(args.iterations, async (index) => {
+    const rows = await args.db
+      .selectFrom('tasks')
+      .select(['id', 'title', 'server_version'])
+      .where('user_id', '=', args.actorId)
+      .where('project_id', '=', args.projectId)
+      .where('title', 'like', `%Task ${index % 100}%`)
+      .orderBy('id')
+      .limit(50)
+      .execute();
+    assert(rows.length > 0, `${args.prefix} search query returned no rows`);
+  });
+  emitTimedSamples(args.pushMetric, `${args.prefix}_local_search`, search);
+
+  const aggregate = await measureSamples(args.iterations, async () => {
+    const rows = await args.db
+      .selectFrom('tasks')
+      .select(({ fn }) => [
+        'completed',
+        fn.count<number>('id').as('count'),
+      ])
+      .where('user_id', '=', args.actorId)
+      .where('project_id', '=', args.projectId)
+      .groupBy('completed')
+      .orderBy('completed')
+      .execute();
+    assert(rows.length > 0, `${args.prefix} aggregate query returned no rows`);
+  });
+  emitTimedSamples(args.pushMetric, `${args.prefix}_aggregate`, aggregate);
+}
+
+async function measureSamples(
+  iterations: number,
+  run: (index: number) => Promise<void>
+): Promise<TimedSamples> {
+  const samples: number[] = [];
+  for (let index = 0; index < iterations; index += 1) {
+    const startedAt = performance.now();
+    await run(index);
+    samples.push(performance.now() - startedAt);
+  }
+  samples.sort((left, right) => left - right);
+  return {
+    p50: percentile(samples, 0.5),
+    p95: percentile(samples, 0.95),
+    min: samples[0] ?? 0,
+    max: samples[samples.length - 1] ?? 0,
+  };
+}
+
+function emitTimedSamples(
+  pushMetric: (
+    name: string,
+    value: number,
+    unit?: E2eScoreboardMetric['unit']
+  ) => void,
+  prefix: string,
+  samples: TimedSamples
+): void {
+  pushMetric(`${prefix}_p50_ms`, samples.p50);
+  pushMetric(`${prefix}_p95_ms`, samples.p95);
+  pushMetric(`${prefix}_min_ms`, samples.min);
+  pushMetric(`${prefix}_max_ms`, samples.max);
+}
+
+function percentile(samples: readonly number[], percentileValue: number): number {
+  if (samples.length === 0) return 0;
+  const index = Math.min(
+    samples.length - 1,
+    Math.max(0, Math.ceil(samples.length * percentileValue) - 1)
+  );
+  return samples[index] ?? 0;
 }
 
 async function runPushPull(params: {
@@ -2066,6 +2348,7 @@ function encryptedTitleCrdtAppSchema(): SyncularV2AppSchema {
 const runtime = {
   conformance: runConformance,
   bootstrap: runBootstrap,
+  benchmarkE2eScoreboard: runE2eScoreboard,
   benchmarkFeatureWorkloads: runFeatureWorkloadBenchmark,
   benchmarkLocalMutations: runLocalMutationBenchmark,
   hostStore: runHostStore,
