@@ -1610,8 +1610,8 @@ where
 
             Ok(PullRequest {
                 limit_commits: 50,
-                limit_snapshot_rows: 1000,
-                max_snapshot_pages: 4,
+                limit_snapshot_rows: 25_000,
+                max_snapshot_pages: 20,
                 dedupe_rows: None,
                 snapshot_encodings: vec![
                     SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),

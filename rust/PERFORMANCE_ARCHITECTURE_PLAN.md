@@ -1064,6 +1064,22 @@ client. Overflow should close or resync the session deliberately.
     `rust_server_bootstrap_row_frame_encode_ms` `39 -> 32`,
     `rust_pull_apply_ms` stayed flat/noisy (`111 -> 108`), and local read
     p50s stayed neutral.
+- Retained Rust-first large bootstrap page defaults. Rust native/web clients now
+  request `25_000` snapshot rows and `20` snapshot pages by default, and the
+  Hono/core server cap allows that shape so one binary bootstrap pull can carry
+  a 500k-row subscription while still using 25k-row binary chunks. The TS
+  scoreboard lane keeps its previous `5_000`/`100` settings.
+  - 500k bootstrap-only, release-WASM, battery saver:
+    `rust_bootstrap_ms` `1054.49 -> 984.02`,
+    `rust_pull_rounds` `2 -> 1`,
+    `rust_pull_request_ms` `557 -> 478`,
+    `rust_server_bootstrap_row_frame_encode_ms` `208 -> 135`.
+    Apply was slightly noisier (`488 -> 501`) but total bootstrap still
+    improved by `70ms`.
+  - 100k full scoreboard guardrail:
+    `rust_bootstrap_ms` `220.10 -> 217.00`,
+    `rust_pull_request_ms` `108 -> 106`,
+    `rust_pull_apply_ms` `108 -> 107`; local read p50s stayed neutral.
 
 ### Phase 4: Worker Default
 

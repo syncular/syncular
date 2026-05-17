@@ -56,6 +56,11 @@ import {
   type SyncularWebStoreHostConfig,
 } from './web-store-host';
 
+const E2E_SNAPSHOT_ROWS_PER_PAGE = 25_000;
+const E2E_MAX_SNAPSHOT_PAGES = 20;
+const E2E_TS_SNAPSHOT_ROWS_PER_PAGE = 5_000;
+const E2E_TS_MAX_SNAPSHOT_PAGES = 100;
+
 // --- Helpers ---
 
 function createDb<T>(fileName: string, options?: { preferOPFS?: boolean }) {
@@ -957,8 +962,8 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
       collectChangedRows: options.rustCollectChangedRows ?? false,
       collectServerTimings: true,
-      limitSnapshotRows: 5_000,
-      maxSnapshotPages: 100,
+      limitSnapshotRows: E2E_SNAPSHOT_ROWS_PER_PAGE,
+      maxSnapshotPages: E2E_MAX_SNAPSHOT_PAGES,
     };
     if (options.rustMaxSnapshotChangedRows !== undefined) {
       rustPullOptions.maxSnapshotChangedRows =
@@ -979,8 +984,8 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
             scopes: { user_id: actorId },
           },
         ],
-        limitSnapshotRows: 5_000,
-        maxSnapshotPages: 100,
+        limitSnapshotRows: E2E_TS_SNAPSHOT_ROWS_PER_PAGE,
+        maxSnapshotPages: E2E_TS_MAX_SNAPSHOT_PAGES,
       }
     );
     pushMetric('ts_bootstrap_ms', performance.now() - tsBootstrapStartedAt);
