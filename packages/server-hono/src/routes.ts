@@ -75,6 +75,7 @@ import {
   resolveAllowedOriginFromPatterns,
 } from './websocket-origin';
 import {
+  createRealtimeSessionId,
   createWebSocketConnection,
   createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
@@ -2816,6 +2817,8 @@ export function createSyncRoutes<
 
       return upgradeWebSocket(c, {
         onOpen(_evt, ws) {
+          const requiresInitialSync =
+            initialScopeKeys.length > 0 && latestCommitSeq > lastAckedCursor;
           const conn = createWebSocketConnection(ws, {
             actorId: auth.actorId,
             clientId,
@@ -2840,11 +2843,20 @@ export function createSyncRoutes<
           }
 
           unregister = wsConnectionManager.register(conn, initialScopeKeys);
+          conn.sendHello({
+            protocolVersion: 1,
+            sessionId: createRealtimeSessionId(),
+            actorId: auth.actorId,
+            clientId,
+            transportPath: realtimeTransportPath,
+            syncPackEncoding,
+            cursor: lastAckedCursor,
+            latestCursor: latestCommitSeq,
+            scopeCount: initialScopeKeys.length,
+            requiresSync: requiresInitialSync,
+          });
           conn.sendHeartbeat();
-          if (
-            initialScopeKeys.length > 0 &&
-            latestCommitSeq > lastAckedCursor
-          ) {
+          if (requiresInitialSync) {
             conn.sendSync(latestCommitSeq);
           }
           emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({

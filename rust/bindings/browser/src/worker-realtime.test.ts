@@ -50,6 +50,60 @@ describe('Syncular v2 worker realtime', () => {
     expect(isSyncularV2RealtimeSyncMessage('sync')).toBe(false);
   });
 
+  it('records websocket hello diagnostics without triggering a pull', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const controller = new SyncularV2WorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    sockets[0]!.message({
+      event: 'hello',
+      data: {
+        protocolVersion: 1,
+        sessionId: 'session-1',
+        cursor: 3,
+        latestCursor: 5,
+        scopeCount: 2,
+        requiresSync: true,
+        syncPackEncoding: 'binary-sync-pack-v1',
+      },
+    });
+
+    await waitFor(() =>
+      diagnostics.some((event) => event.code === 'realtime.hello')
+    );
+    expect(client.syncPulls).toBe(0);
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'realtime.hello',
+        details: expect.objectContaining({
+          sessionId: 'session-1',
+          cursor: 3,
+          latestCursor: 5,
+          requiresSync: true,
+        }),
+      })
+    );
+  });
+
   it('accepts websocket text frames delivered as bytes', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];

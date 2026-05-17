@@ -112,6 +112,7 @@ describe('createSyncServer console configuration', () => {
       },
       sendSync() {},
       sendSyncPack() {},
+      sendHello() {},
       sendHeartbeat() {},
       sendPresence() {},
       sendError() {},
@@ -967,6 +968,75 @@ describe('createSyncServer console configuration', () => {
     expect(syncMessage).toMatchObject({
       event: 'sync',
       data: expect.objectContaining({ cursor: 1 }),
+    });
+  });
+
+  it('sends a websocket hello frame with session capabilities', async () => {
+    const options = createOptions();
+    const server = createSyncServer(options);
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const push = await app.request(
+      createPushRequest({
+        clientId: 'writer-client',
+      })
+    );
+    expect(push.status).toBe(200);
+    await sql`
+      INSERT INTO sync_client_cursors (
+        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
+      )
+      VALUES (
+        'default', 'client-hello', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
+      )
+    `.execute(db);
+
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const realtimeServer = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const realtimeApp = new Hono();
+    realtimeApp.route('/sync', realtimeServer.syncRoutes);
+
+    const response = await realtimeApp.request(
+      'http://localhost/sync/realtime?clientId=client-hello&syncPackEncoding=binary-sync-pack-v1'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    const helloMessage = upstream.messages.find(
+      (message) => message.event === 'hello'
+    );
+    if (!isRecord(helloMessage?.data)) {
+      throw new Error('Expected websocket hello data.');
+    }
+    expect(typeof helloMessage.data.sessionId).toBe('string');
+    expect(helloMessage).toMatchObject({
+      event: 'hello',
+      data: expect.objectContaining({
+        protocolVersion: 1,
+        actorId: 'u1',
+        clientId: 'client-hello',
+        transportPath: 'direct',
+        syncPackEncoding: 'binary-sync-pack-v1',
+        cursor: 0,
+        latestCursor: 1,
+        scopeCount: 1,
+        requiresSync: true,
+      }),
     });
   });
 

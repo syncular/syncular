@@ -37,6 +37,16 @@ interface SyncularV2RealtimeSyncMessage {
   syncPackBytes?: Uint8Array;
 }
 
+interface SyncularV2RealtimeHelloMessage {
+  protocolVersion?: number;
+  sessionId?: string;
+  cursor?: number;
+  latestCursor?: number;
+  scopeCount?: number;
+  requiresSync?: boolean;
+  syncPackEncoding?: string | null;
+}
+
 export interface SyncularV2WorkerRealtimeSocket {
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
@@ -185,6 +195,16 @@ export class SyncularV2WorkerRealtimeController {
     try {
       message = JSON.parse(text);
     } catch {
+      return;
+    }
+    const helloMessage = readSyncularV2RealtimeHelloMessage(message);
+    if (helloMessage) {
+      this.#diagnostic({
+        level: 'debug',
+        code: 'realtime.hello',
+        message: 'Syncular v2 realtime session accepted',
+        details: { ...helloMessage },
+      });
       return;
     }
     const syncMessage = readSyncularV2RealtimeSyncMessage(message);
@@ -468,6 +488,39 @@ export function resolveSyncularV2RealtimeUrl(
 
 export function isSyncularV2RealtimeSyncMessage(value: unknown): boolean {
   return readSyncularV2RealtimeSyncMessage(value) !== null;
+}
+
+function readSyncularV2RealtimeHelloMessage(
+  value: unknown
+): SyncularV2RealtimeHelloMessage | null {
+  if (!value || typeof value !== 'object') return null;
+  if ((value as { event?: unknown }).event !== 'hello') return null;
+  const data = (value as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return {};
+  const record = data as Record<string, unknown>;
+  return {
+    protocolVersion:
+      typeof record.protocolVersion === 'number'
+        ? record.protocolVersion
+        : undefined,
+    sessionId:
+      typeof record.sessionId === 'string' ? record.sessionId : undefined,
+    cursor: typeof record.cursor === 'number' ? record.cursor : undefined,
+    latestCursor:
+      typeof record.latestCursor === 'number' ? record.latestCursor : undefined,
+    scopeCount:
+      typeof record.scopeCount === 'number' ? record.scopeCount : undefined,
+    requiresSync:
+      typeof record.requiresSync === 'boolean'
+        ? record.requiresSync
+        : undefined,
+    syncPackEncoding:
+      typeof record.syncPackEncoding === 'string'
+        ? record.syncPackEncoding
+        : record.syncPackEncoding === null
+          ? null
+          : undefined,
+  };
 }
 
 function readSyncularV2RealtimeSyncMessage(

@@ -1730,10 +1730,28 @@ client. Overflow should close or resync the session deliberately.
 
 ### Phase 9: Sync Session And Sequencer Design
 
-- Status: planned.
+- Status: started.
 - Define the websocket-first session state machine:
   hello, capability negotiation, schema manifest, auth, subscriptions,
   snapshots, delta packs, ack/resume, overflow, and close.
+- Done: added an explicit websocket `hello` frame on session open. It carries
+  protocol version, server session id, accepted binary sync-pack capability,
+  last acked cursor, latest server cursor, effective scope count, and whether
+  catch-up sync is required. The browser worker records this as a structured
+  realtime diagnostic without triggering an extra pull.
+  - Correctness guard: Hono route coverage asserts the hello frame; browser
+    worker coverage asserts hello diagnostics do not trigger an HTTP pull.
+  - Perf guard after the change:
+    `rust_browser_e2e_rust_realtime_live_ms` `12.1`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `14.6`,
+    `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
+    `rust_browser_e2e_rust_realtime_binary_events` `2.0`,
+    `rust_browser_e2e_browser_page_sync_encoded_kib` `100.4`,
+    `rust_browser_e2e_browser_served_syncular_worker_js_kib` `43.3`.
+  - Complexity check: the hello frame is retained because it establishes the
+    session/capability contract needed for replay windows and explicit
+    overflow handling. The observed cost is a small fixed frame plus roughly
+    1.2 KiB worker JS growth.
 - Pick the Cloudflare-compatible sequencer/fanout shard key
   `(tenant/workspace/partition)`.
 - Define which state lives in the sequencer, D1-like SQL storage, and R2-like

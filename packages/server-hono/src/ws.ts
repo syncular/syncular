@@ -39,18 +39,53 @@ export interface WsPushResponseData {
 
 export type WebSocketSyncPackEncoding = 'binary-sync-pack-v1';
 
+export interface WsHelloData {
+  protocolVersion: 1;
+  sessionId: string;
+  actorId: string;
+  clientId: string;
+  transportPath: 'direct' | 'relay';
+  syncPackEncoding: WebSocketSyncPackEncoding | null;
+  cursor: number;
+  latestCursor: number;
+  scopeCount: number;
+  requiresSync: boolean;
+}
+
 /**
  * WebSocket event data for sync notifications
  */
 export interface SyncWebSocketEvent {
   /** Event type */
-  event: 'sync' | 'heartbeat' | 'error' | 'presence' | 'push-response';
+  event:
+    | 'hello'
+    | 'sync'
+    | 'heartbeat'
+    | 'error'
+    | 'presence'
+    | 'push-response';
   /** Data payload */
   data: {
+    /** Realtime protocol version (for hello events) */
+    protocolVersion?: number;
+    /** Server-generated websocket session id (for hello events) */
+    sessionId?: string;
     /** New cursor position (for sync events) */
     cursor?: number;
+    /** Latest server cursor known when the session was accepted */
+    latestCursor?: number;
+    /** Number of effective scope keys attached to this connection */
+    scopeCount?: number;
+    /** Whether the client should run catch-up sync */
+    requiresSync?: boolean;
+    /** Negotiated binary sync-pack encoding, if any */
+    syncPackEncoding?: WebSocketSyncPackEncoding | null;
     /** Commit actor metadata (for sync events with inline changes) */
     actorId?: string;
+    /** Client/device id (for hello events) */
+    clientId?: string;
+    /** Transport path used by this connection */
+    transportPath?: 'direct' | 'relay';
     /** Commit timestamp metadata (for sync events with inline changes) */
     createdAt?: string;
     /** Error message (for error events) */
@@ -80,6 +115,8 @@ export interface SyncWebSocketEvent {
  * WebSocket connection controller for managing active connections
  */
 export interface WebSocketConnection {
+  /** Send session/capability handshake metadata */
+  sendHello(data: WsHelloData): void;
   /** Send a sync notification, optionally with inline change data */
   sendSync(
     cursor: number,
@@ -129,6 +166,12 @@ function safeSend(ws: WSContext, message: string | ArrayBuffer): boolean {
   }
 }
 
+export function createRealtimeSessionId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return randomUuid;
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function createWebSocketConnection(
   ws: WSContext,
   args: {
@@ -151,6 +194,17 @@ export function createWebSocketConnection(
     ownerKey: args.ownerKey,
     transportPath: args.transportPath,
     syncPackEncoding: args.syncPackEncoding ?? null,
+    sendHello(data: WsHelloData) {
+      if (!connection.isOpen) return;
+      const ok = safeSend(
+        ws,
+        JSON.stringify({
+          event: 'hello',
+          data: { ...data, timestamp: Date.now() },
+        })
+      );
+      if (!ok) closed = true;
+    },
     sendSync(
       cursor: number,
       changes?: unknown[],
