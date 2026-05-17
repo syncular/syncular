@@ -125,35 +125,6 @@ function createPullBootstrapTimings(): PullBootstrapTimings {
   };
 }
 
-let nodeCryptoModulePromise: Promise<
-  typeof import('node:crypto') | null
-> | null = null;
-
-async function getNodeCryptoModule(): Promise<
-  typeof import('node:crypto') | null
-> {
-  if (!nodeCryptoModulePromise) {
-    nodeCryptoModulePromise = import('node:crypto').catch(() => null);
-  }
-  return nodeCryptoModulePromise;
-}
-
-async function sha256HexFromByteChunks(
-  chunks: readonly Uint8Array[]
-): Promise<string> {
-  const nodeCrypto = await getNodeCryptoModule();
-  if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
-    const hasher = nodeCrypto.createHash('sha256');
-    for (const chunk of chunks) {
-      if (chunk.length === 0) continue;
-      hasher.update(chunk);
-    }
-    return hasher.digest('hex');
-  }
-
-  return sha256Hex(concatByteChunks(chunks));
-}
-
 async function gzipByteChunks(
   chunks: readonly Uint8Array[],
   gzipLevel: number
@@ -168,19 +139,11 @@ async function encodeCompressedSnapshotChunk(
   gzipLevel: number
 ): Promise<SnapshotChunkEncodeResult> {
   const gzipStartedAt = Date.now();
-  const gzipPromise = gzipByteChunks(chunks, gzipLevel).then((body) => ({
-    body,
-    gzipMs: Math.max(0, Date.now() - gzipStartedAt),
-  }));
+  const body = await gzipByteChunks(chunks, gzipLevel);
+  const gzipMs = Math.max(0, Date.now() - gzipStartedAt);
   const hashStartedAt = Date.now();
-  const hashPromise = sha256HexFromByteChunks(chunks).then((sha256) => ({
-    sha256,
-    hashMs: Math.max(0, Date.now() - hashStartedAt),
-  }));
-  const [{ body, gzipMs }, { sha256, hashMs }] = await Promise.all([
-    gzipPromise,
-    hashPromise,
-  ]);
+  const sha256 = await sha256Hex(body);
+  const hashMs = Math.max(0, Date.now() - hashStartedAt);
   return { body, sha256, gzipMs, hashMs };
 }
 

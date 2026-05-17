@@ -6,6 +6,7 @@ import {
   decodeSnapshotRows,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+  sha256Hex,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
@@ -232,6 +233,7 @@ describe('pull', () => {
 
     const chunk = await readSnapshotChunk(db, chunkRef!.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
+    expect(chunkRef!.sha256).toBe(await sha256Hex(chunk.body));
     const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
     expect(decoded.table).toBe('tasks');
     expect(decoded.columns.map((column) => column.name).sort()).toEqual([
