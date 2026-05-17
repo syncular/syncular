@@ -6,10 +6,7 @@
  */
 
 import path from 'node:path';
-import {
-  type BenchmarkResult,
-  parseBenchmarkTable,
-} from './benchmark';
+import { type BenchmarkResult, parseBenchmarkTable } from './benchmark';
 import {
   detectRegressions,
   formatRegressionReport,
@@ -27,10 +24,7 @@ const PERF_TEST_PATHS = [
   'tests/perf/rust-client.perf.test.ts',
 ];
 const RUST_PERF_TEST_PATHS = ['tests/perf/rust-client.perf.test.ts'];
-const OPTIONAL_METRIC_PREFIXES = [
-  'rust_browser_local_',
-  'rust_browser_e2e_',
-];
+const OPTIONAL_METRIC_PREFIXES = ['rust_browser_local_', 'rust_browser_e2e_'];
 const RUST_METRIC_PREFIXES = [
   'rust_native_',
   'rust_e2e_',
@@ -174,7 +168,9 @@ async function runPerfTestPath(
         );
         continue;
       }
-      throw new Error(`${testPath} run ${run} failed with exit code ${exitCode}`);
+      throw new Error(
+        `${testPath} run ${run} failed with exit code ${exitCode}`
+      );
     }
 
     const runRegressionMarker = findGateMarker(combined, [
@@ -530,6 +526,9 @@ function metricSuite(metric: string): string {
 }
 
 function metricUnit(metric: string): BenchmarkResult['unit'] {
+  if (metric.endsWith('_count') || metric.endsWith('_events')) {
+    return 'count';
+  }
   if (metric.startsWith('rust_browser_wasm_') && metric.endsWith('_kib')) {
     return 'KiB';
   }
