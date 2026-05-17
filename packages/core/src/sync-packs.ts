@@ -378,21 +378,27 @@ function readSnapshotChunkRef(reader: BinarySyncPackReader): SyncSnapshotChunkRe
 }
 
 class BinarySyncPackWriter {
-  private readonly chunks: Uint8Array[] = [];
+  private bytesOut: Uint8Array;
+  private view: DataView;
+  private offset = 0;
+
+  constructor(initialCapacity = 1024) {
+    this.bytesOut = new Uint8Array(Math.max(64, initialCapacity));
+    this.view = new DataView(
+      this.bytesOut.buffer,
+      this.bytesOut.byteOffset,
+      this.bytesOut.length
+    );
+  }
 
   finish(): Uint8Array {
-    const length = this.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const out = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of this.chunks) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return out;
+    return this.bytesOut.subarray(0, this.offset);
   }
 
   bytes(value: Uint8Array): void {
-    this.chunks.push(value);
+    this.ensure(value.length);
+    this.bytesOut.set(value, this.offset);
+    this.offset += value.length;
   }
 
   bool(value: boolean): void {
@@ -404,28 +410,30 @@ class BinarySyncPackWriter {
   }
 
   u8(value: number): void {
-    this.chunks.push(new Uint8Array([value]));
+    this.ensure(1);
+    this.view.setUint8(this.offset, value);
+    this.offset += 1;
   }
 
   u16(value: number): void {
     assertUnsigned(value, 0xffff, 'uint16');
-    const bytes = new Uint8Array(2);
-    new DataView(bytes.buffer).setUint16(0, value, true);
-    this.chunks.push(bytes);
+    this.ensure(2);
+    this.view.setUint16(this.offset, value, true);
+    this.offset += 2;
   }
 
   u32(value: number): void {
     assertUnsigned(value, 0xffff_ffff, 'uint32');
-    const bytes = new Uint8Array(4);
-    new DataView(bytes.buffer).setUint32(0, value, true);
-    this.chunks.push(bytes);
+    this.ensure(4);
+    this.view.setUint32(this.offset, value, true);
+    this.offset += 4;
   }
 
   i32(value: number): void {
     assertSigned(value, -0x8000_0000, 0x7fff_ffff, 'int32');
-    const bytes = new Uint8Array(4);
-    new DataView(bytes.buffer).setInt32(0, value, true);
-    this.chunks.push(bytes);
+    this.ensure(4);
+    this.view.setInt32(this.offset, value, true);
+    this.offset += 4;
   }
 
   optionalI32(value: number | undefined): void {
@@ -436,9 +444,18 @@ class BinarySyncPackWriter {
     if (!Number.isSafeInteger(value)) {
       throw new Error('int64 value must be a safe integer');
     }
-    const bytes = new Uint8Array(8);
-    new DataView(bytes.buffer).setBigInt64(0, BigInt(value), true);
-    this.chunks.push(bytes);
+    this.ensure(8);
+    if (value >= 0) {
+      this.view.setUint32(this.offset, value >>> 0, true);
+      this.view.setUint32(
+        this.offset + 4,
+        Math.floor(value / 0x1_0000_0000),
+        true
+      );
+    } else {
+      this.view.setBigInt64(this.offset, BigInt(value), true);
+    }
+    this.offset += 8;
   }
 
   optionalI64(value: number | undefined | null): void {
@@ -448,15 +465,17 @@ class BinarySyncPackWriter {
   }
 
   string16(value: string): void {
+    if (this.writeAsciiString16(value)) return;
     const bytes = textEncoder.encode(value);
     this.u16(bytes.length);
-    this.chunks.push(bytes);
+    this.bytes(bytes);
   }
 
   string32(value: string): void {
+    if (this.writeAsciiString32(value)) return;
     const bytes = textEncoder.encode(value);
     this.u32(bytes.length);
-    this.chunks.push(bytes);
+    this.bytes(bytes);
   }
 
   optionalString32(value: string | undefined): void {
@@ -467,7 +486,7 @@ class BinarySyncPackWriter {
 
   bytes32(value: Uint8Array): void {
     this.u32(value.length);
-    this.chunks.push(value);
+    this.bytes(value);
   }
 
   optionalBytes(value: Uint8Array | undefined): void {
@@ -522,6 +541,51 @@ class BinarySyncPackWriter {
     }
     this.u8(1);
     write(this, value);
+  }
+
+  private ensure(length: number): void {
+    const required = this.offset + length;
+    if (required <= this.bytesOut.length) return;
+    let nextLength = this.bytesOut.length;
+    while (nextLength < required) {
+      nextLength *= 2;
+    }
+    const next = new Uint8Array(nextLength);
+    next.set(this.bytesOut, 0);
+    this.bytesOut = next;
+    this.view = new DataView(
+      this.bytesOut.buffer,
+      this.bytesOut.byteOffset,
+      this.bytesOut.length
+    );
+  }
+
+  private writeAsciiString16(value: string): boolean {
+    assertUnsigned(value.length, 0xffff, 'uint16');
+    const start = this.offset;
+    this.u16(value.length);
+    return this.tryWriteAsciiBytes(value, start);
+  }
+
+  private writeAsciiString32(value: string): boolean {
+    assertUnsigned(value.length, 0xffff_ffff, 'uint32');
+    const start = this.offset;
+    this.u32(value.length);
+    return this.tryWriteAsciiBytes(value, start);
+  }
+
+  private tryWriteAsciiBytes(value: string, rollbackOffset: number): boolean {
+    this.ensure(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code > 0x7f) {
+        this.offset = rollbackOffset;
+        return false;
+      }
+      this.bytesOut[this.offset + index] = code;
+    }
+    this.offset += value.length;
+    return true;
   }
 }
 
