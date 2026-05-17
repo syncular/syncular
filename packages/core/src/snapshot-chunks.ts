@@ -605,6 +605,7 @@ class BinarySnapshotWriter {
   }
 
   writeString16(value: string, label: string): void {
+    if (this.writeAsciiString16(value, label)) return;
     const bytes = snapshotRowFrameEncoder.encode(value);
     assertUint16(bytes.length, label);
     this.writeUint16(bytes.length);
@@ -612,6 +613,7 @@ class BinarySnapshotWriter {
   }
 
   writeString32(value: string, label: string): void {
+    if (this.writeAsciiString32(value, label)) return;
     const bytes = snapshotRowFrameEncoder.encode(value);
     assertUint32(bytes.length, label);
     this.writeUint32(bytes.length);
@@ -659,6 +661,34 @@ class BinarySnapshotWriter {
       this.bytes.byteOffset,
       this.bytes.length
     );
+  }
+
+  private writeAsciiString16(value: string, label: string): boolean {
+    assertUint16(value.length, label);
+    const start = this.offset;
+    this.writeUint16(value.length);
+    return this.tryWriteAsciiBytes(value, start);
+  }
+
+  private writeAsciiString32(value: string, label: string): boolean {
+    assertUint32(value.length, label);
+    const start = this.offset;
+    this.writeUint32(value.length);
+    return this.tryWriteAsciiBytes(value, start);
+  }
+
+  private tryWriteAsciiBytes(value: string, rollbackOffset: number): boolean {
+    this.ensure(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      if (code > 0x7f) {
+        this.offset = rollbackOffset;
+        return false;
+      }
+      this.bytes[this.offset + index] = code;
+    }
+    this.offset += value.length;
+    return true;
   }
 }
 

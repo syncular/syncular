@@ -169,4 +169,16 @@ describe('binary snapshot table format', () => {
       },
     ]);
   });
+
+  it('round-trips unicode strings through the binary writer fallback', () => {
+    const columns = [{ name: 'title', type: 'string' }] as const;
+    const writer = new BinarySnapshotTableWriter('tasks', columns, 1);
+
+    writer.beginRow();
+    writer.writeString('München 日本語', 'binary snapshot tasks.title');
+
+    expect(decodeBinarySnapshotTable(writer.finish()).rows).toEqual([
+      { title: 'München 日本語' },
+    ]);
+  });
 });
