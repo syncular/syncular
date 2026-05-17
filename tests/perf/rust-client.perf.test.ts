@@ -1,6 +1,11 @@
 import { afterAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import {
+  decodeBinarySyncPack,
+  encodeBinarySyncPack,
+} from '../../packages/core/src/sync-packs';
+import {
+  benchmark,
   type BenchmarkResult,
   formatBenchmarkTable,
 } from './benchmark';
@@ -71,6 +76,7 @@ const itBrowserBenchmark =
   Bun.env.PERF_RUST_BROWSER_BENCHMARK === 'true' ? it : it.skip;
 const itBrowserE2eScoreboard =
   Bun.env.PERF_RUST_BROWSER_E2E_SCOREBOARD === 'true' ? it : it.skip;
+let syncPackBenchmarkSink = 0;
 
 describe('rust client performance', () => {
   afterAll(async () => {
@@ -118,6 +124,55 @@ describe('rust client performance', () => {
 
     expect(native.metrics.length).toBeGreaterThan(0);
   }, 120_000);
+
+  it('tracks binary sync-pack incremental row codec cost', async () => {
+    const changeCount = readPositiveIntEnv('PERF_SYNC_PACK_CHANGES', 50_000);
+    const rounds = readPositiveIntEnv('PERF_SYNC_PACK_ROUNDS', 5);
+    const warmup = readPositiveIntEnv('PERF_SYNC_PACK_WARMUP', 2);
+    const response = makeIncrementalSyncPackResponse(changeCount);
+    const json = JSON.stringify(response);
+    const binary = encodeBinarySyncPack(response);
+
+    results.push(
+      await benchmark(
+        `sync_pack_json_encode_${changeCount}`,
+        async () => {
+          syncPackBenchmarkSink += JSON.stringify(response).length;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `sync_pack_json_decode_${changeCount}`,
+        async () => {
+          syncPackBenchmarkSink += JSON.parse(json).pull.subscriptions.length;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `sync_pack_binary_encode_${changeCount}`,
+        async () => {
+          syncPackBenchmarkSink += encodeBinarySyncPack(response).byteLength;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `sync_pack_binary_decode_${changeCount}`,
+        async () => {
+          syncPackBenchmarkSink +=
+            decodeBinarySyncPack(binary).pull?.subscriptions.length ?? 0;
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      bytesMetric(`sync_pack_json_response_${changeCount}_kib`, json.length),
+      bytesMetric(
+        `sync_pack_binary_response_${changeCount}_kib`,
+        binary.byteLength
+      )
+    );
+
+    expect(binary.byteLength).toBeGreaterThan(0);
+    expect(syncPackBenchmarkSink).toBeGreaterThan(0);
+  });
 
   itBrowserBenchmark(
     'tracks browser Rust-owned SQLite local mutation latency',
@@ -285,6 +340,51 @@ function browserE2eMetric(
     min: value,
     max: value,
     stdDev: 0,
+  };
+}
+
+function makeIncrementalSyncPackResponse(changeCount: number) {
+  const changes = Array.from({ length: changeCount }, (_, index) => ({
+    table: 'tasks',
+    row_id: `task-${index}`,
+    op: 'upsert' as const,
+    row_json: {
+      id: `task-${index}`,
+      title: `Task ${index}`,
+      completed: index % 2 === 0,
+      user_id: 'browser-e2e-user',
+      project_id: index % 5 === 0 ? 'p1' : null,
+      server_version: index + 1,
+      image: null,
+      title_yjs_state: null,
+    },
+    row_version: index + 1,
+    scopes: { user_id: 'browser-e2e-user' },
+  }));
+
+  return {
+    ok: true as const,
+    pull: {
+      ok: true as const,
+      subscriptions: [
+        {
+          id: 'sub-tasks',
+          status: 'active' as const,
+          scopes: { user_id: 'browser-e2e-user' },
+          bootstrap: false,
+          bootstrapState: null,
+          nextCursor: changeCount,
+          commits: [
+            {
+              commitSeq: 1,
+              createdAt: '2026-05-17T00:00:00.000Z',
+              actorId: 'server',
+              changes,
+            },
+          ],
+        },
+      ],
+    },
   };
 }
 
