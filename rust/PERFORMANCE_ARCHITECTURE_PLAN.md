@@ -1086,6 +1086,12 @@ client. Overflow should close or resync the session deliberately.
   `rust_bootstrap_ms` `984.02 -> 1026.36`,
   `rust_server_bootstrap_row_frame_encode_ms` `135 -> 140`,
   `rust_pull_apply_ms` `501 -> 521`. Reverted.
+- Rejected raising the Rust-owned browser SQLite snapshot batch target from
+  `2048` to `4096` rows. With the current 8-column schema this reduced the
+  number of SQLite steps, but the larger prepared statement was slower:
+  `rust_bootstrap_ms` `984.02 -> 1003.40`,
+  `rust_pull_apply_ms` `501 -> 515`,
+  `rust_cached_pull_apply_ms` `493 -> 521`. Reverted; keep `2048`.
 
 ### Phase 4: Worker Default
 
