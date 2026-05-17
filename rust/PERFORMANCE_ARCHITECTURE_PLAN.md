@@ -113,6 +113,23 @@ same server subscription after the first Rust bootstrap. These
 actually avoiding work for later clients, not just avoiding gzip/hash on the
 first generated chunk.
 
+The browser E2E scoreboard also supports `--scope-fanout-users=N`. In that
+mode it seeds `rows * N` server rows while keeping `rows` visible to the
+benchmark actor. This is the required lane for scope/index work because the
+default single-user dataset cannot prove whether scoped server snapshot queries
+avoid scanning unrelated tenant data.
+
+Measured scoped-server lane:
+
+- No-index scoped baseline, 50k visible rows / 500k seeded rows /
+  `--scope-fanout-users=10`: Rust bootstrap `149.87ms`, pull request `88ms`,
+  server snapshot query `62ms`, local apply `59ms`.
+- Benchmark server scope index on `(user_id, id)`, same lane: Rust bootstrap
+  `119.33ms`, pull request `58ms`, server snapshot query `30ms`, local apply
+  `59ms`.
+- Single-user guardrails stayed neutral after rerun: 100k Rust bootstrap
+  `191.02ms -> 190.61ms`; 500k Rust bootstrap `879.14ms -> 869.34ms`.
+
 Validated perf-lane smoke:
 
 ```bash

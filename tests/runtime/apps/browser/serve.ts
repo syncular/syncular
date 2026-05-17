@@ -31,6 +31,7 @@ const portArg = process.argv.find((a) => a.startsWith('--port='));
 const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
 const wasmProfile = readWasmProfile();
 const syncSeedRows = readPositiveIntArg('--sync-seed-rows', 0);
+const syncSeedUsers = Math.max(1, readPositiveIntArg('--sync-seed-users', 1));
 const repoRoot = path.resolve(import.meta.dir, '../../../..');
 const rustPackageRoot = path.join(repoRoot, 'rust/bindings/browser');
 const rustPackageWasmDir = path.join(rustPackageRoot, 'dist/wasm');
@@ -136,7 +137,9 @@ const COOP_COEP_HEADERS = {
 
 let syncCommitSeq = 1;
 const benchmarkSyncRoute =
-  syncSeedRows > 0 ? await createBenchmarkSyncRoute(syncSeedRows) : null;
+  syncSeedRows > 0
+    ? await createBenchmarkSyncRoute(syncSeedRows, syncSeedUsers)
+    : null;
 
 const HTML = `<!DOCTYPE html>
 <html>
@@ -290,7 +293,8 @@ function readPositiveIntArg(name: string, fallback: number): number {
 }
 
 async function createBenchmarkSyncRoute(
-  rows: number
+  rows: number,
+  users: number
 ): Promise<(request: Request) => Promise<Response>> {
   const dialect = createSqliteServerDialect();
   const db = createDatabase<BenchmarkSyncServerDb>({
@@ -299,7 +303,7 @@ async function createBenchmarkSyncRoute(
   });
   await ensureSyncSchema(db, dialect);
   await ensureBenchmarkTasksTable(db);
-  await seedBenchmarkTasks(db, rows);
+  await seedBenchmarkTasks(db, rows, users);
   const syncRoutes = createSyncRoutes<
     BenchmarkSyncServerDb,
     BenchmarkSyncAuthContext
@@ -375,11 +379,19 @@ async function ensureBenchmarkTasksTable(
     .addColumn('image', 'text')
     .addColumn('title_yjs_state', 'text')
     .execute();
+
+  await db.schema
+    .createIndex('idx_tasks_scope_user_id_id')
+    .ifNotExists()
+    .on('tasks')
+    .columns(['user_id', 'id'])
+    .execute();
 }
 
 async function seedBenchmarkTasks(
   db: ReturnType<typeof createDatabase<BenchmarkSyncServerDb>>,
-  rows: number
+  rows: number,
+  users: number
 ): Promise<void> {
   const chunkSize = 1_000;
   for (let start = 0; start < rows; start += chunkSize) {
@@ -387,11 +399,15 @@ async function seedBenchmarkTasks(
       { length: Math.min(chunkSize, rows - start) },
       (_, offset) => {
         const index = start + offset;
+        const userIndex = users === 1 ? 0 : index % users;
         return {
           id: `task-${index}`,
           title: `Task ${index}`,
           completed: index % 2,
-          user_id: 'browser-e2e-user',
+          user_id:
+            userIndex === 0
+              ? 'browser-e2e-user'
+              : `browser-e2e-user-${userIndex}`,
           project_id: 'p1',
           server_version: index + 1,
           image: null,
