@@ -8,7 +8,8 @@ Make the Rust client win on its own architecture instead of matching the TypeScr
   binary path: the latest 500k-row local runs report near-zero
   `snapshotChunkDecodeMs`.
 - SQLite WASM apply is still the dominant 500k-row browser Rust client-side
-  cost in release WASM, but is now around 416ms in the local Hono harness.
+  cost in release WASM, but is now around 490ms in the current browser E2E
+  harness on battery-saver runs.
 - Aggregate queries scan/group 100k rows and are around 10x slower than TS/native SQLite.
 
 ## Current Baseline
@@ -1020,6 +1021,34 @@ client. Overflow should close or resync the session deliberately.
     (`rust_pull_apply_ms` `111 -> 111`,
     `rust_local_search_p50_ms` `2.70 -> 2.63`).
   - WASM size changed by only `69` bytes raw and stayed inside the budget.
+- Rejected nullable all-null column pruning for generated binary snapshots. It
+  reduced some nullable bind work in theory, but in practice forced the server
+  off generated table encoders and regressed 500k first bootstrap:
+  `rust_bootstrap_ms` `1338.48 -> 1433.91`,
+  `rust_pull_apply_ms` `490 -> 514`,
+  `rust_server_bootstrap_row_frame_encode_ms` `247 -> 291`, and response bytes
+  increased slightly. Reverted.
+- Rejected cached-statement null-bind state tracking. It avoided repeated
+  `sqlite3_bind_null` calls for stable-null parameters, but the per-parameter
+  bookkeeping cost more than the skipped SQLite calls in the 500k browser path:
+  `rust_cached_bootstrap_ms` `509.82 -> 533.89`,
+  `rust_pull_apply_ms` `490 -> 503`,
+  `rust_cached_pull_apply_ms` `490 -> 514`. Reverted.
+- Retained lazy server codec hydration for default snapshots. Snapshot pages now
+  resolve table codecs once per page, and `applyCodecsFromDbRow` only copies a
+  row when a codec-backed column actually has a non-null value to transform.
+  This keeps generated binary snapshot encoders on the hot path while removing
+  avoidable per-row `Object.keys`/sort/cache lookup and row spread work.
+  - 500k bootstrap-only, release-WASM, battery saver:
+    `rust_bootstrap_ms` `1338.48 -> 1096.17`,
+    `rust_pull_request_ms` `840 -> 594`,
+    `rust_server_bootstrap_snapshot_query_ms` `469 -> 231`,
+    `rust_pull_apply_ms` stayed flat/noisy (`490 -> 493`).
+  - 100k full scoreboard guardrail:
+    `rust_bootstrap_ms` `281.38 -> 232.85`,
+    `rust_pull_request_ms` `166 -> 118`,
+    `rust_pull_apply_ms` stayed `111 -> 111`; local read p50s were in the
+    expected noise band.
 
 ### Phase 4: Worker Default
 

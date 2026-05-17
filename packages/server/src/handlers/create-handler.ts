@@ -18,6 +18,7 @@ import {
   type ColumnCodecSource,
   createSingleVariableScopeMetadata,
   createTableColumnCodecsResolver,
+  toTableColumnCodecs,
 } from '@syncular/core';
 import type {
   DeleteQueryBuilder,
@@ -426,9 +427,30 @@ export function createServerHandler<
           | undefined)
       : null;
 
-    const outputRows = pageRows.map((r) =>
-      applyOutboundTransform(r as Selectable<ServerDB[TableName]>)
-    );
+    let outputRows: unknown[];
+    if (transformOutbound) {
+      outputRows = pageRows.map((r) =>
+        applyOutboundTransform(r as Selectable<ServerDB[TableName]>)
+      );
+    } else {
+      const firstRow = pageRows[0] as Record<string, unknown> | undefined;
+      const tableCodecs = firstRow
+        ? toTableColumnCodecs(table, codecs, Object.keys(firstRow), {
+            dialect: codecDialect,
+          })
+        : {};
+      if (Object.keys(tableCodecs).length === 0) {
+        outputRows = pageRows;
+      } else {
+        outputRows = pageRows.map((r) =>
+          applyCodecsFromDbRow(
+            r as Record<string, unknown>,
+            tableCodecs,
+            codecDialect
+          )
+        );
+      }
+    }
 
     return {
       rows: outputRows,
