@@ -111,6 +111,7 @@ describe('createSyncServer console configuration', () => {
         return true;
       },
       sendSync() {},
+      sendSyncPack() {},
       sendHeartbeat() {},
       sendPresence() {},
       sendError() {},

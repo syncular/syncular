@@ -43,10 +43,14 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     while (dbs.length > 0) await dbs.pop()!.destroy();
   });
 
-  it('applies inline websocket changes and emits live-query updates', async () => {
+  it('applies websocket delta changes and emits live-query updates', async () => {
     const scenario = syncConformance.realtime;
-    const { baseUrl, connectionCount, httpPullCount } =
-      await openRealtimeServer();
+    const {
+      baseUrl,
+      connectionCount,
+      httpPullCount,
+      websocketSyncPackEncodings,
+    } = await openRealtimeServer();
     const clientA = await openClient({
       baseUrl,
       clientId: scenario.clientAId,
@@ -68,6 +72,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       initialReconnectDelayMs: 50,
     });
     await waitFor(() => connectionCount() === scenario.expectedConnectionCount);
+    expect(websocketSyncPackEncodings).toContain('binary-sync-pack-v1');
     const pullCountBeforeRealtimePush = httpPullCount();
     const liveEvent = waitForLiveEvent(clientA, snapshot.id);
 
@@ -160,6 +165,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     await ensureHonoSyncTasksTable(db);
     const realtimeTokens = new Set(options.realtimeTokens ?? [REALTIME_TOKEN]);
     const websocketAuthTokens: string[] = [];
+    const websocketSyncPackEncodings: string[] = [];
     let httpPullCount = 0;
 
     const routes = createSyncRoutes<HonoSyncServerDb, HonoAuthContext>({
@@ -181,7 +187,11 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       authenticate: async (c) => {
         const authorization = c.req.header('authorization');
         const token = c.req.query('token');
+        const syncPackEncoding = c.req.query('syncPackEncoding');
         if (token) websocketAuthTokens.push(token);
+        if (token && syncPackEncoding) {
+          websocketSyncPackEncodings.push(syncPackEncoding);
+        }
         if (
           authorization === AUTHORIZATION ||
           realtimeTokens.has(token ?? '')
@@ -235,6 +245,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       connectionCount: () => connectionManager.getTotalConnections(),
       httpPullCount: () => httpPullCount,
       websocketAuthTokens,
+      websocketSyncPackEncodings,
     };
   }
 
@@ -264,6 +275,7 @@ interface RealtimeServerHarness {
   connectionCount(): number;
   httpPullCount(): number;
   websocketAuthTokens: string[];
+  websocketSyncPackEncodings: string[];
 }
 
 function waitForLiveEvent(

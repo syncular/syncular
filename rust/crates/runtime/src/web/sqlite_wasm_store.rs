@@ -766,6 +766,19 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = applyRealtimeSyncPackBytes)]
+    pub async fn apply_realtime_sync_pack_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> std::result::Result<String, JsValue> {
+        let result = self
+            .inner
+            .apply_realtime_sync_pack_bytes(bytes)
+            .await
+            .map_err(error_to_js)?;
+        serde_json::to_string(&result).map_err(|err| error_to_js(SyncularError::from(err)))
+    }
+
     #[wasm_bindgen(js_name = syncPushJson)]
     pub async fn sync_push_json(&mut self) -> std::result::Result<String, JsValue> {
         self.inner.sync_push_json().await.map_err(error_to_js)

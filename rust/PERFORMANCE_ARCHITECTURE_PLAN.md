@@ -1506,19 +1506,41 @@ client. Overflow should close or resync the session deliberately.
     `rust_incremental_pull_ms` `7.2`, request `6`, apply `0`, sync-pack decode
     `1`. This lane is not the target win; the target win is removing the extra
     realtime HTTP round trip for inline websocket payloads.
-- Next target: upgrade websocket delivery from the existing JSON inline
-  `changes` payload to the same generated binary delta-pack format used by
-  incremental HTTP pull.
+- Retained binary websocket delta-pack slice: browser realtime now advertises
+  `syncPackEncoding=binary-sync-pack-v1`, Hono encodes the same generated
+  binary sync-pack format used by HTTP pull, and the worker routes `SSP1`
+  binary frames directly into Rust-owned SQLite.
+  - Guard: only negotiated clients receive binary frames; non-negotiated
+    clients keep the JSON inline/cursor fallback, and oversized inline payloads
+    still fall back to pull wakeups. Mixed-scope commits also use cursor-only
+    wakeups until the server can filter inline rows per connection.
+  - Measurement/validation: server manager coverage proves binary frames go
+    only to negotiated clients, worker coverage proves `0` HTTP pulls for a
+    binary frame, and the real Hono/WASM websocket test proves a negotiated
+    browser client gets the live-query update with `0` additional HTTP pulls.
+  - Smoke perf after the change still passes. On the small browser E2E lane,
+    100 bootstrap rows + 10 incremental rows measured
+    `rust_incremental_pull_ms` `6.2`, request `5`, apply `1`, sync-pack decode
+    `0`. WASM size moved from the prior local dev measurement of roughly
+    `3226.9 KiB` raw / `1324.4 KiB` gzip to `3233.4 KiB` raw /
+    `1326.0 KiB` gzip.
+  - Complexity check: this is retained because it uses the existing
+    sync-pack encoder/decoder and removes protocol divergence between HTTP and
+    realtime. It is not yet a measured latency win beyond avoiding the HTTP
+    pull; future work needs a dedicated realtime latency/bytes lane.
+- Next target: add that dedicated realtime latency/bytes lane before tuning
+  binary websocket internals further.
 
 ### Phase 7: Delta WebSocket Runtime
 
 - Status: in progress.
-- Extend websocket negotiation to advertise binary delta support.
-- Stream compact delta packs over websocket instead of treating realtime as
-  only a sync wakeup.
+- Done: websocket negotiation advertises binary sync-pack support for the
+  browser worker.
+- Done: bounded binary delta packs stream over websocket for negotiated clients.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
-- Measure steady-state propagation without an extra HTTP round trip.
+- Next: add a dedicated steady-state realtime latency/bytes lane before further
+  websocket tuning.
 
 ### Phase 8: Compression And Cache Policy
 

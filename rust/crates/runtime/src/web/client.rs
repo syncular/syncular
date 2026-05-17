@@ -1,5 +1,6 @@
 use crate::app_schema::AppSchema;
 use crate::binary_snapshot::SnapshotChunkRows;
+use crate::binary_sync_pack::decode_binary_sync_pack;
 use crate::client::{
     sync_changed_row_for_change, sync_changed_row_for_local_operation,
     sync_changed_row_for_snapshot, sync_changed_rows_for_cleared_snapshot_chunk_limited,
@@ -10,8 +11,8 @@ use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
-    CombinedRequest, PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
-    SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
+    CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
+    PushCommitRequest, ScopeValues, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
     SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
     SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
 };
@@ -558,13 +559,65 @@ where
         request: WebRealtimeChangesRequest,
     ) -> Result<WebSyncResult> {
         let total_started_at = timing_now_ms();
-        let mut result = WebSyncResult::default();
         if request.changes.is_empty() {
+            let mut result = WebSyncResult::default();
             result.timings.total_ms = elapsed_ms_since(total_started_at);
             result.timings.pull_ms = result.timings.total_ms;
             return Ok(result);
         }
 
+        let commit_seq = request.cursor;
+        self.apply_realtime_combined_response(
+            CombinedResponse {
+                ok: true,
+                required_schema_version: None,
+                latest_schema_version: None,
+                push: None,
+                pull: Some(PullResponse {
+                    ok: true,
+                    subscriptions: vec![crate::protocol::SubscriptionResponse {
+                        id: "__syncular_realtime__".to_string(),
+                        status: "active".to_string(),
+                        scopes: ScopeValues::new(),
+                        bootstrap: false,
+                        bootstrap_state: None,
+                        next_cursor: commit_seq,
+                        commits: vec![SyncCommit {
+                            commit_seq,
+                            created_at: request.created_at.unwrap_or_else(|| now_ms().to_string()),
+                            actor_id: request.actor_id.unwrap_or_else(|| "server".to_string()),
+                            changes: request.changes,
+                        }],
+                        snapshots: None,
+                    }],
+                }),
+            },
+            total_started_at,
+        )
+        .await
+    }
+
+    pub async fn apply_realtime_sync_pack_bytes(&mut self, bytes: &[u8]) -> Result<WebSyncResult> {
+        let total_started_at = timing_now_ms();
+        let response = decode_binary_sync_pack(bytes)?;
+        self.apply_realtime_combined_response(response, total_started_at)
+            .await
+    }
+
+    async fn apply_realtime_combined_response(
+        &mut self,
+        response: CombinedResponse,
+        total_started_at: i64,
+    ) -> Result<WebSyncResult> {
+        validate_server_schema_version(
+            response.required_schema_version,
+            response.latest_schema_version,
+        )?;
+        if !response.ok {
+            return Err(SyncularError::protocol_message(
+                "realtime sync-pack response was not ok",
+            ));
+        }
         if !self.store.pending_outbox(1).await?.is_empty() {
             return Err(SyncularError::message(
                 ErrorKind::Busy,
@@ -572,38 +625,38 @@ where
             ));
         }
 
-        let commit_seq = request.cursor;
+        let Some(pull) = response.pull else {
+            let mut result = WebSyncResult::default();
+            result.timings.total_ms = elapsed_ms_since(total_started_at);
+            result.timings.pull_ms = result.timings.total_ms;
+            return Ok(result);
+        };
+        let mut result = WebSyncResult::default();
         let transform_started_at = timing_now_ms();
-        let pull = self.transform_pull_response(PullResponse {
-            ok: true,
-            subscriptions: vec![crate::protocol::SubscriptionResponse {
-                id: "__syncular_realtime__".to_string(),
-                status: "active".to_string(),
-                scopes: ScopeValues::new(),
-                bootstrap: false,
-                bootstrap_state: None,
-                next_cursor: commit_seq,
-                commits: vec![SyncCommit {
-                    commit_seq,
-                    created_at: request.created_at.unwrap_or_else(|| now_ms().to_string()),
-                    actor_id: request.actor_id.unwrap_or_else(|| "server".to_string()),
-                    changes: request.changes,
-                }],
-                snapshots: None,
-            }],
-        })?;
+        let pull = self.transform_pull_response(pull)?;
         result.timings.pull_transform_ms = elapsed_ms_since(transform_started_at);
+        let cursor = pull
+            .subscriptions
+            .iter()
+            .map(|subscription| subscription.next_cursor)
+            .max()
+            .unwrap_or(0);
         let commits = pull
             .subscriptions
             .into_iter()
             .flat_map(|subscription| subscription.commits)
             .collect::<Vec<_>>();
+        if commits.is_empty() {
+            result.timings.total_ms = elapsed_ms_since(total_started_at);
+            result.timings.pull_ms = result.timings.total_ms;
+            return Ok(result);
+        }
 
         self.store.begin_apply_batch().await?;
         let apply_started_at = timing_now_ms();
         let apply_result = async {
             self.apply_realtime_commits(&mut result, commits).await?;
-            self.advance_realtime_subscription_cursors(commit_seq).await
+            self.advance_realtime_subscription_cursors(cursor).await
         }
         .await;
         result.timings.pull_apply_ms = elapsed_ms_since(apply_started_at);

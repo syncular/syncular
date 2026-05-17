@@ -16,6 +16,7 @@ export interface SyncularV2WorkerRealtimeClient {
   applyRealtimeChanges?(
     request: SyncularV2RealtimeChangesRequest
   ): Promise<SyncularV2SyncResult>;
+  applyRealtimeSyncPack?(bytes: Uint8Array): Promise<SyncularV2SyncResult>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<SyncularV2LiveQueryEvent<Row>>;
@@ -33,6 +34,7 @@ interface SyncularV2RealtimeSyncMessage {
   changes?: unknown[];
   actorId?: string | null;
   createdAt?: string | null;
+  syncPackBytes?: Uint8Array;
 }
 
 export interface SyncularV2WorkerRealtimeSocket {
@@ -160,8 +162,24 @@ export class SyncularV2WorkerRealtimeController {
     socket: SyncularV2WorkerRealtimeSocket,
     data: MessageEvent['data']
   ): Promise<void> {
-    const text = await readRealtimeMessageText(data);
-    if (socket !== this.#socket || text == null) return;
+    const bytes = await readRealtimeMessageBytes(data);
+    if (socket !== this.#socket) return;
+    if (bytes && isSyncPackBytes(bytes)) {
+      this.#diagnostic({
+        level: 'debug',
+        code: 'realtime.sync_wakeup',
+        message: 'Syncular v2 realtime binary sync-pack received',
+        details: {
+          bytes: bytes.byteLength,
+        },
+      });
+      this.#scheduleSync({ syncPackBytes: bytes });
+      return;
+    }
+
+    const text = bytes ? new TextDecoder().decode(bytes) : data;
+    if (text == null) return;
+    if (typeof text !== 'string') return;
     let message: unknown;
     try {
       message = JSON.parse(text);
@@ -261,6 +279,35 @@ export class SyncularV2WorkerRealtimeController {
     message: SyncularV2RealtimeSyncMessage | undefined
   ): Promise<SyncularV2SyncResult> {
     const client = this.controllerOptions.getClient();
+    if (
+      message?.syncPackBytes &&
+      typeof client.applyRealtimeSyncPack === 'function'
+    ) {
+      try {
+        const result = await client.applyRealtimeSyncPack(
+          message.syncPackBytes
+        );
+        this.#diagnostic({
+          level: 'debug',
+          code: 'realtime.binary_applied',
+          message: 'Syncular v2 realtime binary sync-pack applied',
+          details: {
+            bytes: message.syncPackBytes.byteLength,
+          },
+        });
+        return result;
+      } catch {
+        this.#diagnostic({
+          level: 'warn',
+          code: 'realtime.binary_fallback',
+          message:
+            'Syncular v2 realtime binary sync-pack apply failed; falling back to pull',
+          details: {
+            bytes: message.syncPackBytes.byteLength,
+          },
+        });
+      }
+    }
     if (
       message?.changes &&
       message.changes.length > 0 &&
@@ -370,6 +417,7 @@ export function resolveSyncularV2RealtimeUrl(
   if (url.protocol === 'https:') url.protocol = 'wss:';
   url.searchParams.set('clientId', config.clientId);
   url.searchParams.set('transportPath', 'direct');
+  url.searchParams.set('syncPackEncoding', 'binary-sync-pack-v1');
   for (const [key, value] of Object.entries(options.params ?? {})) {
     if (value) url.searchParams.set(key, value);
   }
@@ -396,16 +444,25 @@ function readSyncularV2RealtimeSyncMessage(
   return { cursor, changes, actorId, createdAt };
 }
 
-async function readRealtimeMessageText(
+async function readRealtimeMessageBytes(
   data: MessageEvent['data']
-): Promise<string | null> {
-  if (typeof data === 'string') return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+): Promise<Uint8Array | null> {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(
-      new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-    );
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
-  if (typeof Blob !== 'undefined' && data instanceof Blob) return data.text();
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return new Uint8Array(await data.arrayBuffer());
+  }
   return null;
+}
+
+function isSyncPackBytes(bytes: Uint8Array): boolean {
+  return (
+    bytes.byteLength >= 4 &&
+    bytes[0] === 0x53 &&
+    bytes[1] === 0x53 &&
+    bytes[2] === 0x50 &&
+    bytes[3] === 0x31
+  );
 }

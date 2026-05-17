@@ -98,6 +98,7 @@ describe('realtime broadcaster bridge', () => {
           return true;
         },
         sendSync: onSync,
+        sendSyncPack: mock(() => {}),
         sendHeartbeat: mock(() => {}),
         sendPresence: mock(() => {}),
         sendError: mock(() => {}),

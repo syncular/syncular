@@ -216,6 +216,14 @@ export class SyncularV2RustClient {
     return result;
   }
 
+  async applyRealtimeSyncPack(bytes: Uint8Array): Promise<SyncularV2SyncResult> {
+    const result = parseSyncResult(
+      await this.raw.applyRealtimeSyncPackBytes(bytes)
+    );
+    this.#emitRowsChanged('remotePull', result);
+    return result;
+  }
+
   async syncPush(): Promise<SyncularV2SyncResult> {
     try {
       const result = parseSyncResult(await this.raw.syncPushJson());

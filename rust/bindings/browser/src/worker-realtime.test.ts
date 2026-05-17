@@ -26,7 +26,7 @@ describe('Syncular v2 worker realtime', () => {
         'https://app.example'
       )
     ).toBe(
-      'wss://app.example/sync/realtime?clientId=client-1&transportPath=direct&token=abc'
+      'wss://app.example/sync/realtime?clientId=client-1&transportPath=direct&syncPackEncoding=binary-sync-pack-v1&token=abc'
     );
 
     expect(
@@ -39,7 +39,9 @@ describe('Syncular v2 worker realtime', () => {
         { wsUrl: 'ws://api.example/socket' },
         'https://app.example'
       )
-    ).toBe('ws://api.example/socket?clientId=client-1&transportPath=direct');
+    ).toBe(
+      'ws://api.example/socket?clientId=client-1&transportPath=direct&syncPackEncoding=binary-sync-pack-v1'
+    );
   });
 
   it('recognizes server sync wakeup messages', () => {
@@ -146,6 +148,42 @@ describe('Syncular v2 worker realtime', () => {
     );
   });
 
+  it('applies binary websocket sync packs without an HTTP pull', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const controller = new SyncularV2WorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    sockets[0]!.messageRaw(new Uint8Array([0x53, 0x53, 0x50, 0x31, 1, 2, 3]));
+
+    await waitFor(() => client.realtimeSyncPacks.length === 1);
+    expect(client.syncPulls).toBe(0);
+    expect(Array.from(client.realtimeSyncPacks[0]!)).toEqual([
+      0x53, 0x53, 0x50, 0x31, 1, 2, 3,
+    ]);
+    expect(diagnostics.map((event) => event.code)).toContain(
+      'realtime.binary_applied'
+    );
+  });
+
   it('emits structured diagnostics for reconnect scheduling', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
@@ -210,7 +248,7 @@ describe('Syncular v2 worker realtime', () => {
 
     controller.start({ heartbeatTimeoutMs: 0, params: { token: 'abc' } });
     expect(sockets[0]?.url).toBe(
-      'wss://app.example/sync/realtime?clientId=client-1&transportPath=direct&token=abc'
+      'wss://app.example/sync/realtime?clientId=client-1&transportPath=direct&syncPackEncoding=binary-sync-pack-v1&token=abc'
     );
     sockets[0]!.open();
 
@@ -340,6 +378,7 @@ describe('Syncular v2 worker realtime', () => {
 class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
   syncPulls = 0;
   realtimeApplies = 0;
+  realtimeSyncPacks: Uint8Array[] = [];
   appliedRealtime: Array<{
     cursor: number;
     changes: unknown[];
@@ -371,6 +410,18 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
   }): Promise<SyncularV2SyncResult> {
     this.realtimeApplies += 1;
     this.appliedRealtime.push(request);
+    return {
+      changedTables: ['tasks'],
+      changedRows: [],
+      subscriptions: [],
+      pushedCommits: 0,
+    };
+  }
+
+  async applyRealtimeSyncPack(
+    bytes: Uint8Array
+  ): Promise<SyncularV2SyncResult> {
+    this.realtimeSyncPacks.push(bytes);
     return {
       changedTables: ['tasks'],
       changedRows: [],
@@ -420,6 +471,10 @@ class FakeRealtimeSocket implements SyncularV2WorkerRealtimeSocket {
     this.onmessage?.({
       data: new TextEncoder().encode(JSON.stringify(value)),
     } as MessageEvent);
+  }
+
+  messageRaw(data: MessageEvent['data']): void {
+    this.onmessage?.({ data } as MessageEvent);
   }
 
   serverClose(): void {

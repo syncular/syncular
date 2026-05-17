@@ -1,7 +1,7 @@
 /**
  * @syncular/server-hono - WebSocket helpers for realtime sync wake-ups
  *
- * WebSockets are used only as a "wake up" mechanism; clients must still pull.
+ * WebSockets can deliver bounded inline deltas and fall back to wake-ups.
  * Also supports presence tracking for collaborative features.
  */
 
@@ -36,6 +36,8 @@ export interface WsPushResponseData {
   commitSeq?: number;
   results: Array<{ opIndex: number; status: string; [k: string]: unknown }>;
 }
+
+export type WebSocketSyncPackEncoding = 'binary-sync-pack-v1';
 
 /**
  * WebSocket event data for sync notifications
@@ -84,6 +86,8 @@ export interface WebSocketConnection {
     changes?: unknown[],
     metadata?: { actorId?: string; createdAt?: string }
   ): void;
+  /** Send an encoded binary sync-pack delta */
+  sendSyncPack(bytes: Uint8Array): void;
   /** Send a heartbeat */
   sendHeartbeat(): void;
   /** Send a presence event */
@@ -112,9 +116,11 @@ export interface WebSocketConnection {
   ownerKey: string;
   /** Transport path used by this connection. */
   transportPath: 'direct' | 'relay';
+  /** Optional binary sync-pack encoding negotiated by the client. */
+  syncPackEncoding?: WebSocketSyncPackEncoding | null;
 }
 
-function safeSend(ws: WSContext, message: string): boolean {
+function safeSend(ws: WSContext, message: string | ArrayBuffer): boolean {
   try {
     ws.send(message);
     return true;
@@ -130,6 +136,7 @@ export function createWebSocketConnection(
     clientId: string;
     ownerKey: string;
     transportPath: 'direct' | 'relay';
+    syncPackEncoding?: WebSocketSyncPackEncoding | null;
   }
 ): WebSocketConnection {
   let closed = false;
@@ -143,6 +150,7 @@ export function createWebSocketConnection(
     clientId: args.clientId,
     ownerKey: args.ownerKey,
     transportPath: args.transportPath,
+    syncPackEncoding: args.syncPackEncoding ?? null,
     sendSync(
       cursor: number,
       changes?: unknown[],
@@ -163,6 +171,15 @@ export function createWebSocketConnection(
         payload.createdAt = metadata.createdAt;
       }
       const ok = safeSend(ws, JSON.stringify({ event: 'sync', data: payload }));
+      if (!ok) closed = true;
+    },
+    sendSyncPack(bytes: Uint8Array) {
+      if (!connection.isOpen) return;
+      const body = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
+      const ok = safeSend(ws, body);
       if (!ok) closed = true;
     },
     sendHeartbeat() {
@@ -605,6 +622,7 @@ export class WebSocketConnectionManager {
     opts?: {
       excludeClientIds?: string[];
       changes?: unknown[];
+      syncPack?: Uint8Array;
       actorId?: string;
       createdAt?: string;
     }
@@ -617,10 +635,19 @@ export class WebSocketConnectionManager {
         inlineChanges = opts.changes;
       }
     }
+    const inlineSyncPack =
+      opts?.syncPack &&
+      opts.syncPack.byteLength <= WebSocketConnectionManager.WS_INLINE_MAX_BYTES
+        ? opts.syncPack
+        : undefined;
 
     this.registry.forEachConnectionInScopeKeys(
       scopeKeys,
       (conn) => {
+        if (inlineSyncPack && conn.syncPackEncoding === 'binary-sync-pack-v1') {
+          conn.sendSyncPack(inlineSyncPack);
+          return;
+        }
         if (inlineChanges) {
           conn.sendSync(cursor, inlineChanges, {
             actorId: opts?.actorId,
