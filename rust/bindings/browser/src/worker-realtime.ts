@@ -42,6 +42,7 @@ export interface SyncularV2WorkerRealtimeSocket {
   onmessage: ((event: MessageEvent) => void) | null;
   onerror: ((event: Event) => void) | null;
   onclose: ((event: CloseEvent) => void) | null;
+  send(data: string): void;
   close(): void;
 }
 
@@ -237,9 +238,11 @@ export class SyncularV2WorkerRealtimeController {
   }
 
   async #runSync(message?: SyncularV2RealtimeSyncMessage): Promise<void> {
+    const socket = this.#socket;
     try {
       const result = await this.#syncForMessage(message);
       if (this.#stopped) return;
+      this.#ackRealtimeCursor(socket, message, result);
       if (result.changedTables.length > 0 || result.changedRows.length > 0) {
         this.controllerOptions.postEvent({
           protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -272,6 +275,45 @@ export class SyncularV2WorkerRealtimeController {
         this.#syncAgain = false;
         this.#scheduleSync();
       }
+    }
+  }
+
+  #ackRealtimeCursor(
+    socket: SyncularV2WorkerRealtimeSocket | undefined,
+    message: SyncularV2RealtimeSyncMessage | undefined,
+    result: SyncularV2SyncResult
+  ): void {
+    if (!socket || socket !== this.#socket) return;
+    const subscriptionCursor = result.subscriptions.reduce(
+      (cursor, subscription) =>
+        Number.isFinite(subscription.nextCursor)
+          ? Math.max(cursor, subscription.nextCursor)
+          : cursor,
+      -1
+    );
+    const messageCursor =
+      message?.changes &&
+      message.changes.length > 0 &&
+      Number.isFinite(message.cursor)
+        ? message.cursor!
+        : -1;
+    const cursor = Math.max(subscriptionCursor, messageCursor);
+    if (!Number.isSafeInteger(cursor) || cursor < 0) return;
+    try {
+      socket.send(JSON.stringify({ type: 'ack', cursor }));
+      this.#diagnostic({
+        level: 'debug',
+        code: 'realtime.ack_sent',
+        message: 'Syncular v2 realtime cursor ack sent',
+        details: { cursor },
+      });
+    } catch {
+      this.#diagnostic({
+        level: 'warn',
+        code: 'realtime.ack_failed',
+        message: 'Syncular v2 realtime cursor ack failed',
+        details: { cursor },
+      });
     }
   }
 

@@ -1610,13 +1610,41 @@ client. Overflow should close or resync the session deliberately.
     correctness/perf fallback for multi-tenant or multi-scope commits while
     preserving bounded payload fallback and the shared-pack fast path for
     single-scope commits.
-- Next target: ack/resume semantics for websocket delta delivery. The current
-  realtime path is fast enough in the measured single-scope lane; reliability
-  around missed frames/reconnect is the next higher-value runtime foundation.
+- Retained first ack/resume reliability slice for websocket delta delivery.
+  The browser worker now sends `{type:"ack", cursor}` after successful inline
+  or binary realtime apply, Hono records monotonic cursor acks without
+  replacing effective scopes, and reconnecting websocket sessions receive a
+  cursor-only catch-up wakeup when their recorded server cursor lags the latest
+  partition commit.
+  - Correctness guard: worker unit coverage asserts inline and binary applies
+    send cursor acks; server route coverage asserts cursor acks update only the
+    cursor and preserve effective scopes; server route coverage also asserts a
+    reconnecting stale cursor receives a catch-up wakeup.
+  - Integration guard: the browser/Hono WASM realtime suite still passes,
+    including direct binary websocket delta apply, mixed-scope filtering, and
+    auth-param reconnect.
+  - Normal perf-harness smoke after the change reports
+    `rust_browser_e2e_rust_realtime_live_ms` `11.6`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `14.1`,
+    `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
+    and `rust_browser_e2e_rust_realtime_binary_events` `2.0`.
+  - Single-scope perf guard after the change, same 10k + 1k x3 release lane:
+    `rust_realtime_live_ms` `87.64`,
+    `rust_realtime_live_p95_ms` `93.17`,
+    `ts_realtime_push_ms` `70.77`,
+    `rust_realtime_http_request_count` `0`,
+    `rust_realtime_binary_events` `15`,
+    `rust_realtime_binary_bytes` `639015`. This is effectively neutral versus
+    the prior mixed-scope filtering measurement (`87.04` p50 / `88.82` p95)
+    and keeps the no-HTTP-fallback guarantee.
+  - Complexity check: the extra ack frame is a reliability contract, not a hot
+    path optimization. It reuses the existing client cursor table and avoids a
+    full websocket envelope rewrite while making reconnect recovery explicit.
 
 ### Phase 7: Delta WebSocket Runtime
 
-- Status: in progress.
+- Status: mostly complete for browser steady-state deltas; remaining work is
+  durable sequenced sessions and server-side replay windows.
 - Done: websocket negotiation advertises binary sync-pack support for the
   browser worker.
 - Done: bounded binary delta packs stream over websocket for negotiated clients.
@@ -1624,10 +1652,13 @@ client. Overflow should close or resync the session deliberately.
   HTTP fallback counters.
 - Done: mixed-scope commits can still use inline websocket deltas by filtering
   per connected client's effective scopes.
+- Done: browser websocket clients ack successfully applied realtime cursors;
+  Hono records monotonic realtime acks and sends reconnect catch-up wakeups
+  when the recorded cursor lags.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
-- Next: add explicit ack/resume behavior so reconnecting clients can detect and
-  recover missed websocket delta frames without app-layer babysitting.
+- Next: design the heavier websocket-first session protocol with server
+  sequence ids, explicit replay windows, and bounded in-flight backpressure.
 
 ### Phase 8: Compression And Cache Policy
 

@@ -635,17 +635,21 @@ where
         let transform_started_at = timing_now_ms();
         let pull = self.transform_pull_response(pull)?;
         result.timings.pull_transform_ms = elapsed_ms_since(transform_started_at);
-        let cursor = pull
-            .subscriptions
-            .iter()
-            .map(|subscription| subscription.next_cursor)
-            .max()
-            .unwrap_or(0);
-        let commits = pull
-            .subscriptions
-            .into_iter()
-            .flat_map(|subscription| subscription.commits)
-            .collect::<Vec<_>>();
+        let mut cursor = 0;
+        let mut commits = Vec::new();
+        for subscription in pull.subscriptions {
+            cursor = cursor.max(subscription.next_cursor);
+            commits.extend(subscription.commits);
+            result.subscriptions.push(WebSubscriptionResult {
+                id: subscription.id,
+                table: "__syncular_realtime__".to_string(),
+                status: subscription.status,
+                scopes: subscription.scopes,
+                next_cursor: subscription.next_cursor,
+                snapshot_rows: Vec::new(),
+                commits: Vec::new(),
+            });
+        }
         if commits.is_empty() {
             result.timings.total_ms = elapsed_ms_since(total_started_at);
             result.timings.pull_ms = result.timings.total_ms;

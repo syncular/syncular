@@ -131,6 +131,9 @@ describe('Syncular v2 worker realtime', () => {
 
     await waitFor(() => client.realtimeApplies === 1);
     expect(client.syncPulls).toBe(0);
+    expect(
+      sockets[0]!.sent.map((message) => JSON.parse(message))
+    ).toContainEqual({ type: 'ack', cursor: 12 });
     expect(client.appliedRealtime[0]).toMatchObject({
       cursor: 12,
       changes: [{ table: 'tasks', row_id: 'task-inline' }],
@@ -176,6 +179,9 @@ describe('Syncular v2 worker realtime', () => {
 
     await waitFor(() => client.realtimeSyncPacks.length === 1);
     expect(client.syncPulls).toBe(0);
+    expect(
+      sockets[0]!.sent.map((message) => JSON.parse(message))
+    ).toContainEqual({ type: 'ack', cursor: 44 });
     expect(Array.from(client.realtimeSyncPacks[0]!)).toEqual([
       0x53, 0x53, 0x50, 0x31, 1, 2, 3,
     ]);
@@ -425,7 +431,17 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
     return {
       changedTables: ['tasks'],
       changedRows: [],
-      subscriptions: [],
+      subscriptions: [
+        {
+          id: '__syncular_realtime__',
+          table: '__syncular_realtime__',
+          status: 'active',
+          scopes: {},
+          nextCursor: 44,
+          snapshotRows: [],
+          commits: [],
+        },
+      ],
       pushedCommits: 0,
     };
   }
@@ -454,6 +470,7 @@ class FakeRealtimeSocket implements SyncularV2WorkerRealtimeSocket {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
+  sent: string[] = [];
 
   constructor(readonly url: string) {}
 
@@ -479,6 +496,10 @@ class FakeRealtimeSocket implements SyncularV2WorkerRealtimeSocket {
 
   serverClose(): void {
     this.onclose?.({} as CloseEvent);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
   }
 
   close(): void {}

@@ -2666,6 +2666,8 @@ export function createSyncRoutes<
       // Load last-known effective scopes for this client (best-effort).
       // Keeps /realtime lightweight and avoids sending large subscription payloads over the URL.
       let initialScopeKeys: string[] = [];
+      let lastAckedCursor = -1;
+      let latestCommitSeq = 0;
       try {
         const clientState = await readClientState(
           options.db,
@@ -2703,6 +2705,8 @@ export function createSyncRoutes<
           partitionId,
           scopeValuesToScopeKeys(parsed)
         );
+        lastAckedCursor = clientState.cursor ?? -1;
+        latestCommitSeq = clientState.latestCommitSeq;
       } catch {
         // ignore; realtime is best-effort
       }
@@ -2833,6 +2837,12 @@ export function createSyncRoutes<
 
           unregister = wsConnectionManager.register(conn, initialScopeKeys);
           conn.sendHeartbeat();
+          if (
+            initialScopeKeys.length > 0 &&
+            latestCommitSeq > lastAckedCursor
+          ) {
+            conn.sendSync(latestCommitSeq);
+          }
           emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
             action: 'realtime_connected',
             actorId: auth.actorId,
@@ -2882,6 +2892,33 @@ export function createSyncRoutes<
               typeof evt.data === 'string' ? evt.data : String(evt.data);
             const msg = JSON.parse(raw);
             if (!msg || typeof msg !== 'object') return;
+
+            if (msg.type === 'ack') {
+              const cursor =
+                typeof msg.cursor === 'number' &&
+                Number.isSafeInteger(msg.cursor)
+                  ? msg.cursor
+                  : null;
+              if (cursor !== null && cursor > lastAckedCursor) {
+                lastAckedCursor = cursor;
+                void recordRealtimeAck({
+                  db: options.db,
+                  actorId: auth.actorId,
+                  clientId,
+                  cursor,
+                  partitionId,
+                }).catch((error) => {
+                  logAsyncFailureOnce('sync.realtime.ack_record_failed', {
+                    event: 'sync.realtime.ack_record_failed',
+                    userId: auth.actorId,
+                    clientId,
+                    error:
+                      error instanceof Error ? error.message : String(error),
+                  });
+                });
+              }
+              return;
+            }
 
             if (msg.type === 'push') {
               void handleWsPush(msg, connRef, auth, clientId);
@@ -3339,33 +3376,98 @@ async function readClientState<DB extends SyncCoreDb>(
 ): Promise<{
   ownerActorId: string | null;
   effectiveScopes: unknown;
+  cursor: number | null;
+  latestCommitSeq: number;
   hasConflict: boolean;
 }> {
-  const [cursorResult, latestCommitResult] = await Promise.all([
-    sql<{ actor_id: string | null; effective_scopes: unknown }>`
-      SELECT actor_id, effective_scopes
+  const [cursorResult, latestClientCommitResult, latestCommitResult] =
+    await Promise.all([
+      sql<{
+        actor_id: string | null;
+        effective_scopes: unknown;
+        cursor: number | string | null;
+      }>`
+      SELECT actor_id, effective_scopes, cursor
       FROM sync_client_cursors
       WHERE partition_id = ${partitionId} AND client_id = ${clientId}
       LIMIT 1
     `.execute(db),
-    sql<{ actor_id: string | null }>`
+      sql<{ actor_id: string | null }>`
       SELECT actor_id
       FROM sync_commits
       WHERE partition_id = ${partitionId} AND client_id = ${clientId}
       ORDER BY commit_seq DESC
       LIMIT 1
     `.execute(db),
-  ]);
+      sql<{ latest_commit_seq: number | string | null }>`
+      SELECT COALESCE(MAX(commit_seq), 0) AS latest_commit_seq
+      FROM sync_commits
+      WHERE partition_id = ${partitionId}
+    `.execute(db),
+    ]);
   const cursorRow = cursorResult.rows[0];
+  const latestClientCommitRow = latestClientCommitResult.rows[0];
   const latestCommitRow = latestCommitResult.rows[0];
 
   // Cursor state reflects the current authenticated owner for a clientId.
   // Commit history is only used to seed ownership before the first pull.
-  const ownerActorId = cursorRow?.actor_id ?? latestCommitRow?.actor_id ?? null;
+  const ownerActorId =
+    cursorRow?.actor_id ?? latestClientCommitRow?.actor_id ?? null;
+  const cursor =
+    cursorRow?.cursor === null || cursorRow?.cursor === undefined
+      ? null
+      : Number(cursorRow.cursor);
+  const latestCommitSeq =
+    latestCommitRow?.latest_commit_seq === null ||
+    latestCommitRow?.latest_commit_seq === undefined
+      ? 0
+      : Number(latestCommitRow.latest_commit_seq);
 
   return {
     ownerActorId,
     effectiveScopes: cursorRow?.effective_scopes ?? null,
+    cursor: Number.isFinite(cursor) ? cursor : null,
+    latestCommitSeq: Number.isFinite(latestCommitSeq) ? latestCommitSeq : 0,
     hasConflict: false,
   };
+}
+
+async function recordRealtimeAck<DB extends SyncCoreDb>(args: {
+  db: Kysely<DB>;
+  partitionId: string;
+  actorId: string;
+  clientId: string;
+  cursor: number;
+}): Promise<void> {
+  const now = new Date().toISOString();
+  await sql`
+    UPDATE sync_client_cursors
+    SET
+      cursor = CASE
+        WHEN cursor < ${args.cursor}
+          AND cursor < (
+            SELECT COALESCE(MAX(commit_seq), 0)
+            FROM sync_commits
+            WHERE partition_id = ${args.partitionId}
+          )
+        THEN CASE
+          WHEN ${args.cursor} < (
+            SELECT COALESCE(MAX(commit_seq), 0)
+            FROM sync_commits
+            WHERE partition_id = ${args.partitionId}
+          )
+          THEN ${args.cursor}
+          ELSE (
+            SELECT COALESCE(MAX(commit_seq), 0)
+            FROM sync_commits
+            WHERE partition_id = ${args.partitionId}
+          )
+        END
+        ELSE cursor
+      END,
+      updated_at = ${now}
+    WHERE partition_id = ${args.partitionId}
+      AND client_id = ${args.clientId}
+      AND actor_id = ${args.actorId}
+  `.execute(args.db);
 }
