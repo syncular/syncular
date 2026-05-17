@@ -88,6 +88,8 @@ with `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`:
   `rust_browser_e2e_rust_pull_apply_ms`.
 - TS/Rust local list, search, and aggregate p50/p95 metrics.
 - Request/response bytes are emitted as KiB metrics.
+- Browser page resource bytes, explicitly served JS/WASM asset sizes, and JS
+  heap before/after/delta are emitted as KiB metrics.
 
 Run only the Rust client perf slice from repo root:
 
@@ -134,7 +136,8 @@ SYNCULAR_BROWSER_PERF_ROWS=500000 bun --cwd rust/bindings/browser run benchmark:
 
 This scoreboard seeds a same-origin sync server, runs Chromium against the
 release WASM browser runtime, and emits TS/Rust bootstrap, Rust transport/apply
-buckets, payload/chunk counts, and local list/search/aggregate p50/p95 metrics.
+buckets, payload/chunk counts, local list/search/aggregate p50/p95 metrics,
+page resource bytes, served asset sizes, and JS heap snapshots.
 
 Operation counts are part of the metric name. For example,
 `PERF_RUST_NATIVE_OPERATIONS=200` emits `rust_native_insert_batch_200`, which

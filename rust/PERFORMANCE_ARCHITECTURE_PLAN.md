@@ -69,7 +69,7 @@ Required first-class metrics:
 | Mutations | local insert/update batch latency, outbox rows, sync push batch latency | Rust native/browser covered partly; needs TS comparison and browser buckets. |
 | Realtime | WS propagation p50/p95/p99, ordered wakeup-to-apply latency | Stress and smoke tests exist; not yet a TS-vs-Rust scoreboard lane. |
 | Reconnect | reconnect 25/100/250 clients, catchup rows, missed wakeups | TS perf has reconnect lanes; Rust stress exists, but scenarios are not aligned. |
-| Memory/package | peak browser memory during 500k bootstrap, WASM raw/gzip, loaded JS bytes | WASM size gated; peak memory and total loaded bytes need automated capture. |
+| Memory/package | peak browser memory during 500k bootstrap, WASM raw/gzip, loaded JS bytes | WASM size is gated; browser page resource, served asset, and JS heap snapshots now flow through the E2E scoreboard. Peak/worker memory still needs deeper capture. |
 | Correctness during perf | final row counts, query result equality, event overflow/recovery count | Some checks exist; scoreboard must make them mandatory for every run. |
 
 Minimum commands after a perf change:
@@ -95,8 +95,10 @@ server, runs release-WASM Chromium, bootstraps TS and Rust clients against the
 same app table, and emits side-by-side bootstrap, payload, local list/search,
 and aggregate metrics. The Rust side also emits pull request, snapshot fetch,
 decompress/hash/decode, local apply, request count, payload bytes, and
-JSON-vs-binary chunk counts. It still needs TS bucket parity, realtime,
-reconnect, and memory capture.
+JSON-vs-binary chunk counts. The harness now records page ResourceTiming
+asset/sync bytes, explicit served asset byte sizes for Rust/WASM/wa-sqlite
+files, and Chromium JS heap snapshots before/after the run. It still needs TS
+bucket parity, realtime, reconnect, and deeper worker/WASM memory capture.
 
 The E2E scoreboard is also wired into `tests/perf/rust-client.perf.test.ts`
 behind `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`, so it can participate in the
@@ -115,11 +117,14 @@ bun run test:perf:rust
 ```
 
 This emitted `rust_browser_e2e_*` metrics through the normal perf regression
-table. The 100-row smoke reported TS bootstrap `32.8ms`, Rust bootstrap
-`14.3ms`, Rust pull request `8.0ms`, Rust snapshot fetch `3.0ms`, Rust local
-apply `5.0ms`, Rust response `1.2KiB`, local list p50 TS/Rust
-`1.3ms` / `0.3ms`, local search p50 TS/Rust `1.0ms` / `0.3ms`, and aggregate
-p50 TS/Rust `0.9ms` / `0.3ms`.
+table. The latest 100-row smoke reported TS bootstrap `34.4ms`, Rust bootstrap
+`13.8ms`, Rust pull request `7.0ms`, Rust snapshot fetch `2.0ms`, Rust local
+apply `4.0ms`, Rust response `1.2KiB`, local list p50 TS/Rust
+`1.2ms` / `0.4ms`, local search p50 TS/Rust `1.0ms` / `0.4ms`, and aggregate
+p50 TS/Rust `1.0ms` / `0.2ms`. It also emitted served asset total
+`7332.2KiB`, Rust WASM `3112.7KiB`, wa-sqlite async WASM `1421.4KiB`, loaded
+page transfer `1178.4KiB`, sync transfer `39.0KiB`, and JS heap delta
+`613.1KiB`.
 
 Validated smoke:
 
@@ -152,7 +157,8 @@ It should ultimately emit at least:
 - `ts_reconnect_25_ms`, `rust_reconnect_25_ms`,
   `ts_reconnect_100_ms`, `rust_reconnect_100_ms`,
   `ts_reconnect_250_ms`, `rust_reconnect_250_ms`
-- peak memory and loaded asset bytes
+- page/served asset bytes, JS heap before/after/delta, and eventually worker
+  WASM heap/peak memory
 
 ## Architecture Direction
 
