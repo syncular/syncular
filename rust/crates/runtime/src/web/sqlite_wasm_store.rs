@@ -710,6 +710,7 @@ impl SyncularRustOwnedSqliteClient {
             app_schema: config.app_schema,
         })
         .await?;
+        let collect_server_timings = config.pull.collect_server_timings;
         let inner_config = WebSyncularClientConfig {
             base_url: config.base_url,
             client_id: config.client_id,
@@ -721,6 +722,7 @@ impl SyncularRustOwnedSqliteClient {
             base_url: inner_config.base_url.clone(),
             client_id: inner_config.client_id.clone(),
             actor_id: inner_config.actor_id.clone(),
+            collect_server_timings,
         });
         Ok(Self {
             inner: WebSyncularClient::with_parts(inner_config, transport, store),

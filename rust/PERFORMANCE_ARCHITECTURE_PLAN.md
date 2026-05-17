@@ -97,8 +97,9 @@ and aggregate metrics. The Rust side also emits pull request, snapshot fetch,
 decompress/hash/decode, local apply, request count, payload bytes, and
 JSON-vs-binary chunk counts. The harness now records page ResourceTiming
 asset/sync bytes, explicit served asset byte sizes for Rust/WASM/wa-sqlite
-files, and Chromium JS heap snapshots before/after the run. It still needs TS
-bucket parity, realtime, reconnect, and deeper worker/WASM memory capture.
+files, Chromium JS heap snapshots before/after the run, and opt-in server
+bootstrap timing buckets from the Hono route. It still needs TS bucket parity,
+realtime, reconnect, and deeper worker/WASM memory capture.
 
 The E2E scoreboard is also wired into `tests/perf/rust-client.perf.test.ts`
 behind `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`, so it can participate in the
@@ -990,6 +991,19 @@ client. Overflow should close or resync the session deliberately.
   - after second run was globally noisy (`TS 747ms -> 1015ms`, Rust
     `200.75ms -> 278.13ms`) and is not used as a reject signal. The isolated
     encoder benchmark is the reliable signal for this server-side slice.
+- Added first-class server bootstrap timing metrics to the Rust browser
+  transport and E2E scoreboard. The browser client opts into the existing
+  Hono `x-syncular-bench-pull-timings` header only for benchmark pull options,
+  then records:
+  - `rust_server_bootstrap_snapshot_query_ms`
+  - `rust_server_bootstrap_row_frame_encode_ms`
+  - `rust_server_bootstrap_chunk_cache_lookup_ms`
+  - `rust_server_bootstrap_chunk_gzip_ms`
+  - `rust_server_bootstrap_chunk_hash_ms`
+  - `rust_server_bootstrap_chunk_persist_ms`
+- Battery-saver-mode smoke, 1k rows, release WASM: server query `2ms`, row
+  frame encode `2ms`, cache/gzip/hash/persist all `0ms`, proving the buckets
+  are wired. Do not use that run for latency regression claims.
 - Cache binary chunks in final compressed wire format.
 - Measure server encode time, chunk size, client decode time, SQLite apply
   time, and peak memory against `json-row-frame-v1`.

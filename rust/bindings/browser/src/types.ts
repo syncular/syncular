@@ -28,6 +28,7 @@ export interface SyncularV2PullOptions {
   includeSnapshotRows?: boolean;
   collectChangedRows?: boolean;
   maxSnapshotChangedRows?: number | null;
+  collectServerTimings?: boolean;
 }
 
 export interface SyncularV2TransportStats {
@@ -42,6 +43,12 @@ export interface SyncularV2TransportStats {
   snapshotChunkDecompressMs: number;
   snapshotChunkHashMs: number;
   snapshotChunkDecodeMs: number;
+  serverBootstrapSnapshotQueryMs: number;
+  serverBootstrapRowFrameEncodeMs: number;
+  serverBootstrapChunkCacheLookupMs: number;
+  serverBootstrapChunkGzipMs: number;
+  serverBootstrapChunkHashMs: number;
+  serverBootstrapChunkPersistMs: number;
 }
 
 export type SyncularV2Storage = 'memory' | 'indexedDb' | 'opfsSahPool';

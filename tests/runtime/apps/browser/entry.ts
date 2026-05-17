@@ -831,6 +831,7 @@ async function runE2eScoreboard(
     const rustPullOptions: SyncularV2PullOptions = {
       includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
       collectChangedRows: options.rustCollectChangedRows ?? false,
+      collectServerTimings: true,
       limitSnapshotRows: 5_000,
       maxSnapshotPages: 100,
     };
@@ -895,6 +896,12 @@ async function runE2eScoreboard(
         snapshotChunkDecompressMs: number;
         snapshotChunkHashMs: number;
         snapshotChunkDecodeMs: number;
+        serverBootstrapSnapshotQueryMs: number;
+        serverBootstrapRowFrameEncodeMs: number;
+        serverBootstrapChunkCacheLookupMs: number;
+        serverBootstrapChunkGzipMs: number;
+        serverBootstrapChunkHashMs: number;
+        serverBootstrapChunkPersistMs: number;
       }>;
     };
     await rustDiagnostics.resetTransportStats();
@@ -923,6 +930,30 @@ async function runE2eScoreboard(
       rustStats.snapshotChunkDecompressMs
     );
     pushMetric('rust_snapshot_chunk_hash_ms', rustStats.snapshotChunkHashMs);
+    pushMetric(
+      'rust_server_bootstrap_snapshot_query_ms',
+      rustStats.serverBootstrapSnapshotQueryMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_row_frame_encode_ms',
+      rustStats.serverBootstrapRowFrameEncodeMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_chunk_cache_lookup_ms',
+      rustStats.serverBootstrapChunkCacheLookupMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_chunk_gzip_ms',
+      rustStats.serverBootstrapChunkGzipMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_chunk_hash_ms',
+      rustStats.serverBootstrapChunkHashMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_chunk_persist_ms',
+      rustStats.serverBootstrapChunkPersistMs
+    );
     pushMetric('rust_request_count', rustStats.requestCount, 'count');
     pushMetric('rust_request_bytes', rustStats.requestBytes, 'bytes');
     pushMetric('rust_response_bytes', rustStats.responseBytes, 'bytes');
