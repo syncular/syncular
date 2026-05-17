@@ -242,6 +242,10 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().applyCrdtFieldYjsUpdate(request.request);
     case 'materializeCrdtField':
       return requireClient().materializeCrdtField(request.request);
+    case 'crdtDocumentSnapshot':
+      return requireClient().crdtDocumentSnapshot(request.request);
+    case 'crdtUpdateLog':
+      return requireClient().crdtUpdateLog(request.request);
     case 'snapshotCrdtFieldStateVector':
       return requireClient().snapshotCrdtFieldStateVector(request.request);
     case 'compactCrdtField':

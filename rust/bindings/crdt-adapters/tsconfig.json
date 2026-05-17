@@ -1,0 +1,14 @@
+{
+  "extends": "../../../config/tsconfig.bun.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": false,
+    "declarationMap": false,
+    "paths": {
+      "@syncular/client-rust": ["../browser/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

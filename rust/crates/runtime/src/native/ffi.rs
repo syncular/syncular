@@ -504,6 +504,34 @@ pub extern "C" fn syncular_native_client_materialize_crdt_field_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_crdt_document_snapshot_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| {
+            client.crdt_document_snapshot_json(&request_json)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_crdt_update_log_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| client.crdt_update_log_json(&request_json))
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_snapshot_crdt_field_state_vector_json(
     handle: *mut SyncularNativeHandle,
     request_json: *const c_char,

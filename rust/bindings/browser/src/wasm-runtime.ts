@@ -79,6 +79,8 @@ export interface RawSyncularV2RustClient {
   applyCrdtFieldTextJson(requestJson: string): string;
   applyCrdtFieldYjsUpdateJson(requestJson: string): string;
   materializeCrdtFieldJson(requestJson: string): string;
+  crdtDocumentSnapshotJson(requestJson: string): string;
+  crdtUpdateLogJson(requestJson: string): string;
   snapshotCrdtFieldStateVectorJson(requestJson: string): string;
   compactCrdtFieldJson(requestJson: string): string;
   encryptionHelperJson(method: string, argsJson: string): string;

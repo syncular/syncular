@@ -24,3 +24,16 @@ syncular-client = { default-features = false, features = ["native", "crdt-yjs"] 
 
 That profile avoids CLI/testkit dependencies while keeping native SQLite,
 sync transport, and CRDT/Yjs support.
+
+## Rich editor CRDT fields
+
+Treat the Yjs document field as canonical editor state. ProseMirror JSON,
+title, preview, outline, search text, and other read models should be
+materialized from CRDT state after local apply, remote apply, or compaction.
+
+The runtime stores a compact binary Yjs state and state vector per document
+field, plus an append-only binary Yjs update log with `pending`, `flushed`, and
+`acked` statuses. Use `crdtDocumentSnapshot` to inspect the persisted state,
+state vector, and queue counts; use `crdtUpdateLog` for adapter diagnostics or
+retry policy; use `compactCrdtField` and storage compaction pruning to keep the
+log bounded without making derived columns canonical.

@@ -19,12 +19,64 @@ pub enum CrdtFieldSyncMode {
     EncryptedUpdateLog,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CrdtUpdateOrigin {
+    Local,
+    Remote,
+    Compaction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CrdtUpdateStatus {
+    Pending,
+    Flushed,
+    Acked,
+    Pruned,
+}
+
 #[derive(Debug, Clone)]
 pub struct CrdtField {
     id: CrdtFieldId,
     metadata: &'static AppTableMetadata,
     field: &'static CrdtYjsFieldMetadata,
     sync_mode: CrdtFieldSyncMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrdtDocumentSnapshot {
+    pub document_key: String,
+    pub table: String,
+    pub row_id: String,
+    pub field: String,
+    pub state_column: String,
+    pub sync_mode: CrdtFieldSyncMode,
+    pub state_base64: Option<String>,
+    pub state_vector_base64: String,
+    pub pending_updates: i64,
+    pub flushed_updates: i64,
+    pub acked_updates: i64,
+    pub log_updates: i64,
+    pub updated_at: i64,
+    pub compacted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrdtUpdateLogEntry {
+    pub id: i64,
+    pub document_key: String,
+    pub update_id: String,
+    pub client_commit_id: Option<String>,
+    pub origin: CrdtUpdateOrigin,
+    pub status: CrdtUpdateStatus,
+    pub update_base64: String,
+    pub state_vector_base64: String,
+    pub created_at: i64,
+    pub flushed_at: Option<i64>,
+    pub acked_at: Option<i64>,
 }
 
 impl CrdtFieldId {
@@ -92,6 +144,14 @@ impl CrdtField {
             kind: YjsFieldKind::from_metadata(self.field.kind)?,
         })
     }
+
+    pub fn document_key(&self) -> String {
+        crdt_document_key(self.table(), self.row_id(), self.field())
+    }
+}
+
+pub fn crdt_document_key(table: &str, row_id: &str, field: &str) -> String {
+    format!("{table}\u{1f}{row_id}\u{1f}{field}")
 }
 
 pub fn validate_crdt_field(app_schema: AppSchema, id: &CrdtFieldId) -> Result<CrdtField> {

@@ -34,7 +34,7 @@ use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef};
 use crate::protocol::{
     OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange,
-    SyncOperation, SyncularMutationKind,
+    SyncOperation,
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
@@ -70,6 +70,7 @@ const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 2048;
 const SQLITE_BIND_PARAMETER_LIMIT: usize = 32_000;
 const QUERY_STATEMENT_CACHE_CAPACITY: usize = 64;
 const SNAPSHOT_STATEMENT_CACHE_CAPACITY: usize = 16;
+const DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY: i64 = 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +165,17 @@ struct RustOwnedCrdtFieldCompactionRequest {
     min_uncheckpointed_updates: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RustOwnedCrdtFieldLogRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
 impl RustOwnedCrdtFieldRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
@@ -183,6 +195,12 @@ impl RustOwnedCrdtFieldYjsUpdateRequest {
 }
 
 impl RustOwnedCrdtFieldCompactionRequest {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+impl RustOwnedCrdtFieldLogRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
     }
@@ -1035,6 +1053,30 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = crdtDocumentSnapshotJson)]
+    pub fn crdt_document_snapshot_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.crdt_document_snapshot(request)
+            .map(|snapshot| snapshot.to_string())
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = crdtUpdateLogJson)]
+    pub fn crdt_update_log_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let request: RustOwnedCrdtFieldLogRequest = serde_json::from_str(request_json)
+            .map_err(|err| error_to_js(SyncularError::from(err)))?;
+        self.crdt_update_log(request)
+            .map(|log| log.to_string())
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = snapshotCrdtFieldStateVectorJson)]
     pub fn snapshot_crdt_field_state_vector_json(
         &mut self,
@@ -1157,25 +1199,29 @@ impl SyncularRustOwnedSqliteClient {
         let field = self.open_validated_crdt_field(request.id())?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
+                self.inner.store().assert_crdt_document_capacity(
+                    &field.document_key(),
+                    DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY,
+                )?;
                 let mut envelope = Map::new();
                 envelope.insert(
                     field.field().to_string(),
-                    serde_json::to_value(request.update)?,
+                    serde_json::to_value(&request.update)?,
                 );
                 let mut payload = Map::new();
                 payload.insert(YJS_PAYLOAD_KEY.to_string(), Value::Object(envelope));
-                let mutation = PendingSyncularMutation {
-                    kind: SyncularMutationKind::Upsert,
+                let operation = SyncOperation {
                     table: field.table().to_string(),
                     row_id: field.row_id().to_string(),
+                    op: "upsert".to_string(),
                     payload: Some(Value::Object(payload)),
                     base_version: None,
-                    local_row: None,
                 };
-                let client_commit_id = self
-                    .inner
-                    .store_mut()
-                    .apply_pending_mutation_commit(mutation, &[])?;
+                let client_commit_id = self.inner.store_mut().apply_crdt_field_operation(
+                    &field,
+                    operation,
+                    request.update,
+                )?;
                 Ok(crdt_field_write_receipt(
                     &client_commit_id,
                     field.sync_mode(),
@@ -1226,6 +1272,18 @@ impl SyncularRustOwnedSqliteClient {
         }))
     }
 
+    fn crdt_document_snapshot(&mut self, request: RustOwnedCrdtFieldRequest) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        self.inner.store().crdt_document_snapshot(&field)
+    }
+
+    fn crdt_update_log(&mut self, request: RustOwnedCrdtFieldLogRequest) -> Result<Value> {
+        let field = self.open_validated_crdt_field(request.id())?;
+        self.inner
+            .store()
+            .crdt_update_log(&field, request.limit.unwrap_or(100))
+    }
+
     fn snapshot_crdt_field_state_vector(
         &mut self,
         request: RustOwnedCrdtFieldRequest,
@@ -1248,10 +1306,19 @@ impl SyncularRustOwnedSqliteClient {
     ) -> Result<Value> {
         let field = self.open_validated_crdt_field(request.id())?;
         match field.sync_mode() {
-            CrdtFieldSyncMode::ServerMerge => Ok(json!({
-                "checkpointCreated": false,
-                "clientCommitId": Value::Null
-            })),
+            CrdtFieldSyncMode::ServerMerge => {
+                self.inner.store().compact_crdt_document(&field)?;
+                self.inner
+                    .store_mut()
+                    .notify_local_tables_changed_with_rows(
+                        &[field.table().to_string()],
+                        &[crdt_field_compacted_changed_row(&field, None)],
+                    )?;
+                Ok(json!({
+                    "checkpointCreated": false,
+                    "clientCommitId": Value::Null
+                }))
+            }
             CrdtFieldSyncMode::EncryptedUpdateLog => {
                 let min_uncheckpointed_updates = request.min_uncheckpointed_updates.unwrap_or(1);
                 if min_uncheckpointed_updates < 1 {
@@ -2190,6 +2257,16 @@ impl SyncularRustOwnedSqlite {
             ))?;
         }
 
+        if options.should_prune_crdt_update_log() {
+            let cutoff = required_compaction_cutoff(cutoff, "CRDT update log")?;
+            report.crdt_update_log_deleted = self.exec_with_changes(&format!(
+                "DELETE FROM sync_crdt_update_log \
+                 WHERE status IN ('acked', 'pruned') \
+                   AND coalesce(acked_at, flushed_at, created_at) <= {cutoff}"
+            ))?;
+            self.refresh_all_crdt_document_counts()?;
+        }
+
         Ok(report)
     }
 
@@ -2336,6 +2413,237 @@ impl SyncularRustOwnedSqlite {
         self.current_row_json(field.metadata(), field.table(), field.row_id())
     }
 
+    fn crdt_document_snapshot(&self, field: &CrdtField) -> Result<Value> {
+        let row = self.current_crdt_field_row(field)?;
+        let state_base64 = crdt_field_state_base64(field, row.as_ref());
+        let state_vector_base64 = crdt_yjs_state_vector_base64(state_base64.as_deref())?;
+        self.upsert_crdt_document_snapshot(
+            field,
+            state_base64.as_deref(),
+            &state_vector_base64,
+            None,
+        )?;
+        self.select_crdt_document_snapshot(&field.document_key())
+    }
+
+    fn crdt_update_log(&self, field: &CrdtField, limit: i64) -> Result<Value> {
+        let document_key = sql_string(&field.document_key());
+        let rows = self.query_rows(
+            &format!(
+                "SELECT id, document_key, update_id, client_commit_id, origin, status, update_base64, \
+                 state_vector_base64, created_at, flushed_at, acked_at \
+                 FROM sync_crdt_update_log WHERE document_key = {document_key} \
+                 ORDER BY id ASC LIMIT {limit}",
+                limit = limit.max(0)
+            ),
+            |row| {
+                Ok(json!({
+                    "id": row.i64("id")?,
+                    "documentKey": row.string("document_key")?,
+                    "updateId": row.string("update_id")?,
+                    "clientCommitId": row.optional_string("client_commit_id"),
+                    "origin": row.string("origin")?,
+                    "status": row.string("status")?,
+                    "updateBase64": row.string("update_base64")?,
+                    "stateVectorBase64": row.string("state_vector_base64")?,
+                    "createdAt": row.i64("created_at")?,
+                    "flushedAt": row.optional_i64("flushed_at"),
+                    "ackedAt": row.optional_i64("acked_at"),
+                }))
+            },
+        )?;
+        Ok(Value::Array(rows))
+    }
+
+    fn compact_crdt_document(&self, field: &CrdtField) -> Result<Value> {
+        let row = self.current_crdt_field_row(field)?;
+        let state_base64 = crdt_field_state_base64(field, row.as_ref());
+        let state_vector_base64 = crdt_yjs_state_vector_base64(state_base64.as_deref())?;
+        self.upsert_crdt_document_snapshot(
+            field,
+            state_base64.as_deref(),
+            &state_vector_base64,
+            Some(now_ms()),
+        )?;
+        self.select_crdt_document_snapshot(&field.document_key())
+    }
+
+    fn assert_crdt_document_capacity(
+        &self,
+        document_key: &str,
+        max_pending_updates: i64,
+    ) -> Result<()> {
+        if max_pending_updates < 1 {
+            return Err(SyncularError::config(
+                "CRDT update queue capacity must be at least 1",
+            ));
+        }
+        let document_key_sql = sql_string(document_key);
+        let pending = self
+            .query_rows(
+                &format!(
+                    "SELECT count(*) AS count FROM sync_crdt_update_log \
+                     WHERE document_key = {document_key_sql} AND status IN ('pending', 'flushed')"
+                ),
+                |row| row.i64("count"),
+            )?
+            .into_iter()
+            .next()
+            .unwrap_or(0);
+        if pending >= max_pending_updates {
+            return Err(SyncularError::message(
+                ErrorKind::Storage,
+                format!(
+                    "CRDT update queue is full for document {document_key}; pending={pending}, capacity={max_pending_updates}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn upsert_crdt_document_snapshot(
+        &self,
+        field: &CrdtField,
+        state_base64: Option<&str>,
+        state_vector_base64: &str,
+        compacted_at: Option<i64>,
+    ) -> Result<()> {
+        let now = now_ms();
+        let sync_mode = match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => "server-merge",
+            CrdtFieldSyncMode::EncryptedUpdateLog => "encrypted-update-log",
+        };
+        self.exec(&format!(
+            "INSERT INTO sync_crdt_documents (\
+               document_key, app_table, row_id, field_name, state_column, sync_mode, \
+               state_base64, state_vector_base64, pending_updates, flushed_updates, \
+               acked_updates, log_updates, created_at, updated_at, compacted_at\
+             ) VALUES ({document_key}, {table}, {row_id}, {field_name}, {state_column}, {sync_mode}, \
+               {state_base64}, {state_vector_base64}, 0, 0, 0, 0, {created_at}, {updated_at}, {compacted_at}) \
+             ON CONFLICT(document_key) DO UPDATE SET \
+               state_base64 = excluded.state_base64, \
+               state_vector_base64 = excluded.state_vector_base64, \
+               state_column = excluded.state_column, \
+               sync_mode = excluded.sync_mode, \
+               updated_at = excluded.updated_at, \
+               compacted_at = coalesce(excluded.compacted_at, sync_crdt_documents.compacted_at)",
+            document_key = sql_string(&field.document_key()),
+            table = sql_string(field.table()),
+            row_id = sql_string(field.row_id()),
+            field_name = sql_string(field.field()),
+            state_column = sql_string(field.state_column()),
+            sync_mode = sql_string(sync_mode),
+            state_base64 = optional_sql_string(state_base64),
+            state_vector_base64 = sql_string(state_vector_base64),
+            created_at = now,
+            updated_at = now,
+            compacted_at = optional_sql_number(compacted_at)
+        ))?;
+        self.refresh_crdt_document_counts(&field.document_key())
+    }
+
+    fn record_crdt_update_log(
+        &self,
+        field: &CrdtField,
+        update: &YjsUpdateEnvelope,
+        client_commit_id: Option<&str>,
+        origin: &str,
+        status: &str,
+        state_base64: Option<&str>,
+        state_vector_base64: &str,
+    ) -> Result<()> {
+        self.upsert_crdt_document_snapshot(field, state_base64, state_vector_base64, None)?;
+        let now = now_ms();
+        self.exec(&format!(
+            "INSERT INTO sync_crdt_update_log (\
+               document_key, app_table, row_id, field_name, update_id, client_commit_id, \
+               origin, status, update_base64, state_vector_base64, created_at, flushed_at, acked_at\
+             ) VALUES ({document_key}, {table}, {row_id}, {field_name}, {update_id}, {client_commit_id}, \
+               {origin}, {status}, {update_base64}, {state_vector_base64}, {created_at}, \
+               CASE WHEN {status} IN ('flushed', 'acked') THEN {created_at} ELSE NULL END, \
+               CASE WHEN {status} = 'acked' THEN {created_at} ELSE NULL END) \
+             ON CONFLICT(update_id) DO UPDATE SET \
+               state_vector_base64 = excluded.state_vector_base64, \
+               status = CASE WHEN sync_crdt_update_log.status = 'acked' THEN sync_crdt_update_log.status ELSE excluded.status END, \
+               flushed_at = coalesce(sync_crdt_update_log.flushed_at, excluded.flushed_at), \
+               acked_at = coalesce(sync_crdt_update_log.acked_at, excluded.acked_at)",
+            document_key = sql_string(&field.document_key()),
+            table = sql_string(field.table()),
+            row_id = sql_string(field.row_id()),
+            field_name = sql_string(field.field()),
+            update_id = sql_string(&update.update_id),
+            client_commit_id = optional_sql_string(client_commit_id),
+            origin = sql_string(origin),
+            status = sql_string(status),
+            update_base64 = sql_string(&update.update_base64),
+            state_vector_base64 = sql_string(state_vector_base64),
+            created_at = now
+        ))?;
+        self.refresh_crdt_document_counts(&field.document_key())
+    }
+
+    fn select_crdt_document_snapshot(&self, document_key: &str) -> Result<Value> {
+        let document_key_sql = sql_string(document_key);
+        self.query_rows(
+            &format!(
+                "SELECT document_key, app_table, row_id, field_name, state_column, sync_mode, \
+                 state_base64, state_vector_base64, pending_updates, flushed_updates, \
+                 acked_updates, log_updates, updated_at, compacted_at \
+                 FROM sync_crdt_documents WHERE document_key = {document_key_sql} LIMIT 1"
+            ),
+            |row| {
+                Ok(json!({
+                    "documentKey": row.string("document_key")?,
+                    "table": row.string("app_table")?,
+                    "rowId": row.string("row_id")?,
+                    "field": row.string("field_name")?,
+                    "stateColumn": row.string("state_column")?,
+                    "syncMode": row.string("sync_mode")?,
+                    "stateBase64": row.optional_string("state_base64"),
+                    "stateVectorBase64": row.string("state_vector_base64")?,
+                    "pendingUpdates": row.i64("pending_updates")?,
+                    "flushedUpdates": row.i64("flushed_updates")?,
+                    "ackedUpdates": row.i64("acked_updates")?,
+                    "logUpdates": row.i64("log_updates")?,
+                    "updatedAt": row.i64("updated_at")?,
+                    "compactedAt": row.optional_i64("compacted_at"),
+                }))
+            },
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            SyncularError::message(
+                ErrorKind::Storage,
+                format!("CRDT document not found: {document_key}"),
+            )
+        })
+    }
+
+    fn refresh_crdt_document_counts(&self, document_key: &str) -> Result<()> {
+        let document_key = sql_string(document_key);
+        self.exec(&format!(
+            "UPDATE sync_crdt_documents SET \
+               pending_updates = (SELECT count(*) FROM sync_crdt_update_log WHERE document_key = {document_key} AND status = 'pending'), \
+               flushed_updates = (SELECT count(*) FROM sync_crdt_update_log WHERE document_key = {document_key} AND status = 'flushed'), \
+               acked_updates = (SELECT count(*) FROM sync_crdt_update_log WHERE document_key = {document_key} AND status = 'acked'), \
+               log_updates = (SELECT count(*) FROM sync_crdt_update_log WHERE document_key = {document_key}), \
+               updated_at = {updated_at} \
+             WHERE document_key = {document_key}",
+            updated_at = now_ms()
+        ))
+    }
+
+    fn refresh_all_crdt_document_counts(&self) -> Result<()> {
+        let keys = self.query_rows("SELECT document_key FROM sync_crdt_documents", |row| {
+            row.string("document_key")
+        })?;
+        for key in keys {
+            self.refresh_crdt_document_counts(&key)?;
+        }
+        Ok(())
+    }
+
     fn previous_local_operation_row(&self, operation: &SyncOperation) -> Result<Option<Value>> {
         let Some(metadata) = self.app_schema.table_metadata(&operation.table) else {
             return Ok(None);
@@ -2384,6 +2692,63 @@ impl SyncularRustOwnedSqlite {
                     .into_iter()
                     .collect::<Vec<_>>();
                 self.notify_local_tables_changed_with_rows(&changed_tables, &changed_rows)?;
+                Ok(client_commit_id)
+            }
+            Err(err) => {
+                let _ = self.exec("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    fn apply_crdt_field_operation(
+        &mut self,
+        field: &CrdtField,
+        operation: SyncOperation,
+        update: YjsUpdateEnvelope,
+    ) -> Result<String> {
+        self.begin_write_transaction()?;
+        let result = (|| {
+            let previous_row = self.previous_local_operation_row(&operation)?;
+            let (operation, local_row) = self.transform_local_operation_entry(operation, None)?;
+            let changed_row = sync_changed_row_for_local_operation(
+                self.app_schema,
+                &operation,
+                previous_row.as_ref(),
+                local_row.as_ref(),
+                None,
+            );
+            self.apply_local_mutation(&operation, local_row.as_ref())?;
+            let client_commit_id = self.enqueue_outbox_operations(&[operation])?;
+            let row = self.current_crdt_field_row(field)?;
+            let state_base64 = crdt_field_state_base64(field, row.as_ref());
+            let state_vector_base64 = crdt_yjs_state_vector_base64(state_base64.as_deref())?;
+            self.record_crdt_update_log(
+                field,
+                &update,
+                Some(&client_commit_id),
+                "local",
+                "pending",
+                state_base64.as_deref(),
+                &state_vector_base64,
+            )?;
+            Ok((client_commit_id, changed_row))
+        })();
+
+        match result {
+            Ok((client_commit_id, changed_row)) => {
+                self.exec("COMMIT")?;
+                let changed_rows = changed_row
+                    .map(|mut row| {
+                        row.commit_id = Some(client_commit_id.clone());
+                        row
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                self.notify_local_tables_changed_with_rows(
+                    &[field.table().to_string()],
+                    &changed_rows,
+                )?;
                 Ok(client_commit_id)
             }
             Err(err) => {
@@ -3198,6 +3563,7 @@ impl SyncularRustOwnedSqlite {
         next_attempt_at: i64,
         failed: bool,
     ) -> Result<()> {
+        let now = now_ms();
         self.execute_blob_statement(
             "UPDATE sync_outbox_commits \
              SET status = ?1, error = ?2, next_attempt_at = ?3, updated_at = ?4 \
@@ -3206,10 +3572,20 @@ impl SyncularRustOwnedSqlite {
                 bind_text(stmt, 1, if failed { "failed" } else { "pending" })?;
                 bind_text(stmt, 2, error)?;
                 bind_i64(stmt, 3, if failed { 0 } else { next_attempt_at })?;
-                bind_i64(stmt, 4, now_ms())?;
+                bind_i64(stmt, 4, now)?;
                 bind_text(stmt, 5, row_id)
             },
-        )
+        )?;
+        if !failed {
+            self.exec(&format!(
+                "UPDATE sync_crdt_update_log SET status = 'pending' \
+                 WHERE status = 'flushed' \
+                   AND client_commit_id = (SELECT client_commit_id FROM sync_outbox_commits WHERE id = {id})",
+                id = sql_string(row_id)
+            ))?;
+            self.refresh_all_crdt_document_counts()?;
+        }
+        Ok(())
     }
 
     fn query_rows<T>(
@@ -3722,7 +4098,15 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                    updated_at = {now} \
                  WHERE status = 'sending' AND updated_at < {stale_before}",
                 max_retries = MAX_SYNC_RETRIES
-            ))
+            ))?;
+            self.exec(&format!(
+                "UPDATE sync_crdt_update_log SET status = 'pending' \
+                 WHERE status = 'flushed' AND client_commit_id IN (\
+                   SELECT client_commit_id FROM sync_outbox_commits \
+                   WHERE status = 'pending' AND updated_at = {now}\
+                 )"
+            ))?;
+            self.refresh_all_crdt_document_counts()
         })
     }
 
@@ -3731,12 +4115,21 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         row_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            let now = now_ms();
             self.exec(&format!(
                 "UPDATE sync_outbox_commits SET status = 'sending', attempt_count = attempt_count + 1, \
                  error = NULL, next_attempt_at = 0, updated_at = {now} WHERE id = {id}",
-                now = now_ms(),
+                now = now,
                 id = sql_string(row_id)
-            ))
+            ))?;
+            self.exec(&format!(
+                "UPDATE sync_crdt_update_log \
+                 SET status = 'flushed', flushed_at = coalesce(flushed_at, {now}) \
+                 WHERE status = 'pending' \
+                   AND client_commit_id = (SELECT client_commit_id FROM sync_outbox_commits WHERE id = {id})",
+                id = sql_string(row_id)
+            ))?;
+            self.refresh_all_crdt_document_counts()
         })
     }
 
@@ -3793,14 +4186,23 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         response: PushCommitResponse,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            let now = now_ms();
             self.exec(&format!(
                 "UPDATE sync_outbox_commits SET status = 'acked', last_response_json = {response}, \
                  error = NULL, acked_commit_seq = {commit_seq}, next_attempt_at = 0, updated_at = {now} WHERE id = {id}",
                 response = sql_string(&serde_json::to_string(&response)?),
                 commit_seq = response.commit_seq.map_or_else(|| "NULL".to_string(), |value| value.to_string()),
-                now = now_ms(),
+                now = now,
                 id = sql_string(row_id)
-            ))
+            ))?;
+            self.exec(&format!(
+                "UPDATE sync_crdt_update_log \
+                 SET status = 'acked', flushed_at = coalesce(flushed_at, {now}), acked_at = coalesce(acked_at, {now}) \
+                 WHERE status IN ('pending', 'flushed') \
+                   AND client_commit_id = (SELECT client_commit_id FROM sync_outbox_commits WHERE id = {id})",
+                id = sql_string(row_id)
+            ))?;
+            self.refresh_all_crdt_document_counts()
         })
     }
 
@@ -4521,6 +4923,15 @@ fn crdt_field_write_receipt(client_commit_id: &str, sync_mode: CrdtFieldSyncMode
     json!({
         "clientCommitId": client_commit_id,
         "syncMode": sync_mode,
+    })
+}
+
+fn crdt_field_state_base64(field: &CrdtField, row: Option<&Value>) -> Option<String> {
+    row.and_then(|row| {
+        row.get(field.state_column())
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
     })
 }
 
@@ -5325,6 +5736,23 @@ impl<'a> SqliteRow<'a> {
             row.insert(column.clone(), value);
         }
         Ok(Value::Object(row))
+    }
+}
+
+fn crdt_field_compacted_changed_row(
+    field: &CrdtField,
+    client_commit_id: Option<String>,
+) -> SyncChangedRow {
+    SyncChangedRow {
+        table: field.table().to_string(),
+        row_id: Some(field.row_id().to_string()),
+        operation: "compact".to_string(),
+        changed_fields: vec![field.state_column().to_string()],
+        crdt_fields: vec![field.state_column().to_string()],
+        commit_id: client_commit_id,
+        commit_seq: None,
+        subscription_id: None,
+        server_version: None,
     }
 }
 

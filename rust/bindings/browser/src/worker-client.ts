@@ -27,6 +27,8 @@ import type {
   SyncularV2CrdtFieldTextRequest,
   SyncularV2CrdtFieldWriteReceipt,
   SyncularV2CrdtFieldYjsUpdateRequest,
+  SyncularV2CrdtDocumentSnapshot,
+  SyncularV2CrdtUpdateLogEntry,
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSink,
   SyncularV2EncryptedCrdtConfig,
@@ -531,6 +533,18 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     request: SyncularV2CrdtFieldRequest
   ): Promise<SyncularV2CrdtFieldMaterialization> {
     return this.#request({ type: 'materializeCrdtField', request });
+  }
+
+  crdtDocumentSnapshot(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtDocumentSnapshot> {
+    return this.#request({ type: 'crdtDocumentSnapshot', request });
+  }
+
+  crdtUpdateLog(
+    request: SyncularV2CrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularV2CrdtUpdateLogEntry[]> {
+    return this.#request({ type: 'crdtUpdateLog', request });
   }
 
   snapshotCrdtFieldStateVector(

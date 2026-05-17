@@ -312,6 +312,14 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.materialize_crdt_field_json(request_json))
     }
 
+    pub fn crdt_document_snapshot_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.crdt_document_snapshot_json(request_json))
+    }
+
+    pub fn crdt_update_log_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.crdt_update_log_json(request_json))
+    }
+
     pub fn snapshot_crdt_field_state_vector_json(
         &self,
         request_json: &str,
