@@ -4,7 +4,7 @@ use crate::app_schema::{
 };
 use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BinarySnapshotRowCursor, BorrowedBinarySnapshotCell,
-    BorrowedBinarySnapshotCellVisitor, DecodedBinarySnapshotRows, SnapshotChunkRows,
+    BorrowedBinarySnapshotRawCellVisitor, DecodedBinarySnapshotRows, SnapshotChunkRows,
 };
 use crate::client::{sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow};
 use crate::compaction::{
@@ -4967,9 +4967,9 @@ fn bind_binary_payload_multirow_upsert(
     cursor: &mut BinarySnapshotRowCursor<'_>,
     row_count: usize,
 ) -> Result<()> {
-    let mut binder = BorrowedSqliteCellBinder { stmt, index: 1 };
+    let mut binder = BorrowedSqliteRawCellBinder { stmt, index: 1 };
     for _ in 0..row_count {
-        let read = cursor.read_next_row_with_visitor(&mut binder)?;
+        let read = cursor.read_next_row_with_raw_visitor(&mut binder)?;
         if !read {
             return Err(SyncularError::protocol_message(
                 "binary snapshot ended before expected row count",
@@ -4979,18 +4979,18 @@ fn bind_binary_payload_multirow_upsert(
     Ok(())
 }
 
-struct BorrowedSqliteCellBinder {
+struct BorrowedSqliteRawCellBinder {
     stmt: *mut ffi::sqlite3_stmt,
     index: i32,
 }
 
-impl<'a> BorrowedBinarySnapshotCellVisitor<'a> for BorrowedSqliteCellBinder {
+impl<'a> BorrowedBinarySnapshotRawCellVisitor<'a> for BorrowedSqliteRawCellBinder {
     fn visit_null(&mut self) -> Result<()> {
         self.bind_rc(unsafe { ffi::sqlite3_bind_null(self.stmt, self.index) })
     }
 
-    fn visit_string(&mut self, value: &'a str) -> Result<()> {
-        let rc = bind_text_bytes_static(self.stmt, self.index, value.as_bytes())?;
+    fn visit_string_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+        let rc = bind_text_bytes_static(self.stmt, self.index, value)?;
         self.bind_rc(rc)
     }
 
@@ -5006,8 +5006,8 @@ impl<'a> BorrowedBinarySnapshotCellVisitor<'a> for BorrowedSqliteCellBinder {
         self.bind_rc(unsafe { ffi::sqlite3_bind_int(self.stmt, self.index, i32::from(value)) })
     }
 
-    fn visit_json(&mut self, value: &'a str) -> Result<()> {
-        let rc = bind_text_bytes_static(self.stmt, self.index, value.as_bytes())?;
+    fn visit_json_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+        let rc = bind_text_bytes_static(self.stmt, self.index, value)?;
         self.bind_rc(rc)
     }
 
@@ -5017,7 +5017,7 @@ impl<'a> BorrowedBinarySnapshotCellVisitor<'a> for BorrowedSqliteCellBinder {
     }
 }
 
-impl BorrowedSqliteCellBinder {
+impl BorrowedSqliteRawCellBinder {
     fn bind_rc(&mut self, rc: i32) -> Result<()> {
         bind_sqlite_parameter_result(rc, self.index)?;
         self.index += 1;

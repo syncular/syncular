@@ -170,6 +170,16 @@ pub trait BorrowedBinarySnapshotCellVisitor<'a> {
     fn visit_bytes(&mut self, value: &'a [u8]) -> Result<()>;
 }
 
+pub trait BorrowedBinarySnapshotRawCellVisitor<'a> {
+    fn visit_null(&mut self) -> Result<()>;
+    fn visit_string_bytes(&mut self, value: &'a [u8]) -> Result<()>;
+    fn visit_integer(&mut self, value: i64) -> Result<()>;
+    fn visit_float(&mut self, value: f64) -> Result<()>;
+    fn visit_boolean(&mut self, value: bool) -> Result<()>;
+    fn visit_json_bytes(&mut self, value: &'a [u8]) -> Result<()>;
+    fn visit_bytes(&mut self, value: &'a [u8]) -> Result<()>;
+}
+
 pub struct BinarySnapshotRowCursor<'a> {
     reader: BinarySnapshotReader<'a>,
     columns: &'a [BinarySnapshotColumn],
@@ -267,6 +277,36 @@ impl<'a> BinarySnapshotRowCursor<'a> {
             }
             self.reader
                 .visit_borrowed_cell(column.column_type, &column.name, visitor)?;
+        }
+        self.remaining -= 1;
+        Ok(true)
+    }
+
+    pub fn read_next_row_with_raw_visitor<V>(&mut self, visitor: &mut V) -> Result<bool>
+    where
+        V: BorrowedBinarySnapshotRawCellVisitor<'a>,
+    {
+        if self.remaining == 0 {
+            return Ok(false);
+        }
+
+        let null_bitmap = self
+            .reader
+            .read_bytes(self.null_bitmap_bytes, "binary snapshot row null bitmap")?;
+        for (column_index, column) in self.columns.iter().enumerate() {
+            let is_null = null_bitmap[column_index / 8] & (1u8 << (column_index % 8)) != 0;
+            if is_null {
+                if !column.nullable {
+                    return Err(SyncularError::protocol_message(format!(
+                        "binary snapshot column {} is not nullable",
+                        column.name
+                    )));
+                }
+                visitor.visit_null()?;
+                continue;
+            }
+            self.reader
+                .visit_raw_cell(column.column_type, &column.name, visitor)?;
         }
         self.remaining -= 1;
         Ok(true)
@@ -522,6 +562,11 @@ impl<'a> BinarySnapshotReader<'a> {
             .map_err(|err| SyncularError::protocol(err).context(format!("decode {label} as utf8")))
     }
 
+    fn read_bytes32(&mut self, label: &str) -> Result<&'a [u8]> {
+        let len = self.read_u32(&format!("{label} length"))? as usize;
+        self.read_bytes(len, label)
+    }
+
     fn read_bytes(&mut self, len: usize, label: &str) -> Result<&'a [u8]> {
         self.require(len, label)?;
         let bytes = &self.bytes[self.offset..self.offset + len];
@@ -651,6 +696,52 @@ impl<'a> BinarySnapshotReader<'a> {
             }
             BinarySnapshotColumnType::Json => {
                 visitor.visit_json(self.read_str32("binary snapshot json")?)
+            }
+            BinarySnapshotColumnType::Bytes => {
+                let len = self.read_u32("binary snapshot bytes length")? as usize;
+                let bytes = self.read_bytes(len, "binary snapshot bytes")?;
+                visitor.visit_bytes(bytes)
+            }
+        }
+    }
+
+    fn visit_raw_cell<V>(
+        &mut self,
+        column_type: BinarySnapshotColumnType,
+        column: &str,
+        visitor: &mut V,
+    ) -> Result<()>
+    where
+        V: BorrowedBinarySnapshotRawCellVisitor<'a>,
+    {
+        match column_type {
+            BinarySnapshotColumnType::String => {
+                visitor.visit_string_bytes(self.read_bytes32("binary snapshot string")?)
+            }
+            BinarySnapshotColumnType::Integer => {
+                visitor.visit_integer(self.read_i64("binary snapshot integer")?)
+            }
+            BinarySnapshotColumnType::Float => {
+                let value = self.read_f64("binary snapshot float")?;
+                Number::from_f64(value).ok_or_else(|| {
+                    SyncularError::protocol_message(format!(
+                        "binary snapshot {column} contained non-finite float"
+                    ))
+                })?;
+                visitor.visit_float(value)
+            }
+            BinarySnapshotColumnType::Boolean => {
+                let value = self.read_u8("binary snapshot boolean")?;
+                match value {
+                    0 => visitor.visit_boolean(false),
+                    1 => visitor.visit_boolean(true),
+                    _ => Err(SyncularError::protocol_message(format!(
+                        "binary snapshot {column} expected boolean byte"
+                    ))),
+                }
+            }
+            BinarySnapshotColumnType::Json => {
+                visitor.visit_json_bytes(self.read_bytes32("binary snapshot json")?)
             }
             BinarySnapshotColumnType::Bytes => {
                 let len = self.read_u32("binary snapshot bytes length")? as usize;
@@ -824,5 +915,74 @@ mod tests {
         let mut visitor = RecordingVisitor { values: Vec::new() };
         assert!(cursor.read_next_row_with_visitor(&mut visitor).unwrap());
         assert_eq!(visitor.values, first_row);
+
+        #[derive(Debug, PartialEq)]
+        enum RawCell<'a> {
+            Null,
+            String(&'a [u8]),
+            Integer(i64),
+            Float(f64),
+            Boolean(bool),
+            Json(&'a [u8]),
+            Bytes(&'a [u8]),
+        }
+
+        struct RawRecordingVisitor<'a> {
+            values: Vec<RawCell<'a>>,
+        }
+
+        impl<'a> BorrowedBinarySnapshotRawCellVisitor<'a> for RawRecordingVisitor<'a> {
+            fn visit_null(&mut self) -> Result<()> {
+                self.values.push(RawCell::Null);
+                Ok(())
+            }
+
+            fn visit_string_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+                self.values.push(RawCell::String(value));
+                Ok(())
+            }
+
+            fn visit_integer(&mut self, value: i64) -> Result<()> {
+                self.values.push(RawCell::Integer(value));
+                Ok(())
+            }
+
+            fn visit_float(&mut self, value: f64) -> Result<()> {
+                self.values.push(RawCell::Float(value));
+                Ok(())
+            }
+
+            fn visit_boolean(&mut self, value: bool) -> Result<()> {
+                self.values.push(RawCell::Boolean(value));
+                Ok(())
+            }
+
+            fn visit_json_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+                self.values.push(RawCell::Json(value));
+                Ok(())
+            }
+
+            fn visit_bytes(&mut self, value: &'a [u8]) -> Result<()> {
+                self.values.push(RawCell::Bytes(value));
+                Ok(())
+            }
+        }
+
+        let mut cursor = payload.row_cursor();
+        let mut raw_visitor = RawRecordingVisitor { values: Vec::new() };
+        assert!(cursor
+            .read_next_row_with_raw_visitor(&mut raw_visitor)
+            .unwrap());
+        assert_eq!(
+            raw_visitor.values,
+            vec![
+                RawCell::String(&b"task-1"[..]),
+                RawCell::Boolean(false),
+                RawCell::Integer(42),
+                RawCell::Float(1.5),
+                RawCell::Json(&br#"{"priority":"high"}"#[..]),
+                RawCell::Bytes(&[1, 2, 3]),
+            ]
+        );
     }
 }
