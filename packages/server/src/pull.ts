@@ -59,7 +59,7 @@ const defaultScopeCache = createMemoryScopeCache();
 const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
 const MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 4 * 1024 * 1024;
 const DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES = 256 * 1024;
-const DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS = 25_000;
+const DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS = 50_000;
 const DEFAULT_SNAPSHOT_CHUNK_GZIP_LEVEL = 1;
 const EMPTY_SNAPSHOT_ROW_FRAMES = encodeSnapshotRows([]);
 const MAX_PULL_TRANSACTION_RETRIES = 2;
@@ -648,7 +648,7 @@ export async function pull<
           request.limitSnapshotRows,
           1000,
           1,
-          25000
+          50000
         );
         const maxSnapshotPages = sanitizeLimit(
           request.maxSnapshotPages,

@@ -56,8 +56,8 @@ import {
   type SyncularWebStoreHostConfig,
 } from './web-store-host';
 
-const E2E_SNAPSHOT_ROWS_PER_PAGE = 25_000;
-const E2E_MAX_SNAPSHOT_PAGES = 20;
+const E2E_SNAPSHOT_ROWS_PER_PAGE = 50_000;
+const E2E_MAX_SNAPSHOT_PAGES = 10;
 const E2E_TS_SNAPSHOT_ROWS_PER_PAGE = 5_000;
 const E2E_TS_MAX_SNAPSHOT_PAGES = 100;
 
