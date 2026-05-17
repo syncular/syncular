@@ -1662,13 +1662,31 @@ client. Overflow should close or resync the session deliberately.
 
 ### Phase 8: Compression And Cache Policy
 
-- Status: planned.
+- Status: in progress.
 - Keep snapshot chunks gzip-only.
 - Benchmark binary snapshot chunk size and gzip CPU cost on native and
   browser/WASM.
-- Do not add unsupported compression algorithms.
-- Add cache keys that include schema version, subscription/scope, as-of commit,
-  encoding, compression, and feature flags.
+- Done: keep compression policy gzip-only; no unsupported compression
+  algorithms added.
+- Done: snapshot chunk scope cache keys now use a stable v2 semantic key that
+  includes partition, effective scope digest, configured schema/cache version,
+  chunk encoding, compression, gzip level, and feature flags. The indexed page
+  key still carries table, as-of commit, row cursor, row limit, encoding, and
+  compression.
+  - Correctness guard: unit coverage proves scope and feature ordering are
+    stable while schema version, encoding, and gzip level produce distinct
+    keys. Hono snapshot chunk download authorization recognizes the v2 key
+    without weakening scope checks.
+  - Snapshot chunk tests pass for DB metadata storage, external chunk storage,
+    scope-bound download authorization, and bundled multi-page chunks.
+  - Perf smoke after the change still shows the cached bootstrap path hitting:
+    `rust_browser_e2e_rust_bootstrap_ms` `13.9`,
+    `rust_browser_e2e_rust_cached_bootstrap_ms` `3.8`,
+    `rust_browser_e2e_rust_cached_snapshot_chunk_binary_count` `1.0`, and
+    realtime remains no-HTTP-fallback with `rust_browser_e2e_rust_realtime_live_ms`
+    `12.6` / p95 `15.4`.
+- Next: benchmark binary snapshot chunk size and gzip CPU cost on native and
+  browser/WASM before changing compression or cache persistence policy.
 
 ### Phase 9: Sync Session And Sequencer Design
 

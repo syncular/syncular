@@ -43,10 +43,10 @@ import type { SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
 import {
+  createSnapshotChunkScopeCacheKey,
   insertSnapshotChunk,
   readSnapshotChunkRefByPageKey,
   type SnapshotChunkRefWithContinuation,
-  scopesToSnapshotChunkScopeKey,
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
 import {
@@ -584,6 +584,12 @@ export async function pull<
    * Default: 1, range: 0-9.
    */
   snapshotChunkGzipLevel?: number;
+  /**
+   * Schema/cache semantic version included in generated snapshot chunk cache
+   * keys. Changing this value invalidates cached bootstrap chunks without
+   * requiring table data to change.
+   */
+  snapshotChunkCacheSchemaVersion?: number | string | null;
 }): Promise<PullResult> {
   const { request, dialect } = args;
   const db = args.db;
@@ -772,9 +778,14 @@ export async function pull<
 
                     const snapshots: SyncSnapshot[] = [];
                     let nextState: SyncBootstrapState | null = effectiveState;
-                    const cacheKey = `${partitionId}:gzip-level-${snapshotChunkGzipLevel}:${await scopesToSnapshotChunkScopeKey(
-                      effectiveScopes
-                    )}`;
+                    const cacheKey = await createSnapshotChunkScopeCacheKey({
+                      partitionId,
+                      scopes: effectiveScopes,
+                      schemaVersion: args.snapshotChunkCacheSchemaVersion,
+                      encoding: snapshotChunkEncoding,
+                      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                      gzipLevel: snapshotChunkGzipLevel,
+                    });
 
                     interface SnapshotBundle {
                       table: string;

@@ -28,6 +28,16 @@ export interface SnapshotChunkPageKey {
   compression: SyncSnapshotChunkCompression;
 }
 
+export interface SnapshotChunkScopeCacheKeyInput {
+  partitionId: string;
+  scopes: ScopeValues;
+  schemaVersion?: number | string | null;
+  encoding: SyncSnapshotChunkEncoding;
+  compression: SyncSnapshotChunkCompression;
+  gzipLevel: number;
+  features?: readonly string[];
+}
+
 export type SnapshotChunkRefWithContinuation = SyncSnapshotChunkRef & {
   nextRowCursor: string | null;
   isLastPage: boolean;
@@ -75,6 +85,37 @@ export async function scopesToSnapshotChunkScopeKey(
     })
     .join('|');
   return sha256Hex(sorted);
+}
+
+/**
+ * Generate the full server-side snapshot chunk cache key.
+ *
+ * The database page key also stores table, as-of commit, row cursor, row
+ * limit, encoding, and compression as indexed columns. This scope key carries
+ * the remaining semantic dimensions that otherwise invalidate all pages for a
+ * subscription scope.
+ */
+export async function createSnapshotChunkScopeCacheKey(
+  input: SnapshotChunkScopeCacheKeyInput
+): Promise<string> {
+  const scopeDigest = await scopesToSnapshotChunkScopeKey(input.scopes);
+  const features = [...(input.features ?? [])].sort();
+  const digest = await sha256Hex(
+    JSON.stringify({
+      version: 2,
+      partitionId: input.partitionId,
+      schemaVersion:
+        input.schemaVersion === null || input.schemaVersion === undefined
+          ? 'unversioned'
+          : String(input.schemaVersion),
+      encoding: input.encoding,
+      compression: input.compression,
+      gzipLevel: input.gzipLevel,
+      features,
+      scopeDigest,
+    })
+  );
+  return `snapshot-v2:${digest}:scope:${scopeDigest}`;
 }
 
 function coerceChunkRow(value: unknown): Uint8Array {
