@@ -2729,7 +2729,7 @@ impl SyncularRustOwnedSqlite {
         row: Value,
         metadata: &'static AppTableMetadata,
     ) -> Result<Map<String, Value>> {
-        if metadata.crdt_yjs_fields.is_empty() {
+        if !row_needs_crdt_materialization(&row, metadata) {
             return object_from_owned_value(row);
         }
         let row = materialize_row_for_metadata(table, None, row, metadata)?;
@@ -4457,6 +4457,27 @@ fn has_yjs_payload(value: &Value) -> bool {
     value
         .as_object()
         .is_some_and(|object| object.contains_key(YJS_PAYLOAD_KEY))
+}
+
+fn row_needs_crdt_materialization(row: &Value, metadata: &AppTableMetadata) -> bool {
+    if metadata.crdt_yjs_fields.is_empty() {
+        return false;
+    }
+    let Some(object) = row.as_object() else {
+        return true;
+    };
+    if object.contains_key(YJS_PAYLOAD_KEY) {
+        return true;
+    }
+    metadata.crdt_yjs_fields.iter().any(|field| {
+        if field.sync_mode == "encrypted-update-log" {
+            return true;
+        }
+        object
+            .get(field.state_column)
+            .and_then(Value::as_str)
+            .is_some_and(|state| !state.is_empty())
+    })
 }
 
 fn crdt_field_descriptor_json(field: &CrdtField) -> Value {

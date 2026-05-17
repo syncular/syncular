@@ -1471,6 +1471,18 @@ client. Overflow should close or resync the session deliberately.
     response bytes unchanged (`1,091,633`).
   - Complexity check: this is a net simplification of ownership in the decoder,
     so the modest gain is acceptable.
+- Retained browser SQLite row materialization guard: app rows now skip Yjs/CRDT
+  materialization when the table has CRDT metadata but the incoming row has no
+  Yjs envelope, no non-empty server-merge state, and no encrypted update-log
+  field requiring preservation.
+  - 100k bootstrap rows + 5k incremental rows:
+    `rust_incremental_pull_ms` `50.86 -> 48.40`,
+    `rust_incremental_pull_apply_ms` `18 -> 14`,
+    request noise `32 -> 33`, sync-pack decode stayed `9`,
+    response bytes unchanged (`1,091,633`).
+  - Complexity check: the branch documents the real semantic boundary between
+    ordinary rows and CRDT rows, so this is a foundation cleanup rather than a
+    benchmark-only special case.
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 
