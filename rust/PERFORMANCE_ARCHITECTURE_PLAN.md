@@ -146,6 +146,11 @@ Measured scoped-server lane:
   browser E2E lane this moved 100k local apply `101ms -> 94ms`, 100k
   bootstrap `190.32ms -> 183.59ms`, 500k local apply `449ms -> 437ms`, and
   500k bootstrap `836.25ms -> 828.21ms`.
+- Rejected experiment: keeping fetched compressed snapshot chunks as JS
+  `ArrayBuffer`s through browser-native hash/decompress avoided one Rust copy
+  but added WASM code and did not improve the target. The 100k guardrail moved
+  Rust bootstrap `183.59ms -> 186.80ms`, local apply `94ms -> 97ms`, and hash
+  `1ms -> 2ms`; the transport change was discarded.
 
 Validated perf-lane smoke:
 
