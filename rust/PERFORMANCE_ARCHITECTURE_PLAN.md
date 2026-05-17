@@ -1426,6 +1426,17 @@ client. Overflow should close or resync the session deliberately.
     `rust_incremental_pull_apply_ms` `7 -> 5`, bootstrap/apply guardrails
     stayed neutral (`rust_bootstrap_ms` `181.28 -> 180.15`,
     `rust_pull_apply_ms` `90 -> 90`), response bytes unchanged (`42,953`).
+- Retained follow-up cleanup: when `collectChangedRows=false`, incremental
+  commit changes are moved into the web store instead of cloned before apply.
+  The changed-row path still clones because it needs the row payload after
+  applying.
+  - 1k bootstrap rows + 200 incremental rows:
+    `rust_incremental_pull_ms` `15.80 -> 14.95`,
+    `rust_incremental_pull_apply_ms` stayed `5`.
+  - 100k bootstrap rows + 200 incremental rows:
+    `rust_incremental_pull_ms` `13.99 -> 12.62`,
+    `rust_incremental_pull_apply_ms` `5 -> 4`, response bytes unchanged
+    (`42,953`).
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 

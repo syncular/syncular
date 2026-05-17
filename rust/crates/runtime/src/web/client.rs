@@ -285,7 +285,7 @@ where
         let collect_changed_rows = self.config.pull.collect_changed_rows;
         let max_snapshot_changed_rows = self.config.pull.max_snapshot_changed_rows;
         let mut snapshot_changed_rows = 0usize;
-        for sub in pull.subscriptions {
+        for mut sub in pull.subscriptions {
             let previous_state = self.store.subscription_state(&sub.id).await?;
             let table = self
                 .subscriptions
@@ -468,27 +468,27 @@ where
                     }
                 }
             }
-            for commit in &sub.commits {
-                for change in &commit.changes {
+            let commits = std::mem::take(&mut sub.commits);
+            for commit in commits {
+                for change in commit.changes {
                     add_changed_table(&mut result.changed_tables, &change.table);
-                    let previous_row = if collect_changed_rows {
-                        self.store
-                            .current_row_json(&change.table, &change.row_id)
-                            .await?
-                    } else {
-                        None
-                    };
-                    self.store.apply_change(change.clone()).await?;
                     if collect_changed_rows {
+                        let previous_row = self
+                            .store
+                            .current_row_json(&change.table, &change.row_id)
+                            .await?;
+                        self.store.apply_change(change.clone()).await?;
                         if let Some(changed_row) = sync_changed_row_for_change(
                             app_schema,
-                            change,
+                            &change,
                             previous_row.as_ref(),
                             commit.commit_seq,
                             &sub.id,
                         ) {
                             result.changed_rows.push(changed_row);
                         }
+                    } else {
+                        self.store.apply_change(change).await?
                     }
                 }
             }
