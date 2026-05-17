@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS projects (
   owner_id TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0,
   server_version BIGINT NOT NULL DEFAULT 0
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   server_version BIGINT NOT NULL DEFAULT 0,
   image TEXT NULL,
   title_yjs_state TEXT NULL
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS comments (
   id TEXT PRIMARY KEY,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS comments (
   author_id TEXT NOT NULL,
   deleted INTEGER NOT NULL DEFAULT 0,
   server_version BIGINT NOT NULL DEFAULT 0
-);
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS sync_migrations (
   version TEXT PRIMARY KEY,
