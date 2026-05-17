@@ -1774,15 +1774,18 @@ client. Overflow should close or resync the session deliberately.
   `sync-realtime-v1:<tenant>:<workspace>:<partition>` semantics. Until auth
   exposes tenant/workspace separately, partition is used as the default
   tenant/workspace dimension. Hono commit broadcaster events now include this
-  shard key alongside `partitionId`.
+  shard key alongside `partitionId`, and websocket hello frames expose the same
+  shard key to clients.
   - Correctness guard: unit coverage locks default, explicit, and escaped
     shard-key forms; broadcaster bridge coverage still fans out cross-instance
     commits.
   - Perf guard after the change:
-    `rust_browser_e2e_rust_realtime_live_ms` `9.6`,
-    `rust_browser_e2e_rust_realtime_live_p95_ms` `12.8`,
+    `rust_browser_e2e_rust_realtime_live_ms` `12.0`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `14.1`,
     `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
-    `rust_browser_e2e_rust_realtime_binary_events` `2.0`.
+    `rust_browser_e2e_rust_realtime_binary_events` `2.0`,
+    `rust_browser_e2e_browser_page_sync_encoded_kib` `101.1`,
+    `rust_browser_e2e_browser_served_syncular_worker_js_kib` `43.7`.
 - Define which state lives in the sequencer, D1-like SQL storage, and R2-like
   object storage.
 - Add deterministic tests for reconnect, resume, auth refresh, slow client

@@ -2823,6 +2823,7 @@ export function createSyncRoutes<
         onOpen(_evt, ws) {
           const requiresInitialSync =
             initialScopeKeys.length > 0 && latestCommitSeq > lastAckedCursor;
+          const shardKey = createSyncRealtimeShardKey({ partitionId });
           const conn = createWebSocketConnection(ws, {
             actorId: auth.actorId,
             clientId,
@@ -2850,6 +2851,7 @@ export function createSyncRoutes<
           conn.sendHello({
             protocolVersion: 1,
             sessionId: createRealtimeSessionId(),
+            shardKey,
             actorId: auth.actorId,
             clientId,
             transportPath: realtimeTransportPath,

@@ -42,6 +42,7 @@ interface SyncularV2RealtimeSyncMessage {
 interface SyncularV2RealtimeHelloMessage {
   protocolVersion?: number;
   sessionId?: string;
+  shardKey?: string;
   cursor?: number;
   latestCursor?: number;
   scopeCount?: number;
@@ -509,6 +510,7 @@ function readSyncularV2RealtimeHelloMessage(
         : undefined,
     sessionId:
       typeof record.sessionId === 'string' ? record.sessionId : undefined,
+    shardKey: typeof record.shardKey === 'string' ? record.shardKey : undefined,
     cursor: typeof record.cursor === 'number' ? record.cursor : undefined,
     latestCursor:
       typeof record.latestCursor === 'number' ? record.latestCursor : undefined,
