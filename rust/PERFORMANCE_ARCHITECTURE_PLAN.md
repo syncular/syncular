@@ -1127,6 +1127,21 @@ client. Overflow should close or resync the session deliberately.
     `rust_pull_request_ms` `106 -> 94`,
     `rust_server_bootstrap_row_frame_encode_ms` `34 -> 19`.
     Local read metrics were noisy and not affected by this server-side path.
+- Retained larger Rust-first snapshot page defaults after measuring `50_000`
+  rows x `10` pages against the previous `25_000` x `20` shape. This keeps the
+  same 500k single-pull bootstrap envelope but halves the number of binary
+  chunks, server snapshot pages, and client chunk apply passes.
+  - 500k bootstrap-only, release-WASM, battery saver:
+    `rust_bootstrap_ms` `928.49 -> 899.87`,
+    `rust_pull_request_ms` `412 -> 406`,
+    `rust_pull_apply_ms` `511 -> 489`,
+    `rust_snapshot_chunk_binary_count` `20 -> 10`,
+    `rust_response_bytes` `3,782,229 -> 3,777,162`.
+  - 100k full scoreboard guardrail:
+    `rust_bootstrap_ms` `212.56 -> 198.23`,
+    `rust_pull_request_ms` `94 -> 89`,
+    `rust_pull_apply_ms` `115 -> 107`,
+    `rust_snapshot_chunk_binary_count` `4 -> 2`.
 
 ### Phase 4: Worker Default
 
