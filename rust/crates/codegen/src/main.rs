@@ -66,6 +66,7 @@ struct TableCodegenConfig {
     crdt_yjs_fields: Vec<CrdtYjsFieldConfig>,
     encrypted_fields: Vec<EncryptedFieldConfig>,
     soft_delete_column: Option<String>,
+    sqlite_without_rowid: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -453,6 +454,8 @@ struct SchemaJsonTable {
     encrypted_fields: Vec<SchemaJsonEncryptedField>,
     scopes: Vec<SchemaJsonScope>,
     subscription: SchemaJsonSubscription,
+    #[serde(default, skip_serializing_if = "is_false")]
+    sqlite_without_rowid: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -637,6 +640,7 @@ fn generate_schema_json(
                 id: table_config.subscription_id(&table.name),
                 params: table_config.subscription_params.clone(),
             },
+            sqlite_without_rowid: table_config.sqlite_without_rowid.unwrap_or(false),
         });
     }
 
@@ -845,6 +849,7 @@ fn schema_backed_codegen_inputs(
                     })
                     .collect(),
                 soft_delete_column: table.soft_delete_column,
+                sqlite_without_rowid: Some(table.sqlite_without_rowid),
             },
         );
         tables.push(TableInfo {
@@ -1348,6 +1353,56 @@ fn ts_sqlite_column_type(column: &ColumnRow) -> &'static str {
     } else {
         "text"
     }
+}
+
+fn sqlite_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn ts_template_literal_content(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace("${", "\\${")
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn ts_raw_sql_create_table(table: &TableInfo, without_rowid: bool) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "CREATE TABLE IF NOT EXISTS {} (",
+        sqlite_identifier(&table.name)
+    ));
+    for (index, column) in table.columns.iter().enumerate() {
+        if index == 0 {
+            out.push('\n');
+        } else {
+            out.push_str(",\n");
+        }
+        out.push_str("  ");
+        out.push_str(&sqlite_identifier(&column.name));
+        out.push(' ');
+        out.push_str(&ts_sqlite_column_type(column).to_ascii_uppercase());
+        if column.pk > 0 {
+            out.push_str(" PRIMARY KEY");
+        }
+        if !is_nullable(column) && column.pk == 0 {
+            out.push_str(" NOT NULL");
+        }
+        if let Some(default) = column.dflt_value.as_deref() {
+            out.push_str(" DEFAULT ");
+            out.push_str(default);
+        }
+    }
+    out.push('\n');
+    out.push(')');
+    if without_rowid {
+        out.push_str(" WITHOUT ROWID");
+    }
+    out
 }
 
 fn ts_binary_snapshot_column_type(column: &ColumnRow, config: &TableCodegenConfig) -> &'static str {
@@ -4241,26 +4296,38 @@ fn generate_typescript_module(
     );
     out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
     for table in &user_tables {
-        out.push_str("  await db.schema\n");
-        out.push_str(&format!("    .createTable({})\n", ts_string(&table.name)));
-        out.push_str("    .ifNotExists()\n");
-        for column in &table.columns {
-            if let Some(callback) = ts_schema_column_callback(column) {
-                out.push_str(&format!(
-                    "    .addColumn({}, {}, {})\n",
-                    ts_string(&column.name),
-                    ts_string(ts_sqlite_column_type(column)),
-                    callback
-                ));
-            } else {
-                out.push_str(&format!(
-                    "    .addColumn({}, {})\n",
-                    ts_string(&column.name),
-                    ts_string(ts_sqlite_column_type(column))
-                ));
+        let table_config = config.table(&table.name);
+        if table_config.sqlite_without_rowid.unwrap_or(false) {
+            let sql = ts_template_literal_content(&ts_raw_sql_create_table(table, true));
+            out.push_str("  await sql`\n");
+            for line in sql.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
             }
+            out.push_str("  `.execute(db);\n\n");
+        } else {
+            out.push_str("  await db.schema\n");
+            out.push_str(&format!("    .createTable({})\n", ts_string(&table.name)));
+            out.push_str("    .ifNotExists()\n");
+            for column in &table.columns {
+                if let Some(callback) = ts_schema_column_callback(column) {
+                    out.push_str(&format!(
+                        "    .addColumn({}, {}, {})\n",
+                        ts_string(&column.name),
+                        ts_string(ts_sqlite_column_type(column)),
+                        callback
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "    .addColumn({}, {})\n",
+                        ts_string(&column.name),
+                        ts_string(ts_sqlite_column_type(column))
+                    ));
+                }
+            }
+            out.push_str("    .execute();\n\n");
         }
-        out.push_str("    .execute();\n\n");
     }
     out.push_str("  await validateSyncularAppSchema(db);\n");
     out.push_str("  await sql`\n");
@@ -7993,6 +8060,7 @@ mod tests {
             crdt_yjs_fields: Vec::new(),
             encrypted_fields: Vec::new(),
             soft_delete_column: None,
+            sqlite_without_rowid: None,
         }
     }
 
@@ -8495,6 +8563,40 @@ mod tests {
         assert!(output.contains("    op: 'upsert',\n    payload: { deleted: 1 },"));
         assert!(output.contains("  image: BlobRef | null;"));
         assert!(output.contains("  if (input.image !== undefined) payload.image = input.image;"));
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_schema_installer_supports_sqlite_without_rowid() -> Result<()> {
+        let tables = vec![table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+            ],
+        )];
+        let mut table_configs = BTreeMap::new();
+        let mut tasks_config = table_config(
+            "sub-tasks",
+            "server_version",
+            vec![scope("user_id", "id", "actorId", true)],
+        );
+        tasks_config.sqlite_without_rowid = Some(true);
+        table_configs.insert("tasks".to_string(), tasks_config);
+        let config = CodegenConfig {
+            tables: table_configs,
+            typescript_runtime_import_path: Some("@app/sync-runtime".to_string()),
+            ..CodegenConfig::default()
+        };
+
+        let output = generate_typescript_module(&tables, &config, 3)?;
+
+        assert!(output.contains("CREATE TABLE IF NOT EXISTS \"tasks\" ("));
+        assert!(output.contains("\"id\" TEXT PRIMARY KEY"));
+        assert!(output.contains("\"server_version\" INTEGER NOT NULL DEFAULT 0"));
+        assert!(output.contains(") WITHOUT ROWID"));
+        assert!(!output.contains(".createTable('tasks')"));
         Ok(())
     }
 

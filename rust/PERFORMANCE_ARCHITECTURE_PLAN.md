@@ -140,6 +140,12 @@ Measured scoped-server lane:
   and snapshot fetch `15ms -> 9ms`. At 500k, Rust bootstrap moved
   `869.34ms -> 836.25ms`, snapshot fetch `61ms -> 37ms`, decompression
   `57ms -> 34ms`, and cached bootstrap `492.42ms -> 459.25ms`.
+- Retained change: generated browser SQLite schema installers can opt tables
+  into `sqliteWithoutRowid`, which emits `CREATE TABLE ... WITHOUT ROWID` for
+  app tables whose primary key is a text id. The todo example opts in. In the
+  browser E2E lane this moved 100k local apply `101ms -> 94ms`, 100k
+  bootstrap `190.32ms -> 183.59ms`, 500k local apply `449ms -> 437ms`, and
+  500k bootstrap `836.25ms -> 828.21ms`.
 
 Validated perf-lane smoke:
 

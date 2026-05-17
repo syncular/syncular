@@ -418,40 +418,40 @@ function withSyncularGeneratedCodecs(userCodecs?: ColumnCodecSource): ColumnCode
 
 export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
   await ensureSyncularAppSchemaMetadata(db);
-  await db.schema
-    .createTable('comments')
-    .ifNotExists()
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('task_id', 'text', (col) => col.notNull())
-    .addColumn('project_id', 'text')
-    .addColumn('body', 'text', (col) => col.notNull())
-    .addColumn('author_id', 'text', (col) => col.notNull())
-    .addColumn('deleted', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
-    .execute();
+  await sql`
+    CREATE TABLE IF NOT EXISTS "comments" (
+      "id" TEXT PRIMARY KEY,
+      "task_id" TEXT NOT NULL,
+      "project_id" TEXT,
+      "body" TEXT NOT NULL,
+      "author_id" TEXT NOT NULL,
+      "deleted" INTEGER NOT NULL DEFAULT 0,
+      "server_version" INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID
+  `.execute(db);
 
-  await db.schema
-    .createTable('projects')
-    .ifNotExists()
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('name', 'text', (col) => col.notNull())
-    .addColumn('owner_id', 'text', (col) => col.notNull())
-    .addColumn('archived', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
-    .execute();
+  await sql`
+    CREATE TABLE IF NOT EXISTS "projects" (
+      "id" TEXT PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "owner_id" TEXT NOT NULL,
+      "archived" INTEGER NOT NULL DEFAULT 0,
+      "server_version" INTEGER NOT NULL DEFAULT 0
+    ) WITHOUT ROWID
+  `.execute(db);
 
-  await db.schema
-    .createTable('tasks')
-    .ifNotExists()
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('title', 'text', (col) => col.notNull())
-    .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('user_id', 'text', (col) => col.notNull())
-    .addColumn('project_id', 'text')
-    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('image', 'text')
-    .addColumn('title_yjs_state', 'text')
-    .execute();
+  await sql`
+    CREATE TABLE IF NOT EXISTS "tasks" (
+      "id" TEXT PRIMARY KEY,
+      "title" TEXT NOT NULL,
+      "completed" INTEGER NOT NULL DEFAULT 0,
+      "user_id" TEXT NOT NULL,
+      "project_id" TEXT,
+      "server_version" INTEGER NOT NULL DEFAULT 0,
+      "image" TEXT,
+      "title_yjs_state" TEXT
+    ) WITHOUT ROWID
+  `.execute(db);
 
   await validateSyncularAppSchema(db);
   await sql`
