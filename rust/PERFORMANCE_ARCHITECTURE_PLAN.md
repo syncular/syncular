@@ -1492,12 +1492,27 @@ client. Overflow should close or resync the session deliberately.
     `rust_incremental_pull_apply_ms` stayed `14`,
     sync-pack decode noise `9 -> 10`.
   - Decision: reverted; not enough signal for the extra conditional logic.
-- Next target: wire websocket delivery to carry the same pack format instead
-  of using realtime only as a pull wakeup.
+- Retained first websocket delta slice: the browser worker can now apply the
+  existing JSON inline websocket `changes` payload directly through Rust-owned
+  SQLite instead of treating every realtime frame as a pull wakeup.
+  - Guard: inline apply only runs for non-empty changes with a finite cursor
+    and an empty local outbox; otherwise it falls back to HTTP pull.
+  - Measurement/validation: the worker unit test asserts `syncPulls === 0`
+    for an inline frame, and the real Hono/WASM websocket test counts combined
+    HTTP pull requests and proves the live-query update arrives with `0`
+    additional HTTP pulls after the realtime push.
+  - Smoke perf after the change still passes the Rust perf gate on the small
+    browser E2E lane: 100 bootstrap rows + 10 incremental rows measured
+    `rust_incremental_pull_ms` `7.2`, request `6`, apply `0`, sync-pack decode
+    `1`. This lane is not the target win; the target win is removing the extra
+    realtime HTTP round trip for inline websocket payloads.
+- Next target: upgrade websocket delivery from the existing JSON inline
+  `changes` payload to the same generated binary delta-pack format used by
+  incremental HTTP pull.
 
 ### Phase 7: Delta WebSocket Runtime
 
-- Status: planned.
+- Status: in progress.
 - Extend websocket negotiation to advertise binary delta support.
 - Stream compact delta packs over websocket instead of treating realtime as
   only a sync wakeup.
