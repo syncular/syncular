@@ -50,6 +50,15 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
             "/migrations/0005_encrypted_crdt_server_seq/up.sql"
         )),
     },
+    EmbeddedMigration {
+        version: "0006",
+        schema_version: 6,
+        name: "crdt_document_persistence",
+        up_sql: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/0006_crdt_document_persistence/up.sql"
+        )),
+    },
 ];
 
 pub fn current_schema_version() -> i32 {

@@ -83,6 +83,35 @@ const unsubscribe = syncular.client.addRowsChangedListener((event) => {
 });
 ```
 
+## Rich editors
+
+For rich editor fields, Yjs is the canonical document. ProseMirror JSON, title,
+preview, outline, search text, and other UI/search projections should be
+materialized from the CRDT field after local writes, remote apply, or
+compaction.
+
+```ts
+const snapshot = await syncular.client.crdtDocumentSnapshot({
+  table: 'tasks',
+  rowId: taskId,
+  field: 'title',
+});
+
+const log = await syncular.client.crdtUpdateLog({
+  table: 'tasks',
+  rowId: taskId,
+  field: 'title',
+  limit: 50,
+});
+```
+
+The snapshot exposes the compact binary Yjs state, state vector, sync mode, and
+pending/flushed/acked queue counts. The update log is append-only and tracks
+each binary Yjs update through `pending`, `flushed`, and `acked`. Use
+`compactCrdtField` to refresh the compact state and
+`compactStorage({ olderThanMs, pruneCrdtUpdateLog: true })` to prune old acked
+log entries without treating derived app columns as canonical.
+
 ## Runtime artifacts
 
 The package ships runtime artifact metadata. Generated clients declare required

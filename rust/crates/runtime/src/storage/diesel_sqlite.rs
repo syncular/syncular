@@ -6,8 +6,13 @@ use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, StorageCompactionOptions,
     StorageCompactionReport,
 };
+use crate::crdt_field::{
+    validate_crdt_field, CrdtDocumentSnapshot, CrdtField, CrdtFieldId, CrdtUpdateLogEntry,
+    CrdtUpdateOrigin, CrdtUpdateStatus,
+};
 use crate::crdt_yjs::{
-    materialize_row_for_metadata, transform_local_row_for_metadata, YJS_PAYLOAD_KEY,
+    materialize_row_for_metadata, transform_local_row_for_metadata, yjs_state_vector_base64,
+    YjsUpdateEnvelope, YJS_PAYLOAD_KEY,
 };
 use crate::encrypted_crdt::{
     apply_encrypted_crdt_plaintext_to_row, encrypted_crdt_identity_column,
@@ -15,7 +20,7 @@ use crate::encrypted_crdt::{
     is_encrypted_crdt_system_table, EncryptedCrdtStreamStats, CRDT_CHECKPOINTS_TABLE,
     CRDT_UPDATES_TABLE,
 };
-use crate::error::{Result, SyncularError};
+use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::tasks::{insert_local_task, list_tasks, patch_local_task_title};
 use crate::protocol::*;
@@ -31,13 +36,14 @@ use crate::store::{DemoTaskStore, Task};
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Binary, Integer, Text};
+use diesel::sql_types::{BigInt, Binary, Integer, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
 const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 128;
+pub const DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY: i64 = 1024;
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = schema::sync_outbox_commits)]
@@ -57,6 +63,64 @@ struct OutboxCommitRow {
     next_attempt_at: i64,
 }
 
+#[derive(Debug, Clone, QueryableByName)]
+struct CrdtDocumentSnapshotRow {
+    #[diesel(sql_type = Text)]
+    document_key: String,
+    #[diesel(sql_type = Text)]
+    app_table: String,
+    #[diesel(sql_type = Text)]
+    row_id: String,
+    #[diesel(sql_type = Text)]
+    field_name: String,
+    #[diesel(sql_type = Text)]
+    state_column: String,
+    #[diesel(sql_type = Text)]
+    sync_mode: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    state_base64: Option<String>,
+    #[diesel(sql_type = Text)]
+    state_vector_base64: String,
+    #[diesel(sql_type = BigInt)]
+    pending_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    flushed_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    acked_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    log_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    updated_at: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    compacted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, QueryableByName)]
+struct CrdtUpdateLogRow {
+    #[diesel(sql_type = BigInt)]
+    id: i64,
+    #[diesel(sql_type = Text)]
+    document_key: String,
+    #[diesel(sql_type = Text)]
+    update_id: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    client_commit_id: Option<String>,
+    #[diesel(sql_type = Text)]
+    origin: String,
+    #[diesel(sql_type = Text)]
+    status: String,
+    #[diesel(sql_type = Text)]
+    update_base64: String,
+    #[diesel(sql_type = Text)]
+    state_vector_base64: String,
+    #[diesel(sql_type = BigInt)]
+    created_at: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    flushed_at: Option<i64>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    acked_at: Option<i64>,
+}
+
 impl From<OutboxCommitRow> for OutboxCommit {
     fn from(row: OutboxCommitRow) -> Self {
         Self {
@@ -73,6 +137,49 @@ impl From<OutboxCommitRow> for OutboxCommit {
             schema_version: row.schema_version,
             next_attempt_at: row.next_attempt_at,
         }
+    }
+}
+
+impl TryFrom<CrdtDocumentSnapshotRow> for CrdtDocumentSnapshot {
+    type Error = SyncularError;
+
+    fn try_from(row: CrdtDocumentSnapshotRow) -> Result<Self> {
+        Ok(Self {
+            document_key: row.document_key,
+            table: row.app_table,
+            row_id: row.row_id,
+            field: row.field_name,
+            state_column: row.state_column,
+            sync_mode: crdt_sync_mode_from_str(&row.sync_mode)?,
+            state_base64: row.state_base64,
+            state_vector_base64: row.state_vector_base64,
+            pending_updates: row.pending_updates,
+            flushed_updates: row.flushed_updates,
+            acked_updates: row.acked_updates,
+            log_updates: row.log_updates,
+            updated_at: row.updated_at,
+            compacted_at: row.compacted_at,
+        })
+    }
+}
+
+impl TryFrom<CrdtUpdateLogRow> for CrdtUpdateLogEntry {
+    type Error = SyncularError;
+
+    fn try_from(row: CrdtUpdateLogRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            document_key: row.document_key,
+            update_id: row.update_id,
+            client_commit_id: row.client_commit_id,
+            origin: crdt_update_origin_from_str(&row.origin)?,
+            status: crdt_update_status_from_str(&row.status)?,
+            update_base64: row.update_base64,
+            state_vector_base64: row.state_vector_base64,
+            created_at: row.created_at,
+            flushed_at: row.flushed_at,
+            acked_at: row.acked_at,
+        })
     }
 }
 
@@ -301,6 +408,18 @@ struct BlobCacheEntryRow {
     hash: String,
     #[diesel(sql_type = BigInt)]
     size: i64,
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
+
+#[derive(QueryableByName)]
+struct StringValueRow {
+    #[diesel(sql_type = Text)]
+    value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -719,6 +838,76 @@ impl DieselSqliteStore {
         })
     }
 
+    pub fn apply_crdt_field_yjs_update(
+        &mut self,
+        field: &CrdtField,
+        update: YjsUpdateEnvelope,
+        max_pending_updates: i64,
+    ) -> Result<String> {
+        self.transaction(|tx| tx.apply_crdt_field_yjs_update(field, update, max_pending_updates))
+    }
+
+    pub fn crdt_document_snapshot(&mut self, field: &CrdtField) -> Result<CrdtDocumentSnapshot> {
+        let row = current_app_row_json(
+            &mut self.conn,
+            self.app_schema,
+            field.table(),
+            field.row_id(),
+        )?;
+        let state_base64 = crdt_field_state_base64(field, row.as_ref());
+        let state_vector_base64 = yjs_state_vector_base64(state_base64.as_deref())?;
+        upsert_crdt_document_snapshot(
+            &mut self.conn,
+            field,
+            state_base64.as_deref(),
+            &state_vector_base64,
+            None,
+        )?;
+        select_crdt_document_snapshot(&mut self.conn, &field.document_key())
+    }
+
+    pub fn crdt_update_log(
+        &mut self,
+        field: &CrdtField,
+        limit: i64,
+    ) -> Result<Vec<CrdtUpdateLogEntry>> {
+        sql_query(
+            r#"
+            select id, document_key, update_id, client_commit_id, origin, status, update_base64,
+                   state_vector_base64, created_at, flushed_at, acked_at
+            from sync_crdt_update_log
+            where document_key = ?1
+            order by id asc
+            limit ?2
+            "#,
+        )
+        .bind::<Text, _>(field.document_key())
+        .bind::<BigInt, _>(limit.max(0))
+        .load::<CrdtUpdateLogRow>(&mut self.conn)?
+        .into_iter()
+        .map(CrdtUpdateLogEntry::try_from)
+        .collect()
+    }
+
+    pub fn compact_crdt_document(&mut self, field: &CrdtField) -> Result<CrdtDocumentSnapshot> {
+        let row = current_app_row_json(
+            &mut self.conn,
+            self.app_schema,
+            field.table(),
+            field.row_id(),
+        )?;
+        let state_base64 = crdt_field_state_base64(field, row.as_ref());
+        let state_vector_base64 = yjs_state_vector_base64(state_base64.as_deref())?;
+        upsert_crdt_document_snapshot(
+            &mut self.conn,
+            field,
+            state_base64.as_deref(),
+            &state_vector_base64,
+            Some(now_ms()),
+        )?;
+        select_crdt_document_snapshot(&mut self.conn, &field.document_key())
+    }
+
     pub fn prune_blob_cache(&mut self, max_bytes: i64) -> Result<i64> {
         if max_bytes <= 0 {
             return Ok(0);
@@ -747,6 +936,20 @@ impl DieselSqliteStore {
             freed += entry.size;
         }
         Ok(freed)
+    }
+
+    pub fn prune_crdt_update_log(&mut self, cutoff: i64) -> Result<i64> {
+        let deleted = sql_query(
+            r#"
+            delete from sync_crdt_update_log
+            where status in ('acked', 'pruned')
+              and coalesce(acked_at, flushed_at, created_at) <= ?1
+            "#,
+        )
+        .bind::<BigInt, _>(cutoff)
+        .execute(&mut self.conn)? as i64;
+        refresh_all_crdt_document_counts(&mut self.conn)?;
+        Ok(deleted)
     }
 
     pub fn clear_blob_cache(&mut self) -> Result<()> {
@@ -901,6 +1104,11 @@ impl DieselSqliteStore {
                 self.prune_encrypted_crdt_checkpoints(keep)?;
         }
 
+        if options.should_prune_crdt_update_log() {
+            let cutoff = required_compaction_cutoff(cutoff, "CRDT update log")?;
+            report.crdt_update_log_deleted = self.prune_crdt_update_log(cutoff)?;
+        }
+
         Ok(report)
     }
 
@@ -1024,6 +1232,44 @@ fn operation_payload_has_server_merge_yjs_payload(
         (field.sync_mode == "server-merge" || field.sync_mode.is_empty())
             && envelope.contains_key(field.field)
     })
+}
+
+fn collect_server_merge_yjs_updates(
+    app_schema: AppSchema,
+    metadata: &'static AppTableMetadata,
+    operation: &SyncOperation,
+) -> Result<Vec<(CrdtField, YjsUpdateEnvelope)>> {
+    let Some(Value::Object(payload)) = operation.payload.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let Some(Value::Object(envelope)) = payload.get(YJS_PAYLOAD_KEY) else {
+        return Ok(Vec::new());
+    };
+
+    let mut updates = Vec::new();
+    for field_metadata in metadata.crdt_yjs_fields.iter().filter(|field| {
+        (field.sync_mode == "server-merge" || field.sync_mode.is_empty())
+            && envelope.contains_key(field.field)
+    }) {
+        let field = validate_crdt_field(
+            app_schema,
+            &CrdtFieldId::new(&operation.table, &operation.row_id, field_metadata.field),
+        )?;
+        let Some(value) = envelope.get(field_metadata.field) else {
+            continue;
+        };
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    updates.push((field.clone(), serde_json::from_value(item.clone())?));
+                }
+            }
+            Value::Null => {}
+            item => updates.push((field, serde_json::from_value(item.clone())?)),
+        }
+    }
+
+    Ok(updates)
 }
 
 impl SyncStore for DieselSqliteStore {
@@ -1311,6 +1557,7 @@ impl<'a> DieselSqliteTx<'a> {
         let current_row = self.current_row_json(&operation.table, &operation.row_id)?;
         let current_server_version =
             self.row_server_version(&operation.table, current_row.as_ref());
+        let yjs_updates = collect_server_merge_yjs_updates(self.app_schema, metadata, &operation)?;
         let local_row = transform_local_row_for_metadata(
             &operation.table,
             &operation.row_id,
@@ -1357,7 +1604,58 @@ impl<'a> DieselSqliteTx<'a> {
             }
         }
 
-        self.enqueue_outbox(vec![operation])
+        let client_commit_id = self.enqueue_outbox(vec![operation])?;
+        for (field, update) in yjs_updates {
+            let row = self.current_row_json(field.table(), field.row_id())?;
+            let state_base64 = crdt_field_state_base64(&field, row.as_ref());
+            let state_vector_base64 = yjs_state_vector_base64(state_base64.as_deref())?;
+            record_crdt_update_log(
+                self.conn,
+                &field,
+                &update,
+                Some(&client_commit_id),
+                CrdtUpdateOrigin::Local,
+                CrdtUpdateStatus::Pending,
+                state_base64.as_deref(),
+                &state_vector_base64,
+            )?;
+        }
+        Ok(client_commit_id)
+    }
+
+    fn apply_crdt_field_yjs_update(
+        &mut self,
+        field: &CrdtField,
+        update: YjsUpdateEnvelope,
+        max_pending_updates: i64,
+    ) -> Result<String> {
+        assert_crdt_document_capacity(self.conn, &field.document_key(), max_pending_updates)?;
+        let mut envelope = Map::new();
+        envelope.insert(field.field().to_string(), serde_json::to_value(&update)?);
+        let mut payload = Map::new();
+        payload.insert(YJS_PAYLOAD_KEY.to_string(), Value::Object(envelope));
+        let operation = SyncOperation {
+            table: field.table().to_string(),
+            row_id: field.row_id().to_string(),
+            op: "upsert".to_string(),
+            payload: Some(Value::Object(payload)),
+            base_version: None,
+        };
+        let client_commit_id = self.apply_local_operation(operation, None)?;
+        let row = self.current_row_json(field.table(), field.row_id())?;
+        let state_base64 = crdt_field_state_base64(field, row.as_ref());
+        let state_vector_base64 = yjs_state_vector_base64(state_base64.as_deref())?;
+        record_crdt_update_log(
+            self.conn,
+            field,
+            &update,
+            Some(&client_commit_id),
+            CrdtUpdateOrigin::Local,
+            CrdtUpdateStatus::Pending,
+            state_base64.as_deref(),
+            &state_vector_base64,
+        )?;
+        Ok(client_commit_id)
     }
 
     fn apply_syncular_mutations(
@@ -2321,6 +2619,262 @@ fn sql_value(value: &Value) -> String {
     }
 }
 
+fn crdt_sync_mode_str(mode: crate::crdt_field::CrdtFieldSyncMode) -> &'static str {
+    match mode {
+        crate::crdt_field::CrdtFieldSyncMode::ServerMerge => "server-merge",
+        crate::crdt_field::CrdtFieldSyncMode::EncryptedUpdateLog => "encrypted-update-log",
+    }
+}
+
+fn crdt_sync_mode_from_str(value: &str) -> Result<crate::crdt_field::CrdtFieldSyncMode> {
+    match value {
+        "server-merge" => Ok(crate::crdt_field::CrdtFieldSyncMode::ServerMerge),
+        "encrypted-update-log" => Ok(crate::crdt_field::CrdtFieldSyncMode::EncryptedUpdateLog),
+        other => Err(SyncularError::message(
+            ErrorKind::Storage,
+            format!("unknown CRDT document sync mode: {other}"),
+        )),
+    }
+}
+
+fn crdt_update_origin_str(origin: CrdtUpdateOrigin) -> &'static str {
+    match origin {
+        CrdtUpdateOrigin::Local => "local",
+        CrdtUpdateOrigin::Remote => "remote",
+        CrdtUpdateOrigin::Compaction => "compaction",
+    }
+}
+
+fn crdt_update_origin_from_str(value: &str) -> Result<CrdtUpdateOrigin> {
+    match value {
+        "local" => Ok(CrdtUpdateOrigin::Local),
+        "remote" => Ok(CrdtUpdateOrigin::Remote),
+        "compaction" => Ok(CrdtUpdateOrigin::Compaction),
+        other => Err(SyncularError::message(
+            ErrorKind::Storage,
+            format!("unknown CRDT update origin: {other}"),
+        )),
+    }
+}
+
+fn crdt_update_status_str(status: CrdtUpdateStatus) -> &'static str {
+    match status {
+        CrdtUpdateStatus::Pending => "pending",
+        CrdtUpdateStatus::Flushed => "flushed",
+        CrdtUpdateStatus::Acked => "acked",
+        CrdtUpdateStatus::Pruned => "pruned",
+    }
+}
+
+fn crdt_update_status_from_str(value: &str) -> Result<CrdtUpdateStatus> {
+    match value {
+        "pending" => Ok(CrdtUpdateStatus::Pending),
+        "flushed" => Ok(CrdtUpdateStatus::Flushed),
+        "acked" => Ok(CrdtUpdateStatus::Acked),
+        "pruned" => Ok(CrdtUpdateStatus::Pruned),
+        other => Err(SyncularError::message(
+            ErrorKind::Storage,
+            format!("unknown CRDT update status: {other}"),
+        )),
+    }
+}
+
+fn crdt_field_state_base64(field: &CrdtField, row: Option<&Value>) -> Option<String> {
+    row.and_then(|row| {
+        row.get(field.state_column())
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn assert_crdt_document_capacity(
+    conn: &mut SqliteConnection,
+    document_key: &str,
+    max_pending_updates: i64,
+) -> Result<()> {
+    if max_pending_updates < 1 {
+        return Err(SyncularError::config(
+            "CRDT update queue capacity must be at least 1",
+        ));
+    }
+    let pending = sql_query(
+        r#"
+        select count(*) as count
+        from sync_crdt_update_log
+        where document_key = ?1 and status in ('pending', 'flushed')
+        "#,
+    )
+    .bind::<Text, _>(document_key)
+    .load::<CountRow>(conn)?
+    .into_iter()
+    .next()
+    .map(|row| row.count)
+    .unwrap_or(0);
+    if pending >= max_pending_updates {
+        return Err(SyncularError::message(ErrorKind::Storage, format!(
+            "CRDT update queue is full for document {document_key}; pending={pending}, capacity={max_pending_updates}"
+        )));
+    }
+    Ok(())
+}
+
+fn upsert_crdt_document_snapshot(
+    conn: &mut SqliteConnection,
+    field: &CrdtField,
+    state_base64: Option<&str>,
+    state_vector_base64: &str,
+    compacted_at: Option<i64>,
+) -> Result<()> {
+    let now = now_ms();
+    sql_query(
+        r#"
+        insert into sync_crdt_documents (
+          document_key, app_table, row_id, field_name, state_column, sync_mode,
+          state_base64, state_vector_base64, pending_updates, flushed_updates,
+          acked_updates, log_updates, created_at, updated_at, compacted_at
+        ) values (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+          0, 0, 0, 0, ?9, ?10, ?11
+        )
+        on conflict(document_key) do update set
+          state_base64 = excluded.state_base64,
+          state_vector_base64 = excluded.state_vector_base64,
+          state_column = excluded.state_column,
+          sync_mode = excluded.sync_mode,
+          updated_at = excluded.updated_at,
+          compacted_at = coalesce(excluded.compacted_at, sync_crdt_documents.compacted_at)
+        "#,
+    )
+    .bind::<Text, _>(field.document_key())
+    .bind::<Text, _>(field.table())
+    .bind::<Text, _>(field.row_id())
+    .bind::<Text, _>(field.field())
+    .bind::<Text, _>(field.state_column())
+    .bind::<Text, _>(crdt_sync_mode_str(field.sync_mode()))
+    .bind::<Nullable<Text>, _>(state_base64)
+    .bind::<Text, _>(state_vector_base64)
+    .bind::<BigInt, _>(now)
+    .bind::<BigInt, _>(now)
+    .bind::<Nullable<BigInt>, _>(compacted_at)
+    .execute(conn)?;
+    refresh_crdt_document_counts(conn, &field.document_key())
+}
+
+fn record_crdt_update_log(
+    conn: &mut SqliteConnection,
+    field: &CrdtField,
+    update: &YjsUpdateEnvelope,
+    client_commit_id: Option<&str>,
+    origin: CrdtUpdateOrigin,
+    status: CrdtUpdateStatus,
+    state_base64: Option<&str>,
+    state_vector_base64: &str,
+) -> Result<()> {
+    upsert_crdt_document_snapshot(conn, field, state_base64, state_vector_base64, None)?;
+    let now = now_ms();
+    let document_key = field.document_key();
+    sql_query(
+        r#"
+        insert into sync_crdt_update_log (
+          document_key, app_table, row_id, field_name, update_id, client_commit_id,
+          origin, status, update_base64, state_vector_base64, created_at, flushed_at, acked_at
+        ) values (
+          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+          case when ?8 in ('flushed', 'acked') then ?11 else null end,
+          case when ?8 = 'acked' then ?11 else null end
+        )
+        on conflict(update_id) do update set
+          state_vector_base64 = excluded.state_vector_base64,
+          status = case
+            when sync_crdt_update_log.status = 'acked' then sync_crdt_update_log.status
+            else excluded.status
+          end,
+          flushed_at = coalesce(sync_crdt_update_log.flushed_at, excluded.flushed_at),
+          acked_at = coalesce(sync_crdt_update_log.acked_at, excluded.acked_at)
+        "#,
+    )
+    .bind::<Text, _>(&document_key)
+    .bind::<Text, _>(field.table())
+    .bind::<Text, _>(field.row_id())
+    .bind::<Text, _>(field.field())
+    .bind::<Text, _>(&update.update_id)
+    .bind::<Nullable<Text>, _>(client_commit_id)
+    .bind::<Text, _>(crdt_update_origin_str(origin))
+    .bind::<Text, _>(crdt_update_status_str(status))
+    .bind::<Text, _>(&update.update_base64)
+    .bind::<Text, _>(state_vector_base64)
+    .bind::<BigInt, _>(now)
+    .execute(conn)?;
+    refresh_crdt_document_counts(conn, &document_key)
+}
+
+fn select_crdt_document_snapshot(
+    conn: &mut SqliteConnection,
+    document_key: &str,
+) -> Result<CrdtDocumentSnapshot> {
+    sql_query(
+        r#"
+        select document_key, app_table, row_id, field_name, state_column, sync_mode,
+               state_base64, state_vector_base64, pending_updates, flushed_updates,
+               acked_updates, log_updates, updated_at, compacted_at
+        from sync_crdt_documents
+        where document_key = ?1
+        limit 1
+        "#,
+    )
+    .bind::<Text, _>(document_key)
+    .load::<CrdtDocumentSnapshotRow>(conn)?
+    .into_iter()
+    .next()
+    .ok_or_else(|| {
+        SyncularError::message(
+            ErrorKind::Storage,
+            format!("CRDT document not found: {document_key}"),
+        )
+    })?
+    .try_into()
+}
+
+fn refresh_crdt_document_counts(conn: &mut SqliteConnection, document_key: &str) -> Result<()> {
+    sql_query(
+        r#"
+        update sync_crdt_documents
+        set pending_updates = (
+              select count(*) from sync_crdt_update_log
+              where document_key = ?1 and status = 'pending'
+            ),
+            flushed_updates = (
+              select count(*) from sync_crdt_update_log
+              where document_key = ?1 and status = 'flushed'
+            ),
+            acked_updates = (
+              select count(*) from sync_crdt_update_log
+              where document_key = ?1 and status = 'acked'
+            ),
+            log_updates = (
+              select count(*) from sync_crdt_update_log
+              where document_key = ?1
+            ),
+            updated_at = ?2
+        where document_key = ?1
+        "#,
+    )
+    .bind::<Text, _>(document_key)
+    .bind::<BigInt, _>(now_ms())
+    .execute(conn)?;
+    Ok(())
+}
+
+fn refresh_all_crdt_document_counts(conn: &mut SqliteConnection) -> Result<()> {
+    let keys = sql_query("select document_key as value from sync_crdt_documents")
+        .load::<StringValueRow>(conn)?;
+    for key in keys {
+        refresh_crdt_document_counts(conn, &key.value)?;
+    }
+    Ok(())
+}
+
 impl SyncStoreTx for DieselSqliteTx<'_> {
     fn pending_outbox(&mut self, limit: i64) -> Result<Vec<OutboxCommit>> {
         use schema::sync_outbox_commits::dsl as o;
@@ -2363,15 +2917,31 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
 
     fn mark_outbox_sending(&mut self, row_id: &str) -> Result<()> {
         use schema::sync_outbox_commits::dsl as o;
+        let now = now_ms();
         diesel::update(o::sync_outbox_commits.filter(o::id.eq(row_id)))
             .set((
                 o::status.eq("sending"),
-                o::updated_at.eq(now_ms()),
+                o::updated_at.eq(now),
                 o::attempt_count.eq(o::attempt_count + 1),
                 o::error.eq::<Option<String>>(None),
                 o::next_attempt_at.eq(0),
             ))
             .execute(self.conn)?;
+        sql_query(
+            r#"
+            update sync_crdt_update_log
+            set status = 'flushed',
+                flushed_at = coalesce(flushed_at, ?1)
+            where status = 'pending'
+              and client_commit_id = (
+                select client_commit_id from sync_outbox_commits where id = ?2
+              )
+            "#,
+        )
+        .bind::<BigInt, _>(now)
+        .bind::<Text, _>(row_id)
+        .execute(self.conn)?;
+        refresh_all_crdt_document_counts(self.conn)?;
         Ok(())
     }
 
@@ -2424,16 +2994,33 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
 
     fn mark_outbox_acked(&mut self, row_id: &str, response: &PushCommitResponse) -> Result<()> {
         use schema::sync_outbox_commits::dsl as o;
+        let now = now_ms();
         diesel::update(o::sync_outbox_commits.filter(o::id.eq(row_id)))
             .set((
                 o::status.eq("acked"),
-                o::updated_at.eq(now_ms()),
+                o::updated_at.eq(now),
                 o::acked_commit_seq.eq(response.commit_seq),
                 o::last_response_json.eq(Some(serde_json::to_string(response)?)),
                 o::error.eq::<Option<String>>(None),
                 o::next_attempt_at.eq(0),
             ))
             .execute(self.conn)?;
+        sql_query(
+            r#"
+            update sync_crdt_update_log
+            set status = 'acked',
+                flushed_at = coalesce(flushed_at, ?1),
+                acked_at = coalesce(acked_at, ?1)
+            where status in ('pending', 'flushed')
+              and client_commit_id = (
+                select client_commit_id from sync_outbox_commits where id = ?2
+              )
+            "#,
+        )
+        .bind::<BigInt, _>(now)
+        .bind::<Text, _>(row_id)
+        .execute(self.conn)?;
+        refresh_all_crdt_document_counts(self.conn)?;
         Ok(())
     }
 
@@ -2464,14 +3051,30 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
         failed: bool,
     ) -> Result<()> {
         use schema::sync_outbox_commits::dsl as o;
+        let now = now_ms();
         diesel::update(o::sync_outbox_commits.filter(o::id.eq(row_id)))
             .set((
                 o::status.eq(if failed { "failed" } else { "pending" }),
-                o::updated_at.eq(now_ms()),
+                o::updated_at.eq(now),
                 o::error.eq(Some(error.to_string())),
                 o::next_attempt_at.eq(if failed { 0 } else { next_attempt_at }),
             ))
             .execute(self.conn)?;
+        if !failed {
+            sql_query(
+                r#"
+                update sync_crdt_update_log
+                set status = 'pending'
+                where status = 'flushed'
+                  and client_commit_id = (
+                    select client_commit_id from sync_outbox_commits where id = ?1
+                  )
+                "#,
+            )
+            .bind::<Text, _>(row_id)
+            .execute(self.conn)?;
+            refresh_all_crdt_document_counts(self.conn)?;
+        }
         Ok(())
     }
 

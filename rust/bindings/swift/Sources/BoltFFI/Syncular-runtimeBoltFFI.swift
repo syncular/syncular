@@ -241,6 +241,18 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func startRealtimeWorker() throws -> Bool {
+        let buf = boltffi_syncular_bolt_client_start_realtime_worker(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func stopRealtimeWorker() throws -> Bool {
+        let buf = boltffi_syncular_bolt_client_stop_realtime_worker(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
     public func startEventStream(capacity: UInt64) throws -> Bool {
         let buf = boltffi_syncular_bolt_client_start_event_stream(handle, capacity)
         defer { boltffi_free_buf(buf) }
@@ -374,6 +386,24 @@ public final class SyncularBoltClient {
         var requestJson = requestJson
         return try requestJson.withUTF8 { requestJsonBuf in
             let buf = boltffi_syncular_bolt_client_materialize_crdt_field_json(handle, requestJsonBuf.baseAddress!, UInt(requestJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
+    public func crdtDocumentSnapshotJson(requestJson: String) throws -> String {
+        var requestJson = requestJson
+        return try requestJson.withUTF8 { requestJsonBuf in
+            let buf = boltffi_syncular_bolt_client_crdt_document_snapshot_json(handle, requestJsonBuf.baseAddress!, UInt(requestJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
+    public func crdtUpdateLogJson(requestJson: String) throws -> String {
+        var requestJson = requestJson
+        return try requestJson.withUTF8 { requestJsonBuf in
+            let buf = boltffi_syncular_bolt_client_crdt_update_log_json(handle, requestJsonBuf.baseAddress!, UInt(requestJsonBuf.count))
             defer { boltffi_free_buf(buf) }
             return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
         }

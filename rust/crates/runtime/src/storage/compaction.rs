@@ -16,6 +16,7 @@ pub struct StorageCompactionOptions {
     pub max_tombstone_server_version: Option<i64>,
     pub prune_encrypted_crdt_updates: Option<bool>,
     pub max_encrypted_crdt_checkpoints_per_stream: Option<i64>,
+    pub prune_crdt_update_log: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub struct StorageCompactionReport {
     pub blob_cache_bytes_pruned: i64,
     pub encrypted_crdt_updates_deleted: i64,
     pub encrypted_crdt_checkpoints_deleted: i64,
+    pub crdt_update_log_deleted: i64,
 }
 
 impl StorageCompactionOptions {
@@ -84,6 +86,11 @@ impl StorageCompactionOptions {
 
     pub fn should_prune_encrypted_crdt_updates(&self) -> bool {
         self.prune_encrypted_crdt_updates.unwrap_or(false)
+    }
+
+    pub fn should_prune_crdt_update_log(&self) -> bool {
+        self.prune_crdt_update_log
+            .unwrap_or(self.older_than_ms.is_some())
     }
 
     pub fn encrypted_crdt_checkpoint_keep_count(&self) -> Result<Option<i64>> {

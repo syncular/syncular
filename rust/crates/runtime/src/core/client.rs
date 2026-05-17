@@ -6,14 +6,17 @@ use crate::binary_snapshot::{
     DecodedBinarySnapshotRows, SnapshotChunkRows,
 };
 #[cfg(feature = "native")]
-use crate::crdt_field::{validate_crdt_field, CrdtField, CrdtFieldId, CrdtFieldSyncMode};
+use crate::crdt_field::{
+    validate_crdt_field, CrdtDocumentSnapshot, CrdtField, CrdtFieldId, CrdtFieldSyncMode,
+    CrdtUpdateLogEntry,
+};
 #[cfg(feature = "native")]
 use crate::crdt_yjs::{
     build_yjs_text_update, materialize_yjs_state, yjs_state_vector_base64, BuildYjsTextUpdateArgs,
 };
 use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 #[cfg(feature = "native")]
-use crate::diesel_sqlite::DieselSqliteStore;
+use crate::diesel_sqlite::{DieselSqliteStore, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
 use crate::encrypted_crdt::EncryptedCrdt;
 #[cfg(feature = "native")]
 use crate::encrypted_crdt::{
@@ -2200,18 +2203,11 @@ where
     ) -> Result<CrdtFieldWriteReceipt> {
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
-                let mut envelope = Map::new();
-                envelope.insert(field.field().to_string(), serde_json::to_value(update)?);
-                let mut payload = Map::new();
-                payload.insert(YJS_PAYLOAD_KEY.to_string(), Value::Object(envelope));
-                let operation = SyncOperation {
-                    table: field.table().to_string(),
-                    row_id: field.row_id().to_string(),
-                    op: "upsert".to_string(),
-                    payload: Some(Value::Object(payload)),
-                    base_version: None,
-                };
-                let client_commit_id = self.store.apply_local_operation(operation, None)?;
+                let client_commit_id = self.store.apply_crdt_field_yjs_update(
+                    field,
+                    update,
+                    DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY,
+                )?;
                 Ok(CrdtFieldWriteReceipt {
                     client_commit_id,
                     sync_mode: field.sync_mode(),
@@ -2228,6 +2224,28 @@ where
                     client_commit_id: receipt.client_commit_id,
                     sync_mode: field.sync_mode(),
                 })
+            }
+        }
+    }
+
+    pub fn apply_crdt_field_yjs_update_with_queue_capacity(
+        &mut self,
+        field: &CrdtField,
+        update: YjsUpdateEnvelope,
+        max_pending_updates: i64,
+    ) -> Result<CrdtFieldWriteReceipt> {
+        match field.sync_mode() {
+            CrdtFieldSyncMode::ServerMerge => {
+                let client_commit_id =
+                    self.store
+                        .apply_crdt_field_yjs_update(field, update, max_pending_updates)?;
+                Ok(CrdtFieldWriteReceipt {
+                    client_commit_id,
+                    sync_mode: field.sync_mode(),
+                })
+            }
+            CrdtFieldSyncMode::EncryptedUpdateLog => {
+                self.apply_crdt_field_yjs_update(field, update)
             }
         }
     }
@@ -2327,6 +2345,26 @@ where
         Ok(serde_json::to_string(&self.materialize_crdt_field(field)?)?)
     }
 
+    pub fn crdt_document_snapshot(&mut self, field: &CrdtField) -> Result<CrdtDocumentSnapshot> {
+        self.store.crdt_document_snapshot(field)
+    }
+
+    pub fn crdt_document_snapshot_json(&mut self, field: &CrdtField) -> Result<String> {
+        Ok(serde_json::to_string(&self.crdt_document_snapshot(field)?)?)
+    }
+
+    pub fn crdt_update_log(
+        &mut self,
+        field: &CrdtField,
+        limit: i64,
+    ) -> Result<Vec<CrdtUpdateLogEntry>> {
+        self.store.crdt_update_log(field, limit)
+    }
+
+    pub fn crdt_update_log_json(&mut self, field: &CrdtField, limit: i64) -> Result<String> {
+        Ok(serde_json::to_string(&self.crdt_update_log(field, limit)?)?)
+    }
+
     pub fn snapshot_crdt_field_state_vector_base64(&mut self, field: &CrdtField) -> Result<String> {
         let row = self.store.read_row_json(field.table(), field.row_id())?;
         let state_base64 = row.as_ref().and_then(|row| {
@@ -2343,10 +2381,13 @@ where
         min_uncheckpointed_updates: i64,
     ) -> Result<CrdtFieldCompactionReceipt> {
         match field.sync_mode() {
-            CrdtFieldSyncMode::ServerMerge => Ok(CrdtFieldCompactionReceipt {
-                checkpoint_created: false,
-                client_commit_id: None,
-            }),
+            CrdtFieldSyncMode::ServerMerge => {
+                self.store.compact_crdt_document(field)?;
+                Ok(CrdtFieldCompactionReceipt {
+                    checkpoint_created: false,
+                    client_commit_id: None,
+                })
+            }
             CrdtFieldSyncMode::EncryptedUpdateLog => {
                 let receipt = self.apply_encrypted_crdt_checkpoint(
                     field.metadata(),

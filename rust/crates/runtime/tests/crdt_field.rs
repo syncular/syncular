@@ -8,8 +8,12 @@ use syncular_runtime::app_schema::{
 use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::compaction::{StorageCompactionOptions, StorageCompactionReport};
-use syncular_runtime::crdt_field::{validate_crdt_field, CrdtFieldId, CrdtFieldSyncMode};
-use syncular_runtime::crdt_yjs::transform_local_row_for_metadata;
+use syncular_runtime::crdt_field::{
+    validate_crdt_field, CrdtFieldId, CrdtFieldSyncMode, CrdtUpdateStatus,
+};
+use syncular_runtime::crdt_yjs::{
+    build_yjs_text_update, transform_local_row_for_metadata, BuildYjsTextUpdateArgs,
+};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::encrypted_crdt::{
     is_encrypted_crdt_system_table, EncryptedCrdt, StaticEncryptedCrdtConfig,
@@ -82,6 +86,121 @@ fn rust_client_exposes_generic_crdt_field_text_flow() -> Result<()> {
     let compaction = client.compact_crdt_field(&field, 1)?;
     assert!(!compaction.checkpoint_created);
     assert!(compaction.client_commit_id.is_none());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn server_merge_crdt_field_persists_document_state_update_log_and_ack_status() -> Result<()> {
+    let path = temp_db_path("syncular-crdt-document-log");
+    let server = seeded_todo_app_server("crdt-document-log-task")?;
+    let app_schema = demo_todo_app_schema();
+    let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+    let mut client = SyncularClient::with_app_schema_parts(
+        test_config_with_client(&path, "crdt-document-log-client"),
+        store,
+        server,
+        app_schema,
+    );
+
+    client.sync_http()?;
+    let field =
+        client.open_crdt_field(CrdtFieldId::new("tasks", "crdt-document-log-task", "title"))?;
+    let receipt = client.apply_crdt_field_text(&field, "Document log title")?;
+
+    let snapshot = client.crdt_document_snapshot(&field)?;
+    assert_eq!(snapshot.table, "tasks");
+    assert_eq!(snapshot.field, "title");
+    assert_eq!(snapshot.sync_mode, CrdtFieldSyncMode::ServerMerge);
+    assert_eq!(snapshot.pending_updates, 1);
+    assert_eq!(snapshot.flushed_updates, 0);
+    assert_eq!(snapshot.acked_updates, 0);
+    assert_eq!(snapshot.log_updates, 1);
+    assert!(snapshot
+        .state_base64
+        .as_deref()
+        .is_some_and(|value| !value.is_empty()));
+    assert!(!snapshot.state_vector_base64.is_empty());
+
+    let log = client.crdt_update_log(&field, 10)?;
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        log[0].client_commit_id.as_deref(),
+        Some(receipt.client_commit_id.as_str())
+    );
+    assert_eq!(
+        log[0].origin,
+        syncular_runtime::crdt_field::CrdtUpdateOrigin::Local
+    );
+    assert_eq!(log[0].status, CrdtUpdateStatus::Pending);
+    assert!(!log[0].update_base64.is_empty());
+
+    client.sync_http()?;
+    let acked_snapshot = client.crdt_document_snapshot(&field)?;
+    assert_eq!(acked_snapshot.pending_updates, 0);
+    assert_eq!(acked_snapshot.flushed_updates, 0);
+    assert_eq!(acked_snapshot.acked_updates, 1);
+    assert_eq!(acked_snapshot.log_updates, 1);
+    let acked_log = client.crdt_update_log(&field, 10)?;
+    assert_eq!(acked_log[0].status, CrdtUpdateStatus::Acked);
+    assert!(acked_log[0].flushed_at.is_some());
+    assert!(acked_log[0].acked_at.is_some());
+
+    let compaction = client.compact_crdt_field(&field, 1)?;
+    assert!(!compaction.checkpoint_created);
+    let compacted = client.crdt_document_snapshot(&field)?;
+    assert!(compacted.compacted_at.is_some());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn server_merge_crdt_field_enforces_bounded_pending_update_queue() -> Result<()> {
+    let path = temp_db_path("syncular-crdt-document-backpressure");
+    let app_schema = demo_todo_app_schema();
+    let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+    let mut client =
+        SyncularClient::with_app_schema_parts(test_config(&path), store, NoopTransport, app_schema);
+    client.apply_local_operation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "crdt-document-backpressure-task",
+            "op": "upsert",
+            "payload": {
+                "title": "",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+
+    let field = client.open_crdt_field(CrdtFieldId::new(
+        "tasks",
+        "crdt-document-backpressure-task",
+        "title",
+    ))?;
+    client.apply_crdt_field_text(&field, "First queued title")?;
+    let materialized = client.materialize_crdt_field(&field)?;
+    let second = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: materialized.state_base64,
+        next_text: "Second queued title".to_string(),
+        container_key: Some(field.container_key().to_string()),
+        update_id: Some("backpressure-second".to_string()),
+    })?;
+    let err = client
+        .apply_crdt_field_yjs_update_with_queue_capacity(&field, second.update, 1)
+        .expect_err("second pending CRDT update should hit queue capacity");
+    assert!(err.to_string().contains("CRDT update queue is full"));
+
+    let snapshot = client.crdt_document_snapshot(&field)?;
+    assert_eq!(snapshot.pending_updates, 1);
+    assert_eq!(snapshot.log_updates, 1);
 
     let _ = std::fs::remove_file(path);
     Ok(())

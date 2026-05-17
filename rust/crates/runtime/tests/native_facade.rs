@@ -964,6 +964,43 @@ fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
     assert_eq!(tasks_json[0]["title"], "Queued Yjs");
     assert!(tasks_json[0]["title_yjs_state"].as_str().is_some());
 
+    let snapshot_json: Value = serde_json::from_str(
+        &client.crdt_document_snapshot_json(
+            &json!({
+                "table": "tasks",
+                "rowId": "queued-yjs-task",
+                "field": "title"
+            })
+            .to_string(),
+        )?,
+    )?;
+    assert_eq!(snapshot_json["logUpdates"], 2);
+    assert_eq!(snapshot_json["pendingUpdates"], 2);
+    assert!(snapshot_json["stateBase64"].as_str().is_some());
+
+    let update_log_json: Value = serde_json::from_str(
+        &client.crdt_update_log_json(
+            &json!({
+                "table": "tasks",
+                "rowId": "queued-yjs-task",
+                "field": "title",
+                "limit": 10
+            })
+            .to_string(),
+        )?,
+    )?;
+    assert_eq!(update_log_json.as_array().map(Vec::len), Some(2));
+    assert_eq!(update_log_json[0]["updateId"], "queued-yjs-1");
+    assert_eq!(update_log_json[1]["updateId"], "queued-yjs-2");
+    assert_eq!(
+        update_log_json[0]["clientCommitId"].as_str(),
+        first_commit_id.as_deref()
+    );
+    assert_eq!(
+        update_log_json[1]["clientCommitId"].as_str(),
+        second_commit_id.as_deref()
+    );
+
     client.close()?;
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -1251,12 +1288,14 @@ fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()>
 
     let compacted = client
         .next_event_timeout(Duration::from_secs(2))
-        .expect("server-merge CRDT queued compaction completion event");
-    assert_eq!(compacted.kind, NativeEventKind::WorkerCommandCompleted);
+        .expect("server-merge CRDT queued compaction event");
+    assert_eq!(compacted.kind, NativeEventKind::CrdtFieldCompacted);
     assert_eq!(
         compacted.command_id.as_deref(),
         Some(compact_command_id.as_str())
     );
+    assert_eq!(compacted.client_commit_id.as_deref(), None);
+    assert_eq!(compacted.tables, vec!["tasks"]);
     assert_eq!(
         compacted.payload_json.as_ref().unwrap()["checkpointCreated"],
         false
@@ -1274,6 +1313,15 @@ fn native_facade_enqueues_generic_crdt_field_text_and_compaction() -> Result<()>
     assert_eq!(
         compacted.payload_json.as_ref().unwrap()["minUncheckpointedUpdates"],
         1
+    );
+
+    let completed = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("server-merge CRDT queued compaction completion event");
+    assert_eq!(completed.kind, NativeEventKind::WorkerCommandCompleted);
+    assert_eq!(
+        completed.command_id.as_deref(),
+        Some(compact_command_id.as_str())
     );
 
     client.close()?;

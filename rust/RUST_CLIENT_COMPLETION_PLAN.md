@@ -379,9 +379,8 @@ Goal: keep future work visible without blocking the Rust client foundation.
   Decision captured in `rust/SERVER_EDGE_INVESTIGATION.md`: do not start a
   Cloudflare Worker WASM server rewrite without a concrete product bottleneck.
 - `[x]` Optional adapter packages for editor integrations.
-  Current deliverable is the tested app-layer Yjs document-field adapter example
-  in `rust/examples/crdt-adapters`; keep TipTap/ProseMirror, Excalidraw, and
-  markdown-specific behavior outside core.
+  Current deliverable is `@syncular/client-rust-crdt-adapters`; keep
+  TipTap/ProseMirror, Excalidraw, and markdown-specific behavior outside core.
 - `[x]` Optional storage/package variants for deployments that do not need
   blobs, E2EE, CRDT, or realtime.
   Decision captured in `rust/FEATURE_VARIANTS_DECISION.md`: the
@@ -622,9 +621,9 @@ Current notes:
 - Generated Swift/Kotlin app clients include schema-derived queued CRDT text
   and queued CRDT compaction helpers, and the BoltFFI Swift/Kotlin headers and
   wrappers include the matching low-level methods.
-- Added `rust/examples/crdt-adapters` with a generic Yjs document-field
-  adapter example. It shows how TipTap/ProseMirror or Excalidraw/Yjs app code
-  can connect editor update hooks to Syncular CRDT fields without adding editor
+- Added `@syncular/client-rust-crdt-adapters` with generic Yjs document-field
+  adapters. It shows how TipTap/ProseMirror or Excalidraw/Yjs app code can
+  connect editor update hooks to Syncular CRDT fields without adding editor
   schemas or UI bridge behavior to Syncular core.
 
 Done when:
@@ -1317,14 +1316,14 @@ Scope: future-facing work that should not block the Rust client foundation.
 
 Progress:
 
-- Hardened the example app-layer Yjs document-field adapter in
-  `rust/examples/crdt-adapters`. It now prefers queued host writes when
-  available, keeps failed local updates pending for retry instead of dropping
-  editor state, exposes pending queue backpressure, and documents when apps
-  should refresh materialized state versus applying raw remote Yjs updates.
-- Added executable coverage for the CRDT adapter example:
-  `bun test rust/examples/crdt-adapters/yjs-document-field-adapter.test.ts`.
-- Linked the adapter example from `rust/bindings/browser/README.md` so browser
+- Hardened the app-layer Yjs document-field adapter package. It now prefers
+  queued host writes when available, keeps failed local updates pending for
+  retry instead of dropping editor state, exposes pending queue backpressure,
+  and documents when apps should refresh materialized state versus applying raw
+  remote Yjs updates.
+- Added executable coverage for the CRDT adapter package:
+  `bun run rust:crdt-adapters:test`.
+- Linked the adapter package from `rust/bindings/browser/README.md` so browser
   consumers can find the CRDT field guidance without treating it as core API.
 - Added `rust/SERVER_EDGE_INVESTIGATION.md`. Current decision: do not start a
   Rust Cloudflare Worker server replacement now. A future Rust server should

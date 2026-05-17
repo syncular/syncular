@@ -23,6 +23,8 @@ import type {
   SyncularV2CrdtFieldTextRequest,
   SyncularV2CrdtFieldWriteReceipt,
   SyncularV2CrdtFieldYjsUpdateRequest,
+  SyncularV2CrdtDocumentSnapshot,
+  SyncularV2CrdtUpdateLogEntry,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
@@ -433,6 +435,18 @@ export class SyncularV2RustClient {
     );
   }
 
+  async crdtDocumentSnapshot(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtDocumentSnapshot> {
+    return parseJson(this.raw.crdtDocumentSnapshotJson(JSON.stringify(request)));
+  }
+
+  async crdtUpdateLog(
+    request: SyncularV2CrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularV2CrdtUpdateLogEntry[]> {
+    return parseJson(this.raw.crdtUpdateLogJson(JSON.stringify(request)));
+  }
+
   async snapshotCrdtFieldStateVector(
     request: SyncularV2CrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }> {
@@ -444,7 +458,11 @@ export class SyncularV2RustClient {
   async compactCrdtField(
     request: SyncularV2CrdtFieldCompactionRequest
   ): Promise<SyncularV2CrdtFieldCompactionReceipt> {
-    return parseJson(this.raw.compactCrdtFieldJson(JSON.stringify(request)));
+    const receipt = parseJson<SyncularV2CrdtFieldCompactionReceipt>(
+      this.raw.compactCrdtFieldJson(JSON.stringify(request))
+    );
+    this.#drainAndEmitRowsChanged();
+    return receipt;
   }
 
   encryptionHelper<T = unknown>(

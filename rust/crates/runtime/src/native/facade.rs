@@ -275,6 +275,17 @@ struct NativeCrdtFieldCompactionRequest {
     min_uncheckpointed_updates: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeCrdtFieldLogRequest {
+    table: String,
+    #[serde(alias = "row_id")]
+    row_id: String,
+    field: String,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeBlobStoreOptions {
@@ -794,6 +805,19 @@ impl NativeSyncularClient {
         crdt_field_materialization_json(self.writer.materialize_crdt_field(&field)?)
     }
 
+    pub fn crdt_document_snapshot_json(&mut self, request_json: &str) -> Result<String> {
+        let request: NativeCrdtFieldRequest = serde_json::from_str(request_json)?;
+        let field = self.writer.open_crdt_field(request.id())?;
+        self.writer.crdt_document_snapshot_json(&field)
+    }
+
+    pub fn crdt_update_log_json(&mut self, request_json: &str) -> Result<String> {
+        let request: NativeCrdtFieldLogRequest = serde_json::from_str(request_json)?;
+        let field = self.writer.open_crdt_field(request.id())?;
+        self.writer
+            .crdt_update_log_json(&field, request.limit.unwrap_or(100))
+    }
+
     pub fn snapshot_crdt_field_state_vector_json(&mut self, request_json: &str) -> Result<String> {
         let request: NativeCrdtFieldRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
@@ -808,7 +832,9 @@ impl NativeSyncularClient {
         let receipt = self
             .writer
             .compact_crdt_field(&field, request.min_uncheckpointed_updates.unwrap_or(1))?;
-        if receipt.checkpoint_created {
+        let should_emit_compaction_event =
+            receipt.checkpoint_created || field.sync_mode() == CrdtFieldSyncMode::ServerMerge;
+        if should_emit_compaction_event {
             let extra_payload_json = crdt_field_compaction_event_payload(
                 &mut self.writer,
                 &field,
@@ -824,6 +850,7 @@ impl NativeSyncularClient {
                     .collect(),
                 None,
                 None,
+                receipt.checkpoint_created,
                 extra_payload_json,
             ));
             self.events.push_rows_changed_events_with_details(
@@ -1182,6 +1209,12 @@ impl NativeClientOpenTask {
 }
 
 impl NativeCrdtFieldRequest {
+    fn id(&self) -> CrdtFieldId {
+        CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
+    }
+}
+
+impl NativeCrdtFieldLogRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
     }
@@ -1551,6 +1584,7 @@ impl NativeEventHub {
                 row_id,
                 field,
                 changed_tables,
+                checkpoint_created,
                 payload_json,
                 duration_ms,
             } => vec![crdt_field_compacted_event_from_parts(
@@ -1559,8 +1593,8 @@ impl NativeEventHub {
                     row_id,
                     field,
                     changed_tables,
-                    client_commit_id: Some(client_commit_id),
-                    checkpoint_created: Some(true),
+                    client_commit_id,
+                    checkpoint_created: Some(checkpoint_created),
                     extra_payload_json: payload_json,
                 },
                 Some(command_id),
@@ -1759,7 +1793,7 @@ fn crdt_field_write_tables(field: &CrdtField) -> Vec<&'static str> {
 
 fn crdt_field_compaction_tables(field: &CrdtField) -> Vec<&'static str> {
     match field.sync_mode() {
-        CrdtFieldSyncMode::ServerMerge => Vec::new(),
+        CrdtFieldSyncMode::ServerMerge => vec![field.table()],
         CrdtFieldSyncMode::EncryptedUpdateLog => vec![CRDT_CHECKPOINTS_TABLE],
     }
 }
@@ -1863,6 +1897,7 @@ fn crdt_field_compacted_event(
     changed_tables: Vec<String>,
     command_id: Option<String>,
     duration_ms: Option<u64>,
+    checkpoint_created: bool,
     extra_payload_json: Option<Value>,
 ) -> NativeEvent {
     crdt_field_compacted_event_from_parts(
@@ -1872,7 +1907,7 @@ fn crdt_field_compacted_event(
             field: field.field().to_string(),
             changed_tables,
             client_commit_id,
-            checkpoint_created: Some(true),
+            checkpoint_created: Some(checkpoint_created),
             extra_payload_json,
         },
         command_id,

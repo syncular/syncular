@@ -842,6 +842,24 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun startRealtimeWorker(): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_start_realtime_worker(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun stopRealtimeWorker(): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_stop_realtime_worker(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun startEventStream(capacity: ULong): Boolean {
         val buf = Native.boltffi_syncular_bolt_client_start_event_stream(handle, capacity.toLong())
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1006,6 +1024,24 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
     @Throws(FfiException::class)
     fun materializeCrdtFieldJson(requestJson: String): String {
         val buf = Native.boltffi_syncular_bolt_client_materialize_crdt_field_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun crdtDocumentSnapshotJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_crdt_document_snapshot_json(handle, requestJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun crdtUpdateLogJson(requestJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_crdt_update_log_json(handle, requestJson.toByteArray(Charsets.UTF_8))
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
@@ -1531,6 +1567,8 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_pause_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resume_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_sync_worker_running(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_start_realtime_worker(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_stop_realtime_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start_event_stream(handle: Long, capacity: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_next_event_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_close_event_stream(handle: Long): ByteArray?
@@ -1546,6 +1584,8 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_crdt_field_text_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_crdt_field_compaction_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_materialize_crdt_field_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_crdt_document_snapshot_json(handle: Long, request_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_crdt_update_log_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_snapshot_crdt_field_state_vector_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_compact_crdt_field_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_encrypted_crdt_update_json(handle: Long, request_json: ByteArray): ByteArray?

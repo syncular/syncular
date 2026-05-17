@@ -755,6 +755,18 @@
         "hono": "^4.12.15",
       },
     },
+    "rust/bindings/crdt-adapters": {
+      "name": "@syncular/client-rust-crdt-adapters",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "yjs": "^13.6.30",
+      },
+      "peerDependencies": {
+        "@syncular/client-rust": ">=0.0.0",
+        "yjs": "^13.6.30",
+      },
+    },
     "tests/dialects": {
       "name": "@syncular/tests-dialects",
       "version": "0.0.0",
@@ -2071,6 +2083,8 @@
     "@syncular/client-react": ["@syncular/client-react@workspace:packages/client-react"],
 
     "@syncular/client-rust": ["@syncular/client-rust@workspace:rust/bindings/browser"],
+
+    "@syncular/client-rust-crdt-adapters": ["@syncular/client-rust-crdt-adapters@workspace:rust/bindings/crdt-adapters"],
 
     "@syncular/config": ["@syncular/config@workspace:config"],
 

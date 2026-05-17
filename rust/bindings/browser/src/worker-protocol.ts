@@ -285,6 +285,18 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'crdtDocumentSnapshot';
+      request: SyncularV2CrdtFieldRequest;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'crdtUpdateLog';
+      request: SyncularV2CrdtFieldRequest & { limit?: number };
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'compactCrdtField';
       request: SyncularV2CrdtFieldCompactionRequest;
     }

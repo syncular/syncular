@@ -225,6 +225,18 @@ char *syncular_native_client_materialize_crdt_field_json(
     char **error_out
 );
 
+char *syncular_native_client_crdt_document_snapshot_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_crdt_update_log_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
 char *syncular_native_client_snapshot_crdt_field_state_vector_json(
     SyncularNativeHandle *handle,
     const char *request_json,

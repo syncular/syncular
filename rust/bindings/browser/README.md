@@ -292,12 +292,21 @@ methods. Keep editor-specific code above this package: TipTap schemas,
 ProseMirror transforms, Excalidraw save policy, selection, undo, and WebView
 messages belong in app code or optional app adapters.
 
-The app-layer example in `rust/examples/crdt-adapters` shows how to connect an
-editor bridge that emits Yjs binary updates to Syncular's durable CRDT field
-API. It deliberately imports no editor libraries. The example preserves pending
-updates across failed writes, exposes backpressure, prefers queued native host
-writes when available, and refreshes app view models from materialized Syncular
-state after live-query or realtime changes.
+Use `@syncular/client-rust-crdt-adapters` for app-layer editor glue above this
+package. It connects Yjs binary update streams to Syncular's durable CRDT field
+API, preserves pending updates across failed writes, exposes backpressure,
+prefers queued native host writes when available, and refreshes app view models
+from materialized Syncular state after changed-row events.
+
+For rich editors, keep Yjs as the canonical field state. ProseMirror JSON,
+title, preview, outline, search text, and similar values are projections that
+apps should rebuild after a CRDT changed-row event, remote apply, or compaction.
+The Rust-owned client persists a compact binary Yjs state and state vector per
+document field, plus an append-only binary Yjs update log with `pending`,
+`flushed`, and `acked` status. Use `crdtDocumentSnapshot` to inspect the
+current compacted state/vector and queue counts, `crdtUpdateLog` for adapter
+diagnostics, and `compactStorage({ olderThanMs, pruneCrdtUpdateLog: true })` to
+prune old acked log entries without touching the canonical compact state.
 
 ## Assets
 

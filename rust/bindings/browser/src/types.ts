@@ -309,6 +309,42 @@ export interface SyncularV2CrdtFieldMaterialization {
   stateVectorBase64: string;
 }
 
+export interface SyncularV2CrdtDocumentSnapshot
+  extends SyncularV2CrdtFieldRequest {
+  documentKey: string;
+  stateColumn: string;
+  syncMode: SyncularYjsSyncMode;
+  stateBase64?: string | null;
+  stateVectorBase64: string;
+  pendingUpdates: number;
+  flushedUpdates: number;
+  ackedUpdates: number;
+  logUpdates: number;
+  updatedAt: number;
+  compactedAt?: number | null;
+}
+
+export type SyncularV2CrdtUpdateOrigin = 'local' | 'remote' | 'compaction';
+export type SyncularV2CrdtUpdateStatus =
+  | 'pending'
+  | 'flushed'
+  | 'acked'
+  | 'pruned';
+
+export interface SyncularV2CrdtUpdateLogEntry {
+  id: number;
+  documentKey: string;
+  updateId: string;
+  clientCommitId?: string | null;
+  origin: SyncularV2CrdtUpdateOrigin;
+  status: SyncularV2CrdtUpdateStatus;
+  updateBase64: string;
+  stateVectorBase64: string;
+  createdAt: number;
+  flushedAt?: number | null;
+  ackedAt?: number | null;
+}
+
 export interface SyncularV2CrdtFieldCompactionReceipt {
   checkpointCreated: boolean;
   clientCommitId?: string | null;
@@ -573,6 +609,7 @@ export interface SyncularV2StorageCompactionOptions {
   maxTombstoneServerVersion?: number;
   pruneEncryptedCrdtUpdates?: boolean;
   maxEncryptedCrdtCheckpointsPerStream?: number;
+  pruneCrdtUpdateLog?: boolean;
 }
 
 export interface SyncularV2StorageCompactionReport {
@@ -584,6 +621,7 @@ export interface SyncularV2StorageCompactionReport {
   blobCacheBytesPruned: number;
   encryptedCrdtUpdatesDeleted: number;
   encryptedCrdtCheckpointsDeleted: number;
+  crdtUpdateLogDeleted: number;
 }
 
 export interface SyncularV2Blobs {
@@ -670,6 +708,12 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   materializeCrdtField(
     request: SyncularV2CrdtFieldRequest
   ): Promise<SyncularV2CrdtFieldMaterialization>;
+  crdtDocumentSnapshot(
+    request: SyncularV2CrdtFieldRequest
+  ): Promise<SyncularV2CrdtDocumentSnapshot>;
+  crdtUpdateLog(
+    request: SyncularV2CrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularV2CrdtUpdateLogEntry[]>;
   snapshotCrdtFieldStateVector(
     request: SyncularV2CrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }>;

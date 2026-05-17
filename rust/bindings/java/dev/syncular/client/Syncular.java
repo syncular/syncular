@@ -942,6 +942,8 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_pause_sync_worker(long handle);
     static native byte[] boltffi_syncular_bolt_client_resume_sync_worker(long handle);
     static native byte[] boltffi_syncular_bolt_client_sync_worker_running(long handle);
+    static native byte[] boltffi_syncular_bolt_client_start_realtime_worker(long handle);
+    static native byte[] boltffi_syncular_bolt_client_stop_realtime_worker(long handle);
     static native byte[] boltffi_syncular_bolt_client_start_event_stream(long handle, long capacity);
     static native byte[] boltffi_syncular_bolt_client_next_event_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_close_event_stream(long handle);
@@ -957,6 +959,8 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_enqueue_crdt_field_text_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_enqueue_crdt_field_compaction_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_materialize_crdt_field_json(long handle, byte[] requestJson);
+    static native byte[] boltffi_syncular_bolt_client_crdt_document_snapshot_json(long handle, byte[] requestJson);
+    static native byte[] boltffi_syncular_bolt_client_crdt_update_log_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_snapshot_crdt_field_state_vector_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_compact_crdt_field_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_apply_encrypted_crdt_update_json(long handle, byte[] requestJson);

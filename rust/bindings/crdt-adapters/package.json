@@ -1,0 +1,54 @@
+{
+  "name": "@syncular/client-rust-crdt-adapters",
+  "version": "0.0.0",
+  "description": "Rich-editor CRDT adapters for the Syncular Rust client",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "rust/bindings/crdt-adapters"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "crdt",
+    "yjs",
+    "prosemirror",
+    "tiptap"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "test": "bun test src/*.test.ts",
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && tsgo",
+    "release": "bunx syncular-publish"
+  },
+  "peerDependencies": {
+    "@syncular/client-rust": ">=0.0.0",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "@syncular/config": "workspace:*",
+    "yjs": "^13.6.30"
+  },
+  "files": [
+    "dist"
+  ]
+}

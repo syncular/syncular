@@ -181,11 +181,12 @@ pub enum SyncWorkerEvent {
     },
     CrdtFieldCompacted {
         command_id: String,
-        client_commit_id: String,
+        client_commit_id: Option<String>,
         table: String,
         row_id: String,
         field: String,
         changed_tables: Vec<String>,
+        checkpoint_created: bool,
         payload_json: Option<Value>,
         duration_ms: u64,
     },
@@ -296,6 +297,7 @@ impl Clone for SyncWorkerEvent {
                 row_id,
                 field,
                 changed_tables,
+                checkpoint_created,
                 payload_json,
                 duration_ms,
             } => Self::CrdtFieldCompacted {
@@ -305,6 +307,7 @@ impl Clone for SyncWorkerEvent {
                 row_id: row_id.clone(),
                 field: field.clone(),
                 changed_tables: changed_tables.clone(),
+                checkpoint_created: *checkpoint_created,
                 payload_json: payload_json.clone(),
                 duration_ms: *duration_ms,
             },
@@ -2398,11 +2401,12 @@ where
             if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
                 let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldCompacted {
                     command_id,
-                    client_commit_id: receipt.client_commit_id,
+                    client_commit_id: Some(receipt.client_commit_id),
                     table: request.table,
                     row_id: request.row_id,
                     field: request.field,
                     changed_tables: receipt.changed_tables,
+                    checkpoint_created: true,
                     payload_json: receipt.crdt_event_payload_json,
                     duration_ms: duration_ms(started),
                 });
@@ -2508,11 +2512,12 @@ where
             if let Some(request) = crdt_event {
                 let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldCompacted {
                     command_id,
-                    client_commit_id: receipt.client_commit_id,
+                    client_commit_id: Some(receipt.client_commit_id),
                     table: request.table,
                     row_id: request.row_id,
                     field: request.field,
                     changed_tables: receipt.changed_tables,
+                    checkpoint_created: true,
                     payload_json: receipt.crdt_event_payload_json,
                     duration_ms: duration_ms(started),
                 });
@@ -2521,6 +2526,26 @@ where
         }
         Ok(None) => {
             let payload_json = compact_crdt_field_skipped_payload(client, request_json);
+            let request = WorkerCrdtFieldCompactionRequest::from_json(request_json).ok();
+            let compacted_server_merge_document = payload_json
+                .get("syncMode")
+                .and_then(Value::as_str)
+                .is_some_and(|sync_mode| sync_mode == "server-merge");
+            if compacted_server_merge_document {
+                if let Some(request) = request {
+                    let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldCompacted {
+                        command_id: command_id.clone(),
+                        client_commit_id: None,
+                        table: request.table.clone(),
+                        row_id: request.row_id.clone(),
+                        field: request.field.clone(),
+                        changed_tables: vec![request.table],
+                        checkpoint_created: false,
+                        payload_json: Some(payload_json.clone()),
+                        duration_ms: duration_ms(started),
+                    });
+                }
+            }
             let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandCompleted {
                 command_id,
                 operation: "compactCrdtField",
