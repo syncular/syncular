@@ -61,6 +61,10 @@ const rows = numberArg(
   '--rows',
   Number(process.env.SYNCULAR_BROWSER_PERF_ROWS ?? 100_000)
 );
+const scopeFanoutUsers = numberArg(
+  '--scope-fanout-users',
+  Number(process.env.SYNCULAR_BROWSER_PERF_SCOPE_FANOUT_USERS ?? 1)
+);
 const queryIterations = nonNegativeNumberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
 const rustIncludeSnapshotRows = booleanArg(
@@ -100,7 +104,8 @@ try {
       servePath,
       `--port=${assetPort}`,
       `--wasm-profile=${wasmProfile}`,
-      `--sync-seed-rows=${rows}`,
+      `--sync-seed-rows=${rows * scopeFanoutUsers}`,
+      `--sync-seed-users=${scopeFanoutUsers}`,
     ],
     {
       cwd: path.resolve(import.meta.dir, '..'),
@@ -160,6 +165,8 @@ try {
   const resourcesAfterBenchmark = await collectResourceSummary(page);
   const memoryAfter = await collectBrowserMemory(page);
   const metrics = [
+    metric('benchmark_seed_rows', rows * scopeFanoutUsers, 'rows'),
+    metric('benchmark_scope_fanout_users', scopeFanoutUsers, 'count'),
     ...result.metrics,
     ...resourceMetrics(resourcesAfterLoad, resourcesAfterBenchmark),
     ...servedAssetMetrics,
@@ -176,6 +183,8 @@ try {
     },
     options: {
       rows,
+      seedRows: rows * scopeFanoutUsers,
+      scopeFanoutUsers,
       queryIterations,
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
@@ -198,6 +207,11 @@ try {
     console.log(
       `rows=${rows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage}`
     );
+    if (scopeFanoutUsers > 1) {
+      console.log(
+        `scope-fanout-users=${scopeFanoutUsers} seed-rows=${rows * scopeFanoutUsers}`
+      );
+    }
     console.log(
       `rust-include-snapshot-rows=${rustIncludeSnapshotRows} rust-collect-changed-rows=${rustCollectChangedRows}`
     );
