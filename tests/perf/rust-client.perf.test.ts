@@ -1,16 +1,16 @@
 import { afterAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
 import {
+  type BinarySnapshotColumn,
+  encodeBinarySnapshotTable,
+} from '../../packages/core/src/snapshot-chunks';
+import {
   decodeBinarySyncPack,
   encodeBinarySyncPack,
 } from '../../packages/core/src/sync-packs';
 import {
-  encodeBinarySnapshotTable,
-  type BinarySnapshotColumn,
-} from '../../packages/core/src/snapshot-chunks';
-import {
-  benchmark,
   type BenchmarkResult,
+  benchmark,
   formatBenchmarkTable,
 } from './benchmark';
 import {
@@ -70,6 +70,7 @@ interface BrowserE2eScoreboardReport {
   };
   options?: {
     rows?: number;
+    incrementalRows?: number;
     queryIterations?: number;
   };
   metrics: BrowserE2eScoreboardMetric[];
@@ -239,9 +240,9 @@ describe('rust client performance', () => {
         )
       );
 
-      expect(browser.results.rustOwnedSqliteOpfsWorker.medianMs).toBeGreaterThan(
-        0
-      );
+      expect(
+        browser.results.rustOwnedSqliteOpfsWorker.medianMs
+      ).toBeGreaterThan(0);
       expect(browser.runtime?.wasmProfile).toBe('release');
     },
     180_000
@@ -250,7 +251,11 @@ describe('rust client performance', () => {
   it('tracks browser Rust WASM size as a perf budget', async () => {
     await ensureBrowserReleaseWasmBuilt();
     const size = await runJsonCommand<WasmSizeReport>(
-      ['bun', 'rust/bindings/browser/scripts/size-syncular-v2-wasm.ts', '--json'],
+      [
+        'bun',
+        'rust/bindings/browser/scripts/size-syncular-v2-wasm.ts',
+        '--json',
+      ],
       'rust browser wasm size'
     );
 
@@ -267,6 +272,10 @@ describe('rust client performance', () => {
     'tracks browser E2E TS-vs-Rust bootstrap and local-query scoreboard',
     async () => {
       const rows = readPositiveIntEnv('PERF_RUST_BROWSER_E2E_ROWS', 1_000);
+      const incrementalRows = readNonNegativeIntEnv(
+        'PERF_RUST_BROWSER_E2E_INCREMENTAL_ROWS',
+        0
+      );
       const queryIterations = readPositiveIntEnv(
         'PERF_RUST_BROWSER_E2E_QUERY_ITERATIONS',
         10
@@ -277,6 +286,7 @@ describe('rust client performance', () => {
           'tests/runtime/scripts/browser-e2e-scoreboard.ts',
           '--json',
           `--rows=${rows}`,
+          `--incremental-rows=${incrementalRows}`,
           `--query-iterations=${queryIterations}`,
           '--wasm-profile=release',
         ],
@@ -293,6 +303,12 @@ describe('rust client performance', () => {
       );
       expect(rowMetrics.get('ts_rows')).toBe(rows);
       expect(rowMetrics.get('rust_rows')).toBe(rows);
+      if (incrementalRows > 0) {
+        expect(rowMetrics.get('incremental_rows')).toBe(incrementalRows);
+        expect(rowMetrics.get('rust_incremental_rows')).toBe(
+          rows + incrementalRows
+        );
+      }
       expect(scoreboard.runtime?.wasmProfile).toBe('release');
     },
     300_000
@@ -358,8 +374,7 @@ function browserE2eMetric(
 ): BenchmarkResult | null {
   if (metric.unit === 'count' || metric.unit === 'rows') return null;
   const value = metric.unit === 'bytes' ? metric.value / 1024 : metric.value;
-  const unit: BenchmarkResult['unit'] =
-    metric.unit === 'bytes' ? 'KiB' : 'ms';
+  const unit: BenchmarkResult['unit'] = metric.unit === 'bytes' ? 'KiB' : 'ms';
   return {
     name:
       metric.unit === 'bytes'
@@ -382,10 +397,10 @@ function makeIncrementalSyncPackResponse(changeCount: number) {
     table: 'tasks',
     row_id: `task-${index}`,
     op: 'upsert' as const,
-      row_json: {
-        id: `task-${index}`,
-        title: `Task ${index}`,
-        completed: index % 2 === 0 ? 1 : 0,
+    row_json: {
+      id: `task-${index}`,
+      title: `Task ${index}`,
+      completed: index % 2 === 0 ? 1 : 0,
       user_id: 'browser-e2e-user',
       project_id: index % 5 === 0 ? 'p1' : null,
       server_version: index + 1,
@@ -479,5 +494,13 @@ function readPositiveIntEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function readNonNegativeIntEnv(name: string, fallback: number): number {
+  const raw = Bun.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
   return parsed;
 }

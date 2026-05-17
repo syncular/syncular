@@ -29,6 +29,7 @@ interface ScoreboardWindow {
       actorId: string;
       projectId: string;
       rows: number;
+      incrementalRows: number;
       queryIterations: number;
       rustStorage: 'memory' | 'indexedDb' | 'opfsSahPool';
       rustIncludeSnapshotRows: boolean;
@@ -65,6 +66,7 @@ const scopeFanoutUsers = numberArg(
   '--scope-fanout-users',
   Number(process.env.SYNCULAR_BROWSER_PERF_SCOPE_FANOUT_USERS ?? 1)
 );
+const incrementalRows = nonNegativeNumberArg('--incremental-rows', 0);
 const queryIterations = nonNegativeNumberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
 const rustIncludeSnapshotRows = booleanArg(
@@ -145,6 +147,7 @@ try {
       actorId: 'browser-e2e-user',
       projectId: 'p1',
       rows,
+      incrementalRows,
       queryIterations,
       rustStorage,
       rustIncludeSnapshotRows,
@@ -185,6 +188,7 @@ try {
       rows,
       seedRows: rows * scopeFanoutUsers,
       scopeFanoutUsers,
+      incrementalRows,
       queryIterations,
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
@@ -205,7 +209,7 @@ try {
     console.log('');
     console.log('Browser E2E TS vs Rust scoreboard');
     console.log(
-      `rows=${rows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage}`
+      `rows=${rows} incremental-rows=${incrementalRows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage}`
     );
     if (scopeFanoutUsers > 1) {
       console.log(
