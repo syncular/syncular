@@ -12,8 +12,8 @@ import type {
   SyncularV2BlobCacheStats,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
-  SyncularV2ClientConfig,
   SyncularV2ChangedRow,
+  SyncularV2ClientConfig,
   SyncularV2ConflictSummary,
   SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldCompactionRequest,
@@ -250,12 +250,21 @@ export class SyncularV2RustClient {
     params: readonly unknown[] = []
   ): SyncularV2SqlResult<Row> {
     assertSyncularV2ReadonlySql(sql);
+    if (typeof this.raw.executeSqlValue === 'function') {
+      return this.raw.executeSqlValue(sql, params) as SyncularV2SqlResult<Row>;
+    }
     return parseJson(this.raw.executeSqlJson(sql, stringifyParams(params)));
   }
 
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
+    if (typeof this.raw.executeUnsafeSqlValue === 'function') {
+      return this.raw.executeUnsafeSqlValue(
+        sql,
+        params
+      ) as SyncularV2SqlResult<Row>;
+    }
     return parseJson(
       this.raw.executeUnsafeSqlJson(sql, stringifyParams(params))
     );

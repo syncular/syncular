@@ -515,6 +515,16 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = executeSqlValue)]
+    pub fn execute_sql_value(
+        &mut self,
+        sql: &str,
+        params: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.execute_sql_value_inner_with_mode(sql, params, SqlExecutionMode::Readonly)
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = executeUnsafeSqlJson)]
     pub fn execute_unsafe_sql_json(
         &mut self,
@@ -522,6 +532,16 @@ impl SyncularRustOwnedSqlite {
         params_json: &str,
     ) -> std::result::Result<String, JsValue> {
         self.execute_unsafe_sql_json_inner(sql, params_json)
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = executeUnsafeSqlValue)]
+    pub fn execute_unsafe_sql_value(
+        &mut self,
+        sql: &str,
+        params: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.execute_sql_value_inner_with_mode(sql, params, SqlExecutionMode::Unchecked)
             .map_err(error_to_js)
     }
 
@@ -862,6 +882,18 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = executeSqlValue)]
+    pub fn execute_sql_value(
+        &mut self,
+        sql: &str,
+        params: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.inner
+            .store_mut()
+            .execute_sql_value_inner_with_mode(sql, params, SqlExecutionMode::Readonly)
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = executeUnsafeSqlJson)]
     pub fn execute_unsafe_sql_json(
         &mut self,
@@ -871,6 +903,18 @@ impl SyncularRustOwnedSqliteClient {
         self.inner
             .store_mut()
             .execute_unsafe_sql_json_inner(sql, params_json)
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = executeUnsafeSqlValue)]
+    pub fn execute_unsafe_sql_value(
+        &mut self,
+        sql: &str,
+        params: JsValue,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.inner
+            .store_mut()
+            .execute_sql_value_inner_with_mode(sql, params, SqlExecutionMode::Unchecked)
             .map_err(error_to_js)
     }
 
@@ -3191,7 +3235,30 @@ impl SyncularRustOwnedSqlite {
         mode: SqlExecutionMode,
     ) -> Result<String> {
         let params = parse_params(params_json)?;
-        let rows = self.execute_sql(sql, &params, mode)?;
+        let result = self.execute_sql_result(sql, &params, mode)?;
+        Ok(serde_json::to_string(&result)?)
+    }
+
+    fn execute_sql_value_inner_with_mode(
+        &mut self,
+        sql: &str,
+        params: JsValue,
+        mode: SqlExecutionMode,
+    ) -> Result<JsValue> {
+        let params: Vec<Value> = serde_wasm_bindgen::from_value(params).map_err(|err| {
+            SyncularError::protocol(err).context("decode SQL parameters from JS value")
+        })?;
+        let result = self.execute_sql_result(sql, &params, mode)?;
+        serialize_js_value(&result, "encode SQL result as JS value")
+    }
+
+    fn execute_sql_result(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+        mode: SqlExecutionMode,
+    ) -> Result<Value> {
+        let rows = self.execute_sql(sql, params, mode)?;
         let result = serde_json::json!({
             "rows": rows,
             "numAffectedRows": unsafe { ffi::sqlite3_changes(self.db) },
@@ -3205,7 +3272,7 @@ impl SyncularRustOwnedSqlite {
                 self.invalidate_live_queries(&changed_tables)?;
             }
         }
-        Ok(serde_json::to_string(&result)?)
+        Ok(result)
     }
 
     fn subscribe_query_json_inner(
@@ -4528,6 +4595,13 @@ fn parse_params(params_json: &str) -> Result<Vec<Value>> {
             "SQL parameters must be a JSON array",
         )),
     }
+}
+
+fn serialize_js_value(value: &(impl Serialize + ?Sized), context: &str) -> Result<JsValue> {
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
+    value
+        .serialize(&serializer)
+        .map_err(|err| SyncularError::protocol(err).context(context))
 }
 
 #[cfg(feature = "web-blobs")]
