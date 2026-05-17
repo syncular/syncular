@@ -966,6 +966,13 @@ export function createSyncRoutes<
     });
   }
   const handlerRegistry = createServerHandlerCollection(options.handlers);
+  const binarySyncPackChangeRowEncoders = Object.fromEntries(
+    handlerRegistry.handlers.flatMap((handler) =>
+      handler.snapshotBinaryEncoder
+        ? [[handler.table, handler.snapshotBinaryEncoder]]
+        : []
+    )
+  );
   const maxPullLimitCommits = config.maxPullLimitCommits ?? 100;
   const maxSubscriptionsPerPull = config.maxSubscriptionsPerPull ?? 200;
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 50000;
@@ -2360,7 +2367,9 @@ export function createSyncRoutes<
           combinedResponse,
           options.chunkStorage
         );
-        const encoded = encodeBinarySyncPack(combinedResponse);
+        const encoded = encodeBinarySyncPack(combinedResponse, {
+          changeRowEncoders: binarySyncPackChangeRowEncoders,
+        });
         const body = encoded.buffer.slice(
           encoded.byteOffset,
           encoded.byteOffset + encoded.byteLength

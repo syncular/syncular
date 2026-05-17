@@ -1,3 +1,4 @@
+use crate::binary_snapshot::decode_binary_snapshot_table;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
     CombinedResponse, OperationResult, PullResponse, PushBatchResponse, PushCommitResponse,
@@ -10,8 +11,15 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 const FLAG_NONE: u16 = 0;
+
+struct PendingBinaryChangeRowRef {
+    change_index: usize,
+    table: String,
+    group_index: usize,
+    row_index: usize,
+}
 
 pub fn is_binary_sync_pack_content_type(content_type: Option<&str>) -> bool {
     content_type
@@ -116,7 +124,112 @@ fn read_commit(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncCommit> {
         commit_seq: reader.read_i64("commit seq")?,
         created_at: reader.read_string32("commit createdAt")?,
         actor_id: reader.read_string32("commit actorId")?,
-        changes: reader.read_array("commit changes", read_change)?,
+        changes: if reader.version >= 4 {
+            read_changes_v4(reader)?
+        } else {
+            reader.read_array("commit changes", read_change)?
+        },
+    })
+}
+
+fn read_changes_v4(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
+    let change_count = reader.read_u32("commit changes length")? as usize;
+    let mut changes = Vec::with_capacity(change_count);
+    let mut row_refs = Vec::new();
+    for change_index in 0..change_count {
+        changes.push(read_change_metadata_v4(
+            reader,
+            change_index,
+            &mut row_refs,
+        )?);
+    }
+
+    let group_count = reader.read_u32("binary change row group count")? as usize;
+    let mut group_rows = Vec::with_capacity(group_count);
+    for _ in 0..group_count {
+        let table = reader.read_string16("binary change row group table")?;
+        let payload = reader.read_bytes32("binary change row group payload")?;
+        let decoded = decode_binary_snapshot_table(&payload)?;
+        if decoded.table != table {
+            return Err(SyncularError::protocol_message(format!(
+                "binary sync pack row group table mismatch: expected {table}, got {}",
+                decoded.table
+            )));
+        }
+        group_rows.push(decoded.rows);
+    }
+
+    for row_ref in row_refs {
+        let Some(rows) = group_rows.get(row_ref.group_index) else {
+            return Err(SyncularError::protocol_message(format!(
+                "binary sync pack change row ref has invalid group index: {}",
+                row_ref.group_index
+            )));
+        };
+        let Some(row) = rows.get(row_ref.row_index) else {
+            return Err(SyncularError::protocol_message(format!(
+                "binary sync pack change row ref has invalid row index: group={}, row={}",
+                row_ref.group_index, row_ref.row_index
+            )));
+        };
+        let Some(change) = changes.get_mut(row_ref.change_index) else {
+            return Err(SyncularError::protocol_message(format!(
+                "binary sync pack change row ref has invalid change index: {}",
+                row_ref.change_index
+            )));
+        };
+        if change.table != row_ref.table {
+            return Err(SyncularError::protocol_message(
+                "binary sync pack row ref table mismatch",
+            ));
+        }
+        change.row_json = Some(Value::Object(row.clone()));
+    }
+
+    Ok(changes)
+}
+
+fn read_change_metadata_v4(
+    reader: &mut BinarySyncPackReader<'_>,
+    change_index: usize,
+    row_refs: &mut Vec<PendingBinaryChangeRowRef>,
+) -> Result<SyncChange> {
+    let table = reader.read_string16("change table")?;
+    let row_id = reader.read_string32("change row id")?;
+    let op = match reader.read_u8("change op")? {
+        1 => "upsert".to_string(),
+        2 => "delete".to_string(),
+        value => {
+            return Err(SyncularError::protocol_message(format!(
+                "unsupported binary sync pack change op byte: {value}"
+            )));
+        }
+    };
+    let row_json = match reader.read_u8("change row payload kind")? {
+        0 => None,
+        1 => Some(reader.read_json("change row json")?),
+        2 => {
+            row_refs.push(PendingBinaryChangeRowRef {
+                change_index,
+                table: table.clone(),
+                group_index: reader.read_u32("change row group index")? as usize,
+                row_index: reader.read_u32("change row group row index")? as usize,
+            });
+            None
+        }
+        value => {
+            return Err(SyncularError::protocol_message(format!(
+                "unsupported binary sync pack change row payload kind: {value}"
+            )));
+        }
+    };
+    Ok(SyncChange {
+        table,
+        row_id,
+        op,
+        row_json,
+        row_version: reader.read_optional_i64("change row version")?,
+        scopes: reader.read_string_map("change scopes")?,
     })
 }
 
