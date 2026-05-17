@@ -1820,13 +1820,22 @@ client. Overflow should close or resync the session deliberately.
 
 ### Phase 10: Binary Commit Log And Subscription Indexes
 
-- Status: planned.
+- Status: started.
 - Add append-only binary commit records optimized for range scan and direct
   delta encoding.
 - Add subscription/scope membership indexes for pull and realtime fanout.
 - Keep debug/export JSON projection out of the hot path.
 - Measure server CPU for range scan, filtering, and fanout before and after
   indexes.
+- Done: added a server-scoped incremental pull perf lane. It seeds a SQLite
+  sync log with many table commits distributed across users, then repeatedly
+  pulls one user's scoped subscription until the cursor catches up. This is the
+  measurement gate for deciding whether durable scope/subscription indexes are
+  worth their write-time complexity.
+  - Initial small guard run:
+    `server_scoped_incremental_pull_fanout_1000_10` `6.9ms`,
+    `server_scoped_incremental_pull_requests_1000_10` `10`,
+    `server_scoped_incremental_pull_changes_1000_10` `100`.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 

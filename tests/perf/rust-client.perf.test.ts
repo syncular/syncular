@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
+import { createDatabase } from '../../packages/core/src';
 import {
   type BinarySnapshotColumn,
   decodeBinarySnapshotTable,
@@ -12,6 +13,16 @@ import {
   encodeBinarySyncPack,
 } from '../../packages/core/src/sync-packs';
 import { gunzipBytes, gzipBytes } from '../../packages/core/src/utils';
+import { createBunSqliteDialect } from '../../packages/dialect-bun-sqlite/src';
+import {
+  createServerHandler,
+  createServerHandlerCollection,
+  ensureSyncSchema,
+  pull,
+  type SyncCoreDb,
+  type SyncServerAuth,
+} from '../../packages/server/src';
+import { createSqliteServerDialect } from '../../packages/server-dialect-sqlite/src';
 import {
   type BenchmarkResult,
   benchmark,
@@ -213,6 +224,54 @@ describe('rust client performance', () => {
     expect(binary.byteLength).toBeGreaterThan(0);
     expect(binaryGenerated.byteLength).toBeLessThan(binary.byteLength);
     expect(syncPackBenchmarkSink).toBeGreaterThan(0);
+  });
+
+  it('tracks scoped incremental server pull under fanout', async () => {
+    const totalCommits = readPositiveIntEnv('PERF_SERVER_SCOPE_COMMITS', 5_000);
+    const fanoutUsers = readPositiveIntEnv(
+      'PERF_SERVER_SCOPE_FANOUT_USERS',
+      20
+    );
+    const limitCommits = readPositiveIntEnv(
+      'PERF_SERVER_SCOPE_LIMIT_COMMITS',
+      500
+    );
+    const rounds = readPositiveIntEnv('PERF_SERVER_SCOPE_ROUNDS', 3);
+    const warmup = readPositiveIntEnv('PERF_SERVER_SCOPE_WARMUP', 1);
+    const context = await createScopedPullBenchmarkContext({
+      totalCommits,
+      fanoutUsers,
+    });
+
+    try {
+      let summary = await runScopedIncrementalPullCatchup(context, {
+        limitCommits,
+      });
+      results.push(
+        await benchmark(
+          `server_scoped_incremental_pull_fanout_${totalCommits}_${fanoutUsers}`,
+          async () => {
+            summary = await runScopedIncrementalPullCatchup(context, {
+              limitCommits,
+            });
+          },
+          { iterations: rounds, warmup, trackMemory: false }
+        ),
+        countMetric(
+          `server_scoped_incremental_pull_requests_${totalCommits}_${fanoutUsers}`,
+          summary.requests
+        ),
+        countMetric(
+          `server_scoped_incremental_pull_changes_${totalCommits}_${fanoutUsers}`,
+          summary.changes
+        )
+      );
+
+      expect(summary.cursor).toBe(totalCommits);
+      expect(summary.changes).toBe(Math.ceil(totalCommits / fanoutUsers));
+    } finally {
+      await context.db.destroy();
+    }
   });
 
   it('tracks snapshot chunk encoding and gzip policy cost', async () => {
@@ -477,6 +536,204 @@ async function ensureBrowserReleaseWasmBuilt(): Promise<void> {
   );
 }
 
+interface ServerScopedPullTaskTable {
+  id: string;
+  title: string;
+  completed: number;
+  user_id: string;
+  project_id: string | null;
+  server_version: number;
+}
+
+interface ServerScopedPullDb extends SyncCoreDb {
+  tasks: ServerScopedPullTaskTable;
+}
+
+interface ServerScopedPullAuth extends SyncServerAuth {
+  actorId: string;
+}
+
+interface ServerScopedPullContext {
+  db: ReturnType<typeof createDatabase<ServerScopedPullDb>>;
+  dialect: ReturnType<typeof createSqliteServerDialect>;
+  handlers: ReturnType<
+    typeof createServerHandlerCollection<
+      ServerScopedPullDb,
+      ServerScopedPullAuth
+    >
+  >;
+  totalCommits: number;
+  fanoutUsers: number;
+}
+
+async function createScopedPullBenchmarkContext(args: {
+  totalCommits: number;
+  fanoutUsers: number;
+}): Promise<ServerScopedPullContext> {
+  const dialect = createSqliteServerDialect();
+  const db = createDatabase<ServerScopedPullDb>({
+    dialect: createBunSqliteDialect({ path: ':memory:' }),
+    family: 'sqlite',
+  });
+  await ensureSyncSchema(db, dialect);
+  await db.schema
+    .createTable('tasks')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('project_id', 'text')
+    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+    .execute();
+
+  await seedScopedPullCommits(db, dialect, args);
+
+  const handler = createServerHandler<
+    ServerScopedPullDb,
+    ServerScopedPullDb,
+    'tasks',
+    ServerScopedPullAuth
+  >({
+    table: 'tasks',
+    scopes: ['user:{user_id}'],
+    resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+  });
+
+  return {
+    db,
+    dialect,
+    handlers: createServerHandlerCollection<
+      ServerScopedPullDb,
+      ServerScopedPullAuth
+    >([handler]),
+    totalCommits: args.totalCommits,
+    fanoutUsers: args.fanoutUsers,
+  };
+}
+
+async function seedScopedPullCommits(
+  db: ReturnType<typeof createDatabase<ServerScopedPullDb>>,
+  dialect: ReturnType<typeof createSqliteServerDialect>,
+  args: { totalCommits: number; fanoutUsers: number }
+): Promise<void> {
+  const chunkSize = 500;
+  for (let start = 1; start <= args.totalCommits; start += chunkSize) {
+    const end = Math.min(args.totalCommits, start + chunkSize - 1);
+    const commits = [];
+    const changes = [];
+    const tableCommits = [];
+
+    for (let seq = start; seq <= end; seq++) {
+      const userIndex = (seq - 1) % args.fanoutUsers;
+      const userId = `scope-user-${userIndex}`;
+      const task = {
+        id: `task-${seq}`,
+        title: `Task ${seq}`,
+        completed: seq % 2,
+        user_id: userId,
+        project_id: 'p1',
+        server_version: seq,
+      };
+      commits.push({
+        commit_seq: seq,
+        partition_id: 'server-scope-perf',
+        actor_id: userId,
+        client_id: `seed-client-${userIndex}`,
+        client_commit_id: `seed-${seq}`,
+        created_at: '2026-05-17T00:00:00.000Z',
+        meta: null,
+        result_json: null,
+        change_count: 1,
+        affected_tables: dialect.arrayToDb(['tasks']),
+      });
+      changes.push({
+        partition_id: 'server-scope-perf',
+        commit_seq: seq,
+        table: 'tasks',
+        row_id: task.id,
+        op: 'upsert',
+        row_json: JSON.stringify(task),
+        row_version: seq,
+        scopes: dialect.scopesToDb({ user_id: userId }),
+      });
+      tableCommits.push({
+        partition_id: 'server-scope-perf',
+        table: 'tasks',
+        commit_seq: seq,
+      });
+    }
+
+    await db
+      .insertInto('sync_commits')
+      .values(commits as never)
+      .execute();
+    await db
+      .insertInto('sync_changes')
+      .values(changes as never)
+      .execute();
+    await db.insertInto('sync_table_commits').values(tableCommits).execute();
+  }
+}
+
+async function runScopedIncrementalPullCatchup(
+  context: ServerScopedPullContext,
+  args: { limitCommits: number }
+): Promise<{
+  cursor: number;
+  requests: number;
+  commits: number;
+  changes: number;
+}> {
+  let cursor = 0;
+  let requests = 0;
+  let commits = 0;
+  let changes = 0;
+
+  while (cursor < context.totalCommits) {
+    const result = await pull({
+      db: context.db,
+      dialect: context.dialect,
+      handlers: context.handlers,
+      auth: { actorId: 'scope-user-0', partitionId: 'server-scope-perf' },
+      request: {
+        clientId: 'server-scope-pull-client',
+        limitCommits: args.limitCommits,
+        limitSnapshotRows: 100,
+        maxSnapshotPages: 1,
+        dedupeRows: false,
+        subscriptions: [
+          {
+            id: 'tasks-scope-user-0',
+            table: 'tasks',
+            scopes: { user_id: 'scope-user-0' },
+            cursor,
+          },
+        ],
+      },
+    });
+    const subscription = result.response.subscriptions[0];
+    if (!subscription) {
+      throw new Error('Scoped pull benchmark returned no subscription');
+    }
+    const nextCursor = subscription.nextCursor;
+    if (nextCursor <= cursor) {
+      throw new Error(
+        `Scoped pull benchmark made no progress at cursor ${cursor}`
+      );
+    }
+    requests += 1;
+    commits += subscription.commits.length;
+    changes += subscription.commits.reduce(
+      (total, commit) => total + commit.changes.length,
+      0
+    );
+    cursor = nextCursor;
+  }
+
+  return { cursor, requests, commits, changes };
+}
+
 function bytesMetric(name: string, bytes: number): BenchmarkResult {
   const kib = bytes / 1024;
   return {
@@ -489,6 +746,21 @@ function bytesMetric(name: string, bytes: number): BenchmarkResult {
     p99: kib,
     min: kib,
     max: kib,
+    stdDev: 0,
+  };
+}
+
+function countMetric(name: string, value: number): BenchmarkResult {
+  return {
+    name,
+    unit: 'count',
+    iterations: 1,
+    mean: value,
+    median: value,
+    p95: value,
+    p99: value,
+    min: value,
+    max: value,
     stdDev: 0,
   };
 }
