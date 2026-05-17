@@ -1002,6 +1002,24 @@ client. Overflow should close or resync the session deliberately.
     `498 -> 505`).
   - WASM size increased by `13,036` bytes raw (`3.06MiB -> 3.07MiB`) and
     remains inside the enforced size budget.
+- Rejected inline snapshot chunk hash skipping. It reliably removed the hash
+  bucket (`rust_cached_snapshot_chunk_hash_ms` `28 -> 0`) and reduced
+  `rust_cached_snapshot_fetch_ms`, but end-to-end 500k cached bootstrap was
+  not consistently better (`526 -> 508`, `526 -> 629`, `526 -> 531`) and the
+  change weakened chunk integrity checks. Reverted.
+- Raised the Rust-owned browser SQLite snapshot write batch target from `256`
+  to `2048` rows, with an adaptive cap based on column count so wider generated
+  tables stay under SQLite bind-parameter limits.
+  - 500k bootstrap-only, release-WASM, battery saver:
+    `rust_bootstrap_ms` `1374.08 -> 1338.48`,
+    `rust_cached_bootstrap_ms` `526.11 -> 509.82`,
+    `rust_pull_apply_ms` `517 -> 490`,
+    `rust_cached_pull_apply_ms` `505 -> 490`.
+  - 100k full scoreboard guardrail:
+    bootstrap and local query metrics stayed flat/noisy
+    (`rust_pull_apply_ms` `111 -> 111`,
+    `rust_local_search_p50_ms` `2.70 -> 2.63`).
+  - WASM size changed by only `69` bytes raw and stayed inside the budget.
 
 ### Phase 4: Worker Default
 

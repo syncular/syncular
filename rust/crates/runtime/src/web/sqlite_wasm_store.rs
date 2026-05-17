@@ -66,7 +66,8 @@ use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 
 const GENERATED_SCHEMA_ID: &str = "syncular-app";
-const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 256;
+const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 2048;
+const SQLITE_BIND_PARAMETER_LIMIT: usize = 32_000;
 const QUERY_STATEMENT_CACHE_CAPACITY: usize = 64;
 const SNAPSHOT_STATEMENT_CACHE_CAPACITY: usize = 16;
 
@@ -2775,13 +2776,14 @@ impl SyncularRustOwnedSqlite {
                     .join(", ")
             )
         };
-        let mut batch = Vec::with_capacity(SNAPSHOT_UPSERT_BATCH_ROWS);
+        let batch_rows = snapshot_write_batch_rows(columns.len());
+        let mut batch = Vec::with_capacity(batch_rows);
         let mut full_batch_stmt: *mut ffi::sqlite3_stmt = ptr::null_mut();
         let write_result = (|| -> Result<()> {
             for row in rows {
                 let row = self.materialize_app_row_object(table, row, metadata)?;
                 batch.push(row);
-                if batch.len() == SNAPSHOT_UPSERT_BATCH_ROWS {
+                if batch.len() == batch_rows {
                     if full_batch_stmt.is_null() {
                         full_batch_stmt = prepare_multirow_upsert(
                             self.db,
@@ -2789,7 +2791,7 @@ impl SyncularRustOwnedSqlite {
                             metadata.primary_key_column,
                             &columns,
                             &on_conflict,
-                            SNAPSHOT_UPSERT_BATCH_ROWS,
+                            batch_rows,
                         )?;
                     }
                     execute_prepared_multirow_upsert(self.db, full_batch_stmt, &batch, &columns)?;
@@ -2895,14 +2897,15 @@ impl SyncularRustOwnedSqlite {
         };
 
         let write_result = (|| -> Result<()> {
-            for batch in rows.rows.chunks(SNAPSHOT_UPSERT_BATCH_ROWS) {
-                if batch.len() == SNAPSHOT_UPSERT_BATCH_ROWS {
+            let batch_rows = snapshot_write_batch_rows(columns.len());
+            for batch in rows.rows.chunks(batch_rows) {
+                if batch.len() == batch_rows {
                     let full_batch_stmt = self.cached_binary_snapshot_statement(
                         table,
                         metadata.primary_key_column,
                         &columns,
                         on_conflict.as_deref(),
-                        SNAPSHOT_UPSERT_BATCH_ROWS,
+                        batch_rows,
                         mode,
                     )?;
                     execute_prepared_binary_multirow_upsert(self.db, full_batch_stmt, batch)?;
@@ -2994,22 +2997,23 @@ impl SyncularRustOwnedSqlite {
         let write_result = (|| -> Result<()> {
             let mut cursor = payload.row_cursor();
             let mut remaining = payload.row_count();
-            while remaining >= SNAPSHOT_UPSERT_BATCH_ROWS {
+            let batch_rows = snapshot_write_batch_rows(columns.len());
+            while remaining >= batch_rows {
                 let full_batch_stmt = self.cached_binary_snapshot_statement(
                     table,
                     metadata.primary_key_column,
                     &columns,
                     on_conflict.as_deref(),
-                    SNAPSHOT_UPSERT_BATCH_ROWS,
+                    batch_rows,
                     mode,
                 )?;
                 execute_prepared_binary_payload_batch(
                     self.db,
                     full_batch_stmt,
                     &mut cursor,
-                    SNAPSHOT_UPSERT_BATCH_ROWS,
+                    batch_rows,
                 )?;
-                remaining -= SNAPSHOT_UPSERT_BATCH_ROWS;
+                remaining -= batch_rows;
             }
             if remaining > 0 {
                 execute_binary_snapshot_payload_write(
@@ -4595,6 +4599,13 @@ fn parse_params(params_json: &str) -> Result<Vec<Value>> {
             "SQL parameters must be a JSON array",
         )),
     }
+}
+
+fn snapshot_write_batch_rows(column_count: usize) -> usize {
+    if column_count == 0 {
+        return 1;
+    }
+    SNAPSHOT_UPSERT_BATCH_ROWS.min((SQLITE_BIND_PARAMETER_LIMIT / column_count).max(1))
 }
 
 fn serialize_js_value(value: &(impl Serialize + ?Sized), context: &str) -> Result<JsValue> {
