@@ -151,6 +151,11 @@ Measured scoped-server lane:
   but added WASM code and did not improve the target. The 100k guardrail moved
   Rust bootstrap `183.59ms -> 186.80ms`, local apply `94ms -> 97ms`, and hash
   `1ms -> 2ms`; the transport change was discarded.
+- Rejected experiment: lowering server snapshot chunk gzip level from `1` to
+  `0` reduced little CPU and made the wire shape much worse. At 100k, response
+  bytes moved `765,774 -> 7,079,548`, Rust bootstrap `183.59ms -> 194.50ms`,
+  and cached bootstrap `91.39ms -> 108.44ms`; the gzip-level change was
+  discarded.
 
 Validated perf-lane smoke:
 
