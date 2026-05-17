@@ -1848,6 +1848,31 @@ client. Overflow should close or resync the session deliberately.
   - Follow-up: cross-instance realtime fallback scope lookup now reads
     `sync_scope_commits` before falling back to legacy `sync_changes` scope
     extraction.
+- Done: added a dense incremental pull measurement lane that separates server
+  response build from response build plus binary sync-pack encoding. This is
+  the current measurement gate before adding a durable binary commit log.
+  - Baseline dense lane on battery-saver environment:
+    `server_dense_incremental_pull_build_5000_500` `36.5ms`,
+    `server_dense_incremental_pull_build_binary_encode_5000_500` `41.6ms`,
+    `server_dense_incremental_pull_build_generated_binary_encode_5000_500`
+    `47.9ms`.
+  - Finding: the existing generated row-group encoder is not a free win for
+    incremental commit packs in this shape. It was slower and larger than the
+    generic binary pack (`1579.7KiB` vs `1349.1KiB`) because the row-group
+    framing/schema overhead is better suited to large snapshot-style row
+    blocks than small commit pages.
+- Done: raised the default internal incremental-pull batch size from `100`
+  commits to the request-sized limit capped at `500`. This reduces SQL round
+  trips without changing protocol or storage shape.
+  - Dense lane after the change:
+    `server_dense_incremental_pull_build_5000_500` `36.5ms -> 33.9ms`,
+    `server_dense_incremental_pull_build_binary_encode_5000_500`
+    `41.6ms -> 37.8ms`,
+    `server_dense_incremental_pull_build_generated_binary_encode_5000_500`
+    `47.9ms -> 43.4ms`.
+  - Sparse scope-index lane stayed stable:
+    `server_scoped_incremental_pull_fanout_20000_100` `8.1ms`, requests `2`,
+    changes `200`.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 

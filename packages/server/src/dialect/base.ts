@@ -291,7 +291,7 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
     const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
     const batchSize = Math.max(
       1,
-      Math.min(limitCommits, args.batchSize ?? 100, 500)
+      Math.min(limitCommits, args.batchSize ?? limitCommits, 500)
     );
 
     let processedCommits = 0;
