@@ -7,6 +7,8 @@
 export interface SyncRealtimeCommitEvent {
   type: 'commit';
   commitSeq: number;
+  /** Stable sequencer/fanout shard key. */
+  shardKey?: string;
   /** Logical partition key (tenant / demo / workspace). */
   partitionId?: string;
   /**
@@ -24,6 +26,8 @@ export interface SyncRealtimeCommitEvent {
  */
 export interface SyncRealtimePresenceEvent {
   type: 'presence';
+  /** Stable sequencer/fanout shard key. */
+  shardKey?: string;
   /** The action that occurred */
   action: 'join' | 'leave' | 'update';
   /** The scope key this presence event relates to */
@@ -54,4 +58,33 @@ export interface SyncRealtimeBroadcaster {
   subscribe(handler: (event: SyncRealtimeEvent) => void): () => void;
   /** Close underlying resources (best-effort). */
   close(): Promise<void>;
+}
+
+export interface SyncRealtimeShardKeyInput {
+  tenantId?: string | null;
+  workspaceId?: string | null;
+  partitionId?: string | null;
+}
+
+export function createSyncRealtimeShardKey(
+  input: SyncRealtimeShardKeyInput = {}
+): string {
+  const partitionId = normalizeShardPart(input.partitionId, 'default');
+  const tenantId = normalizeShardPart(input.tenantId, partitionId);
+  const workspaceId = normalizeShardPart(input.workspaceId, partitionId);
+  return `sync-realtime-v1:${encodeShardPart(tenantId)}:${encodeShardPart(
+    workspaceId
+  )}:${encodeShardPart(partitionId)}`;
+}
+
+function normalizeShardPart(
+  value: string | null | undefined,
+  fallback: string
+): string {
+  const normalized = value?.trim();
+  return normalized && normalized.length > 0 ? normalized : fallback;
+}
+
+function encodeShardPart(value: string): string {
+  return encodeURIComponent(value);
 }

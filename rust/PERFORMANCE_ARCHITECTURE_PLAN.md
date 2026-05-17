@@ -1770,6 +1770,19 @@ client. Overflow should close or resync the session deliberately.
     `rust_browser_e2e_browser_served_syncular_worker_js_kib` `43.6`.
 - Pick the Cloudflare-compatible sequencer/fanout shard key
   `(tenant/workspace/partition)`.
+- Done: added `createSyncRealtimeShardKey()` with stable
+  `sync-realtime-v1:<tenant>:<workspace>:<partition>` semantics. Until auth
+  exposes tenant/workspace separately, partition is used as the default
+  tenant/workspace dimension. Hono commit broadcaster events now include this
+  shard key alongside `partitionId`.
+  - Correctness guard: unit coverage locks default, explicit, and escaped
+    shard-key forms; broadcaster bridge coverage still fans out cross-instance
+    commits.
+  - Perf guard after the change:
+    `rust_browser_e2e_rust_realtime_live_ms` `9.6`,
+    `rust_browser_e2e_rust_realtime_live_p95_ms` `12.8`,
+    `rust_browser_e2e_rust_realtime_http_request_count` `0.0`,
+    `rust_browser_e2e_rust_realtime_binary_events` `2.0`.
 - Define which state lives in the sequencer, D1-like SQL storage, and R2-like
   object storage.
 - Add deterministic tests for reconnect, resume, auth refresh, slow client

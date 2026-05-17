@@ -43,6 +43,7 @@ import type {
 import {
   type CompactOptions,
   createServerHandlerCollection,
+  createSyncRealtimeShardKey,
   InvalidSubscriptionScopeError,
   maybeCompactChanges,
   maybePruneSync,
@@ -1457,6 +1458,9 @@ export function createSyncRoutes<
         .publish({
           type: 'commit',
           commitSeq: latestCommitSeq,
+          shardKey: createSyncRealtimeShardKey({
+            partitionId: ctx.partitionId,
+          }),
           partitionId: ctx.partitionId,
           scopeKeys: combinedScopeKeys,
           sourceInstanceId: instanceId,
