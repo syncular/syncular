@@ -984,6 +984,24 @@ client. Overflow should close or resync the session deliberately.
   and execute work across generic runtime metadata. Only keep additional
   experiments that show a measured 500k `rust_cached_pull_apply_ms` win against
   the latest committed release-WASM baseline.
+- Added a JS-value query result path for Rust-owned browser SQLite
+  (`executeSqlValue`/`executeUnsafeSqlValue`) and switched the TypeScript
+  wrapper to prefer it with a JSON fallback. This avoids JSON stringifying
+  query parameters and JSON stringifying/parsing result rows across the
+  JS/WASM boundary for Kysely reads.
+  - 100k full scoreboard, release-WASM, battery saver, repeated twice:
+    `rust_local_search_p50_ms` `4.86 -> 2.72` and `4.86 -> 2.70`,
+    `rust_local_search_p95_ms` `21.92 -> 17.90` and `21.92 -> 18.03`,
+    `rust_aggregate_p95_ms` `38.66 -> 32.98` and `38.66 -> 33.14`.
+  - List-query p50 was neutral/noisy (`0.385 -> 0.410`, then
+    `0.385 -> 0.380`), with list p95 improved in both runs
+    (`0.88 -> 0.68`).
+  - 500k bootstrap-only guardrail, repeated twice, showed no first-bootstrap
+    apply regression (`519 -> 520`, then `519 -> 517`) and a small cached
+    bootstrap/apply noise band (`rust_cached_pull_apply_ms` `498 -> 506` and
+    `498 -> 505`).
+  - WASM size increased by `13,036` bytes raw (`3.06MiB -> 3.07MiB`) and
+    remains inside the enforced size budget.
 
 ### Phase 4: Worker Default
 

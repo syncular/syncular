@@ -87,6 +87,8 @@ export type RustOperationResult =
 export interface RawSyncularRustOwnedSqlite {
   executeSqlJson(sql: string, paramsJson: string): string;
   executeUnsafeSqlJson(sql: string, paramsJson: string): string;
+  executeSqlValue?(sql: string, params: readonly unknown[]): unknown;
+  executeUnsafeSqlValue?(sql: string, params: readonly unknown[]): unknown;
   generatedSchemaStateJson(): string;
   subscribeQueryJson(
     sql: string,
@@ -171,12 +173,21 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
     params: readonly unknown[] = []
   ): SyncularV2SqlResult<Row> {
     assertSyncularV2ReadonlySql(sql);
+    if (typeof this.raw.executeSqlValue === 'function') {
+      return this.raw.executeSqlValue(sql, params) as SyncularV2SqlResult<Row>;
+    }
     return parseJson(this.raw.executeSqlJson(sql, stringifyParams(params)));
   }
 
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
+    if (typeof this.raw.executeUnsafeSqlValue === 'function') {
+      return this.raw.executeUnsafeSqlValue(
+        sql,
+        params
+      ) as SyncularV2SqlResult<Row>;
+    }
     return parseJson(
       this.raw.executeUnsafeSqlJson(sql, stringifyParams(params))
     );

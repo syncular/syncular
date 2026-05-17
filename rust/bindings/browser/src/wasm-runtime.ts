@@ -66,6 +66,8 @@ export interface RawSyncularV2RustClient {
   compactStorageJson(optionsJson: string): string;
   executeSqlJson(sql: string, paramsJson: string): string;
   executeUnsafeSqlJson(sql: string, paramsJson: string): string;
+  executeSqlValue?(sql: string, params: readonly unknown[]): unknown;
+  executeUnsafeSqlValue?(sql: string, params: readonly unknown[]): unknown;
   buildYjsTextUpdateJson(argsJson: string): string;
   applyYjsTextUpdatesJson(argsJson: string): string;
   applyYjsEnvelopeToPayloadJson(argsJson: string): string;
