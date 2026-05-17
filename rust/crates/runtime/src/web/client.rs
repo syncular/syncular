@@ -5,14 +5,15 @@ use crate::client::{
     sync_changed_row_for_snapshot, sync_changed_rows_for_cleared_snapshot_chunk_limited,
     SubscriptionSpec, SyncChangedRow,
 };
-use crate::encrypted_crdt::EncryptedCrdt;
+use crate::crdt_yjs::YJS_PAYLOAD_KEY;
+use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
     CombinedRequest, PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
-    SubscriptionRequest, SyncCommit, SyncOperation, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1, SYNC_PACK_ENCODING_BINARY_V1,
-    SYNC_PACK_ENCODING_JSON_V1,
+    SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+    SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
@@ -469,10 +470,10 @@ where
                 }
             }
             let commits = std::mem::take(&mut sub.commits);
-            for commit in commits {
-                for change in commit.changes {
-                    add_changed_table(&mut result.changed_tables, &change.table);
-                    if collect_changed_rows {
+            if collect_changed_rows {
+                for commit in commits {
+                    for change in commit.changes {
+                        add_changed_table(&mut result.changed_tables, &change.table);
                         let previous_row = self
                             .store
                             .current_row_json(&change.table, &change.row_id)
@@ -487,10 +488,11 @@ where
                         ) {
                             result.changed_rows.push(changed_row);
                         }
-                    } else {
-                        self.store.apply_change(change).await?
                     }
                 }
+            } else {
+                apply_commits_without_changed_rows(&mut self.store, app_schema, result, commits)
+                    .await?;
             }
 
             if sub.status == "revoked" {
@@ -945,6 +947,94 @@ fn add_changed_table(tables: &mut Vec<String>, table: &str) {
     if !tables.iter().any(|existing| existing == table) {
         tables.push(table.to_string());
     }
+}
+
+async fn apply_commits_without_changed_rows<S>(
+    store: &mut S,
+    app_schema: AppSchema,
+    result: &mut WebSyncResult,
+    commits: Vec<SyncCommit>,
+) -> Result<()>
+where
+    S: AsyncWebStore,
+{
+    let mut batch_table: Option<String> = None;
+    let mut batch_rows: Vec<Value> = Vec::new();
+
+    for commit in commits {
+        for mut change in commit.changes {
+            add_changed_table(&mut result.changed_tables, &change.table);
+            if let Some((table, row)) = take_batchable_change_row(app_schema, &mut change) {
+                if batch_table.as_deref() != Some(table.as_str()) {
+                    flush_change_row_batch(store, &mut batch_table, &mut batch_rows).await?;
+                    batch_table = Some(table);
+                }
+                batch_rows.push(row);
+                continue;
+            }
+
+            flush_change_row_batch(store, &mut batch_table, &mut batch_rows).await?;
+            store.apply_change(change).await?;
+        }
+    }
+
+    flush_change_row_batch(store, &mut batch_table, &mut batch_rows).await
+}
+
+async fn flush_change_row_batch<S>(
+    store: &mut S,
+    table: &mut Option<String>,
+    rows: &mut Vec<Value>,
+) -> Result<()>
+where
+    S: AsyncWebStore,
+{
+    let Some(table_name) = table.take() else {
+        return Ok(());
+    };
+    let batch = std::mem::take(rows);
+    if batch.is_empty() {
+        return Ok(());
+    }
+    store.upsert_rows(&table_name, batch).await
+}
+
+fn take_batchable_change_row(
+    app_schema: AppSchema,
+    change: &mut SyncChange,
+) -> Option<(String, Value)> {
+    if change.op != "upsert" || is_encrypted_crdt_system_table(&change.table) {
+        return None;
+    }
+
+    let metadata = app_schema.table_metadata(&change.table)?;
+    let row_json = change.row_json.as_ref()?;
+    if row_json
+        .as_object()
+        .is_some_and(|row| row.contains_key(YJS_PAYLOAD_KEY))
+    {
+        return None;
+    }
+
+    let row_json = change.row_json.take()?;
+    let mut row = match row_json {
+        Value::Object(row) => row,
+        other => {
+            change.row_json = Some(other);
+            return None;
+        }
+    };
+    row.insert(
+        metadata.primary_key_column.to_string(),
+        Value::String(change.row_id.clone()),
+    );
+    if let Some(version) = change.row_version {
+        row.insert(
+            metadata.server_version_column.to_string(),
+            Value::Number(version.into()),
+        );
+    }
+    Some((change.table.clone(), Value::Object(row)))
 }
 
 fn push_snapshot_changed_row(

@@ -1437,6 +1437,22 @@ client. Overflow should close or resync the session deliberately.
     `rust_incremental_pull_ms` `13.99 -> 12.62`,
     `rust_incremental_pull_apply_ms` `5 -> 4`, response bytes unchanged
     (`42,953`).
+- Retained browser incremental change batching: when `collectChangedRows=false`,
+  ordinary app-table `upsert` changes without Yjs envelopes are grouped by
+  table and sent through the existing `upsert_rows` multi-row SQLite path.
+  Deletes, encrypted CRDT system rows, Yjs-envelope changes, and unknown tables
+  still use the existing per-change fallback.
+  - 100k bootstrap rows + 5k incremental rows:
+    `rust_incremental_pull_ms` `105.97 -> 54.02`,
+    `rust_incremental_pull_apply_ms` `70 -> 18`, request stayed `35`,
+    response bytes unchanged (`1,091,633`).
+  - 1k bootstrap rows + 200 incremental rows:
+    `rust_incremental_pull_ms` `14.95 -> 11.86`,
+    `rust_incremental_pull_apply_ms` `5 -> 2`, response bytes unchanged
+    (`42,953`).
+  - 100k bootstrap rows + 200 incremental rows:
+    local apply improved `4 -> 2`; total moved `12.62 -> 15.17` due request
+    noise (`8 -> 13`), while bootstrap/apply guardrails stayed neutral.
 - Next target: wire websocket delivery to carry the same pack format instead
   of using realtime only as a pull wakeup.
 
