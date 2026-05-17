@@ -223,6 +223,14 @@ describe('createSyncServer console configuration', () => {
     }
   }
 
+  async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (await predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    throw new Error('Timed out waiting for condition');
+  }
+
   async function waitForRequestEventRow(requestId: string): Promise<{
     payload_ref: string | null;
   }> {
@@ -834,6 +842,132 @@ describe('createSyncServer console configuration', () => {
     expect(String(errorMessage.data.error)).toContain(
       'WebSocket message rate exceeded'
     );
+  });
+
+  it('records realtime cursor acks without replacing effective scopes', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const push = await app.request(
+      createPushRequest({
+        clientId: 'writer-client',
+      })
+    );
+    expect(push.status).toBe(200);
+    await sql`
+      INSERT INTO sync_client_cursors (
+        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
+      )
+      VALUES (
+        'default', 'client-ack', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
+      )
+    `.execute(db);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-ack'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+    await events.onMessage(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'ack', cursor: 1 }),
+      }),
+      upstream.ws
+    );
+
+    await waitFor(async () => {
+      const result = await sql<{ cursor: number | string }>`
+        SELECT cursor
+        FROM sync_client_cursors
+        WHERE partition_id = 'default' AND client_id = 'client-ack'
+      `.execute(db);
+      return Number(result.rows[0]?.cursor) === 1;
+    });
+
+    const state = await sql<{
+      cursor: number | string;
+      effective_scopes: unknown;
+    }>`
+      SELECT cursor, effective_scopes
+      FROM sync_client_cursors
+      WHERE partition_id = 'default' AND client_id = 'client-ack'
+    `.execute(db);
+    expect(Number(state.rows[0]?.cursor)).toBe(1);
+    expect(parseSnapshotValue(state.rows[0]?.effective_scopes)).toEqual({
+      user_id: 'u1',
+    });
+  });
+
+  it('sends a catch-up wakeup when a realtime reconnect lags the server cursor', async () => {
+    const options = createOptions();
+    const server = createSyncServer(options);
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const push = await app.request(
+      createPushRequest({
+        clientId: 'writer-client',
+      })
+    );
+    expect(push.status).toBe(200);
+    await sql`
+      INSERT INTO sync_client_cursors (
+        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
+      )
+      VALUES (
+        'default', 'client-catchup', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
+      )
+    `.execute(db);
+
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const realtimeServer = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const realtimeApp = new Hono();
+    realtimeApp.route('/sync', realtimeServer.syncRoutes);
+
+    const response = await realtimeApp.request(
+      'http://localhost/sync/realtime?clientId=client-catchup'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    const syncMessage = upstream.messages.find(
+      (message) => message.event === 'sync'
+    );
+    expect(syncMessage).toMatchObject({
+      event: 'sync',
+      data: expect.objectContaining({ cursor: 1 }),
+    });
   });
 
   it('enforces inbound websocket message rate limits on console live route', async () => {
