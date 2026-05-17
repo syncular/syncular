@@ -169,6 +169,7 @@ interface E2eScoreboardOptions {
   actorId: string;
   projectId?: string;
   rows: number;
+  incrementalRows?: number;
   queryIterations?: number;
   rustStorage?: 'memory' | 'indexedDb' | 'opfsSahPool';
   rustIncludeSnapshotRows?: boolean;
@@ -304,7 +305,12 @@ class RustOwnedSqliteWorkerClient {
   }
 }
 
-function makeTaskOperation(prefix: string, index: number, actorId: string) {
+function makeTaskOperation(
+  prefix: string,
+  index: number,
+  actorId: string,
+  projectId = 'p1'
+) {
   return {
     table: 'tasks',
     row_id: `${prefix}-${index}`,
@@ -313,7 +319,7 @@ function makeTaskOperation(prefix: string, index: number, actorId: string) {
       title: `${prefix} Task ${index}`,
       completed: index % 2,
       user_id: actorId,
-      project_id: 'p1',
+      project_id: projectId,
     },
     base_version: null,
   };
@@ -937,6 +943,97 @@ async function syncRustUntilRows(
   );
 }
 
+const E2E_INCREMENTAL_OPERATIONS_PER_COMMIT = 200;
+const E2E_INCREMENTAL_INSERT_BATCH_SIZE = 1_000;
+
+async function pushIncrementalRowsFromTsClient(args: {
+  db: Kysely<RuntimeClientDb>;
+  transport: SyncTransport;
+  actorId: string;
+  clientId: string;
+  projectId: string;
+  rows: number;
+}): Promise<{ pushMs: number; pushedCommits: number }> {
+  if (args.rows <= 0) return { pushMs: 0, pushedCommits: 0 };
+
+  const operations = Array.from({ length: args.rows }, (_, index) =>
+    makeTaskOperation(
+      'browser-e2e-incremental-task',
+      index,
+      args.actorId,
+      args.projectId
+    )
+  );
+
+  await args.db.transaction().execute(async (trx) => {
+    for (
+      let start = 0;
+      start < operations.length;
+      start += E2E_INCREMENTAL_INSERT_BATCH_SIZE
+    ) {
+      const batch = operations.slice(
+        start,
+        start + E2E_INCREMENTAL_INSERT_BATCH_SIZE
+      );
+      await trx
+        .insertInto('tasks')
+        .values(
+          batch.map((operation) => ({
+            id: operation.row_id,
+            title: operation.payload.title,
+            completed: operation.payload.completed,
+            user_id: operation.payload.user_id,
+            project_id: operation.payload.project_id,
+            server_version: 0,
+          }))
+        )
+        .onConflict((oc) =>
+          oc.column('id').doUpdateSet({
+            title: (eb) => eb.ref('excluded.title'),
+            completed: (eb) => eb.ref('excluded.completed'),
+            user_id: (eb) => eb.ref('excluded.user_id'),
+            project_id: (eb) => eb.ref('excluded.project_id'),
+          })
+        )
+        .execute();
+    }
+
+    for (
+      let start = 0;
+      start < operations.length;
+      start += E2E_INCREMENTAL_OPERATIONS_PER_COMMIT
+    ) {
+      await enqueueOutboxCommit(trx as unknown as Kysely<SyncClientDb>, {
+        schemaVersion: syncularGeneratedSchemaVersion,
+        operations: operations.slice(
+          start,
+          start + E2E_INCREMENTAL_OPERATIONS_PER_COMMIT
+        ),
+      });
+    }
+  });
+
+  const pushStartedAt = performance.now();
+  let pushedCommits = 0;
+  const expectedCommits = Math.ceil(
+    args.rows / E2E_INCREMENTAL_OPERATIONS_PER_COMMIT
+  );
+
+  while (pushedCommits < expectedCommits) {
+    const pushResult = await syncPushOnce(args.db, args.transport, {
+      clientId: args.clientId,
+    });
+    assert(pushResult.pushed, 'expected incremental push to send a commit');
+    assert(
+      pushResult.response?.status === 'applied',
+      `incremental push failed: ${pushResult.response?.status}`
+    );
+    pushedCommits += 1;
+  }
+
+  return { pushMs: performance.now() - pushStartedAt, pushedCommits };
+}
+
 async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
   ok: boolean;
   rows?: number;
@@ -946,6 +1043,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
 }> {
   const actorId = options.actorId;
   const projectId = options.projectId ?? 'p1';
+  const incrementalRows = Math.max(0, options.incrementalRows ?? 0);
   const queryIterations = options.queryIterations ?? 25;
   const metrics: E2eScoreboardMetric[] = [];
   const tsClient = await createSyncClient(options.serverUrl, actorId);
@@ -1185,6 +1283,70 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       cachedRustRun.rowCount === options.rows,
       'Cached Rust row count mismatch'
     );
+
+    if (incrementalRows > 0) {
+      const incrementalPush = await pushIncrementalRowsFromTsClient({
+        db: tsClient.db,
+        transport: tsClient.transport,
+        actorId,
+        clientId: `ts-e2e-incremental-${Date.now()}`,
+        projectId,
+        rows: incrementalRows,
+      });
+      pushMetric('incremental_rows', incrementalRows, 'rows');
+      pushMetric('ts_incremental_push_ms', incrementalPush.pushMs);
+      pushMetric(
+        'ts_incremental_push_commits',
+        incrementalPush.pushedCommits,
+        'count'
+      );
+
+      await rustDiagnostics.resetTransportStats();
+      const incrementalRustRun = await syncRustUntilRows(
+        rustDatabase,
+        options.rows + incrementalRows
+      );
+      const incrementalRustStats = await rustDiagnostics.transportStats();
+      pushMetric('rust_incremental_pull_ms', incrementalRustRun.wallMs);
+      pushMetric(
+        'rust_incremental_pull_rounds',
+        incrementalRustRun.rounds,
+        'count'
+      );
+      pushMetric(
+        'rust_incremental_pull_request_ms',
+        incrementalRustRun.timings.pullRequestMs
+      );
+      pushMetric(
+        'rust_incremental_pull_apply_ms',
+        incrementalRustRun.timings.pullApplyMs
+      );
+      pushMetric(
+        'rust_incremental_changed_row_count',
+        incrementalRustRun.sync.changedRows.length,
+        'count'
+      );
+      pushMetric(
+        'rust_incremental_request_count',
+        incrementalRustStats.requestCount,
+        'count'
+      );
+      pushMetric(
+        'rust_incremental_request_bytes',
+        incrementalRustStats.requestBytes,
+        'bytes'
+      );
+      pushMetric(
+        'rust_incremental_response_bytes',
+        incrementalRustStats.responseBytes,
+        'bytes'
+      );
+      pushMetric(
+        'rust_incremental_snapshot_chunk_decode_ms',
+        incrementalRustStats.snapshotChunkDecodeMs
+      );
+      pushMetric('rust_incremental_rows', incrementalRustRun.rowCount, 'rows');
+    }
 
     if (queryIterations > 0) {
       await collectLocalQueryMetrics({

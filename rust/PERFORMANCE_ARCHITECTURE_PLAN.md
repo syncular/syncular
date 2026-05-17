@@ -119,6 +119,14 @@ benchmark actor. This is the required lane for scope/index work because the
 default single-user dataset cannot prove whether scoped server snapshot queries
 avoid scanning unrelated tenant data.
 
+The browser E2E scoreboard also supports `--incremental-rows=N`. In that mode
+it bootstraps TS and Rust clients, pushes `N` new task rows through the real TS
+outbox/server path, resets Rust transport stats, and measures Rust catching up
+from the server. The same lane is exposed through
+`PERF_RUST_BROWSER_E2E_INCREMENTAL_ROWS` in `tests/perf/rust-client.perf.test.ts`.
+This is the required guardrail for sync-pack/delta protocol work because
+synthetic codec benches alone do not prove the actual pull/apply path moved.
+
 Measured scoped-server lane:
 
 - No-index scoped baseline, 50k visible rows / 500k seeded rows /
@@ -1384,9 +1392,29 @@ client. Overflow should close or resync the session deliberately.
     `rust_bootstrap_ms` `185.04 -> 182.82`,
     `rust_pull_request_ms` stayed `87`,
     `rust_pull_apply_ms` `94 -> 93`, and response bytes stayed `765,774`.
-- Next target: measure real incremental pull/client-to-client catchup with v4
-  generated row groups, then wire websocket delivery to carry the same pack
-  format instead of using realtime only as a pull wakeup.
+- Added a real incremental browser E2E lane to the scoreboard and perf gate.
+  It pushes new rows through the TS client/outbox/server path, then measures
+  Rust pull/apply catch-up with fresh transport stats.
+  - Smoke, 100 bootstrap rows + 10 incremental rows:
+    `ts_incremental_push_ms` `15.43`, `rust_incremental_pull_ms` `7.06`,
+    `rust_incremental_pull_request_ms` `5`, `rust_incremental_pull_apply_ms`
+    `2`, response bytes `2,373`, final Rust rows `110`.
+  - Baseline, 1k bootstrap rows + 200 incremental rows:
+    `ts_incremental_push_ms` `24.75`, `rust_incremental_pull_ms` `17.62`,
+    `rust_incremental_pull_request_ms` `9`, `rust_incremental_pull_apply_ms`
+    `7`, response bytes `42,953`, final Rust rows `1,200`.
+  - Guardrail, 100k bootstrap rows + 200 incremental rows:
+    `rust_bootstrap_ms` `181.28`, `rust_pull_request_ms` `88`,
+    `rust_pull_apply_ms` `90`, cached bootstrap `97.16`,
+    `ts_incremental_push_ms` `21.64`, `rust_incremental_pull_ms` `14.79`,
+    `rust_incremental_pull_request_ms` `6`, `rust_incremental_pull_apply_ms`
+    `7`, response bytes `42,953`, final Rust rows `100,200`.
+  - Perf smoke with
+    `PERF_RUST_BROWSER_E2E_INCREMENTAL_ROWS=10` reported
+    `rust_browser_e2e_rust_incremental_pull_ms` `7.7`,
+    request `5.0`, apply `2.0`, response `2.3KiB`.
+- Next target: wire websocket delivery to carry the same pack format instead
+  of using realtime only as a pull wakeup.
 
 ### Phase 7: Delta WebSocket Runtime
 
