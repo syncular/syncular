@@ -27,6 +27,7 @@ function createConn(args: {
     }),
     transportPath: 'direct',
     syncPackEncoding: args.syncPackEncoding ?? null,
+    sendHello() {},
     sendSync(cursor, changes) {
       if (!open) return;
       args.onSync(cursor, changes);
