@@ -172,6 +172,31 @@ interface E2eScoreboardMetric {
   unit: 'ms' | 'rows' | 'bytes' | 'count';
 }
 
+interface RustE2eTransportStats {
+  requestCount: number;
+  requestBytes: number;
+  responseBytes: number;
+  snapshotChunkCount: number;
+  snapshotChunkJsonCount: number;
+  snapshotChunkBinaryCount: number;
+  snapshotChunkRowCount: number;
+  snapshotChunkFetchMs: number;
+  snapshotChunkDecompressMs: number;
+  snapshotChunkHashMs: number;
+  snapshotChunkDecodeMs: number;
+  serverBootstrapSnapshotQueryMs: number;
+  serverBootstrapRowFrameEncodeMs: number;
+  serverBootstrapChunkCacheLookupMs: number;
+  serverBootstrapChunkGzipMs: number;
+  serverBootstrapChunkHashMs: number;
+  serverBootstrapChunkPersistMs: number;
+}
+
+interface RustE2eDiagnostics {
+  resetTransportStats(): Promise<void>;
+  transportStats(): Promise<RustE2eTransportStats>;
+}
+
 interface TimedSamples {
   p50: number;
   p95: number;
@@ -821,6 +846,7 @@ async function runE2eScoreboard(
   const metrics: E2eScoreboardMetric[] = [];
   const tsClient = await createSyncClient(options.serverUrl, actorId);
   let rustDatabase: SyncularAppDatabase | undefined;
+  let cachedRustDatabase: SyncularAppDatabase | undefined;
 
   try {
     const pushMetric = (
@@ -882,28 +908,7 @@ async function runE2eScoreboard(
     await rustDatabase.client.setSubscriptions([
       taskSubscription({ actorId }),
     ]);
-    const rustDiagnostics = rustDatabase.client as unknown as {
-      resetTransportStats(): Promise<void>;
-      transportStats(): Promise<{
-        requestCount: number;
-        requestBytes: number;
-        responseBytes: number;
-        snapshotChunkCount: number;
-        snapshotChunkJsonCount: number;
-        snapshotChunkBinaryCount: number;
-        snapshotChunkRowCount: number;
-        snapshotChunkFetchMs: number;
-        snapshotChunkDecompressMs: number;
-        snapshotChunkHashMs: number;
-        snapshotChunkDecodeMs: number;
-        serverBootstrapSnapshotQueryMs: number;
-        serverBootstrapRowFrameEncodeMs: number;
-        serverBootstrapChunkCacheLookupMs: number;
-        serverBootstrapChunkGzipMs: number;
-        serverBootstrapChunkHashMs: number;
-        serverBootstrapChunkPersistMs: number;
-      }>;
-    };
+    const rustDiagnostics = rustDatabase.client as unknown as RustE2eDiagnostics;
     await rustDiagnostics.resetTransportStats();
     const rustBootstrapStartedAt = performance.now();
     const rustSync = await rustDatabase.client.syncPull();
@@ -978,6 +983,107 @@ async function runE2eScoreboard(
       .executeTakeFirstOrThrow();
     pushMetric('rust_rows', Number(rustRows.count), 'rows');
 
+    cachedRustDatabase = await createSyncularAppDatabase({
+      worker: () =>
+        new Worker('/syncular-v2-worker.js', {
+          type: 'module',
+          credentials: 'same-origin',
+        }),
+      getHeaders: () => ({ 'x-actor-id': actorId }),
+      subscriptions: false,
+      config: {
+        baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
+        actorId,
+        clientId: `rust-e2e-cached-${Date.now()}`,
+        projectId,
+        fileName: `rust-e2e-cached-${Date.now()}.sqlite`,
+        storage: options.rustStorage ?? 'memory',
+        clearOnInit: true,
+        pull: rustPullOptions,
+      },
+    });
+    await cachedRustDatabase.client.setSubscriptions([
+      taskSubscription({ actorId }),
+    ]);
+    const cachedRustDiagnostics =
+      cachedRustDatabase.client as unknown as RustE2eDiagnostics;
+    await cachedRustDiagnostics.resetTransportStats();
+    const cachedRustBootstrapStartedAt = performance.now();
+    const cachedRustSync = await cachedRustDatabase.client.syncPull();
+    pushMetric(
+      'rust_cached_bootstrap_ms',
+      performance.now() - cachedRustBootstrapStartedAt
+    );
+    pushMetric(
+      'rust_cached_pull_request_ms',
+      cachedRustSync.timings.pullRequestMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_fetch_ms',
+      cachedRustSync.timings.snapshotFetchMs
+    );
+    pushMetric(
+      'rust_cached_pull_apply_ms',
+      cachedRustSync.timings.pullApplyMs
+    );
+    const cachedRustStats = await cachedRustDiagnostics.transportStats();
+    pushMetric(
+      'rust_cached_snapshot_chunk_decompress_ms',
+      cachedRustStats.snapshotChunkDecompressMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_hash_ms',
+      cachedRustStats.snapshotChunkHashMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_decode_ms',
+      cachedRustStats.snapshotChunkDecodeMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_snapshot_query_ms',
+      cachedRustStats.serverBootstrapSnapshotQueryMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_row_frame_encode_ms',
+      cachedRustStats.serverBootstrapRowFrameEncodeMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_chunk_cache_lookup_ms',
+      cachedRustStats.serverBootstrapChunkCacheLookupMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_chunk_gzip_ms',
+      cachedRustStats.serverBootstrapChunkGzipMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_chunk_hash_ms',
+      cachedRustStats.serverBootstrapChunkHashMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_chunk_persist_ms',
+      cachedRustStats.serverBootstrapChunkPersistMs
+    );
+    pushMetric(
+      'rust_cached_request_count',
+      cachedRustStats.requestCount,
+      'count'
+    );
+    pushMetric(
+      'rust_cached_response_bytes',
+      cachedRustStats.responseBytes,
+      'bytes'
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_binary_count',
+      cachedRustStats.snapshotChunkBinaryCount,
+      'count'
+    );
+    const cachedRustRows = await cachedRustDatabase.db
+      .selectFrom('tasks')
+      .select(({ fn }) => fn.count<number>('id').as('count'))
+      .executeTakeFirstOrThrow();
+    pushMetric('rust_cached_rows', Number(cachedRustRows.count), 'rows');
+
     await collectLocalQueryMetrics({
       prefix: 'ts',
       db: tsClient.db as unknown as Kysely<any>,
@@ -997,6 +1103,10 @@ async function runE2eScoreboard(
 
     assert(Number(tsRows.count) === options.rows, 'TS row count mismatch');
     assert(Number(rustRows.count) === options.rows, 'Rust row count mismatch');
+    assert(
+      Number(cachedRustRows.count) === options.rows,
+      'Cached Rust row count mismatch'
+    );
     return { ok: true, rows: options.rows, queryIterations, metrics };
   } catch (err) {
     return {
@@ -1004,7 +1114,11 @@ async function runE2eScoreboard(
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
-    await Promise.all([tsClient.db.destroy(), rustDatabase?.close()]);
+    await Promise.all([
+      tsClient.db.destroy(),
+      rustDatabase?.close(),
+      cachedRustDatabase?.close(),
+    ]);
   }
 }
 

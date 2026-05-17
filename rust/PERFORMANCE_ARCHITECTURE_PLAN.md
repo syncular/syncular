@@ -106,6 +106,12 @@ behind `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`, so it can participate in the
 same baseline/regression reporting as the Rust perf lane. Its metrics are
 optional until stable 100k/500k baselines are established.
 
+The browser E2E scoreboard now also boots a second Rust client against the
+same server subscription after the first Rust bootstrap. These
+`rust_cached_*` metrics measure whether the server-side snapshot chunk cache is
+actually avoiding work for later clients, not just avoiding gzip/hash on the
+first generated chunk.
+
 Validated perf-lane smoke:
 
 ```bash
@@ -920,6 +926,15 @@ client. Overflow should close or resync the session deliberately.
   .on_conflict(...)` shape is not supported for SQLite in the generated
   adapter path. The safe generated fallback remains per-row upsert inside the
   existing transaction.
+- Added cached Rust bootstrap metrics to the browser E2E scoreboard. Baseline
+  on battery-saver 100k release-WASM run:
+  - first Rust bootstrap `283.36ms`, pull request `164ms`, apply `116ms`.
+  - cached Rust bootstrap `205.80ms`, pull request `99ms`, apply `105ms`.
+  - cached server row encode/gzip/hash dropped to `0ms`, but cached snapshot
+    query was still `93ms`. This proves the cache stores compressed wire
+    chunks, but cache hits still query rows to rediscover continuation
+    metadata. Next retained runtime optimization must target query skipping,
+    not another encode/gzip tweak.
 - Next target: the remaining SQLite apply cost is mostly structural. The
   generic prepared statement path still binds every cell through runtime table
   metadata. The likely next wins are generated table binders where the app
