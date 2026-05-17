@@ -35,6 +35,25 @@ interface ScoreboardWindow {
   };
 }
 
+interface ResourceSummary {
+  totalTransferBytes: number;
+  totalEncodedBytes: number;
+  totalDecodedBytes: number;
+  assetTransferBytes: number;
+  assetEncodedBytes: number;
+  assetDecodedBytes: number;
+  jsAssetEncodedBytes: number;
+  wasmAssetEncodedBytes: number;
+  syncTransferBytes: number;
+  syncEncodedBytes: number;
+  syncDecodedBytes: number;
+}
+
+interface BrowserMemorySnapshot {
+  jsHeapUsedBytes?: number;
+  jsHeapTotalBytes?: number;
+}
+
 const rows = numberArg(
   '--rows',
   Number(process.env.SYNCULAR_BROWSER_PERF_ROWS ?? 100_000)
@@ -83,6 +102,7 @@ try {
 
   const assetUrl = `http://127.0.0.1:${assetPort}`;
   await waitForHealthy(assetUrl, wasmProfile === 'release' ? 180_000 : 60_000);
+  const servedAssetMetrics = await collectServedAssetMetrics(assetUrl);
 
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
@@ -96,6 +116,8 @@ try {
     timeout: 30_000,
   });
   browserErrors = collectBrowserErrors(page);
+  const resourcesAfterLoad = await collectResourceSummary(page);
+  const memoryBefore = await collectBrowserMemory(page);
 
   const result = await page.evaluate(
     (options) =>
@@ -121,6 +143,14 @@ try {
     );
   }
   browserErrors.assertNone('browser e2e scoreboard');
+  const resourcesAfterBenchmark = await collectResourceSummary(page);
+  const memoryAfter = await collectBrowserMemory(page);
+  const metrics = [
+    ...result.metrics,
+    ...resourceMetrics(resourcesAfterLoad, resourcesAfterBenchmark),
+    ...servedAssetMetrics,
+    ...memoryMetrics(memoryBefore, memoryAfter),
+  ];
 
   const report = {
     name: 'browser-e2e-scoreboard',
@@ -131,8 +161,8 @@ try {
       userAgent: await page.evaluate(() => navigator.userAgent),
     },
     options: { rows, queryIterations },
-    metrics: result.metrics,
-    comparisons: buildComparisons(result.metrics),
+    metrics,
+    comparisons: buildComparisons(metrics),
   };
 
   if (outputPath) {
@@ -162,6 +192,249 @@ try {
   await closeBrowser(browser);
   await killProcess(assetProc);
   killAssetServerByPort(assetPort);
+}
+
+async function collectResourceSummary(page: Page): Promise<ResourceSummary> {
+  return page.evaluate(() => {
+    const empty = {
+      totalTransferBytes: 0,
+      totalEncodedBytes: 0,
+      totalDecodedBytes: 0,
+      assetTransferBytes: 0,
+      assetEncodedBytes: 0,
+      assetDecodedBytes: 0,
+      jsAssetEncodedBytes: 0,
+      wasmAssetEncodedBytes: 0,
+      syncTransferBytes: 0,
+      syncEncodedBytes: 0,
+      syncDecodedBytes: 0,
+    };
+    const entries = [
+      ...performance.getEntriesByType('navigation'),
+      ...performance.getEntriesByType('resource'),
+    ] as PerformanceResourceTiming[];
+    for (const entry of entries) {
+      const transferSize = entry.transferSize || 0;
+      const encodedBodySize = entry.encodedBodySize || 0;
+      const decodedBodySize = entry.decodedBodySize || 0;
+      empty.totalTransferBytes += transferSize;
+      empty.totalEncodedBytes += encodedBodySize;
+      empty.totalDecodedBytes += decodedBodySize;
+      const pathname = new URL(entry.name, location.href).pathname;
+      const isAsset =
+        pathname === '/' ||
+        pathname === '/index.html' ||
+        pathname.endsWith('.js') ||
+        pathname.endsWith('.wasm') ||
+        pathname.startsWith('/wasqlite/') ||
+        pathname.startsWith('/wasm/');
+      if (isAsset) {
+        empty.assetTransferBytes += transferSize;
+        empty.assetEncodedBytes += encodedBodySize;
+        empty.assetDecodedBytes += decodedBodySize;
+      }
+      if (pathname.endsWith('.js')) {
+        empty.jsAssetEncodedBytes += encodedBodySize;
+      }
+      if (pathname.endsWith('.wasm')) {
+        empty.wasmAssetEncodedBytes += encodedBodySize;
+      }
+      if (pathname.startsWith('/sync')) {
+        empty.syncTransferBytes += transferSize;
+        empty.syncEncodedBytes += encodedBodySize;
+        empty.syncDecodedBytes += decodedBodySize;
+      }
+    }
+    return empty;
+  });
+}
+
+async function collectBrowserMemory(
+  page: Page
+): Promise<BrowserMemorySnapshot> {
+  try {
+    const session = await page.context().newCDPSession(page);
+    await session.send('Performance.enable');
+    const response = (await session.send('Performance.getMetrics')) as {
+      metrics: Array<{ name: string; value: number }>;
+    };
+    await session.detach();
+    const metrics = new Map(
+      response.metrics.map((metric) => [metric.name, metric.value])
+    );
+    return {
+      jsHeapUsedBytes: metrics.get('JSHeapUsedSize'),
+      jsHeapTotalBytes: metrics.get('JSHeapTotalSize'),
+    };
+  } catch {
+    return page.evaluate(() => {
+      const memory = (
+        performance as Performance & {
+          memory?: {
+            usedJSHeapSize?: number;
+            totalJSHeapSize?: number;
+          };
+        }
+      ).memory;
+      return {
+        jsHeapUsedBytes: memory?.usedJSHeapSize,
+        jsHeapTotalBytes: memory?.totalJSHeapSize,
+      };
+    });
+  }
+}
+
+function resourceMetrics(
+  afterLoad: ResourceSummary,
+  afterBenchmark: ResourceSummary
+): ScoreboardMetric[] {
+  const syncTransferBytes =
+    afterBenchmark.syncTransferBytes - afterLoad.syncTransferBytes;
+  const syncEncodedBytes =
+    afterBenchmark.syncEncodedBytes - afterLoad.syncEncodedBytes;
+  const syncDecodedBytes =
+    afterBenchmark.syncDecodedBytes - afterLoad.syncDecodedBytes;
+  return [
+    metric(
+      'browser_page_loaded_transfer_bytes',
+      afterLoad.totalTransferBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_loaded_encoded_bytes',
+      afterLoad.totalEncodedBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_asset_transfer_bytes',
+      afterLoad.assetTransferBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_asset_encoded_bytes',
+      afterLoad.assetEncodedBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_js_asset_encoded_bytes',
+      afterLoad.jsAssetEncodedBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_wasm_asset_encoded_bytes',
+      afterLoad.wasmAssetEncodedBytes,
+      'bytes'
+    ),
+    metric('browser_page_sync_transfer_bytes', syncTransferBytes, 'bytes'),
+    metric('browser_page_sync_encoded_bytes', syncEncodedBytes, 'bytes'),
+    metric('browser_page_sync_decoded_bytes', syncDecodedBytes, 'bytes'),
+    metric(
+      'browser_page_total_transfer_bytes',
+      afterBenchmark.totalTransferBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_total_encoded_bytes',
+      afterBenchmark.totalEncodedBytes,
+      'bytes'
+    ),
+    metric(
+      'browser_page_total_decoded_bytes',
+      afterBenchmark.totalDecodedBytes,
+      'bytes'
+    ),
+  ];
+}
+
+async function collectServedAssetMetrics(
+  assetUrl: string
+): Promise<ScoreboardMetric[]> {
+  const assets = [
+    ['browser_served_entry_js_bytes', '/entry.js'],
+    ['browser_served_syncular_worker_js_bytes', '/syncular-v2-worker.js'],
+    ['browser_served_rust_wasm_glue_js_bytes', '/wasm/syncular_v2.js'],
+    ['browser_served_rust_wasm_bytes', '/wasm/syncular_v2_bg.wasm'],
+    ['browser_served_wasqlite_worker_js_bytes', '/wasqlite/worker.js'],
+    [
+      'browser_served_wasqlite_async_wasm_bytes',
+      '/wasqlite/wa-sqlite-async.wasm',
+    ],
+    ['browser_served_wasqlite_sync_wasm_bytes', '/wasqlite/wa-sqlite.wasm'],
+  ] as const;
+  const metrics: ScoreboardMetric[] = [];
+  let total = 0;
+  for (const [name, pathname] of assets) {
+    const response = await fetch(`${assetUrl}${pathname}`);
+    if (!response.ok) {
+      throw new Error(
+        `Failed to measure served asset ${pathname}: ${response.status}`
+      );
+    }
+    const bytes = (await response.arrayBuffer()).byteLength;
+    total += bytes;
+    metrics.push(metric(name, bytes, 'bytes'));
+  }
+  metrics.push(metric('browser_served_asset_total_bytes', total, 'bytes'));
+  return metrics;
+}
+
+function memoryMetrics(
+  before: BrowserMemorySnapshot,
+  after: BrowserMemorySnapshot
+): ScoreboardMetric[] {
+  const metrics: ScoreboardMetric[] = [];
+  if (isFiniteNumber(before.jsHeapUsedBytes)) {
+    metrics.push(
+      metric(
+        'browser_js_heap_used_before_bytes',
+        before.jsHeapUsedBytes,
+        'bytes'
+      )
+    );
+  }
+  if (isFiniteNumber(after.jsHeapUsedBytes)) {
+    metrics.push(
+      metric(
+        'browser_js_heap_used_after_bytes',
+        after.jsHeapUsedBytes,
+        'bytes'
+      )
+    );
+  }
+  if (
+    isFiniteNumber(before.jsHeapUsedBytes) &&
+    isFiniteNumber(after.jsHeapUsedBytes)
+  ) {
+    metrics.push(
+      metric(
+        'browser_js_heap_used_delta_bytes',
+        after.jsHeapUsedBytes - before.jsHeapUsedBytes,
+        'bytes'
+      )
+    );
+  }
+  if (isFiniteNumber(after.jsHeapTotalBytes)) {
+    metrics.push(
+      metric(
+        'browser_js_heap_total_after_bytes',
+        after.jsHeapTotalBytes,
+        'bytes'
+      )
+    );
+  }
+  return metrics;
+}
+
+function metric(
+  name: string,
+  value: number,
+  unit: ScoreboardMetric['unit']
+): ScoreboardMetric {
+  return { name, value, unit };
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function buildComparisons(metrics: ScoreboardMetric[]): Array<{
