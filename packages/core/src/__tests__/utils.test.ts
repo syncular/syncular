@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isRecord, randomId } from '../utils';
+import { createRealtimeChangeScopeIndex, isRecord, randomId } from '../utils';
 
 describe('isRecord', () => {
   it('returns true for plain objects', () => {
@@ -23,5 +23,22 @@ describe('randomId', () => {
     const first = randomId();
     const second = randomId();
     expect(first).not.toBe(second);
+  });
+});
+
+describe('createRealtimeChangeScopeIndex', () => {
+  it('selects matching changes once while preserving source order', () => {
+    const index = createRealtimeChangeScopeIndex([
+      { item: { id: 'a' }, scopeKeys: ['s1'] },
+      { item: { id: 'b' }, scopeKeys: ['s2', 's3'] },
+      { item: { id: 'c' }, scopeKeys: ['s1', 's2'] },
+      { item: { id: 'd' }, scopeKeys: ['s4'] },
+    ]);
+
+    expect(index.selectForScopeKeys(['s2', 's1'])).toEqual([
+      { id: 'a' },
+      { id: 'b' },
+      { id: 'c' },
+    ]);
   });
 });

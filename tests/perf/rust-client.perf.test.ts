@@ -1,6 +1,10 @@
 import { afterAll, describe, expect, it } from 'bun:test';
 import path from 'node:path';
-import { createDatabase } from '../../packages/core/src';
+import {
+  createDatabase,
+  createRealtimeChangeScopeIndex,
+  type RealtimeChangeScopeIndex,
+} from '../../packages/core/src';
 import {
   type BinarySnapshotColumn,
   decodeBinarySnapshotTable,
@@ -100,6 +104,7 @@ const itBrowserE2eScoreboard =
   Bun.env.PERF_RUST_BROWSER_E2E_SCOREBOARD === 'true' ? it : it.skip;
 let syncPackBenchmarkSink = 0;
 let snapshotChunkBenchmarkSink = 0;
+let realtimeFanoutBenchmarkSink = 0;
 
 describe('rust client performance', () => {
   afterAll(async () => {
@@ -356,6 +361,52 @@ describe('rust client performance', () => {
     } finally {
       await context.db.destroy();
     }
+  });
+
+  it('tracks realtime mixed-scope fanout filtering cost', async () => {
+    const changeCount = readPositiveIntEnv(
+      'PERF_REALTIME_FANOUT_CHANGES',
+      5_000
+    );
+    const connectionCount = readPositiveIntEnv(
+      'PERF_REALTIME_FANOUT_CONNECTIONS',
+      1_000
+    );
+    const scopeCount = readPositiveIntEnv('PERF_REALTIME_FANOUT_SCOPES', 500);
+    const rounds = readPositiveIntEnv('PERF_REALTIME_FANOUT_ROUNDS', 3);
+    const warmup = readPositiveIntEnv('PERF_REALTIME_FANOUT_WARMUP', 1);
+    const context = createRealtimeFanoutBenchmarkContext({
+      changeCount,
+      connectionCount,
+      scopeCount,
+    });
+
+    results.push(
+      await benchmark(
+        `realtime_fanout_filter_scan_${changeCount}_${connectionCount}_${scopeCount}`,
+        async () => {
+          realtimeFanoutBenchmarkSink += runRealtimeFanoutScan(context);
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      await benchmark(
+        `realtime_fanout_filter_indexed_${changeCount}_${connectionCount}_${scopeCount}`,
+        async () => {
+          realtimeFanoutBenchmarkSink += runRealtimeFanoutIndexed(context);
+        },
+        { iterations: rounds, warmup, trackMemory: false }
+      ),
+      countMetric(
+        `realtime_fanout_filter_changes_${changeCount}_${connectionCount}_${scopeCount}`,
+        changeCount
+      ),
+      countMetric(
+        `realtime_fanout_filter_connections_${changeCount}_${connectionCount}_${scopeCount}`,
+        connectionCount
+      )
+    );
+
+    expect(realtimeFanoutBenchmarkSink).toBeGreaterThan(0);
   });
 
   it('tracks snapshot chunk encoding and gzip policy cost', async () => {
@@ -1012,6 +1063,64 @@ function encodeBenchmarkTaskRows(rows: readonly unknown[]): Uint8Array {
     columns: benchmarkTaskBinaryColumns,
     rows: rows as readonly Record<string, unknown>[],
   });
+}
+
+interface RealtimeFanoutBenchmarkContext {
+  changesWithScopeKeys: Array<{
+    change: { row_id: string };
+    scopeKeys: string[];
+  }>;
+  connectionScopeKeys: string[][];
+  indexed: RealtimeChangeScopeIndex<{ row_id: string }>;
+}
+
+function createRealtimeFanoutBenchmarkContext(args: {
+  changeCount: number;
+  connectionCount: number;
+  scopeCount: number;
+}): RealtimeFanoutBenchmarkContext {
+  const changesWithScopeKeys = Array.from(
+    { length: args.changeCount },
+    (_, index) => ({
+      change: { row_id: `row-${index}` },
+      scopeKeys: [`scope:${index % args.scopeCount}`],
+    })
+  );
+  const connectionScopeKeys = Array.from(
+    { length: args.connectionCount },
+    (_, index) => [`scope:${index % args.scopeCount}`]
+  );
+  const indexed = createRealtimeChangeScopeIndex(
+    changesWithScopeKeys.map((entry) => ({
+      item: entry.change,
+      scopeKeys: entry.scopeKeys,
+    }))
+  );
+  return { changesWithScopeKeys, connectionScopeKeys, indexed };
+}
+
+function runRealtimeFanoutScan(
+  context: RealtimeFanoutBenchmarkContext
+): number {
+  let delivered = 0;
+  for (const scopeKeys of context.connectionScopeKeys) {
+    const scopeKeySet = new Set(scopeKeys);
+    const changes = context.changesWithScopeKeys
+      .filter((entry) => entry.scopeKeys.some((key) => scopeKeySet.has(key)))
+      .map((entry) => entry.change);
+    delivered += changes.length;
+  }
+  return delivered;
+}
+
+function runRealtimeFanoutIndexed(
+  context: RealtimeFanoutBenchmarkContext
+): number {
+  let delivered = 0;
+  for (const scopeKeys of context.connectionScopeKeys) {
+    delivered += context.indexed.selectForScopeKeys(scopeKeys).length;
+  }
+  return delivered;
 }
 
 async function runJsonCommand<T>(cmd: string[], label: string): Promise<T> {
