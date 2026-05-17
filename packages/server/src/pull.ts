@@ -648,7 +648,7 @@ export async function pull<
           request.limitSnapshotRows,
           1000,
           1,
-          20000
+          25000
         );
         const maxSnapshotPages = sanitizeLimit(
           request.maxSnapshotPages,

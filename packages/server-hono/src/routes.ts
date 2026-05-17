@@ -968,7 +968,7 @@ export function createSyncRoutes<
   const handlerRegistry = createServerHandlerCollection(options.handlers);
   const maxPullLimitCommits = config.maxPullLimitCommits ?? 100;
   const maxSubscriptionsPerPull = config.maxSubscriptionsPerPull ?? 200;
-  const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 5000;
+  const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 25000;
   const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 50;
   const maxOperationsPerPush = config.maxOperationsPerPush ?? 200;
   const requiredSchemaVersion = readOptionalPositiveInteger(

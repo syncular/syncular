@@ -59,8 +59,8 @@ impl Default for WebSyncPullOptions {
     fn default() -> Self {
         Self {
             limit_commits: 50,
-            limit_snapshot_rows: 1000,
-            max_snapshot_pages: 4,
+            limit_snapshot_rows: 25_000,
+            max_snapshot_pages: 20,
             dedupe_rows: None,
             include_snapshot_rows: true,
             collect_changed_rows: true,
@@ -75,11 +75,11 @@ fn default_limit_commits() -> i64 {
 }
 
 fn default_limit_snapshot_rows() -> i64 {
-    1000
+    25_000
 }
 
 fn default_max_snapshot_pages() -> i64 {
-    4
+    20
 }
 
 fn default_include_snapshot_rows() -> bool {
