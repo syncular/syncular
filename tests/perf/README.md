@@ -133,6 +133,7 @@ comparisons:
 bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-iterations=25 --wasm-profile=release
 SYNCULAR_BROWSER_PERF_ROWS=500000 bun --cwd rust/bindings/browser run benchmark:browser:e2e --query-iterations=25 --wasm-profile=release
 bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-iterations=25 --wasm-profile=release --rust-collect-changed-rows=true
+bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-iterations=25 --wasm-profile=release --rust-collect-changed-rows=true --rust-max-snapshot-changed-rows=0
 ```
 
 This scoreboard seeds a same-origin sync server, runs Chromium against the
@@ -142,6 +143,11 @@ page resource bytes, served asset sizes, and JS heap snapshots.
 Use `--rust-collect-changed-rows=true` to measure the row/field event path
 used by live UI refreshes, and `--rust-include-snapshot-rows=true` when a
 host needs materialized snapshot rows in the sync result.
+Snapshot-origin changed rows are capped by default in the Rust browser client
+to keep bootstrap events bounded; the scoreboard emits `rust_changed_row_count`
+and `rust_changed_rows_truncated`. Use
+`--rust-max-snapshot-changed-rows=<count>` to override the cap for event-volume
+experiments.
 
 Operation counts are part of the metric name. For example,
 `PERF_RUST_NATIVE_OPERATIONS=200` emits `rust_native_insert_batch_200`, which

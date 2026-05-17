@@ -27,6 +27,7 @@ export interface SyncularV2PullOptions {
   dedupeRows?: boolean | null;
   includeSnapshotRows?: boolean;
   collectChangedRows?: boolean;
+  maxSnapshotChangedRows?: number | null;
 }
 
 export interface SyncularV2TransportStats {
@@ -363,6 +364,7 @@ export interface SyncularV2RowsChangedEvent {
   source: 'localWrite' | 'remotePull' | string;
   changedTables: string[];
   changedRows: SyncularV2ChangedRow[];
+  changedRowsTruncated?: boolean;
 }
 
 export type SyncularV2RowsChangedSink = (
@@ -372,6 +374,7 @@ export type SyncularV2RowsChangedSink = (
 export interface SyncularV2SyncResult {
   changedTables: string[];
   changedRows: SyncularV2ChangedRow[];
+  changedRowsTruncated: boolean;
   subscriptions: SyncularV2SubscriptionResult[];
   pushedCommits: number;
   timings: SyncularV2SyncTimings;

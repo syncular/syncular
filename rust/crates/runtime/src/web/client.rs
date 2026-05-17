@@ -2,8 +2,8 @@ use crate::app_schema::AppSchema;
 use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::{
     sync_changed_row_for_change, sync_changed_row_for_local_operation,
-    sync_changed_row_for_snapshot, sync_changed_rows_for_cleared_snapshot_chunk, SubscriptionSpec,
-    SyncChangedRow,
+    sync_changed_row_for_snapshot, sync_changed_rows_for_cleared_snapshot_chunk_limited,
+    SubscriptionSpec, SyncChangedRow,
 };
 use crate::encrypted_crdt::EncryptedCrdt;
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
@@ -49,6 +49,8 @@ pub struct WebSyncPullOptions {
     pub include_snapshot_rows: bool,
     #[serde(default = "default_collect_changed_rows")]
     pub collect_changed_rows: bool,
+    #[serde(default = "default_max_snapshot_changed_rows")]
+    pub max_snapshot_changed_rows: Option<usize>,
 }
 
 impl Default for WebSyncPullOptions {
@@ -60,6 +62,7 @@ impl Default for WebSyncPullOptions {
             dedupe_rows: None,
             include_snapshot_rows: true,
             collect_changed_rows: true,
+            max_snapshot_changed_rows: default_max_snapshot_changed_rows(),
         }
     }
 }
@@ -84,6 +87,10 @@ fn default_collect_changed_rows() -> bool {
     true
 }
 
+fn default_max_snapshot_changed_rows() -> Option<usize> {
+    Some(5_000)
+}
+
 pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
     config: WebSyncularClientConfig,
     transport: T,
@@ -97,6 +104,7 @@ pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
 pub struct WebSyncResult {
     pub changed_tables: Vec<String>,
     pub changed_rows: Vec<SyncChangedRow>,
+    pub changed_rows_truncated: bool,
     pub subscriptions: Vec<WebSubscriptionResult>,
     pub pushed_commits: usize,
     pub timings: WebSyncTimings,
@@ -271,6 +279,8 @@ where
         let app_schema = self.store.app_schema();
         let include_snapshot_rows = self.config.pull.include_snapshot_rows;
         let collect_changed_rows = self.config.pull.collect_changed_rows;
+        let max_snapshot_changed_rows = self.config.pull.max_snapshot_changed_rows;
+        let mut snapshot_changed_rows = 0usize;
         for sub in pull.subscriptions {
             let previous_state = self.store.subscription_state(&sub.id).await?;
             let table = self
@@ -369,7 +379,12 @@ where
                                     previous_row.as_ref(),
                                     &sub.id,
                                 ) {
-                                    result.changed_rows.push(changed_row);
+                                    push_snapshot_changed_row(
+                                        result,
+                                        &mut snapshot_changed_rows,
+                                        max_snapshot_changed_rows,
+                                        changed_row,
+                                    );
                                 }
                             }
                             rows_to_upsert.push(row);
@@ -381,14 +396,24 @@ where
                         for batch in chunk_batches {
                             if scope_cleared_for_snapshot && !include_snapshot_rows {
                                 if collect_changed_rows {
-                                    result.changed_rows.extend(
-                                        sync_changed_rows_for_cleared_snapshot_chunk(
+                                    let remaining = snapshot_changed_row_budget(
+                                        snapshot_changed_rows,
+                                        max_snapshot_changed_rows,
+                                    );
+                                    let (changed_rows, truncated) =
+                                        sync_changed_rows_for_cleared_snapshot_chunk_limited(
                                             app_schema,
                                             &snapshot_table,
                                             &batch,
                                             &sub.id,
-                                        ),
-                                    );
+                                            remaining,
+                                        );
+                                    snapshot_changed_rows =
+                                        snapshot_changed_rows.saturating_add(changed_rows.len());
+                                    result.changed_rows.extend(changed_rows);
+                                    if truncated {
+                                        result.changed_rows_truncated = true;
+                                    }
                                 }
                                 self.store
                                     .insert_cleared_snapshot_chunk_rows(&snapshot_table, batch)
@@ -417,7 +442,12 @@ where
                                         previous_row.as_ref(),
                                         &sub.id,
                                     ) {
-                                        result.changed_rows.push(changed_row);
+                                        push_snapshot_changed_row(
+                                            result,
+                                            &mut snapshot_changed_rows,
+                                            max_snapshot_changed_rows,
+                                            changed_row,
+                                        );
                                     }
                                 }
                                 if include_snapshot_rows {
@@ -613,6 +643,8 @@ where
         for table in pull_result.changed_tables {
             add_changed_table(&mut result.changed_tables, &table);
         }
+        result.changed_rows_truncated =
+            result.changed_rows_truncated || pull_result.changed_rows_truncated;
         result.changed_rows = pull_result.changed_rows;
         result.subscriptions = pull_result.subscriptions;
         result.timings = pull_result.timings;
@@ -904,6 +936,29 @@ fn add_changed_table(tables: &mut Vec<String>, table: &str) {
     if !tables.iter().any(|existing| existing == table) {
         tables.push(table.to_string());
     }
+}
+
+fn push_snapshot_changed_row(
+    result: &mut WebSyncResult,
+    snapshot_changed_rows: &mut usize,
+    max_snapshot_changed_rows: Option<usize>,
+    row: SyncChangedRow,
+) {
+    if snapshot_changed_row_budget(*snapshot_changed_rows, max_snapshot_changed_rows) == 0 {
+        result.changed_rows_truncated = true;
+        return;
+    }
+    result.changed_rows.push(row);
+    *snapshot_changed_rows = snapshot_changed_rows.saturating_add(1);
+}
+
+fn snapshot_changed_row_budget(
+    snapshot_changed_rows: usize,
+    max_snapshot_changed_rows: Option<usize>,
+) -> usize {
+    max_snapshot_changed_rows
+        .map(|max| max.saturating_sub(snapshot_changed_rows))
+        .unwrap_or(usize::MAX)
 }
 
 fn elapsed_ms_since(started_at: i64) -> f64 {

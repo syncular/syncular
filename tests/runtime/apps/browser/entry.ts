@@ -36,7 +36,10 @@ import {
   taskSubscription,
   taskPatchPayload,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import type { SyncularV2AppSchema } from '../../../../rust/bindings/browser/src/index';
+import type {
+  SyncularV2AppSchema,
+  SyncularV2PullOptions,
+} from '../../../../rust/bindings/browser/src/index';
 import type {
   ConformanceDb,
   RuntimeClientDb,
@@ -160,6 +163,7 @@ interface E2eScoreboardOptions {
   rustStorage?: 'memory' | 'indexedDb' | 'opfsSahPool';
   rustIncludeSnapshotRows?: boolean;
   rustCollectChangedRows?: boolean;
+  rustMaxSnapshotChangedRows?: number | null;
 }
 
 interface E2eScoreboardMetric {
@@ -824,6 +828,16 @@ async function runE2eScoreboard(
       value: number,
       unit: E2eScoreboardMetric['unit'] = 'ms'
     ) => metrics.push({ name, value, unit });
+    const rustPullOptions: SyncularV2PullOptions = {
+      includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
+      collectChangedRows: options.rustCollectChangedRows ?? false,
+      limitSnapshotRows: 5_000,
+      maxSnapshotPages: 100,
+    };
+    if (options.rustMaxSnapshotChangedRows !== undefined) {
+      rustPullOptions.maxSnapshotChangedRows =
+        options.rustMaxSnapshotChangedRows;
+    }
 
     const tsBootstrapStartedAt = performance.now();
     await syncPullOnce(tsClient.db, tsClient.transport, tsClient.handlers, {
@@ -861,12 +875,7 @@ async function runE2eScoreboard(
         fileName: `rust-e2e-${Date.now()}.sqlite`,
         storage: options.rustStorage ?? 'memory',
         clearOnInit: true,
-        pull: {
-          includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
-          collectChangedRows: options.rustCollectChangedRows ?? false,
-          limitSnapshotRows: 5_000,
-          maxSnapshotPages: 100,
-        },
+        pull: rustPullOptions,
       },
     });
     await rustDatabase.client.setSubscriptions([
@@ -898,6 +907,12 @@ async function runE2eScoreboard(
     pushMetric('rust_pull_request_ms', rustSync.timings.pullRequestMs);
     pushMetric('rust_snapshot_fetch_ms', rustSync.timings.snapshotFetchMs);
     pushMetric('rust_pull_apply_ms', rustSync.timings.pullApplyMs);
+    pushMetric('rust_changed_row_count', rustSync.changedRows.length, 'count');
+    pushMetric(
+      'rust_changed_rows_truncated',
+      rustSync.changedRowsTruncated ? 1 : 0,
+      'count'
+    );
     const rustStats = await rustDiagnostics.transportStats();
     pushMetric(
       'rust_snapshot_chunk_decode_ms',

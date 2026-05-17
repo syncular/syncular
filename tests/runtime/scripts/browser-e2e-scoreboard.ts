@@ -33,6 +33,7 @@ interface ScoreboardWindow {
       rustStorage: 'memory' | 'indexedDb' | 'opfsSahPool';
       rustIncludeSnapshotRows: boolean;
       rustCollectChangedRows: boolean;
+      rustMaxSnapshotChangedRows?: number | null;
     }): Promise<ScoreboardResult>;
   };
 }
@@ -64,6 +65,9 @@ const queryIterations = numberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
 const rustIncludeSnapshotRows = booleanArg('--rust-include-snapshot-rows', false);
 const rustCollectChangedRows = booleanArg('--rust-collect-changed-rows', false);
+const rustMaxSnapshotChangedRows = optionalNumberArg(
+  '--rust-max-snapshot-changed-rows'
+);
 const wasmProfile = wasmProfileArg(
   '--wasm-profile',
   process.env.SYNCULAR_BROWSER_WASM_PROFILE ?? 'release'
@@ -137,6 +141,7 @@ try {
       rustStorage,
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
+      rustMaxSnapshotChangedRows,
     }
   );
 
@@ -171,6 +176,7 @@ try {
       queryIterations,
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
+      rustMaxSnapshotChangedRows,
     },
     metrics,
     comparisons: buildComparisons(metrics),
@@ -192,6 +198,9 @@ try {
     console.log(
       `rust-include-snapshot-rows=${rustIncludeSnapshotRows} rust-collect-changed-rows=${rustCollectChangedRows}`
     );
+    if (rustMaxSnapshotChangedRows != null) {
+      console.log(`rust-max-snapshot-changed-rows=${rustMaxSnapshotChangedRows}`);
+    }
     console.log('');
     console.log(formatMetrics(report.metrics));
     const comparisons = report.comparisons;
@@ -515,6 +524,16 @@ function numberArg(name: string, fallback: number): number {
   if (!raw) return fallback;
   const value = Number(raw.slice(name.length + 1));
   if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+  return Math.floor(value);
+}
+
+function optionalNumberArg(name: string): number | undefined {
+  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  if (!raw) return undefined;
+  const value = Number(raw.slice(name.length + 1));
+  if (!Number.isFinite(value) || value < 0) {
     throw new Error(`Invalid ${name}: ${raw}`);
   }
   return Math.floor(value);

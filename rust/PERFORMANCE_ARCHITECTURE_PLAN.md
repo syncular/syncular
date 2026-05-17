@@ -171,6 +171,33 @@ Architecture iteration: cleared binary snapshot row-delta fast path.
   run-to-run variance for the untargeted path; the retained improvement is the
   `collectChangedRows` path apps need for live row/field events.
 
+Architecture iteration: cap snapshot changed-row event volume.
+
+- Rejected experiment: caching the repeated partial snapshot apply statement
+  for the final 168-row batch did not move the target. The 100k no-row-delta
+  control measured Rust bootstrap `206.31ms`, local apply `78ms`; after the
+  change it measured `211ms`, local apply `79ms`, so the runtime change was
+  discarded.
+- Problem: with `--rust-collect-changed-rows=true`, large bootstrap snapshots
+  were preserving one changed-row entry per row. At 100k rows that meant
+  `100000` changed rows, Rust bootstrap `523.34ms`, local apply `132ms`, and
+  JS heap delta `129.69MiB` even after the binary snapshot row-delta fast path.
+- Retained change: browser pull options now default
+  `maxSnapshotChangedRows` / `max_snapshot_changed_rows` to `5000` for
+  snapshot-origin row events. Normal commit/local/realtime changed rows are not
+  capped. Sync results and worker row-change events expose
+  `changedRowsTruncated` so hosts can treat the event as "row stream
+  incomplete; refresh affected live views by table/query".
+- After the cap, the same 100k row-delta run measured TS bootstrap
+  `746.27ms`, Rust bootstrap `219.98ms`, Rust pull request `122ms`, snapshot
+  fetch `12ms`, local apply `83ms`, `5000` changed rows,
+  `changedRowsTruncated=1`, binary chunks `4`, JSON chunks `0`, and JS heap
+  delta `5.99MiB`.
+- Same-code no-row-delta control, 100k rows:
+  Rust bootstrap `210.45ms`, pull request `126ms`, snapshot fetch `14ms`,
+  local apply `82ms`, `0` changed rows, `changedRowsTruncated=0`, and JS heap
+  delta `4.95MiB`.
+
 It should ultimately emit at least:
 
 - `ts_bootstrap_100k_ms`, `rust_bootstrap_100k_ms`
