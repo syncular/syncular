@@ -2312,6 +2312,8 @@ export function createSyncRoutes<
             scopeCache: options.scopeCache,
             inlineSnapshotChunkBodies: shouldInlineSnapshotChunkBodies,
             snapshotChunkGzipLevel: options.sync?.snapshotChunkGzipLevel,
+            snapshotChunkCacheSchemaVersion:
+              latestSchemaVersion ?? requiredSchemaVersion ?? null,
           });
         } catch (err) {
           if (err instanceof InvalidSubscriptionScopeError) {
@@ -2581,7 +2583,9 @@ export function createSyncRoutes<
         const scopedChunkKeyMatches =
           chunk.scopeKey === legacyScopeKey ||
           (chunk.scopeKey.startsWith(gzipScopedPrefix) &&
-            chunk.scopeKey.endsWith(`:${scopeHash}`));
+            chunk.scopeKey.endsWith(`:${scopeHash}`)) ||
+          (chunk.scopeKey.startsWith('snapshot-v2:') &&
+            chunk.scopeKey.endsWith(`:scope:${scopeHash}`));
         if (!scopedChunkKeyMatches) {
           return c.json({ error: 'FORBIDDEN' }, 403);
         }
