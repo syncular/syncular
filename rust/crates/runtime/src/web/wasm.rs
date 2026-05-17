@@ -49,6 +49,7 @@ impl SyncularWasmClient {
         let config: WasmClientConfig = serde_wasm_bindgen::from_value(config)
             .map_err(|err| JsValue::from_str(&format!("decode browser client config: {err}")))?;
         let store = WebHostStore::new(host_store).map_err(error_to_js)?;
+        let collect_server_timings = config.pull.collect_server_timings;
         let inner_config = WebSyncularClientConfig {
             base_url: config.base_url,
             client_id: config.client_id,
@@ -60,6 +61,7 @@ impl SyncularWasmClient {
             base_url: inner_config.base_url.clone(),
             client_id: inner_config.client_id.clone(),
             actor_id: inner_config.actor_id.clone(),
+            collect_server_timings,
         });
         Ok(Self {
             inner: WebSyncularClient::with_parts(inner_config, transport, store),

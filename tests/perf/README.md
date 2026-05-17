@@ -86,6 +86,10 @@ with `PERF_RUST_BROWSER_E2E_SCOREBOARD=true`:
 - Rust sync buckets such as `rust_browser_e2e_rust_pull_request_ms`,
   `rust_browser_e2e_rust_snapshot_fetch_ms`, and
   `rust_browser_e2e_rust_pull_apply_ms`.
+- Server bootstrap buckets such as
+  `rust_browser_e2e_rust_server_bootstrap_row_frame_encode_ms`,
+  `rust_browser_e2e_rust_server_bootstrap_chunk_gzip_ms`, and
+  `rust_browser_e2e_rust_server_bootstrap_chunk_persist_ms`.
 - TS/Rust local list, search, and aggregate p50/p95 metrics.
 - Request/response bytes are emitted as KiB metrics.
 - Browser page resource bytes, explicitly served JS/WASM asset sizes, and JS
@@ -138,8 +142,9 @@ bun --cwd rust/bindings/browser run benchmark:browser:e2e --rows=100000 --query-
 
 This scoreboard seeds a same-origin sync server, runs Chromium against the
 release WASM browser runtime, and emits TS/Rust bootstrap, Rust transport/apply
-buckets, payload/chunk counts, local list/search/aggregate p50/p95 metrics,
-page resource bytes, served asset sizes, and JS heap snapshots.
+buckets, server bootstrap buckets, payload/chunk counts, local
+list/search/aggregate p50/p95 metrics, page resource bytes, served asset
+sizes, and JS heap snapshots.
 Use `--rust-collect-changed-rows=true` to measure the row/field event path
 used by live UI refreshes, and `--rust-include-snapshot-rows=true` when a
 host needs materialized snapshot rows in the sync result.

@@ -51,6 +51,8 @@ pub struct WebSyncPullOptions {
     pub collect_changed_rows: bool,
     #[serde(default = "default_max_snapshot_changed_rows")]
     pub max_snapshot_changed_rows: Option<usize>,
+    #[serde(default)]
+    pub collect_server_timings: bool,
 }
 
 impl Default for WebSyncPullOptions {
@@ -63,6 +65,7 @@ impl Default for WebSyncPullOptions {
             include_snapshot_rows: true,
             collect_changed_rows: true,
             max_snapshot_changed_rows: default_max_snapshot_changed_rows(),
+            collect_server_timings: false,
         }
     }
 }
@@ -139,6 +142,7 @@ impl WebSyncularClient<WebSyncTransport, WebMemoryStore> {
             base_url: config.base_url.clone(),
             client_id: config.client_id.clone(),
             actor_id: config.actor_id.clone(),
+            collect_server_timings: config.pull.collect_server_timings,
         });
         Self::with_parts(config, transport, WebMemoryStore::new())
     }

@@ -14,7 +14,7 @@ use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use flate2::read::GzDecoder;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
@@ -34,6 +34,7 @@ pub struct WebSyncTransportConfig {
     pub base_url: String,
     pub client_id: String,
     pub actor_id: String,
+    pub collect_server_timings: bool,
 }
 
 #[derive(Clone)]
@@ -58,6 +59,23 @@ pub struct WebTransportStats {
     pub snapshot_chunk_decompress_ms: f64,
     pub snapshot_chunk_hash_ms: f64,
     pub snapshot_chunk_decode_ms: f64,
+    pub server_bootstrap_snapshot_query_ms: f64,
+    pub server_bootstrap_row_frame_encode_ms: f64,
+    pub server_bootstrap_chunk_cache_lookup_ms: f64,
+    pub server_bootstrap_chunk_gzip_ms: f64,
+    pub server_bootstrap_chunk_hash_ms: f64,
+    pub server_bootstrap_chunk_persist_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebServerBootstrapTimings {
+    snapshot_query_ms: f64,
+    row_frame_encode_ms: f64,
+    chunk_cache_lookup_ms: f64,
+    chunk_gzip_ms: f64,
+    chunk_hash_ms: f64,
+    chunk_persist_ms: f64,
 }
 
 pub struct WebRealtimeSocket {
@@ -151,6 +169,9 @@ impl AsyncSyncTransport for WebSyncTransport {
                     "direct".to_string(),
                 ),
             ];
+            if self.config.collect_server_timings {
+                headers.push(("x-syncular-bench-timings".to_string(), "1".to_string()));
+            }
             headers.extend(effective_auth_headers(&self.auth_headers));
             fetch_sync_response_metered(
                 "POST",
@@ -430,6 +451,7 @@ async fn fetch_sync_response_metered(
         ));
     }
 
+    record_server_bootstrap_timings(&response, stats)?;
     let content_type = response_content_type(&response)?;
     if is_binary_sync_pack_content_type(content_type.as_deref()) {
         let buffer = response
@@ -573,6 +595,29 @@ fn record_snapshot_chunk_hash(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms
 
 fn record_snapshot_chunk_decode(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
     stats.borrow_mut().snapshot_chunk_decode_ms += elapsed_ms;
+}
+
+fn record_server_bootstrap_timings(
+    response: &Response,
+    stats: &Rc<RefCell<WebTransportStats>>,
+) -> Result<()> {
+    let Some(raw) = response
+        .headers()
+        .get("x-syncular-bench-pull-timings")
+        .map_err(|err| js_error(ErrorKind::Transport, "read server timing header", err))?
+    else {
+        return Ok(());
+    };
+    let timings: WebServerBootstrapTimings = serde_json::from_str(&raw)
+        .map_err(|err| SyncularError::protocol(err).context("decode server timing header"))?;
+    let mut stats = stats.borrow_mut();
+    stats.server_bootstrap_snapshot_query_ms += timings.snapshot_query_ms;
+    stats.server_bootstrap_row_frame_encode_ms += timings.row_frame_encode_ms;
+    stats.server_bootstrap_chunk_cache_lookup_ms += timings.chunk_cache_lookup_ms;
+    stats.server_bootstrap_chunk_gzip_ms += timings.chunk_gzip_ms;
+    stats.server_bootstrap_chunk_hash_ms += timings.chunk_hash_ms;
+    stats.server_bootstrap_chunk_persist_ms += timings.chunk_persist_ms;
+    Ok(())
 }
 
 #[cfg(feature = "web-blobs")]
