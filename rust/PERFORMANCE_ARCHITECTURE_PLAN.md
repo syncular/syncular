@@ -2508,6 +2508,16 @@ client. Overflow should close or resync the session deliberately.
     `rust_local_search_p50_ms` `1.39 -> 1.52`,
     `rust_aggregate_p50_ms` `22.06 -> 21.99`, and served Rust WASM bytes
     matched the v7 release build at `3328081`.
+  - Rejected v8 commit actor dictionary. It moved commit actor ids into a
+    per-subscription dictionary, but the maintained 50k sync-pack lane showed
+    no byte improvement and worse CPU:
+    v7 final generic encode/decode `20.6ms/25.1ms`,
+    v7 final generated encode/decode `19.6ms/24.7ms`, sizes
+    `9478.3KiB/5104.5KiB`;
+    v8 candidate generic encode/decode `20.6ms/27.2ms`,
+    generated encode/decode `20.9ms/26.5ms`, sizes unchanged at
+    `9478.3KiB/5104.5KiB`. Reverted; it adds another protocol dictionary
+    without a measurable win.
 
 ### Phase 7: Delta WebSocket Runtime
 
