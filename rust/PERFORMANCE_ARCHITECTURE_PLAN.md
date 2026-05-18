@@ -466,6 +466,18 @@ derived-schema deferral for app bootstrap.
   `+4.35%`), pull apply `73ms -> 76ms`, snapshot chunk apply `62ms -> 65ms`,
   and did not improve server binary encode. Keep the public writer API small
   until profiling shows validation checks are a real bottleneck.
+- Rejected generated streaming binary snapshot appenders. The candidate added a
+  patchable binary table writer plus generated `append*BinarySnapshotRows`
+  functions so the server could append pages directly instead of retaining
+  `binaryRows` until bundle flush. Correctness checks passed
+  (`cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts
+  tests/unit/server-pull.test.ts`, `bun run --cwd rust/bindings/browser tsgo`),
+  but the 100k local release scoreboard regressed Rust bootstrap
+  `138.04ms -> 142.78ms` (`+4.74ms`, `+3.43%`) and 500k stayed inside noise
+  without improving the external branch-server path, because that app does not
+  currently provide generated binary metadata/appender hooks. Revert the API;
+  revisit only as part of a full server-generated snapshot artifact design.
 
 ### Required Benchmark Scoreboard
 
