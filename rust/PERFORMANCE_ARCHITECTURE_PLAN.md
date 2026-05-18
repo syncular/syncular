@@ -554,6 +554,12 @@ derived-schema deferral for app bootstrap.
   apply `396ms`, derived schema `858.63ms`, and peak memory `736.38MB`. Keep
   this because the code is local to the generic encoder and the measured server
   encode bucket moved in the right direction twice.
+- Rejected manual preallocated row validation array in `encodeBinarySnapshotRows`.
+  Replacing `rows.map(toSnapshotRecordRow)` with a hand-written indexed loop
+  passed correctness checks but made the external branch-server Rust 500k path
+  worse: `2418.98ms -> 2708.20ms`, pull request `1002ms -> 1143ms`, server
+  binary encode `356ms -> 401ms`, local apply `391ms -> 402ms`, and derived
+  schema `866.17ms -> 984.63ms`. Keep the simpler `map` implementation.
 
 ### Required Benchmark Scoreboard
 
