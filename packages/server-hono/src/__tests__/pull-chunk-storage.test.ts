@@ -8,9 +8,9 @@ import {
   decodeSnapshotRows,
   getSyncTelemetry,
   isBinarySyncPackContentType,
-  SyncCombinedResponseSchema,
   SYNC_PACK_ENCODING_BINARY_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+  SyncCombinedResponseSchema,
   type SyncPullResponse,
   type SyncSnapshotChunkRef,
   type SyncSpan,
@@ -332,6 +332,26 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(chunkResponse.status).toBe(200);
+    const etag = `"sha256:${chunk.sha256}"`;
+    expect(chunkResponse.headers.get('etag')).toBe(etag);
+    expect(chunkResponse.headers.get('x-sync-chunk-id')).toBe(chunk.id);
+    expect(chunkResponse.headers.get('x-sync-chunk-sha256')).toBe(chunk.sha256);
+    expect(chunkResponse.headers.get('x-sync-chunk-encoding')).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+
+    const cachedChunkResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunk.id}`, {
+        headers: {
+          'if-none-match': etag,
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+    expect(cachedChunkResponse.status).toBe(304);
+    expect(cachedChunkResponse.headers.get('etag')).toBe(etag);
+
     const chunkBytes = gunzipSync(
       new Uint8Array(await chunkResponse.arrayBuffer())
     );
