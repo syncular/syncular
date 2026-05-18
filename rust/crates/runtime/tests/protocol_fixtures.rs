@@ -1,11 +1,108 @@
 use serde_json::Value;
 use syncular_runtime::binary_snapshot::{
-    decode_binary_snapshot_table, BinarySnapshotColumnType,
+    decode_binary_snapshot_table, decode_snapshot_row_frames, BinarySnapshotColumnType,
 };
 use syncular_runtime::binary_sync_pack::{
     decode_binary_sync_pack, is_binary_sync_pack_content_type, SYNC_PACK_CONTENT_TYPE,
 };
-use syncular_runtime::protocol::CombinedResponse;
+use syncular_runtime::protocol::{CombinedRequest, CombinedResponse};
+
+#[test]
+fn decodes_json_combined_sync_fixture() {
+    let fixture = json_combined_sync_fixture();
+    assert_eq!(fixture["name"].as_str(), Some("json-combined-sync-v1"));
+
+    let request: CombinedRequest =
+        serde_json::from_value(fixture["request"].clone()).expect("fixture request");
+    assert_eq!(request.client_id, "fixture-client-1");
+    assert_eq!(request.sync_pack_encodings[0], "binary-sync-pack-v1");
+    assert_eq!(request.sync_pack_encodings[1], "json-v1");
+
+    let push = request.push.expect("push request");
+    assert_eq!(push.commits.len(), 1);
+    assert_eq!(push.commits[0].client_commit_id, "fixture-commit-1");
+    assert_eq!(push.commits[0].schema_version, 3);
+    assert_eq!(push.commits[0].operations.len(), 2);
+    assert_eq!(push.commits[0].operations[0].table, "tasks");
+    assert_eq!(push.commits[0].operations[0].row_id, "task-local-1");
+    assert_eq!(push.commits[0].operations[0].op, "upsert");
+    assert_eq!(push.commits[0].operations[0].base_version, Some(5));
+    assert_eq!(
+        push.commits[0].operations[0]
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.get("title"))
+            .and_then(Value::as_str),
+        Some("Local edit")
+    );
+    assert_eq!(push.commits[0].operations[1].op, "delete");
+    assert!(push.commits[0].operations[1].payload.is_none());
+
+    let pull = request.pull.expect("pull request");
+    assert_eq!(pull.limit_commits, 50);
+    assert_eq!(pull.limit_snapshot_rows, 1000);
+    assert_eq!(pull.max_snapshot_pages, 4);
+    assert_eq!(pull.dedupe_rows, Some(true));
+    assert_eq!(pull.snapshot_encodings[0], "binary-table-v1");
+    assert_eq!(pull.sync_pack_encodings[0], "binary-sync-pack-v1");
+    assert_eq!(pull.subscriptions.len(), 1);
+    assert_eq!(pull.subscriptions[0].id, "sub-tasks");
+    assert_eq!(pull.subscriptions[0].table, "tasks");
+    assert_eq!(pull.subscriptions[0].cursor, 41);
+    assert_eq!(
+        pull.subscriptions[0]
+            .scopes
+            .get("user_id")
+            .and_then(Value::as_str),
+        Some("user-1")
+    );
+    assert_eq!(
+        pull.subscriptions[0]
+            .bootstrap_state
+            .as_ref()
+            .map(|state| state.row_cursor.as_deref()),
+        Some(Some("task-0"))
+    );
+
+    let response: CombinedResponse =
+        serde_json::from_value(fixture["response"].clone()).expect("fixture response");
+    assert!(response.ok);
+    assert_eq!(response.required_schema_version, Some(3));
+    assert_eq!(response.latest_schema_version, Some(4));
+
+    let push = response.push.expect("push response");
+    assert!(push.ok);
+    assert_eq!(push.commits[0].client_commit_id, "fixture-commit-1");
+    assert_eq!(push.commits[0].commit_seq, Some(42));
+    assert_eq!(push.commits[0].results.len(), 2);
+    assert_eq!(push.commits[0].results[1].status, "applied");
+
+    let pull = response.pull.expect("pull response");
+    assert!(pull.ok);
+    let subscription = &pull.subscriptions[0];
+    assert_eq!(subscription.id, "sub-tasks");
+    assert_eq!(subscription.next_cursor, 42);
+    assert_eq!(
+        subscription
+            .bootstrap_state
+            .as_ref()
+            .map(|state| state.row_cursor.as_deref()),
+        Some(Some("task-1"))
+    );
+    assert_eq!(subscription.commits[0].changes[0].row_id, "task-remote-1");
+
+    let snapshot = &subscription.snapshots.as_ref().expect("snapshots")[0];
+    assert_eq!(snapshot.table, "tasks");
+    assert!(snapshot.is_first_page);
+    assert!(!snapshot.is_last_page);
+    assert_eq!(
+        snapshot
+            .bootstrap_state_after
+            .as_ref()
+            .map(|state| state.row_cursor.as_deref()),
+        Some(Some("task-snapshot-1"))
+    );
+}
 
 #[test]
 fn decodes_typescript_encoded_binary_sync_pack_fixture() {
@@ -14,7 +111,6 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
         fixture["contentType"].as_str(),
         Some(SYNC_PACK_CONTENT_TYPE)
     );
-    assert_eq!(fixture["wireVersion"].as_u64(), Some(10));
     assert!(is_binary_sync_pack_content_type(Some(
         "application/vnd.syncular.sync-pack.v1; charset=binary"
     )));
@@ -25,6 +121,10 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
         .as_str()
         .expect("fixture encodedHex must be a string");
     let encoded = hex::decode(encoded_hex).expect("fixture encodedHex must be valid hex");
+    assert_eq!(
+        fixture["wireVersion"].as_u64(),
+        Some(sync_pack_wire_version(&encoded) as u64)
+    );
     let decoded = decode_binary_sync_pack(&encoded).expect("decode fixture");
 
     assert_eq!(decoded.ok, expected.ok);
@@ -123,7 +223,10 @@ fn decodes_typescript_encoded_binary_snapshot_table_fixture() {
     assert_eq!(decoded.table, "tasks");
     assert_eq!(decoded.columns.len(), 6);
     assert_eq!(decoded.columns[0].name, "id");
-    assert_eq!(decoded.columns[0].column_type, BinarySnapshotColumnType::String);
+    assert_eq!(
+        decoded.columns[0].column_type,
+        BinarySnapshotColumnType::String
+    );
     assert!(!decoded.columns[0].nullable);
     assert_eq!(decoded.columns[2].name, "server_version");
     assert_eq!(
@@ -131,14 +234,20 @@ fn decodes_typescript_encoded_binary_snapshot_table_fixture() {
         BinarySnapshotColumnType::Integer
     );
     assert_eq!(decoded.columns[3].name, "score");
-    assert_eq!(decoded.columns[3].column_type, BinarySnapshotColumnType::Float);
+    assert_eq!(
+        decoded.columns[3].column_type,
+        BinarySnapshotColumnType::Float
+    );
     assert_eq!(decoded.columns[4].name, "done");
     assert_eq!(
         decoded.columns[4].column_type,
         BinarySnapshotColumnType::Boolean
     );
     assert_eq!(decoded.columns[5].name, "metadata");
-    assert_eq!(decoded.columns[5].column_type, BinarySnapshotColumnType::Json);
+    assert_eq!(
+        decoded.columns[5].column_type,
+        BinarySnapshotColumnType::Json
+    );
     assert!(decoded.columns[5].nullable);
 
     assert_eq!(decoded.rows.len(), 2);
@@ -186,6 +295,48 @@ fn decodes_typescript_encoded_binary_snapshot_table_fixture() {
     assert!(decoded.rows[1].get("metadata").is_some_and(Value::is_null));
 }
 
+#[test]
+fn decodes_typescript_encoded_json_row_frame_fixture() {
+    let fixture = json_row_frame_fixture();
+    assert_eq!(fixture["encoding"].as_str(), Some("json-row-frame-v1"));
+    assert_eq!(fixture["wireVersion"].as_u64(), Some(1));
+
+    let encoded_hex = fixture["encodedHex"]
+        .as_str()
+        .expect("fixture encodedHex must be a string");
+    let encoded = hex::decode(encoded_hex).expect("fixture encodedHex must be valid hex");
+    let decoded = decode_snapshot_row_frames(&encoded).expect("decode fixture");
+
+    let expected = fixture["decodedRows"]
+        .as_array()
+        .expect("fixture decodedRows must be an array");
+    assert_eq!(decoded.len(), expected.len());
+    assert_eq!(
+        decoded[0].get("id").and_then(Value::as_str),
+        Some("task-frame-1")
+    );
+    assert_eq!(
+        decoded[0].get("title").and_then(Value::as_str),
+        Some("Frame one")
+    );
+    assert_eq!(
+        decoded[0].get("server_version").and_then(Value::as_i64),
+        Some(51)
+    );
+    assert_eq!(
+        decoded[0]
+            .get("metadata")
+            .and_then(|metadata| metadata.get("source"))
+            .and_then(Value::as_str),
+        Some("json-row-frame-v1")
+    );
+    assert_eq!(
+        decoded[1].get("id").and_then(Value::as_str),
+        Some("task-frame-2")
+    );
+    assert!(decoded[1].get("metadata").is_some_and(Value::is_null));
+}
+
 fn binary_sync_pack_fixture() -> Value {
     serde_json::from_str(include_str!(
         "fixtures/binary-sync-pack-v1-combined-response.json"
@@ -193,9 +344,21 @@ fn binary_sync_pack_fixture() -> Value {
     .expect("binary sync pack fixture JSON")
 }
 
+fn sync_pack_wire_version(bytes: &[u8]) -> u16 {
+    u16::from_le_bytes([bytes[4], bytes[5]])
+}
+
+fn json_combined_sync_fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/json-combined-sync-v1.json"))
+        .expect("JSON combined sync fixture")
+}
+
 fn binary_snapshot_table_fixture() -> Value {
-    serde_json::from_str(include_str!(
-        "fixtures/binary-snapshot-table-v1-tasks.json"
-    ))
-    .expect("binary snapshot table fixture JSON")
+    serde_json::from_str(include_str!("fixtures/binary-snapshot-table-v1-tasks.json"))
+        .expect("binary snapshot table fixture JSON")
+}
+
+fn json_row_frame_fixture() -> Value {
+    serde_json::from_str(include_str!("fixtures/json-row-frame-v1-tasks.json"))
+        .expect("JSON row-frame fixture")
 }

@@ -198,6 +198,12 @@ pub struct PullRequest {
 pub struct CombinedRequest {
     #[serde(rename = "clientId")]
     pub client_id: String,
+    #[serde(
+        rename = "syncPackEncodings",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub sync_pack_encodings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push: Option<PushBatchRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]

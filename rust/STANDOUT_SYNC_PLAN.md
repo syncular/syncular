@@ -56,8 +56,8 @@ of jumping straight into new public APIs.
 - 2026-05-19: Started protocol fixture baseline. Added a checked-in
   TypeScript-encoded `binary-sync-pack-v1` combined response fixture and a Rust
   decoder contract test under `syncular-runtime`, plus a TypeScript encoder
-  fixture test in `packages/core`. This is the first slice of "protocol
-  fixtures and compatibility tests for current JSON/binary sync."
+  fixture test in `packages/core`. This is the first slice of protocol
+  fixtures and contract tests for current JSON/binary sync.
 - 2026-05-19: Extended the fixture baseline to `binary-table-v1` snapshot
   chunks. The fixture covers table metadata, typed scalar cells, JSON cells,
   and nullable values in both TypeScript and Rust decoders.
@@ -82,6 +82,38 @@ of jumping straight into new public APIs.
   integrity-bearing commit sequences before local apply. This is intentionally
   not yet cryptographic recomputation; next is canonical Rust digest/root
   verification against the server metadata.
+- 2026-05-19: Added a shared JSON combined sync fixture covering push, pull,
+  subscriptions, bootstrap state, snapshots, and `bootstrapStateAfter`. The
+  TypeScript test validates it with the Zod schemas; the Rust test deserializes
+  it into protocol structs.
+- 2026-05-19: Added `bun run --cwd packages/core fixtures:protocol` so shared
+  JSON/binary protocol fixtures are regenerated from the TypeScript codecs and
+  schema fixture definitions instead of hand-edited.
+- 2026-05-19: Added `json-row-frame-v1` snapshot fixture coverage and promoted
+  the native row-frame decoder into `binary_snapshot.rs`, so fixture tests use
+  the same Rust decoder path as native snapshot chunk transport.
+- 2026-05-19: Aligned Rust `CombinedRequest` with the TypeScript root-level
+  `syncPackEncodings` field, regenerated the shared JSON fixture with that
+  field, and kept Rust clients advertising the current `binary-sync-pack-v1`
+  path explicitly.
+- 2026-05-19: Updated the TypeScript testkit combined-request builder to carry
+  root-level `syncPackEncodings`, with schema-backed coverage. This lets
+  runtime and route tests request binary sync packs through the normal builder
+  instead of hand-shaped bodies.
+- 2026-05-19: Patched Rust testkit commit response constructors to populate the
+  optional `commitDigest`/`commitChainRoot` fields with explicit `None` values,
+  so the runtime test suite compiles against the verifiable-log protocol model.
+- 2026-05-19: Replaced protocol encoding string literals in the fixture
+  generator with exported core constants, and switched the focused Hono binary
+  sync-pack route test to root-level `syncPackEncodings` negotiation.
+- 2026-05-19: Fixed binary sync-pack fixture metadata so `wireVersion` is
+  derived from the encoded header, and made the generated v10 fixture cover
+  `commitDigest`/`commitChainRoot` roundtrips in both TypeScript and Rust.
+- 2026-05-19: Added Rust pull-response integrity metadata validation before
+  apply/cursor advancement in native and web clients. Complete metadata remains
+  optional, but malformed partial metadata, non-hex roots, and reordered
+  integrity-bearing commits now fail with protocol errors before rows are
+  applied.
 
 ## Priority Roadmap
 
@@ -695,7 +727,7 @@ Start with extraction, not redesign:
 
 ## Suggested Implementation Order
 
-1. Add protocol fixtures and compatibility tests for current JSON/binary sync.
+1. Add protocol fixtures and contract tests for current JSON/binary sync.
 2. Prototype commit digests and chain roots in server metadata.
 3. Add Rust client verification for commit/chunk metadata.
 4. Add snapshot manifests and bootstrap verification.

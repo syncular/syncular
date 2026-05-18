@@ -1,8 +1,8 @@
 #[cfg(feature = "native")]
 use crate::app_schema::default_app_schema;
-#[cfg(feature = "native")]
-use crate::binary_snapshot::decode_binary_snapshot_rows;
 use crate::binary_snapshot::SnapshotChunkRows;
+#[cfg(feature = "native")]
+use crate::binary_snapshot::{decode_binary_snapshot_rows, decode_snapshot_row_frames};
 #[cfg(feature = "native")]
 use crate::binary_sync_pack::{decode_binary_sync_pack, is_binary_sync_pack_content_type};
 use crate::error::{ErrorKind, Result, SyncularError};
@@ -963,7 +963,7 @@ fn decode_snapshot_chunk_rows(chunk: &SnapshotChunkRef, bytes: &[u8]) -> Result<
 
     match chunk.encoding.as_str() {
         SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 => {
-            decode_snapshot_rows(bytes).map(SnapshotChunkRows::Json)
+            decode_snapshot_row_frames(bytes).map(SnapshotChunkRows::Json)
         }
         SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
             decode_binary_snapshot_rows(bytes).map(SnapshotChunkRows::Binary)
@@ -972,42 +972,6 @@ fn decode_snapshot_chunk_rows(chunk: &SnapshotChunkRef, bytes: &[u8]) -> Result<
             "unsupported snapshot chunk encoding: {encoding}"
         ))),
     }
-}
-
-#[cfg(feature = "native")]
-fn decode_snapshot_rows(bytes: &[u8]) -> Result<Vec<Value>> {
-    if bytes.len() < 4 || &bytes[0..4] != b"SRF1" {
-        return Err(SyncularError::protocol_message(
-            "unexpected snapshot chunk frame header",
-        ));
-    }
-
-    let mut offset = 4usize;
-    let mut rows = Vec::with_capacity(estimated_snapshot_row_count(bytes.len()));
-    while offset < bytes.len() {
-        if offset + 4 > bytes.len() {
-            return Err(SyncularError::protocol_message(
-                "snapshot frame ended mid-header",
-            ));
-        }
-        let len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-        if offset + len > bytes.len() {
-            return Err(SyncularError::protocol_message(
-                "snapshot frame ended mid-body",
-            ));
-        }
-        let row: Value = serde_json::from_slice(&bytes[offset..offset + len])?;
-        rows.push(row);
-        offset += len;
-    }
-
-    Ok(rows)
-}
-
-#[cfg(feature = "native")]
-fn estimated_snapshot_row_count(byte_len: usize) -> usize {
-    (byte_len / 160).clamp(1, 20_000)
 }
 
 #[cfg(all(test, feature = "native"))]

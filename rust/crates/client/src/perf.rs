@@ -17,6 +17,7 @@ use syncular_client::fixtures::todo::generated::{
 };
 use syncular_client::protocol::{
     CombinedRequest, PushBatchRequest, PushCommitRequest, SyncOperation,
+    SYNC_PACK_ENCODING_BINARY_V1,
 };
 use syncular_client::store::{SyncStateStore, SyncStore};
 use syncular_client::transport::{
@@ -1335,6 +1336,7 @@ fn handle_stateful_ws_connection(
                 let request_id = message.request_id;
                 let request = CombinedRequest {
                     client_id: client_id.clone(),
+                    sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
                     push: Some(PushBatchRequest {
                         commits: vec![PushCommitRequest {
                             client_commit_id: message.client_commit_id,

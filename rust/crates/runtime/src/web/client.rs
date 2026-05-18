@@ -244,6 +244,7 @@ where
         let total_started_at = timing_now_ms();
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
+            sync_pack_encodings: self.sync_pack_encodings(),
             push: None,
             pull: Some(self.build_pull_request().await?),
         };
@@ -762,6 +763,7 @@ where
 
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
+            sync_pack_encodings: self.sync_pack_encodings(),
             push: self.build_push_request(&pending)?,
             pull: None,
         };
@@ -1039,6 +1041,10 @@ where
             sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
             subscriptions,
         })
+    }
+
+    fn sync_pack_encodings(&self) -> Vec<String> {
+        vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()]
     }
 
     async fn prepare_push(&mut self) -> Result<Vec<OutboxCommit>> {

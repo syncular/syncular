@@ -545,6 +545,8 @@ impl AppTestServer {
                                 commit_seq: commit.commit_seq,
                                 created_at: self.created_at(commit.commit_seq),
                                 actor_id: self.options.actor_id.clone(),
+                                commit_digest: None,
+                                commit_chain_root: None,
                                 changes,
                             })
                         }
