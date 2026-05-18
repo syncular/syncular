@@ -524,6 +524,20 @@ derived-schema deferral for app bootstrap.
   `404ms -> 399ms`, derived schema `960.44ms -> 862.79ms`, and peak memory
   `738.17MB -> 737.09MB`. Same-run TS 500k was `3740.24ms`, so Rust was
   `0.68x` TS wall time for this run.
+- Retained no-allocation generic inference property iteration. Replacing
+  `Object.entries(row)` with an own-property loop avoids allocating an entries
+  array for every row in the same generic binary inference path. Correctness
+  checks stayed green (`bun test packages/core/src/__tests__/snapshot-chunks.test.ts
+  tests/unit/server-pull.test.ts`, `bun run --cwd rust/bindings/browser tsgo`).
+  Local generated-encoder 100k guardrail stayed neutral: Rust bootstrap
+  `138.04ms -> 138.83ms`, pull request `63ms -> 63ms`, server binary encode
+  `15ms`. External branch-server 500k improved again versus the previous
+  retained inference cleanup: Rust bootstrap `2547.95ms -> 2463.69ms`
+  (`-84.26ms`, `-3.3%`), pull request `1112ms -> 1014ms`, server binary encode
+  `472ms -> 367ms`, server snapshot query stayed `504ms`, local apply
+  `399ms -> 391ms`, derived schema `862.79ms -> 872.04ms`, and peak memory
+  `737.09MB -> 737.50MB`. Same-run TS 500k was `3865.52ms`, so Rust was
+  `0.64x` TS wall time for this run.
 
 ### Required Benchmark Scoreboard
 

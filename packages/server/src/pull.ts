@@ -245,7 +245,9 @@ function inferBinarySnapshotColumns(
   const columnsByName = new Map<string, SnapshotColumnInference>();
 
   for (const row of rows) {
-    for (const [name, value] of Object.entries(row)) {
+    for (const name in row) {
+      if (!Object.hasOwn(row, name)) continue;
+      const value = row[name];
       let column = columnsByName.get(name);
       if (!column) {
         column = { name, type: null, nullable: false, presentCount: 0 };
