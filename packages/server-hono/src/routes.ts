@@ -975,7 +975,7 @@ export function createSyncRoutes<
         : []
     )
   );
-  const maxPullLimitCommits = config.maxPullLimitCommits ?? 100;
+  const maxPullLimitCommits = config.maxPullLimitCommits ?? 500;
   const maxSubscriptionsPerPull = config.maxSubscriptionsPerPull ?? 200;
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 50000;
   const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 50;
@@ -2290,7 +2290,7 @@ export function createSyncRoutes<
         const request = {
           clientId,
           limitCommits: clampInt(
-            body.pull.limitCommits ?? 50,
+            body.pull.limitCommits ?? 500,
             1,
             maxPullLimitCommits
           ),

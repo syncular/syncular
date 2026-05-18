@@ -59,7 +59,7 @@ pub struct WebSyncPullOptions {
 impl Default for WebSyncPullOptions {
     fn default() -> Self {
         Self {
-            limit_commits: 50,
+            limit_commits: 500,
             limit_snapshot_rows: 50_000,
             max_snapshot_pages: 10,
             dedupe_rows: None,
@@ -72,7 +72,7 @@ impl Default for WebSyncPullOptions {
 }
 
 fn default_limit_commits() -> i64 {
-    50
+    500
 }
 
 fn default_limit_snapshot_rows() -> i64 {
