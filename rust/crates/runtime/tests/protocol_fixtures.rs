@@ -14,7 +14,7 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
         fixture["contentType"].as_str(),
         Some(SYNC_PACK_CONTENT_TYPE)
     );
-    assert_eq!(fixture["wireVersion"].as_u64(), Some(9));
+    assert_eq!(fixture["wireVersion"].as_u64(), Some(10));
     assert!(is_binary_sync_pack_content_type(Some(
         "application/vnd.syncular.sync-pack.v1; charset=binary"
     )));
@@ -75,6 +75,14 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
     let commit = &subscription.commits[0];
     assert_eq!(commit.commit_seq, 42);
     assert_eq!(commit.actor_id, "user-2");
+    assert_eq!(
+        commit.commit_digest.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        commit.commit_chain_root.as_deref(),
+        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
     assert_eq!(commit.changes.len(), 1);
     assert_eq!(commit.changes[0].table, "tasks");
     assert_eq!(commit.changes[0].row_id, "task-1");

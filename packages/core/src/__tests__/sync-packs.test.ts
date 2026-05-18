@@ -114,6 +114,8 @@ describe('binary sync pack format', () => {
                 commitSeq: 42,
                 createdAt: '2026-05-17T10:00:00.000Z',
                 actorId: 'user-2',
+                commitDigest: 'a'.repeat(64),
+                commitChainRoot: 'b'.repeat(64),
                 changes: [
                   {
                     table: 'tasks',
@@ -159,7 +161,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(9);
+    expect(encoded[4]).toBe(10);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);

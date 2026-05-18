@@ -1331,6 +1331,8 @@ export async function pull<
                         commitSeq: number;
                         createdAt: string;
                         actorId: string;
+                        commitDigest: string | null;
+                        commitChainRoot: string | null;
                         change: SyncChange;
                       }
                     >();
@@ -1356,6 +1358,8 @@ export async function pull<
                         commitSeq: r.commit_seq,
                         createdAt: r.created_at,
                         actorId: r.actor_id,
+                        commitDigest: r.commit_digest,
+                        commitChainRoot: r.commit_chain_root,
                         change,
                       });
                     }
@@ -1386,6 +1390,12 @@ export async function pull<
                           commitSeq: item.commitSeq,
                           createdAt: item.createdAt,
                           actorId: item.actorId,
+                          ...(item.commitDigest
+                            ? { commitDigest: item.commitDigest }
+                            : {}),
+                          ...(item.commitChainRoot
+                            ? { commitChainRoot: item.commitChainRoot }
+                            : {}),
                           changes: [item.change],
                         });
                         continue;
@@ -1416,6 +1426,12 @@ export async function pull<
                         commitSeq: seq,
                         createdAt: r.created_at,
                         actorId: r.actor_id,
+                        ...(r.commit_digest
+                          ? { commitDigest: r.commit_digest }
+                          : {}),
+                        ...(r.commit_chain_root
+                          ? { commitChainRoot: r.commit_chain_root }
+                          : {}),
                         changes: [],
                       };
                       commits.push(commit);

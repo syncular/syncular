@@ -277,6 +277,10 @@ pub struct SyncCommit {
     pub created_at: String,
     #[serde(rename = "actorId")]
     pub actor_id: String,
+    #[serde(rename = "commitDigest", skip_serializing_if = "Option::is_none")]
+    pub commit_digest: Option<String>,
+    #[serde(rename = "commitChainRoot", skip_serializing_if = "Option::is_none")]
+    pub commit_chain_root: Option<String>,
     pub changes: Vec<SyncChange>,
 }
 

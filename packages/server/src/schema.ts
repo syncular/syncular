@@ -228,6 +228,8 @@ export interface SyncCommitRow {
   actor_id: string;
   created_at: string;
   result_json: unknown | null;
+  commit_digest: string | null;
+  commit_chain_root: string | null;
 }
 
 /**

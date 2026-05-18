@@ -1408,6 +1408,8 @@ impl SharedCrdtServer {
                 commit_seq: commit.commit_seq,
                 created_at: "2026-05-13T00:00:00.000Z".to_string(),
                 actor_id: commit.client_id.clone(),
+                commit_digest: None,
+                commit_chain_root: None,
                 changes: commit.changes.clone(),
             })
             .collect()

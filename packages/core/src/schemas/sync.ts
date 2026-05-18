@@ -195,6 +195,8 @@ export const SyncCommitSchema = z.object({
   commitSeq: z.number().int(),
   createdAt: z.string(),
   actorId: z.string(),
+  commitDigest: z.string().optional(),
+  commitChainRoot: z.string().optional(),
   changes: z.array(SyncChangeSchema),
 });
 

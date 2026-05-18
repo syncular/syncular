@@ -12,6 +12,7 @@
  *   incremental changes.
  * - v8: variant-tagged push and operation result records.
  * - v9: per-snapshot `bootstrapStateAfter` checkpoints for partial resume.
+ * - v10: optional per-commit digest and chain-root verification metadata.
  */
 
 import type {
@@ -43,7 +44,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 9;
+const VERSION = 10;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -352,16 +353,24 @@ function writeCommit(
   writer.i64(commit.commitSeq);
   writer.string32(commit.createdAt);
   writer.string32(commit.actorId);
+  writer.optionalString32(commit.commitDigest);
+  writer.optionalString32(commit.commitChainRoot);
   writeChanges(writer, commit.changes, options);
 }
 
 function readCommit(reader: BinarySyncPackReader): SyncCommit {
-  return {
+  const commit: SyncCommit = {
     commitSeq: reader.i64('commit seq'),
     createdAt: reader.string32('commit createdAt'),
     actorId: reader.string32('commit actorId'),
-    changes: readChangesV8(reader),
+    changes: [],
   };
+  const commitDigest = reader.optionalString32('commit digest');
+  if (commitDigest !== undefined) commit.commitDigest = commitDigest;
+  const commitChainRoot = reader.optionalString32('commit chain root');
+  if (commitChainRoot !== undefined) commit.commitChainRoot = commitChainRoot;
+  commit.changes = readChangesV8(reader);
+  return commit;
 }
 
 function writeChanges(

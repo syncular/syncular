@@ -1459,6 +1459,8 @@ mod tests {
                     commit_seq: 2,
                     created_at: "2026-05-10T00:00:00.000Z".to_string(),
                     actor_id: "other".to_string(),
+                    commit_digest: None,
+                    commit_chain_root: None,
                     changes: vec![SyncChange {
                         table: "tasks".to_string(),
                         row_id: "t2".to_string(),
