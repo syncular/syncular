@@ -221,11 +221,11 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         rows: [{ id: firstTask.id, title: firstTask.title }],
       }
     );
-    await expect(client.executeSql(sql, [secondTask.id])).resolves.toMatchObject(
-      {
-        rows: [{ id: secondTask.id, title: secondTask.title }],
-      }
-    );
+    await expect(
+      client.executeSql(sql, [secondTask.id])
+    ).resolves.toMatchObject({
+      rows: [{ id: secondTask.id, title: secondTask.title }],
+    });
   });
 
   it('surfaces revoked sessions when auth refresh declines retry', async () => {
@@ -431,6 +431,58 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ]);
   });
 
+  it('rejects corrupted snapshot chunks before applying rows', async () => {
+    const scenario = syncConformance.snapshotChunk;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      snapshotBundleMaxBytes: 1,
+      seedTasks: [
+        {
+          id: scenario.browserServerTask.id,
+          title: scenario.browserServerTask.title,
+          actorId: ACTOR_A,
+        },
+      ],
+      edgeGate: (request) => {
+        if (new URL(request.url).pathname.includes('/snapshot-chunks/')) {
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'corrupted-snapshot-chunk-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    const localRow = {
+      ...scenario.localRow,
+      user_id: ACTOR_A,
+    };
+    await client.applyLocalOperation(
+      {
+        table: 'tasks',
+        row_id: localRow.id,
+        op: 'upsert',
+        payload: localRow,
+        base_version: 0,
+      },
+      localRow
+    );
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    await expect(client.syncPull()).rejects.toThrow(/hash mismatch/i);
+
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({
+        id: scenario.localRow.id,
+        title: scenario.localRow.title,
+      }),
+    ]);
+  });
+
   it('keeps repeated pulls of the same server row idempotent', async () => {
     const scenario = syncConformance.repeatedPull;
     const sync = await createHonoSyncHarness({
@@ -476,10 +528,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
     const cursorRows = await unsafe.executeUnsafeSql<{
       cursor: number;
-    }>(
-      'select cursor from sync_subscription_state where subscription_id = ?',
-      [syncConformance.subscription.id]
-    );
+    }>('select cursor from sync_subscription_state where subscription_id = ?', [
+      syncConformance.subscription.id,
+    ]);
     expect(cursorRows.rows).toEqual([
       { cursor: scenario.expectedBrowserCursor },
     ]);
@@ -677,8 +728,12 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       },
     ]);
 
-    await expect(clientA.unsubscribeQuery(snapshot.id)).resolves.toBeUndefined();
-    await expect(clientA.unsubscribeQuery(snapshot.id)).resolves.toBeUndefined();
+    await expect(
+      clientA.unsubscribeQuery(snapshot.id)
+    ).resolves.toBeUndefined();
+    await expect(
+      clientA.unsubscribeQuery(snapshot.id)
+    ).resolves.toBeUndefined();
     await pushTaskAndPull(clientB, clientA, scenario.thirdTask);
     expect(events).toHaveLength(scenario.expectedEventsAfterUnsubscribe);
   });
@@ -1169,7 +1224,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const conflictRows = await unsafe.executeUnsafeSql<{
       server_row_json: string;
     }>('select server_row_json from sync_conflicts');
-    expect(conflictRows.rows).toHaveLength(scenario.conflict.expectedConflictCount);
+    expect(conflictRows.rows).toHaveLength(
+      scenario.conflict.expectedConflictCount
+    );
     const serverRow = JSON.parse(conflictRows.rows[0]!.server_row_json) as {
       title?: string;
     };
@@ -1300,7 +1357,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
-    await reader.client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    await reader.client.setSubscriptions([
+      taskSubscription({ actorId: ACTOR_A }),
+    ]);
     await expect(reader.client.syncPull()).resolves.toMatchObject({
       changedTables: [syncConformance.subscription.table],
       pushedCommits: 0,
@@ -1446,9 +1505,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const outboxRows = await unsafe.executeUnsafeSql<{
       operations_json: string;
     }>('select operations_json from sync_outbox_commits order by created_at');
-    expect(outboxRows.rows.some((row) => row.operations_json.includes(plaintext))).toBe(
-      false
-    );
+    expect(
+      outboxRows.rows.some((row) => row.operations_json.includes(plaintext))
+    ).toBe(false);
 
     await client.syncOnce();
     const ackedCrdtRows = await unsafe.executeUnsafeSql<{
