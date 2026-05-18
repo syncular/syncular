@@ -538,6 +538,22 @@ derived-schema deferral for app bootstrap.
   `399ms -> 391ms`, derived schema `862.79ms -> 872.04ms`, and peak memory
   `737.09MB -> 737.50MB`. Same-run TS 500k was `3865.52ms`, so Rust was
   `0.64x` TS wall time for this run.
+- Retained precomputed generic binary value writers. `encodeBinarySnapshotTable`
+  now builds per-column value writers once per chunk instead of switching on
+  column type and constructing label strings for every cell. This only targets
+  the generic encoder; generated table writers remain the preferred hot path.
+  Correctness checks stayed green (`bun test
+  packages/core/src/__tests__/snapshot-chunks.test.ts tests/unit/server-pull.test.ts`,
+  `bun run --cwd rust/bindings/browser tsgo`). Local generated-encoder 100k
+  guardrail was noisy and not used as the target conclusion: Rust bootstrap
+  `138.04ms -> 148.36ms` while TS also drifted `722.67ms -> 777.09ms`; server
+  binary encode stayed `15ms`. External branch-server 500k improved modestly
+  versus the previous retained property-loop run: first candidate
+  `2463.69ms -> 2418.98ms`, server binary encode `367ms -> 356ms`; confirm
+  Rust-only run was `2441.75ms` total with server binary encode `350ms`, local
+  apply `396ms`, derived schema `858.63ms`, and peak memory `736.38MB`. Keep
+  this because the code is local to the generic encoder and the measured server
+  encode bucket moved in the right direction twice.
 
 ### Required Benchmark Scoreboard
 
