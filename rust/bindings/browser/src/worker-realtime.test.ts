@@ -106,6 +106,72 @@ describe('Syncular v2 worker realtime', () => {
     );
   });
 
+  it('sends and forwards websocket presence messages', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const events: SyncularV2WorkerEvent[] = [];
+    const controller = new SyncularV2WorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: (event) => events.push(event),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    controller.sendPresence('join', 'tasks:user-1', { editing: 'task-1' });
+
+    expect(JSON.parse(sockets[0]!.sent.at(-1)!)).toEqual({
+      type: 'presence',
+      action: 'join',
+      scopeKey: 'tasks:user-1',
+      metadata: { editing: 'task-1' },
+    });
+
+    sockets[0]!.message({
+      event: 'presence',
+      data: {
+        presence: {
+          action: 'snapshot',
+          scopeKey: 'tasks:user-1',
+          entries: [
+            {
+              clientId: 'client-2',
+              actorId: 'actor-2',
+              joinedAt: 123,
+              metadata: { viewing: 'task-2' },
+            },
+          ],
+        },
+      },
+    });
+
+    await waitFor(() => events.some((event) => event.type === 'presenceEvent'));
+    expect(events).toContainEqual({
+      protocolVersion: 1,
+      type: 'presenceEvent',
+      action: 'snapshot',
+      scopeKey: 'tasks:user-1',
+      entries: [
+        {
+          clientId: 'client-2',
+          actorId: 'actor-2',
+          joinedAt: 123,
+          metadata: { viewing: 'task-2' },
+        },
+      ],
+    });
+  });
+
   it('accepts websocket text frames delivered as bytes', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];

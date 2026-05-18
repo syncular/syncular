@@ -110,6 +110,14 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'sendPresence';
+      action: 'join' | 'leave' | 'update';
+      scopeKey: string;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'executeSql';
       sql: string;
       params: unknown[];
@@ -343,6 +351,20 @@ export type SyncularV2WorkerEvent =
   | (SyncularV2WorkerEventBase & {
       type: 'realtimeState';
       state: SyncularV2RealtimeConnectionState;
+    })
+  | (SyncularV2WorkerEventBase & {
+      type: 'presenceEvent';
+      action: 'join' | 'leave' | 'update' | 'snapshot';
+      scopeKey: string;
+      clientId?: string;
+      actorId?: string;
+      metadata?: Record<string, unknown>;
+      entries?: Array<{
+        clientId: string;
+        actorId: string;
+        joinedAt: number;
+        metadata?: Record<string, unknown>;
+      }>;
     })
   | (SyncularV2WorkerEventBase & {
       type: 'diagnostic';

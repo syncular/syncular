@@ -66,6 +66,27 @@ await syncular.mutations.tasks.update(taskId, {
 });
 ```
 
+Local mutations schedule a background `syncOnce()` by default after the outbox
+commit is written. Bursts are coalesced with a short debounce, and writes that
+land during an active sync queue one follow-up sync. Apps that own their own
+sync cadence can disable it:
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'device-1',
+  },
+  sync: {
+    autoSyncAfterMutation: false,
+  },
+});
+```
+
+Use `mutationSyncDebounceMs` to tune the post-mutation sync debounce, and
+`rowsChangedDebounceMs` when a UI wants to coalesce changed-row notifications.
+
 ## Route row deltas
 
 The runtime emits generic `changedRows`; generated helpers turn those into
@@ -82,6 +103,59 @@ const unsubscribe = syncular.client.addRowsChangedListener((event) => {
   }
 });
 ```
+
+The same client surface exposes operational events for app chrome:
+
+```ts
+syncular.client.addEventListener('outbox:change', (stats) => {
+  setPendingSyncCount(stats.pending + stats.sending);
+});
+
+syncular.client.addEventListener('conflict:change', (stats) => {
+  setConflictCount(stats.unresolved);
+});
+
+syncular.client.addEventListener('blob:upload:complete', ({ ref }) => {
+  markBlobUploaded(ref.hash);
+});
+```
+
+## Presence
+
+Realtime presence uses the same websocket connection as sync wakeups. Join a
+scope only after the client has subscribed and completed an initial sync, since
+the server authorizes presence by the websocket connection's active scope keys.
+
+```ts
+await syncular.client.setSubscriptions([
+  taskSubscription({ actorId: 'user-1' }),
+]);
+await syncular.client.syncOnce();
+await syncular.client.startRealtime({
+  wsUrl: 'wss://api.example.com/sync/realtime',
+});
+
+const unsubscribePresence = syncular.client.addPresenceListener((event) => {
+  renderPresence(event.scopeKey, event.presence);
+});
+
+syncular.client.joinPresence('user:user-1', {
+  editingTaskId: taskId,
+});
+
+syncular.client.updatePresenceMetadata('user:user-1', {
+  editingTaskId: nextTaskId,
+});
+
+const current = syncular.client.getPresence('user:user-1');
+
+syncular.client.leavePresence('user:user-1');
+unsubscribePresence();
+```
+
+Presence scope keys are the unpartitioned sync scope keys, such as
+`user:user-1` for a `user:{user_id}` server handler scope. The browser client
+normalizes partitioned server messages back to those app-facing keys.
 
 ## Rich editors
 

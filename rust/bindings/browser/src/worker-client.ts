@@ -13,11 +13,17 @@ import type {
   SyncularBuildYjsTextUpdateResult,
   SyncularV2AuthHeaders,
   SyncularV2BlobCacheStats,
+  SyncularV2BlobUploadErrorEvent,
+  SyncularV2BlobUploadEvent,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2Client,
+  SyncularV2ClientEventMap,
+  SyncularV2ClientEventSink,
+  SyncularV2ClientEventType,
   SyncularV2ClientConfig,
   SyncularV2ConflictSummary,
+  SyncularV2ConflictStats,
   SyncularV2ConnectionState,
   SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldCompactionRequest,
@@ -36,6 +42,9 @@ import type {
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
+  SyncularV2OutboxStats,
+  SyncularV2PresenceEntry,
+  SyncularV2PresenceSink,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
   SyncularV2RowsChangedSink,
@@ -67,6 +76,14 @@ type PendingRequest = {
   reject(reason: unknown): void;
 };
 
+type BlobOutboxRow = {
+  hash: string;
+  size: number;
+  mime_type: string;
+  status: string;
+  error: string | null;
+};
+
 type SyncularV2WorkerRequestInput =
   SyncularV2WorkerRequest extends infer Request
     ? Request extends SyncularV2WorkerRequest
@@ -96,6 +113,7 @@ export async function createSyncularV2WorkerClient(
     getHeaders: options.getHeaders,
     authLifecycle: options.authLifecycle,
     diagnostics: options.diagnostics,
+    rowsChangedDebounceMs: options.sync?.rowsChangedDebounceMs,
   });
   try {
     await client.open(config, runtime);
@@ -165,8 +183,25 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #storageFallback: SyncularV2StorageFallbackInfo | undefined;
   #lastDiagnostic: SyncularV2DiagnosticEvent | undefined;
   #lastError: { message: string; code?: string } | undefined;
+  #rowsChangedDebounceMs: number | false;
+  #rowsChangedDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  #pendingRowsChanged:
+    | {
+        source: string;
+        changedTables: Set<string>;
+        changedRows: SyncularV2SyncResult['changedRows'];
+        changedRowsTruncated: boolean;
+      }
+    | undefined;
+  #lastOutboxStats: SyncularV2OutboxStats | undefined;
+  #lastConflictStats: SyncularV2ConflictStats | undefined;
   #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
   #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
+  #eventListeners = new Map<
+    SyncularV2ClientEventType,
+    Set<SyncularV2ClientEventSink<SyncularV2ClientEventType>>
+  >();
+  #presenceByScopeKey = new Map<string, SyncularV2PresenceEntry[]>();
   #liveListeners = new Map<
     string,
     (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
@@ -180,12 +215,17 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       getHeaders?: CreateSyncularV2DatabaseOptions['getHeaders'];
       authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
       diagnostics?: SyncularV2DiagnosticSink;
+      rowsChangedDebounceMs?: number | false;
     }
   ) {
     this.#requestTimeoutMs =
       options.requestTimeoutMs ?? DEFAULT_SYNCULAR_V2_WORKER_REQUEST_TIMEOUT_MS;
     this.#getHeaders = options.getHeaders;
     this.#authLifecycle = options.authLifecycle;
+    this.#rowsChangedDebounceMs =
+      options.rowsChangedDebounceMs === false
+        ? false
+        : Math.max(0, options.rowsChangedDebounceMs ?? 0);
     if (options.diagnostics) {
       this.#diagnosticListeners.add(options.diagnostics);
     }
@@ -441,9 +481,16 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     options?: SyncularV2BlobStoreOptions
   ): Promise<BlobRef> {
     const request = { type: 'storeBlob' as const, data, options };
-    return options?.immediate
-      ? this.#requestWithAuthRetry(request, 'blobInitiateUpload')
-      : this.#request(request);
+    const result = options?.immediate
+      ? this.#requestWithAuthRetry<BlobRef>(request, 'blobInitiateUpload')
+      : this.#request<BlobRef>(request);
+    return result.then((ref) => {
+      if (options?.immediate) {
+        this.#emitClientEvent('blob:upload:complete', { ref });
+      }
+      void this.#emitOperationalState();
+      return ref;
+    });
   }
 
   retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
@@ -457,11 +504,23 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return this.#request({ type: 'isBlobLocal', hash });
   }
 
-  processBlobUploadQueue(): Promise<{ uploaded: number; failed: number }> {
-    return this.#requestWithAuthRetry(
-      { type: 'processBlobUploadQueue' },
-      'blobInitiateUpload'
-    );
+  async processBlobUploadQueue(): Promise<{ uploaded: number; failed: number }> {
+    const observeBlobEvents =
+      this.#hasClientEventListeners('blob:upload:complete') ||
+      this.#hasClientEventListeners('blob:upload:error');
+    const before = observeBlobEvents
+      ? await this.#readBlobOutboxRows().catch(() => [])
+      : [];
+    const result = await this.#requestWithAuthRetry<{
+      uploaded: number;
+      failed: number;
+    }>({ type: 'processBlobUploadQueue' }, 'blobInitiateUpload');
+    if (observeBlobEvents) {
+      const after = await this.#readBlobOutboxRows().catch(() => []);
+      this.#emitBlobUploadEvents(before, after);
+    }
+    void this.#emitOperationalState();
+    return result;
   }
 
   blobUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats> {
@@ -610,11 +669,117 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
+  addEventListener<T extends SyncularV2ClientEventType>(
+    event: T,
+    listener: SyncularV2ClientEventSink<T>
+  ): () => void {
+    const listeners = this.#eventListeners.get(event) ?? new Set();
+    listeners.add(
+      listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
+    );
+    this.#eventListeners.set(event, listeners);
+    return () => {
+      listeners.delete(
+        listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
+      );
+      if (listeners.size === 0) this.#eventListeners.delete(event);
+    };
+  }
+
   addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void {
     this.#rowsChangedListeners.add(listener);
     return () => {
       this.#rowsChangedListeners.delete(listener);
     };
+  }
+
+  getPresence<TMetadata = Record<string, unknown>>(
+    scopeKey: string
+  ): SyncularV2PresenceEntry<TMetadata>[] {
+    return (this.#presenceByScopeKey.get(scopeKey) ??
+      []) as SyncularV2PresenceEntry<TMetadata>[];
+  }
+
+  joinPresence(scopeKey: string, metadata?: Record<string, unknown>): void {
+    void this.#request({
+      type: 'sendPresence',
+      action: 'join',
+      scopeKey,
+      ...(metadata === undefined ? {} : { metadata }),
+    }).catch((error) => {
+      this.#emitDiagnostic({
+        level: 'warn',
+        source: 'realtime',
+        code: 'realtime.presence_join_failed',
+        message: `Syncular v2 presence join failed: ${errorMessage(error)}`,
+        details: { scopeKey },
+      });
+    });
+    this.#applyPresenceEvent({
+      action: 'join',
+      scopeKey,
+      clientId: this.#config?.clientId ?? '',
+      actorId: this.#config?.actorId ?? '',
+      metadata,
+    });
+  }
+
+  leavePresence(scopeKey: string): void {
+    void this.#request({
+      type: 'sendPresence',
+      action: 'leave',
+      scopeKey,
+    }).catch((error) => {
+      this.#emitDiagnostic({
+        level: 'warn',
+        source: 'realtime',
+        code: 'realtime.presence_leave_failed',
+        message: `Syncular v2 presence leave failed: ${errorMessage(error)}`,
+        details: { scopeKey },
+      });
+    });
+    this.#applyPresenceEvent({
+      action: 'leave',
+      scopeKey,
+      clientId: this.#config?.clientId ?? '',
+      actorId: this.#config?.actorId ?? '',
+    });
+  }
+
+  updatePresenceMetadata(
+    scopeKey: string,
+    metadata: Record<string, unknown>
+  ): void {
+    void this.#request({
+      type: 'sendPresence',
+      action: 'update',
+      scopeKey,
+      metadata,
+    }).catch((error) => {
+      this.#emitDiagnostic({
+        level: 'warn',
+        source: 'realtime',
+        code: 'realtime.presence_update_failed',
+        message: `Syncular v2 presence update failed: ${errorMessage(error)}`,
+        details: { scopeKey },
+      });
+    });
+    this.#applyPresenceEvent({
+      action: 'update',
+      scopeKey,
+      clientId: this.#config?.clientId ?? '',
+      actorId: this.#config?.actorId ?? '',
+      metadata,
+    });
+  }
+
+  addPresenceListener<TMetadata = Record<string, unknown>>(
+    listener: SyncularV2PresenceSink<TMetadata>
+  ): () => void {
+    return this.addEventListener(
+      'presence:change',
+      listener as SyncularV2ClientEventSink<'presence:change'>
+    );
   }
 
   addLiveQueryListener(
@@ -635,6 +800,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     try {
       await this.#request({ type: 'close' });
     } finally {
+      this.#flushRowsChanged();
       this.#rejectAll(new Error('Syncular v2 worker client closed'));
       if (this.ownsWorker) this.worker.terminate();
     }
@@ -643,6 +809,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   async #requestAndDrain<T>(request: SyncularV2WorkerRequestInput): Promise<T> {
     const value = await this.#request<T>(request);
     await this.#emitLiveEvents();
+    if (shouldEmitOperationalState(request.type)) {
+      void this.#emitOperationalState();
+    }
     return value;
   }
 
@@ -851,18 +1020,12 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       return;
     }
     if (event.type === 'rowsChanged') {
-      for (const listener of this.#rowsChangedListeners) {
-        try {
-          listener({
-            source: event.source,
-            changedTables: event.changedTables,
-            changedRows: event.changedRows,
-            changedRowsTruncated: event.changedRowsTruncated,
-          });
-        } catch {
-          // Row-change listeners must never break worker event handling.
-        }
-      }
+      this.#emitRowsChanged({
+        source: event.source,
+        changedTables: event.changedTables,
+        changedRows: event.changedRows,
+        changedRowsTruncated: event.changedRowsTruncated,
+      });
       return;
     }
     if (event.type === 'realtimeState') {
@@ -876,7 +1039,248 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       });
       return;
     }
+    if (event.type === 'presenceEvent') {
+      this.#applyPresenceEvent(event);
+      return;
+    }
     this.#emitDiagnostic(event.event);
+  }
+
+  #emitClientEvent<T extends SyncularV2ClientEventType>(
+    event: T,
+    payload: SyncularV2ClientEventMap[T]
+  ): void {
+    const listeners = this.#eventListeners.get(event);
+    if (!listeners || listeners.size === 0) return;
+    for (const listener of listeners) {
+      try {
+        listener(payload as SyncularV2ClientEventMap[SyncularV2ClientEventType]);
+      } catch {
+        // Client event listeners must never break sync control flow.
+      }
+    }
+  }
+
+  #hasClientEventListeners(event: SyncularV2ClientEventType): boolean {
+    return (this.#eventListeners.get(event)?.size ?? 0) > 0;
+  }
+
+  #emitRowsChanged(event: SyncularV2ClientEventMap['rows:changed']): void {
+    if (this.#rowsChangedDebounceMs === false || this.#rowsChangedDebounceMs <= 0) {
+      this.#deliverRowsChanged(event);
+      return;
+    }
+    if (!this.#pendingRowsChanged) {
+      this.#pendingRowsChanged = {
+        source: event.source,
+        changedTables: new Set(event.changedTables),
+        changedRows: [...event.changedRows],
+        changedRowsTruncated: event.changedRowsTruncated === true,
+      };
+    } else {
+      const pending = this.#pendingRowsChanged;
+      pending.source =
+        pending.source === event.source ? pending.source : 'mixed';
+      for (const table of event.changedTables) pending.changedTables.add(table);
+      pending.changedRows.push(...event.changedRows);
+      pending.changedRowsTruncated ||= event.changedRowsTruncated === true;
+    }
+    if (this.#rowsChangedDebounceTimer) return;
+    this.#rowsChangedDebounceTimer = setTimeout(() => {
+      this.#rowsChangedDebounceTimer = undefined;
+      this.#flushRowsChanged();
+    }, this.#rowsChangedDebounceMs);
+  }
+
+  #flushRowsChanged(): void {
+    if (this.#rowsChangedDebounceTimer) {
+      clearTimeout(this.#rowsChangedDebounceTimer);
+      this.#rowsChangedDebounceTimer = undefined;
+    }
+    const pending = this.#pendingRowsChanged;
+    this.#pendingRowsChanged = undefined;
+    if (!pending) return;
+    this.#deliverRowsChanged({
+      source: pending.source,
+      changedTables: [...pending.changedTables],
+      changedRows: pending.changedRows,
+      changedRowsTruncated: pending.changedRowsTruncated,
+    });
+  }
+
+  #deliverRowsChanged(event: SyncularV2ClientEventMap['rows:changed']): void {
+    for (const listener of this.#rowsChangedListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Row-change listeners must never break worker event handling.
+      }
+    }
+    this.#emitClientEvent('rows:changed', event);
+  }
+
+  async #emitOperationalState(): Promise<void> {
+    if (
+      !this.#hasClientEventListeners('outbox:change') &&
+      !this.#hasClientEventListeners('conflict:change')
+    ) {
+      return;
+    }
+    const [outboxStats, conflictStats] = await Promise.all([
+      this.#readOutboxStats().catch(() => undefined),
+      this.#readConflictStats().catch(() => undefined),
+    ]);
+    if (outboxStats && !sameJson(this.#lastOutboxStats, outboxStats)) {
+      this.#lastOutboxStats = outboxStats;
+      this.#emitClientEvent('outbox:change', outboxStats);
+    }
+    if (conflictStats && !sameJson(this.#lastConflictStats, conflictStats)) {
+      this.#lastConflictStats = conflictStats;
+      this.#emitClientEvent('conflict:change', conflictStats);
+    }
+  }
+
+  async #readOutboxStats(): Promise<SyncularV2OutboxStats> {
+    const result = await this.#request<
+      SyncularV2SqlResult<{ status: string; count: number }>
+    >({
+      type: 'executeUnsafeSql',
+      sql: 'select status, count(*) as count from sync_outbox_commits group by status',
+      params: [],
+    });
+    const stats: SyncularV2OutboxStats = {
+      pending: 0,
+      sending: 0,
+      failed: 0,
+      acked: 0,
+      total: 0,
+    };
+    for (const row of result.rows) {
+      const count = coerceCount(row.count);
+      if (row.status === 'pending') stats.pending = count;
+      if (row.status === 'sending') stats.sending = count;
+      if (row.status === 'failed') stats.failed = count;
+      if (row.status === 'acked') stats.acked = count;
+      stats.total += count;
+    }
+    return stats;
+  }
+
+  async #readConflictStats(): Promise<SyncularV2ConflictStats> {
+    const result = await this.#request<
+      SyncularV2SqlResult<{
+        unresolved: number;
+        resolved: number;
+        total: number;
+      }>
+    >({
+      type: 'executeUnsafeSql',
+      sql:
+        'select ' +
+        'coalesce(sum(case when resolved_at is null then 1 else 0 end), 0) as unresolved, ' +
+        'coalesce(sum(case when resolved_at is not null then 1 else 0 end), 0) as resolved, ' +
+        'count(*) as total from sync_conflicts',
+      params: [],
+    });
+    const row = result.rows[0];
+    return {
+      unresolved: coerceCount(row?.unresolved),
+      resolved: coerceCount(row?.resolved),
+      total: coerceCount(row?.total),
+    };
+  }
+
+  async #readBlobOutboxRows(): Promise<BlobOutboxRow[]> {
+    const result = await this.#request<SyncularV2SqlResult<BlobOutboxRow>>({
+      type: 'executeUnsafeSql',
+      sql:
+        'select hash, size, mime_type, status, error ' +
+        'from sync_blob_outbox order by created_at asc',
+      params: [],
+    });
+    return result.rows;
+  }
+
+  #emitBlobUploadEvents(
+    beforeRows: readonly BlobOutboxRow[],
+    afterRows: readonly BlobOutboxRow[]
+  ): void {
+    const after = new Map(afterRows.map((row) => [row.hash, row]));
+    for (const before of beforeRows) {
+      const next = after.get(before.hash);
+      if (!next) {
+        this.#emitClientEvent('blob:upload:complete', {
+          ref: {
+            hash: before.hash,
+            size: coerceCount(before.size),
+            mimeType: before.mime_type,
+            encrypted: false,
+          },
+        });
+        continue;
+      }
+      if (before.status !== 'failed' && next.status === 'failed') {
+        this.#emitClientEvent('blob:upload:error', {
+          hash: next.hash,
+          error: next.error ?? 'Blob upload failed',
+        });
+      }
+    }
+  }
+
+  #applyPresenceEvent(event: {
+    action: 'join' | 'leave' | 'update' | 'snapshot';
+    scopeKey: string;
+    clientId?: string;
+    actorId?: string;
+    metadata?: Record<string, unknown>;
+    entries?: SyncularV2PresenceEntry[];
+  }): void {
+    const scopeKey = normalizePresenceScopeKey(event.scopeKey);
+    if (!scopeKey) return;
+    const current = this.#presenceByScopeKey.get(scopeKey) ?? [];
+    let next: SyncularV2PresenceEntry[];
+    if (event.action === 'snapshot') {
+      next = event.entries ?? [];
+    } else {
+      if (!event.clientId || !event.actorId) return;
+      if (event.action === 'leave') {
+        next = current.filter((entry) => entry.clientId !== event.clientId);
+      } else if (event.action === 'update') {
+        const existing = current.find(
+          (entry) => entry.clientId === event.clientId
+        );
+        if (!existing) return;
+        next = current.map((entry) =>
+          entry.clientId === event.clientId
+            ? { ...entry, metadata: event.metadata }
+            : entry
+        );
+      } else {
+        const existing = current.find(
+          (entry) => entry.clientId === event.clientId
+        );
+        next = [
+          ...current.filter((entry) => entry.clientId !== event.clientId),
+          {
+            clientId: event.clientId,
+            actorId: event.actorId,
+            joinedAt: existing?.joinedAt ?? Date.now(),
+            metadata: event.metadata,
+          },
+        ];
+      }
+    }
+    if (arePresenceEntriesEqual(current, next)) return;
+    if (next.length === 0) {
+      this.#presenceByScopeKey.delete(scopeKey);
+    } else {
+      this.#presenceByScopeKey.set(scopeKey, next);
+    }
+    this.#emitClientEvent('presence:change', {
+      scopeKey,
+      presence: next,
+    });
   }
 
   #rejectAll(reason: SyncularV2WorkerErrorPayload | Error): void {
@@ -936,8 +1340,38 @@ function isOpfsOpenFailure(error: unknown): boolean {
   );
 }
 
+function shouldEmitOperationalState(
+  type: SyncularV2WorkerRequestInput['type']
+): boolean {
+  return (
+    type === 'applyLocalOperation' ||
+    type === 'applyLocalOperationsBatch' ||
+    type === 'applyLocalOperationsCommit' ||
+    type === 'syncPull' ||
+    type === 'syncPush' ||
+    type === 'syncOnce' ||
+    type === 'retryConflictKeepLocal' ||
+    type === 'resolveConflict' ||
+    type === 'compactStorage'
+  );
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizePresenceScopeKey(scopeKey: string): string {
+  const separator = scopeKey.indexOf('::');
+  return separator >= 0 ? scopeKey.slice(separator + 2) : scopeKey;
+}
+
+function coerceCount(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value ?? 0);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : 0;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function cloneAuthHeaders(
@@ -987,6 +1421,26 @@ function normalizeEncryptedCrdtConfig(
     keys[kid] = value instanceof Uint8Array ? bytesToBase64Url(value) : value;
   }
   return { ...config, keys };
+}
+
+function arePresenceEntriesEqual(
+  left: readonly SyncularV2PresenceEntry[],
+  right: readonly SyncularV2PresenceEntry[]
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (
+      a.clientId !== b.clientId ||
+      a.actorId !== b.actorId ||
+      a.joinedAt !== b.joinedAt ||
+      JSON.stringify(a.metadata ?? {}) !== JSON.stringify(b.metadata ?? {})
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {

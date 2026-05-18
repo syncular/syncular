@@ -61,6 +61,9 @@ await syncular.mutations.tasks.insert({
   project_id: 'project-1',
 });
 
+// Local mutations sync automatically by default. To opt out, pass:
+// sync: { autoSyncAfterMutation: false }
+
 const live = await syncular.live(
   syncular.db
     .selectFrom('tasks')
@@ -110,6 +113,28 @@ local rows from bypassing Syncular's outbox, conflict, encryption, blob, and
 realtime semantics. Generated app setup uses an internal schema-write path
 before the database handle is returned; application writes should use
 `syncular.mutations`.
+
+Mutations schedule `client.syncOnce()` automatically after a successful local
+commit. The scheduler coalesces repeated writes with a short debounce and queues
+one follow-up sync if another mutation lands while sync is already running:
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'client-1',
+  },
+  sync: {
+    autoSyncAfterMutation: true, // default
+    mutationSyncDebounceMs: 25,
+    rowsChangedDebounceMs: 16,
+  },
+});
+```
+
+Set `autoSyncAfterMutation: false` when an app wants to batch its own sync
+cycles explicitly.
 
 ## Blobs
 
@@ -222,6 +247,47 @@ await createSyncularAppDatabase({
     wsUrl: 'wss://api.example.com/sync/realtime',
     getParams: async () => ({ token: await auth.realtimeToken() }),
   },
+});
+```
+
+Realtime also carries presence. Scope keys match the sync scope keys exposed by
+the server, for example `user:user-1` for a `user:{user_id}` handler scope:
+
+```ts
+const unsubscribePresence = syncular.client.addPresenceListener((event) => {
+  renderCollaborators(event.scopeKey, event.presence);
+});
+
+syncular.client.joinPresence('user:user-1', {
+  editingTaskId: 'task-1',
+});
+
+syncular.client.updatePresenceMetadata('user:user-1', {
+  editingTaskId: 'task-2',
+});
+
+syncular.client.leavePresence('user:user-1');
+unsubscribePresence();
+```
+
+`getPresence(scopeKey)` returns the latest in-memory snapshot for that scope.
+The server authorizes presence against the websocket connection's current
+subscriptions, so call `setSubscriptions()` and complete an initial sync before
+joining presence.
+
+Operational events are available on the same client surface:
+
+```ts
+syncular.client.addEventListener('outbox:change', (stats) => {
+  updateSyncBadge(stats.pending + stats.sending);
+});
+
+syncular.client.addEventListener('conflict:change', (stats) => {
+  showConflictCount(stats.unresolved);
+});
+
+syncular.client.addEventListener('blob:upload:error', ({ hash, error }) => {
+  reportBlobUploadFailure(hash, error);
 });
 ```
 

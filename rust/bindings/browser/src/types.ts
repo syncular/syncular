@@ -132,6 +132,12 @@ export interface SyncularV2RealtimeOptions {
   heartbeatTimeoutMs?: number;
 }
 
+export interface SyncularV2DatabaseSyncOptions {
+  autoSyncAfterMutation?: boolean;
+  mutationSyncDebounceMs?: number | false;
+  rowsChangedDebounceMs?: number | false;
+}
+
 export interface CreateSyncularV2DatabaseOptions {
   config: SyncularV2ClientConfig;
   worker?: Worker | (() => Worker);
@@ -146,6 +152,7 @@ export interface CreateSyncularV2DatabaseOptions {
   authLifecycle?: SyncAuthLifecycle;
   diagnostics?: SyncularV2DiagnosticSink;
   realtime?: boolean | SyncularV2RealtimeOptions;
+  sync?: SyncularV2DatabaseSyncOptions;
 }
 
 export interface SyncularV2RuntimeArtifact {
@@ -413,6 +420,64 @@ export interface SyncularV2RowsChangedEvent {
 
 export type SyncularV2RowsChangedSink = (
   event: SyncularV2RowsChangedEvent
+) => void;
+
+export interface SyncularV2OutboxStats {
+  pending: number;
+  sending: number;
+  failed: number;
+  acked: number;
+  total: number;
+}
+
+export interface SyncularV2ConflictStats {
+  unresolved: number;
+  resolved: number;
+  total: number;
+}
+
+export interface SyncularV2PresenceEntry<
+  TMetadata = Record<string, unknown>,
+> {
+  clientId: string;
+  actorId: string;
+  joinedAt: number;
+  metadata?: TMetadata;
+}
+
+export interface SyncularV2PresenceChangeEvent<
+  TMetadata = Record<string, unknown>,
+> {
+  scopeKey: string;
+  presence: SyncularV2PresenceEntry<TMetadata>[];
+}
+
+export type SyncularV2PresenceSink<TMetadata = Record<string, unknown>> = (
+  event: SyncularV2PresenceChangeEvent<TMetadata>
+) => void;
+
+export interface SyncularV2BlobUploadEvent {
+  ref: BlobRef;
+}
+
+export interface SyncularV2BlobUploadErrorEvent {
+  hash: string;
+  error: string;
+}
+
+export interface SyncularV2ClientEventMap {
+  'rows:changed': SyncularV2RowsChangedEvent;
+  'outbox:change': SyncularV2OutboxStats;
+  'conflict:change': SyncularV2ConflictStats;
+  'blob:upload:complete': SyncularV2BlobUploadEvent;
+  'blob:upload:error': SyncularV2BlobUploadErrorEvent;
+  'presence:change': SyncularV2PresenceChangeEvent;
+}
+
+export type SyncularV2ClientEventType = keyof SyncularV2ClientEventMap;
+
+export type SyncularV2ClientEventSink<T extends SyncularV2ClientEventType> = (
+  event: SyncularV2ClientEventMap[T]
 ) => void;
 
 export interface SyncularV2SyncResult {
@@ -727,7 +792,23 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   runtimeInfo(): Promise<SyncularV2RuntimeInfo>;
   connectionState(): SyncularV2ConnectionState;
   addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void;
+  addEventListener<T extends SyncularV2ClientEventType>(
+    event: T,
+    listener: SyncularV2ClientEventSink<T>
+  ): () => void;
   addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void;
+  getPresence<TMetadata = Record<string, unknown>>(
+    scopeKey: string
+  ): SyncularV2PresenceEntry<TMetadata>[];
+  joinPresence(scopeKey: string, metadata?: Record<string, unknown>): void;
+  leavePresence(scopeKey: string): void;
+  updatePresenceMetadata(
+    scopeKey: string,
+    metadata: Record<string, unknown>
+  ): void;
+  addPresenceListener<TMetadata = Record<string, unknown>>(
+    listener: SyncularV2PresenceSink<TMetadata>
+  ): () => void;
   addLiveQueryListener(
     queryId: string,
     listener: (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void

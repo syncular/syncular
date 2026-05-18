@@ -50,6 +50,20 @@ interface SyncularV2RealtimeHelloMessage {
   syncPackEncoding?: string | null;
 }
 
+interface SyncularV2RealtimePresenceMessage {
+  action: 'join' | 'leave' | 'update' | 'snapshot';
+  scopeKey: string;
+  clientId?: string;
+  actorId?: string;
+  metadata?: Record<string, unknown>;
+  entries?: Array<{
+    clientId: string;
+    actorId: string;
+    joinedAt: number;
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
 export interface SyncularV2WorkerRealtimeSocket {
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
@@ -114,6 +128,31 @@ export class SyncularV2WorkerRealtimeController {
     this.#clearHeartbeatTimer();
     this.#closeSocket();
     this.#setState('disconnected');
+  }
+
+  sendPresence(
+    action: 'join' | 'leave' | 'update',
+    scopeKey: string,
+    metadata?: Record<string, unknown>
+  ): void {
+    const socket = this.#socket;
+    if (!socket || this.#state !== 'connected') {
+      this.#diagnostic({
+        level: 'warn',
+        code: 'realtime.presence_not_connected',
+        message: 'Syncular v2 realtime presence send skipped while disconnected',
+        details: { action, scopeKey },
+      });
+      return;
+    }
+    socket.send(
+      JSON.stringify({
+        type: 'presence',
+        action,
+        scopeKey,
+        ...(metadata === undefined ? {} : { metadata }),
+      })
+    );
   }
 
   #connect(): void {
@@ -207,6 +246,15 @@ export class SyncularV2WorkerRealtimeController {
         code: 'realtime.hello',
         message: 'Syncular v2 realtime session accepted',
         details: { ...helloMessage },
+      });
+      return;
+    }
+    const presenceMessage = readSyncularV2RealtimePresenceMessage(message);
+    if (presenceMessage) {
+      this.controllerOptions.postEvent({
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        type: 'presenceEvent',
+        ...presenceMessage,
       });
       return;
     }
@@ -546,6 +594,68 @@ function readSyncularV2RealtimeSyncMessage(
   const requiresPull =
     typeof record.requiresPull === 'boolean' ? record.requiresPull : undefined;
   return { cursor, changes, actorId, createdAt, reason, requiresPull };
+}
+
+function readSyncularV2RealtimePresenceMessage(
+  value: unknown
+): SyncularV2RealtimePresenceMessage | null {
+  if (!value || typeof value !== 'object') return null;
+  if ((value as { event?: unknown }).event !== 'presence') return null;
+  const data = (value as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') return null;
+  const presence = (data as { presence?: unknown }).presence;
+  if (!presence || typeof presence !== 'object') return null;
+  const record = presence as Record<string, unknown>;
+  const action = record.action;
+  if (
+    action !== 'join' &&
+    action !== 'leave' &&
+    action !== 'update' &&
+    action !== 'snapshot'
+  ) {
+    return null;
+  }
+  if (typeof record.scopeKey !== 'string' || !record.scopeKey) return null;
+  return {
+    action,
+    scopeKey: record.scopeKey,
+    clientId: typeof record.clientId === 'string' ? record.clientId : undefined,
+    actorId: typeof record.actorId === 'string' ? record.actorId : undefined,
+    metadata: objectRecordOrUndefined(record.metadata),
+    entries: Array.isArray(record.entries)
+      ? record.entries.flatMap(readPresenceEntry)
+      : undefined,
+  };
+}
+
+function readPresenceEntry(value: unknown): Array<{
+  clientId: string;
+  actorId: string;
+  joinedAt: number;
+  metadata?: Record<string, unknown>;
+}> {
+  if (!value || typeof value !== 'object') return [];
+  const record = value as Record<string, unknown>;
+  if (typeof record.clientId !== 'string') return [];
+  if (typeof record.actorId !== 'string') return [];
+  return [
+    {
+      clientId: record.clientId,
+      actorId: record.actorId,
+      joinedAt:
+        typeof record.joinedAt === 'number' ? record.joinedAt : Date.now(),
+      metadata: objectRecordOrUndefined(record.metadata),
+    },
+  ];
+}
+
+function objectRecordOrUndefined(
+  value: unknown
+): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return { ...(value as Record<string, unknown>) };
 }
 
 async function readRealtimeMessageBytes(

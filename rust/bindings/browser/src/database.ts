@@ -107,6 +107,7 @@ export interface SyncularV2MutationsOptions {
     idColumn: string;
     versionColumn: string;
   }) => Promise<number | null>;
+  afterCommit?: (meta: SyncularV2MutationsMeta) => void | Promise<void>;
 }
 
 export type CreateSyncularRustSqliteDatabaseOptions =
@@ -131,14 +132,21 @@ export async function createSyncularV2Database<DB>(
         ]
       : undefined,
   });
+  let closed = false;
+  const mutationSyncScheduler = createMutationSyncScheduler(client, {
+    enabled: options.sync?.autoSyncAfterMutation ?? true,
+    debounceMs: options.sync?.mutationSyncDebounceMs ?? 10,
+    isClosed: () => closed,
+  });
   const mutations = createSyncularV2Mutations<DB>({
     client,
     codecs: options.codecs,
     codecDialect: 'sqlite',
     tableConfig: options.tableConfig,
+    readBaseVersion: (args) => readCurrentBaseVersion(client, args),
+    afterCommit: () => mutationSyncScheduler.schedule(),
   });
   const blobs = createSyncularV2BlobClient(client);
-  let closed = false;
 
   return {
     db,
@@ -150,6 +158,7 @@ export async function createSyncularV2Database<DB>(
     async close() {
       if (closed) return;
       closed = true;
+      mutationSyncScheduler.destroy();
       try {
         await dialect.destroyLiveQueries();
         await db.destroy();
@@ -161,6 +170,62 @@ export async function createSyncularV2Database<DB>(
 }
 
 export const createSyncularRustSqliteDatabase = createSyncularV2Database;
+
+function createMutationSyncScheduler(
+  client: Pick<SyncularV2Client, 'syncOnce'>,
+  options: {
+    enabled: boolean;
+    debounceMs: number | false;
+    isClosed: () => boolean;
+  }
+): { schedule(): void; destroy(): void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> | undefined;
+  let queued = false;
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+  const run = async () => {
+    if (options.isClosed()) return;
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    inFlight = client
+      .syncOnce()
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        inFlight = undefined;
+        if (queued && !options.isClosed()) {
+          queued = false;
+          schedule();
+        }
+      });
+    await inFlight;
+  };
+  const schedule = () => {
+    if (!options.enabled || options.isClosed()) return;
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    clear();
+    if (options.debounceMs === false || options.debounceMs <= 0) {
+      queueMicrotask(() => void run());
+      return;
+    }
+    timer = setTimeout(() => void run(), options.debounceMs);
+  };
+  return {
+    schedule,
+    destroy() {
+      clear();
+      queued = false;
+    },
+  };
+}
 
 export function createSyncularV2BlobClient(
   client: Pick<
@@ -257,55 +322,60 @@ export function createSyncularV2Commit<DB>(
         tableConfig?.crdtYjsFields ?? []
       );
 
+      const prepareInsert = async (values: unknown) => {
+        const raw = objectRecord(values);
+        const rawId = raw[tableIdColumn];
+        const id = typeof rawId === 'string' && rawId ? rawId : randomId();
+        const row = { ...raw, [tableIdColumn]: id };
+        const payload = sanitizeOperationPayload(row, {
+          omit: [
+            tableIdColumn,
+            ...(tableVersionColumn ? [tableVersionColumn] : []),
+            ...omitColumns,
+          ],
+        });
+        const syncPayload = stripCrdtYjsMaterializedPayloadFields(
+          payload,
+          crdtYjsFields
+        );
+        const localPayload = sanitizeOperationPayload(row, {
+          omit: [
+            tableIdColumn,
+            ...(tableVersionColumn ? [tableVersionColumn] : []),
+          ],
+        });
+        const transformedLocalPayload = await transformCrdtYjsMutationPayload({
+          client: options.client,
+          table,
+          rowId: id,
+          payload: localPayload,
+          crdtYjsFields,
+        });
+        const localDbPayload = applyCodecsToDbRow(
+          transformedLocalPayload,
+          resolveTableCodecs(table, transformedLocalPayload),
+          codecDialect
+        );
+        const operation: SyncOperation = {
+          table,
+          row_id: id,
+          op: 'upsert',
+          payload: syncPayload,
+          base_version: null,
+        };
+        return {
+          id,
+          operation,
+          localRow: { ...localDbPayload, [tableIdColumn]: id },
+        };
+      };
+
       const tableApi = {
         async insert(values: unknown) {
-          const raw = objectRecord(values);
-          const rawId = raw[tableIdColumn];
-          const id = typeof rawId === 'string' && rawId ? rawId : randomId();
-          const row = { ...raw, [tableIdColumn]: id };
-          const payload = sanitizeOperationPayload(row, {
-            omit: [
-              tableIdColumn,
-              ...(tableVersionColumn ? [tableVersionColumn] : []),
-              ...omitColumns,
-            ],
-          });
-          const syncPayload = stripCrdtYjsMaterializedPayloadFields(
-            payload,
-            crdtYjsFields
-          );
-          const localPayload = sanitizeOperationPayload(row, {
-            omit: [
-              tableIdColumn,
-              ...(tableVersionColumn ? [tableVersionColumn] : []),
-            ],
-          });
-          const transformedLocalPayload = await transformCrdtYjsMutationPayload(
-            {
-              client: options.client,
-              table,
-              rowId: id,
-              payload: localPayload,
-              crdtYjsFields,
-            }
-          );
-          const localDbPayload = applyCodecsToDbRow(
-            transformedLocalPayload,
-            resolveTableCodecs(table, transformedLocalPayload),
-            codecDialect
-          );
-          const operation: SyncOperation = {
-            table,
-            row_id: id,
-            op: 'upsert',
-            payload: syncPayload,
-            base_version: null,
-          };
+          const prepared = await prepareInsert(values);
+          const { id, operation, localRow } = prepared;
           operations.push(operation);
-          batch.push({
-            operation,
-            localRow: { ...localDbPayload, [tableIdColumn]: id },
-          });
+          batch.push({ operation, localRow });
           localMutations.push({ table, rowId: id, op: 'upsert' });
           return id;
         },
@@ -314,7 +384,13 @@ export function createSyncularV2Commit<DB>(
             throw new Error('insertMany requires at least one row');
           }
           const ids: string[] = [];
-          for (const row of rows) ids.push(await tableApi.insert(row));
+          for (const row of rows) {
+            const { id, operation, localRow } = await prepareInsert(row);
+            ids.push(id);
+            operations.push(operation);
+            batch.push({ operation, localRow });
+            localMutations.push({ table, rowId: id, op: 'upsert' });
+          }
           return ids;
         },
         async update(
@@ -453,14 +529,16 @@ export function createSyncularV2Commit<DB>(
     if (operations.length === 0) throw new Error('No mutations were enqueued');
     const clientCommitId =
       await options.client.applyLocalOperationsCommit(batch);
+    const meta = {
+      operations,
+      localMutations,
+      clientCommitIds: [clientCommitId],
+    };
+    await options.afterCommit?.(meta);
     return {
       result,
       receipt: { commitId: clientCommitId, clientCommitId },
-      meta: {
-        operations,
-        localMutations,
-        clientCommitIds: [clientCommitId],
-      },
+      meta,
     };
   };
 }
@@ -710,6 +788,22 @@ async function readCrdtYjsExistingRow(args: {
 function quoteSqlIdentifier(identifier: string): string {
   if (!identifier) throw new Error('SQLite identifier cannot be empty');
   return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+async function readCurrentBaseVersion(
+  client: Pick<SyncularV2Client, 'executeSql'>,
+  args: {
+    table: string;
+    rowId: string;
+    idColumn: string;
+    versionColumn: string;
+  }
+): Promise<number | null> {
+  const result = await client.executeSql(
+    `select ${quoteSqlIdentifier(args.versionColumn)} as version from ${quoteSqlIdentifier(args.table)} where ${quoteSqlIdentifier(args.idColumn)} = ? limit 1`,
+    [args.rowId]
+  );
+  return coerceBaseVersion(result.rows[0]?.version);
 }
 
 function coerceBaseVersion(value: unknown): number | null {
