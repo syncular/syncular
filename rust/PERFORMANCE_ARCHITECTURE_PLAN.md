@@ -2418,6 +2418,49 @@ client. Overflow should close or resync the session deliberately.
   - Complexity check: the extra ack frame is a reliability contract, not a hot
     path optimization. It reuses the existing client cursor table and avoids a
     full websocket envelope rewrite while making reconnect recovery explicit.
+- Retained binary sync-pack wire version 6 with a per-pack table dictionary
+  for incremental commit changes and generated row groups. The current
+  Rust-first protocol now writes table names once per sync-pack and encodes
+  `u16` table indexes in change metadata and row-group metadata. The v5 branch
+  was removed instead of kept as a compatibility fallback.
+  - Correctness guard:
+    `bun test packages/core/src/__tests__/sync-packs.test.ts`,
+    `bun --cwd packages/core tsgo`,
+    `bun --cwd rust/bindings/browser tsgo`,
+    `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime decodes_v6_table_dictionary_changes`,
+    and `bun run --cwd rust/bindings/browser test:wasm:hono` all passed.
+  - Test-harness cleanup required for the Hono websocket test: root `bun test`
+    preloads HappyDOM for React tests, so the realtime Bun server now converts
+    non-websocket Hono HTTP responses back to the native Bun `Response` class
+    captured by the preload. This is test isolation only; websocket upgrade
+    handling is unchanged.
+  - Targeted 50k sync-pack codec lane, current v6 versus the immediate pre-v6
+    measurement:
+    generic binary encode `24.1ms -> 22.3ms` (`-1.8ms`, `-7.5%`),
+    generic binary decode `42.9ms -> 32.5ms` (`-10.4ms`, `-24.2%`),
+    generated binary encode `21.8ms -> 18.3ms` (`-3.5ms`, `-16.1%`),
+    generated binary decode `37.6ms -> 34.9ms` (`-2.7ms`, `-7.2%`).
+    Generic binary response size moved `11138.4KiB -> 10894.3KiB`
+    (`-244.1KiB`, `-2.2%`); generated binary response size moved
+    `6764.6KiB -> 6520.5KiB` (`-244.1KiB`, `-3.6%`). JSON encode/decode
+    also drifted (`11.7ms/32.9ms -> 10.8ms/27.0ms`), so CPU gains are treated
+    as directional and the byte reduction is the strongest signal.
+  - Release browser E2E guardrail, 10k bootstrap + 1k incremental x3 realtime,
+    against `.context/benchmarks/browser-e2e-incremental-realtime-baseline.json`:
+    `rust_incremental_response_bytes` `215733 -> 210763`
+    (`-4970 bytes`, `-2.3%`), `rust_realtime_binary_bytes`
+    `639015 -> 624105` (`-14910 bytes`, `-2.33%`),
+    `rust_incremental_pull_apply_ms` stayed `3`,
+    `rust_incremental_sync_pack_decode_ms` stayed `2`,
+    realtime HTTP fallback stayed `0`, `rust_realtime_binary_events` stayed
+    `15`, and release WASM size moved `3326638 -> 3326710` bytes (`+72`).
+    Realtime latency drifted within the local noise band:
+    `rust_realtime_live_ms` `66.76 -> 69.19`,
+    `rust_realtime_live_p95_ms` `68.34 -> 72.42`.
+  - External `/Users/bkniffler/GitHub/sync/offline-sync-bench` validation was
+    attempted for this batch, but Docker Compose did not return for either
+    `up --build -d` or `ps`; both compose processes were stopped after hanging.
+    Do not treat this as external branch-server evidence for or against v6.
 
 ### Phase 7: Delta WebSocket Runtime
 

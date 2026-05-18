@@ -153,7 +153,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(5);
+    expect(encoded[4]).toBe(6);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);
