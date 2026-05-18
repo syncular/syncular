@@ -58,6 +58,28 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages).toEqual([]);
   });
 
+  it('does not drain live-query events after readonly SQL', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const promise = client.executeSql('select 1');
+    expect(worker.messages[0]).toMatchObject({ type: 'executeSql' });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ value: 1 }] },
+    });
+
+    await expect(promise).resolves.toEqual({ rows: [{ value: 1 }] });
+    expect(worker.messages.map((message) => message.type)).toEqual([
+      'executeSql',
+    ]);
+  });
+
   it('keeps unsafe SQL on an explicit internal worker request', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {

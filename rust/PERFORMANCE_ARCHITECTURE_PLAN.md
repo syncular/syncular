@@ -604,6 +604,27 @@ derived-schema deferral for app bootstrap.
   asset bytes stayed unchanged in the benchmark harness. The generated browser
   source itself dropped roughly 100 lines, but no served-size win is claimed
   because the previous exports were already tree-shaken.
+- Retained read-side live-event drain removal. Browser worker readonly SQL now
+  uses a single request and does not drain live-query events, and the Kysely
+  dialect no longer drains live events after every read. Writes, sync, conflict
+  commands, CRDT commands, and realtime delivery still drain or post live events
+  explicitly. Correctness: `bun --cwd rust/bindings/browser test
+  src/worker-client.test.ts src/database.test.ts` and
+  `bun run --cwd rust/bindings/browser tsgo` passed. Local 100k release
+  scoreboard versus `.context/benchmarks/browser-e2e-100k-baseline.json`
+  improved the intended read lane while bootstrap stayed neutral: first run
+  Rust list p50 `0.27ms -> 0.20ms`, search p50 `1.39ms -> 1.32ms`,
+  bootstrap `138.04ms -> 136.81ms`; confirm run list p50 stayed `0.20ms`,
+  search p50 `1.34ms`, bootstrap `141.10ms`. Incremental/realtime guardrail
+  stayed stable: realtime p50 `66.76ms -> 66.72ms`, p95
+  `68.34ms -> 68.37ms`, HTTP fallback `0 -> 0`, binary events `15 -> 15`.
+  External `/Users/bkniffler/GitHub/sync/offline-sync-bench` local-query after
+  emitting the updated browser `dist`: TS list/search/aggregate p50
+  `0.08ms` / `0.07ms` / `5.22ms`; Rust bootstrap `582.22ms`, list p50
+  `0.10ms`, search p50 `0.14ms`, read-model aggregate p50 `0.01ms`, raw SQL
+  aggregate p50 `7.40ms`, peak memory `472.27MB`. Against the prior accepted
+  release external Rust local-query sample, list improved `0.13ms -> 0.10ms`,
+  search `0.19ms -> 0.14ms`, and raw aggregate `7.68ms -> 7.40ms`.
 
 ### Required Benchmark Scoreboard
 

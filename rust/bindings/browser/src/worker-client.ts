@@ -360,7 +360,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     params: readonly unknown[] = []
   ): Promise<SyncularV2SqlResult<Row>> {
     assertSyncularV2ReadonlySql(sql);
-    return this.#requestAndDrain({
+    return this.#request({
       type: 'executeSql',
       sql,
       params: [...params],
