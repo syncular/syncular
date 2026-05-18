@@ -2925,6 +2925,10 @@ client. Overflow should close or resync the session deliberately.
 - Done: added browser Rust corrupted-chunk coverage. A snapshot chunk request
   that returns HTTP 200 with bytes that do not match the advertised digest now
   fails before decompression/apply and leaves existing local rows intact.
+- Done: added browser Rust interrupted-chunk retry coverage. If a snapshot
+  chunk fetch fails, no rows are applied and a later pull can restart the
+  snapshot fetch and apply successfully. This proves restart recovery; cached
+  partial-bootstrap resume remains open.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 

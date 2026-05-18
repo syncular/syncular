@@ -483,6 +483,59 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ]);
   });
 
+  it('recovers on a later pull after an interrupted snapshot chunk fetch', async () => {
+    const scenario = syncConformance.snapshotChunk;
+    let failNextChunk = true;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      snapshotBundleMaxBytes: 1,
+      seedTasks: [
+        {
+          id: scenario.browserServerTask.id,
+          title: scenario.browserServerTask.title,
+          actorId: ACTOR_A,
+        },
+      ],
+      edgeGate: (request) => {
+        if (
+          failNextChunk &&
+          new URL(request.url).pathname.includes('/snapshot-chunks/')
+        ) {
+          failNextChunk = false;
+          return new Response('chunk failure', { status: 500 });
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'snapshot-chunk-retry-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    await expect(client.syncPull()).rejects.toThrow(
+      new RegExp(scenario.expectedErrorPattern)
+    );
+    await expect(client.listTable('tasks')).resolves.toEqual([]);
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      subscriptions: [
+        {
+          id: syncConformance.subscription.id,
+        },
+      ],
+    });
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({
+        id: scenario.browserServerTask.id,
+        title: scenario.browserServerTask.title,
+      }),
+    ]);
+  });
+
   it('keeps repeated pulls of the same server row idempotent', async () => {
     const scenario = syncConformance.repeatedPull;
     const sync = await createHonoSyncHarness({
