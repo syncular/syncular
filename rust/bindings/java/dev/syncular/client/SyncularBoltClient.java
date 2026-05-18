@@ -11,6 +11,11 @@ public final class SyncularBoltClient implements AutoCloseable {
         void onEventJson(String eventJson);
     }
 
+    @FunctionalInterface
+    public interface SyncularNativeEventListener {
+        void onNativeEvent(SyncularNativeEvent event);
+    }
+
     private SyncularBoltClient(long handle) {
         this.handle = handle;
     }
@@ -275,6 +280,20 @@ public final class SyncularBoltClient implements AutoCloseable {
     public void forEachEventJson(long capacity, SyncularEventJsonListener listener) {
         forEachEventJson(capacity, eventJson -> {
             listener.onEventJson(eventJson);
+            return true;
+        });
+    }
+
+    public void forEachNativeEvent(long capacity, java.util.function.Predicate<SyncularNativeEvent> handler) {
+        forEachEventJson(
+            capacity,
+            (java.util.function.Predicate<String>) eventJson -> handler.test(SyncularNativeEvent.fromJson(eventJson))
+        );
+    }
+
+    public void forEachNativeEvent(long capacity, SyncularNativeEventListener listener) {
+        forEachNativeEvent(capacity, event -> {
+            listener.onNativeEvent(event);
             return true;
         });
     }

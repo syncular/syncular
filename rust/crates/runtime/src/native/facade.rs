@@ -66,6 +66,7 @@ pub struct NativeSyncularClient {
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
     auto_sync_local_writes: bool,
+    shutdown_on_drop: bool,
     command_seq: Mutex<u64>,
     events: NativeEventHub,
     default_events: NativeEventSubscription,
@@ -85,6 +86,12 @@ pub struct NativeSyncularClientBuilder {
     config: NativeClientConfig,
     options: NativeClientOptions,
     realtime: bool,
+    auth_headers: Option<SyncAuthHeaders>,
+    subscriptions: Option<Vec<SubscriptionSpec>>,
+    initial_sync: bool,
+    initial_websocket_sync: bool,
+    process_blob_uploads_on_open: bool,
+    shutdown_on_drop: bool,
 }
 
 pub struct NativePresenceHandle<'a> {
@@ -452,6 +459,7 @@ impl NativeSyncularClient {
             field_encryption: None,
             encrypted_crdt: None,
             auto_sync_local_writes: options.auto_sync_local_writes,
+            shutdown_on_drop: false,
             command_seq: Mutex::new(0),
             events,
             default_events,
@@ -1302,6 +1310,12 @@ impl NativeSyncularClientBuilder {
             config,
             options: NativeClientOptions::default(),
             realtime: true,
+            auth_headers: None,
+            subscriptions: None,
+            initial_sync: false,
+            initial_websocket_sync: false,
+            process_blob_uploads_on_open: false,
+            shutdown_on_drop: false,
         }
     }
 
@@ -1315,12 +1329,75 @@ impl NativeSyncularClientBuilder {
         self
     }
 
+    pub fn auth_headers(mut self, headers: SyncAuthHeaders) -> Self {
+        self.auth_headers = Some(headers);
+        self
+    }
+
+    pub fn auth_headers_json(mut self, headers_json: &str) -> Result<Self> {
+        self.auth_headers = Some(serde_json::from_str(headers_json)?);
+        Ok(self)
+    }
+
+    pub fn subscriptions(mut self, subscriptions: Vec<SubscriptionSpec>) -> Self {
+        self.subscriptions = Some(subscriptions);
+        self
+    }
+
+    pub fn subscriptions_json(mut self, subscriptions_json: &str) -> Result<Self> {
+        self.subscriptions = Some(serde_json::from_str(subscriptions_json)?);
+        Ok(self)
+    }
+
+    pub fn initial_sync(mut self, enabled: bool) -> Self {
+        self.initial_sync = enabled;
+        self
+    }
+
+    pub fn initial_websocket_sync(mut self, enabled: bool) -> Self {
+        self.initial_websocket_sync = enabled;
+        self
+    }
+
+    pub fn process_blob_uploads_on_open(mut self, enabled: bool) -> Self {
+        self.process_blob_uploads_on_open = enabled;
+        self
+    }
+
+    pub fn shutdown_on_drop(mut self, enabled: bool) -> Self {
+        self.shutdown_on_drop = enabled;
+        self
+    }
+
     pub fn open(self) -> Result<NativeSyncularClient> {
         let mut client = NativeSyncularClient::open_native_with_options(self.config, self.options)?;
+        client.shutdown_on_drop = self.shutdown_on_drop;
+        if let Some(headers) = self.auth_headers {
+            client.set_auth_headers(headers)?;
+        }
+        if let Some(subscriptions) = self.subscriptions {
+            client.set_subscriptions(subscriptions)?;
+        }
         if self.realtime {
             client.start()?;
         }
+        if self.initial_websocket_sync {
+            client.trigger_sync_websocket()?;
+        } else if self.initial_sync {
+            client.trigger_sync()?;
+        }
+        if self.process_blob_uploads_on_open {
+            let _ = client.process_blob_upload_queue_json()?;
+        }
         Ok(client)
+    }
+}
+
+impl Drop for NativeSyncularClient {
+    fn drop(&mut self) {
+        if self.shutdown_on_drop {
+            let _ = self.close();
+        }
     }
 }
 

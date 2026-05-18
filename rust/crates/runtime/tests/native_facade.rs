@@ -1836,6 +1836,44 @@ fn native_facade_reports_closed_worker_as_structured_error() -> Result<()> {
 }
 
 #[test]
+fn native_facade_builder_applies_lifecycle_options() -> Result<()> {
+    let path = temp_db_path("syncular-native-builder");
+    let mut config = test_config(&path, "native-builder");
+    let server = TestSyncServer::empty_success()?;
+    config.base_url = server.url();
+    let mut client = NativeSyncularClient::builder(config)
+        .auto_sync_local_writes(false)
+        .realtime(false)
+        .auth_headers_json(
+            &json!({
+                "authorization": "Bearer builder-test"
+            })
+            .to_string(),
+        )?
+        .subscriptions_json("[]")?
+        .initial_sync(true)
+        .process_blob_uploads_on_open(true)
+        .shutdown_on_drop(true)
+        .open()?;
+
+    let event = client
+        .next_event_timeout(Duration::from_secs(5))
+        .expect("builder initial sync result event");
+    assert_eq!(event.kind, NativeEventKind::SyncCompleted);
+    let requests = server.wait_for_requests(1, Duration::from_secs(1));
+    assert_eq!(
+        requests
+            .first()
+            .and_then(|request| request.header("authorization")),
+        Some("Bearer builder-test")
+    );
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_can_pause_and_resume_background_worker() -> Result<()> {
     let path = temp_db_path("syncular-native-worker-lifecycle");
     let mut client = open_demo_native_with_options(
