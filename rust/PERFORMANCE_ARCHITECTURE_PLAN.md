@@ -2692,8 +2692,9 @@ client. Overflow should close or resync the session deliberately.
   - Client recovery rule: any sequencer overflow, missed replay window, auth
     restart, schema mismatch, or object digest failure degrades to HTTP pull
     from durable SQL/object state.
-- Add deterministic tests for reconnect, resume, auth refresh, slow client
-  overflow, and subscription changes.
+- Deterministic websocket tests for reconnect, resume, auth refresh, slow
+  client overflow, and subscription changes are now covered by focused manager
+  and Hono route tests.
 - Done: added realtime auth refresh coverage. A refreshed bearer token that
   resolves to the same actor can open the websocket session and receive the
   normal hello/capability frame, while an expired token is rejected before
@@ -2881,7 +2882,8 @@ client. Overflow should close or resync the session deliberately.
 - Replace bootstrap mega-responses with snapshot manifests.
 - Store binary snapshot chunks, large blobs, and CRDT checkpoints as
   content-addressed artifacts.
-- Add per-chunk digest verification and partial-bootstrap resume.
+- Per-chunk digest verification/revalidation is now covered. Remaining:
+  partial-bootstrap resume after an interrupted chunk sequence.
 - Measure Worker memory, artifact cache hit cost, and interrupted bootstrap
   recovery.
 - Done: removed inline snapshot chunk bodies from binary sync-packs. Pull
