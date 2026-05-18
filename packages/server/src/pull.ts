@@ -612,7 +612,7 @@ export async function pull<
     async (span) => {
       try {
         // Validate and sanitize request limits
-        const limitCommits = sanitizeLimit(request.limitCommits, 500, 1, 500);
+        const limitCommits = sanitizeLimit(request.limitCommits, 1000, 1, 1000);
         const limitSnapshotRows = sanitizeLimit(
           request.limitSnapshotRows,
           1000,

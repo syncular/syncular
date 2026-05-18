@@ -288,10 +288,10 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
     db: DbExecutor<DB>,
     args: IncrementalPullRowsArgs
   ): AsyncGenerator<IncrementalPullRow> {
-    const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
+    const limitCommits = Math.max(1, Math.min(1000, args.limitCommits));
     const batchSize = Math.max(
       1,
-      Math.min(limitCommits, args.batchSize ?? limitCommits, 500)
+      Math.min(limitCommits, args.batchSize ?? limitCommits, 1000)
     );
 
     let processedCommits = 0;

@@ -2775,17 +2775,25 @@ client. Overflow should close or resync the session deliberately.
   moved from the retained sequential baseline (`21.5ms` build, `26.0ms`
   binary encode) to `23.0ms`/`31.5ms` and `22.6ms`/`30.6ms`, so the refactor
   was reverted.
-- Retained Rust-first pull page default of 500 commits: Rust native/web clients,
-  server pull sanitization, and Hono route defaults now use the server's
-  existing 500-commit cap instead of the old 50/100 defaults. This does not
-  change the protocol; it changes the current default toward the measured
-  Rust-first hot path.
+- Retained Rust-first pull page default/cap of 1000 commits: Rust native/web
+  clients, server pull sanitization, Hono route defaults, and dialect
+  incremental iterators now use 1000 instead of the old 50/100/500 defaults.
+  This does not change the protocol; it changes the current default toward the
+  measured Rust-first hot path.
   - Request-sizing measurement on the dense lane:
     `server_dense_incremental_pull_build_5000_50` `74.9ms`,
     binary encode `81.7ms`, requests `100`.
-  - Current 500-commit retained lane for the same 5k commits:
+  - 500-commit intermediate retained lane for the same 5k commits:
     build `21.5-23.4ms`, binary encode `26.0-27.1ms`, requests `10`.
-  - Browser release E2E 10k + 1k incremental x1, before/after default bump:
+  - 1000-commit candidate lane:
+    first run build `20.8ms`, binary encode `23.6ms`, requests `5`; repeat
+    build `23.4ms`, binary encode `27.2ms`, requests `5`. The latency gain is
+    noisy, but request count is consistently halved with total response bytes
+    unchanged (`1417.5KiB -> 1417.0KiB`).
+  - Sparse scope-index guard with 1000:
+    `server_scoped_incremental_pull_fanout_5000_20` `2.2ms`, requests `2`,
+    changes `250`.
+  - Browser release E2E 10k + 1k incremental x1, before/after 500 default:
     `rust_bootstrap_ms` `33.31 -> 33.06`, `rust_request_count` stayed `2`,
     `rust_incremental_pull_ms` `12.30 -> 12.67`, incremental rounds stayed
     `1`, realtime HTTP fallback stayed `0`. This scenario only emits 5
@@ -2793,6 +2801,12 @@ client. Overflow should close or resync the session deliberately.
     win. Reports:
     `.context/benchmarks/browser-e2e-limit-commits-before.json` and
     `.context/benchmarks/browser-e2e-limit-commits-after.json`.
+  - Browser release E2E after 1000 cap/default:
+    `rust_bootstrap_ms` `32.64`, `rust_request_count` stayed `2`,
+    `rust_incremental_pull_ms` `12.69`, incremental rounds stayed `1`,
+    realtime HTTP fallback stayed `0`, served Rust WASM bytes moved only
+    `3328084 -> 3328084` versus the 500 run. Report:
+    `.context/benchmarks/browser-e2e-limit-commits-1000.json`.
 - Done: added a dense incremental pull measurement lane that separates server
   response build from response build plus binary sync-pack encoding. This is
   the current measurement gate before adding a durable binary commit log.
