@@ -1898,13 +1898,41 @@ client. Overflow should close or resync the session deliberately.
 
 ### Phase 11: Resumable Manifests And Artifact Storage
 
-- Status: planned.
+- Status: started.
 - Replace bootstrap mega-responses with snapshot manifests.
 - Store binary snapshot chunks, large blobs, and CRDT checkpoints as
   content-addressed artifacts.
 - Add per-chunk digest verification and partial-bootstrap resume.
 - Measure Worker memory, artifact cache hit cost, and interrupted bootstrap
   recovery.
+- Done: added explicit `snapshotChunkTransfer` negotiation for pull requests.
+  Existing callers keep the previous inline-body behavior when they ask for
+  binary sync packs. Rust native/web clients now request
+  `snapshotChunkTransfer: "separate"`, so the combined sync response carries a
+  compact binary sync-pack manifest with snapshot chunk refs, and chunk bodies
+  are fetched through the existing `/snapshot-chunks/:chunkId` path.
+  - Correctness guard: Hono chunk-storage coverage proves binary sync-pack
+    responses can omit chunk bodies, preserve `binary-table-v1` refs, and serve
+    the chunk bytes through the authenticated chunk route. Browser/Hono WASM
+    sync coverage still passes with the separate-chunk Rust request path.
+  - Final release-WASM 100k scoreboard, battery-saver environment:
+    `ts_bootstrap_ms` `711.61`, `rust_bootstrap_ms` `139.26`,
+    `rust_pull_request_ms` `64`, `rust_snapshot_fetch_ms` `10`,
+    `rust_pull_apply_ms` `73`, `rust_request_count` `3`,
+    `rust_response_bytes` `765,766`, `rust_snapshot_chunk_binary_count` `2`,
+    `rust_snapshot_chunk_json_count` `0`, cached Rust bootstrap `68.77`.
+    Report: `.context/benchmarks/browser-e2e-snapshot-separate-100k.json`.
+  - Complexity check: this is retained as the first manifest/artifact split.
+    It deliberately trades a small number of chunk fetches for resumability,
+    cacheable artifacts, and avoiding a single large logical sync response.
+    The current 100k guardrail remains well inside the existing Rust-vs-TS
+    target band.
+- Done: fixed browser Rust schema-version validation to compare server
+  `requiredSchemaVersion` and local outbox commit versions against the
+  generated app schema version, not the runtime system schema version. This
+  matters now that runtime schema and app schema can differ. The browser WASM
+  Hono sync suite covers both future server-required versions and future local
+  outbox versions.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 

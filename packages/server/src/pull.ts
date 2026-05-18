@@ -86,7 +86,8 @@ type InlineSnapshotChunkRef = SyncSnapshotChunkRef & {
 };
 
 function toResponseChunkRef(
-  ref: SyncSnapshotChunkRef & { body?: Uint8Array }
+  ref: SyncSnapshotChunkRef & { body?: Uint8Array },
+  options: { includeBody?: boolean } = {}
 ): SyncSnapshotChunkRef {
   const response: InlineSnapshotChunkRef = {
     id: ref.id,
@@ -95,7 +96,7 @@ function toResponseChunkRef(
     encoding: ref.encoding,
     compression: ref.compression,
   };
-  if (ref.body) response.body = ref.body;
+  if (options.includeBody !== false && ref.body) response.body = ref.body;
   return response;
 }
 
@@ -967,7 +968,11 @@ export async function pull<
                       snapshots.push({
                         table: bundle.table,
                         rows: [],
-                        chunks: [toResponseChunkRef(chunkRef)],
+                        chunks: [
+                          toResponseChunkRef(chunkRef, {
+                            includeBody: args.inlineSnapshotChunkBodies,
+                          }),
+                        ],
                         isFirstPage: bundle.isFirstPage,
                         isLastPage: bundle.isLastPage,
                       });
@@ -1059,7 +1064,11 @@ export async function pull<
                           snapshots.push({
                             table: nextTableName,
                             rows: [],
-                            chunks: [toResponseChunkRef(cached)],
+                            chunks: [
+                              toResponseChunkRef(cached, {
+                                includeBody: args.inlineSnapshotChunkBodies,
+                              }),
+                            ],
                             isFirstPage: nextState.rowCursor == null,
                             isLastPage: cached.isLastPage,
                           });
@@ -1545,7 +1554,11 @@ export async function pull<
                     }
                   }
 
-                  pending.snapshot.chunks = [toResponseChunkRef(chunkRef)];
+                  pending.snapshot.chunks = [
+                    toResponseChunkRef(chunkRef, {
+                      includeBody: args.inlineSnapshotChunkBodies,
+                    }),
+                  ];
                 }
               );
             }
