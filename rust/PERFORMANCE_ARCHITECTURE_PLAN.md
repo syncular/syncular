@@ -440,6 +440,32 @@ derived-schema deferral for app bootstrap.
     500k bootstrap was `3857.29ms`, so Rust remained `0.74x` TS wall time.
     Rust local-query p50s were `list=0.12ms`, `search=0.18ms`,
     `read_model_aggregate=0.01ms`, `raw_aggregate=7.90ms`.
+- Rejected external branch-server page-size increase from `20_000` to `50_000`
+  rows/page. This matched the local browser scoreboard setting but made the
+  external app harness much worse: Rust 500k bootstrap `2865.02ms ->
+  4717.23ms` (`+1852.21ms`, `+64.6%`), pull request `1350ms -> 2444ms`,
+  pull apply `565ms -> 1135ms`, local apply `408ms -> 822ms`, derived build
+  `944.63ms -> 1132.07ms`, and peak memory `734.70MB -> 763.63MB`.
+  Request count, chunk count, and response bytes were effectively unchanged, so
+  the regression is not explained by fewer network round trips. Keep the
+  external Rust benchmark at `20_000` rows/page until a dedicated server
+  snapshot artifact/streaming design replaces row-page pulls.
+- Added external server timing capture to the Rust bench harness. Latest valid
+  500k branch-server run (`.results/2026-05-18T13-05-46-822Z`) reports Rust
+  bootstrap `2675.14ms`, pull request `1218ms`, pull apply `568ms`, local apply
+  `394ms`, derived schema `884.34ms`, snapshot fetch `174ms`, server snapshot
+  query `497ms`, server binary encode `573ms`, chunk cache lookup `10ms`, gzip
+  `64ms`, hash `2ms`, persist `50ms`, and peak memory `736.91MB`. This shifts
+  the next big target away from client row apply and toward server snapshot
+  query/encoding and reusable snapshot artifacts.
+- Rejected generated trusted-writer methods for binary snapshot encoding. The
+  candidate skipped per-cell writer validation/nullability checks and generated
+  calls to `writeTrustedString`, `writeTrustedInteger`, `writeTrustedJson`, and
+  `writeTrustedNull`. Correctness checks passed, but the local 100k release
+  scoreboard regressed Rust bootstrap `138.04ms -> 144.05ms` (`+6.01ms`,
+  `+4.35%`), pull apply `73ms -> 76ms`, snapshot chunk apply `62ms -> 65ms`,
+  and did not improve server binary encode. Keep the public writer API small
+  until profiling shows validation checks are a real bottleneck.
 
 ### Required Benchmark Scoreboard
 
