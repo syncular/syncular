@@ -26,8 +26,7 @@ import {
   syncularGeneratedCodecs,
 } from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
 import {
-  syncularGeneratedSnapshotBinaryEncoders,
-  syncularGeneratedSnapshotBinaryColumns,
+  syncularGeneratedServerSnapshotBinary,
 } from '../../../../../examples/todo-app/generated/typescript/syncular.server.generated';
 import type {
   CreateSyncularV2DatabaseOptions,
@@ -133,8 +132,6 @@ export async function createHonoSyncHarness(
           scopes: ['user:{user_id}'],
           codecs: syncularGeneratedCodecs,
           snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
-          snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns.tasks,
-          snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders.tasks,
           resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
         }),
         ...createEncryptedCrdtSystemHandlers<
@@ -147,6 +144,7 @@ export async function createHonoSyncHarness(
             row.scopes.user_id === ctx.actorId,
         }),
       ],
+      snapshotBinary: syncularGeneratedServerSnapshotBinary,
       authenticate: async (c) => {
         const authorization = c.req.header('authorization');
         if (authorization) syncRouteAuthHeaders.push(authorization);

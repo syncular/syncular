@@ -4,6 +4,7 @@ import {
   createDatabase,
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
+  encodeBinarySnapshotTable,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
   sha256Hex,
@@ -470,6 +471,74 @@ describe('pull', () => {
       { name: 'title', type: 'string' },
       { name: 'server_version', type: 'integer' },
     ]);
+    expect(decoded.rows).toEqual([
+      {
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'First Task',
+        server_version: 1,
+      },
+    ]);
+  });
+
+  it('attaches generated snapshot binary metadata at the handler collection boundary', async () => {
+    const columns = [
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ] as const;
+    let encoderCallCount = 0;
+    const taskHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+    const handlers = createServerHandlerCollection<ServerDb>([taskHandler], {
+      snapshotBinary: {
+        columns: { tasks: columns },
+        encoders: {
+          tasks: (rows) => {
+            encoderCallCount += 1;
+            return encodeBinarySnapshotTable({
+              table: 'tasks',
+              columns,
+              rows: rows as Record<string, unknown>[],
+            });
+          },
+        },
+      },
+    });
+
+    await pushTask(handlers, 'task-1', 'First Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        limitCommits: 10,
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    expect(encoderCallCount).toBe(1);
+    const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+    const chunk = await readSnapshotChunk(db, chunkRef.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+
+    expect(decoded.columns).toEqual(columns);
     expect(decoded.rows).toEqual([
       {
         id: 'task-1',

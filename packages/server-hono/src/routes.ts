@@ -32,6 +32,7 @@ import {
 import type {
   ScopeCacheBackend,
   ServerSyncDialect,
+  ServerSnapshotBinaryMetadata,
   ServerTableHandler,
   SnapshotChunkStorage,
   SqlFamily,
@@ -312,6 +313,7 @@ export interface CreateSyncRoutesOptions<
   db: Kysely<DB>;
   dialect: ServerSyncDialect<F>;
   handlers: ServerTableHandler<DB, Auth>[];
+  snapshotBinary?: ServerSnapshotBinaryMetadata;
   plugins?: SyncServerPushPlugin<DB, Auth>[];
   authenticate: (c: Context) => Promise<Auth | null>;
   sync?: SyncRoutesConfigWithRateLimit;
@@ -957,7 +959,9 @@ export function createSyncRoutes<
       return c.res;
     });
   }
-  const handlerRegistry = createServerHandlerCollection(options.handlers);
+  const handlerRegistry = createServerHandlerCollection(options.handlers, {
+    snapshotBinary: options.snapshotBinary,
+  });
   const binarySyncPackChangeRowEncoders = Object.fromEntries(
     handlerRegistry.handlers.flatMap((handler) =>
       handler.snapshotBinaryEncoder

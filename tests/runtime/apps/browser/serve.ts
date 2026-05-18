@@ -27,8 +27,7 @@ import {
   syncularGeneratedCodecs,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
-  syncularGeneratedSnapshotBinaryColumns,
-  syncularGeneratedSnapshotBinaryEncoders,
+  syncularGeneratedServerSnapshotBinary,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 
 type BunServer = ReturnType<typeof Bun.serve>;
@@ -329,11 +328,10 @@ async function createBenchmarkSyncRoute(
         scopes: ['user:{user_id}'],
         codecs: syncularGeneratedCodecs,
         snapshotBundleMaxBytes: Number.MAX_SAFE_INTEGER,
-        snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns.tasks,
-        snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders.tasks,
         resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
       }),
     ],
+    snapshotBinary: syncularGeneratedServerSnapshotBinary,
     authenticate: async (c) => {
       const actorId =
         c.req.header('x-actor-id') ??

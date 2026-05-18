@@ -575,6 +575,20 @@ derived-schema deferral for app bootstrap.
   Rust request count `3 -> 3`, response bytes `765,764 -> 765,764`, server
   binary encode `15ms`, and served Rust WASM bytes stayed at `3,327,561`.
   This is kept as architecture/API groundwork, not as a direct performance win.
+- Retained generated snapshot binary server API cleanup. `createServerHandlerCollection`
+  and `createSyncRoutes` now accept the generated
+  `syncularGeneratedServerSnapshotBinary` contract once and attach matching
+  per-table columns/encoders at the handler collection boundary. This removes
+  repetitive per-handler wiring and makes generated server encoders the
+  obvious path for app servers. Correctness: `bun test
+  tests/unit/server-pull.test.ts`, `bun --cwd packages/server tsgo`,
+  `bun --cwd packages/server-hono tsgo`, and
+  `bun run --cwd rust/bindings/browser tsgo` passed. Local 100k release
+  scoreboard versus `.context/benchmarks/browser-e2e-100k-baseline.json` stayed
+  neutral: TS bootstrap `722.67ms -> 723.90ms`, Rust bootstrap
+  `138.04ms -> 139.32ms`, Rust request count `3 -> 3`, response bytes
+  `765,764 -> 765,764`, server binary encode `15ms`, and served Rust WASM
+  bytes stayed at `3,327,561`.
 
 ### Required Benchmark Scoreboard
 
