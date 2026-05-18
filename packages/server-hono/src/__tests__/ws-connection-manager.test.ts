@@ -165,6 +165,57 @@ describe('WebSocketConnectionManager (scopes)', () => {
     ]);
   });
 
+  it('replays recent binary sync packs after reconnect when the cursor is inside the window', () => {
+    const mgr = new WebSocketConnectionManager({
+      heartbeatIntervalMs: 0,
+      replayWindowSize: 4,
+    });
+    const liveSeen: number[] = [];
+    const live = createConn({
+      actorId: 'u1',
+      clientId: 'live',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: () => {},
+      onSyncPack: (bytes) => liveSeen.push(bytes[0] ?? 0),
+    });
+
+    mgr.register(live, ['s']);
+    mgr.notifyScopeKeys(['s'], 10, { syncPack: new Uint8Array([10]) });
+    mgr.notifyScopeKeys(['s'], 11, { syncPack: new Uint8Array([11]) });
+
+    const replaySeen: number[] = [];
+    const replayed = createConn({
+      actorId: 'u1',
+      clientId: 'replayed',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: () => {},
+      onSyncPack: (bytes) => replaySeen.push(bytes[0] ?? 0),
+    });
+
+    expect(mgr.replayScopeKeys(replayed, ['s'], 9, 11)).toBe(true);
+    expect(liveSeen).toEqual([10, 11]);
+    expect(replaySeen).toEqual([10, 11]);
+  });
+
+  it('refuses websocket replay when the requested cursor fell out of the window', () => {
+    const mgr = new WebSocketConnectionManager({
+      heartbeatIntervalMs: 0,
+      replayWindowSize: 1,
+    });
+    const conn = createConn({
+      actorId: 'u1',
+      clientId: 'c1',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: () => {},
+      onSyncPack: () => {},
+    });
+
+    mgr.notifyScopeKeys(['s'], 10, { syncPack: new Uint8Array([10]) });
+    mgr.notifyScopeKeys(['s'], 11, { syncPack: new Uint8Array([11]) });
+
+    expect(mgr.replayScopeKeys(conn, ['s'], 9, 11)).toBe(false);
+  });
+
   it('supports per-connection inline deltas for mixed scopes', () => {
     const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
     const seen: Array<{

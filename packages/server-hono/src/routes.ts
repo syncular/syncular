@@ -10,8 +10,8 @@
 import {
   captureSyncException,
   countSyncMetric,
-  createSyncTimer,
   createRealtimeChangeScopeIndex,
+  createSyncTimer,
   distributionSyncMetric,
   ErrorResponseSchema,
   encodeBinarySyncPack,
@@ -31,8 +31,8 @@ import {
 } from '@syncular/core';
 import type {
   ScopeCacheBackend,
-  ServerSyncDialect,
   ServerSnapshotBinaryMetadata,
+  ServerSyncDialect,
   ServerTableHandler,
   SnapshotChunkStorage,
   SqlFamily,
@@ -134,6 +134,12 @@ export interface SyncWebSocketConfig {
    * Default: 64.
    */
   maxInFlightSyncsPerConnection?: number;
+  /**
+   * Recent outbound scope notifications retained for websocket reconnect
+   * replay before falling back to HTTP pull recovery. Set to 0 to disable.
+   * Default: 64.
+   */
+  replayWindowSize?: number;
   /**
    * Window size in milliseconds for inbound websocket message rate limiting.
    * Default: 10000 ms.
@@ -1037,6 +1043,7 @@ export function createSyncRoutes<
         heartbeatIntervalMs: websocketConfig.heartbeatIntervalMs ?? 30_000,
         maxInFlightSyncsPerConnection:
           websocketConfig.maxInFlightSyncsPerConnection ?? 64,
+        replayWindowSize: websocketConfig.replayWindowSize ?? 64,
       }))
     : null;
 
@@ -2859,10 +2866,18 @@ export function createSyncRoutes<
           });
           conn.sendHeartbeat();
           if (requiresInitialSync) {
-            conn.sendSync(latestCommitSeq, undefined, {
-              reason: 'reconnect-catchup',
-              requiresPull: true,
-            });
+            const replayed = wsConnectionManager.replayScopeKeys(
+              conn,
+              initialScopeKeys,
+              lastAckedCursor,
+              latestCommitSeq
+            );
+            if (!replayed) {
+              conn.sendSync(latestCommitSeq, undefined, {
+                reason: 'reconnect-catchup',
+                requiresPull: true,
+              });
+            }
           }
           emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
             action: 'realtime_connected',

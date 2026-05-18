@@ -2695,6 +2695,19 @@ client. Overflow should close or resync the session deliberately.
   after a pull subscription records effective scopes, then stops receiving that
   scope after a pull clears subscriptions. This keeps realtime fanout tied to
   the authoritative pull/subscription state instead of stale connection state.
+- Done: added a bounded in-memory websocket replay window for recent scoped
+  notifications. On reconnect, a client whose cursor is still inside the
+  window receives recent binary sync-pack deltas directly over websocket; if
+  the requested cursor range fell out of the window, the route keeps the
+  explicit `reconnect-catchup` HTTP-pull recovery frame. The default window is
+  64 notifications and can be disabled with `replayWindowSize: 0`.
+  - Correctness guard: manager coverage proves binary replay inside the window
+    and refusal after window eviction; Hono route coverage proves a reconnecting
+    binary client receives a replayed sync pack instead of a
+    `reconnect-catchup` frame.
+  - Perf guard on the maintained realtime fanout lane, before versus after:
+    indexed fanout stayed flat at `0.5ms`; scan lane was effectively flat at
+    `32.6ms -> 32.5ms`.
 
 ### Phase 10: Binary Commit Log And Subscription Indexes
 

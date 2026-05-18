@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
+import { createDatabase, decodeBinarySyncPack } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   createServerHandler,
@@ -122,12 +122,18 @@ describe('createSyncServer console configuration', () => {
 
   function createUpstreamSocketHarness() {
     const messages: Array<Record<string, unknown>> = [];
+    const binaryMessages: Uint8Array[] = [];
     const closes: Array<{ code?: number; reason?: string }> = [];
 
     const ws = new WSContext({
       readyState: 1,
       send(data) {
-        if (typeof data !== 'string') return;
+        if (typeof data !== 'string') {
+          if (data instanceof ArrayBuffer) {
+            binaryMessages.push(new Uint8Array(data));
+          }
+          return;
+        }
         const parsed = JSON.parse(data);
         if (isRecord(parsed)) {
           messages.push(parsed);
@@ -141,6 +147,7 @@ describe('createSyncServer console configuration', () => {
     return {
       ws,
       messages,
+      binaryMessages,
       closes,
     };
   }
@@ -993,6 +1000,69 @@ describe('createSyncServer console configuration', () => {
         requiresPull: true,
       }),
     });
+  });
+
+  it('replays recent binary websocket deltas on reconnect before falling back to pull', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        websocket: {
+          replayWindowSize: 4,
+        },
+      },
+      upgradeWebSocket,
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    await sql`
+      INSERT INTO sync_client_cursors (
+        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
+      )
+      VALUES (
+        'default', 'client-replay', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
+      )
+    `.execute(db);
+
+    const push = await app.request(
+      createPushRequest({
+        clientId: 'writer-client',
+      })
+    );
+    expect(push.status).toBe(200);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-replay&syncPackEncoding=binary-sync-pack-v1'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    expect(upstream.binaryMessages).toHaveLength(1);
+    const replay = decodeBinarySyncPack(upstream.binaryMessages[0]!);
+    expect(replay.pull?.subscriptions[0]?.commits[0]?.changes[0]?.row_id).toBe(
+      'task-1'
+    );
+    expect(
+      upstream.messages.some(
+        (message) =>
+          message.event === 'sync' &&
+          isRecord(message.data) &&
+          message.data.reason === 'reconnect-catchup'
+      )
+    ).toBe(false);
   });
 
   it('sends a websocket hello frame with session capabilities', async () => {
