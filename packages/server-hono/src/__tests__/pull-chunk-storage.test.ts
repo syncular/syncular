@@ -3,9 +3,15 @@ import { gunzipSync } from 'node:zlib';
 import {
   configureSyncTelemetry,
   createDatabase,
+  decodeBinarySnapshotTable,
+  decodeBinarySyncPack,
   decodeSnapshotRows,
   getSyncTelemetry,
+  isBinarySyncPackContentType,
   SyncCombinedResponseSchema,
+  SYNC_PACK_ENCODING_BINARY_V1,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+  SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
   type SyncPullResponse,
   type SyncSnapshotChunkRef,
   type SyncSpan,
@@ -68,11 +74,18 @@ function createExceptionCaptureTelemetry(calls: {
 }
 
 function mustGetFirstChunkId(payload: SyncPullResponse): string {
-  const chunkId = payload.subscriptions[0]?.snapshots?.[0]?.chunks?.[0]?.id;
-  if (!chunkId) {
-    throw new Error('Expected pull bootstrap response to include a chunk id.');
-  }
+  const chunkId = mustGetFirstChunk(payload).id;
   return chunkId;
+}
+
+function mustGetFirstChunk(payload: SyncPullResponse): SyncSnapshotChunkRef & {
+  body?: Uint8Array;
+} {
+  const chunk = payload.subscriptions[0]?.snapshots?.[0]?.chunks?.[0];
+  if (!chunk) {
+    throw new Error('Expected pull bootstrap response to include a chunk.');
+  }
+  return chunk as SyncSnapshotChunkRef & { body?: Uint8Array };
 }
 
 async function streamToBytes(
@@ -236,6 +249,97 @@ describe('createSyncRoutes chunkStorage wiring', () => {
 
     expect(Number(snapshotChunkCountRow.count)).toBe(0);
     expect(rows).toEqual([
+      { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
+    ]);
+  }, 10_000);
+
+  it('can return binary sync packs with separate snapshot chunk bodies', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't1',
+        user_id: 'u1',
+        title: 'Task 1',
+        server_version: 1,
+      })
+      .execute();
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const pullResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u1',
+        },
+        body: JSON.stringify({
+          clientId: 'client-1',
+          pull: {
+            limitCommits: 10,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 1,
+            snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+            snapshotChunkTransfer: SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
+            syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
+            subscriptions: [
+              {
+                id: 'sub-1',
+                table: 'tasks',
+                scopes: { user_id: 'u1' },
+                cursor: -1,
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(pullResponse.status).toBe(200);
+    expect(
+      isBinarySyncPackContentType(pullResponse.headers.get('content-type'))
+    ).toBe(true);
+
+    const combined = decodeBinarySyncPack(
+      new Uint8Array(await pullResponse.arrayBuffer())
+    );
+    const parsed = combined.pull!;
+    const chunk = mustGetFirstChunk(parsed);
+
+    expect(chunk.encoding).toBe(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1);
+    expect(chunk.body).toBeUndefined();
+
+    const chunkResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunk.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+
+    expect(chunkResponse.status).toBe(200);
+    const chunkBytes = gunzipSync(
+      new Uint8Array(await chunkResponse.arrayBuffer())
+    );
+    expect(decodeBinarySnapshotTable(chunkBytes).rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
     ]);
   }, 10_000);

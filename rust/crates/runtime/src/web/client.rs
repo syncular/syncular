@@ -14,9 +14,8 @@ use crate::protocol::{
     CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
     SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-    SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
+    SNAPSHOT_CHUNK_TRANSFER_SEPARATE, SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
 };
-use crate::runtime_schema::runtime_schema_version;
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
     AsyncSyncTransport, WebRealtimeSocket, WebSyncTransport, WebSyncTransportConfig,
@@ -224,6 +223,10 @@ where
         &self.config
     }
 
+    fn schema_version(&self) -> i32 {
+        self.store.app_schema().current_schema_version()
+    }
+
     pub fn encrypted_crdt(&self) -> Option<&EncryptedCrdt> {
         self.encrypted_crdt.as_ref()
     }
@@ -241,6 +244,7 @@ where
         validate_server_schema_version(
             response.required_schema_version,
             response.latest_schema_version,
+            self.schema_version(),
         )?;
         if !response.ok {
             return Err(SyncularError::protocol_message(
@@ -612,6 +616,7 @@ where
         validate_server_schema_version(
             response.required_schema_version,
             response.latest_schema_version,
+            self.schema_version(),
         )?;
         if !response.ok {
             return Err(SyncularError::protocol_message(
@@ -713,6 +718,7 @@ where
         if let Err(error) = validate_server_schema_version(
             response.required_schema_version,
             response.latest_schema_version,
+            self.schema_version(),
         ) {
             self.schedule_outbox_retry(&pending, &error).await?;
             return Err(error);
@@ -939,7 +945,7 @@ where
         socket.send_push_commit(crate::protocol::PushCommitRequest {
             client_commit_id: uuid::Uuid::new_v4().to_string(),
             operations,
-            schema_version: runtime_schema_version(),
+            schema_version: self.schema_version(),
         })
     }
 
@@ -977,6 +983,7 @@ where
                 SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
                 SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
             ],
+            snapshot_chunk_transfer: Some(SNAPSHOT_CHUNK_TRANSFER_SEPARATE.to_string()),
             sync_pack_encodings: vec![
                 SYNC_PACK_ENCODING_BINARY_V1.to_string(),
                 SYNC_PACK_ENCODING_JSON_V1.to_string(),
@@ -986,10 +993,11 @@ where
     }
 
     async fn prepare_push(&mut self) -> Result<Vec<OutboxCommit>> {
+        let schema_version = self.schema_version();
         self.store.requeue_stale_outbox().await?;
         let pending = self.store.pending_outbox(20).await?;
         for commit in &pending {
-            validate_outbox_schema_version(commit)?;
+            validate_outbox_schema_version(commit, schema_version)?;
         }
         for commit in &pending {
             self.store.mark_outbox_sending(&commit.id).await?;
@@ -1121,9 +1129,8 @@ where
 fn validate_server_schema_version(
     required_schema_version: Option<i32>,
     latest_schema_version: Option<i32>,
+    current: i32,
 ) -> Result<()> {
-    let current = runtime_schema_version();
-
     if let Some(required) = required_schema_version {
         if required < 1 {
             return Err(SyncularError::schema(format!(
@@ -1310,7 +1317,7 @@ fn snapshot_clear_removes_all_rows(app_schema: AppSchema, table: &str) -> bool {
     })
 }
 
-fn validate_outbox_schema_version(commit: &OutboxCommit) -> Result<()> {
+fn validate_outbox_schema_version(commit: &OutboxCommit, current: i32) -> Result<()> {
     if commit.schema_version < 1 {
         return Err(SyncularError::schema(format!(
             "web outbox commit {} has invalid schema version {}",
@@ -1318,7 +1325,6 @@ fn validate_outbox_schema_version(commit: &OutboxCommit) -> Result<()> {
         )));
     }
 
-    let current = runtime_schema_version();
     if commit.schema_version > current {
         return Err(SyncularError::schema(format!(
             "web outbox commit {} was created with schema version {}, but this client supports {}",

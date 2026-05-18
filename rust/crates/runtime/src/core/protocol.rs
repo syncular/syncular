@@ -9,6 +9,8 @@ pub type ScopeValues = Map<String, Value>;
 
 pub const SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1: &str = "json-row-frame-v1";
 pub const SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1: &str = "binary-table-v1";
+pub const SNAPSHOT_CHUNK_TRANSFER_INLINE: &str = "inline";
+pub const SNAPSHOT_CHUNK_TRANSFER_SEPARATE: &str = "separate";
 pub const SYNC_PACK_ENCODING_JSON_V1: &str = "json-v1";
 pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 
@@ -184,6 +186,11 @@ pub struct PullRequest {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub snapshot_encodings: Vec<String>,
+    #[serde(
+        rename = "snapshotChunkTransfer",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_chunk_transfer: Option<String>,
     #[serde(
         rename = "syncPackEncodings",
         default,

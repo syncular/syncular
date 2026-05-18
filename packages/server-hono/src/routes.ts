@@ -19,6 +19,7 @@ import {
   prefersBinarySyncPack,
   type RealtimeChangeScopeIndex,
   ScopeValuesSchema,
+  SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
   type SyncChange,
@@ -2187,9 +2188,13 @@ export function createSyncRoutes<
         c.req.header('x-syncular-bench-timings') === '1';
       const requestedSyncPackEncodings =
         body.syncPackEncodings ?? body.pull?.syncPackEncodings;
-      const shouldInlineSnapshotChunkBodies = prefersBinarySyncPack(
+      const shouldEncodeBinarySyncPack = prefersBinarySyncPack(
         requestedSyncPackEncodings
       );
+      const shouldInlineSnapshotChunkBodies =
+        shouldEncodeBinarySyncPack &&
+        body.pull?.snapshotChunkTransfer !==
+          SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE;
 
       // --- Push phase ---
       if (body.push) {
@@ -2481,12 +2486,14 @@ export function createSyncRoutes<
         ...(pullResponse ? { pull: pullResponse } : {}),
       };
 
-      if (shouldInlineSnapshotChunkBodies) {
-        await inlineSnapshotChunkBodies(
-          options.db,
-          combinedResponse,
-          options.chunkStorage
-        );
+      if (shouldEncodeBinarySyncPack) {
+        if (shouldInlineSnapshotChunkBodies) {
+          await inlineSnapshotChunkBodies(
+            options.db,
+            combinedResponse,
+            options.chunkStorage
+          );
+        }
         const encoded = encodeBinarySyncPack(combinedResponse, {
           changeRowEncoders: binarySyncPackChangeRowEncoders,
         });
