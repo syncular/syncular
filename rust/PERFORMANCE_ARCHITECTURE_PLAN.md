@@ -506,6 +506,24 @@ derived-schema deferral for app bootstrap.
   `63ms -> 74ms`, and server binary encode rose to `24ms` versus the preceding
   cache-key run's `16ms`. Keep the direct ASCII writer; per-string
   `TextEncoder` allocation is not a win for the current snapshot payload.
+- Retained generic binary snapshot column inference cleanup. The server generic
+  binary encoder now counts column presence during the first row scan instead
+  of doing a second `rows × columns` pass with `Object.hasOwn` only to mark
+  missing fields nullable. This targets custom snapshot handlers that do not
+  provide generated binary columns/encoders, which is exactly the current
+  external branch-server app path. Correctness:
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts
+  tests/unit/server-pull.test.ts` and
+  `bun run --cwd rust/bindings/browser tsgo` passed. Local generated-encoder
+  100k guardrail stayed neutral: Rust bootstrap `138.04ms -> 137.27ms`,
+  pull request `63ms -> 62ms`, and server binary encode `17ms`. External
+  branch-server 500k improved materially versus the immediately previous
+  cache-key run: Rust bootstrap `2926.37ms -> 2547.95ms` (`-378.42ms`,
+  `-12.9%`), pull request `1390ms -> 1112ms`, server binary encode
+  `648ms -> 472ms`, server snapshot query `573ms -> 504ms`, local apply
+  `404ms -> 399ms`, derived schema `960.44ms -> 862.79ms`, and peak memory
+  `738.17MB -> 737.09MB`. Same-run TS 500k was `3740.24ms`, so Rust was
+  `0.68x` TS wall time for this run.
 
 ### Required Benchmark Scoreboard
 
