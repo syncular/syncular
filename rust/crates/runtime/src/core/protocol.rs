@@ -11,6 +11,7 @@ pub const SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1: &str = "json-row-frame-v1";
 pub const SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1: &str = "binary-table-v1";
 pub const SYNC_PACK_ENCODING_JSON_V1: &str = "json-v1";
 pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
+pub const COMMIT_INTEGRITY_HEX_LENGTH: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncOperation {
@@ -282,6 +283,69 @@ pub struct SyncCommit {
     #[serde(rename = "commitChainRoot", skip_serializing_if = "Option::is_none")]
     pub commit_chain_root: Option<String>,
     pub changes: Vec<SyncChange>,
+}
+
+pub fn validate_pull_commit_integrity_metadata(response: &PullResponse) -> Result<()> {
+    for subscription in &response.subscriptions {
+        let mut previous_integrity_commit_seq = None;
+        for commit in &subscription.commits {
+            validate_commit_integrity_metadata(&subscription.id, commit)?;
+            if commit.commit_digest.is_some() {
+                if let Some(previous) = previous_integrity_commit_seq {
+                    if commit.commit_seq <= previous {
+                        return Err(SyncularError::protocol_message(format!(
+                            "subscription {} integrity-bearing commit sequence must be strictly increasing: {} after {}",
+                            subscription.id, commit.commit_seq, previous
+                        )));
+                    }
+                }
+                previous_integrity_commit_seq = Some(commit.commit_seq);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_commit_integrity_metadata(subscription_id: &str, commit: &SyncCommit) -> Result<()> {
+    match (&commit.commit_digest, &commit.commit_chain_root) {
+        (None, None) => Ok(()),
+        (Some(commit_digest), Some(commit_chain_root)) => {
+            validate_commit_integrity_hex(
+                "commitDigest",
+                subscription_id,
+                commit.commit_seq,
+                commit_digest,
+            )?;
+            validate_commit_integrity_hex(
+                "commitChainRoot",
+                subscription_id,
+                commit.commit_seq,
+                commit_chain_root,
+            )
+        }
+        _ => Err(SyncularError::protocol_message(format!(
+            "subscription {} commit {} integrity metadata must include both commitDigest and commitChainRoot",
+            subscription_id, commit.commit_seq
+        ))),
+    }
+}
+
+fn validate_commit_integrity_hex(
+    label: &str,
+    subscription_id: &str,
+    commit_seq: i64,
+    value: &str,
+) -> Result<()> {
+    if value.len() != COMMIT_INTEGRITY_HEX_LENGTH
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(SyncularError::protocol_message(format!(
+            "subscription {subscription_id} commit {commit_seq} {label} must be a lowercase 64-character SHA-256 hex string"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
