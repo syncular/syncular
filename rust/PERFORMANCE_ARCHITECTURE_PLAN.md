@@ -2758,6 +2758,17 @@ client. Overflow should close or resync the session deliberately.
   moved dense build/encode from the accepted `21.4ms`/`26.0ms` to
   `23.6ms`/`29.1ms`; a symbol-property variant was worse at
   `28.5ms`/`30.2ms`. The added per-row bookkeeping is not worth retaining.
+- Retained sequential incremental commit grouping: the non-dedupe pull path now
+  groups already-ordered incremental rows directly instead of building a
+  `Map` by commit sequence and then materializing a second array.
+  - Immediate dense lane before/after:
+    `server_dense_incremental_pull_build_5000_500` `23.4ms -> 22.2ms`,
+    binary encode `27.1ms -> 25.6ms`, generated encode `28.2ms -> 27.0ms`.
+  - Repeat held the shape:
+    `server_dense_incremental_pull_build_5000_500` `21.5ms`, binary encode
+    `26.0ms`, generated encode `26.4ms`.
+  - Sparse scope-index guard stayed better than the prior cleanup note:
+    `server_scoped_incremental_pull_fanout_5000_20` `2.7ms -> 2.3ms`.
 - Done: added a dense incremental pull measurement lane that separates server
   response build from response build plus binary sync-pack encoding. This is
   the current measurement gate before adding a durable binary commit log.
