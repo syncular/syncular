@@ -370,9 +370,13 @@ function writeChanges(
     return scopeIndex;
   };
 
-  for (const change of changes) {
-    tableIndexFor(change.table);
-    scopeIndexFor(change.scopes);
+  const tableIndexesByChange: number[] = [];
+  const scopeIndexesByChange: number[] = [];
+
+  for (let index = 0; index < changes.length; index += 1) {
+    const change = changes[index]!;
+    tableIndexesByChange[index] = tableIndexFor(change.table);
+    scopeIndexesByChange[index] = scopeIndexFor(change.scopes);
     if (change.op === 'delete' || change.row_json == null) continue;
     if (!options.changeRowEncoders?.[change.table]) continue;
     encodedRowCountsByTable.set(
@@ -398,10 +402,14 @@ function writeChanges(
     }
     let groupIndex = groupIndexesByTable.get(change.table);
     if (groupIndex === undefined) {
-      const tableIndex = tableIndexFor(change.table);
       groupIndex = groups.length;
       groupIndexesByTable.set(change.table, groupIndex);
-      groups.push({ table: change.table, tableIndex, encoder, rows: [] });
+      groups.push({
+        table: change.table,
+        tableIndex: tableIndexesByChange[index]!,
+        encoder,
+        rows: [],
+      });
     }
     const group = groups[groupIndex]!;
     const rowIndex = group.rows.length;
@@ -419,8 +427,8 @@ function writeChanges(
     writeChangeMetadataV7(
       writer,
       change,
-      tableIndexFor(change.table),
-      scopeIndexFor(change.scopes),
+      tableIndexesByChange[index]!,
+      scopeIndexesByChange[index]!,
       rowRefs.get(index)
     );
   }
