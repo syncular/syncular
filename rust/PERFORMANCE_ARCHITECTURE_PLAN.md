@@ -2912,6 +2912,22 @@ client. Overflow should close or resync the session deliberately.
 
 - Status: in progress.
 - Add binary conflict/rejection records.
+  - Done: binary sync-pack v8 now uses variant-tagged push commit statuses and
+    operation result statuses. Applied operation results no longer carry empty
+    conflict/error optional fields, while conflict and error records are decoded
+    through explicit variant layouts on both TypeScript and Rust. This is a
+    protocol cleanliness/compactness change, not the hot row-apply target.
+    Focused validation:
+    `bun test packages/core/src/__tests__/sync-packs.test.ts`,
+    `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime binary_sync_pack`,
+    `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`,
+    and `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+    Sample rejected push response: binary `139` bytes versus JSON `333` bytes;
+    the equivalent old string-status/optional-field layout would have been
+    about `172` bytes. The maintained 50k incremental row-pack lane remains in
+    the same band because it does not exercise push rejection records:
+    generic encode/decode `20.9ms/25.8ms`, generated encode/decode
+    `18.1ms/26.3ms`, sizes `9478.3KiB/5104.5KiB`.
 - Add CRDT-specific update/checkpoint lanes.
   - Done: encrypted CRDT update/checkpoint system handlers now expose stable
     binary table metadata and encoders. The shared system tables no longer rely
@@ -2936,22 +2952,6 @@ client. Overflow should close or resync the session deliberately.
     `resync-required` until it really has reached the configured outstanding
     notification limit again. Focused coverage:
     `bun test packages/server-hono/src/__tests__/ws-connection-manager.test.ts`.
-  - Done: binary sync-pack v8 now uses variant-tagged push commit statuses and
-    operation result statuses. Applied operation results no longer carry empty
-    conflict/error optional fields, while conflict and error records are decoded
-    through explicit variant layouts on both TypeScript and Rust. This is a
-    protocol cleanliness/compactness change, not the hot row-apply target.
-    Focused validation:
-    `bun test packages/core/src/__tests__/sync-packs.test.ts`,
-    `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime binary_sync_pack`,
-    `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`,
-    and `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
-    Sample rejected push response: binary `139` bytes versus JSON `333` bytes;
-    the equivalent old string-status/optional-field layout would have been
-    about `172` bytes. The maintained 50k incremental row-pack lane remains in
-    the same band because it does not exercise push rejection records:
-    generic encode/decode `20.9ms/25.8ms`, generated encode/decode
-    `18.1ms/26.3ms`, sizes `9478.3KiB/5104.5KiB`.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
   - Done: browser/Hono realtime coverage now proves both sides of the recovery
