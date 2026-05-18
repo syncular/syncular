@@ -243,8 +243,10 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       actor_id: string;
       created_at: unknown;
       result_json: unknown | null;
+      commit_digest: string | null;
+      commit_chain_root: string | null;
     }>`
-      SELECT commit_seq, actor_id, created_at, result_json
+      SELECT commit_seq, actor_id, created_at, result_json, commit_digest, commit_chain_root
       FROM sync_commits
       WHERE commit_seq ${seqsFilter}
         AND partition_id = ${partitionId}
@@ -256,6 +258,8 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       actor_id: row.actor_id,
       created_at: coerceIsoString(row.created_at),
       result_json: row.result_json ?? null,
+      commit_digest: row.commit_digest ?? null,
+      commit_chain_root: row.commit_chain_root ?? null,
     }));
   }
 

@@ -9,6 +9,7 @@ import {
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
 import { notifyExternalDataChange } from './notify';
+import { pull } from './pull';
 import { pushCommit } from './push';
 import type { SyncCoreDb } from './schema';
 
@@ -214,5 +215,58 @@ describe('commit integrity metadata', () => {
     expect(commit.change_count).toBe(0);
     expect(commit.commit_digest).toMatch(sha256HexPattern);
     expect(commit.commit_chain_root).toMatch(sha256HexPattern);
+  });
+
+  it('surfaces commit integrity metadata in incremental pull responses', async () => {
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      }),
+    ]);
+    await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'writer',
+        clientCommitId: 'commit-1',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'task-1',
+            op: 'upsert',
+            payload: { title: 'Pulled', user_id: 'u1' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    const response = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'reader',
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: 0,
+          },
+        ],
+      },
+    });
+    const commit = response.response.subscriptions[0]!.commits[0]!;
+
+    expect(commit.commitDigest).toMatch(sha256HexPattern);
+    expect(commit.commitChainRoot).toMatch(sha256HexPattern);
   });
 });

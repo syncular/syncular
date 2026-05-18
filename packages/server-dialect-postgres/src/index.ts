@@ -637,6 +637,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         commit_seq: unknown;
         actor_id: string;
         created_at: unknown;
+        commit_digest: string | null;
+        commit_chain_root: string | null;
         change_id: unknown;
         table: string;
         row_id: string;
@@ -649,6 +651,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
           cm.commit_seq,
           cm.actor_id,
           cm.created_at,
+          cm.commit_digest,
+          cm.commit_chain_root,
           c.change_id,
           c."table",
           c.row_id,
@@ -671,6 +675,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         scanned_max_commit_seq: scannedMaxCommitSeq,
         actor_id: row.actor_id,
         created_at: coerceIsoString(row.created_at),
+        commit_digest: row.commit_digest ?? null,
+        commit_chain_root: row.commit_chain_root ?? null,
         change_id: coerceNumber(row.change_id) ?? 0,
         table: row.table,
         row_id: row.row_id,
@@ -686,6 +692,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       scanned_max_commit_seq: unknown;
       actor_id: string;
       created_at: unknown;
+      commit_digest: string | null;
+      commit_chain_root: string | null;
       change_id: unknown;
       table: string;
       row_id: string;
@@ -723,6 +731,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         (SELECT max(commit_seq) FROM commit_window) AS scanned_max_commit_seq,
         cm.actor_id,
         cm.created_at,
+        cm.commit_digest,
+        cm.commit_chain_root,
         c.change_id,
         c."table",
         c.row_id,
@@ -745,6 +755,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       scanned_max_commit_seq: coerceNumber(row.scanned_max_commit_seq),
       actor_id: row.actor_id,
       created_at: coerceIsoString(row.created_at),
+      commit_digest: row.commit_digest ?? null,
+      commit_chain_root: row.commit_chain_root ?? null,
       change_id: coerceNumber(row.change_id) ?? 0,
       table: row.table,
       row_id: row.row_id,

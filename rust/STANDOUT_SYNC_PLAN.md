@@ -70,6 +70,12 @@ of jumping straight into new public APIs.
   old SQLite schema migration, synthetic external commits, and proxy oplog
   compatibility. Next: expose the digest/root metadata on pull responses and
   teach the Rust client to verify it before cursor advancement.
+- 2026-05-19: Exposed commit integrity metadata through incremental pull
+  responses and `binary-sync-pack-v1` wire version 10. Pull commits now carry
+  optional `commitDigest` and `commitChainRoot`; TypeScript and Rust binary
+  decoders round-trip the fields, and the shared binary fixture now includes
+  the metadata. Next: Rust client verification before applying changes and
+  advancing cursors.
 
 ## Priority Roadmap
 

@@ -32,7 +32,7 @@ describe('cross-language protocol fixtures', () => {
     const fixture = readBinarySyncPackFixture();
     const encoded = encodeBinarySyncPack(fixture.decodedResponse);
 
-    expect(fixture.wireVersion).toBe(9);
+    expect(fixture.wireVersion).toBe(10);
     expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
     expect(decodeBinarySyncPack(encoded)).toEqual(fixture.decodedResponse);
   });

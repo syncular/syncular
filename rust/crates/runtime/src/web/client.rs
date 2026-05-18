@@ -642,6 +642,8 @@ where
                             commit_seq,
                             created_at: request.created_at.unwrap_or_else(|| now_ms().to_string()),
                             actor_id: request.actor_id.unwrap_or_else(|| "server".to_string()),
+                            commit_digest: None,
+                            commit_chain_root: None,
                             changes: request.changes,
                         }],
                         snapshots: None,

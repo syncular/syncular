@@ -1298,6 +1298,8 @@ impl SyncTransport for EncryptedCrdtPullTransport {
                             commit_seq: 2,
                             created_at: "2026-05-10T00:00:00.000Z".to_string(),
                             actor_id: "remote-user".to_string(),
+                            commit_digest: None,
+                            commit_chain_root: None,
                             changes: vec![SyncChange {
                                 table: CRDT_UPDATES_TABLE.to_string(),
                                 row_id: self.encrypted_update["update_id"]
@@ -1386,6 +1388,8 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
                             commit_seq: 7,
                             created_at: "2026-05-10T00:00:00.000Z".to_string(),
                             actor_id: "remote-user".to_string(),
+                            commit_digest: None,
+                            commit_chain_root: None,
                             changes: vec![SyncChange {
                                 table: CRDT_CHECKPOINTS_TABLE.to_string(),
                                 row_id: self.encrypted_checkpoint["checkpoint_id"]

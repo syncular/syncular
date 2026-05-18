@@ -36,6 +36,8 @@ export interface IncrementalPullRow {
   scanned_max_commit_seq?: number | null;
   actor_id: string;
   created_at: string;
+  commit_digest: string | null;
+  commit_chain_root: string | null;
   change_id: number;
   table: string;
   row_id: string;
