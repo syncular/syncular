@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
+import { createDatabase, decodeBinarySnapshotTable } from '@syncular/core';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
 import {
@@ -95,6 +95,70 @@ describe('encrypted CRDT system handlers', () => {
       field_name: 'body',
       update_id: 'update-1',
     });
+  });
+
+  it('encodes encrypted CRDT system rows as binary tables', () => {
+    const [updates, checkpoints] = createEncryptedCrdtSystemHandlers({
+      resolveScopes: () => ({ user_id: 'user-1' }),
+    });
+
+    const updateBytes = updates.snapshotBinaryEncoder?.([
+      {
+        seq: 7,
+        partition_id: 'default',
+        stream_id: 'tasks:task-1:body',
+        app_table: 'tasks',
+        row_id: 'task-1',
+        field_name: 'body',
+        update_id: 'update-1',
+        actor_id: null,
+        client_id: 'client-1',
+        key_id: 'kid-1',
+        ciphertext: 'ciphertext',
+        scopes: { user_id: 'user-1' },
+      },
+    ]);
+    expect(updateBytes).toBeInstanceOf(Uint8Array);
+    const updateTable = decodeBinarySnapshotTable(updateBytes!);
+    expect(updateTable.table).toBe(SYNC_CRDT_UPDATES_TABLE);
+    expect(updateTable.rows[0]).toEqual({
+      seq: 7,
+      partition_id: 'default',
+      stream_id: 'tasks:task-1:body',
+      app_table: 'tasks',
+      row_id: 'task-1',
+      field_name: 'body',
+      update_id: 'update-1',
+      actor_id: null,
+      client_id: 'client-1',
+      key_id: 'kid-1',
+      ciphertext: 'ciphertext',
+      scopes: { user_id: 'user-1' },
+    });
+
+    const checkpointBytes = checkpoints.snapshotBinaryEncoder?.([
+      {
+        seq: 9,
+        partition_id: 'default',
+        stream_id: 'tasks:task-1:body',
+        app_table: 'tasks',
+        row_id: 'task-1',
+        field_name: 'body',
+        checkpoint_id: 'checkpoint-1',
+        covers_seq: 8,
+        actor_id: 'user-1',
+        client_id: null,
+        key_id: 'kid-1',
+        ciphertext: 'checkpoint-ciphertext',
+        scopes: { user_id: 'user-1' },
+      },
+    ]);
+    expect(checkpointBytes).toBeInstanceOf(Uint8Array);
+    const checkpointTable = decodeBinarySnapshotTable(checkpointBytes!);
+    expect(checkpointTable.table).toBe(SYNC_CRDT_CHECKPOINTS_TABLE);
+    expect(checkpointTable.rows[0]?.checkpoint_id).toBe('checkpoint-1');
+    expect(checkpointTable.rows[0]?.covers_seq).toBe(8);
+    expect(checkpointTable.rows[0]?.scopes).toEqual({ user_id: 'user-1' });
   });
 
   it('prunes encrypted updates covered by retained same-key checkpoints', async () => {
