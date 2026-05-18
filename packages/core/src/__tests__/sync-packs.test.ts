@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'bun:test';
+import type {
+  SyncCombinedResponse,
+  SyncSnapshotChunkRef,
+} from '../schemas/sync';
 import {
   SyncCombinedRequestSchema,
   SyncPullRequestSchema,
 } from '../schemas/sync';
+import {
+  encodeBinarySnapshotTable,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+} from '../snapshot-chunks';
 import {
   decodeBinarySyncPack,
   encodeBinarySyncPack,
@@ -12,14 +20,6 @@ import {
   SYNC_PACK_ENCODING_BINARY_V1,
   SYNC_PACK_ENCODING_JSON_V1,
 } from '../sync-packs';
-import {
-  encodeBinarySnapshotTable,
-  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-} from '../snapshot-chunks';
-import type {
-  SyncCombinedResponse,
-  SyncSnapshotChunkRef,
-} from '../schemas/sync';
 
 describe('sync pack protocol negotiation', () => {
   it('accepts advertised JSON and binary pack encodings on pull requests', () => {
@@ -153,7 +153,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(7);
+    expect(encoded[4]).toBe(8);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);

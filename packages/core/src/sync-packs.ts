@@ -10,12 +10,9 @@
  * - v7: positional envelope with refs-only snapshot chunks, per-pack table and
  *   scope dictionaries, and grouped generated binary row payloads for
  *   incremental changes.
+ * - v8: variant-tagged push and operation result records.
  */
 
-import {
-  decodeBinarySnapshotTable,
-  type BinarySnapshotRowsEncoder,
-} from './snapshot-chunks';
 import type {
   SyncChange,
   SyncCombinedResponse,
@@ -23,12 +20,16 @@ import type {
   SyncOperationResult,
   SyncPullResponse,
   SyncPullSubscriptionResponse,
-  SyncPushBatchResponse,
   SyncPushBatchCommitResponse,
+  SyncPushBatchResponse,
   SyncSnapshot,
   SyncSnapshotChunkRef,
 } from './schemas/sync';
 import type { ScopeValues } from './scopes';
+import {
+  type BinarySnapshotRowsEncoder,
+  decodeBinarySnapshotTable,
+} from './snapshot-chunks';
 
 export const SYNC_PACK_ENCODING_JSON_V1 = 'json-v1';
 export const SYNC_PACK_ENCODING_BINARY_V1 = 'binary-sync-pack-v1';
@@ -41,7 +42,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 7;
+const VERSION = 8;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -156,7 +157,7 @@ function writePushCommitResponse(
 ): void {
   writer.bool(commit.ok);
   writer.string32(commit.clientCommitId);
-  writer.string16(commit.status);
+  writer.u8(pushCommitStatusByte(commit.status));
   writer.optionalI64(commit.commitSeq);
   writer.array(commit.results, writeOperationResult);
 }
@@ -167,10 +168,7 @@ function readPushCommitResponse(
   const commit: SyncPushBatchCommitResponse = {
     ok: reader.bool('push commit ok') as true,
     clientCommitId: reader.string32('push client commit id'),
-    status: reader.string16('push commit status') as
-      | 'applied'
-      | 'cached'
-      | 'rejected',
+    status: readPushCommitStatus(reader),
     results: [],
   };
   const commitSeq = reader.optionalI64('push commit seq');
@@ -179,72 +177,111 @@ function readPushCommitResponse(
   return commit;
 }
 
+function pushCommitStatusByte(
+  status: SyncPushBatchCommitResponse['status']
+): number {
+  switch (status) {
+    case 'applied':
+      return 1;
+    case 'cached':
+      return 2;
+    case 'rejected':
+      return 3;
+  }
+}
+
+function readPushCommitStatus(
+  reader: BinarySyncPackReader
+): SyncPushBatchCommitResponse['status'] {
+  const status = reader.u8('push commit status');
+  switch (status) {
+    case 1:
+      return 'applied';
+    case 2:
+      return 'cached';
+    case 3:
+      return 'rejected';
+    default:
+      throw new Error(`Unsupported push commit status byte: ${status}`);
+  }
+}
+
+function operationResultStatusByte(
+  status: SyncOperationResult['status']
+): number {
+  switch (status) {
+    case 'applied':
+      return 1;
+    case 'conflict':
+      return 2;
+    case 'error':
+      return 3;
+  }
+}
+
 function writeOperationResult(
   writer: BinarySyncPackWriter,
   result: SyncOperationResult
 ): void {
   writer.i32(result.opIndex);
-  writer.string16(result.status);
-  if (result.status === 'applied') {
-    writer.optionalString32(undefined);
-    writer.optionalString32(undefined);
-    writer.optionalString32(undefined);
-    writer.optionalBool(undefined);
-    writer.optionalI64(undefined);
-    writer.optionalJson(undefined);
-    return;
+  writer.u8(operationResultStatusByte(result.status));
+  switch (result.status) {
+    case 'applied':
+      return;
+    case 'conflict':
+      writer.string32(result.message);
+      writer.optionalString32(result.code);
+      writer.i64(result.server_version);
+      writer.json(result.server_row);
+      return;
+    case 'error':
+      writer.string32(result.error);
+      writer.optionalString32(result.code);
+      writer.optionalBool(result.retriable);
+      return;
   }
-  writer.optionalString32('message' in result ? result.message : undefined);
-  writer.optionalString32('error' in result ? result.error : undefined);
-  writer.optionalString32(result.code);
-  writer.optionalBool('retriable' in result ? result.retriable : undefined);
-  writer.optionalI64(
-    'server_version' in result ? result.server_version : undefined
-  );
-  writer.optionalJson('server_row' in result ? result.server_row : undefined);
 }
 
 function readOperationResult(
   reader: BinarySyncPackReader
 ): SyncOperationResult {
   const opIndex = reader.i32('operation result index');
-  const status = reader.string16('operation result status');
-  const message = reader.optionalString32('operation result message');
-  const error = reader.optionalString32('operation result error');
-  const code = reader.optionalString32('operation result code');
-  const retriable = reader.optionalBool('operation result retriable');
-  const serverVersion = reader.optionalI64('operation result server version');
-  const serverRow = reader.optionalJson('operation result server row');
+  const status = reader.u8('operation result status');
 
-  if (status === 'applied') {
-    return { opIndex, status };
-  }
-  if (status === 'conflict') {
-    if (message === undefined || serverVersion === undefined) {
-      throw new Error('Binary sync pack conflict result is incomplete');
+  switch (status) {
+    case 1:
+      return { opIndex, status: 'applied' };
+    case 2: {
+      const message = reader.string32('operation result conflict message');
+      const code = reader.optionalString32('operation result conflict code');
+      const serverVersion = reader.i64(
+        'operation result conflict server version'
+      );
+      const serverRow = reader.json('operation result conflict server row');
+      return {
+        opIndex,
+        status: 'conflict',
+        message,
+        ...(code !== undefined ? { code } : {}),
+        server_version: serverVersion,
+        server_row: serverRow,
+      };
     }
-    return {
-      opIndex,
-      status,
-      message,
-      ...(code !== undefined ? { code } : {}),
-      server_version: serverVersion,
-      server_row: serverRow,
-    };
-  }
-  if (status === 'error') {
-    if (error === undefined) {
-      throw new Error('Binary sync pack error result is incomplete');
+    case 3: {
+      const error = reader.string32('operation result error message');
+      const code = reader.optionalString32('operation result error code');
+      const retriable = reader.optionalBool('operation result error retriable');
+      return {
+        opIndex,
+        status: 'error',
+        error,
+        ...(code !== undefined ? { code } : {}),
+        ...(retriable !== undefined ? { retriable } : {}),
+      };
     }
-    return {
-      opIndex,
-      status,
-      error,
-      ...(code !== undefined ? { code } : {}),
-      ...(retriable !== undefined ? { retriable } : {}),
-    };
+    default:
+      throw new Error(`Unsupported operation result status byte: ${status}`);
   }
-  throw new Error(`Unsupported operation result status: ${status}`);
 }
 
 function writePullResponse(
@@ -322,7 +359,7 @@ function readCommit(reader: BinarySyncPackReader): SyncCommit {
     commitSeq: reader.i64('commit seq'),
     createdAt: reader.string32('commit createdAt'),
     actorId: reader.string32('commit actorId'),
-    changes: readChangesV7(reader),
+    changes: readChangesV8(reader),
   };
 }
 
@@ -424,7 +461,7 @@ function writeChanges(
   writer.u32(changes.length);
   for (let index = 0; index < changes.length; index += 1) {
     const change = changes[index]!;
-    writeChangeMetadataV7(
+    writeChangeMetadataV8(
       writer,
       change,
       tableIndexesByChange[index]!,
@@ -439,7 +476,7 @@ function writeChanges(
   }
 }
 
-function writeChangeMetadataV7(
+function writeChangeMetadataV8(
   writer: BinarySyncPackWriter,
   change: SyncChange,
   tableIndex: number,
@@ -463,7 +500,7 @@ function writeChangeMetadataV7(
   writer.u32(scopeIndex);
 }
 
-function readChangesV7(reader: BinarySyncPackReader): SyncChange[] {
+function readChangesV8(reader: BinarySyncPackReader): SyncChange[] {
   const tableNames = reader.array('commit change table dictionary', (reader) =>
     reader.string16('commit change table')
   );
@@ -475,7 +512,7 @@ function readChangesV7(reader: BinarySyncPackReader): SyncChange[] {
   const changes: SyncChange[] = [];
   const rowRefs: PendingBinaryChangeRowRef[] = [];
   for (let index = 0; index < changeCount; index += 1) {
-    const change = readChangeMetadataV7(
+    const change = readChangeMetadataV8(
       reader,
       index,
       tableNames,
@@ -520,7 +557,7 @@ function readChangesV7(reader: BinarySyncPackReader): SyncChange[] {
   return changes;
 }
 
-function readChangeMetadataV7(
+function readChangeMetadataV8(
   reader: BinarySyncPackReader,
   changeIndex: number,
   tableNames: readonly string[],

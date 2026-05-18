@@ -11,7 +11,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 7;
+const VERSION: u16 = 8;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -66,23 +66,61 @@ fn read_push_commit_response(reader: &mut BinarySyncPackReader<'_>) -> Result<Pu
     let _ok = reader.read_bool("push commit ok")?;
     Ok(PushCommitResponse {
         client_commit_id: reader.read_string32("push client commit id")?,
-        status: reader.read_string16("push commit status")?,
+        status: read_push_commit_status(reader)?,
         commit_seq: reader.read_optional_i64("push commit seq")?,
         results: reader.read_array("push operation results", read_operation_result)?,
     })
 }
 
 fn read_operation_result(reader: &mut BinarySyncPackReader<'_>) -> Result<OperationResult> {
-    Ok(OperationResult {
-        op_index: reader.read_i32("operation result index")?,
-        status: reader.read_string16("operation result status")?,
-        message: reader.read_optional_string32("operation result message")?,
-        error: reader.read_optional_string32("operation result error")?,
-        code: reader.read_optional_string32("operation result code")?,
-        retriable: reader.read_optional_bool("operation result retriable")?,
-        server_version: reader.read_optional_i64("operation result server version")?,
-        server_row: reader.read_optional_json("operation result server row")?,
-    })
+    let op_index = reader.read_i32("operation result index")?;
+    let status = reader.read_u8("operation result status")?;
+    match status {
+        1 => Ok(OperationResult {
+            op_index,
+            status: "applied".to_string(),
+            message: None,
+            error: None,
+            code: None,
+            retriable: None,
+            server_version: None,
+            server_row: None,
+        }),
+        2 => Ok(OperationResult {
+            op_index,
+            status: "conflict".to_string(),
+            message: Some(reader.read_string32("operation result conflict message")?),
+            error: None,
+            code: reader.read_optional_string32("operation result conflict code")?,
+            retriable: None,
+            server_version: Some(reader.read_i64("operation result conflict server version")?),
+            server_row: Some(reader.read_json("operation result conflict server row")?),
+        }),
+        3 => Ok(OperationResult {
+            op_index,
+            status: "error".to_string(),
+            message: None,
+            error: Some(reader.read_string32("operation result error message")?),
+            code: reader.read_optional_string32("operation result error code")?,
+            retriable: reader.read_optional_bool("operation result error retriable")?,
+            server_version: None,
+            server_row: None,
+        }),
+        value => Err(SyncularError::protocol_message(format!(
+            "unsupported binary sync pack operation result status byte: {value}"
+        ))),
+    }
+}
+
+fn read_push_commit_status(reader: &mut BinarySyncPackReader<'_>) -> Result<String> {
+    match reader.read_u8("push commit status")? {
+        1 => Ok("applied".to_string()),
+        2 => Ok("cached".to_string()),
+        3 => Ok("rejected".to_string()),
+        value => Err(SyncularError::protocol_message(format!(
+            "unsupported binary sync pack push commit status byte: {value}"
+        ))),
+    }
 }
 
 fn read_pull_response(reader: &mut BinarySyncPackReader<'_>) -> Result<PullResponse> {
@@ -123,11 +161,11 @@ fn read_commit(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncCommit> {
         commit_seq: reader.read_i64("commit seq")?,
         created_at: reader.read_string32("commit createdAt")?,
         actor_id: reader.read_string32("commit actorId")?,
-        changes: read_changes_v7(reader)?,
+        changes: read_changes_v8(reader)?,
     })
 }
 
-fn read_changes_v7(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
+fn read_changes_v8(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
     let table_names = reader.read_array("commit change table dictionary", |reader| {
         reader.read_string16("commit change table")
     })?;
@@ -138,7 +176,7 @@ fn read_changes_v7(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChan
     let mut changes = Vec::with_capacity(change_count);
     let mut row_refs = Vec::new();
     for change_index in 0..change_count {
-        changes.push(read_change_metadata_v7(
+        changes.push(read_change_metadata_v8(
             reader,
             change_index,
             &table_names,
@@ -201,7 +239,7 @@ fn read_changes_v7(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChan
     Ok(changes)
 }
 
-fn read_change_metadata_v7(
+fn read_change_metadata_v8(
     reader: &mut BinarySyncPackReader<'_>,
     change_index: usize,
     table_names: &[String],
@@ -483,9 +521,9 @@ mod tests {
     use super::decode_binary_sync_pack;
 
     #[test]
-    fn decodes_v7_table_and_scope_dictionary_changes() {
+    fn decodes_v8_table_and_scope_dictionary_changes() {
         let bytes = [
-            83, 83, 80, 49, 7, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 21, 0, 0, 0, 95, 95, 115,
+            83, 83, 80, 49, 8, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 21, 0, 0, 0, 95, 95, 115,
             121, 110, 99, 117, 108, 97, 114, 95, 114, 101, 97, 108, 116, 105, 109, 101, 95, 95, 6,
             0, 97, 99, 116, 105, 118, 101, 2, 0, 0, 0, 123, 125, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
             0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 50, 48, 50, 54, 45, 48, 53, 45, 49, 56,
@@ -507,5 +545,35 @@ mod tests {
             change.row_json.as_ref().unwrap()["title"].as_str(),
             Some("A")
         );
+    }
+
+    #[test]
+    fn decodes_v8_variant_tagged_push_rejections() {
+        let bytes = [
+            83, 83, 80, 49, 8, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 99, 49, 3, 0, 2,
+            0, 0, 0, 0, 0, 0, 0, 2, 18, 0, 0, 0, 115, 101, 114, 118, 101, 114, 32, 114, 111, 119,
+            32, 99, 104, 97, 110, 103, 101, 100, 1, 8, 0, 0, 0, 67, 79, 78, 70, 76, 73, 67, 84, 7,
+            0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 123, 34, 105, 100, 34, 58, 34, 116, 97, 115, 107, 45,
+            50, 34, 44, 34, 116, 105, 116, 108, 101, 34, 58, 34, 83, 101, 114, 118, 101, 114, 34,
+            125, 1, 0, 0, 0, 3, 4, 0, 0, 0, 98, 111, 111, 109, 1, 4, 0, 0, 0, 66, 79, 79, 77, 1, 1,
+            0,
+        ];
+        let response = decode_binary_sync_pack(&bytes).unwrap();
+        let push = response.push.unwrap();
+        assert_eq!(push.commits[0].status, "rejected");
+        let conflict = &push.commits[0].results[0];
+        assert_eq!(conflict.status, "conflict");
+        assert_eq!(conflict.message.as_deref(), Some("server row changed"));
+        assert_eq!(conflict.code.as_deref(), Some("CONFLICT"));
+        assert_eq!(conflict.server_version, Some(7));
+        assert_eq!(
+            conflict.server_row.as_ref().unwrap()["title"].as_str(),
+            Some("Server")
+        );
+        let error = &push.commits[0].results[1];
+        assert_eq!(error.status, "error");
+        assert_eq!(error.error.as_deref(), Some("boom"));
+        assert_eq!(error.code.as_deref(), Some("BOOM"));
+        assert_eq!(error.retriable, Some(true));
     }
 }
