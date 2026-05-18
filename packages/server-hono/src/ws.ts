@@ -361,7 +361,7 @@ export class WebSocketConnectionManager {
     {
       lastAckedCursor: number;
       lastSentCursor: number;
-      unackedSyncs: number;
+      inFlightCursors: number[];
       resyncRequired: boolean;
       droppedCount: number;
     }
@@ -411,8 +411,11 @@ export class WebSocketConnectionManager {
     const state = this.getFlowState(connection);
     if (cursor <= state.lastAckedCursor) return;
     state.lastAckedCursor = cursor;
+    state.inFlightCursors = state.inFlightCursors.filter(
+      (inFlightCursor) => inFlightCursor > cursor
+    );
     if (cursor >= state.lastSentCursor) {
-      state.unackedSyncs = 0;
+      state.inFlightCursors = [];
       state.resyncRequired = false;
       state.droppedCount = 0;
     }
@@ -932,7 +935,7 @@ export class WebSocketConnectionManager {
   private getFlowState(connection: WebSocketConnection): {
     lastAckedCursor: number;
     lastSentCursor: number;
-    unackedSyncs: number;
+    inFlightCursors: number[];
     resyncRequired: boolean;
     droppedCount: number;
   } {
@@ -941,7 +944,7 @@ export class WebSocketConnectionManager {
       state = {
         lastAckedCursor: -1,
         lastSentCursor: -1,
-        unackedSyncs: 0,
+        inFlightCursors: [],
         resyncRequired: false,
         droppedCount: 0,
       };
@@ -965,7 +968,7 @@ export class WebSocketConnectionManager {
     if (cursor <= state.lastAckedCursor) return false;
     return (
       state.resyncRequired ||
-      state.unackedSyncs >= this.maxInFlightSyncsPerConnection
+      state.inFlightCursors.length >= this.maxInFlightSyncsPerConnection
     );
   }
 
@@ -980,7 +983,9 @@ export class WebSocketConnectionManager {
     const state = this.getFlowState(connection);
     if (cursor <= state.lastAckedCursor) return;
     state.lastSentCursor = Math.max(state.lastSentCursor, cursor);
-    state.unackedSyncs += 1;
+    if (!state.inFlightCursors.includes(cursor)) {
+      state.inFlightCursors.push(cursor);
+    }
   }
 
   private sendResyncRequired(

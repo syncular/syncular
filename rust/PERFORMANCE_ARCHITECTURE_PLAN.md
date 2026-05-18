@@ -2921,6 +2921,12 @@ client. Overflow should close or resync the session deliberately.
     `reason: "resync-required"` frames with `requiresPull: true` and
     `droppedCount` until the client ACKs a caught-up cursor. The browser worker
     records those fields in realtime diagnostics before running HTTP recovery.
+  - Done: corrected websocket flow-control accounting to track outstanding
+    cursor ids instead of a plain in-flight counter. Partial ACKs now release
+    the acknowledged cursors, so a catching-up client is not forced into
+    `resync-required` until it really has reached the configured outstanding
+    notification limit again. Focused coverage:
+    `bun test packages/server-hono/src/__tests__/ws-connection-manager.test.ts`.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
 
