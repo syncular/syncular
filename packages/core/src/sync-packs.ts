@@ -7,9 +7,9 @@
  * generated binary table payloads when table encoders are available.
  *
  * Wire versions:
- * - v6: positional envelope with refs-only snapshot chunks, per-pack table
- *   dictionaries, and grouped generated binary row payloads for incremental
- *   changes.
+ * - v7: positional envelope with refs-only snapshot chunks, per-pack table and
+ *   scope dictionaries, and grouped generated binary row payloads for
+ *   incremental changes.
  */
 
 import {
@@ -41,7 +41,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 6;
+const VERSION = 7;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -322,7 +322,7 @@ function readCommit(reader: BinarySyncPackReader): SyncCommit {
     commitSeq: reader.i64('commit seq'),
     createdAt: reader.string32('commit createdAt'),
     actorId: reader.string32('commit actorId'),
-    changes: readChangesV6(reader),
+    changes: readChangesV7(reader),
   };
 }
 
@@ -334,6 +334,9 @@ function writeChanges(
   const encodedRowCountsByTable = new Map<string, number>();
   const tableIndexesByName = new Map<string, number>();
   const tableNames: string[] = [];
+  const scopeIndexesByKey = new Map<string, number>();
+  const singleScopeIndexesByName = new Map<string, Map<string, number>>();
+  const scopeValuesByIndex: Record<string, string>[] = [];
   const tableIndexFor = (table: string): number => {
     let tableIndex = tableIndexesByName.get(table);
     if (tableIndex !== undefined) return tableIndex;
@@ -342,9 +345,34 @@ function writeChanges(
     tableNames.push(table);
     return tableIndex;
   };
+  const scopeIndexFor = (scopes: Record<string, string>): number => {
+    const entries = Object.entries(scopes);
+    if (entries.length === 1) {
+      const [scopeName, scopeValue] = entries[0]!;
+      let indexesByValue = singleScopeIndexesByName.get(scopeName);
+      if (!indexesByValue) {
+        indexesByValue = new Map();
+        singleScopeIndexesByName.set(scopeName, indexesByValue);
+      }
+      let scopeIndex = indexesByValue.get(scopeValue);
+      if (scopeIndex !== undefined) return scopeIndex;
+      scopeIndex = scopeValuesByIndex.length;
+      indexesByValue.set(scopeValue, scopeIndex);
+      scopeValuesByIndex.push(scopes);
+      return scopeIndex;
+    }
+    const key = scopeDictionaryKey(entries);
+    let scopeIndex = scopeIndexesByKey.get(key);
+    if (scopeIndex !== undefined) return scopeIndex;
+    scopeIndex = scopeValuesByIndex.length;
+    scopeIndexesByKey.set(key, scopeIndex);
+    scopeValuesByIndex.push(scopes);
+    return scopeIndex;
+  };
 
   for (const change of changes) {
     tableIndexFor(change.table);
+    scopeIndexFor(change.scopes);
     if (change.op === 'delete' || change.row_json == null) continue;
     if (!options.changeRowEncoders?.[change.table]) continue;
     encodedRowCountsByTable.set(
@@ -382,13 +410,17 @@ function writeChanges(
   }
 
   writer.array(tableNames, (nextWriter, table) => nextWriter.string16(table));
+  writer.array(scopeValuesByIndex, (nextWriter, scopes) =>
+    nextWriter.stringMap(scopes)
+  );
   writer.u32(changes.length);
   for (let index = 0; index < changes.length; index += 1) {
     const change = changes[index]!;
-    writeChangeMetadataV6(
+    writeChangeMetadataV7(
       writer,
       change,
       tableIndexFor(change.table),
+      scopeIndexFor(change.scopes),
       rowRefs.get(index)
     );
   }
@@ -399,10 +431,11 @@ function writeChanges(
   }
 }
 
-function writeChangeMetadataV6(
+function writeChangeMetadataV7(
   writer: BinarySyncPackWriter,
   change: SyncChange,
   tableIndex: number,
+  scopeIndex: number,
   rowRef: BinaryChangeRowRef | undefined
 ): void {
   writer.u16(tableIndex);
@@ -419,18 +452,28 @@ function writeChangeMetadataV6(
     writer.json(change.row_json);
   }
   writer.optionalI64(change.row_version ?? undefined);
-  writer.stringMap(change.scopes);
+  writer.u32(scopeIndex);
 }
 
-function readChangesV6(reader: BinarySyncPackReader): SyncChange[] {
+function readChangesV7(reader: BinarySyncPackReader): SyncChange[] {
   const tableNames = reader.array('commit change table dictionary', (reader) =>
     reader.string16('commit change table')
+  );
+  const scopeValuesByIndex = reader.array(
+    'commit change scope dictionary',
+    (reader) => reader.stringMap('commit change scopes')
   );
   const changeCount = reader.u32('commit changes length');
   const changes: SyncChange[] = [];
   const rowRefs: PendingBinaryChangeRowRef[] = [];
   for (let index = 0; index < changeCount; index += 1) {
-    const change = readChangeMetadataV6(reader, index, tableNames, rowRefs);
+    const change = readChangeMetadataV7(
+      reader,
+      index,
+      tableNames,
+      scopeValuesByIndex,
+      rowRefs
+    );
     changes.push(change);
   }
 
@@ -469,10 +512,11 @@ function readChangesV6(reader: BinarySyncPackReader): SyncChange[] {
   return changes;
 }
 
-function readChangeMetadataV6(
+function readChangeMetadataV7(
   reader: BinarySyncPackReader,
   changeIndex: number,
   tableNames: readonly string[],
+  scopeValuesByIndex: readonly Record<string, string>[],
   rowRefs: PendingBinaryChangeRowRef[]
 ): SyncChange {
   const table = tableNameAt(tableNames, reader.u16('change table index'));
@@ -503,7 +547,10 @@ function readChangeMetadataV6(
     op: opByte === 1 ? 'upsert' : 'delete',
     row_json: rowJson,
     row_version: reader.optionalI64('change row version') ?? null,
-    scopes: reader.stringMap('change scopes'),
+    scopes: scopeValuesAt(
+      scopeValuesByIndex,
+      reader.u32('change scopes index')
+    ),
   };
 }
 
@@ -513,6 +560,27 @@ function tableNameAt(tableNames: readonly string[], index: number): string {
     throw new Error(`Binary sync pack table index is invalid: ${index}`);
   }
   return table;
+}
+
+function scopeValuesAt(
+  scopeValuesByIndex: readonly Record<string, string>[],
+  index: number
+): Record<string, string> {
+  const scopes = scopeValuesByIndex[index];
+  if (scopes === undefined) {
+    throw new Error(`Binary sync pack scope index is invalid: ${index}`);
+  }
+  return { ...scopes };
+}
+
+function scopeDictionaryKey(entries: readonly [string, string][]): string {
+  let count = 0;
+  let body = '';
+  for (const [scopeName, scopeValue] of entries) {
+    count += 1;
+    body += `${scopeName.length}:${scopeName}${scopeValue.length}:${scopeValue}`;
+  }
+  return `${count}|${body}`;
 }
 
 function writeSnapshot(
