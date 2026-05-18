@@ -487,7 +487,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       : this.#request<BlobRef>(request);
     return result.then((ref) => {
       if (options?.immediate) {
-        this.#emitClientEvent('blob:upload:complete', { ref });
+        this.#emitClientEvent('blobUploadCompleted', { ref });
       }
       void this.#emitOperationalState();
       return ref;
@@ -507,8 +507,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   async processBlobUploadQueue(): Promise<{ uploaded: number; failed: number }> {
     const observeBlobEvents =
-      this.#hasClientEventListeners('blob:upload:complete') ||
-      this.#hasClientEventListeners('blob:upload:error');
+      this.#hasClientEventListeners('blobUploadCompleted') ||
+      this.#hasClientEventListeners('blobUploadFailed');
     const before = observeBlobEvents
       ? await this.#readBlobOutboxRows().catch(() => [])
       : [];
@@ -783,8 +783,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     listener: SyncularV2PresenceSink<TMetadata>
   ): () => void {
     return this.addEventListener(
-      'presence:change',
-      listener as SyncularV2ClientEventSink<'presence:change'>
+      'presenceChanged',
+      listener as SyncularV2ClientEventSink<'presenceChanged'>
     );
   }
 
@@ -1074,7 +1074,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return (this.#eventListeners.get(event)?.size ?? 0) > 0;
   }
 
-  #emitRowsChanged(event: SyncularV2ClientEventMap['rows:changed']): void {
+  #emitRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
     if (this.#rowsChangedDebounceMs === false || this.#rowsChangedDebounceMs <= 0) {
       this.#deliverRowsChanged(event);
       return;
@@ -1117,7 +1117,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  #deliverRowsChanged(event: SyncularV2ClientEventMap['rows:changed']): void {
+  #deliverRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
     for (const listener of this.#rowsChangedListeners) {
       try {
         listener(event);
@@ -1125,13 +1125,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         // Row-change listeners must never break worker event handling.
       }
     }
-    this.#emitClientEvent('rows:changed', event);
+    this.#emitClientEvent('rowsChanged', event);
   }
 
   async #emitOperationalState(): Promise<void> {
     if (
-      !this.#hasClientEventListeners('outbox:change') &&
-      !this.#hasClientEventListeners('conflict:change')
+      !this.#hasClientEventListeners('outboxChanged') &&
+      !this.#hasClientEventListeners('conflictsChanged')
     ) {
       return;
     }
@@ -1141,11 +1141,11 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     ]);
     if (outboxStats && !sameJson(this.#lastOutboxStats, outboxStats)) {
       this.#lastOutboxStats = outboxStats;
-      this.#emitClientEvent('outbox:change', outboxStats);
+      this.#emitClientEvent('outboxChanged', outboxStats);
     }
     if (conflictStats && !sameJson(this.#lastConflictStats, conflictStats)) {
       this.#lastConflictStats = conflictStats;
-      this.#emitClientEvent('conflict:change', conflictStats);
+      this.#emitClientEvent('conflictsChanged', conflictStats);
     }
   }
 
@@ -1218,7 +1218,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     for (const before of beforeRows) {
       const next = after.get(before.hash);
       if (!next) {
-        this.#emitClientEvent('blob:upload:complete', {
+        this.#emitClientEvent('blobUploadCompleted', {
           ref: {
             hash: before.hash,
             size: coerceCount(before.size),
@@ -1229,7 +1229,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         continue;
       }
       if (before.status !== 'failed' && next.status === 'failed') {
-        this.#emitClientEvent('blob:upload:error', {
+        this.#emitClientEvent('blobUploadFailed', {
           hash: next.hash,
           error: next.error ?? 'Blob upload failed',
         });
@@ -1286,7 +1286,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     } else {
       this.#presenceByScopeKey.set(scopeKey, next);
     }
-    this.#emitClientEvent('presence:change', {
+    this.#emitClientEvent('presenceChanged', {
       scopeKey,
       presence: next,
     });
