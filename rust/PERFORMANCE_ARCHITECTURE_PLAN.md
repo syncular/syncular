@@ -2014,9 +2014,9 @@ client. Overflow should close or resync the session deliberately.
   stable order and type shape.
 - Added browser/Hono coverage that worker sync receives binary chunks and
   applies them through the fast path.
-- Wired the generated TypeScript example output to emit
-  `syncularGeneratedSnapshotBinaryColumns`, and the Hono browser harness now
-  passes those columns into `createServerHandler`.
+- Wired the generated TypeScript server output to emit
+  `syncularGeneratedServerSnapshotBinary`, and the Hono browser harness now
+  passes that contract once through `createSyncRoutes({ snapshotBinary })`.
 - Local Hono/browser measurement with generated snapshot columns still confirms
   binary-only chunks, but this run was slower than the previous local sample:
   - 2k rows, 500-row pages: 4 binary chunks, 0 JSON chunks, wall
@@ -2033,10 +2033,10 @@ client. Overflow should close or resync the session deliberately.
   - generated metadata removed about `18-19ms` of encode work and
     `34-38ms` wall time in this local run.
 - Added generated table-specific `binary-table-v1` encoders. Server handlers
-  can now provide `snapshotBinaryEncoder`; generated TypeScript emits
-  `syncularGeneratedSnapshotBinaryEncoders`, and the browser Hono benchmark
-  harness uses the generated tasks encoder. The generic object-row encoder
-  remains the fallback.
+  can now receive `snapshotBinaryEncoder` from the collection-level generated
+  server contract; generated TypeScript emits the encoders only from the
+  server generated artifact. The generic object-row encoder remains available
+  for non-generated server handlers.
 - Isolated binary encode benchmark using the generated tasks rows:
   - 100k rows: generic median `43.25ms`, generated median `33.46ms`,
     same `7,077,900` byte payload.
