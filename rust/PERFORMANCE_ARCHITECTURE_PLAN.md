@@ -1933,6 +1933,12 @@ client. Overflow should close or resync the session deliberately.
   matters now that runtime schema and app schema can differ. The browser WASM
   Hono sync suite covers both future server-required versions and future local
   outbox versions.
+- Done: changed snapshot chunk reads so routes using external/blob chunk
+  storage load only metadata from SQL first, then stream/read the chunk body
+  from the blob adapter. The legacy `body` column is selected only for the
+  database-backed fallback path. This is a memory/Worker-safety improvement for
+  the artifact path, not a latency target; the existing chunk storage and Hono
+  chunk-route tests cover the behavior.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 
