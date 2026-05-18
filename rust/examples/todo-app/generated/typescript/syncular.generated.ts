@@ -5,7 +5,7 @@ import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORK
 import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../bindings/browser/src';
 
 import { sql, type Kysely } from 'kysely';
-import { BinarySnapshotTableWriter, codecs, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef, type ColumnCodecSource } from '@syncular/core';
+import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
 
 export interface SyncularGeneratedOperation {
   table: string;
@@ -162,105 +162,6 @@ export const syncularGeneratedAppSchema = {
     },
   ],
 } satisfies SyncularV2AppSchema;
-
-export const syncularGeneratedSnapshotBinaryColumns = {
-  comments: [
-    { name: 'id', type: 'string' },
-    { name: 'task_id', type: 'string' },
-    { name: 'project_id', type: 'string', nullable: true },
-    { name: 'body', type: 'string' },
-    { name: 'author_id', type: 'string' },
-    { name: 'deleted', type: 'integer' },
-    { name: 'server_version', type: 'integer' },
-  ],
-  projects: [
-    { name: 'id', type: 'string' },
-    { name: 'name', type: 'string' },
-    { name: 'owner_id', type: 'string' },
-    { name: 'archived', type: 'integer' },
-    { name: 'server_version', type: 'integer' },
-  ],
-  tasks: [
-    { name: 'id', type: 'string' },
-    { name: 'title', type: 'string' },
-    { name: 'completed', type: 'integer' },
-    { name: 'user_id', type: 'string' },
-    { name: 'project_id', type: 'string', nullable: true },
-    { name: 'server_version', type: 'integer' },
-    { name: 'image', type: 'json', nullable: true },
-    { name: 'title_yjs_state', type: 'string', nullable: true },
-  ],
-} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;
-
-export function encodeCommentsBinarySnapshotRows(rows: readonly CommentRow[]): Uint8Array {
-  const writer = new BinarySnapshotTableWriter('comments', syncularGeneratedSnapshotBinaryColumns.comments, rows.length);
-  for (const row of rows) {
-    writer.beginRow();
-    writer.writeString(row.id, 'binary snapshot comments.id');
-    writer.writeString(row.task_id, 'binary snapshot comments.task_id');
-    const value2 = row.project_id;
-    if (value2 == null) {
-      writer.writeNull(2);
-    } else {
-      writer.writeString(value2, 'binary snapshot comments.project_id');
-    }
-    writer.writeString(row.body, 'binary snapshot comments.body');
-    writer.writeString(row.author_id, 'binary snapshot comments.author_id');
-    writer.writeInteger(row.deleted, 'binary snapshot comments.deleted');
-    writer.writeInteger(row.server_version, 'binary snapshot comments.server_version');
-  }
-  return writer.finish();
-}
-
-export function encodeProjectsBinarySnapshotRows(rows: readonly ProjectRow[]): Uint8Array {
-  const writer = new BinarySnapshotTableWriter('projects', syncularGeneratedSnapshotBinaryColumns.projects, rows.length);
-  for (const row of rows) {
-    writer.beginRow();
-    writer.writeString(row.id, 'binary snapshot projects.id');
-    writer.writeString(row.name, 'binary snapshot projects.name');
-    writer.writeString(row.owner_id, 'binary snapshot projects.owner_id');
-    writer.writeInteger(row.archived, 'binary snapshot projects.archived');
-    writer.writeInteger(row.server_version, 'binary snapshot projects.server_version');
-  }
-  return writer.finish();
-}
-
-export function encodeTasksBinarySnapshotRows(rows: readonly TaskRow[]): Uint8Array {
-  const writer = new BinarySnapshotTableWriter('tasks', syncularGeneratedSnapshotBinaryColumns.tasks, rows.length);
-  for (const row of rows) {
-    writer.beginRow();
-    writer.writeString(row.id, 'binary snapshot tasks.id');
-    writer.writeString(row.title, 'binary snapshot tasks.title');
-    writer.writeInteger(row.completed, 'binary snapshot tasks.completed');
-    writer.writeString(row.user_id, 'binary snapshot tasks.user_id');
-    const value4 = row.project_id;
-    if (value4 == null) {
-      writer.writeNull(4);
-    } else {
-      writer.writeString(value4, 'binary snapshot tasks.project_id');
-    }
-    writer.writeInteger(row.server_version, 'binary snapshot tasks.server_version');
-    const value6 = row.image;
-    if (value6 == null) {
-      writer.writeNull(6);
-    } else {
-      writer.writeJson(value6, 'binary snapshot tasks.image');
-    }
-    const value7 = row.title_yjs_state;
-    if (value7 == null) {
-      writer.writeNull(7);
-    } else {
-      writer.writeString(value7, 'binary snapshot tasks.title_yjs_state');
-    }
-  }
-  return writer.finish();
-}
-
-export const syncularGeneratedSnapshotBinaryEncoders = {
-  comments: (rows) => encodeCommentsBinarySnapshotRows(rows as readonly CommentRow[]),
-  projects: (rows) => encodeProjectsBinarySnapshotRows(rows as readonly ProjectRow[]),
-  tasks: (rows) => encodeTasksBinarySnapshotRows(rows as readonly TaskRow[]),
-} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;
 
 export const syncularGeneratedFieldEncryptionRules = [
 ] satisfies readonly SyncularV2FieldEncryptionRule[];

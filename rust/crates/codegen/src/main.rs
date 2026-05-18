@@ -4152,7 +4152,7 @@ fn generate_typescript_module(
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
     out.push_str(
-        "import { BinarySnapshotTableWriter, codecs, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
+        "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
     );
     out.push_str("export interface SyncularGeneratedOperation {\n");
     out.push_str("  table: string;\n");
@@ -4408,7 +4408,6 @@ fn generate_typescript_module(
     }
     out.push_str("  ],\n");
     out.push_str("} satisfies SyncularV2AppSchema;\n\n");
-    push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
     out.push_str("export const syncularGeneratedFieldEncryptionRules = [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -8726,7 +8725,7 @@ mod tests {
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
-            "import { BinarySnapshotTableWriter, codecs, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
+            "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
         ));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains(
@@ -8808,27 +8807,11 @@ mod tests {
         assert!(output.contains("export const syncularGeneratedTableConfig = {"));
         assert!(output.contains("export const syncularGeneratedAppSchema = {"));
         assert!(output.contains("} satisfies SyncularV2AppSchema;"));
-        assert!(output.contains("export const syncularGeneratedSnapshotBinaryColumns = {"));
-        assert!(output
-            .contains("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;"));
-        assert!(output.contains(
-            "export function encodeTasksBinarySnapshotRows(rows: readonly TaskRow[]): Uint8Array {"
-        ));
-        assert!(output.contains(
-            "  const writer = new BinarySnapshotTableWriter('tasks', syncularGeneratedSnapshotBinaryColumns.tasks, rows.length);"
-        ));
-        assert!(output.contains(
-            "    writer.writeInteger(row.completed, 'binary snapshot tasks.completed');"
-        ));
-        assert!(output.contains("export const syncularGeneratedSnapshotBinaryEncoders = {"));
-        assert!(output.contains(
-            "  tasks: (rows) => encodeTasksBinarySnapshotRows(rows as readonly TaskRow[]),"
-        ));
-        assert!(
-            output.contains("} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;")
-        );
-        assert!(output.contains("    { name: 'image', type: 'json', nullable: true },"));
-        assert!(output.contains("    { name: 'completed', type: 'integer' },"));
+        assert!(!output.contains("syncularGeneratedSnapshotBinaryColumns"));
+        assert!(!output.contains("syncularGeneratedSnapshotBinaryEncoders"));
+        assert!(!output.contains("BinarySnapshotTableWriter"));
+        assert!(!output.contains("BinarySnapshotRowsEncoder"));
+        assert!(!output.contains("BinarySnapshotColumn"));
         assert!(output.contains("    primaryKeyColumn: 'id',"));
         assert!(output.contains("    serverVersionColumn: 'server_version',"));
         assert!(output.contains("    softDeleteColumn: 'deleted',"));

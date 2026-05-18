@@ -589,6 +589,21 @@ derived-schema deferral for app bootstrap.
   `138.04ms -> 139.32ms`, Rust request count `3 -> 3`, response bytes
   `765,764 -> 765,764`, server binary encode `15ms`, and served Rust WASM
   bytes stayed at `3,327,561`.
+- Retained generated browser/server boundary cleanup. The browser TypeScript
+  generated client no longer exports server binary snapshot columns or row
+  encoders; those live only in the server generated module. This removes
+  server-only code from the browser-facing generated API and prevents apps from
+  wiring the wrong artifact by habit. Correctness:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts
+  tests/unit/server-pull.test.ts` passed. Local 100k release scoreboard versus
+  `.context/benchmarks/browser-e2e-100k-baseline.json` stayed neutral: TS
+  bootstrap `722.67ms -> 712.96ms`, Rust bootstrap `138.04ms -> 137.57ms`,
+  Rust request count `3 -> 3`, response bytes `765,764 -> 765,764`, and served
+  asset bytes stayed unchanged in the benchmark harness. The generated browser
+  source itself dropped roughly 100 lines, but no served-size win is claimed
+  because the previous exports were already tree-shaken.
 
 ### Required Benchmark Scoreboard
 
