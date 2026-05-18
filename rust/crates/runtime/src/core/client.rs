@@ -1206,6 +1206,7 @@ where
         let pending = self.prepare_sync()?;
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
+            sync_pack_encodings: self.sync_pack_encodings(),
             push: self.build_push_request(&pending)?,
             pull: Some(self.build_pull_request()?),
         };
@@ -1258,6 +1259,7 @@ where
 
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
+            sync_pack_encodings: self.sync_pack_encodings(),
             push: None,
             pull: Some(self.build_pull_request()?),
         };
@@ -1623,6 +1625,10 @@ where
         })
     }
 
+    fn sync_pack_encodings(&self) -> Vec<String> {
+        vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()]
+    }
+
     fn build_push_request(&self, pending: &[OutboxCommit]) -> Result<Option<PushBatchRequest>> {
         if pending.is_empty() {
             return Ok(None);
@@ -1805,6 +1811,7 @@ where
 
             let request = CombinedRequest {
                 client_id: self.config.client_id.clone(),
+                sync_pack_encodings: self.sync_pack_encodings(),
                 push: None,
                 pull: Some(self.build_pull_request()?),
             };

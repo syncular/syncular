@@ -647,6 +647,7 @@ fn blob_queue_assertions_use_real_store() {
 fn default_response_acknowledges_pushes() {
     let request = syncular_runtime::protocol::CombinedRequest {
         client_id: "client".to_string(),
+        sync_pack_encodings: Vec::new(),
         push: Some(syncular_runtime::protocol::PushBatchRequest {
             commits: vec![syncular_runtime::protocol::PushCommitRequest {
                 client_commit_id: "commit-1".to_string(),

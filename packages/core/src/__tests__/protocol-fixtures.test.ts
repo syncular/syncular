@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import type { SyncCombinedResponse } from '../schemas/sync';
+import {
+  SyncCombinedRequestSchema,
+  SyncCombinedResponseSchema,
+  type SyncCombinedRequest,
+  type SyncCombinedResponse,
+} from '../schemas/sync';
 import {
   decodeBinarySnapshotTable,
+  decodeSnapshotRows,
   encodeBinarySnapshotTable,
+  encodeSnapshotRows,
   type BinarySnapshotTable,
   type DecodedBinarySnapshotTable,
 } from '../snapshot-chunks';
@@ -27,12 +34,39 @@ interface BinarySnapshotTableFixture {
   decodedTable: DecodedBinarySnapshotTable;
 }
 
+interface JsonCombinedSyncFixture {
+  name: string;
+  request: SyncCombinedRequest;
+  response: SyncCombinedResponse;
+}
+
+interface JsonRowFrameFixture {
+  name: string;
+  generatedBy: string;
+  encoding: string;
+  wireVersion: number;
+  encodedHex: string;
+  decodedRows: unknown[];
+}
+
 describe('cross-language protocol fixtures', () => {
+  it('keeps the JSON combined sync fixture aligned with the TypeScript schemas', () => {
+    const fixture = readJsonCombinedSyncFixture();
+
+    expect(fixture.name).toBe('json-combined-sync-v1');
+    expect(SyncCombinedRequestSchema.parse(fixture.request)).toEqual(
+      fixture.request
+    );
+    expect(SyncCombinedResponseSchema.parse(fixture.response)).toEqual(
+      fixture.response
+    );
+  });
+
   it('keeps the binary sync-pack fixture aligned with the TypeScript codec', () => {
     const fixture = readBinarySyncPackFixture();
     const encoded = encodeBinarySyncPack(fixture.decodedResponse);
 
-    expect(fixture.wireVersion).toBe(10);
+    expect(fixture.wireVersion).toBe(readU16Le(encoded, 4));
     expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
     expect(decodeBinarySyncPack(encoded)).toEqual(fixture.decodedResponse);
   });
@@ -48,7 +82,29 @@ describe('cross-language protocol fixtures', () => {
     expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
     expect(decodeBinarySnapshotTable(encoded)).toEqual(fixture.decodedTable);
   });
+
+  it('keeps the JSON row-frame fixture aligned with the TypeScript codec', () => {
+    const fixture = readJsonRowFrameFixture();
+    const encoded = encodeSnapshotRows(fixture.decodedRows);
+
+    expect(fixture.encoding).toBe('json-row-frame-v1');
+    expect(fixture.wireVersion).toBe(1);
+    expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
+    expect(decodeSnapshotRows(encoded)).toEqual(fixture.decodedRows);
+  });
 });
+
+function readJsonCombinedSyncFixture(): JsonCombinedSyncFixture {
+  return JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../rust/crates/runtime/tests/fixtures/json-combined-sync-v1.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  ) as JsonCombinedSyncFixture;
+}
 
 function readBinarySyncPackFixture(): BinarySyncPackFixture {
   return JSON.parse(
@@ -72,4 +128,20 @@ function readBinarySnapshotTableFixture(): BinarySnapshotTableFixture {
       'utf8'
     )
   ) as BinarySnapshotTableFixture;
+}
+
+function readJsonRowFrameFixture(): JsonRowFrameFixture {
+  return JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../rust/crates/runtime/tests/fixtures/json-row-frame-v1-tasks.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  ) as JsonRowFrameFixture;
+}
+
+function readU16Le(bytes: Uint8Array, offset: number): number {
+  return bytes[offset] | (bytes[offset + 1] << 8);
 }

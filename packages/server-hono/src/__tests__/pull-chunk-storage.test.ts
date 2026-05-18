@@ -289,12 +289,12 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         },
         body: JSON.stringify({
           clientId: 'client-1',
+          syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
           pull: {
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
             snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
-            syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
             subscriptions: [
               {
                 id: 'sub-1',
