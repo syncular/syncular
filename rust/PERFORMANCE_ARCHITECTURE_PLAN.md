@@ -2956,6 +2956,10 @@ client. Overflow should close or resync the session deliberately.
     `resync-required` until it really has reached the configured outstanding
     notification limit again. Focused coverage:
     `bun test packages/server-hono/src/__tests__/ws-connection-manager.test.ts`.
+  - Done: added binary sync-pack backpressure coverage. Binary websocket
+    deltas now have the same tested in-flight limit semantics as cursor-only
+    wakeups: once `resync-required` is emitted, the client must ACK the
+    recovery cursor before inline binary deltas resume.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
   - Done: browser/Hono realtime coverage now proves both sides of the recovery

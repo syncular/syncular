@@ -435,6 +435,62 @@ describe('WebSocketConnectionManager (scopes)', () => {
     ]);
   });
 
+  it('applies the in-flight limit to binary sync-pack frames', () => {
+    const mgr = new WebSocketConnectionManager({
+      heartbeatIntervalMs: 0,
+      maxInFlightSyncsPerConnection: 2,
+    });
+    const seen: Array<{
+      cursor?: number;
+      kind: 'binary' | 'sync';
+      value?: number;
+      metadata?: WebSocketSyncMetadata;
+    }> = [];
+    const conn = createConn({
+      actorId: 'u1',
+      clientId: 'binary-slow',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: (cursor, _changes, metadata) =>
+        seen.push({ cursor, kind: 'sync', metadata }),
+      onSyncPack: (bytes) =>
+        seen.push({ kind: 'binary', value: bytes[0] ?? 0 }),
+    });
+
+    mgr.register(conn, ['s']);
+    mgr.notifyScopeKeys(['s'], 1, { syncPack: new Uint8Array([1]) });
+    mgr.notifyScopeKeys(['s'], 2, { syncPack: new Uint8Array([2]) });
+    mgr.notifyScopeKeys(['s'], 3, { syncPack: new Uint8Array([3]) });
+
+    mgr.recordAck(conn, 1);
+    mgr.notifyScopeKeys(['s'], 4, { syncPack: new Uint8Array([4]) });
+    mgr.recordAck(conn, 4);
+    mgr.notifyScopeKeys(['s'], 5, { syncPack: new Uint8Array([5]) });
+
+    expect(seen).toEqual([
+      { kind: 'binary', value: 1 },
+      { kind: 'binary', value: 2 },
+      {
+        cursor: 3,
+        kind: 'sync',
+        metadata: {
+          reason: 'resync-required',
+          requiresPull: true,
+          droppedCount: 1,
+        },
+      },
+      {
+        cursor: 4,
+        kind: 'sync',
+        metadata: {
+          reason: 'resync-required',
+          requiresPull: true,
+          droppedCount: 2,
+        },
+      },
+      { kind: 'binary', value: 5 },
+    ]);
+  });
+
   it('stops notifying after unregister', () => {
     const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
     const seen: number[] = [];
