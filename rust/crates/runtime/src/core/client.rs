@@ -1612,7 +1612,7 @@ where
             }
 
             Ok(PullRequest {
-                limit_commits: 500,
+                limit_commits: 1000,
                 limit_snapshot_rows: 50_000,
                 max_snapshot_pages: 10,
                 dedupe_rows: None,

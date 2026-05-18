@@ -603,7 +603,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     args: Omit<IncrementalPullRowsArgs, 'batchSize'>
   ): Promise<IncrementalPullRow[]> {
     const partitionId = args.partitionId ?? 'default';
-    const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
+    const limitCommits = Math.max(1, Math.min(1000, args.limitCommits));
 
     const scopeFilter = buildJsonbScopeContainmentFilter(
       'c.scopes',
