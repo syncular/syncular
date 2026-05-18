@@ -10,6 +10,7 @@
 
 import { randomId, type StoredScopes } from '@syncular/core';
 import type { Insertable, Kysely } from 'kysely';
+import { finalizeCommitIntegrity } from './commit-integrity';
 import { coerceNumber, toDialectJsonValue } from './dialect/helpers';
 import type { ServerSyncDialect } from './dialect/types';
 import { createScopeCommitIndexEntries } from './helpers/scope-commit-index';
@@ -160,6 +161,13 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
       .where('scope', 'in', uniqueTables)
       .executeTakeFirst();
     const deletedChunks = Number(deletedResult?.numDeletedRows ?? 0);
+
+    await finalizeCommitIntegrity({
+      db: trx,
+      dialect,
+      partitionId,
+      commitSeq,
+    });
 
     return {
       commitSeq,
@@ -316,6 +324,13 @@ export async function notifyExternalRowChanges<DB extends SyncCoreDb>(
       })
       .where('commit_seq', '=', commitSeq)
       .execute();
+
+    await finalizeCommitIntegrity({
+      db: trx,
+      dialect,
+      partitionId,
+      commitSeq,
+    });
 
     return {
       commitSeq,

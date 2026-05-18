@@ -12,6 +12,7 @@ export * from '@syncular/core';
 export * from './blobs';
 export * from './clients';
 export * from './compaction';
+export * from './commit-integrity';
 export * from './dialect';
 export * from './encrypted-crdt';
 export * from './handlers';

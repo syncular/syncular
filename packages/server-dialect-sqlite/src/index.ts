@@ -140,6 +140,23 @@ async function ensurePartitionColumn<DB extends SyncCoreDb>(
   }
 }
 
+async function ensureCommitVerificationColumns<DB extends SyncCoreDb>(
+  db: Kysely<DB>
+): Promise<void> {
+  const alterStatements = [
+    'ALTER TABLE sync_commits ADD COLUMN commit_digest TEXT',
+    'ALTER TABLE sync_commits ADD COLUMN commit_chain_root TEXT',
+  ];
+
+  for (const statement of alterStatements) {
+    try {
+      await sql.raw(statement).execute(db);
+    } catch {
+      // Ignore when column already exists.
+    }
+  }
+}
+
 async function ensureConsoleEventColumns<DB extends SyncCoreDb>(
   db: Kysely<DB>
 ): Promise<void> {
@@ -242,11 +259,14 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       .addColumn('meta', 'json')
       .addColumn('result_json', 'json')
       .addColumn('change_count', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('commit_digest', 'text')
+      .addColumn('commit_chain_root', 'text')
       .addColumn('affected_tables', 'text', (col) =>
         col.notNull().defaultTo('[]')
       )
       .execute();
     await ensurePartitionColumn(db, 'sync_commits');
+    await ensureCommitVerificationColumns(db);
 
     await sql`DROP INDEX IF EXISTS idx_sync_commits_client_commit`.execute(db);
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_commits_client_commit

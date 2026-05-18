@@ -33,6 +33,10 @@ export interface SyncCommitsTable {
   result_json: unknown | null;
   /** Number of emitted changes (denormalized for observability) */
   change_count: Generated<number>;
+  /** Hex SHA-256 digest of the canonical persisted commit payload */
+  commit_digest: Generated<string | null>;
+  /** Hex SHA-256 root chaining this commit to the previous partition root */
+  commit_chain_root: Generated<string | null>;
   /**
    * Tables affected by this commit (for realtime notifications).
    * Array of table names that had changes.

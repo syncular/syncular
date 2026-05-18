@@ -110,6 +110,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .addColumn('meta', 'jsonb')
       .addColumn('result_json', 'jsonb')
       .addColumn('change_count', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('commit_digest', 'text')
+      .addColumn('commit_chain_root', 'text')
       .addColumn('affected_tables', sql`text[]`, (col) =>
         col.notNull().defaultTo(sql`ARRAY[]::text[]`)
       )
@@ -128,6 +130,10 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
       db
     );
+    await sql`ALTER TABLE sync_commits
+      ADD COLUMN IF NOT EXISTS commit_digest text`.execute(db);
+    await sql`ALTER TABLE sync_commits
+      ADD COLUMN IF NOT EXISTS commit_chain_root text`.execute(db);
 
     await sql`DROP INDEX IF EXISTS idx_sync_commits_client_commit`.execute(db);
     await db.schema
