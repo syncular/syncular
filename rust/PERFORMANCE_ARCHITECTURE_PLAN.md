@@ -2769,6 +2769,12 @@ client. Overflow should close or resync the session deliberately.
     `26.0ms`, generated encode `26.4ms`.
   - Sparse scope-index guard stayed better than the prior cleanup note:
     `server_scoped_incremental_pull_fanout_5000_20` `2.7ms -> 2.3ms`.
+- Rejected streaming incremental-row grouping: building the non-dedupe commits
+  while iterating dialect rows avoided the intermediate row array, but the
+  extra branch/map setup in the shared loop regressed the dense lane. Two runs
+  moved from the retained sequential baseline (`21.5ms` build, `26.0ms`
+  binary encode) to `23.0ms`/`31.5ms` and `22.6ms`/`30.6ms`, so the refactor
+  was reverted.
 - Done: added a dense incremental pull measurement lane that separates server
   response build from response build plus binary sync-pack encoding. This is
   the current measurement gate before adding a durable binary commit log.
