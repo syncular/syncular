@@ -1317,8 +1317,10 @@ client. Overflow should close or resync the session deliberately.
 - Added protocol negotiation fields.
 - Added server-side generic binary table inference/encoding for snapshot rows.
 - Added Rust native and browser transport decoding for `binary-table-v1`.
-- Rust clients now advertise `binary-table-v1` first and keep
-  `json-row-frame-v1` as fallback.
+- Rust clients now request only `binary-table-v1` snapshot chunks. We removed
+  the `json-row-frame-v1` fallback advertisement from the Rust runtime/browser
+  clients so protocol failures are explicit instead of silently taking the old
+  path.
 - Fixed the Hono combined sync route so browser worker pulls pass
   `snapshotEncodings` through to the core server pull path instead of silently
   falling back to JSON chunks.
@@ -2100,6 +2102,8 @@ client. Overflow should close or resync the session deliberately.
 - Status: started.
 - Added `json-v1` / `binary-sync-pack-v1` negotiation on pull and combined sync
   requests.
+- Rust runtime/browser clients now request only `binary-sync-pack-v1` sync
+  packs. This is retained as protocol cleanup, not a performance target.
 - Added a versioned `binary-sync-pack-v1` combined-response envelope in
   `@syncular/core` with coverage for push acks, conflicts, pull subscriptions,
   commits, snapshot chunk refs, cursors, and schema-version metadata.

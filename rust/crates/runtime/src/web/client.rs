@@ -13,8 +13,7 @@ use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
     CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
-    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-    SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
@@ -1017,14 +1016,8 @@ where
             limit_snapshot_rows: self.config.pull.limit_snapshot_rows,
             max_snapshot_pages: self.config.pull.max_snapshot_pages,
             dedupe_rows: self.config.pull.dedupe_rows,
-            snapshot_encodings: vec![
-                SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
-                SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
-            ],
-            sync_pack_encodings: vec![
-                SYNC_PACK_ENCODING_BINARY_V1.to_string(),
-                SYNC_PACK_ENCODING_JSON_V1.to_string(),
-            ],
+            snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
+            sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
             subscriptions,
         })
     }
