@@ -2960,6 +2960,10 @@ client. Overflow should close or resync the session deliberately.
     deltas now have the same tested in-flight limit semantics as cursor-only
     wakeups: once `resync-required` is emitted, the client must ACK the
     recovery cursor before inline binary deltas resume.
+  - Done: added a Hono route-level guard for the same contract. A configured
+    realtime route now proves active binary websocket clients receive inline
+    packs up to the in-flight limit, then a `resync-required` frame, then
+    binary packs again after ACKing the recovery cursor.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
   - Done: browser/Hono realtime coverage now proves both sides of the recovery
