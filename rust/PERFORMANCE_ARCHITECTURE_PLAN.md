@@ -2751,6 +2751,13 @@ client. Overflow should close or resync the session deliberately.
   - Sparse scope-index guard after the cleanup:
     `server_scoped_incremental_pull_fanout_5000_20` `2.7ms`, requests `2`,
     changes `250`.
+- Rejected raw JSON reuse for SQLite incremental rows: keeping the original
+  row JSON string attached to parsed row objects made a synthetic codec
+  micro-lane faster (`sync_pack_binary_encode_50000` `20.6ms` vs raw JSON
+  `13.0ms`), but the real dense server pull lane regressed. WeakMap attachment
+  moved dense build/encode from the accepted `21.4ms`/`26.0ms` to
+  `23.6ms`/`29.1ms`; a symbol-property variant was worse at
+  `28.5ms`/`30.2ms`. The added per-row bookkeeping is not worth retaining.
 - Done: added a dense incremental pull measurement lane that separates server
   response build from response build plus binary sync-pack encoding. This is
   the current measurement gate before adding a durable binary commit log.
