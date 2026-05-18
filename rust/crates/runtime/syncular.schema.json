@@ -1,7 +1,7 @@
 {
   "$schema": "https://syncular.dev/schemas/syncular.schema.v1.json",
   "contractVersion": 1,
-  "appSchemaVersion": 5,
+  "appSchemaVersion": 6,
   "migrations": [
     {
       "version": "0001",
@@ -27,6 +27,11 @@
       "version": "0005",
       "schemaVersion": 5,
       "name": "encrypted_crdt_server_seq"
+    },
+    {
+      "version": "0006",
+      "schemaVersion": 6,
+      "name": "crdt_document_persistence"
     }
   ],
   "tables": [
