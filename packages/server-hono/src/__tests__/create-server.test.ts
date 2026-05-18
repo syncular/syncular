@@ -154,10 +154,13 @@ describe('createSyncServer console configuration', () => {
 
   function createPushRequest(args?: {
     requestId?: string;
+    clientCommitId?: string;
+    rowId?: string;
     title?: string;
     clientId?: string;
     headers?: Record<string, string>;
   }): Request {
+    const rowId = args?.rowId ?? 'task-1';
     return new Request('http://localhost/sync', {
       method: 'POST',
       headers: {
@@ -170,15 +173,15 @@ describe('createSyncServer console configuration', () => {
         push: {
           commits: [
             {
-              clientCommitId: 'commit-1',
+              clientCommitId: args?.clientCommitId ?? 'commit-1',
               schemaVersion: 1,
               operations: [
                 {
                   table: 'tasks',
-                  row_id: 'task-1',
+                  row_id: rowId,
                   op: 'upsert',
                   payload: {
-                    id: 'task-1',
+                    id: rowId,
                     user_id: 'u1',
                     title: args?.title ?? 'Task 1',
                     server_version: 0,
@@ -1063,6 +1066,98 @@ describe('createSyncServer console configuration', () => {
           message.data.reason === 'reconnect-catchup'
       )
     ).toBe(false);
+  });
+
+  it('enforces binary websocket backpressure through the realtime route', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        websocket: {
+          maxInFlightSyncsPerConnection: 1,
+        },
+      },
+      upgradeWebSocket,
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    await sql`
+      INSERT INTO sync_client_cursors (
+        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
+      )
+      VALUES (
+        'default', 'client-binary-slow', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
+      )
+    `.execute(db);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-binary-slow&syncPackEncoding=binary-sync-pack-v1'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    const firstPush = await app.request(
+      createPushRequest({
+        clientCommitId: 'commit-backpressure-1',
+        clientId: 'writer-client',
+        rowId: 'task-backpressure-1',
+      })
+    );
+    expect(firstPush.status).toBe(200);
+
+    await waitFor(async () => upstream.binaryMessages.length === 1);
+
+    const secondPush = await app.request(
+      createPushRequest({
+        clientCommitId: 'commit-backpressure-2',
+        clientId: 'writer-client',
+        rowId: 'task-backpressure-2',
+      })
+    );
+    expect(secondPush.status).toBe(200);
+
+    await waitFor(async () =>
+      upstream.messages.some(
+        (message) =>
+          message.event === 'sync' &&
+          isRecord(message.data) &&
+          message.data.reason === 'resync-required' &&
+          message.data.cursor === 2 &&
+          message.data.droppedCount === 1
+      )
+    );
+    expect(upstream.binaryMessages).toHaveLength(1);
+
+    await events.onMessage(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'ack', cursor: 2 }),
+      }),
+      upstream.ws
+    );
+
+    const thirdPush = await app.request(
+      createPushRequest({
+        clientCommitId: 'commit-backpressure-3',
+        clientId: 'writer-client',
+        rowId: 'task-backpressure-3',
+      })
+    );
+    expect(thirdPush.status).toBe(200);
+
+    await waitFor(async () => upstream.binaryMessages.length === 2);
   });
 
   it('sends a websocket hello frame with session capabilities', async () => {
