@@ -2508,8 +2508,8 @@ client. Overflow should close or resync the session deliberately.
     `rust_local_search_p50_ms` `1.39 -> 1.52`,
     `rust_aggregate_p50_ms` `22.06 -> 21.99`, and served Rust WASM bytes
     matched the v7 release build at `3328081`.
-  - Rejected v8 commit actor dictionary. It moved commit actor ids into a
-    per-subscription dictionary, but the maintained 50k sync-pack lane showed
+  - Rejected commit actor dictionary candidate. It moved commit actor ids into
+    a per-subscription dictionary, but the maintained 50k sync-pack lane showed
     no byte improvement and worse CPU:
     v7 final generic encode/decode `20.6ms/25.1ms`,
     v7 final generated encode/decode `19.6ms/24.7ms`, sizes
@@ -2927,6 +2927,22 @@ client. Overflow should close or resync the session deliberately.
     `resync-required` until it really has reached the configured outstanding
     notification limit again. Focused coverage:
     `bun test packages/server-hono/src/__tests__/ws-connection-manager.test.ts`.
+  - Done: binary sync-pack v8 now uses variant-tagged push commit statuses and
+    operation result statuses. Applied operation results no longer carry empty
+    conflict/error optional fields, while conflict and error records are decoded
+    through explicit variant layouts on both TypeScript and Rust. This is a
+    protocol cleanliness/compactness change, not the hot row-apply target.
+    Focused validation:
+    `bun test packages/core/src/__tests__/sync-packs.test.ts`,
+    `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime binary_sync_pack`,
+    `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`,
+    and `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+    Sample rejected push response: binary `139` bytes versus JSON `333` bytes;
+    the equivalent old string-status/optional-field layout would have been
+    about `172` bytes. The maintained 50k incremental row-pack lane remains in
+    the same band because it does not exercise push rejection records:
+    generic encode/decode `20.9ms/25.8ms`, generated encode/decode
+    `18.1ms/26.3ms`, sizes `9478.3KiB/5104.5KiB`.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
 
