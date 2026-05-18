@@ -2496,6 +2496,15 @@ client. Overflow should close or resync the session deliberately.
     (`69.19ms -> 70.13ms`) and p95 improved (`72.42ms -> 70.61ms`).
     Release WASM size moved from the v6 run `3326710 -> 3328081` bytes
     (`+1371`, `+0.04%`), still inside the size budget.
+  - Broader 100k release guardrail after retention was neutral:
+    `rust_bootstrap_ms` `138.04 -> 136.37`,
+    `rust_pull_apply_ms` `73 -> 72`,
+    `rust_snapshot_chunk_apply_ms` stayed `62`,
+    `rust_cached_bootstrap_ms` `68.43 -> 68.84`,
+    `rust_local_list_p50_ms` `0.27 -> 0.21`,
+    `rust_local_search_p50_ms` `1.39 -> 1.52`,
+    `rust_aggregate_p50_ms` `22.06 -> 21.99`, and served Rust WASM bytes
+    matched the v7 release build at `3328081`.
 
 ### Phase 7: Delta WebSocket Runtime
 
