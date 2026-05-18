@@ -500,6 +500,12 @@ derived-schema deferral for app bootstrap.
     be claimed as first-bootstrap speed; it stays because it makes cached
     snapshot artifacts addressable by the same row-limit key that produced
     them.
+- Rejected TextEncoder-only binary string writes. Removing the ASCII direct
+  write path from `writeString32` made the 100k local release scoreboard worse:
+  Rust bootstrap `138.04ms -> 150.68ms` (`+12.64ms`, `+9.15%`), pull request
+  `63ms -> 74ms`, and server binary encode rose to `24ms` versus the preceding
+  cache-key run's `16ms`. Keep the direct ASCII writer; per-string
+  `TextEncoder` allocation is not a win for the current snapshot payload.
 
 ### Required Benchmark Scoreboard
 
