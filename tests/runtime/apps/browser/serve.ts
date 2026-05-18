@@ -25,9 +25,11 @@ import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import {
   syncularGeneratedCodecs,
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+import {
   syncularGeneratedSnapshotBinaryColumns,
   syncularGeneratedSnapshotBinaryEncoders,
-} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 
 type BunServer = ReturnType<typeof Bun.serve>;
 

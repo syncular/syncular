@@ -60,6 +60,7 @@ struct CodegenConfig {
     tables: BTreeMap<String, TableCodegenConfig>,
     schema_output_path: Option<PathBuf>,
     typescript_output_path: Option<PathBuf>,
+    typescript_server_output_path: Option<PathBuf>,
     typescript_runtime_import_path: Option<String>,
     rust_runtime_crate_path: Option<String>,
     native_swift_output_path: Option<PathBuf>,
@@ -163,6 +164,15 @@ impl CodegenConfig {
         } else {
             Ok(manifest_dir.join(path))
         }
+    }
+
+    fn typescript_server_output_path(&self, manifest_dir: &Path) -> Result<PathBuf> {
+        output_path(
+            manifest_dir,
+            self.typescript_server_output_path.clone(),
+            "generated/typescript/syncular.server.generated.ts",
+            "typescriptServerOutputPath",
+        )
     }
 
     fn typescript_runtime_import_path(&self) -> Result<&str> {
@@ -3983,6 +3993,140 @@ fn push_kotlin_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) 
     }
 }
 
+fn push_typescript_binary_snapshot_exports(
+    out: &mut String,
+    user_tables: &[TableInfo],
+    config: &CodegenConfig,
+) {
+    out.push_str("export const syncularGeneratedSnapshotBinaryColumns = {\n");
+    for table in user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!("  {}: [\n", ts_property_name(&table.name)));
+        for column in &table.columns {
+            out.push_str(&format!(
+                "    {{ name: {}, type: {}{} }},\n",
+                ts_string(&column.name),
+                ts_string(ts_binary_snapshot_column_type(column, &table_config)),
+                if is_nullable(column) {
+                    ", nullable: true"
+                } else {
+                    ""
+                }
+            ));
+        }
+        out.push_str("  ],\n");
+    }
+    out.push_str("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;\n\n");
+    for table in user_tables {
+        let row_name = format!("{}Row", singular_pascal_case(&table.name));
+        let encoder_name = format!("encode{}BinarySnapshotRows", pascal_case(&table.name));
+        out.push_str(&format!(
+            "export function {encoder_name}(rows: readonly {row_name}[]): Uint8Array {{\n"
+        ));
+        out.push_str(&format!(
+            "  const writer = new BinarySnapshotTableWriter({}, syncularGeneratedSnapshotBinaryColumns.{}, rows.length);\n",
+            ts_string(&table.name),
+            ts_property_name(&table.name)
+        ));
+        out.push_str("  for (const row of rows) {\n");
+        out.push_str("    writer.beginRow();\n");
+        for (index, column) in table.columns.iter().enumerate() {
+            let method = ts_binary_snapshot_writer_method(column, &config.table(&table.name));
+            let value = ts_member("row", &column.name);
+            let label = ts_string(&format!("binary snapshot {}.{}", table.name, column.name));
+            if is_nullable(column) {
+                out.push_str(&format!("    const value{index} = {value};\n"));
+                out.push_str(&format!("    if (value{index} == null) {{\n"));
+                out.push_str(&format!("      writer.writeNull({index});\n"));
+                out.push_str("    } else {\n");
+                if method == "writeBytes" {
+                    out.push_str(&format!(
+                        "      writer.{method}(value{index}, {});\n",
+                        ts_string(&column.name)
+                    ));
+                } else {
+                    out.push_str(&format!("      writer.{method}(value{index}, {label});\n"));
+                }
+                out.push_str("    }\n");
+            } else if method == "writeBytes" {
+                out.push_str(&format!(
+                    "    writer.{method}({value}, {});\n",
+                    ts_string(&column.name)
+                ));
+            } else {
+                out.push_str(&format!("    writer.{method}({value}, {label});\n"));
+            }
+        }
+        out.push_str("  }\n");
+        out.push_str("  return writer.finish();\n");
+        out.push_str("}\n\n");
+    }
+    out.push_str("export const syncularGeneratedSnapshotBinaryEncoders = {\n");
+    for table in user_tables {
+        out.push_str(&format!(
+            "  {}: (rows) => encode{}BinarySnapshotRows(rows as readonly {}Row[]),\n",
+            ts_property_name(&table.name),
+            pascal_case(&table.name),
+            singular_pascal_case(&table.name)
+        ));
+    }
+    out.push_str("} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;\n\n");
+}
+
+fn push_typescript_app_db_rows(
+    out: &mut String,
+    user_tables: &[TableInfo],
+    config: &CodegenConfig,
+) {
+    out.push_str("export interface SyncularAppDb {\n");
+    for table in user_tables {
+        out.push_str(&format!(
+            "  {}: {}Row;\n",
+            ts_property_name(&table.name),
+            singular_pascal_case(&table.name)
+        ));
+    }
+    out.push_str("}\n\n");
+    for table in user_tables {
+        let table_config = config.table(&table.name);
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!("export interface {type_name}Row {{\n"));
+        for column in &table.columns {
+            out.push_str(&format!(
+                "  {}: {};\n",
+                ts_property_name(&column.name),
+                ts_app_type(column, &table_config)
+            ));
+        }
+        out.push_str("}\n\n");
+    }
+}
+
+fn generate_typescript_server_module(
+    tables: &[TableInfo],
+    config: &CodegenConfig,
+) -> Result<String> {
+    let user_tables = tables
+        .iter()
+        .filter(|table| !table.name.starts_with("sync_"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut out = String::from(
+        "// @generated by `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen --`\n",
+    );
+    out.push_str("// Source: migrations/*.sql and syncular.codegen.json\n\n");
+    out.push_str(
+        "import { BinarySnapshotTableWriter, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n\n",
+    );
+    push_typescript_app_db_rows(&mut out, &user_tables, config);
+    push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
+    out.push_str("export const syncularGeneratedServerSnapshotBinary = {\n");
+    out.push_str("  columns: syncularGeneratedSnapshotBinaryColumns,\n");
+    out.push_str("  encoders: syncularGeneratedSnapshotBinaryEncoders,\n");
+    out.push_str("} as const;\n");
+    Ok(out)
+}
+
 fn generate_typescript_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
@@ -4264,79 +4408,7 @@ fn generate_typescript_module(
     }
     out.push_str("  ],\n");
     out.push_str("} satisfies SyncularV2AppSchema;\n\n");
-    out.push_str("export const syncularGeneratedSnapshotBinaryColumns = {\n");
-    for table in &user_tables {
-        let table_config = config.table(&table.name);
-        out.push_str(&format!("  {}: [\n", ts_property_name(&table.name)));
-        for column in &table.columns {
-            out.push_str(&format!(
-                "    {{ name: {}, type: {}{} }},\n",
-                ts_string(&column.name),
-                ts_string(ts_binary_snapshot_column_type(column, &table_config)),
-                if is_nullable(column) {
-                    ", nullable: true"
-                } else {
-                    ""
-                }
-            ));
-        }
-        out.push_str("  ],\n");
-    }
-    out.push_str("} satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;\n\n");
-    for table in &user_tables {
-        let row_name = format!("{}Row", singular_pascal_case(&table.name));
-        let encoder_name = format!("encode{}BinarySnapshotRows", pascal_case(&table.name));
-        out.push_str(&format!(
-            "export function {encoder_name}(rows: readonly {row_name}[]): Uint8Array {{\n"
-        ));
-        out.push_str(&format!(
-            "  const writer = new BinarySnapshotTableWriter({}, syncularGeneratedSnapshotBinaryColumns.{}, rows.length);\n",
-            ts_string(&table.name),
-            ts_property_name(&table.name)
-        ));
-        out.push_str("  for (const row of rows) {\n");
-        out.push_str("    writer.beginRow();\n");
-        for (index, column) in table.columns.iter().enumerate() {
-            let method = ts_binary_snapshot_writer_method(column, &config.table(&table.name));
-            let value = ts_member("row", &column.name);
-            let label = ts_string(&format!("binary snapshot {}.{}", table.name, column.name));
-            if is_nullable(column) {
-                out.push_str(&format!("    const value{index} = {value};\n"));
-                out.push_str(&format!("    if (value{index} == null) {{\n"));
-                out.push_str(&format!("      writer.writeNull({index});\n"));
-                out.push_str("    } else {\n");
-                if method == "writeBytes" {
-                    out.push_str(&format!(
-                        "      writer.{method}(value{index}, {});\n",
-                        ts_string(&column.name)
-                    ));
-                } else {
-                    out.push_str(&format!("      writer.{method}(value{index}, {label});\n"));
-                }
-                out.push_str("    }\n");
-            } else if method == "writeBytes" {
-                out.push_str(&format!(
-                    "    writer.{method}({value}, {});\n",
-                    ts_string(&column.name)
-                ));
-            } else {
-                out.push_str(&format!("    writer.{method}({value}, {label});\n"));
-            }
-        }
-        out.push_str("  }\n");
-        out.push_str("  return writer.finish();\n");
-        out.push_str("}\n\n");
-    }
-    out.push_str("export const syncularGeneratedSnapshotBinaryEncoders = {\n");
-    for table in &user_tables {
-        out.push_str(&format!(
-            "  {}: (rows) => encode{}BinarySnapshotRows(rows as readonly {}Row[]),\n",
-            ts_property_name(&table.name),
-            pascal_case(&table.name),
-            singular_pascal_case(&table.name)
-        ));
-    }
-    out.push_str("} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;\n\n");
+    push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
     out.push_str("export const syncularGeneratedFieldEncryptionRules = [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -7986,6 +8058,7 @@ fn main() -> Result<()> {
     let schema_version = current_schema_version_from_migrations(&migrations_dir)?;
     let schema_json_path = codegen_config.schema_output_path(&manifest_dir)?;
     let generated_ts_path = codegen_config.typescript_output_path(&manifest_dir)?;
+    let generated_ts_server_path = codegen_config.typescript_server_output_path(&manifest_dir)?;
     let generated_swift_path = codegen_config.native_swift_output_path(&manifest_dir)?;
     let generated_kotlin_path = codegen_config.native_kotlin_output_path(&manifest_dir)?;
     let generated_android_kotlin_path =
@@ -8018,6 +8091,8 @@ fn main() -> Result<()> {
     )?;
     let generated_ts =
         generate_typescript_module(&schema_tables, &schema_codegen_config, schema_version)?;
+    let generated_ts_server =
+        generate_typescript_server_module(&schema_tables, &schema_codegen_config)?;
     let generated_swift = generate_swift_module(
         &schema_tables,
         &schema_codegen_config,
@@ -8100,6 +8175,15 @@ fn main() -> Result<()> {
                 "cargo run --manifest-path rust/Cargo.toml -p syncular-codegen --"
             );
         }
+        let existing = fs::read_to_string(&generated_ts_server_path)
+            .with_context(|| format!("read {}", generated_ts_server_path.display()))?;
+        if existing != generated_ts_server {
+            bail!(
+                "{} is out of date; run `{}`",
+                generated_ts_server_path.display(),
+                "cargo run --manifest-path rust/Cargo.toml -p syncular-codegen --"
+            );
+        }
         let existing = fs::read_to_string(&generated_swift_path)
             .with_context(|| format!("read {}", generated_swift_path.display()))?;
         if existing != generated_swift {
@@ -8138,6 +8222,7 @@ fn main() -> Result<()> {
         let mut output_paths = vec![
             &schema_json_path,
             &generated_ts_path,
+            &generated_ts_server_path,
             &generated_swift_path,
             &generated_kotlin_path,
         ];
@@ -8162,6 +8247,8 @@ fn main() -> Result<()> {
             .with_context(|| format!("write {}", generated_path.display()))?;
         fs::write(&generated_ts_path, generated_ts)
             .with_context(|| format!("write {}", generated_ts_path.display()))?;
+        fs::write(&generated_ts_server_path, generated_ts_server)
+            .with_context(|| format!("write {}", generated_ts_server_path.display()))?;
         fs::write(&generated_swift_path, generated_swift)
             .with_context(|| format!("write {}", generated_swift_path.display()))?;
         fs::write(&generated_kotlin_path, generated_kotlin)
@@ -8280,6 +8367,29 @@ mod tests {
         assert_eq!(
             config.typescript_output_path(Path::new("/workspace/app"))?,
             PathBuf::from("/workspace/app/src/generated/syncular.ts")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_server_output_path_defaults_to_generated_server_file() -> Result<()> {
+        let config = CodegenConfig::default();
+        assert_eq!(
+            config.typescript_server_output_path(Path::new("/workspace/app"))?,
+            PathBuf::from("/workspace/app/generated/typescript/syncular.server.generated.ts")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_server_output_path_uses_configured_relative_path() -> Result<()> {
+        let config = CodegenConfig {
+            typescript_server_output_path: Some(PathBuf::from("src/generated/syncular.server.ts")),
+            ..CodegenConfig::default()
+        };
+        assert_eq!(
+            config.typescript_server_output_path(Path::new("/workspace/app"))?,
+            PathBuf::from("/workspace/app/src/generated/syncular.server.ts")
         );
         Ok(())
     }
@@ -8506,6 +8616,10 @@ mod tests {
         assert_eq!(
             generate_typescript_module(&schema_tables, &schema_config, schema_version)?,
             generate_typescript_module(&tables, &config, 2)?
+        );
+        assert_eq!(
+            generate_typescript_server_module(&schema_tables, &schema_config)?,
+            generate_typescript_server_module(&tables, &config)?
         );
         assert_eq!(
             generate_swift_module(
@@ -8760,6 +8874,56 @@ mod tests {
         assert!(output.contains("    op: 'upsert',\n    payload: { deleted: 1 },"));
         assert!(output.contains("  image: BlobRef | null;"));
         assert!(output.contains("  if (input.image !== undefined) payload.image = input.image;"));
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_server_module_contains_only_server_snapshot_metadata() -> Result<()> {
+        let tables = vec![table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("completed", "INTEGER", true, false, Some("0")),
+                column("user_id", "TEXT", true, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+                column("image", "TEXT", false, false, None),
+            ],
+        )];
+        let mut tasks_config = table_config(
+            "sub-tasks",
+            "server_version",
+            vec![scope("user_id", "user_id", "actorId", true)],
+        );
+        tasks_config.blob_columns = vec!["image".to_string()];
+        let config = CodegenConfig {
+            tables: BTreeMap::from([("tasks".to_string(), tasks_config)]),
+            typescript_runtime_import_path: Some("@app/sync-runtime".to_string()),
+            ..CodegenConfig::default()
+        };
+
+        let output = generate_typescript_server_module(&tables, &config)?;
+
+        assert!(output.contains(
+            "import { BinarySnapshotTableWriter, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';"
+        ));
+        assert!(!output.contains("@app/sync-runtime"));
+        assert!(!output.contains("createSyncularRustSqliteDatabase"));
+        assert!(!output.contains("withSyncularV2SchemaWrites"));
+        assert!(!output.contains("from 'kysely'"));
+        assert!(output.contains("export interface SyncularAppDb"));
+        assert!(output.contains("export interface TaskRow"));
+        assert!(output.contains("  image: BlobRef | null;"));
+        assert!(output.contains("export const syncularGeneratedSnapshotBinaryColumns = {"));
+        assert!(output.contains("    { name: 'image', type: 'json', nullable: true },"));
+        assert!(output.contains(
+            "export function encodeTasksBinarySnapshotRows(rows: readonly TaskRow[]): Uint8Array {"
+        ));
+        assert!(output.contains(
+            "  const writer = new BinarySnapshotTableWriter('tasks', syncularGeneratedSnapshotBinaryColumns.tasks, rows.length);"
+        ));
+        assert!(output.contains("export const syncularGeneratedSnapshotBinaryEncoders = {"));
+        assert!(output.contains("export const syncularGeneratedServerSnapshotBinary = {"));
         Ok(())
     }
 

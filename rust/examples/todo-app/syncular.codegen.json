@@ -1,5 +1,6 @@
 {
   "typescriptOutputPath": "generated/typescript/syncular.generated.ts",
+  "typescriptServerOutputPath": "generated/typescript/syncular.server.generated.ts",
   "typescriptRuntimeImportPath": "../../../../bindings/browser/src",
   "nativeSwiftOutputPath": "generated/swift/SyncularApp.swift",
   "nativeKotlinOutputPath": "generated/kotlin/SyncularApp.kt",
