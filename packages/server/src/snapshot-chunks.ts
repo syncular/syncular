@@ -62,6 +62,25 @@ export interface SnapshotChunkRow {
   expiresAt: string;
 }
 
+type SnapshotChunkDbRow = {
+  chunk_id: string;
+  partition_id: string;
+  scope_key: string;
+  scope: string;
+  as_of_commit_seq: number;
+  row_cursor: string;
+  row_limit: number;
+  next_row_cursor: unknown;
+  is_last_page: unknown;
+  encoding: string;
+  compression: string;
+  sha256: string;
+  byte_length: number;
+  blob_hash: string;
+  body?: unknown;
+  expires_at: unknown;
+};
+
 function coerceOptionalString(value: unknown): string | null {
   if (value == null) return null;
   return String(value);
@@ -344,45 +363,51 @@ export async function readSnapshotChunk<DB extends SyncCoreDb>(
     };
   }
 ): Promise<SnapshotChunkRow | null> {
-  const rowResult = await sql<{
-    chunk_id: string;
-    partition_id: string;
-    scope_key: string;
-    scope: string;
-    as_of_commit_seq: number;
-    row_cursor: string;
-    row_limit: number;
-    next_row_cursor: unknown;
-    is_last_page: unknown;
-    encoding: string;
-    compression: string;
-    sha256: string;
-    byte_length: number;
-    blob_hash: string;
-    body: unknown;
-    expires_at: unknown;
-  }>`
-    select
-      chunk_id,
-      partition_id,
-      scope_key,
-      scope,
-      as_of_commit_seq,
-      row_cursor,
-      row_limit,
-      next_row_cursor,
-      is_last_page,
-      encoding,
-      compression,
-      sha256,
-      byte_length,
-      blob_hash,
-      body,
-      expires_at
-    from ${sql.table('sync_snapshot_chunks')}
-    where chunk_id = ${chunkId}
-    limit 1
-  `.execute(db);
+  const includeBody = !options?.chunkStorage;
+  const rowResult = includeBody
+    ? await sql<SnapshotChunkDbRow>`
+        select
+          chunk_id,
+          partition_id,
+          scope_key,
+          scope,
+          as_of_commit_seq,
+          row_cursor,
+          row_limit,
+          next_row_cursor,
+          is_last_page,
+          encoding,
+          compression,
+          sha256,
+          byte_length,
+          blob_hash,
+          body,
+          expires_at
+        from ${sql.table('sync_snapshot_chunks')}
+        where chunk_id = ${chunkId}
+        limit 1
+      `.execute(db)
+    : await sql<SnapshotChunkDbRow>`
+        select
+          chunk_id,
+          partition_id,
+          scope_key,
+          scope,
+          as_of_commit_seq,
+          row_cursor,
+          row_limit,
+          next_row_cursor,
+          is_last_page,
+          encoding,
+          compression,
+          sha256,
+          byte_length,
+          blob_hash,
+          expires_at
+        from ${sql.table('sync_snapshot_chunks')}
+        where chunk_id = ${chunkId}
+        limit 1
+      `.execute(db);
   const row = rowResult.rows[0];
 
   if (!row) return null;
@@ -410,24 +435,37 @@ export async function readSnapshotChunk<DB extends SyncCoreDb>(
         const externalBody = await options.chunkStorage.readChunk(chunkId);
         if (externalBody) {
           body = externalBody;
-        } else if (row.body) {
-          body = coerceChunkRow(row.body);
         } else {
-          throw new Error(`Snapshot chunk body missing for chunk ${chunkId}`);
+          const legacyBody = await readLegacySnapshotChunkBody(db, chunkId);
+          if (!legacyBody) {
+            throw new Error(`Snapshot chunk body missing for chunk ${chunkId}`);
+          }
+          body = legacyBody;
         }
       }
     } else {
       const externalBody = await options.chunkStorage.readChunk(chunkId);
       if (externalBody) {
         body = externalBody;
-      } else if (row.body) {
-        body = coerceChunkRow(row.body);
+      } else {
+        const legacyBody = await readLegacySnapshotChunkBody(db, chunkId);
+        if (!legacyBody) {
+          throw new Error(`Snapshot chunk body missing for chunk ${chunkId}`);
+        }
+        body = legacyBody;
+      }
+    }
+  } else {
+    if (row.body) {
+      body = coerceChunkRow(row.body);
+    } else {
+      const legacyBody = await readLegacySnapshotChunkBody(db, chunkId);
+      if (legacyBody) {
+        body = legacyBody;
       } else {
         throw new Error(`Snapshot chunk body missing for chunk ${chunkId}`);
       }
     }
-  } else {
-    body = coerceChunkRow(row.body);
   }
 
   return {
@@ -447,6 +485,20 @@ export async function readSnapshotChunk<DB extends SyncCoreDb>(
     body,
     expiresAt: coerceIsoString(row.expires_at),
   };
+}
+
+async function readLegacySnapshotChunkBody<DB extends SyncCoreDb>(
+  db: Kysely<DB>,
+  chunkId: string
+): Promise<Uint8Array | null> {
+  const rowResult = await sql<{ body: unknown }>`
+    select body
+    from ${sql.table('sync_snapshot_chunks')}
+    where chunk_id = ${chunkId}
+    limit 1
+  `.execute(db);
+  const body = rowResult.rows[0]?.body;
+  return body ? coerceChunkRow(body) : null;
 }
 
 export async function deleteExpiredSnapshotChunks<DB extends SyncCoreDb>(
