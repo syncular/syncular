@@ -490,6 +490,16 @@ derived-schema deferral for app bootstrap.
   drifted `3408.88ms -> 3759.75ms`. The retained target is cached/artifact
   correctness: 500k cached server snapshot query and binary encode are both
   `0ms`, with cached pull request `2ms`.
+  - External branch-server bootstrap validation after rebuilding the branch
+    server image and release Rust WASM: TS 500k `3857.29ms -> 4051.71ms`
+    (`+194.42ms`, `+5.0%`), Rust 500k `2675.14ms -> 2926.37ms`
+    (`+251.23ms`, `+9.4%`), Rust pull request `1218ms -> 1390ms`, server
+    snapshot query `497ms -> 573ms`, server binary encode `573ms -> 648ms`,
+    local apply `394ms -> 404ms`, derived schema `884.34ms -> 960.44ms`, and
+    peak memory `736.91MB -> 738.17MB`. This validates that the fix should not
+    be claimed as first-bootstrap speed; it stays because it makes cached
+    snapshot artifacts addressable by the same row-limit key that produced
+    them.
 
 ### Required Benchmark Scoreboard
 
