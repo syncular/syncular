@@ -383,6 +383,58 @@ describe('WebSocketConnectionManager (scopes)', () => {
     });
   });
 
+  it('keeps partial cursor ACKs from forcing unnecessary resync', () => {
+    const mgr = new WebSocketConnectionManager({
+      heartbeatIntervalMs: 0,
+      maxInFlightSyncsPerConnection: 2,
+    });
+    const seen: Array<{
+      cursor: number;
+      changes?: unknown[];
+      metadata?: WebSocketSyncMetadata;
+    }> = [];
+    const conn = createConn({
+      actorId: 'u1',
+      clientId: 'catching-up',
+      onSync: (cursor, changes, metadata) =>
+        seen.push({ cursor, changes, metadata }),
+    });
+
+    mgr.register(conn, ['s']);
+    mgr.notifyScopeKeys(['s'], 1);
+    mgr.notifyScopeKeys(['s'], 2);
+    mgr.recordAck(conn, 1);
+    mgr.notifyScopeKeys(['s'], 3);
+    mgr.notifyScopeKeys(['s'], 4);
+
+    expect(seen).toEqual([
+      {
+        cursor: 1,
+        changes: undefined,
+        metadata: { reason: 'server-wakeup', requiresPull: true },
+      },
+      {
+        cursor: 2,
+        changes: undefined,
+        metadata: { reason: 'server-wakeup', requiresPull: true },
+      },
+      {
+        cursor: 3,
+        changes: undefined,
+        metadata: { reason: 'server-wakeup', requiresPull: true },
+      },
+      {
+        cursor: 4,
+        changes: undefined,
+        metadata: {
+          reason: 'resync-required',
+          requiresPull: true,
+          droppedCount: 1,
+        },
+      },
+    ]);
+  });
+
   it('stops notifying after unregister', () => {
     const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
     const seen: number[] = [];
