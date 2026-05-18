@@ -54,7 +54,7 @@ export async function createSyncularV2Client<DB>(
   });
   const controller = new SyncularV2ClientLifecycle(database.client, {
     subscriptions,
-    realtime: lifecycle?.realtime ?? realtime,
+    realtime: lifecycle?.realtime ?? realtime ?? true,
     initialSync: lifecycle?.initialSync,
     syncOnRealtimeConnect: lifecycle?.syncOnRealtimeConnect,
     pollIntervalMs: lifecycle?.pollIntervalMs,
@@ -121,10 +121,7 @@ export class SyncularV2ClientLifecycle {
       if (this.options.initialSync !== false) {
         await this.sync();
       }
-      if (
-        this.options.realtime !== false &&
-        this.options.realtime !== undefined
-      ) {
+      if (this.options.realtime !== false) {
         await this.client.startRealtime(this.options.realtime);
       }
       this.#startPolling();
@@ -141,7 +138,7 @@ export class SyncularV2ClientLifecycle {
     this.#unsubscribeDiagnostics?.();
     this.#unsubscribeDiagnostics = undefined;
     this.#syncAgain = false;
-    if (this.options.realtime !== false && this.options.realtime !== undefined) {
+    if (this.options.realtime !== false) {
       await this.client.stopRealtime();
     }
   }

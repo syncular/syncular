@@ -235,6 +235,14 @@ pub extern "C" fn syncular_native_client_start_realtime_worker(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_start(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    syncular_native_client_start_realtime_worker(handle, error_out)
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_stop_realtime_worker(
     handle: *mut SyncularNativeHandle,
     error_out: *mut *mut c_char,
@@ -243,6 +251,14 @@ pub extern "C" fn syncular_native_client_stop_realtime_worker(
     ffi_catch_bool(error_out, || {
         with_client(handle, |client| client.stop_realtime_worker())
     })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_stop(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    syncular_native_client_stop_realtime_worker(handle, error_out)
 }
 
 #[no_mangle]

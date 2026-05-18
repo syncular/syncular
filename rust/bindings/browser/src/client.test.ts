@@ -32,12 +32,11 @@ describe('Syncular v2 browser client lifecycle', () => {
 
   it('uses websocket reconnects as wakeups for HTTP catchup', async () => {
     const client = new FakeLifecycleClient();
-    const lifecycle = new SyncularV2ClientLifecycle(client, {
-      realtime: true,
-    });
+    const lifecycle = new SyncularV2ClientLifecycle(client);
 
     await lifecycle.start();
     expect(client.syncCount).toBe(1);
+    expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
 
     client.emitRealtimeState('connected');
     await Promise.resolve();
@@ -51,7 +50,6 @@ describe('Syncular v2 browser client lifecycle', () => {
   it('keeps interval polling opt-in', async () => {
     const client = new FakeLifecycleClient();
     const lifecycle = new SyncularV2ClientLifecycle(client, {
-      realtime: true,
       initialSync: false,
     });
 
@@ -124,16 +122,7 @@ class FakeLifecycleClient {
       changedRowsTruncated: false,
       subscriptions: [],
       pushedCommits: 0,
-      timings: {
-        totalMs: 0,
-        pushMs: 0,
-        pullMs: 0,
-        pullRequestMs: 0,
-        pullTransformMs: 0,
-        snapshotFetchMs: 0,
-        pullApplyMs: 0,
-        notifyMs: 0,
-      },
+      timings: zeroSyncTimings(),
     };
   }
 
@@ -149,6 +138,30 @@ class FakeLifecycleClient {
     };
     for (const listener of this.#diagnosticListeners) listener(event);
   }
+}
+
+function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
+  return {
+    totalMs: 0,
+    pushMs: 0,
+    pullMs: 0,
+    pullRequestMs: 0,
+    pullTransformMs: 0,
+    snapshotFetchMs: 0,
+    pullApplyMs: 0,
+    scopeClearMs: 0,
+    snapshotRowApplyMs: 0,
+    snapshotChunkApplyMs: 0,
+    snapshotChunkMaterializeMs: 0,
+    commitApplyMs: 0,
+    subscriptionStateMs: 0,
+    notifyMs: 0,
+    ...({
+      snapshotChunkResetMs: 0,
+      snapshotChunkBindMs: 0,
+      snapshotChunkStepMs: 0,
+    } as object),
+  } as SyncularV2SyncResult['timings'];
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {

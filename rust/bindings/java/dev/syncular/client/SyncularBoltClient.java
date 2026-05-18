@@ -206,6 +206,10 @@ public final class SyncularBoltClient implements AutoCloseable {
         return reader.readBool();
     }
 
+    public boolean start() {
+        return startRealtimeWorker();
+    }
+
     public boolean stopRealtimeWorker() {
         byte[] _buf = Native.boltffi_syncular_bolt_client_stop_realtime_worker(handle);
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -214,6 +218,10 @@ public final class SyncularBoltClient implements AutoCloseable {
             throw new RuntimeException(reader.readString());
         }
         return reader.readBool();
+    }
+
+    public boolean stop() {
+        return stopRealtimeWorker();
     }
 
     public boolean startEventStream(long capacity) {
@@ -244,6 +252,19 @@ public final class SyncularBoltClient implements AutoCloseable {
             throw new RuntimeException(reader.readString());
         }
         return reader.readBool();
+    }
+
+    public void forEachEventJson(long capacity, java.util.function.Predicate<String> handler) {
+        startEventStream(capacity);
+        try {
+            while (true) {
+                java.util.Optional<String> eventJson = nextEventJson();
+                if (eventJson.isEmpty()) break;
+                if (!handler.test(eventJson.get())) break;
+            }
+        } finally {
+            closeEventStream();
+        }
     }
 
     public String applyLocalOperationJson(String operationJson, java.util.Optional<String> localRowJson) {

@@ -198,8 +198,16 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.start_realtime_worker().map(|_| true))
     }
 
+    pub fn start(&self) -> Result<bool, String> {
+        self.with_client_mut(|client| client.start().map(|_| true))
+    }
+
     pub fn stop_realtime_worker(&self) -> Result<bool, String> {
         self.with_client_mut(|client| client.stop_realtime_worker().map(|_| true))
+    }
+
+    pub fn stop(&self) -> Result<bool, String> {
+        self.with_client_mut(|client| client.stop().map(|_| true))
     }
 
     pub fn join_presence(
@@ -526,7 +534,7 @@ impl SyncularBoltClient {
 
     pub fn shutdown(&self) -> Result<bool, String> {
         let _ = self.close_event_stream();
-        self.with_client_mut(|client| client.close().map(|_| true))
+        self.with_client_mut(|client| client.shutdown().map(|_| true))
     }
 }
 

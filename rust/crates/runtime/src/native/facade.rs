@@ -80,6 +80,19 @@ pub struct NativeClientOpenTask {
     taken: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeSyncularClientBuilder {
+    config: NativeClientConfig,
+    options: NativeClientOptions,
+    realtime: bool,
+}
+
+pub struct NativePresenceHandle<'a> {
+    client: &'a mut NativeSyncularClient,
+    scope_key: String,
+    active: bool,
+}
+
 pub const NATIVE_FFI_ABI_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize)]
@@ -373,6 +386,10 @@ pub fn native_runtime_manifest_json() -> Result<String> {
 }
 
 impl NativeSyncularClient {
+    pub fn builder(config: NativeClientConfig) -> NativeSyncularClientBuilder {
+        NativeSyncularClientBuilder::new(config)
+    }
+
     pub fn open(config: SyncularClientConfig) -> Result<Self> {
         Self::open_with_options(config, NativeClientOptions::default())
     }
@@ -703,6 +720,18 @@ impl NativeSyncularClient {
         Ok(())
     }
 
+    pub fn start(&mut self) -> Result<()> {
+        self.start_realtime_worker()
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        self.stop_realtime_worker()
+    }
+
+    pub fn shutdown(&mut self) -> Result<()> {
+        self.close()
+    }
+
     pub fn start_realtime_worker(&mut self) -> Result<()> {
         if self.realtime_worker.is_some() {
             return Ok(());
@@ -759,6 +788,19 @@ impl NativeSyncularClient {
             realtime_worker.send_presence("join", scope_key, metadata)?;
         }
         Ok(())
+    }
+
+    pub fn join_presence_handle(
+        &mut self,
+        scope_key: &str,
+        metadata: Option<Value>,
+    ) -> Result<NativePresenceHandle<'_>> {
+        self.join_presence(scope_key, metadata)?;
+        Ok(NativePresenceHandle {
+            client: self,
+            scope_key: scope_key.to_string(),
+            active: true,
+        })
     }
 
     pub fn leave_presence(&mut self, scope_key: &str) -> Result<()> {
@@ -1243,6 +1285,59 @@ impl NativeSyncularClient {
             Some("localWrite"),
         );
         self.trigger_after_local_write()
+    }
+}
+
+impl NativeSyncularClientBuilder {
+    pub fn new(config: NativeClientConfig) -> Self {
+        Self {
+            config,
+            options: NativeClientOptions::default(),
+            realtime: true,
+        }
+    }
+
+    pub fn auto_sync_local_writes(mut self, enabled: bool) -> Self {
+        self.options.auto_sync_local_writes = enabled;
+        self
+    }
+
+    pub fn realtime(mut self, enabled: bool) -> Self {
+        self.realtime = enabled;
+        self
+    }
+
+    pub fn open(self) -> Result<NativeSyncularClient> {
+        let mut client = NativeSyncularClient::open_native_with_options(self.config, self.options)?;
+        if self.realtime {
+            client.start()?;
+        }
+        Ok(client)
+    }
+}
+
+impl NativePresenceHandle<'_> {
+    pub fn update_metadata(&mut self, metadata: Value) -> Result<()> {
+        self.client
+            .update_presence_metadata(&self.scope_key, metadata)
+    }
+
+    pub fn leave(mut self) -> Result<()> {
+        self.leave_inner()
+    }
+
+    fn leave_inner(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+        self.client.leave_presence(&self.scope_key)
+    }
+}
+
+impl Drop for NativePresenceHandle<'_> {
+    fn drop(&mut self) {
+        let _ = self.leave_inner();
     }
 }
 

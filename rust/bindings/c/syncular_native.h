@@ -114,7 +114,17 @@ bool syncular_native_client_start_realtime_worker(
     char **error_out
 );
 
+bool syncular_native_client_start(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
 bool syncular_native_client_stop_realtime_worker(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
+bool syncular_native_client_stop(
     SyncularNativeHandle *handle,
     char **error_out
 );

@@ -14,6 +14,10 @@ Rust is the canonical native SDK surface. Reads use Diesel, and writes use
 generated Syncular mutations:
 
 ```rust
+let mut client = NativeSyncularClient::builder(config)
+    .auto_sync_local_writes(true)
+    .open()?;
+
 let rows = client.read(
     schema::tasks::dsl::tasks
         .filter(schema::tasks::dsl::user_id.eq("user-rust"))
@@ -26,6 +30,9 @@ client
     .tasks()
     .update(syncular::TaskPatch::new(task_id).completed(1))?;
 ```
+
+The builder starts realtime by default. Use `.realtime(false)` only for a host
+policy that cannot keep a websocket open.
 
 ## Swift and Kotlin
 
@@ -87,12 +94,13 @@ refresh from SQLite before processing incremental events again. The event
 includes top-level `droppedCount` and `resyncRequired: true`. During teardown,
 close the event stream and then call `shutdown()`.
 
-For realtime apps, start the persistent realtime worker after auth headers are
-available. The runtime owns websocket reconnect/backoff and feeds wakeups into
-the sync worker. BoltFFI hosts call `startRealtimeWorker()` and
-`stopRealtimeWorker()`; C hosts use
-`syncular_native_client_start_realtime_worker(...)` and
-`syncular_native_client_stop_realtime_worker(...)`.
+Treat realtime as the normal native lifecycle. After auth headers are available,
+call `start()` and keep the persistent realtime worker hot for the session. The
+runtime owns websocket reconnect/backoff and feeds wakeups into the sync worker.
+BoltFFI hosts can still call the explicit `startRealtimeWorker()` and
+`stopRealtimeWorker()` names; C hosts can use either
+`syncular_native_client_start(...)` / `syncular_native_client_stop(...)` or the
+longer realtime-worker functions.
 
 Native presence uses the same websocket session. Swift/Kotlin call
 `joinPresence(scopeKey:metadataJson:)`, `updatePresenceMetadata(...)`,
@@ -101,6 +109,33 @@ Native presence uses the same websocket session. Swift/Kotlin call
 `PresenceChanged` events with `payload_json.scopeKey` and
 `payload_json.presence`.
 Joined scopes are remembered and re-sent after realtime reconnect.
+
+Rust, Swift, and Kotlin also expose presence handles for component/screen
+lifecycles. Closing or dropping the handle leaves the scope:
+
+```rust
+let mut presence = client.join_presence_handle(
+    "user:user-rust",
+    Some(serde_json::json!({ "view": "tasks" })),
+)?;
+presence.update_metadata(serde_json::json!({ "view": "task-detail" }))?;
+drop(presence);
+```
+
+```swift
+let presence = try client.joinPresenceHandle(
+    scopeKey: "user:user-rust",
+    metadataJson: #"{"view":"tasks"}"#
+)
+try presence.update(metadataJson: #"{"view":"task-detail"}"#)
+try presence.close()
+```
+
+```kotlin
+client.joinPresenceHandle("user:user-rust", """{"view":"tasks"}""").use { presence ->
+    presence.update("""{"view":"task-detail"}""")
+}
+```
 
 App-specific Rust wrappers can subscribe at the worker layer instead of polling
 or rebuilding their own event hub:
@@ -120,30 +155,37 @@ while let Some(event) = events.next_event() {
 Swift:
 
 ```swift
-try client.startEventStream(capacity: 256)
-
-Task.detached {
-    while let eventJson = try client.nextEventJson() {
+try client.start()
+for try await eventJson in client.eventJsonStream(capacity: 256) {
         let event = try syncularDecodeNativeEvent(eventJson)
         await viewModel.apply(syncularEvent: event)
-    }
 }
 ```
 
 Kotlin:
 
 ```kotlin
-client.startEventStream(256uL)
-
+client.start()
 scope.launch(Dispatchers.IO) {
-    while (true) {
-        val eventJson = client.nextEventJson() ?: break
+    client.forEachEventJson(256uL) { eventJson ->
         val event = syncularDecodeNativeEvent(eventJson)
         withContext(Dispatchers.Main) {
             viewModel.applySyncularEvent(event)
         }
+        true
     }
 }
+```
+
+Java:
+
+```java
+client.start();
+client.forEachEventJson(256, eventJson -> {
+    SyncularNativeEvent event = syncularDecodeNativeEvent(eventJson);
+    viewModel.applySyncularEvent(event);
+    return true;
+});
 ```
 
 ## Realtime and sync

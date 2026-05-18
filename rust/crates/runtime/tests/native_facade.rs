@@ -201,6 +201,61 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
 }
 
 #[test]
+fn native_facade_lifecycle_aliases_control_realtime_worker() -> Result<()> {
+    let path = temp_db_path("syncular-native-lifecycle-aliases");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-lifecycle-aliases"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    client.start()?;
+    client.start()?;
+    client.stop()?;
+    client.stop()?;
+    client.shutdown()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_builder_starts_realtime_by_default() -> Result<()> {
+    let path = temp_db_path("syncular-native-builder-realtime");
+    let mut client = NativeSyncularClient::builder(test_config(&path, "native-builder-realtime"))
+        .auto_sync_local_writes(false)
+        .open()?;
+
+    client.stop()?;
+    client.shutdown()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_presence_handle_leaves_on_drop() -> Result<()> {
+    let path = temp_db_path("syncular-native-presence-handle");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-presence-handle"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    {
+        let mut presence =
+            client.join_presence_handle("user:presence", Some(json!({ "view": "a" })))?;
+        presence.update_metadata(json!({ "view": "b" }))?;
+    }
+
+    let entries: Value = serde_json::from_str(&client.presence_json("user:presence")?)?;
+    assert_eq!(entries.as_array().map(Vec::len), Some(0));
+    client.shutdown()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_emits_auth_expired_event_for_sync_401() -> Result<()> {
     let path = temp_db_path("syncular-native-auth-expired");
     let mut config = test_config(&path, "native-auth-expired");
