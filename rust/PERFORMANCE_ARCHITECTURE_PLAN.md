@@ -636,6 +636,22 @@ derived-schema deferral for app bootstrap.
   `1.32ms` / `1.34ms`, and aggregate p50 `21.84ms` / `22.10ms`. Reverted and
   kept the simpler rule: reads do not drain live events, write/sync paths still
   drain explicitly.
+- Rejected second partial-tail snapshot statement cache probe. The candidate
+  reused cached multi-row snapshot statements for every batch size, including
+  page tail batches, and removed the uncached partial-batch helpers. Local 100k
+  release was neutral versus the accepted baseline: Rust bootstrap
+  `138.04ms -> 139.26ms`, pull apply `73ms -> 72ms`, snapshot chunk apply
+  `62ms -> 61ms`, bind `33ms -> 31ms`, step `24ms -> 26ms`, and WASM size
+  `3,326,638 -> 3,326,902` bytes. Same-session 500k showed better client apply
+  buckets but worse wall time due unrelated server drift: candidate/control
+  bootstrap `688.38ms / 650.81ms`, pull apply `334ms / 359ms`, snapshot apply
+  `288ms / 307ms`, cached pull apply `324ms / 347ms`, cached snapshot apply
+  `273ms / 296ms`. External branch-server validation did not support keeping
+  it against the last retained external bootstrap evidence: Rust 500k
+  `2441.75ms -> 2665.04ms`, local apply `396ms -> 405ms`, derived schema
+  `858.63ms -> 947.31ms`, server binary encode `350ms -> 394ms`, and peak
+  memory `736.38MB -> 737.38MB`. Reverted; this remains below the bar for
+  another prepared-statement cache path.
 
 ### Required Benchmark Scoreboard
 
