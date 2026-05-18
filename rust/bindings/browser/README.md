@@ -317,18 +317,22 @@ joining presence.
 Operational events are available on the same client surface:
 
 ```ts
-syncular.client.addEventListener('outbox:change', (stats) => {
+syncular.client.addEventListener('outboxChanged', (stats) => {
   updateSyncBadge(stats.pending + stats.sending);
 });
 
-syncular.client.addEventListener('conflict:change', (stats) => {
+syncular.client.addEventListener('conflictsChanged', (stats) => {
   showConflictCount(stats.unresolved);
 });
 
-syncular.client.addEventListener('blob:upload:error', ({ hash, error }) => {
+syncular.client.addEventListener('blobUploadFailed', ({ hash, error }) => {
   reportBlobUploadFailure(hash, error);
 });
 ```
+
+Browser event names intentionally use the Rust-native vocabulary shared with
+native event payloads: `rowsChanged`, `outboxChanged`, `conflictsChanged`,
+`presenceChanged`, `blobUploadCompleted`, and `blobUploadFailed`.
 
 ## Runtime Contract
 

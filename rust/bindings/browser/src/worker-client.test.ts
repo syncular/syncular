@@ -949,6 +949,63 @@ describe('Syncular v2 worker client', () => {
     ]);
   });
 
+  it('uses Rust-native camelCase client event names', () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const rowsEvents: unknown[] = [];
+    const presenceEvents: unknown[] = [];
+    client.addEventListener('rowsChanged', (event) => rowsEvents.push(event));
+    client.addEventListener('presenceChanged', (event) =>
+      presenceEvents.push(event)
+    );
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'rowsChanged',
+      source: 'remotePull',
+      changedTables: ['tasks'],
+      changedRows: [],
+    });
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'presenceEvent',
+      action: 'snapshot',
+      scopeKey: 'tasks:user-1',
+      entries: [
+        {
+          clientId: 'client-2',
+          actorId: 'actor-2',
+          joinedAt: 123,
+          metadata: { viewing: 'task-2' },
+        },
+      ],
+    });
+
+    expect(rowsEvents).toEqual([
+      {
+        source: 'remotePull',
+        changedTables: ['tasks'],
+        changedRows: [],
+      },
+    ]);
+    expect(presenceEvents).toEqual([
+      {
+        scopeKey: 'tasks:user-1',
+        presence: [
+          {
+            clientId: 'client-2',
+            actorId: 'actor-2',
+            joinedAt: 123,
+            metadata: { viewing: 'task-2' },
+          },
+        ],
+      },
+    ]);
+  });
+
   it('sends and tracks realtime presence events', () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {

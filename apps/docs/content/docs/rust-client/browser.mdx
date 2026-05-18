@@ -138,18 +138,23 @@ const unsubscribe = syncular.client.addRowsChangedListener((event) => {
 The same client surface exposes operational events for app chrome:
 
 ```ts
-syncular.client.addEventListener('outbox:change', (stats) => {
+syncular.client.addEventListener('outboxChanged', (stats) => {
   setPendingSyncCount(stats.pending + stats.sending);
 });
 
-syncular.client.addEventListener('conflict:change', (stats) => {
+syncular.client.addEventListener('conflictsChanged', (stats) => {
   setConflictCount(stats.unresolved);
 });
 
-syncular.client.addEventListener('blob:upload:complete', ({ ref }) => {
+syncular.client.addEventListener('blobUploadCompleted', ({ ref }) => {
   markBlobUploaded(ref.hash);
 });
 ```
+
+Browser event names use the same Rust-native vocabulary as native event
+payloads: `rowsChanged`, `outboxChanged`, `conflictsChanged`,
+`presenceChanged`, `blobUploadCompleted`, and `blobUploadFailed`. They are not
+TS-client compatibility aliases.
 
 ## Presence
 

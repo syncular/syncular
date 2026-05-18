@@ -466,12 +466,12 @@ export interface SyncularV2BlobUploadErrorEvent {
 }
 
 export interface SyncularV2ClientEventMap {
-  'rows:changed': SyncularV2RowsChangedEvent;
-  'outbox:change': SyncularV2OutboxStats;
-  'conflict:change': SyncularV2ConflictStats;
-  'blob:upload:complete': SyncularV2BlobUploadEvent;
-  'blob:upload:error': SyncularV2BlobUploadErrorEvent;
-  'presence:change': SyncularV2PresenceChangeEvent;
+  rowsChanged: SyncularV2RowsChangedEvent;
+  outboxChanged: SyncularV2OutboxStats;
+  conflictsChanged: SyncularV2ConflictStats;
+  blobUploadCompleted: SyncularV2BlobUploadEvent;
+  blobUploadFailed: SyncularV2BlobUploadErrorEvent;
+  presenceChanged: SyncularV2PresenceChangeEvent;
 }
 
 export type SyncularV2ClientEventType = keyof SyncularV2ClientEventMap;

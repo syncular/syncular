@@ -98,7 +98,8 @@ Native presence uses the same websocket session. Swift/Kotlin call
 `joinPresence(scopeKey:metadataJson:)`, `updatePresenceMetadata(...)`,
 `leavePresence(...)`, and `presenceJson(scopeKey:)`; C hosts use the matching
 `syncular_native_client_*presence*` functions. Presence updates emit
-`PresenceChanged` events with `payloadJson.scopeKey` and `payloadJson.presence`.
+`PresenceChanged` events with `payload_json.scopeKey` and
+`payload_json.presence`.
 Joined scopes are remembered and re-sent after realtime reconnect.
 
 App-specific Rust wrappers can subscribe at the worker layer instead of polling
