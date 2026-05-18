@@ -81,6 +81,15 @@ type RawSyncResult = {
     pull_transform_ms?: number;
     snapshot_fetch_ms?: number;
     pull_apply_ms?: number;
+    scope_clear_ms?: number;
+    snapshot_row_apply_ms?: number;
+    snapshot_chunk_apply_ms?: number;
+    snapshot_chunk_materialize_ms?: number;
+    snapshot_chunk_reset_ms?: number;
+    snapshot_chunk_bind_ms?: number;
+    snapshot_chunk_step_ms?: number;
+    commit_apply_ms?: number;
+    subscription_state_ms?: number;
     notify_ms?: number;
   };
 };
@@ -218,7 +227,9 @@ export class SyncularV2RustClient {
     return result;
   }
 
-  async applyRealtimeSyncPack(bytes: Uint8Array): Promise<SyncularV2SyncResult> {
+  async applyRealtimeSyncPack(
+    bytes: Uint8Array
+  ): Promise<SyncularV2SyncResult> {
     const result = parseSyncResult(
       await this.raw.applyRealtimeSyncPackBytes(bytes)
     );
@@ -438,7 +449,9 @@ export class SyncularV2RustClient {
   async crdtDocumentSnapshot(
     request: SyncularV2CrdtFieldRequest
   ): Promise<SyncularV2CrdtDocumentSnapshot> {
-    return parseJson(this.raw.crdtDocumentSnapshotJson(JSON.stringify(request)));
+    return parseJson(
+      this.raw.crdtDocumentSnapshotJson(JSON.stringify(request))
+    );
   }
 
   async crdtUpdateLog(
@@ -553,6 +566,16 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
       pullTransformMs: raw.timings?.pull_transform_ms ?? 0,
       snapshotFetchMs: raw.timings?.snapshot_fetch_ms ?? 0,
       pullApplyMs: raw.timings?.pull_apply_ms ?? 0,
+      scopeClearMs: raw.timings?.scope_clear_ms ?? 0,
+      snapshotRowApplyMs: raw.timings?.snapshot_row_apply_ms ?? 0,
+      snapshotChunkApplyMs: raw.timings?.snapshot_chunk_apply_ms ?? 0,
+      snapshotChunkMaterializeMs:
+        raw.timings?.snapshot_chunk_materialize_ms ?? 0,
+      snapshotChunkResetMs: raw.timings?.snapshot_chunk_reset_ms ?? 0,
+      snapshotChunkBindMs: raw.timings?.snapshot_chunk_bind_ms ?? 0,
+      snapshotChunkStepMs: raw.timings?.snapshot_chunk_step_ms ?? 0,
+      commitApplyMs: raw.timings?.commit_apply_ms ?? 0,
+      subscriptionStateMs: raw.timings?.subscription_state_ms ?? 0,
       notifyMs: raw.timings?.notify_ms ?? 0,
     },
   };

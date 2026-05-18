@@ -44,6 +44,120 @@ branch:
   much as possible.
 - Record the exact command, before/after numbers, and affected timing buckets
   in this plan.
+- Every retained or rejected benchmark note must include the previous accepted
+  baseline, the candidate/result number, and the delta in ms/percent. Raw
+  absolute benchmark numbers without a baseline comparison are not actionable.
+- Branch-server validation must use the external app-style benchmark in
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench` for batches that are
+  expected to affect real bootstrap/local-query/online/reconnect behavior.
+  Performance conclusions must use release WASM; dev WASM is useful for quick
+  correctness but overstates Rust apply/query costs too much. Rebuild the
+  current branch server image and release Rust WASM first:
+
+  ```bash
+  cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+  bun --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+
+  SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+    docker compose -f stacks/syncular/docker-compose.yml up --build -d
+  ```
+
+  Then run TS first and Rust second:
+
+  ```bash
+  export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+  export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+  export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+
+  bun run bench:run -- --stack syncular --scenario bootstrap
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+
+  bun run bench:run -- --stack syncular --scenario local-query
+  bun run bench:run -- --stack syncular-rust --scenario local-query
+
+  bun run bench:run -- --stack syncular --scenario online-propagation
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+
+  bun run bench:run -- --stack syncular --scenario reconnect-storm
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+  ```
+
+  Results are written to `.results/<runId>/<stack>/<scenario>.json`.
+  Recent TS `online-propagation` and `reconnect-storm` runs can fail or hang
+  with snapshot chunk integrity mismatches; use per-command timeouts and keep
+  Rust-only results for those scenarios when the TS pair is invalid.
+  `build:wasm:dev` can still be used for faster edit/test cycles, but it must
+  not be used to decide whether the Rust architecture is slower or faster.
+- Browser E2E scoreboard supports local baseline comparison:
+  `--baseline=<path>` prints previous/current/delta for target metrics, and
+  `--update-baseline` writes the current report as the new accepted baseline.
+  It also supports `--fail-on-regression`, which exits non-zero when a
+  Rust/package metric regresses beyond both the absolute and percentage noise
+  thresholds. The gate intentionally ignores TS control metrics because they
+  can drift with the machine; TS values remain printed for context.
+  Latest gate validation:
+  `bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --baseline=../../../.context/benchmarks/browser-e2e-incremental-realtime-baseline.json --fail-on-regression`
+  passed. Key deltas: `rust_incremental_pull_ms` `12.58 -> 12.09`,
+  `rust_incremental_pull_apply_ms` `3 -> 2`,
+  `rust_realtime_live_p95_ms` `68.34 -> 71.83` stayed under the absolute gate,
+  realtime HTTP fallback stayed `0`, and served package bytes were unchanged.
+  Follow-up normal-power validation after the websocket flow-control slice:
+  the 100k guardrail failed both with flow-control enabled and with the new
+  path disabled via `SYNC_WS_MAX_IN_FLIGHT=0`, so the bootstrap/apply drift is
+  not attributed to battery mode or to flow-control. Disabled 100k control:
+  `rust_bootstrap_ms` `138.04 -> 145.93`; first enabled run was similar at
+  `138.04 -> 146.67`. Realtime same-session control also showed no benefit to
+  disabling the new path: disabled `rust_realtime_live_ms` `66.76 -> 79.63`,
+  enabled `66.76 -> 73.38`; both kept realtime HTTP fallback at `0`. Do not
+  update the accepted baseline from these runs.
+  The target metric list covers bootstrap/apply, read p50s, incremental
+  pull/apply/decode, websocket realtime delivery/fallback counters, heap, and
+  served package size so a candidate cannot improve one lane while silently
+  breaking another.
+  Current local accepted baselines:
+  - 500k bootstrap-only:
+    `.context/benchmarks/browser-e2e-500k-baseline.json`
+    created with
+    `SYNCULAR_BROWSER_PERF_ROWS=500000 bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --query-iterations=0 --baseline=../../../.context/benchmarks/browser-e2e-500k-baseline.json --update-baseline`.
+    Baseline highlights: `rust_bootstrap_ms=593.35`,
+    `rust_pull_apply_ms=322`, `rust_snapshot_chunk_apply_ms=275`,
+    `rust_cached_bootstrap_ms=317.31`,
+    `browser_served_rust_wasm_bytes=3326638`.
+  - 100k full/read guardrail:
+    `.context/benchmarks/browser-e2e-100k-baseline.json`
+    created with
+    `bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --baseline=../../../.context/benchmarks/browser-e2e-100k-baseline.json --update-baseline`.
+    Baseline highlights: `rust_bootstrap_ms=138.04`,
+    `rust_pull_apply_ms=73`, `rust_snapshot_chunk_apply_ms=62`,
+    `rust_cached_bootstrap_ms=68.43`, `rust_local_list_p50_ms=0.27`,
+    `rust_local_search_p50_ms=1.39`, `rust_aggregate_p50_ms=22.06`.
+  - 10k + 1k incremental/realtime guardrail:
+    `.context/benchmarks/browser-e2e-incremental-realtime-baseline.json`
+    created with
+    `bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --baseline=../../../.context/benchmarks/browser-e2e-incremental-realtime-baseline.json --update-baseline`.
+    Baseline highlights: `rust_bootstrap_ms=31.84`,
+    `rust_incremental_pull_ms=12.58`,
+    `rust_incremental_pull_apply_ms=3`,
+    `rust_incremental_sync_pack_decode_ms=2`,
+    `rust_realtime_live_ms=66.76`,
+    `rust_realtime_http_request_count=0`,
+    `rust_realtime_binary_events=15`,
+    `browser_served_rust_wasm_bytes=3326638`.
+  - Baseline comparison smoke run, 100k full/read guardrail:
+    `bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --baseline=../../../.context/benchmarks/browser-e2e-100k-baseline.json`
+    printed the expected delta table. Key deltas versus the accepted baseline:
+    `rust_bootstrap_ms` `138.04 -> 137.71` (`-0.33ms`, neutral),
+    `rust_pull_apply_ms` `73 -> 73`, `rust_snapshot_chunk_apply_ms`
+    `62 -> 61`, `browser_served_rust_wasm_bytes` unchanged.
+  - Baseline comparison smoke run, incremental/realtime guardrail:
+    `bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --baseline=../../../.context/benchmarks/browser-e2e-incremental-realtime-baseline.json`
+    printed incremental/realtime deltas. Key deltas versus the accepted
+    baseline: `rust_incremental_pull_ms` `12.58 -> 12.70`
+    (`+0.12ms`, neutral), `rust_incremental_pull_apply_ms` `3 -> 2`,
+    `rust_realtime_live_ms` `66.76 -> 66.94` (`+0.18ms`, neutral),
+    `rust_realtime_http_request_count` stayed `0`, and served package bytes
+    were unchanged.
 - Commit improvements separately with the benchmark evidence in the commit
   message.
 - Revert or discard changes that do not improve the target metric unless they
@@ -51,6 +165,261 @@ branch:
   and justified.
 - Negative experiments stay documented only as measurements and rationale, not
   as retained runtime code.
+- Retained generator fix: `syncular-codegen` now introspects app-defined
+  SQLite indexes, carries them through the stable schema JSON, and replays them
+  in the generated TypeScript browser schema installer. This does not create
+  hidden indexes; apps must still choose indexes in migrations.
+- Rejected default/example app-index migration: adding scope/read indexes to
+  the todo example improved the 100k aggregate query from `22.88ms -> 7.88ms`,
+  but regressed Rust bootstrap `148.13ms -> 228.13ms`, pull apply
+  `79ms -> 154ms`, and snapshot chunk apply `66ms -> 142ms`. The write/apply
+  regression is too large for a default schema change, so the migration was
+  removed and only the generator capability was kept.
+- Retained SQLite read statement binding cleanup: cached read statements now
+  skip `sqlite3_clear_bindings` when every SQL parameter is rebound, while
+  preserving the previous clear-to-null behavior for under-bound statements.
+  100k comparison against `.context/benchmarks/browser-e2e-100k-before-next.json`:
+  Rust bootstrap `148.13ms -> 144.80ms`, pull apply `79ms -> 77ms`,
+  snapshot chunk bind `38ms -> 35ms`, local list p50 `0.27ms -> 0.25ms`,
+  local search p50 `1.69ms -> 1.50ms`, aggregate p50 `22.88ms -> 23.71ms`,
+  and Rust WASM size `3,326,638 -> 3,326,667` bytes.
+- Retained protocol cleanup: binary-table snapshot clients no longer receive
+  small bootstrap snapshots as inline JSON rows on resync/cursor-repair paths.
+  JSON clients can still use inline rows, but binary clients now consistently
+  get binary chunks. 100k comparison against the immediately previous
+  skip-clear run was effectively neutral for first bootstrap:
+  Rust bootstrap `144.80ms -> 146.94ms`, pull apply `77ms -> 79ms`,
+  snapshot chunk apply `64ms -> 66ms`, served bytes unchanged. The change is
+  kept for protocol cleanliness rather than first-bootstrap speed.
+- Retained measurement cleanup: server bootstrap timing now splits JSON
+  row-frame encoding from binary-table snapshot encoding. The follow-up 100k
+  run reported `rust_server_bootstrap_row_frame_encode_ms=0` and
+  `rust_server_bootstrap_snapshot_binary_encode_ms=14`, confirming the binary
+  path is not doing JSON row-frame encoding during first bootstrap.
+- External branch-server evidence from
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench` after rebuilding the branch
+  server image and Rust WASM, on battery power at 22%:
+  - Valid fresh pairs:
+    `Bootstrap 100k` TS `774ms`, Rust `1535ms` (`1.98x` slower);
+    `Bootstrap 500k` TS `3919ms`, Rust `7934ms` (`2.02x` slower);
+    `500k pull request` TS `1172ms`, Rust `1462ms` (`1.25x` slower);
+    `500k snapshot fetch` TS `187ms`, Rust `210ms` (`1.12x` slower);
+    `500k chunk decode` TS `341ms`, Rust `1ms`;
+    `500k local apply` TS `2004ms`, Rust `6249ms` (`3.12x` slower);
+    `500k peak memory` TS `482MB`, Rust `727MB` (`1.51x` higher);
+    `Local list p50` TS `0.10ms`, Rust `0.57ms`;
+    `Local search p50` TS `0.07ms`, Rust `0.89ms`;
+    `Aggregate read-model p50` TS `5.47ms`, Rust `0.06ms`;
+    `Aggregate raw SQL p50` TS `5.47ms`, Rust `57.08ms`.
+  - TS `online-propagation` and `reconnect-storm` failed again with snapshot
+    chunk integrity mismatch, so only Rust-only values were valid there:
+    online p50 `35.18ms`, online p95 `97.10ms`, reconnect 25 `117.59ms`,
+    reconnect 100 `2019.44ms`, reconnect 250 `2079.18ms`.
+  - Read: branch-server Rust still shows the same structural profile as the
+    earlier feedback: binary decode is gone, while local SQLite apply and raw
+    query execution dominate. The much higher apply time compared with the
+    local release scoreboard means every retained batch now needs both the
+    local scoreboard and the branch-server harness where feasible.
+- External branch-server release-WASM sanity check after rebuilding the same
+  branch server and using the release artifact in
+  `rust/bindings/browser/dist`:
+  - Rust 500k bootstrap `3240.29ms`, pull request `1333ms`, snapshot fetch
+    `178ms`, pull apply `1902ms`, local apply `1724ms`, chunk decode `0ms`,
+    peak memory `791.2MB`.
+  - Against the same branch-server TS bootstrap run (`4067.46ms`), Rust release
+    WASM is faster on 500k bootstrap (`0.80x`) while still using more peak
+    memory (`791.2MB` versus TS `475.2MB`).
+  - Rust release local-query: list p50 `0.13ms`, search p50 `0.19ms`,
+    read-model aggregate p50 `0.01ms`, raw SQL aggregate p50 `7.68ms`,
+    peak memory `459.59MB`.
+  - Against the same branch-server TS local-query run, release Rust is faster
+    on list (`0.13ms` vs `0.25ms`), slower on search (`0.19ms` vs `0.11ms`),
+    close on raw aggregate (`7.68ms` vs `6.18ms`), and much faster with the
+    explicit read model (`0.01ms`).
+  - Read: the earlier ~8s Rust bootstrap and ~6.4s local apply numbers were
+    dev-WASM artifacts. They remain useful for relative A/B checks only when
+    both before and after use dev WASM, but they are not an architecture
+    verdict.
+- Retained API cleanup: Rust web `sync()` now defaults to hydrating snapshot
+  rows into local SQLite without returning them in `snapshotRows`. This is the
+  clean default for a SQLite-owned runtime and prevents accidental giant result
+  payloads in apps. Apps can still opt in with `includeSnapshotRows: true` for
+  explicit debug/test flows.
+  - Correctness:
+    `bun --cwd rust/bindings/browser test src/__tests__/sync-hono.wasm.test.ts`
+    passed, including the new Hono/WASM default-behavior test.
+  - External branch-server bootstrap, after rebuilding dev WASM and the Docker
+    server image:
+    TS 500k bootstrap `4067.46ms`, Rust 500k bootstrap `8044.57ms`,
+    Rust pull request `1325ms`, Rust snapshot fetch `252ms`, Rust local apply
+    `6453ms`, Rust chunk decode `0ms`, Rust peak memory `728.06MB`.
+  - External branch-server local-query:
+    TS list p50 `0.25ms`, TS search p50 `0.11ms`, TS aggregate p50 `6.18ms`;
+    Rust list p50 `0.67ms`, Rust search p50 `0.97ms`, Rust aggregate
+    read-model p50 `0.08ms`, Rust aggregate raw SQL p50 `60.15ms`.
+  - Read: this is intentionally not counted as a perf win. The external Rust
+    adapter already passed `includeSnapshotRows: false` and
+    `collectChangedRows: false`, so the branch-server result stays in the same
+    band. The retained value is API safety/cleanliness and the new regression
+    test.
+- Retained browser SQLite result materialization cleanup: `execute_prepared_sql`
+  now reads SQLite column names once per statement execution and converts row
+  text using SQLite byte lengths directly, instead of rebuilding column metadata
+  and doing name lookups for every returned row.
+  - External branch-server Rust local-query before:
+    list p50 `0.67ms`, search p50 `0.97ms`, read-model aggregate p50
+    `0.08ms`, raw SQL aggregate p50 `60.15ms`.
+  - External branch-server Rust local-query after:
+    list p50 `0.58ms` (`-0.09ms`, `-13.4%`), search p50 `0.81ms`
+    (`-0.16ms`, `-16.5%`), read-model aggregate p50 `0.06ms`,
+    raw SQL aggregate p50 `57.25ms` (`-2.90ms`, `-4.8%`).
+  - Local release-WASM 100k scoreboard guardrail, two runs against
+    `.context/benchmarks/browser-e2e-100k-baseline.json`:
+    run 1 list p50 `0.27ms`, search p50 `1.47ms`, aggregate p50 `21.78ms`;
+    run 2 list p50 `0.25ms`, search p50 `1.39ms`, aggregate p50 `22.81ms`.
+    Bootstrap/apply stayed neutral: `rust_pull_apply_ms` `73ms` in both runs;
+    snapshot chunk apply `59ms` / `62ms` versus baseline `62ms`.
+  - Package impact: release WASM grew `3,326,638 -> 3,327,561` bytes
+    (`+923` bytes, `+0.03%`), still under the configured size budget.
+  - Read: this is deliberately not a hidden query cache. It removes repeated
+    per-row metadata work in the generic result converter while preserving the
+    same JSON result shape.
+- Rejected snapshot batch-size increase:
+  - Candidate: raise `SNAPSHOT_UPSERT_BATCH_ROWS` from `2048` to `4096`.
+    100k same-session comparison against
+    `.context/benchmarks/browser-e2e-100k-before-next.json` improved first
+    bootstrap `148.13 -> 141.81` and bind `38 -> 33`, but regressed cached
+    pull apply `68 -> 72`, cached snapshot apply `58 -> 62`, and heap delta
+    was much higher. Not retained.
+  - Candidate: lower the raised cap to `3072`. 100k improved
+    `rust_bootstrap_ms` `148.13 -> 143.34`, `rust_pull_apply_ms` `79 -> 76`,
+    and `rust_snapshot_chunk_apply_ms` `66 -> 64`, but 500k did not hold.
+    500k candidate against accepted baseline: `rust_bootstrap_ms`
+    `593.35 -> 611.93`, `rust_pull_apply_ms` `322 -> 334`,
+    `rust_snapshot_chunk_apply_ms` `275 -> 286`.
+    Same-session 500k control after reverting to `2048` was better than the
+    candidate: `rust_bootstrap_ms` `607.68`, `rust_pull_apply_ms` `330`,
+    `rust_snapshot_chunk_apply_ms` `284`. Reverted to `2048`.
+
+### Next-Up Performance Priorities
+
+Prepared statement caching is acceptable SQLite hygiene, but it must not
+become the main strategy for making the Rust client competitive. Hidden query
+result caches are not a Syncular performance plan; they add invalidation
+complexity and hide structural overhead that the TypeScript client does not
+need to hide.
+
+Next work should prioritize structural fixes:
+
+1. Add sub-bucket timing for Rust browser apply and local query execution so
+   every change can be judged against the actual hot stage, not just total
+   bootstrap time.
+2. Make snapshot apply generated and table-specific: binary chunk ->
+   schema-ordered typed values -> positional SQLite binds, without generic
+   object maps or `serde_json::Value` on the hot path.
+3. Keep prepared statement reuse where it is simple and measurable, but reject
+   cache bookkeeping that does not improve the benchmark.
+4. Avoid JSON/object result materialization across the JS/WASM boundary for
+   generated hot reads. Return lean row arrays or generated typed shapes where
+   the API allows it.
+5. Treat read models as explicit generated derived state, not hidden query
+   caches. The benchmark must keep reporting raw SQL beside read-model paths.
+6. Reduce peak memory by ensuring compressed bytes, decompressed chunk bytes,
+   decoded row views, and SQLite bind buffers are not retained beyond the
+   current apply page.
+
+### Drastic Performance Experiments
+
+These are the next structural attempts now that release WASM shows the Rust
+client can beat TS on 500k bootstrap, but local apply, memory, and some raw
+query lanes still need work. Each attempt must run the local release scoreboard
+and the external `/Users/bkniffler/GitHub/sync/offline-sync-bench` TS/Rust
+comparison before it is retained. If the change does not improve the target
+bucket without a worse total result, remove it and keep only the measurement
+note here.
+
+1. **Defer derived SQLite work during snapshot bootstrap.** Create base app
+   tables before bootstrap, bulk-apply the snapshot, then create app indexes,
+   triggers, and read models after the snapshot has landed. This tests whether
+   per-row index/trigger maintenance is still hiding in local apply. The
+   measured bootstrap wall time must include the post-bootstrap index/read-model
+   build, otherwise the result is not fair.
+2. **Generated bulk-import phases.** Use generated schema phases for app
+   tables: base DDL, snapshot import, derived DDL/read-model rebuild, steady
+   triggers. This is the proper implementation path if experiment 1 wins; no
+   generic "drop all indexes" fallback should be added.
+3. **SQLite changeset/delta apply.** Investigate SQLite session/changeset-style
+   binary deltas for incremental sync once bootstrap is structurally cleaner.
+   Target metrics are incremental pull/apply and realtime catch-up, not first
+   bootstrap.
+4. **Server-generated SQLite snapshot artifacts.** For very large first sync,
+   evaluate serving a prebuilt tenant/scope SQLite artifact or attachable
+   database page set instead of replaying rows. This is a protocol/server
+   architecture change and only worth keeping if it cuts 500k+ bootstrap wall
+   time and peak memory materially.
+5. **Generated typed read result paths.** Keep Kysely/SQL semantics, but avoid
+   generic JSON result materialization for generated hot reads where the host
+   can accept typed arrays/columnar rows. This must not become a hidden query
+   result cache.
+6. **Streaming memory ceiling pass.** Add explicit peak-memory probes around
+   fetch, decompression, chunk apply, and query result materialization, then
+   remove retained buffers. Accept only changes that lower 500k peak memory or
+   keep memory flat while improving wall time.
+
+Experiment 1 result: retain the generated-schema phase API and keep pursuing
+derived-schema deferral for app bootstrap.
+
+- External `/Users/bkniffler/GitHub/sync/offline-sync-bench` probe split the
+  Rust adapter into base table creation before snapshot apply and derived
+  indexes/triggers/read-model rebuild after snapshot apply. Bootstrap wall time
+  includes the post-bootstrap derived build.
+- Previous accepted release-WASM branch-server Rust bootstrap:
+  100k `648.54ms`, 500k `3240.29ms`, 500k local apply `1724ms`, 500k peak
+  memory `791.2MB`.
+- Candidate release-WASM branch-server Rust bootstrap:
+  100k `557.93ms` (`-90.61ms`, `-14.0%`), 500k `2714.76ms`
+  (`-525.53ms`, `-16.2%`), 500k local apply `382ms` (`-1342ms`, `-77.8%`),
+  post-bootstrap derived-schema rebuild `883.28ms`, 500k peak memory
+  `732.33MB` (`-58.87MB`, `-7.4%`).
+- Same-run TS branch-server bootstrap for context: 100k `818.12ms`, 500k
+  `3669.48ms`, 500k local apply `1960.4ms`, 500k peak memory `493.55MB`.
+  Candidate Rust 500k bootstrap is `0.74x` TS wall time but still `1.48x` TS
+  peak memory.
+- Local-query rerun after one outlier: previous Rust release local-query
+  `bootstrap=746.09ms`, `list=0.13ms`, `search=0.19ms`,
+  `read_model_aggregate=0.01ms`, `raw_aggregate=7.68ms`,
+  `peak_memory=459.59MB`; candidate rerun `bootstrap=902.04ms`,
+  `list=0.15ms`, `search=0.21ms`, `read_model_aggregate=0.02ms`,
+  `raw_aggregate=9.67ms`, `peak_memory=458.95MB`. Read latency is close enough
+  for the large bootstrap win; planner analysis remains a separate measured
+  maintenance step.
+- Normal local release scoreboard after the codegen API change:
+  Rust 100k bootstrap `148.18ms` vs accepted `138.04ms`, pull apply `79ms`
+  vs `73ms`, snapshot chunk apply `66ms` vs `62ms`; TS bootstrap also drifted
+  `722.67ms -> 805.47ms`. This is treated as no perf conclusion for the
+  codegen-only API change; the runtime/default installer path is unchanged.
+  The 500k local release guardrail similarly stayed in the same noisy band:
+  Rust bootstrap `643.44ms` vs accepted `593.35ms`, pull apply `354ms` vs
+  `322ms`, snapshot chunk apply `302ms` vs `275ms`; TS bootstrap drifted
+  `3408.88ms -> 3652.18ms`. Served Rust WASM stayed at `3,327,561` bytes.
+- External online/reconnect lanes after the same branch-server rebuild:
+  TS `online-propagation` and `reconnect-storm` both failed with snapshot chunk
+  integrity mismatches, so no valid TS/Rust pair exists for this batch. Rust-only
+  online propagation completed with mirror visible p50 `16.53ms`, p95
+  `28.72ms`, write ack `6.26ms`. Rust-only reconnect completed with 25 clients
+  `96.10ms`, 100 clients `2025.87ms`, and 250 clients `2031.52ms`.
+- Retained implementation slice: generated TypeScript now exports
+  `ensureSyncularAppBaseSchema` and `ensureSyncularAppDerivedSchema`, while
+  `ensureSyncularAppSchema` remains the full installer by composing both. The
+  default generated client still installs the full schema up front; apps can
+  opt into base -> snapshot sync -> derived for large initial bootstrap.
+- Rejected default `ANALYZE` inside the derived-schema phase. External Rust
+  branch-server candidate with `ANALYZE` improved local-query p50s versus the
+  no-ANALYZE deferred probe (`list 0.15ms -> 0.09ms`, `search 0.21ms ->
+  0.15ms`, `raw aggregate 9.67ms -> 7.60ms`), but regressed 500k bootstrap
+  `2714.76ms -> 2987.44ms` (`+272.68ms`, `+10.0%`) and derived build
+  `883.28ms -> 1102.95ms`. Keep planner analysis as a possible explicit app
+  maintenance step, not the default first-bootstrap path.
 
 ### Required Benchmark Scoreboard
 
@@ -316,7 +685,7 @@ Required work:
 - Add protocol negotiation for snapshot encoding.
 - Add server-side binary chunk encoder.
 - Add Rust decoder for generated schemas.
-- Keep JSON format as compatibility fallback.
+- Keep JSON off the hot path; use it only for explicit debug/test flows.
 
 ### 2. Schema-Generated Apply
 
@@ -416,7 +785,8 @@ Required work:
 - Generate server encoders from the same app schema contract.
 - Encode rows in fixed schema column order.
 - Include schema/table/column version metadata in chunk headers.
-- Keep `json-row-frame-v1` as a compatibility fallback only.
+- Remove `json-row-frame-v1` from the Rust-first hot path once binary table
+  chunks are fully generated.
 
 ### 3. WebSocket Carries Real Deltas
 
@@ -503,8 +873,8 @@ Target shape on the wire:
 ### 8. Gzip-Only Compression Policy
 
 Compression should stay gzip-only for this protocol generation because it is
-the only supported compression path across the current server, browser, native,
-and compatibility clients.
+the only supported compression path across the current server, browser, and
+native clients.
 
 - snapshot chunks use `gzip`.
 - websocket delta packs should avoid compression for small messages unless
@@ -856,14 +1226,9 @@ client. Overflow should close or resync the session deliberately.
   and plain insert is both the correct invariant and cheaper:
   - 500k rows, 5k-row pages, 20 binary chunks: `pullApplyMs=2142ms`,
     wall `3618.5ms`.
-- Extended `binary-sync-pack-v1` with optional inline compressed snapshot
-  chunk bodies. JSON/debug responses still expose chunk refs only, while Rust
-  binary-pack clients can decode chunks without one GET per chunk:
-  - 500k rows, 5k-row pages, 20 binary chunks: request count `22 -> 2`,
-    `snapshotChunkFetchMs=0ms`, wall `3652.6ms`.
-  - Freshly-generated chunks now carry their body out of server `pull()`
-    directly when a binary sync pack is requested; Hono only rereads chunk
-    bodies for cache hits.
+- Removed the optional inline compressed snapshot chunk body experiment.
+  Binary sync-packs now carry refs only; chunk bytes are always fetched through
+  the authenticated chunk route.
 - Made snapshot gzip level explicit and measured level 1 for the binary
   bootstrap path:
   - 500k rows, 5k-row pages: response bytes `~3.52MB -> ~3.55MB`,
@@ -1235,6 +1600,187 @@ client. Overflow should close or resync the session deliberately.
     `rust_pull_request_ms` `89 -> 85`,
     `rust_snapshot_fetch_ms` `19 -> 15`,
     `rust_cached_bootstrap_ms` `106.23 -> 101.41`.
+- Added Rust browser apply sub-bucket metrics so future changes can target the
+  actual hot stage instead of total `pull_apply_ms`. New sync timing fields:
+  `scopeClearMs`, `snapshotRowApplyMs`, `snapshotChunkApplyMs`,
+  `snapshotChunkMaterializeMs`, `snapshotChunkResetMs`,
+  `snapshotChunkBindMs`, `snapshotChunkStepMs`, `commitApplyMs`, and
+  `subscriptionStateMs`. These are measurement-only and do not add hidden
+  result caching.
+  - Validation command:
+    `bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts`
+  - 100k full scoreboard, release-WASM:
+    `ts_bootstrap_ms` `793.21`, `rust_bootstrap_ms` `148.54`,
+    `rust_pull_apply_ms` `77`, `rust_snapshot_chunk_apply_ms` `65`,
+    `rust_snapshot_chunk_materialize_ms` `0`,
+    `rust_local_list_p50_ms` `0.29`,
+    `rust_local_search_p50_ms` `1.62`,
+    `rust_aggregate_p50_ms` `23.53`.
+  - Validation command:
+    `SYNCULAR_BROWSER_PERF_ROWS=500000 bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts --query-iterations=0`
+  - 500k bootstrap-only, release-WASM:
+    `ts_bootstrap_ms` `3707.71`, `rust_bootstrap_ms` `663.09`,
+    `rust_pull_request_ms` `320`, `rust_snapshot_fetch_ms` `50`,
+    `rust_pull_apply_ms` `339`, `rust_snapshot_chunk_apply_ms` `289`,
+    `rust_snapshot_chunk_materialize_ms` `0`,
+    `rust_cached_bootstrap_ms` `340.36`,
+    `rust_cached_pull_apply_ms` `335`,
+    `rust_cached_snapshot_chunk_apply_ms` `285`.
+  - Read: the current Rust hot apply path is not JSON/materialization-bound in
+    this harness; it is dominated by direct binary chunk writes into SQLite.
+    The next structural optimization should target the generated SQLite binder
+    and write transaction path, not query/result caching.
+  - Rejected follow-up: hoisting the cached full-batch statement lookup out of
+    each binary snapshot batch loop. Same 500k command after the change showed
+    `rust_snapshot_chunk_apply_ms` effectively flat (`289 -> 288`) and cached
+    apply neutral/slightly worse (`335 -> 336`), so the runtime change was
+    reverted.
+  - Extended measurement with SQLite reset/bind/step sub-buckets:
+    - 100k full scoreboard, release-WASM:
+      `ts_bootstrap_ms` `736.65`, `rust_bootstrap_ms` `143.08`,
+      `rust_pull_apply_ms` `75`, `rust_snapshot_chunk_apply_ms` `63`,
+      `rust_snapshot_chunk_bind_ms` `30`,
+      `rust_snapshot_chunk_step_ms` `28`,
+      `rust_local_list_p50_ms` `0.28`,
+      `rust_local_search_p50_ms` `1.45`,
+      `rust_aggregate_p50_ms` `22.21`.
+    - 500k bootstrap-only, release-WASM:
+      `ts_bootstrap_ms` `3497.71`, `rust_bootstrap_ms` `602.32`,
+      `rust_pull_request_ms` `272`, `rust_snapshot_fetch_ms` `45`,
+      `rust_pull_apply_ms` `325`, `rust_snapshot_chunk_apply_ms` `279`,
+      `rust_snapshot_chunk_bind_ms` `146`,
+      `rust_snapshot_chunk_step_ms` `125`,
+      `rust_cached_bootstrap_ms` `320.92`,
+      `rust_cached_pull_apply_ms` `316`,
+      `rust_cached_snapshot_chunk_apply_ms` `274`.
+    - Read: remaining 500k apply cost is split almost evenly between binding
+      binary cells into SQLite parameters and executing SQLite insert/upsert
+      steps. Reset time is effectively zero. Next structural work should reduce
+      per-cell binding overhead or change the snapshot import strategy; prepared
+      statement/result caching is not the meaningful lever here.
+  - Rejected follow-up: raising the SQLite snapshot write batch cap from
+    `2048` to `4096` rows. Same 500k command did not improve the target and
+    landed in the same slower band: first bootstrap `653.35`,
+    `rust_snapshot_chunk_apply_ms` `309`, cached apply `304`. After reverting,
+    two 2048-row control runs measured first bootstrap `658.5`/`664.88` and
+    snapshot chunk apply `313`/`312`, showing the later run band was noisier
+    than the earlier `602.32`/`279` result. The runtime change still stays
+    reverted because it has no demonstrated win.
+  - Rejected follow-up: using `sqlite3_bind_text64/blob64` directly in the hot
+    borrowed binary snapshot binder. It was not a consistent win in an A/B
+    sequence: experiment runs measured snapshot apply `292`/`297` and cached
+    apply `281`/`293`; the immediate reverted control measured snapshot apply
+    `295` and cached apply `287`. Because the signal is noise-level and the
+    100k guardrail was slightly worse (`snapshot_chunk_apply_ms` `66` vs the
+    earlier `63`), the runtime change stays reverted.
+  - Rejected follow-up: fetching all snapshot chunks in a subscription page
+    concurrently through a new transport batch method. It required adding the
+    `futures` dependency and grew the served Rust WASM artifact by roughly
+    `5.8KB`, while the 500k bootstrap-only run only moved
+    `rust_snapshot_fetch_ms` into the same mid-40ms noise band
+    (`46ms`) and did not reduce the dominant apply bucket. The dependency and
+    runtime change were reverted.
+  - Kept: added a trusted raw binary payload cursor for generated snapshot
+    import. The fast path skips redundant per-cell nullable/schema checks while
+    keeping byte-bound checks, type decoding, boolean/float validation, and
+    SQLite constraint enforcement. This is small, structural, and has no extra
+    package dependency.
+    - Previous accepted 500k baseline, same bootstrap-only command:
+      `rust_bootstrap_ms=648.06`, `rust_pull_apply_ms=350`,
+      `rust_snapshot_chunk_apply_ms=295`,
+      `rust_snapshot_chunk_bind_ms=149`,
+      `rust_snapshot_chunk_step_ms=133`,
+      `rust_cached_bootstrap_ms=341.62`,
+      `rust_cached_pull_apply_ms=336`,
+      `rust_cached_snapshot_chunk_apply_ms=287`.
+    - 500k bootstrap-only, release-WASM, two accepted runs:
+      `rust_bootstrap_ms` `607.1` / `606.82`,
+      `rust_pull_apply_ms` `323` / `327`,
+      `rust_snapshot_chunk_apply_ms` `275` / `279`,
+      `rust_snapshot_chunk_bind_ms` `145` / `140`,
+      `rust_snapshot_chunk_step_ms` `121` / `128`,
+      `rust_cached_bootstrap_ms` `318.56` / `317.98`,
+      `rust_cached_snapshot_chunk_apply_ms` `271` / `271`.
+    - Delta versus previous accepted 500k baseline, using the mean of the two
+      accepted runs:
+      `rust_bootstrap_ms` `648.06 -> 606.96` (`-41.10ms`, `-6.3%`),
+      `rust_pull_apply_ms` `350 -> 325` (`-25ms`, `-7.1%`),
+      `rust_snapshot_chunk_apply_ms` `295 -> 277` (`-18ms`, `-6.1%`),
+      `rust_snapshot_chunk_bind_ms` `149 -> 142.5` (`-6.5ms`, `-4.4%`),
+      `rust_snapshot_chunk_step_ms` `133 -> 124.5` (`-8.5ms`, `-6.4%`),
+      `rust_cached_bootstrap_ms` `341.62 -> 318.27`
+      (`-23.35ms`, `-6.8%`),
+      `rust_cached_snapshot_chunk_apply_ms` `287 -> 271`
+      (`-16ms`, `-5.6%`).
+    - 100k full scoreboard guardrail:
+      `ts_bootstrap_ms` `781.71`, `rust_bootstrap_ms` `145.62`,
+      `rust_pull_apply_ms` `77`,
+      `rust_snapshot_chunk_apply_ms` `66`,
+      `rust_cached_bootstrap_ms` `70.85`,
+      `rust_local_list_p50_ms` `0.24`,
+      `rust_local_search_p50_ms` `1.46`,
+      `rust_aggregate_p50_ms` `23.02`.
+    - 100k guardrail delta versus previous reported run:
+      `rust_bootstrap_ms` `146.44 -> 145.62` (`-0.82ms`, neutral),
+      `rust_cached_bootstrap_ms` `72.68 -> 70.85` (`-1.83ms`),
+      `rust_local_list_p50_ms` `0.25 -> 0.24`,
+      `rust_local_search_p50_ms` `1.52 -> 1.46`,
+      `rust_aggregate_p50_ms` `22.99 -> 23.02` (neutral).
+  - Rejected follow-up: deferring SQLite bind error handling until after a
+    snapshot batch. It slightly reduced the served WASM artifact
+    (`3,326,638 -> 3,326,118` bytes, `-520` bytes), but regressed the accepted
+    500k bootstrap-only baseline:
+    `rust_bootstrap_ms` `593.35 -> 601.26` (`+7.91ms`, `+1.3%`),
+    `rust_pull_apply_ms` `322 -> 326` (`+4ms`, `+1.2%`),
+    `rust_snapshot_chunk_apply_ms` `275 -> 281` (`+6ms`, `+2.2%`),
+    `rust_snapshot_chunk_bind_ms` `132 -> 159` (`+27ms`, `+20.5%`),
+    `rust_cached_bootstrap_ms` `317.31 -> 334.73`
+    (`+17.42ms`, `+5.5%`),
+    `rust_cached_pull_apply_ms` `313 -> 330` (`+17ms`, `+5.4%`),
+    and `rust_cached_snapshot_chunk_apply_ms` `271 -> 283`
+    (`+12ms`, `+4.4%`). The runtime change was reverted.
+    Post-revert control on the same accepted 500k baseline was back in the
+    retained band: `rust_bootstrap_ms` `593.35 -> 598.25` (`+4.90ms`,
+    `+0.8%`), `rust_pull_apply_ms` `322 -> 326` (`+4ms`, `+1.2%`),
+    `rust_snapshot_chunk_apply_ms` `275 -> 276` (`+1ms`, `+0.4%`),
+    `rust_cached_snapshot_chunk_apply_ms` `271 -> 275` (`+4ms`, `+1.5%`),
+    and `browser_served_rust_wasm_bytes` unchanged.
+    100k full/read guardrail after the revert also stayed in range:
+    `rust_bootstrap_ms` `138.04 -> 142.09` (`+4.05ms`, `+2.9%`),
+    `rust_pull_apply_ms` `73 -> 77` (`+4ms`, `+5.5%`),
+    `rust_snapshot_chunk_apply_ms` `62 -> 64` (`+2ms`, `+3.2%`),
+    `rust_local_list_p50_ms` `0.27 -> 0.25` (`-0.02ms`),
+    `rust_local_search_p50_ms` `1.39 -> 1.43` (`+0.04ms`),
+    and `rust_aggregate_p50_ms` `22.06 -> 23.06` (`+1ms`).
+  - Rejected follow-up: preserving generated binary sync-pack row groups in the
+    browser decoder and applying whole commit groups through the binary SQLite
+    batch path. The target incremental lane improved, but the broad bootstrap
+    guardrail regressed, so the runtime change was reverted.
+    - Incremental/realtime candidate, accepted 10k + 1k baseline:
+      `rust_incremental_pull_ms` `12.58 -> 10.38` / `10.81`
+      (`-17.5%` / `-14.1%`),
+      `rust_incremental_sync_pack_decode_ms` `2 -> 0`,
+      `rust_incremental_pull_apply_ms` stayed `3`,
+      `rust_realtime_http_request_count` stayed `0`, and served Rust WASM
+      bytes moved `3,326,638 -> 3,323,052` (`-3,586` bytes).
+    - Rejection reason, accepted 500k bootstrap-only baseline, two candidate
+      runs:
+      `rust_bootstrap_ms` `593.35 -> 625.51` / `623.71`
+      (`+5.4%` / `+5.1%`),
+      `rust_pull_apply_ms` `322 -> 334` / `343`
+      (`+3.7%` / `+6.5%`),
+      `rust_snapshot_chunk_apply_ms` `275 -> 285` / `289`
+      (`+3.6%` / `+5.1%`),
+      `rust_cached_pull_apply_ms` `313 -> 338` / `330`
+      (`+8.0%` / `+5.4%`), and
+      `rust_cached_snapshot_chunk_apply_ms` `271 -> 290` / `284`
+      (`+7.0%` / `+4.8%`).
+    - Post-revert control on the incremental/realtime lane restored the served
+      WASM bytes to `3,326,638` and the sync-pack decode/apply buckets to the
+      accepted shape (`rust_incremental_sync_pack_decode_ms` `2`,
+      `rust_incremental_pull_apply_ms` `3`). The remaining latency drift in
+      that control matched TS push/realtime drift and was not retained as a
+      runtime change.
 
 ### Phase 4: Worker Default
 
@@ -1328,14 +1874,14 @@ client. Overflow should close or resync the session deliberately.
 - Hono combined sync now emits `application/vnd.syncular.sync-pack.v1` when a
   client advertises the binary pack.
 - Browser HTTP transport and Rust native/web transports decode binary
-  sync-pack responses and keep JSON as fallback.
+  sync-pack responses.
 - Current scope: binary pack removes the outer response JSON envelope. Row
   payloads inside incremental commits are still JSON values until binary delta
   encoders land.
 - Added binary sync-pack wire version 3 for compact incremental change
   metadata. Incremental changes now encode `op` as a byte and stored scopes as
-  typed string pairs instead of a JSON object, while the Rust decoder remains
-  backward-compatible with v1/v2 packs.
+  typed string pairs instead of a JSON object. The current v5 decoder rejects
+  older sync-pack versions instead of carrying old wire branches.
 - Validated v3 through core round-trip tests, server pull tests, Rust
   native/web checks, and browser Hono WASM sync/live-query tests.
 - Local Rust perf slice after v3 passed with `PERF_RUST_NATIVE_ROUNDS=3` /
@@ -1905,12 +2451,9 @@ client. Overflow should close or resync the session deliberately.
 - Add per-chunk digest verification and partial-bootstrap resume.
 - Measure Worker memory, artifact cache hit cost, and interrupted bootstrap
   recovery.
-- Done: added explicit `snapshotChunkTransfer` negotiation for pull requests.
-  Existing callers keep the previous inline-body behavior when they ask for
-  binary sync packs. Rust native/web clients now request
-  `snapshotChunkTransfer: "separate"`, so the combined sync response carries a
-  compact binary sync-pack manifest with snapshot chunk refs, and chunk bodies
-  are fetched through the existing `/snapshot-chunks/:chunkId` path.
+- Done: removed inline snapshot chunk bodies from binary sync-packs. Pull
+  responses now carry compact snapshot chunk refs only, and chunk bodies are
+  fetched through the existing `/snapshot-chunks/:chunkId` path.
   - Correctness guard: Hono chunk-storage coverage proves binary sync-pack
     responses can omit chunk bodies, preserve `binary-table-v1` refs, and serve
     the chunk bytes through the authenticated chunk route. Browser/Hono WASM
@@ -1935,18 +2478,24 @@ client. Overflow should close or resync the session deliberately.
   outbox versions.
 - Done: changed snapshot chunk reads so routes using external/blob chunk
   storage load only metadata from SQL first, then stream/read the chunk body
-  from the blob adapter. The legacy `body` column is selected only for the
-  database-backed fallback path. This is a memory/Worker-safety improvement for
+  from the blob adapter. The `body` column is selected only for the
+  database-backed storage path. This is a memory/Worker-safety improvement for
   the artifact path, not a latency target; the existing chunk storage and Hono
   chunk-route tests cover the behavior.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 
-- Status: planned.
+- Status: in progress.
 - Add binary conflict/rejection records.
 - Add CRDT-specific update/checkpoint lanes.
 - Add session-level backpressure: max in-flight packs, ack ranges, resume
   tokens, overflow/resync-required frames, and slow-client eviction policy.
+  - Done: Hono websocket sessions now have a bounded
+    `maxInFlightSyncsPerConnection` setting. When a connection exceeds the
+    unacked outbound notification limit, the server sends cursor-only
+    `reason: "resync-required"` frames with `requiresPull: true` and
+    `droppedCount` until the client ACKs a caught-up cursor. The browser worker
+    records those fields in realtime diagnostics before running HTTP recovery.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
 

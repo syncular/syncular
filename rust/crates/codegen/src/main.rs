@@ -33,10 +33,25 @@ struct ColumnRow {
     dflt_value: Option<String>,
 }
 
+#[derive(QueryableByName, Clone)]
+struct IndexRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+    #[diesel(sql_type = Text)]
+    sql: String,
+}
+
+#[derive(Clone)]
+struct TableIndex {
+    name: String,
+    sql: String,
+}
+
 #[derive(Clone)]
 struct TableInfo {
     name: String,
     columns: Vec<ColumnRow>,
+    indexes: Vec<TableIndex>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -316,6 +331,33 @@ fn quote_sqlite_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+fn quote_sqlite_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn sqlite_index_create_if_not_exists(sql: &str) -> String {
+    let trimmed = sql.trim().trim_end_matches(';').trim();
+    let upper = trimmed.to_ascii_uppercase();
+
+    if upper.starts_with("CREATE INDEX IF NOT EXISTS ")
+        || upper.starts_with("CREATE UNIQUE INDEX IF NOT EXISTS ")
+    {
+        return trimmed.to_string();
+    }
+
+    if upper.starts_with("CREATE UNIQUE INDEX ") {
+        let rest = &trimmed["CREATE UNIQUE INDEX ".len()..];
+        return format!("CREATE UNIQUE INDEX IF NOT EXISTS {rest}");
+    }
+
+    if upper.starts_with("CREATE INDEX ") {
+        let rest = &trimmed["CREATE INDEX ".len()..];
+        return format!("CREATE INDEX IF NOT EXISTS {rest}");
+    }
+
+    trimmed.to_string()
+}
+
 fn split_sql_statements(sql: &str) -> impl Iterator<Item = String> + '_ {
     sql.split(';')
         .map(str::trim)
@@ -448,6 +490,8 @@ struct SchemaJsonTable {
     server_version_column: String,
     soft_delete_column: Option<String>,
     columns: Vec<SchemaJsonColumn>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    indexes: Vec<SchemaJsonIndex>,
     blob_columns: Vec<String>,
     crdt_yjs_fields: Vec<SchemaJsonCrdtYjsField>,
     #[serde(default)]
@@ -456,6 +500,13 @@ struct SchemaJsonTable {
     subscription: SchemaJsonSubscription,
     #[serde(default, skip_serializing_if = "is_false")]
     sqlite_without_rowid: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonIndex {
+    name: String,
+    sql: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -596,6 +647,14 @@ fn generate_schema_json(
             server_version_column: server_version_column.to_string(),
             soft_delete_column: table_config.soft_delete_column.clone(),
             columns,
+            indexes: table
+                .indexes
+                .iter()
+                .map(|index| SchemaJsonIndex {
+                    name: index.name.clone(),
+                    sql: sqlite_index_create_if_not_exists(&index.sql),
+                })
+                .collect(),
             blob_columns: table_config.blob_columns.clone(),
             crdt_yjs_fields: table_config
                 .crdt_yjs_fields
@@ -855,6 +914,14 @@ fn schema_backed_codegen_inputs(
         tables.push(TableInfo {
             name: table.name,
             columns,
+            indexes: table
+                .indexes
+                .into_iter()
+                .map(|index| TableIndex {
+                    name: index.name,
+                    sql: sqlite_index_create_if_not_exists(&index.sql),
+                })
+                .collect(),
         });
     }
 
@@ -1725,13 +1792,40 @@ fn load_tables(conn: &mut SqliteConnection) -> Result<Vec<TableInfo>> {
         let columns = sql_query(pragma)
             .load::<ColumnRow>(conn)
             .with_context(|| format!("load table columns for {}", table.name))?;
+        let indexes = load_indexes(conn, &table.name)?;
         infos.push(TableInfo {
             name: table.name,
             columns,
+            indexes,
         });
     }
 
     Ok(infos)
+}
+
+fn load_indexes(conn: &mut SqliteConnection, table_name: &str) -> Result<Vec<TableIndex>> {
+    let query = format!(
+        r#"
+        SELECT name, sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND tbl_name = {}
+          AND sql IS NOT NULL
+        ORDER BY name ASC
+        "#,
+        quote_sqlite_string(table_name)
+    );
+    let rows = sql_query(query)
+        .load::<IndexRow>(conn)
+        .with_context(|| format!("load table indexes for {table_name}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TableIndex {
+            name: row.name,
+            sql: sqlite_index_create_if_not_exists(&row.sql),
+        })
+        .collect())
 }
 
 fn load_codegen_config(manifest_dir: &Path) -> Result<CodegenConfig> {
@@ -4292,7 +4386,7 @@ fn generate_typescript_module(
     out.push_str("  return (column) => syncularGeneratedCodecs(column) ?? userCodecs?.(column);\n");
     out.push_str("}\n\n");
     out.push_str(
-        "export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {\n",
+        "export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {\n",
     );
     out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
     for table in &user_tables {
@@ -4329,6 +4423,25 @@ fn generate_typescript_module(
             out.push_str("    .execute();\n\n");
         }
     }
+    out.push_str("}\n\n");
+    out.push_str(
+        "export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {\n",
+    );
+    out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
+    for table in &user_tables {
+        for index in &table.indexes {
+            let sql = ts_template_literal_content(&sqlite_index_create_if_not_exists(&index.sql));
+            let index_name = index.name.replace('\n', " ").replace('\r', " ");
+            out.push_str(&format!("  // SQLite index: {index_name}\n"));
+            out.push_str("  await sql`\n");
+            for line in sql.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str("  `.execute(db);\n\n");
+        }
+    }
     out.push_str("  await validateSyncularAppSchema(db);\n");
     out.push_str("  await sql`\n");
     out.push_str("    insert into syncular_app_schema (schema_id, schema_version, updated_at)\n");
@@ -4339,6 +4452,12 @@ fn generate_typescript_module(
     out.push_str("      schema_version = excluded.schema_version,\n");
     out.push_str("      updated_at = excluded.updated_at\n");
     out.push_str("  `.execute(db);\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {\n",
+    );
+    out.push_str("  await ensureSyncularAppBaseSchema(db);\n");
+    out.push_str("  await ensureSyncularAppDerivedSchema(db);\n");
     out.push_str("}\n\n");
     out.push_str("interface SyncularGeneratedColumnInfo {\n");
     out.push_str("  name: string;\n");
@@ -8066,6 +8185,7 @@ mod tests {
         TableInfo {
             name: name.to_string(),
             columns,
+            indexes: Vec::new(),
         }
     }
 
@@ -8226,7 +8346,7 @@ mod tests {
         fs::create_dir_all(migrations_dir.join("0001_initial"))?;
         fs::create_dir_all(migrations_dir.join("0002_add_images"))?;
 
-        let tables = vec![table(
+        let mut tasks = table(
             "tasks",
             vec![
                 column("id", "TEXT", false, true, None),
@@ -8236,7 +8356,12 @@ mod tests {
                 column("deleted", "INTEGER", true, false, Some("0")),
                 column("server_version", "BIGINT", true, false, Some("0")),
             ],
-        )];
+        );
+        tasks.indexes.push(TableIndex {
+            name: "idx_tasks_project_id".to_string(),
+            sql: "CREATE INDEX idx_tasks_project_id ON tasks (project_id, id)".to_string(),
+        });
+        let tables = vec![tasks];
         let mut tasks_config = table_config(
             "sub-tasks",
             "server_version",
@@ -8277,6 +8402,11 @@ mod tests {
         assert_eq!(table["subscription"]["params"]["includeArchived"], true);
         assert_eq!(table["scopes"][0]["name"], "project_id");
         assert_eq!(table["scopes"][0]["source"], "projectId");
+        assert_eq!(table["indexes"][0]["name"], "idx_tasks_project_id");
+        assert_eq!(
+            table["indexes"][0]["sql"],
+            "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id, id)"
+        );
 
         let columns = table["columns"].as_array().expect("columns array");
         let image = columns
@@ -8516,6 +8646,14 @@ mod tests {
         assert!(output.contains(
             "export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {"
         ));
+        assert!(output.contains(
+            "export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {"
+        ));
+        assert!(output.contains(
+            "export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {"
+        ));
+        assert!(output.contains("  await ensureSyncularAppBaseSchema(db);"));
+        assert!(output.contains("  await ensureSyncularAppDerivedSchema(db);"));
         assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
         assert!(output.contains("await ensureSyncularAppSchemaMetadata(db);"));
         assert!(output.contains("async function validateSyncularAppSchema(db: Kysely<any>)"));
@@ -8632,6 +8770,65 @@ mod tests {
         assert!(output.contains(") WITHOUT ROWID"));
         assert!(!output.contains(".createTable('tasks')"));
         Ok(())
+    }
+
+    #[test]
+    fn typescript_schema_installer_replays_app_indexes() -> Result<()> {
+        let mut tasks = table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("user_id", "TEXT", true, false, None),
+                column("project_id", "TEXT", false, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+            ],
+        );
+        tasks.indexes.push(TableIndex {
+            name: "idx_tasks_user_project_id".to_string(),
+            sql: "CREATE INDEX idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
+                .to_string(),
+        });
+        let mut table_configs = BTreeMap::new();
+        table_configs.insert(
+            "tasks".to_string(),
+            table_config(
+                "sub-tasks",
+                "server_version",
+                vec![scope("user_id", "user_id", "actorId", true)],
+            ),
+        );
+        let config = CodegenConfig {
+            tables: table_configs,
+            typescript_runtime_import_path: Some("@app/sync-runtime".to_string()),
+            ..CodegenConfig::default()
+        };
+
+        let output = generate_typescript_module(&[tasks], &config, 3)?;
+
+        assert!(output.contains("// SQLite index: idx_tasks_user_project_id"));
+        assert!(output.contains(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_index_sql_is_idempotent_for_generated_installers() {
+        assert_eq!(
+            sqlite_index_create_if_not_exists("CREATE INDEX idx_tasks ON tasks (id)"),
+            "CREATE INDEX IF NOT EXISTS idx_tasks ON tasks (id)"
+        );
+        assert_eq!(
+            sqlite_index_create_if_not_exists("CREATE UNIQUE INDEX idx_tasks ON tasks (id)"),
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks ON tasks (id)"
+        );
+        assert_eq!(
+            sqlite_index_create_if_not_exists(
+                "CREATE INDEX IF NOT EXISTS idx_tasks ON tasks (id);"
+            ),
+            "CREATE INDEX IF NOT EXISTS idx_tasks ON tasks (id)"
+        );
     }
 
     #[test]

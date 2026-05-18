@@ -1,7 +1,7 @@
 /**
  * Simplified server factory for Hono
  *
- * Breaking changes from legacy createSyncRoutes:
+ * Current server contract:
  * - sync contract instead of top-level handlers/authenticate
  * - Combined sync + console routes in one call
  */

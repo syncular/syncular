@@ -19,7 +19,6 @@ import {
   prefersBinarySyncPack,
   type RealtimeChangeScopeIndex,
   ScopeValuesSchema,
-  SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
   type SyncChange,
@@ -29,7 +28,6 @@ import {
   type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
   type SyncPushResponse,
-  type SyncSnapshotChunkRef,
 } from '@syncular/core';
 import type {
   ScopeCacheBackend,
@@ -128,6 +126,13 @@ export interface SyncWebSocketConfig {
    * Set to 0 or a negative value to disable rate limiting.
    */
   maxMessagesPerWindow?: number;
+  /**
+   * Maximum outbound sync notifications allowed without a newer client ACK.
+   * When exceeded, the server sends cursor-only resync-required frames until
+   * the client ACKs a caught-up cursor. Set to 0 to disable.
+   * Default: 64.
+   */
+  maxInFlightSyncsPerConnection?: number;
   /**
    * Window size in milliseconds for inbound websocket message rate limiting.
    * Default: 10000 ms.
@@ -898,27 +903,6 @@ function emitConsoleLiveEvent(
   });
 }
 
-type InlineSnapshotChunkRef = SyncSnapshotChunkRef & {
-  body?: Uint8Array;
-};
-
-async function inlineSnapshotChunkBodies<DB extends SyncCoreDb>(
-  db: Kysely<DB>,
-  response: SyncCombinedResponse,
-  chunkStorage?: SnapshotChunkStorage
-): Promise<void> {
-  for (const subscription of response.pull?.subscriptions ?? []) {
-    for (const snapshot of subscription.snapshots ?? []) {
-      for (const chunk of snapshot.chunks ?? []) {
-        if ((chunk as InlineSnapshotChunkRef).body) continue;
-        const stored = await readSnapshotChunk(db, chunk.id, { chunkStorage });
-        if (!stored || !(stored.body instanceof Uint8Array)) continue;
-        (chunk as InlineSnapshotChunkRef).body = stored.body;
-      }
-    }
-  }
-}
-
 export function createSyncRoutes<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
@@ -1047,6 +1031,8 @@ export function createSyncRoutes<
     ? (options.wsConnectionManager ??
       new WebSocketConnectionManager({
         heartbeatIntervalMs: websocketConfig.heartbeatIntervalMs ?? 30_000,
+        maxInFlightSyncsPerConnection:
+          websocketConfig.maxInFlightSyncsPerConnection ?? 64,
       }))
     : null;
 
@@ -2191,10 +2177,6 @@ export function createSyncRoutes<
       const shouldEncodeBinarySyncPack = prefersBinarySyncPack(
         requestedSyncPackEncodings
       );
-      const shouldInlineSnapshotChunkBodies =
-        shouldEncodeBinarySyncPack &&
-        body.pull?.snapshotChunkTransfer !==
-          SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE;
 
       // --- Push phase ---
       if (body.push) {
@@ -2336,7 +2318,6 @@ export function createSyncRoutes<
             request,
             chunkStorage: options.chunkStorage,
             scopeCache: options.scopeCache,
-            inlineSnapshotChunkBodies: shouldInlineSnapshotChunkBodies,
             snapshotChunkGzipLevel: options.sync?.snapshotChunkGzipLevel,
             snapshotChunkCacheSchemaVersion:
               latestSchemaVersion ?? requiredSchemaVersion ?? null,
@@ -2487,13 +2468,6 @@ export function createSyncRoutes<
       };
 
       if (shouldEncodeBinarySyncPack) {
-        if (shouldInlineSnapshotChunkBodies) {
-          await inlineSnapshotChunkBodies(
-            options.db,
-            combinedResponse,
-            options.chunkStorage
-          );
-        }
         const encoded = encodeBinarySyncPack(combinedResponse, {
           changeRowEncoders: binarySyncPackChangeRowEncoders,
         });
@@ -2606,14 +2580,9 @@ export function createSyncRoutes<
         }
 
         const scopeHash = await scopesToSnapshotChunkScopeKey(scopeAuth.scopes);
-        const legacyScopeKey = `${partitionId}:${scopeHash}`;
-        const gzipScopedPrefix = `${partitionId}:gzip-level-`;
         const scopedChunkKeyMatches =
-          chunk.scopeKey === legacyScopeKey ||
-          (chunk.scopeKey.startsWith(gzipScopedPrefix) &&
-            chunk.scopeKey.endsWith(`:${scopeHash}`)) ||
-          (chunk.scopeKey.startsWith('snapshot-v2:') &&
-            chunk.scopeKey.endsWith(`:scope:${scopeHash}`));
+          chunk.scopeKey.startsWith('snapshot-v2:') &&
+          chunk.scopeKey.endsWith(`:scope:${scopeHash}`);
         if (!scopedChunkKeyMatches) {
           return c.json({ error: 'FORBIDDEN' }, 403);
         }
@@ -2949,6 +2918,7 @@ export function createSyncRoutes<
                   : null;
               if (cursor !== null && cursor > lastAckedCursor) {
                 lastAckedCursor = cursor;
+                wsConnectionManager.recordAck(connRef, cursor);
                 void recordRealtimeAck({
                   db: options.db,
                   actorId: auth.actorId,

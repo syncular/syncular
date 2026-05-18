@@ -7,10 +7,8 @@
  * generated binary table payloads when table encoders are available.
  *
  * Wire versions:
- * - v1: original positional envelope.
- * - v2: inline snapshot chunk bodies.
- * - v3: compact incremental change metadata (`op` byte and string-pair scopes).
- * - v4: grouped generated binary row payloads for incremental changes.
+ * - v5: positional envelope with refs-only snapshot chunks and grouped
+ *   generated binary row payloads for incremental changes.
  */
 
 import {
@@ -39,11 +37,10 @@ export const SYNC_PACK_ENCODINGS = [
 ] as const;
 export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 
-export const SYNC_PACK_CONTENT_TYPE =
-  'application/vnd.syncular.sync-pack.v1';
+export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 4;
+const VERSION = 5;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -70,10 +67,6 @@ interface PendingBinaryChangeRowRef extends BinaryChangeRowRef {
   changeIndex: number;
   table: string;
 }
-
-type InlineSnapshotChunkRef = SyncSnapshotChunkRef & {
-  body?: Uint8Array;
-};
 
 export function isSyncPackEncoding(value: unknown): value is SyncPackEncoding {
   return (
@@ -114,10 +107,9 @@ export function decodeBinarySyncPack(bytes: Uint8Array): SyncCombinedResponse {
   const reader = new BinarySyncPackReader(bytes);
   reader.expectMagic(MAGIC, 'binary sync pack');
   const version = reader.u16('binary sync pack version');
-  if (version < 1 || version > VERSION) {
+  if (version !== VERSION) {
     throw new Error(`Unsupported binary sync pack version: ${version}`);
   }
-  reader.version = version;
   const flags = reader.u16('binary sync pack flags');
   if (flags !== FLAG_NONE) {
     throw new Error(`Unsupported binary sync pack flags: ${flags}`);
@@ -125,9 +117,7 @@ export function decodeBinarySyncPack(bytes: Uint8Array): SyncCombinedResponse {
   const response: SyncCombinedResponse = {
     ok: reader.bool('combined response ok') as true,
   };
-  const requiredSchemaVersion = reader.optionalI32(
-    'required schema version'
-  );
+  const requiredSchemaVersion = reader.optionalI32('required schema version');
   if (requiredSchemaVersion !== undefined) {
     response.requiredSchemaVersion = requiredSchemaVersion;
   }
@@ -202,9 +192,7 @@ function writeOperationResult(
     writer.optionalJson(undefined);
     return;
   }
-  writer.optionalString32(
-    'message' in result ? result.message : undefined
-  );
+  writer.optionalString32('message' in result ? result.message : undefined);
   writer.optionalString32('error' in result ? result.error : undefined);
   writer.optionalString32(result.code);
   writer.optionalBool('retriable' in result ? result.retriable : undefined);
@@ -214,7 +202,9 @@ function writeOperationResult(
   writer.optionalJson('server_row' in result ? result.server_row : undefined);
 }
 
-function readOperationResult(reader: BinarySyncPackReader): SyncOperationResult {
+function readOperationResult(
+  reader: BinarySyncPackReader
+): SyncOperationResult {
   const opIndex = reader.i32('operation result index');
   const status = reader.string16('operation result status');
   const message = reader.optionalString32('operation result message');
@@ -306,7 +296,10 @@ function readSubscriptionResponse(
     (bootstrapState as SyncPullSubscriptionResponse['bootstrapState']) ?? null;
   subscription.nextCursor = reader.i64('subscription next cursor');
   subscription.commits = reader.array('subscription commits', readCommit);
-  const snapshots = reader.optionalArray('subscription snapshots', readSnapshot);
+  const snapshots = reader.optionalArray(
+    'subscription snapshots',
+    readSnapshot
+  );
   if (snapshots) subscription.snapshots = snapshots;
   return subscription;
 }
@@ -327,10 +320,7 @@ function readCommit(reader: BinarySyncPackReader): SyncCommit {
     commitSeq: reader.i64('commit seq'),
     createdAt: reader.string32('commit createdAt'),
     actorId: reader.string32('commit actorId'),
-    changes:
-      reader.version >= 4
-        ? readChangesV4(reader)
-        : reader.array('commit changes', readChange),
+    changes: readChangesV5(reader),
   };
 }
 
@@ -409,7 +399,7 @@ function writeChangeMetadataV4(
   writer.stringMap(change.scopes);
 }
 
-function readChangesV4(reader: BinarySyncPackReader): SyncChange[] {
+function readChangesV5(reader: BinarySyncPackReader): SyncChange[] {
   const changeCount = reader.u32('commit changes length');
   const changes: SyncChange[] = [];
   const rowRefs: PendingBinaryChangeRowRef[] = [];
@@ -487,43 +477,10 @@ function readChangeMetadataV4(
   };
 }
 
-function writeChange(writer: BinarySyncPackWriter, change: SyncChange): void {
-  writer.string16(change.table);
-  writer.string32(change.row_id);
-  writer.u8(change.op === 'upsert' ? 1 : 2);
-  writer.optionalJson(change.row_json ?? undefined);
-  writer.optionalI64(change.row_version ?? undefined);
-  writer.stringMap(change.scopes);
-}
-
-function readChange(reader: BinarySyncPackReader): SyncChange {
-  if (reader.version < 3) {
-    return {
-      table: reader.string16('change table'),
-      row_id: reader.string32('change row id'),
-      op: reader.string16('change op') as 'upsert' | 'delete',
-      row_json: reader.optionalJson('change row json') ?? null,
-      row_version: reader.optionalI64('change row version') ?? null,
-      scopes: reader.json('change scopes') as Record<string, string>,
-    };
-  }
-  const table = reader.string16('change table');
-  const rowId = reader.string32('change row id');
-  const opByte = reader.u8('change op');
-  if (opByte !== 1 && opByte !== 2) {
-    throw new Error(`Unsupported binary sync pack change op byte: ${opByte}`);
-  }
-  return {
-    table,
-    row_id: rowId,
-    op: opByte === 1 ? 'upsert' : 'delete',
-    row_json: reader.optionalJson('change row json') ?? null,
-    row_version: reader.optionalI64('change row version') ?? null,
-    scopes: reader.stringMap('change scopes'),
-  };
-}
-
-function writeSnapshot(writer: BinarySyncPackWriter, snapshot: SyncSnapshot): void {
+function writeSnapshot(
+  writer: BinarySyncPackWriter,
+  snapshot: SyncSnapshot
+): void {
   writer.string16(snapshot.table);
   writer.array(snapshot.rows, (nextWriter, row) => nextWriter.json(row));
   writer.optionalArray(snapshot.chunks, writeSnapshotChunkRef);
@@ -556,24 +513,22 @@ function writeSnapshotChunkRef(
   writer.string16(chunk.sha256);
   writer.string16(chunk.encoding);
   writer.string16(chunk.compression);
-  writer.optionalBytes((chunk as InlineSnapshotChunkRef).body);
 }
 
-function readSnapshotChunkRef(reader: BinarySyncPackReader): SyncSnapshotChunkRef {
-  const chunk: InlineSnapshotChunkRef = {
+function readSnapshotChunkRef(
+  reader: BinarySyncPackReader
+): SyncSnapshotChunkRef {
+  return {
     id: reader.string32('snapshot chunk id'),
     byteLength: reader.i64('snapshot chunk byte length'),
     sha256: reader.string16('snapshot chunk sha256'),
-    encoding: reader.string16('snapshot chunk encoding') as SyncSnapshotChunkRef['encoding'],
+    encoding: reader.string16(
+      'snapshot chunk encoding'
+    ) as SyncSnapshotChunkRef['encoding'],
     compression: reader.string16(
       'snapshot chunk compression'
     ) as SyncSnapshotChunkRef['compression'],
   };
-  if (reader.version >= 2) {
-    const body = reader.optionalBytes('snapshot chunk body');
-    if (body) chunk.body = body;
-  }
-  return chunk;
 }
 
 class BinarySyncPackWriter {
@@ -688,12 +643,6 @@ class BinarySyncPackWriter {
     this.bytes(value);
   }
 
-  optionalBytes(value: Uint8Array | undefined): void {
-    this.optionalValue(value, (writer, nextValue) =>
-      writer.bytes32(nextValue)
-    );
-  }
-
   json(value: unknown): void {
     this.string32(JSON.stringify(value) ?? 'null');
   }
@@ -791,7 +740,6 @@ class BinarySyncPackWriter {
 class BinarySyncPackReader {
   private readonly view: DataView;
   private offset = 0;
-  version = 1;
 
   constructor(private readonly bytes: Uint8Array) {
     this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
@@ -884,10 +832,6 @@ class BinarySyncPackReader {
     return this.bytesSlice(length, label);
   }
 
-  optionalBytes(label: string): Uint8Array | undefined {
-    return this.optionalValue((reader) => reader.bytes32(label));
-  }
-
   json(label: string): unknown {
     return JSON.parse(this.string32(label));
   }
@@ -905,10 +849,7 @@ class BinarySyncPackReader {
     return this.optionalValue((reader) => reader.json(label));
   }
 
-  array<T>(
-    label: string,
-    read: (reader: BinarySyncPackReader) => T
-  ): T[] {
+  array<T>(label: string, read: (reader: BinarySyncPackReader) => T): T[] {
     const length = this.u32(`${label} length`);
     const values: T[] = [];
     for (let index = 0; index < length; index += 1) {
@@ -924,9 +865,7 @@ class BinarySyncPackReader {
     return this.optionalValue((reader) => reader.array(label, read));
   }
 
-  optionalValue<T>(
-    read: (reader: BinarySyncPackReader) => T
-  ): T | undefined {
+  optionalValue<T>(read: (reader: BinarySyncPackReader) => T): T | undefined {
     const present = this.u8('optional value present');
     if (present === 0) return undefined;
     if (present !== 1) {

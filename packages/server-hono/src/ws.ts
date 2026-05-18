@@ -57,6 +57,7 @@ export type WebSocketSyncReason =
   | 'commit'
   | 'payload-too-large'
   | 'reconnect-catchup'
+  | 'resync-required'
   | 'server-wakeup';
 
 export interface WebSocketSyncMetadata {
@@ -64,6 +65,7 @@ export interface WebSocketSyncMetadata {
   createdAt?: string;
   reason?: WebSocketSyncReason;
   requiresPull?: boolean;
+  droppedCount?: number;
 }
 
 /**
@@ -96,6 +98,8 @@ export interface SyncWebSocketEvent {
     requiresSync?: boolean;
     /** Whether this notification intentionally requires HTTP pull recovery */
     requiresPull?: boolean;
+    /** Number of realtime payload notifications skipped while waiting for ACK */
+    droppedCount?: number;
     /** Why the server sent this sync notification */
     reason?: WebSocketSyncReason;
     /** Negotiated binary sync-pack encoding, if any */
@@ -250,6 +254,9 @@ export function createWebSocketConnection(
       if (metadata?.requiresPull) {
         payload.requiresPull = true;
       }
+      if (metadata?.droppedCount !== undefined) {
+        payload.droppedCount = metadata.droppedCount;
+      }
       const ok = safeSend(ws, JSON.stringify({ event: 'sync', data: payload }));
       if (!ok) closed = true;
     },
@@ -332,6 +339,17 @@ export function createWebSocketConnection(
  */
 export class WebSocketConnectionManager {
   private readonly registry: RealtimeConnectionRegistry<WebSocketConnection>;
+  private readonly flowStateByConnection = new WeakMap<
+    WebSocketConnection,
+    {
+      lastAckedCursor: number;
+      lastSentCursor: number;
+      unackedSyncs: number;
+      resyncRequired: boolean;
+      droppedCount: number;
+    }
+  >();
+  private readonly maxInFlightSyncsPerConnection: number;
 
   /**
    * In-memory presence tracking by scope key.
@@ -353,15 +371,30 @@ export class WebSocketConnectionManager {
 
   constructor(options?: {
     heartbeatIntervalMs?: number;
+    maxInFlightSyncsPerConnection?: number;
     onPresenceChange?: WebSocketConnectionManager['onPresenceChange'];
   }) {
     this.onPresenceChange = options?.onPresenceChange;
+    this.maxInFlightSyncsPerConnection =
+      options?.maxInFlightSyncsPerConnection ?? 64;
     this.registry = new RealtimeConnectionRegistry({
       heartbeatIntervalMs: options?.heartbeatIntervalMs,
       onOwnerDisconnected: (ownerKey) => {
         this.cleanupOwnerPresence(ownerKey);
       },
     });
+  }
+
+  recordAck(connection: WebSocketConnection, cursor: number): void {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) return;
+    const state = this.getFlowState(connection);
+    if (cursor <= state.lastAckedCursor) return;
+    state.lastAckedCursor = cursor;
+    if (cursor >= state.lastSentCursor) {
+      state.unackedSyncs = 0;
+      state.resyncRequired = false;
+      state.droppedCount = 0;
+    }
   }
 
   /**
@@ -733,6 +766,10 @@ export class WebSocketConnectionManager {
     this.registry.forEachConnectionInScopeKeys(
       scopeKeys,
       (conn) => {
+        if (this.shouldSendResyncRequired(conn, cursor)) {
+          this.sendResyncRequired(conn, cursor);
+          return;
+        }
         const connectionSyncPack =
           opts?.syncPackForConnection?.(conn) ?? inlineSyncPack;
         if (
@@ -741,6 +778,7 @@ export class WebSocketConnectionManager {
             WebSocketConnectionManager.WS_INLINE_MAX_BYTES &&
           conn.syncPackEncoding === 'binary-sync-pack-v1'
         ) {
+          this.markSyncSent(conn, cursor);
           conn.sendSyncPack(connectionSyncPack);
           return;
         }
@@ -752,12 +790,14 @@ export class WebSocketConnectionManager {
           JSON.stringify(connectionChanges).length <=
             WebSocketConnectionManager.WS_INLINE_MAX_BYTES;
         if (canSendConnectionChanges) {
+          this.markSyncSent(conn, cursor);
           conn.sendSync(cursor, connectionChanges, {
             actorId: opts?.actorId,
             createdAt: opts?.createdAt,
             reason: 'commit',
           });
         } else {
+          this.markSyncSent(conn, cursor);
           conn.sendSync(cursor, undefined, {
             reason:
               connectionSyncPack ||
@@ -779,6 +819,11 @@ export class WebSocketConnectionManager {
    */
   notifyAllClients(cursor: number): void {
     this.registry.forEachConnection((conn) => {
+      if (this.shouldSendResyncRequired(conn, cursor)) {
+        this.sendResyncRequired(conn, cursor);
+        return;
+      }
+      this.markSyncSent(conn, cursor);
       conn.sendSync(cursor, undefined, {
         reason: 'server-wakeup',
         requiresPull: true,
@@ -838,5 +883,77 @@ export class WebSocketConnectionManager {
   closeAll(): void {
     this.registry.closeAll(1000, 'server shutdown');
     this.presenceByScopeKey.clear();
+  }
+
+  private getFlowState(connection: WebSocketConnection): {
+    lastAckedCursor: number;
+    lastSentCursor: number;
+    unackedSyncs: number;
+    resyncRequired: boolean;
+    droppedCount: number;
+  } {
+    let state = this.flowStateByConnection.get(connection);
+    if (!state) {
+      state = {
+        lastAckedCursor: -1,
+        lastSentCursor: -1,
+        unackedSyncs: 0,
+        resyncRequired: false,
+        droppedCount: 0,
+      };
+      this.flowStateByConnection.set(connection, state);
+    }
+    return state;
+  }
+
+  private shouldSendResyncRequired(
+    connection: WebSocketConnection,
+    cursor: number
+  ): boolean {
+    if (
+      this.maxInFlightSyncsPerConnection <= 0 ||
+      !Number.isSafeInteger(cursor) ||
+      cursor < 0
+    ) {
+      return false;
+    }
+    const state = this.getFlowState(connection);
+    if (cursor <= state.lastAckedCursor) return false;
+    return (
+      state.resyncRequired ||
+      state.unackedSyncs >= this.maxInFlightSyncsPerConnection
+    );
+  }
+
+  private markSyncSent(
+    connection: WebSocketConnection,
+    cursor: number
+  ): void {
+    if (
+      this.maxInFlightSyncsPerConnection <= 0 ||
+      !Number.isSafeInteger(cursor) ||
+      cursor < 0
+    ) {
+      return;
+    }
+    const state = this.getFlowState(connection);
+    if (cursor <= state.lastAckedCursor) return;
+    state.lastSentCursor = Math.max(state.lastSentCursor, cursor);
+    state.unackedSyncs += 1;
+  }
+
+  private sendResyncRequired(
+    connection: WebSocketConnection,
+    cursor: number
+  ): void {
+    const state = this.getFlowState(connection);
+    state.resyncRequired = true;
+    state.lastSentCursor = Math.max(state.lastSentCursor, cursor);
+    state.droppedCount += 1;
+    connection.sendSync(cursor, undefined, {
+      reason: 'resync-required',
+      requiresPull: true,
+      droppedCount: state.droppedCount,
+    });
   }
 }

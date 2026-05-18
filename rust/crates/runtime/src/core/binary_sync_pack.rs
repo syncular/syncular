@@ -11,7 +11,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 4;
+const VERSION: u16 = 5;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -32,12 +32,11 @@ pub fn decode_binary_sync_pack(bytes: &[u8]) -> Result<CombinedResponse> {
     reader.expect_magic(MAGIC, "binary sync pack")?;
 
     let version = reader.read_u16("binary sync pack version")?;
-    if !(1..=VERSION).contains(&version) {
+    if version != VERSION {
         return Err(SyncularError::protocol_message(format!(
             "unsupported binary sync pack version: {version}"
         )));
     }
-    reader.version = version;
     let flags = reader.read_u16("binary sync pack flags")?;
     if flags != FLAG_NONE {
         return Err(SyncularError::protocol_message(format!(
@@ -124,15 +123,11 @@ fn read_commit(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncCommit> {
         commit_seq: reader.read_i64("commit seq")?,
         created_at: reader.read_string32("commit createdAt")?,
         actor_id: reader.read_string32("commit actorId")?,
-        changes: if reader.version >= 4 {
-            read_changes_v4(reader)?
-        } else {
-            reader.read_array("commit changes", read_change)?
-        },
+        changes: read_changes_v5(reader)?,
     })
 }
 
-fn read_changes_v4(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
+fn read_changes_v5(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
     let change_count = reader.read_u32("commit changes length")? as usize;
     let mut changes = Vec::with_capacity(change_count);
     let mut row_refs = Vec::new();
@@ -239,38 +234,6 @@ fn read_change_metadata_v4(
     })
 }
 
-fn read_change(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncChange> {
-    if reader.version < 3 {
-        return Ok(SyncChange {
-            table: reader.read_string16("change table")?,
-            row_id: reader.read_string32("change row id")?,
-            op: reader.read_string16("change op")?,
-            row_json: reader.read_optional_json("change row json")?,
-            row_version: reader.read_optional_i64("change row version")?,
-            scopes: reader.read_json_map("change scopes")?,
-        });
-    }
-    let table = reader.read_string16("change table")?;
-    let row_id = reader.read_string32("change row id")?;
-    let op = match reader.read_u8("change op")? {
-        1 => "upsert".to_string(),
-        2 => "delete".to_string(),
-        value => {
-            return Err(SyncularError::protocol_message(format!(
-                "unsupported binary sync pack change op byte: {value}"
-            )));
-        }
-    };
-    Ok(SyncChange {
-        table,
-        row_id,
-        op,
-        row_json: reader.read_optional_json("change row json")?,
-        row_version: reader.read_optional_i64("change row version")?,
-        scopes: reader.read_string_map("change scopes")?,
-    })
-}
-
 fn read_snapshot(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncSnapshot> {
     Ok(SyncSnapshot {
         table: reader.read_string16("snapshot table")?,
@@ -287,34 +250,23 @@ fn read_snapshot_chunk_ref(reader: &mut BinarySyncPackReader<'_>) -> Result<Snap
     let sha256 = reader.read_string16("snapshot chunk sha256")?;
     let encoding = reader.read_string16("snapshot chunk encoding")?;
     let compression = reader.read_string16("snapshot chunk compression")?;
-    let body = if reader.version >= 2 {
-        reader.read_optional_bytes32("snapshot chunk body")?
-    } else {
-        None
-    };
     Ok(SnapshotChunkRef {
         id,
         byte_length,
         sha256,
         encoding,
         compression,
-        body,
     })
 }
 
 struct BinarySyncPackReader<'a> {
     bytes: &'a [u8],
     offset: usize,
-    version: u16,
 }
 
 impl<'a> BinarySyncPackReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self {
-            bytes,
-            offset: 0,
-            version: 1,
-        }
+        Self { bytes, offset: 0 }
     }
 
     fn expect_magic(&mut self, magic: &[u8], label: &str) -> Result<()> {
@@ -393,10 +345,6 @@ impl<'a> BinarySyncPackReader<'a> {
     fn read_bytes32(&mut self, label: &str) -> Result<Vec<u8>> {
         let length = self.read_u32(&format!("{label} length"))? as usize;
         Ok(self.read_bytes(length, label)?.to_vec())
-    }
-
-    fn read_optional_bytes32(&mut self, label: &str) -> Result<Option<Vec<u8>>> {
-        self.read_optional_value(|reader| reader.read_bytes32(label))
     }
 
     fn read_json(&mut self, label: &str) -> Result<Value> {

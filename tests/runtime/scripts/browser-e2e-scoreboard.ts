@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { type Browser, chromium, type Page } from '@playwright/test';
 import {
@@ -54,6 +54,48 @@ interface ResourceSummary {
   syncDecodedBytes: number;
 }
 
+interface ScoreboardReport {
+  name: string;
+  generatedAt: string;
+  runtime: { wasmProfile: 'dev' | 'release'; rustStorage: string };
+  browser: { name: string; userAgent: string };
+  options: Record<string, unknown>;
+  metrics: ScoreboardMetric[];
+  comparisons: ReturnType<typeof buildComparisons>;
+  baseline?: {
+    path: string;
+    generatedAt?: string;
+    comparisons: BaselineComparison[];
+    regressionGate?: BaselineRegressionGate;
+  };
+}
+
+interface BaselineComparison {
+  name: string;
+  unit: ScoreboardMetric['unit'];
+  previous: number;
+  current: number;
+  delta: number;
+  deltaPercent: number | null;
+}
+
+interface BaselineRegressionGate {
+  enabled: boolean;
+  passed: boolean;
+  metricScope: 'rust';
+  thresholds: {
+    percent: number;
+    ms: number;
+    bytes: number;
+    count: number;
+  };
+  failures: BaselineRegressionFailure[];
+}
+
+interface BaselineRegressionFailure extends BaselineComparison {
+  threshold: number;
+}
+
 interface BrowserMemorySnapshot {
   jsHeapUsedBytes?: number;
   jsHeapTotalBytes?: number;
@@ -87,7 +129,76 @@ const wasmProfile = wasmProfileArg(
   process.env.SYNCULAR_BROWSER_WASM_PROFILE ?? 'release'
 );
 const outputPath = stringArg('--output');
+const baselinePath = stringArg('--baseline');
+const updateBaseline = process.argv.includes('--update-baseline');
 const jsonOutput = process.argv.includes('--json');
+const failOnRegression = process.argv.includes('--fail-on-regression');
+const regressionThresholdPercent = nonNegativeNumberArg(
+  '--regression-threshold-percent',
+  5
+);
+const regressionThresholdMs = nonNegativeNumberArg(
+  '--regression-threshold-ms',
+  5
+);
+const regressionThresholdBytes = nonNegativeNumberArg(
+  '--regression-threshold-bytes',
+  1024
+);
+const regressionThresholdCount = nonNegativeNumberArg(
+  '--regression-threshold-count',
+  0
+);
+
+const baselineComparisonMetrics = [
+  'ts_bootstrap_ms',
+  'rust_bootstrap_ms',
+  'rust_request_count',
+  'rust_response_bytes',
+  'rust_pull_request_ms',
+  'rust_snapshot_fetch_ms',
+  'rust_pull_apply_ms',
+  'rust_snapshot_chunk_apply_ms',
+  'rust_snapshot_chunk_bind_ms',
+  'rust_snapshot_chunk_step_ms',
+  'rust_server_bootstrap_row_frame_encode_ms',
+  'rust_server_bootstrap_snapshot_binary_encode_ms',
+  'rust_cached_bootstrap_ms',
+  'rust_cached_request_count',
+  'rust_cached_response_bytes',
+  'rust_cached_pull_apply_ms',
+  'rust_cached_snapshot_chunk_apply_ms',
+  'rust_cached_server_bootstrap_row_frame_encode_ms',
+  'rust_cached_server_bootstrap_snapshot_binary_encode_ms',
+  'ts_local_list_p50_ms',
+  'rust_local_list_p50_ms',
+  'ts_local_search_p50_ms',
+  'rust_local_search_p50_ms',
+  'ts_aggregate_p50_ms',
+  'rust_aggregate_p50_ms',
+  'ts_incremental_push_ms',
+  'rust_incremental_pull_ms',
+  'rust_incremental_pull_request_ms',
+  'rust_incremental_pull_apply_ms',
+  'rust_incremental_commit_apply_ms',
+  'rust_incremental_sync_pack_decode_ms',
+  'rust_incremental_response_bytes',
+  'rust_incremental_rows',
+  'ts_realtime_push_ms',
+  'ts_realtime_push_p95_ms',
+  'rust_realtime_live_ms',
+  'rust_realtime_live_p95_ms',
+  'rust_realtime_http_request_count',
+  'rust_realtime_http_request_bytes',
+  'rust_realtime_http_response_bytes',
+  'rust_realtime_binary_events',
+  'rust_realtime_binary_bytes',
+  'rust_realtime_rows',
+  'browser_js_heap_used_delta_bytes',
+  'browser_js_heap_total_after_bytes',
+  'browser_served_rust_wasm_bytes',
+  'browser_served_asset_total_bytes',
+] as const;
 
 let assetProc: ReturnType<typeof Bun.spawn> | undefined;
 let assetPort: number | undefined;
@@ -182,7 +293,19 @@ try {
     ...memoryMetrics(memoryBefore, memoryAfter),
   ];
 
-  const report = {
+  const baselineReport =
+    baselinePath && existsSync(baselinePath)
+      ? readScoreboardReport(baselinePath)
+      : undefined;
+  const baselineComparisons = baselineReport
+    ? buildBaselineComparisons(metrics, baselineReport.metrics)
+    : [];
+  const baselineRegressionGate =
+    baselinePath && baselineReport
+      ? buildBaselineRegressionGate(baselineComparisons)
+      : undefined;
+
+  const report: ScoreboardReport = {
     name: 'browser-e2e-scoreboard',
     generatedAt: new Date().toISOString(),
     runtime: { wasmProfile, rustStorage },
@@ -204,10 +327,22 @@ try {
     metrics,
     comparisons: buildComparisons(metrics),
   };
+  if (baselinePath) {
+    report.baseline = {
+      path: baselinePath,
+      generatedAt: baselineReport?.generatedAt,
+      comparisons: baselineComparisons,
+      regressionGate: baselineRegressionGate,
+    };
+  }
 
   if (outputPath) {
     mkdirSync(path.dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`);
+  }
+  if (baselinePath && updateBaseline) {
+    mkdirSync(path.dirname(baselinePath), { recursive: true });
+    writeFileSync(baselinePath, `${JSON.stringify(report, null, 2)}\n`);
   }
 
   if (jsonOutput) {
@@ -241,7 +376,28 @@ try {
       console.log('');
       console.log(formatComparisons(comparisons));
     }
+    if (baselinePath) {
+      console.log('');
+      if (baselineReport) {
+        console.log(formatBaselineComparisons(baselineComparisons));
+        if (baselineRegressionGate?.enabled) {
+          console.log('');
+          console.log(formatBaselineRegressionGate(baselineRegressionGate));
+        }
+      } else {
+        console.log(`Baseline not found: ${baselinePath}`);
+      }
+      if (updateBaseline) {
+        console.log(`Updated baseline: ${baselinePath}`);
+      }
+    }
     if (outputPath) console.log(`JSON report: ${outputPath}`);
+  }
+  if (
+    baselineRegressionGate?.enabled &&
+    baselineRegressionGate.failures.length > 0
+  ) {
+    process.exitCode = 1;
   }
 } finally {
   browserErrors?.detach();
@@ -515,6 +671,92 @@ function buildComparisons(metrics: ScoreboardMetric[]): Array<{
     .filter((row): row is NonNullable<typeof row> => row != null);
 }
 
+function buildBaselineComparisons(
+  current: ScoreboardMetric[],
+  baseline: ScoreboardMetric[]
+): BaselineComparison[] {
+  const currentByName = new Map(current.map((metric) => [metric.name, metric]));
+  const baselineByName = new Map(
+    baseline.map((metric) => [metric.name, metric])
+  );
+  return baselineComparisonMetrics.flatMap((name) => {
+    const currentMetric = currentByName.get(name);
+    const baselineMetric = baselineByName.get(name);
+    if (!currentMetric || !baselineMetric) return [];
+    if (currentMetric.unit !== baselineMetric.unit) return [];
+    const delta = currentMetric.value - baselineMetric.value;
+    const deltaPercent =
+      baselineMetric.value === 0
+        ? delta === 0
+          ? 0
+          : null
+        : (delta / baselineMetric.value) * 100;
+    return [
+      {
+        name,
+        unit: currentMetric.unit,
+        previous: baselineMetric.value,
+        current: currentMetric.value,
+        delta,
+        deltaPercent,
+      },
+    ];
+  });
+}
+
+function buildBaselineRegressionGate(
+  comparisons: BaselineComparison[]
+): BaselineRegressionGate {
+  const failures = failOnRegression
+    ? comparisons
+        .filter(isGatedBaselineRegression)
+        .map((row) => ({
+          ...row,
+          threshold: absoluteRegressionThreshold(row.unit),
+        }))
+    : [];
+  return {
+    enabled: failOnRegression,
+    passed: failures.length === 0,
+    metricScope: 'rust',
+    thresholds: {
+      percent: regressionThresholdPercent,
+      ms: regressionThresholdMs,
+      bytes: regressionThresholdBytes,
+      count: regressionThresholdCount,
+    },
+    failures,
+  };
+}
+
+function isGatedBaselineRegression(row: BaselineComparison): boolean {
+  if (!isRustRegressionGateMetric(row.name)) return false;
+  if (row.delta <= 0) return false;
+  const absoluteThreshold = absoluteRegressionThreshold(row.unit);
+  if (row.delta <= absoluteThreshold) return false;
+  if (row.deltaPercent == null) return true;
+  return row.deltaPercent > regressionThresholdPercent;
+}
+
+function isRustRegressionGateMetric(name: string): boolean {
+  return name.startsWith('rust_') || name.startsWith('browser_served_');
+}
+
+function absoluteRegressionThreshold(unit: ScoreboardMetric['unit']): number {
+  if (unit === 'ms') return regressionThresholdMs;
+  if (unit === 'bytes') return regressionThresholdBytes;
+  return regressionThresholdCount;
+}
+
+function readScoreboardReport(filePath: string): ScoreboardReport {
+  const raw = readFileSync(filePath, 'utf8');
+  const value = JSON.parse(raw) as Partial<ScoreboardReport>;
+  if (!Array.isArray(value.metrics)) {
+    throw new Error(`Baseline report is missing metrics: ${filePath}`);
+  }
+  return value as ScoreboardReport;
+}
+
 function formatMetrics(metrics: ScoreboardMetric[]): string {
   const header = '| Metric | Value |';
   const separator = '|--------|-------|';
@@ -547,10 +789,66 @@ function formatComparisons(
   ].join('\n');
 }
 
+function formatBaselineComparisons(comparisons: BaselineComparison[]): string {
+  if (comparisons.length === 0) {
+    return 'Baseline comparison: no matching target metrics.';
+  }
+  const header = '| Baseline Metric | Previous | Current | Delta | Delta % |';
+  const separator =
+    '|-----------------|----------|---------|-------|---------|';
+  return [
+    'Baseline comparison',
+    header,
+    separator,
+    ...comparisons.map((row) => {
+      const delta = `${row.delta >= 0 ? '+' : ''}${formatMetricDelta(row)}`;
+      const deltaPercent =
+        row.deltaPercent == null
+          ? 'n/a'
+          : `${row.deltaPercent >= 0 ? '+' : ''}${formatNumber(row.deltaPercent)}%`;
+      return `| ${row.name} | ${formatMetricValue({ name: row.name, value: row.previous, unit: row.unit })} | ${formatMetricValue({ name: row.name, value: row.current, unit: row.unit })} | ${delta} | ${deltaPercent} |`;
+    }),
+  ].join('\n');
+}
+
+function formatBaselineRegressionGate(
+  gate: BaselineRegressionGate
+): string {
+  if (!gate.enabled) return 'Regression gate: disabled.';
+  if (gate.passed) {
+    return `Regression gate: passed for Rust/package metrics (>${formatNumber(gate.thresholds.ms)}ms and >${formatNumber(gate.thresholds.percent)}%, >${formatNumber(gate.thresholds.bytes)} bytes and >${formatNumber(gate.thresholds.percent)}%, or >${formatNumber(gate.thresholds.count)} count/rows and >${formatNumber(gate.thresholds.percent)}%).`;
+  }
+  const header =
+    '| Failed Metric | Previous | Current | Delta | Delta % | Absolute Threshold |';
+  const separator =
+    '|---------------|----------|---------|-------|---------|--------------------|';
+  return [
+    `Regression gate: failed for ${gate.failures.length} Rust/package metric(s).`,
+    header,
+    separator,
+    ...gate.failures.map((row) => {
+      const delta = `${row.delta >= 0 ? '+' : ''}${formatMetricDelta(row)}`;
+      const deltaPercent =
+        row.deltaPercent == null
+          ? 'n/a'
+          : `${row.deltaPercent >= 0 ? '+' : ''}${formatNumber(row.deltaPercent)}%`;
+      return `| ${row.name} | ${formatMetricValue({ name: row.name, value: row.previous, unit: row.unit })} | ${formatMetricValue({ name: row.name, value: row.current, unit: row.unit })} | ${delta} | ${deltaPercent} | ${formatMetricValue({ name: row.name, value: row.threshold, unit: row.unit })} |`;
+    }),
+  ].join('\n');
+}
+
 function formatMetricValue(metric: ScoreboardMetric): string {
   if (metric.unit === 'ms') return `${formatNumber(metric.value)}ms`;
   if (metric.unit === 'bytes') return `${formatNumber(metric.value)} bytes`;
   return `${formatNumber(metric.value)} ${metric.unit}`;
+}
+
+function formatMetricDelta(metric: Omit<ScoreboardMetric, 'value'> & {
+  delta: number;
+}): string {
+  if (metric.unit === 'ms') return `${formatNumber(metric.delta)}ms`;
+  if (metric.unit === 'bytes') return `${formatNumber(metric.delta)} bytes`;
+  return `${formatNumber(metric.delta)} ${metric.unit}`;
 }
 
 function numberArg(name: string, fallback: number): number {

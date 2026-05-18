@@ -68,6 +68,7 @@ const PULL_TRANSACTION_RETRY_DELAY_MS = 15;
 interface PullBootstrapTimings {
   snapshotQueryMs: number;
   rowFrameEncodeMs: number;
+  binaryEncodeMs: number;
   chunkCacheLookupMs: number;
   chunkGzipMs: number;
   chunkHashMs: number;
@@ -81,23 +82,14 @@ interface SnapshotChunkEncodeResult {
   hashMs: number;
 }
 
-type InlineSnapshotChunkRef = SyncSnapshotChunkRef & {
-  body?: Uint8Array;
-};
-
-function toResponseChunkRef(
-  ref: SyncSnapshotChunkRef & { body?: Uint8Array },
-  options: { includeBody?: boolean } = {}
-): SyncSnapshotChunkRef {
-  const response: InlineSnapshotChunkRef = {
+function toResponseChunkRef(ref: SyncSnapshotChunkRef): SyncSnapshotChunkRef {
+  return {
     id: ref.id,
     byteLength: ref.byteLength,
     sha256: ref.sha256,
     encoding: ref.encoding,
     compression: ref.compression,
   };
-  if (options.includeBody !== false && ref.body) response.body = ref.body;
-  return response;
 }
 
 function resolveSnapshotChunkEncoding(
@@ -119,6 +111,7 @@ function createPullBootstrapTimings(): PullBootstrapTimings {
   return {
     snapshotQueryMs: 0,
     rowFrameEncodeMs: 0,
+    binaryEncodeMs: 0,
     chunkCacheLookupMs: 0,
     chunkGzipMs: 0,
     chunkHashMs: 0,
@@ -573,11 +566,6 @@ export async function pull<
    */
   scopeCache?: ScopeCacheBackend;
   /**
-   * Include compressed snapshot chunk bodies in returned chunk refs when they
-   * are already available during pull construction.
-   */
-  inlineSnapshotChunkBodies?: boolean;
-  /**
    * Gzip compression level for generated snapshot chunks. The protocol remains
    * gzip-only; this tunes CPU/size tradeoffs for deployments that know their
    * network constraints.
@@ -853,7 +841,7 @@ export async function pull<
                             bundle.binaryRows,
                             bundle.binaryColumns
                           );
-                      bootstrapTimings.rowFrameEncodeMs += Math.max(
+                      bootstrapTimings.binaryEncodeMs += Math.max(
                         0,
                         Date.now() - encodeStartedAt
                       );
@@ -890,8 +878,6 @@ export async function pull<
                         encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         nowIso,
-                        includeBody:
-                          args.inlineSnapshotChunkBodies && !args.chunkStorage,
                       });
                       bootstrapTimings.chunkCacheLookupMs += Math.max(
                         0,
@@ -955,10 +941,6 @@ export async function pull<
                           body: encodedChunk.body,
                           expiresAt,
                         });
-                        if (args.inlineSnapshotChunkBodies) {
-                          (chunkRef as InlineSnapshotChunkRef).body =
-                            encodedChunk.body;
-                        }
                         bootstrapTimings.chunkPersistMs += Math.max(
                           0,
                           Date.now() - chunkPersistStartedAt
@@ -968,11 +950,7 @@ export async function pull<
                       snapshots.push({
                         table: bundle.table,
                         rows: [],
-                        chunks: [
-                          toResponseChunkRef(chunkRef, {
-                            includeBody: args.inlineSnapshotChunkBodies,
-                          }),
-                        ],
+                        chunks: [toResponseChunkRef(chunkRef)],
                         isFirstPage: bundle.isFirstPage,
                         isLastPage: bundle.isLastPage,
                       });
@@ -1048,9 +1026,6 @@ export async function pull<
                             rowLimit: cachedRowLimit,
                             encoding: snapshotChunkEncoding,
                             compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                            includeBody:
-                              args.inlineSnapshotChunkBodies &&
-                              !args.chunkStorage,
                           });
                         bootstrapTimings.chunkCacheLookupMs += Math.max(
                           0,
@@ -1064,11 +1039,7 @@ export async function pull<
                           snapshots.push({
                             table: nextTableName,
                             rows: [],
-                            chunks: [
-                              toResponseChunkRef(cached, {
-                                includeBody: args.inlineSnapshotChunkBodies,
-                              }),
-                            ],
+                            chunks: [toResponseChunkRef(cached)],
                             isFirstPage: nextState.rowCursor == null,
                             isLastPage: cached.isLastPage,
                           });
@@ -1124,11 +1095,14 @@ export async function pull<
 
                       const pageRows = page.rows ?? [];
                       activeBundle.nextRowCursor = page.nextCursor;
+                      const canInlineBootstrapSnapshot =
+                        snapshotChunkEncoding ===
+                          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 &&
+                        preferInlineBootstrapSnapshot;
                       let rowFrames: Uint8Array | null = null;
                       if (
                         snapshotChunkEncoding ===
-                          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 ||
-                        preferInlineBootstrapSnapshot
+                        SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
                       ) {
                         const rowFrameEncodeStartedAt = Date.now();
                         rowFrames = encodeSnapshotRowFrames(pageRows);
@@ -1171,7 +1145,7 @@ export async function pull<
                       }
 
                       if (
-                        preferInlineBootstrapSnapshot &&
+                        canInlineBootstrapSnapshot &&
                         activeBundle.pageCount === 0 &&
                         page.nextCursor == null &&
                         rowFrames != null &&
@@ -1543,10 +1517,6 @@ export async function pull<
                         body: encodedChunk.body,
                         expiresAt: pending.expiresAt,
                       });
-                      if (args.inlineSnapshotChunkBodies) {
-                        (chunkRef as InlineSnapshotChunkRef).body =
-                          encodedChunk.body;
-                      }
                       bootstrapTimings.chunkPersistMs += Math.max(
                         0,
                         Date.now() - chunkPersistStartedAt
@@ -1554,11 +1524,7 @@ export async function pull<
                     }
                   }
 
-                  pending.snapshot.chunks = [
-                    toResponseChunkRef(chunkRef, {
-                      includeBody: args.inlineSnapshotChunkBodies,
-                    }),
-                  ];
+                  pending.snapshot.chunks = [toResponseChunkRef(chunkRef)];
                 }
               );
             }
@@ -1575,6 +1541,8 @@ export async function pull<
             span.setAttributes({
               bootstrap_snapshot_query_ms: bootstrapTimings.snapshotQueryMs,
               bootstrap_row_frame_encode_ms: bootstrapTimings.rowFrameEncodeMs,
+              bootstrap_snapshot_binary_encode_ms:
+                bootstrapTimings.binaryEncodeMs,
               bootstrap_chunk_cache_lookup_ms:
                 bootstrapTimings.chunkCacheLookupMs,
               bootstrap_chunk_gzip_ms: bootstrapTimings.chunkGzipMs,

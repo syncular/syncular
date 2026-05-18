@@ -1,15 +1,15 @@
 # Binary Snapshot Chunk Format
 
-This document defines the planned `binary-table-v1` snapshot chunk encoding for Rust-capable clients.
+This document defines the `binary-table-v1` snapshot chunk encoding for Rust-capable clients.
 
-The current production encoding remains `json-row-frame-v1`. The server only emits that format today. `binary-table-v1` is now a negotiated protocol value so the encoder and Rust decoder can be implemented behind compatibility fallback.
+`binary-table-v1` is the Rust-first snapshot chunk format. `json-row-frame-v1` remains useful for explicit debug/test paths, but it is not the target architecture for app bootstraps.
 
 ## Goals
 
 - Avoid per-row JSON parsing during bootstrap.
 - Preserve table and column order so Rust can bind directly into generated SQLite statements.
 - Keep chunks independently verifiable with the existing chunk SHA-256 and gzip envelope.
-- Allow old clients to continue using `json-row-frame-v1`.
+- Keep the production hot path binary and schema-driven.
 
 ## Negotiation
 
@@ -23,11 +23,11 @@ Clients advertise supported encodings on pull requests:
 
 Server selection rules:
 
-1. If `snapshotEncodings` is omitted, use `json-row-frame-v1`.
-2. If `binary-table-v1` is present, the current server prefers it for chunked
+1. If `binary-table-v1` is present, the current server prefers it for chunked
    snapshots.
-3. If only `json-row-frame-v1` is present, the server uses JSON row frames.
-4. If no requested encoding is supported, fail the pull request instead of silently falling back to a format the client did not advertise.
+2. If only `json-row-frame-v1` is present, the server may use JSON row frames
+   for debug/test clients.
+3. If no requested encoding is supported, fail the pull request instead of silently falling back to a format the client did not advertise.
 
 ## Envelope
 
@@ -123,12 +123,11 @@ gzip bytes
   -> optional generated read-model updates
 ```
 
-The generic JSON/value apply path remains required for:
+The generic JSON/value apply path is not the target hot path. Keep it only
+where the Rust client cannot use generated schema code yet, such as:
 
-- old servers
-- old clients
 - ungenerated schemas
-- encrypted fields or CRDT fields that need the existing transform path
+- encrypted fields or CRDT fields that still need the existing transform path
 
 ## Open Questions
 

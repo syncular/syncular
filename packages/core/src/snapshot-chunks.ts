@@ -27,15 +27,6 @@ export const SYNC_SNAPSHOT_CHUNK_COMPRESSION = 'gzip';
 export type SyncSnapshotChunkCompression =
   typeof SYNC_SNAPSHOT_CHUNK_COMPRESSION;
 
-export const SYNC_SNAPSHOT_CHUNK_TRANSFER_INLINE = 'inline';
-export const SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE = 'separate';
-export const SYNC_SNAPSHOT_CHUNK_TRANSFERS = [
-  SYNC_SNAPSHOT_CHUNK_TRANSFER_INLINE,
-  SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
-] as const;
-export type SyncSnapshotChunkTransfer =
-  (typeof SYNC_SNAPSHOT_CHUNK_TRANSFERS)[number];
-
 const SNAPSHOT_ROW_FRAME_MAGIC = new Uint8Array([0x53, 0x52, 0x46, 0x31]); // "SRF1"
 const SNAPSHOT_BINARY_TABLE_MAGIC = new Uint8Array([0x53, 0x42, 0x54, 0x31]); // "SBT1"
 const FRAME_LENGTH_BYTES = 4;
