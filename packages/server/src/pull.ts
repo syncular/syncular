@@ -204,6 +204,7 @@ interface SnapshotColumnInference {
   name: string;
   type: BinarySnapshotColumnType | null;
   nullable: boolean;
+  presentCount: number;
 }
 
 function encodeBinarySnapshotRows(
@@ -247,10 +248,11 @@ function inferBinarySnapshotColumns(
     for (const [name, value] of Object.entries(row)) {
       let column = columnsByName.get(name);
       if (!column) {
-        column = { name, type: null, nullable: false };
+        column = { name, type: null, nullable: false, presentCount: 0 };
         columnsByName.set(name, column);
         columns.push(column);
       }
+      column.presentCount += 1;
       if (value == null) {
         column.nullable = true;
         continue;
@@ -262,18 +264,12 @@ function inferBinarySnapshotColumns(
     }
   }
 
-  for (const row of rows) {
-    for (const column of columns) {
-      if (!Object.hasOwn(row, column.name)) {
-        column.nullable = true;
-      }
-    }
-  }
-
   return columns.map((column) => ({
     name: column.name,
     type: column.type ?? 'json',
-    ...(column.nullable ? { nullable: true } : {}),
+    ...(column.nullable || column.presentCount < rows.length
+      ? { nullable: true }
+      : {}),
   }));
 }
 
