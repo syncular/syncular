@@ -479,6 +479,14 @@ install_kotlin_adapter_sources() {
   cp -R "${REPO_ROOT}/rust/bindings/kotlin/compose/." "${OUT_ROOT}/android/compose/"
 }
 
+install_java_adapter_sources() {
+  mkdir -p "${OUT_ROOT}/java/dev/syncular/client"
+  cp "${REPO_ROOT}/rust/bindings/java/dev/syncular/client/SyncularBoltClient.java" \
+    "${OUT_ROOT}/java/dev/syncular/client/SyncularBoltClient.java"
+  cp "${REPO_ROOT}/rust/bindings/java/dev/syncular/client/SyncularNativeEvent.java" \
+    "${OUT_ROOT}/java/dev/syncular/client/SyncularNativeEvent.java"
+}
+
 package_apple_xcframework_zip() {
   local xcframework="${OUT_ROOT}/apple/Syncular.xcframework"
   local zip_path="${OUT_ROOT}/apple/Syncular.xcframework.zip"
@@ -649,8 +657,10 @@ for platform in "${platforms[@]}"; do
         setup_linux_x86_64_jvm_env
       fi
       run_boltffi_pack java
+      install_java_adapter_sources
       verify_file "${OUT_ROOT}/java/dev/syncular/client/Syncular.java"
       verify_file "${OUT_ROOT}/java/dev/syncular/client/SyncularBoltClient.java"
+      verify_file "${OUT_ROOT}/java/dev/syncular/client/SyncularNativeEvent.java"
       if jvm_host_targets_contain "linux-x86_64"; then
         verify_file "${OUT_ROOT}/java/native/linux-x86_64/libsyncular_runtime_jni.so"
       fi

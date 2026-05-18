@@ -16,6 +16,14 @@ data class SyncularComposeEventState<Event>(
     val lastError: Throwable? = null,
 )
 
+@Immutable
+data class SyncularComposeJsonState(
+    val json: String? = null,
+    val refreshCount: Long = 0,
+    val isRunning: Boolean = false,
+    val lastError: Throwable? = null,
+)
+
 @Composable
 fun <Event> rememberSyncularEventState(
     events: Flow<Event>,
@@ -39,3 +47,72 @@ fun <Event> rememberSyncularEventState(
     }
     return state
 }
+
+@Composable
+fun rememberSyncularJsonState(
+    values: Flow<String>,
+): State<SyncularComposeJsonState> {
+    val state = remember { mutableStateOf(SyncularComposeJsonState()) }
+    LaunchedEffect(values) {
+        state.value = state.value.copy(isRunning = true, lastError = null)
+        try {
+            values.collect { json ->
+                state.value = SyncularComposeJsonState(
+                    json = json,
+                    refreshCount = state.value.refreshCount + 1,
+                    isRunning = true,
+                    lastError = null,
+                )
+            }
+            state.value = state.value.copy(isRunning = false)
+        } catch (error: Throwable) {
+            state.value = state.value.copy(isRunning = false, lastError = error)
+        }
+    }
+    return state
+}
+
+@Composable
+fun rememberSyncularPresenceState(
+    client: SyncularBoltClient,
+    scopeKey: String,
+    capacity: ULong = 256uL,
+): State<SyncularComposeJsonState> =
+    rememberSyncularJsonState(client.presenceJsonFlow(scopeKey, capacity))
+
+@Composable
+fun rememberSyncularOutboxState(
+    client: SyncularBoltClient,
+    capacity: ULong = 256uL,
+): State<SyncularComposeJsonState> =
+    rememberSyncularJsonState(client.outboxSummariesJsonFlow(capacity))
+
+@Composable
+fun rememberSyncularConflictState(
+    client: SyncularBoltClient,
+    capacity: ULong = 256uL,
+): State<SyncularComposeJsonState> =
+    rememberSyncularJsonState(client.conflictSummariesJsonFlow(capacity))
+
+@Composable
+fun rememberSyncularBlobUploadQueueState(
+    client: SyncularBoltClient,
+    capacity: ULong = 256uL,
+): State<SyncularComposeJsonState> =
+    rememberSyncularJsonState(client.blobUploadQueueStatsJsonFlow(capacity))
+
+@Composable
+fun rememberSyncularTableRowsState(
+    client: SyncularBoltClient,
+    table: String,
+    capacity: ULong = 256uL,
+): State<SyncularComposeJsonState> =
+    rememberSyncularJsonState(client.tableRowsJsonFlow(table, capacity))
+
+@Composable
+fun rememberSyncularQueryState(
+    client: SyncularBoltClient,
+    requestJson: String,
+    capacity: ULong = 256uL,
+): State<SyncularComposeJsonState> =
+    rememberSyncularJsonState(client.queryJsonFlow(requestJson, capacity))
