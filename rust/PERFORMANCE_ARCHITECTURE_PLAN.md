@@ -2728,7 +2728,7 @@ client. Overflow should close or resync the session deliberately.
     `server_scoped_incremental_pull_requests_1000_10` `10`,
     `server_scoped_incremental_pull_changes_1000_10` `100`.
 - Done: added durable `sync_scope_commits` routing indexes and switched
-  incremental pull to use them before falling back to legacy table-window scans.
+  incremental pull to use them directly.
   Push, external row notifications, and proxy oplog writes now populate the
   index; prune/compaction clean it with the rest of the commit log.
   - Measured before/after, same battery-saver environment:
@@ -2736,9 +2736,21 @@ client. Overflow should close or resync the session deliberately.
     requests `200 -> 2`, changes `200`.
   - Small guard moved from `server_scoped_incremental_pull_fanout_1000_10`
     `6.9ms -> 1.8ms`, requests `10 -> 2`.
-  - Follow-up: cross-instance realtime fallback scope lookup now reads
-    `sync_scope_commits` before falling back to legacy `sync_changes` scope
-    extraction.
+  - Follow-up: cross-instance realtime scope lookup now reads
+    `sync_scope_commits` directly.
+  - Cleanup: removed the remaining SQLite incremental-pull table-window
+    compatibility branch and the Hono cross-instance `sync_changes.scopes`
+    rebuild path. Current-schema tests seed and consume the scope routing index
+    explicitly.
+  - Measurement gate for the cleanup, same dense lane command before/after:
+    `server_dense_incremental_pull_build_5000_500` `21.0ms -> 21.4ms`,
+    binary encode `26.5ms -> 26.0ms`, generated encode `25.8ms -> 26.1ms`.
+    A first post-change run drifted slower (`24.2ms` build), but a repeat
+    returned to baseline; the removed branches are not taken on the indexed
+    dense path.
+  - Sparse scope-index guard after the cleanup:
+    `server_scoped_incremental_pull_fanout_5000_20` `2.7ms`, requests `2`,
+    changes `250`.
 - Done: added a dense incremental pull measurement lane that separates server
   response build from response build plus binary sync-pack encoding. This is
   the current measurement gate before adding a durable binary commit log.

@@ -576,35 +576,13 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
     const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
     const scopeFilter = buildScopeFilterSql(args.scopes, 'c.scopes');
 
-    let commitSeqs = await this.readScopeIndexedCommitSeqsForPull(db, {
+    const commitSeqs = await this.readScopeIndexedCommitSeqsForPull(db, {
       partitionId,
       table: args.table,
       scopes: args.scopes,
       cursor: args.cursor,
       limitCommits,
     });
-    if (commitSeqs.length === 0) {
-      // Legacy fallback for existing databases/tests that predate sync_scope_commits.
-      const commitSeqsRes = await sql<{ commit_seq: unknown }>`
-        SELECT commit_seq
-        FROM sync_table_commits
-        WHERE partition_id = ${partitionId}
-          AND "table" = ${args.table}
-          AND commit_seq > ${args.cursor}
-          AND EXISTS (
-            SELECT 1
-            FROM sync_commits cm
-            WHERE cm.commit_seq = sync_table_commits.commit_seq
-              AND cm.partition_id = ${partitionId}
-          )
-        ORDER BY commit_seq ASC
-        LIMIT ${limitCommits}
-      `.execute(db);
-
-      commitSeqs = commitSeqsRes.rows
-        .map((r) => coerceNumber(r.commit_seq))
-        .filter((n): n is number => n !== null);
-    }
 
     if (commitSeqs.length === 0) return [];
     const scannedMaxCommitSeq =

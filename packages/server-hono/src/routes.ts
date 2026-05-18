@@ -3392,34 +3392,7 @@ async function readCommitScopeKeys<DB extends SyncCoreDb>(
       (scopeKey): scopeKey is string =>
         typeof scopeKey === 'string' && scopeKey.length > 0
     );
-  if (indexedScopeKeys.length > 0) {
-    return applyPartitionToScopeKeys(partitionId, indexedScopeKeys);
-  }
-
-  // Read scopes from the JSONB column and convert to scope strings
-  const rowsResult = await sql<{ scopes: unknown }>`
-    select scopes
-    from ${sql.table('sync_changes')}
-    where commit_seq = ${commitSeq}
-      and partition_id = ${partitionId}
-  `.execute(db);
-  const rows = rowsResult.rows;
-
-  const scopeKeys = new Set<string>();
-
-  for (const row of rows) {
-    const scopes =
-      typeof row.scopes === 'string' ? JSON.parse(row.scopes) : row.scopes;
-
-    for (const k of applyPartitionToScopeKeys(
-      partitionId,
-      scopeValuesToScopeKeys(scopes)
-    )) {
-      scopeKeys.add(k);
-    }
-  }
-
-  return Array.from(scopeKeys);
+  return applyPartitionToScopeKeys(partitionId, indexedScopeKeys);
 }
 
 async function readClientState<DB extends SyncCoreDb>(
