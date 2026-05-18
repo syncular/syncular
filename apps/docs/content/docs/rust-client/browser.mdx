@@ -34,6 +34,34 @@ const syncular = await createSyncularAppDatabase({
 });
 ```
 
+Apps that want startup and shutdown handled in one place can use the managed
+browser preset:
+
+```ts
+import { createSyncularV2Client } from '@syncular/client-rust';
+
+const syncular = await createSyncularV2Client<AppDb>({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'device-1',
+  },
+  subscriptions: [
+    {
+      id: 'tasks:user-1',
+      table: 'tasks',
+      scopes: { user_id: 'user-1' },
+    },
+  ],
+  realtime: true,
+});
+```
+
+The preset sets subscriptions, runs the initial sync, starts realtime when
+requested, and shuts everything down through `destroy()`/`close()`. Realtime is
+treated as a wakeup path: websocket reconnects trigger HTTP catchup sync, and
+interval polling stays opt-in through `lifecycle.pollIntervalMs`.
+
 ## Query with Kysely
 
 Reads are normal Kysely queries:
@@ -86,6 +114,9 @@ const syncular = await createSyncularAppDatabase({
 
 Use `mutationSyncDebounceMs` to tune the post-mutation sync debounce, and
 `rowsChangedDebounceMs` when a UI wants to coalesce changed-row notifications.
+Queued blob uploads stay manual by default; set
+`autoProcessBlobUploadsAfterStore: true` and tune `blobUploadDebounceMs` when
+the browser should process the upload queue after `blobs.store()`.
 
 ## Route row deltas
 

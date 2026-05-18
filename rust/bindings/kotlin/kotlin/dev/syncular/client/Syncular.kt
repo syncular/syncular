@@ -858,6 +858,46 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
     }
 
+    @Throws(FfiException::class)
+    fun joinPresence(scopeKey: String, metadataJson: String? = null): Boolean {
+        val scopeKeyBytes = scopeKey.toByteArray(Charsets.UTF_8)
+        val metadataJsonBytes = WireWriter().also { wire ->
+            metadataJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
+        }.toByteArray()
+        val buf = Native.boltffi_syncular_bolt_client_join_presence(handle, scopeKeyBytes, ByteBuffer.wrap(metadataJsonBytes))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+    @Throws(FfiException::class)
+    fun leavePresence(scopeKey: String): Boolean {
+        val scopeKeyBytes = scopeKey.toByteArray(Charsets.UTF_8)
+        val buf = Native.boltffi_syncular_bolt_client_leave_presence(handle, scopeKeyBytes)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+    @Throws(FfiException::class)
+    fun updatePresenceMetadata(scopeKey: String, metadataJson: String): Boolean {
+        val scopeKeyBytes = scopeKey.toByteArray(Charsets.UTF_8)
+        val metadataJsonBytes = metadataJson.toByteArray(Charsets.UTF_8)
+        val buf = Native.boltffi_syncular_bolt_client_update_presence_metadata(handle, scopeKeyBytes, metadataJsonBytes)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+    @Throws(FfiException::class)
+    fun presenceJson(scopeKey: String): String {
+        val scopeKeyBytes = scopeKey.toByteArray(Charsets.UTF_8)
+        val buf = Native.boltffi_syncular_bolt_client_presence_json(handle, scopeKeyBytes)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
 
     @Throws(FfiException::class)
     fun startEventStream(capacity: ULong): Boolean {
@@ -1569,6 +1609,10 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_sync_worker_running(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start_realtime_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_stop_realtime_worker(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_join_presence(handle: Long, scope_key: ByteArray, metadata_json: ByteBuffer): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_leave_presence(handle: Long, scope_key: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_update_presence_metadata(handle: Long, scope_key: ByteArray, metadata_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_presence_json(handle: Long, scope_key: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start_event_stream(handle: Long, capacity: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_next_event_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_close_event_stream(handle: Long): ByteArray?

@@ -980,7 +980,14 @@ pub struct PersistentRealtimeWorker {
 enum RealtimeWorkerCommand {
     Stop,
     SetAuthHeaders(SyncAuthHeaders),
+    SendPresence {
+        action: String,
+        scope_key: String,
+        metadata: Option<Value>,
+    },
 }
+
+type RealtimeEventHandler = Arc<dyn Fn(RealtimeEvent) + Send + Sync>;
 
 impl SyncWorkerTrigger {
     pub fn trigger_sync(&self) -> Result<()> {
@@ -1004,9 +1011,21 @@ impl PersistentRealtimeWorker {
     where
         T: SyncTransport + SyncAuthHeaderStore + Send + 'static,
     {
+        Self::start_with_event_handler(transport, trigger, None)
+    }
+
+    pub fn start_with_event_handler<T>(
+        transport: T,
+        trigger: SyncWorkerTrigger,
+        event_handler: Option<RealtimeEventHandler>,
+    ) -> Self
+    where
+        T: SyncTransport + SyncAuthHeaderStore + Send + 'static,
+    {
         let (command_tx, command_rx) = mpsc::sync_channel(32);
-        let join =
-            thread::spawn(move || run_persistent_realtime_worker(transport, trigger, command_rx));
+        let join = thread::spawn(move || {
+            run_persistent_realtime_worker(transport, trigger, command_rx, event_handler)
+        });
         Self {
             command_tx,
             join: Some(join),
@@ -1016,6 +1035,28 @@ impl PersistentRealtimeWorker {
     pub fn set_auth_headers(&self, headers: SyncAuthHeaders) -> Result<()> {
         self.command_tx
             .try_send(RealtimeWorkerCommand::SetAuthHeaders(headers))
+            .map_err(|err| match err {
+                TrySendError::Full(_) => {
+                    SyncularError::busy("realtime worker command queue is full")
+                }
+                TrySendError::Disconnected(_) => {
+                    SyncularError::message(ErrorKind::Internal, "realtime worker is not running")
+                }
+            })
+    }
+
+    pub fn send_presence(
+        &self,
+        action: impl Into<String>,
+        scope_key: impl Into<String>,
+        metadata: Option<Value>,
+    ) -> Result<()> {
+        self.command_tx
+            .try_send(RealtimeWorkerCommand::SendPresence {
+                action: action.into(),
+                scope_key: scope_key.into(),
+                metadata,
+            })
             .map_err(|err| match err {
                 TrySendError::Full(_) => {
                     SyncularError::busy("realtime worker command queue is full")
@@ -1047,23 +1088,30 @@ fn run_persistent_realtime_worker<T>(
     mut transport: T,
     trigger: SyncWorkerTrigger,
     command_rx: Receiver<RealtimeWorkerCommand>,
+    event_handler: Option<RealtimeEventHandler>,
 ) where
     T: SyncTransport + SyncAuthHeaderStore,
 {
     let mut reconnect_attempt: i32 = 0;
+    let mut active_presence: BTreeMap<String, Option<Value>> = BTreeMap::new();
     loop {
-        if drain_realtime_commands(&mut transport, &command_rx).is_none() {
+        if drain_realtime_commands(&mut transport, None, &command_rx, &mut active_presence)
+            .is_none()
+        {
             return;
         }
 
         match transport.connect_realtime() {
             Ok(mut socket) => {
                 reconnect_attempt = 0;
+                rejoin_realtime_presence(&mut socket, &active_presence);
                 if !run_connected_realtime_socket(
                     &mut transport,
                     &mut socket,
                     &trigger,
                     &command_rx,
+                    &mut active_presence,
+                    event_handler.as_deref(),
                 ) {
                     return;
                 }
@@ -1081,6 +1129,14 @@ fn run_persistent_realtime_worker<T>(
                 transport.set_auth_headers(headers);
                 reconnect_attempt = 0;
             }
+            Ok(RealtimeWorkerCommand::SendPresence {
+                action,
+                scope_key,
+                metadata,
+            }) => {
+                apply_active_presence_command(&mut active_presence, &action, &scope_key, metadata);
+                reconnect_attempt = 0;
+            }
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
@@ -1091,12 +1147,14 @@ fn run_connected_realtime_socket<T>(
     socket: &mut T::Realtime,
     trigger: &SyncWorkerTrigger,
     command_rx: &Receiver<RealtimeWorkerCommand>,
+    active_presence: &mut BTreeMap<String, Option<Value>>,
+    event_handler: Option<&(dyn Fn(RealtimeEvent) + Send + Sync)>,
 ) -> bool
 where
     T: SyncTransport + SyncAuthHeaderStore,
 {
     loop {
-        match drain_realtime_commands(transport, command_rx) {
+        match drain_realtime_commands(transport, Some(&mut *socket), command_rx, active_presence) {
             Some(true) => {
                 socket.close();
                 return true;
@@ -1112,6 +1170,11 @@ where
             Ok(Some(RealtimeEvent::Sync)) => {
                 let _ = trigger.trigger_sync();
             }
+            Ok(Some(event @ RealtimeEvent::Presence(_))) => {
+                if let Some(handler) = event_handler {
+                    handler(event);
+                }
+            }
             Ok(Some(RealtimeEvent::Other(_))) => {}
             Ok(None) => match command_rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(RealtimeWorkerCommand::Stop) | Err(RecvTimeoutError::Disconnected) => {
@@ -1122,6 +1185,19 @@ where
                     transport.set_auth_headers(headers);
                     socket.close();
                     return true;
+                }
+                Ok(RealtimeWorkerCommand::SendPresence {
+                    action,
+                    scope_key,
+                    metadata,
+                }) => {
+                    apply_active_presence_command(
+                        active_presence,
+                        &action,
+                        &scope_key,
+                        metadata.clone(),
+                    );
+                    let _ = socket.send_presence(&action, &scope_key, metadata.as_ref());
                 }
                 Err(RecvTimeoutError::Timeout) => {}
             },
@@ -1135,10 +1211,12 @@ where
 
 fn drain_realtime_commands<T>(
     transport: &mut T,
+    mut socket: Option<&mut T::Realtime>,
     command_rx: &Receiver<RealtimeWorkerCommand>,
+    active_presence: &mut BTreeMap<String, Option<Value>>,
 ) -> Option<bool>
 where
-    T: SyncAuthHeaderStore,
+    T: SyncAuthHeaderStore + SyncTransport,
 {
     let mut reconnect = false;
     loop {
@@ -1150,8 +1228,49 @@ where
                 transport.set_auth_headers(headers);
                 reconnect = true;
             }
+            Ok(RealtimeWorkerCommand::SendPresence {
+                action,
+                scope_key,
+                metadata,
+            }) => {
+                apply_active_presence_command(
+                    active_presence,
+                    &action,
+                    &scope_key,
+                    metadata.clone(),
+                );
+                if let Some(socket) = socket.as_deref_mut() {
+                    let _ = socket.send_presence(&action, &scope_key, metadata.as_ref());
+                }
+            }
             Err(mpsc::TryRecvError::Empty) => return Some(reconnect),
         }
+    }
+}
+
+fn apply_active_presence_command(
+    active_presence: &mut BTreeMap<String, Option<Value>>,
+    action: &str,
+    scope_key: &str,
+    metadata: Option<Value>,
+) {
+    match action {
+        "leave" => {
+            active_presence.remove(scope_key);
+        }
+        "join" | "update" => {
+            active_presence.insert(scope_key.to_string(), metadata);
+        }
+        _ => {}
+    }
+}
+
+fn rejoin_realtime_presence<T>(socket: &mut T, active_presence: &BTreeMap<String, Option<Value>>)
+where
+    T: RealtimeTransport,
+{
+    for (scope_key, metadata) in active_presence {
+        let _ = socket.send_presence("join", scope_key, metadata.as_ref());
     }
 }
 

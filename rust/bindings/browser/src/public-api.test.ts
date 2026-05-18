@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  createSyncularV2Client,
   createSyncularRustSqliteDatabase,
   createSyncularV2Database,
   getSyncularV2PackagedRuntimeArtifacts,
@@ -39,6 +40,10 @@ describe('@syncular/client-rust public API', () => {
 
   it('keeps the Rust SQLite alias wired to the v2 database constructor', () => {
     expect(createSyncularRustSqliteDatabase).toBe(createSyncularV2Database);
+  });
+
+  it('exports the managed browser client constructor', () => {
+    expect(typeof createSyncularV2Client).toBe('function');
   });
 
   it('defaults generated app storage to OPFS SAH', () => {

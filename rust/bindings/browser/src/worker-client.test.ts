@@ -1005,6 +1005,18 @@ describe('Syncular v2 worker client', () => {
         },
       ],
     });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'realtimeState',
+      state: 'connected',
+    });
+    expect(worker.messages[1]).toMatchObject({
+      type: 'sendPresence',
+      action: 'join',
+      scopeKey: 'tasks:user-1',
+      metadata: { editing: 'task-1' },
+    });
   });
 
   it('forwards storage compaction options to the worker', async () => {

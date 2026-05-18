@@ -202,6 +202,40 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.stop_realtime_worker().map(|_| true))
     }
 
+    pub fn join_presence(
+        &self,
+        scope_key: &str,
+        metadata_json: Option<String>,
+    ) -> Result<bool, String> {
+        self.with_client_mut(|client| {
+            let metadata = metadata_json
+                .map(|json| serde_json::from_str(&json))
+                .transpose()?;
+            client.join_presence(scope_key, metadata).map(|_| true)
+        })
+    }
+
+    pub fn leave_presence(&self, scope_key: &str) -> Result<bool, String> {
+        self.with_client_mut(|client| client.leave_presence(scope_key).map(|_| true))
+    }
+
+    pub fn update_presence_metadata(
+        &self,
+        scope_key: &str,
+        metadata_json: &str,
+    ) -> Result<bool, String> {
+        self.with_client_mut(|client| {
+            let metadata = serde_json::from_str(metadata_json)?;
+            client
+                .update_presence_metadata(scope_key, metadata)
+                .map(|_| true)
+        })
+    }
+
+    pub fn presence_json(&self, scope_key: &str) -> Result<String, String> {
+        self.with_client(|client| client.presence_json(scope_key))
+    }
+
     pub fn start_event_stream(&self, capacity: u64) -> Result<bool, String> {
         let subscription =
             Arc::new(self.with_client(|client| Ok(client.subscribe_events(capacity as usize)))?);
