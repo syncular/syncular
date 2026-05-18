@@ -263,6 +263,96 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     expect(websocketAuthTokens).toEqual(scenario.expectedAuthTokens);
   });
 
+  it('round-trips presence through Hono websocket routes', async () => {
+    const { baseUrl, connectionCount } = await openRealtimeServer();
+    const scopeKey = `user:${ACTOR_ID}`;
+    const clientA = await openClient({
+      baseUrl,
+      clientId: 'presence-client-a',
+    });
+    const clientB = await openClient({
+      baseUrl,
+      clientId: 'presence-client-b',
+    });
+    await clientA.setSubscriptions([taskSubscription({ actorId: ACTOR_ID })]);
+    await clientB.setSubscriptions([taskSubscription({ actorId: ACTOR_ID })]);
+    await clientA.syncOnce();
+    await clientB.syncOnce();
+
+    await clientA.startRealtime({
+      wsUrl: `${baseUrl.replace(/^http:/, 'ws:')}/realtime`,
+      params: { token: REALTIME_TOKEN },
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 50,
+    });
+    await clientB.startRealtime({
+      wsUrl: `${baseUrl.replace(/^http:/, 'ws:')}/realtime`,
+      params: { token: REALTIME_TOKEN },
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 50,
+    });
+    await waitFor(() => connectionCount() === 2);
+
+    const joinEvent = waitForPresenceEvent(
+      clientB,
+      (event) =>
+        event.scopeKey === scopeKey &&
+        event.presence.some(
+          (entry) =>
+            entry.clientId === 'presence-client-a' &&
+            entry.metadata?.editing === 'task-1'
+        )
+    );
+    clientA.joinPresence(scopeKey, { editing: 'task-1' });
+    await expect(joinEvent).resolves.toMatchObject({
+      scopeKey,
+      presence: [
+        {
+          clientId: 'presence-client-a',
+          actorId: ACTOR_ID,
+          metadata: { editing: 'task-1' },
+        },
+      ],
+    });
+    await waitFor(() =>
+      clientA
+        .getPresence(scopeKey)
+        .some((entry) => entry.clientId === 'presence-client-a')
+    );
+
+    const updateEvent = waitForPresenceEvent(
+      clientB,
+      (event) =>
+        event.scopeKey === scopeKey &&
+        event.presence.some(
+          (entry) =>
+            entry.clientId === 'presence-client-a' &&
+            entry.metadata?.editing === 'task-2'
+        )
+    );
+    clientA.updatePresenceMetadata(scopeKey, { editing: 'task-2' });
+    await expect(updateEvent).resolves.toMatchObject({
+      scopeKey,
+      presence: [
+        {
+          clientId: 'presence-client-a',
+          actorId: ACTOR_ID,
+          metadata: { editing: 'task-2' },
+        },
+      ],
+    });
+
+    const leaveEvent = waitForPresenceEvent(
+      clientB,
+      (event) => event.scopeKey === scopeKey && event.presence.length === 0
+    );
+    clientA.leavePresence(scopeKey);
+    await expect(leaveEvent).resolves.toEqual({
+      scopeKey,
+      presence: [],
+    });
+  });
+
   async function openRealtimeServer(
     options: { realtimeTokens?: readonly string[] } = {}
   ): Promise<RealtimeServerHarness> {
@@ -419,6 +509,38 @@ function waitForLiveEvent(
     client.addLiveQueryListener(queryId, (event) => {
       clearTimeout(timeout);
       client.removeLiveQueryListener(queryId);
+      resolve(event);
+    });
+  });
+}
+
+function waitForPresenceEvent(
+  client: SyncularV2Client,
+  predicate: (event: {
+    scopeKey: string;
+    presence: Array<{
+      clientId: string;
+      actorId: string;
+      metadata?: Record<string, unknown>;
+    }>;
+  }) => boolean
+): Promise<{
+  scopeKey: string;
+  presence: Array<{
+    clientId: string;
+    actorId: string;
+    metadata?: Record<string, unknown>;
+  }>;
+}> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error('Timed out waiting for realtime presence event'));
+    }, 5_000);
+    const unsubscribe = client.addPresenceListener((event) => {
+      if (!predicate(event)) return;
+      clearTimeout(timeout);
+      unsubscribe();
       resolve(event);
     });
   });

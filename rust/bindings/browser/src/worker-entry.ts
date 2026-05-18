@@ -162,6 +162,9 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
     case 'stopRealtime':
       realtime.stop();
       return true;
+    case 'sendPresence':
+      realtime.sendPresence(request.action, request.scopeKey, request.metadata);
+      return true;
     case 'executeSql':
       return requireClient().executeSql(request.sql, request.params);
     case 'executeUnsafeSql':

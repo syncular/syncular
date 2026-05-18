@@ -949,6 +949,64 @@ describe('Syncular v2 worker client', () => {
     ]);
   });
 
+  it('sends and tracks realtime presence events', () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const events: unknown[] = [];
+    client.addPresenceListener((event) => events.push(event));
+
+    client.joinPresence('tasks:user-1', { editing: 'task-1' });
+    expect(worker.messages[0]).toMatchObject({
+      type: 'sendPresence',
+      action: 'join',
+      scopeKey: 'tasks:user-1',
+      metadata: { editing: 'task-1' },
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'presenceEvent',
+      action: 'snapshot',
+      scopeKey: 'tasks:user-1',
+      entries: [
+        {
+          clientId: 'client-2',
+          actorId: 'actor-2',
+          joinedAt: 123,
+          metadata: { viewing: 'task-2' },
+        },
+      ],
+    });
+
+    expect(client.getPresence('tasks:user-1')).toEqual([
+      {
+        clientId: 'client-2',
+        actorId: 'actor-2',
+        joinedAt: 123,
+        metadata: { viewing: 'task-2' },
+      },
+    ]);
+    expect(events.at(-1)).toEqual({
+      scopeKey: 'tasks:user-1',
+      presence: [
+        {
+          clientId: 'client-2',
+          actorId: 'actor-2',
+          joinedAt: 123,
+          metadata: { viewing: 'task-2' },
+        },
+      ],
+    });
+  });
+
   it('forwards storage compaction options to the worker', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {
