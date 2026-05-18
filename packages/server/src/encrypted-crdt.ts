@@ -1,9 +1,12 @@
 import type {
+  BinarySnapshotColumn,
+  BinarySnapshotRowsEncoder,
   ScopePattern,
   ScopeValues,
   StoredScopes,
   SyncOperation,
 } from '@syncular/core';
+import { BinarySnapshotTableWriter } from '@syncular/core';
 import { sql } from 'kysely';
 import { parseScopes } from './dialect/helpers';
 import type { DbExecutor } from './dialect/types';
@@ -92,6 +95,43 @@ export interface EncryptedCrdtPruneReport {
   updatesDeleted: number;
   checkpointsDeleted: number;
 }
+
+const CRDT_UPDATE_BINARY_COLUMNS = [
+  { name: 'seq', type: 'integer' },
+  { name: 'partition_id', type: 'string' },
+  { name: 'stream_id', type: 'string' },
+  { name: 'app_table', type: 'string' },
+  { name: 'row_id', type: 'string' },
+  { name: 'field_name', type: 'string' },
+  { name: 'update_id', type: 'string' },
+  { name: 'actor_id', type: 'string', nullable: true },
+  { name: 'client_id', type: 'string', nullable: true },
+  { name: 'key_id', type: 'string' },
+  { name: 'ciphertext', type: 'string' },
+  { name: 'scopes', type: 'json' },
+] satisfies readonly BinarySnapshotColumn[];
+
+const CRDT_CHECKPOINT_BINARY_COLUMNS = [
+  { name: 'seq', type: 'integer' },
+  { name: 'partition_id', type: 'string' },
+  { name: 'stream_id', type: 'string' },
+  { name: 'app_table', type: 'string' },
+  { name: 'row_id', type: 'string' },
+  { name: 'field_name', type: 'string' },
+  { name: 'checkpoint_id', type: 'string' },
+  { name: 'covers_seq', type: 'integer' },
+  { name: 'actor_id', type: 'string', nullable: true },
+  { name: 'client_id', type: 'string', nullable: true },
+  { name: 'key_id', type: 'string' },
+  { name: 'ciphertext', type: 'string' },
+  { name: 'scopes', type: 'json' },
+] satisfies readonly BinarySnapshotColumn[];
+
+const CRDT_UPDATE_BINARY_ENCODER: BinarySnapshotRowsEncoder = (rows) =>
+  encodeEncryptedCrdtUpdateRows(rows);
+
+const CRDT_CHECKPOINT_BINARY_ENCODER: BinarySnapshotRowsEncoder = (rows) =>
+  encodeEncryptedCrdtCheckpointRows(rows);
 
 export function encryptedCrdtStreamId(args: {
   table: string;
@@ -188,6 +228,8 @@ function createEncryptedCrdtUpdateHandler<
 ): ServerTableHandler<DB, Auth> {
   return {
     table: SYNC_CRDT_UPDATES_TABLE,
+    snapshotBinaryColumns: CRDT_UPDATE_BINARY_COLUMNS,
+    snapshotBinaryEncoder: CRDT_UPDATE_BINARY_ENCODER,
     scopePatterns: options.scopePatterns ?? [],
     resolveScopes: async (ctx) => options.resolveScopes(ctx),
     extractScopes: (row) => parseScopes(row.scopes),
@@ -243,6 +285,8 @@ function createEncryptedCrdtCheckpointHandler<
 ): ServerTableHandler<DB, Auth> {
   return {
     table: SYNC_CRDT_CHECKPOINTS_TABLE,
+    snapshotBinaryColumns: CRDT_CHECKPOINT_BINARY_COLUMNS,
+    snapshotBinaryEncoder: CRDT_CHECKPOINT_BINARY_ENCODER,
     scopePatterns: options.scopePatterns ?? [],
     resolveScopes: async (ctx) => options.resolveScopes(ctx),
     extractScopes: (row) => parseScopes(row.scopes),
@@ -502,6 +546,188 @@ function affectedRows(result: {
   numAffectedRows?: bigint | number | string;
 }): number {
   return Number(result.numAffectedRows ?? 0);
+}
+
+function encodeEncryptedCrdtUpdateRows(rows: readonly unknown[]): Uint8Array {
+  const writer = new BinarySnapshotTableWriter(
+    SYNC_CRDT_UPDATES_TABLE,
+    CRDT_UPDATE_BINARY_COLUMNS,
+    rows.length
+  );
+  for (const value of rows) {
+    const row = recordRow(value);
+    writer.beginRow();
+    writer.writeInteger(
+      rowInteger(row, 'seq'),
+      'binary snapshot sync_crdt_updates.seq'
+    );
+    writer.writeString(
+      rowString(row, 'partition_id'),
+      'binary snapshot sync_crdt_updates.partition_id'
+    );
+    writer.writeString(
+      rowString(row, 'stream_id'),
+      'binary snapshot sync_crdt_updates.stream_id'
+    );
+    writer.writeString(
+      rowString(row, 'app_table'),
+      'binary snapshot sync_crdt_updates.app_table'
+    );
+    writer.writeString(
+      rowString(row, 'row_id'),
+      'binary snapshot sync_crdt_updates.row_id'
+    );
+    writer.writeString(
+      rowString(row, 'field_name'),
+      'binary snapshot sync_crdt_updates.field_name'
+    );
+    writer.writeString(
+      rowString(row, 'update_id'),
+      'binary snapshot sync_crdt_updates.update_id'
+    );
+    writeNullableString(
+      writer,
+      7,
+      row.actor_id,
+      'binary snapshot sync_crdt_updates.actor_id'
+    );
+    writeNullableString(
+      writer,
+      8,
+      row.client_id,
+      'binary snapshot sync_crdt_updates.client_id'
+    );
+    writer.writeString(
+      rowString(row, 'key_id'),
+      'binary snapshot sync_crdt_updates.key_id'
+    );
+    writer.writeString(
+      rowString(row, 'ciphertext'),
+      'binary snapshot sync_crdt_updates.ciphertext'
+    );
+    writer.writeJson(
+      scopesField(row.scopes),
+      'binary snapshot sync_crdt_updates.scopes'
+    );
+  }
+  return writer.finish();
+}
+
+function encodeEncryptedCrdtCheckpointRows(
+  rows: readonly unknown[]
+): Uint8Array {
+  const writer = new BinarySnapshotTableWriter(
+    SYNC_CRDT_CHECKPOINTS_TABLE,
+    CRDT_CHECKPOINT_BINARY_COLUMNS,
+    rows.length
+  );
+  for (const value of rows) {
+    const row = recordRow(value);
+    writer.beginRow();
+    writer.writeInteger(
+      rowInteger(row, 'seq'),
+      'binary snapshot sync_crdt_checkpoints.seq'
+    );
+    writer.writeString(
+      rowString(row, 'partition_id'),
+      'binary snapshot sync_crdt_checkpoints.partition_id'
+    );
+    writer.writeString(
+      rowString(row, 'stream_id'),
+      'binary snapshot sync_crdt_checkpoints.stream_id'
+    );
+    writer.writeString(
+      rowString(row, 'app_table'),
+      'binary snapshot sync_crdt_checkpoints.app_table'
+    );
+    writer.writeString(
+      rowString(row, 'row_id'),
+      'binary snapshot sync_crdt_checkpoints.row_id'
+    );
+    writer.writeString(
+      rowString(row, 'field_name'),
+      'binary snapshot sync_crdt_checkpoints.field_name'
+    );
+    writer.writeString(
+      rowString(row, 'checkpoint_id'),
+      'binary snapshot sync_crdt_checkpoints.checkpoint_id'
+    );
+    writer.writeInteger(
+      rowInteger(row, 'covers_seq'),
+      'binary snapshot sync_crdt_checkpoints.covers_seq'
+    );
+    writeNullableString(
+      writer,
+      8,
+      row.actor_id,
+      'binary snapshot sync_crdt_checkpoints.actor_id'
+    );
+    writeNullableString(
+      writer,
+      9,
+      row.client_id,
+      'binary snapshot sync_crdt_checkpoints.client_id'
+    );
+    writer.writeString(
+      rowString(row, 'key_id'),
+      'binary snapshot sync_crdt_checkpoints.key_id'
+    );
+    writer.writeString(
+      rowString(row, 'ciphertext'),
+      'binary snapshot sync_crdt_checkpoints.ciphertext'
+    );
+    writer.writeJson(
+      scopesField(row.scopes),
+      'binary snapshot sync_crdt_checkpoints.scopes'
+    );
+  }
+  return writer.finish();
+}
+
+function recordRow(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Encrypted CRDT binary rows must be objects');
+  }
+  return value as Record<string, unknown>;
+}
+
+function rowString(row: Record<string, unknown>, field: string): string {
+  const value = row[field];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(
+      `Encrypted CRDT binary row field ${field} must be a non-empty string`
+    );
+  }
+  return value;
+}
+
+function rowInteger(
+  row: Record<string, unknown>,
+  field: string
+): number | bigint {
+  const value = row[field];
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return BigInt(value);
+  throw new Error(
+    `Encrypted CRDT binary row field ${field} must be an integer`
+  );
+}
+
+function writeNullableString(
+  writer: BinarySnapshotTableWriter,
+  columnIndex: number,
+  value: unknown,
+  label: string
+): void {
+  if (value == null) {
+    writer.writeNull(columnIndex);
+    return;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label} expected string`);
+  }
+  writer.writeString(value, label);
 }
 
 function escapeStreamPart(value: string): string {

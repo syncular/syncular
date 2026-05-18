@@ -2913,6 +2913,15 @@ client. Overflow should close or resync the session deliberately.
 - Status: in progress.
 - Add binary conflict/rejection records.
 - Add CRDT-specific update/checkpoint lanes.
+  - Done: encrypted CRDT update/checkpoint system handlers now expose stable
+    binary table metadata and encoders. The shared system tables no longer rely
+    on generic row inference for binary snapshot chunks or websocket/incremental
+    row groups when enough CRDT rows are in a pack. Focused coverage:
+    `bun test packages/server/src/encrypted-crdt.test.ts`,
+    `bun test packages/server-hono/src/__tests__/pull-chunk-storage.test.ts`,
+    and the Rust WASM encrypted update-log CRDT sync smoke. A 50-row encrypted
+    CRDT update sample encoded as `9718` binary bytes versus `15435` JSON row
+    frame bytes (`-37.0%`).
 - Add session-level backpressure: max in-flight packs, ack ranges, resume
   tokens, overflow/resync-required frames, and slow-client eviction policy.
   - Done: Hono websocket sessions now have a bounded
