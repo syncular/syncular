@@ -1999,6 +1999,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             chunks: None,
             is_first_page: true,
             is_last_page: true,
+            bootstrap_state_after: None,
         }]),
         MockMode::BlobReferenceSnapshot => Some(vec![SyncSnapshot {
             table: "tasks".to_string(),
@@ -2006,6 +2007,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             chunks: None,
             is_first_page: true,
             is_last_page: true,
+            bootstrap_state_after: None,
         }]),
         MockMode::RejectPush | MockMode::EncryptedConflict => None,
         MockMode::EncryptedChunkedSnapshot => Some(vec![SyncSnapshot {
@@ -2022,6 +2024,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             }]),
             is_first_page: true,
             is_last_page: true,
+            bootstrap_state_after: None,
         }]),
         MockMode::WakeupPull => Some(vec![SyncSnapshot {
             table: "tasks".to_string(),
@@ -2033,6 +2036,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             chunks: None,
             is_first_page: true,
             is_last_page: true,
+            bootstrap_state_after: None,
         }]),
     };
     let bootstrap_state = None;

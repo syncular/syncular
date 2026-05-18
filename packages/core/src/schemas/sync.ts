@@ -216,6 +216,7 @@ export const SyncSnapshotSchema = z.object({
   chunks: z.array(SyncSnapshotChunkRefSchema).optional(),
   isFirstPage: z.boolean(),
   isLastPage: z.boolean(),
+  bootstrapStateAfter: SyncBootstrapStateSchema.nullable().optional(),
 });
 
 export type SyncSnapshot = z.infer<typeof SyncSnapshotSchema>;

@@ -144,6 +144,12 @@ describe('binary sync pack format', () => {
                 chunks: [chunk],
                 isFirstPage: true,
                 isLastPage: true,
+                bootstrapStateAfter: {
+                  asOfCommitSeq: 42,
+                  tables: ['tasks'],
+                  tableIndex: 0,
+                  rowCursor: 'task-1',
+                },
               },
             ],
           },
@@ -153,7 +159,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(8);
+    expect(encoded[4]).toBe(9);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);

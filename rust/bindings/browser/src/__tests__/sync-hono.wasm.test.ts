@@ -536,6 +536,93 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ]);
   });
 
+  it('resumes bootstrap from the last applied snapshot chunk checkpoint', async () => {
+    const syncPosts: unknown[] = [];
+    let chunkRequests = 0;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      seedTasks: [
+        {
+          id: 'checkpoint-task-1',
+          title: 'Checkpoint Task 1',
+          actorId: ACTOR_A,
+        },
+        {
+          id: 'checkpoint-task-2',
+          title: 'Checkpoint Task 2',
+          actorId: ACTOR_A,
+        },
+      ],
+      edgeGate: async (request) => {
+        const url = new URL(request.url);
+        if (request.method === 'POST' && url.pathname === '/sync') {
+          syncPosts.push(await request.clone().json());
+        }
+        if (url.pathname.includes('/snapshot-chunks/')) {
+          chunkRequests += 1;
+          if (chunkRequests === 2) {
+            return new Response('chunk failure', { status: 500 });
+          }
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'snapshot-chunk-checkpoint-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      pull: {
+        includeSnapshotRows: false,
+        collectChangedRows: false,
+        limitSnapshotRows: 1,
+        maxSnapshotPages: 1,
+      },
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      subscriptions: [{ id: syncConformance.subscription.id }],
+    });
+    await expect(client.listTable('tasks')).resolves.toHaveLength(1);
+
+    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const checkpointRows = await unsafe.executeUnsafeSql<{
+      bootstrap_state_json: string | null;
+    }>(
+      'select bootstrap_state_json from sync_subscription_state where subscription_id = ?',
+      [syncConformance.subscription.id]
+    );
+    expect(checkpointRows.rows[0]?.bootstrap_state_json).toContain(
+      '"rowCursor"'
+    );
+
+    await expect(client.syncPull()).rejects.toThrow(/chunk failure/i);
+    await expect(client.listTable('tasks')).resolves.toHaveLength(1);
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      subscriptions: [{ id: syncConformance.subscription.id }],
+    });
+    await expect(client.listTable('tasks')).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'checkpoint-task-1' }),
+        expect.objectContaining({ id: 'checkpoint-task-2' }),
+      ])
+    );
+
+    const resumedRequests = syncPosts.filter((post) => {
+      if (typeof post !== 'object' || post === null) return false;
+      const subscription = (
+        post as {
+          pull?: { subscriptions?: Array<{ bootstrapState?: unknown }> };
+        }
+      ).pull?.subscriptions?.[0];
+      return subscription?.bootstrapState != null;
+    });
+    expect(resumedRequests.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('keeps repeated pulls of the same server row idempotent', async () => {
     const scenario = syncConformance.repeatedPull;
     const sync = await createHonoSyncHarness({

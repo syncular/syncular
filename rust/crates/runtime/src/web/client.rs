@@ -513,6 +513,21 @@ where
                                 elapsed_ms_since(row_apply_started_at);
                         }
                     }
+                    if let Some(bootstrap_state_after) = snapshot.bootstrap_state_after.clone() {
+                        let subscription_state_started_at = timing_now_ms();
+                        self.store
+                            .upsert_subscription_state(WebSubscriptionState {
+                                subscription_id: sub.id.clone(),
+                                table: table.clone(),
+                                scopes: sub.scopes.clone(),
+                                cursor: sub.next_cursor,
+                                bootstrap_state: Some(bootstrap_state_after),
+                                status: sub.status.clone(),
+                            })
+                            .await?;
+                        result.timings.subscription_state_ms +=
+                            elapsed_ms_since(subscription_state_started_at);
+                    }
                 }
             }
             let commits = std::mem::take(&mut sub.commits);
@@ -1453,6 +1468,7 @@ mod tests {
                                 }]),
                                 is_first_page: true,
                                 is_last_page: true,
+                                bootstrap_state_after: None,
                             }]),
                         }],
                     }),

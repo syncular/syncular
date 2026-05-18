@@ -11,7 +11,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 8;
+const VERSION: u16 = 9;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -310,6 +310,10 @@ fn read_snapshot(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncSnapshot> 
         chunks: reader.read_optional_array("snapshot chunks", read_snapshot_chunk_ref)?,
         is_first_page: reader.read_bool("snapshot first page")?,
         is_last_page: reader.read_bool("snapshot last page")?,
+        bootstrap_state_after: reader
+            .read_optional_json("snapshot bootstrap state after")?
+            .map(serde_json::from_value)
+            .transpose()?,
     })
 }
 
@@ -521,9 +525,9 @@ mod tests {
     use super::decode_binary_sync_pack;
 
     #[test]
-    fn decodes_v8_table_and_scope_dictionary_changes() {
+    fn decodes_v9_table_and_scope_dictionary_changes() {
         let bytes = [
-            83, 83, 80, 49, 8, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 21, 0, 0, 0, 95, 95, 115,
+            83, 83, 80, 49, 9, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 21, 0, 0, 0, 95, 95, 115,
             121, 110, 99, 117, 108, 97, 114, 95, 114, 101, 97, 108, 116, 105, 109, 101, 95, 95, 6,
             0, 97, 99, 116, 105, 118, 101, 2, 0, 0, 0, 123, 125, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
             0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 50, 48, 50, 54, 45, 48, 53, 45, 49, 56,
@@ -548,9 +552,9 @@ mod tests {
     }
 
     #[test]
-    fn decodes_v8_variant_tagged_push_rejections() {
+    fn decodes_v9_variant_tagged_push_rejections() {
         let bytes = [
-            83, 83, 80, 49, 8, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 99, 49, 3, 0, 2,
+            83, 83, 80, 49, 9, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 99, 49, 3, 0, 2,
             0, 0, 0, 0, 0, 0, 0, 2, 18, 0, 0, 0, 115, 101, 114, 118, 101, 114, 32, 114, 111, 119,
             32, 99, 104, 97, 110, 103, 101, 100, 1, 8, 0, 0, 0, 67, 79, 78, 70, 76, 73, 67, 84, 7,
             0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 123, 34, 105, 100, 34, 58, 34, 116, 97, 115, 107, 45,

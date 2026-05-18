@@ -11,6 +11,7 @@
  *   scope dictionaries, and grouped generated binary row payloads for
  *   incremental changes.
  * - v8: variant-tagged push and operation result records.
+ * - v9: per-snapshot `bootstrapStateAfter` checkpoints for partial resume.
  */
 
 import type {
@@ -42,7 +43,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 8;
+const VERSION = 9;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -637,6 +638,7 @@ function writeSnapshot(
   writer.optionalArray(snapshot.chunks, writeSnapshotChunkRef);
   writer.bool(snapshot.isFirstPage);
   writer.bool(snapshot.isLastPage);
+  writer.optionalJson(snapshot.bootstrapStateAfter ?? undefined);
 }
 
 function readSnapshot(reader: BinarySyncPackReader): SyncSnapshot {
@@ -652,6 +654,10 @@ function readSnapshot(reader: BinarySyncPackReader): SyncSnapshot {
   if (chunks) snapshot.chunks = chunks;
   snapshot.isFirstPage = reader.bool('snapshot first page');
   snapshot.isLastPage = reader.bool('snapshot last page');
+  snapshot.bootstrapStateAfter =
+    (reader.optionalJson(
+      'snapshot bootstrap state after'
+    ) as SyncSnapshot['bootstrapStateAfter']) ?? null;
   return snapshot;
 }
 

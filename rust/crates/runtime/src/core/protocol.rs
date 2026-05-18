@@ -299,6 +299,8 @@ pub struct SyncSnapshot {
     pub is_first_page: bool,
     #[serde(rename = "isLastPage")]
     pub is_last_page: bool,
+    #[serde(rename = "bootstrapStateAfter")]
+    pub bootstrap_state_after: Option<BootstrapState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
