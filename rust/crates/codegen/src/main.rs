@@ -4547,6 +4547,7 @@ fn generate_typescript_module(
     );
     out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
+    out.push_str("  schemaInstallMode?: 'full' | 'base' | 'none';\n");
     out.push_str("}\n\n");
     out.push_str("export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
     out.push_str("  assertSyncularAppRuntimeInfo(await database.client.runtimeInfo());\n");
@@ -4588,6 +4589,9 @@ fn generate_typescript_module(
     out.push_str("  if (typeof subscriptions === 'function') return subscriptions(args);\n");
     out.push_str("  return subscriptions ?? defaultSyncularSubscriptions(args);\n");
     out.push_str("}\n\n");
+    out.push_str("export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
+    out.push_str("  await withSyncularV2SchemaWrites(database, ensureSyncularAppDerivedSchema);\n");
+    out.push_str("}\n\n");
     out.push_str("export async function createSyncularAppDatabase(\n");
     out.push_str("  options: CreateSyncularAppDatabaseOptions\n");
     out.push_str("): Promise<SyncularAppDatabase> {\n");
@@ -4607,7 +4611,18 @@ fn generate_typescript_module(
     out.push_str("  });\n");
     out.push_str("  try {\n");
     out.push_str("    await assertSyncularAppRuntime(database);\n");
-    out.push_str("    await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);\n");
+    out.push_str("    const schemaInstallMode = options.schemaInstallMode ?? 'full';\n");
+    out.push_str("    if (schemaInstallMode === 'full') {\n");
+    out.push_str("      await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);\n");
+    out.push_str("    } else if (schemaInstallMode === 'base') {\n");
+    out.push_str(
+        "      await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);\n",
+    );
+    out.push_str("    } else if (schemaInstallMode !== 'none') {\n");
+    out.push_str(
+        "      throw new Error(`Unknown Syncular schemaInstallMode: ${schemaInstallMode}`);\n",
+    );
+    out.push_str("    }\n");
     out.push_str(
         "    await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));\n",
     );
@@ -8637,6 +8652,16 @@ mod tests {
         assert!(
             output.contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);")
         );
+        assert!(output.contains("schemaInstallMode?: 'full' | 'base' | 'none';"));
+        assert!(output.contains(
+            "export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {"
+        ));
+        assert!(output.contains(
+            "await withSyncularV2SchemaWrites(database, ensureSyncularAppDerivedSchema);"
+        ));
+        assert!(output.contains("const schemaInstallMode = options.schemaInstallMode ?? 'full';"));
+        assert!(output
+            .contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);"));
         assert!(output.contains("await database.client.setSubscriptions("));
         assert!(output.contains(
             "await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));"

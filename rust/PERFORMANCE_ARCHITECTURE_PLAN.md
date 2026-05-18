@@ -420,6 +420,26 @@ derived-schema deferral for app bootstrap.
   `2714.76ms -> 2987.44ms` (`+272.68ms`, `+10.0%`) and derived build
   `883.28ms -> 1102.95ms`. Keep planner analysis as a possible explicit app
   maintenance step, not the default first-bootstrap path.
+- Retained generated app API ergonomics for the deferred schema flow:
+  generated TypeScript now accepts `schemaInstallMode: 'full' | 'base' |
+  'none'` on `createSyncularAppDatabase`, defaults to `'full'`, and exports
+  `finalizeSyncularAppDatabaseSchema(database)` for the post-bootstrap derived
+  phase. The intended large-bootstrap app flow is:
+  create with `schemaInstallMode: 'base'`, run initial `syncOnce()` or the app
+  bootstrap loop, then call `finalizeSyncularAppDatabaseSchema`.
+  - Correctness: `cargo test --manifest-path rust/Cargo.toml -p
+    syncular-codegen` and `bun run --cwd rust/bindings/browser tsgo` passed.
+  - Normal local 100k release scoreboard after the API addition stayed neutral:
+    Rust bootstrap `138.04ms -> 138.34ms` (`+0.31ms`, `+0.22%`), pull apply
+    `73ms -> 74ms`, snapshot chunk apply `62ms -> 62ms`; TS bootstrap
+    `722.67ms -> 746.10ms`.
+  - External branch-server rerun with the same deferred-schema adapter stayed in
+    the accepted band: Rust 500k bootstrap `2714.76ms -> 2865.02ms`
+    (`+150.26ms`, `+5.5%`), local apply `382ms -> 408ms`, derived build
+    `883.28ms -> 944.63ms`, peak memory `732.33MB -> 734.70MB`. Same-run TS
+    500k bootstrap was `3857.29ms`, so Rust remained `0.74x` TS wall time.
+    Rust local-query p50s were `list=0.12ms`, `search=0.18ms`,
+    `read_model_aggregate=0.01ms`, `raw_aggregate=7.90ms`.
 
 ### Required Benchmark Scoreboard
 
