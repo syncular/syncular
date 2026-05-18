@@ -2807,6 +2807,18 @@ client. Overflow should close or resync the session deliberately.
     realtime HTTP fallback stayed `0`, served Rust WASM bytes moved only
     `3328084 -> 3328084` versus the 500 run. Report:
     `.context/benchmarks/browser-e2e-limit-commits-1000.json`.
+  - External offline-sync-bench after rebuilding the branch server and Rust
+    WASM dev artifact:
+    TS/Rust bootstrap completed with 500k `3845.52ms` vs `6043.95ms`
+    (`1.57x` slower Rust, improved versus the recent user-provided Rust
+    `7934ms` run); Rust 500k local apply was `1718ms`, peak memory `676MB`.
+    Local query: TS/Rust list p50 `0.10ms` vs `0.48ms`, search p50 `0.08ms`
+    vs `0.71ms`, aggregate read model `5.31ms` vs `0.06ms`, Rust raw SQL
+    aggregate `57.15ms`. Rust-only online propagation p50/p95 was
+    `24.22ms`/`35.14ms`; Rust reconnect storm was 25 clients `142.16ms`,
+    100 clients `235.42ms`, 250 clients `2103.82ms`. TS online-propagation
+    failed with the known snapshot chunk integrity mismatch and then hung, so
+    no valid TS online/reconnect pair was produced.
 - Done: added a dense incremental pull measurement lane that separates server
   response build from response build plus binary sync-pack encoding. This is
   the current measurement gate before adding a durable binary commit log.
