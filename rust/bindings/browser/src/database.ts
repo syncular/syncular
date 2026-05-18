@@ -637,7 +637,6 @@ class SyncularV2Driver extends BaseSqliteDriver {
     super(async () => {
       this.conn = new SyncularV2Connection(
         client,
-        this.#emitLiveEvents,
         options.unsafeWrites ?? false
       );
     });
@@ -701,12 +700,6 @@ class SyncularV2Driver extends BaseSqliteDriver {
     await Promise.allSettled(ids.map((id) => this.client.unsubscribeQuery(id)));
   }
 
-  #emitLiveEvents = async (): Promise<void> => {
-    const events =
-      await this.client.drainLiveQueryEvents<Record<string, unknown>>();
-    for (const event of events) this.#listeners.get(event.queryId)?.(event);
-  };
-
   async #unsubscribeQuery(id: string): Promise<void> {
     if (!this.#listeners.has(id)) return;
     this.#listeners.delete(id);
@@ -718,7 +711,6 @@ class SyncularV2Driver extends BaseSqliteDriver {
 class SyncularV2Connection implements DatabaseConnection {
   constructor(
     private readonly client: SyncularV2ConnectionClient,
-    private readonly emitLiveEvents: () => Promise<void>,
     private readonly unsafeWrites: boolean
   ) {}
 
@@ -732,7 +724,6 @@ class SyncularV2Connection implements DatabaseConnection {
           compiledQuery.sql,
           compiledQuery.parameters
         );
-    await this.emitLiveEvents();
     return {
       rows: result.rows as R[],
       numAffectedRows:
