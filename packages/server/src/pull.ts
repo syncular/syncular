@@ -1372,22 +1372,20 @@ export async function pull<
                     continue;
                   }
 
-                  const commitsBySeq = new Map<number, SyncCommit>();
-                  const commitSeqs: number[] = [];
+                  const commits: SyncCommit[] = [];
 
                   for (const r of incrementalRows) {
                     nextCursor = Math.max(nextCursor, r.commit_seq);
                     const seq = r.commit_seq;
-                    let commit = commitsBySeq.get(seq);
-                    if (!commit) {
+                    let commit = commits[commits.length - 1];
+                    if (!commit || commit.commitSeq !== seq) {
                       commit = {
                         commitSeq: seq,
                         createdAt: r.created_at,
                         actorId: r.actor_id,
                         changes: [],
                       };
-                      commitsBySeq.set(seq, commit);
-                      commitSeqs.push(seq);
+                      commits.push(commit);
                     }
 
                     const change: SyncChange = {
@@ -1403,7 +1401,7 @@ export async function pull<
 
                   nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
 
-                  if (commitSeqs.length === 0) {
+                  if (commits.length === 0) {
                     subResponses.push({
                       id: sub.id,
                       status: 'active',
@@ -1415,11 +1413,6 @@ export async function pull<
                     nextCursors.push(nextCursor);
                     continue;
                   }
-
-                  const commits: SyncCommit[] = commitSeqs
-                    .map((seq) => commitsBySeq.get(seq))
-                    .filter((c): c is SyncCommit => !!c)
-                    .filter((c) => c.changes.length > 0);
 
                   subResponses.push({
                     id: sub.id,
