@@ -119,6 +119,19 @@ function createPullBootstrapTimings(): PullBootstrapTimings {
   };
 }
 
+function resolveBinarySnapshotBundleRowLimit(args: {
+  limitSnapshotRows: number;
+  pagesRemaining: number;
+}): number {
+  const pageSize = Math.max(1, args.limitSnapshotRows);
+  const pagesRemaining = Math.max(1, args.pagesRemaining);
+  const maxBundlePages = Math.max(
+    1,
+    Math.ceil(DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS / pageSize)
+  );
+  return pageSize * Math.min(pagesRemaining, maxBundlePages);
+}
+
 async function gzipByteChunks(
   chunks: readonly Uint8Array[],
   gzipLevel: number
@@ -783,6 +796,7 @@ export async function pull<
                       isFirstPage: boolean;
                       isLastPage: boolean;
                       pageCount: number;
+                      cacheRowLimit: number | null;
                       ttlMs: number;
                       payloadByteLength: number;
                       payloadParts: Uint8Array[];
@@ -811,6 +825,7 @@ export async function pull<
                         isFirstPage: rowCursor == null,
                         isLastPage: false,
                         pageCount: 0,
+                        cacheRowLimit: null,
                         ttlMs,
                         payloadByteLength: payloadParts.reduce(
                           (sum, part) => sum + part.length,
@@ -864,7 +879,8 @@ export async function pull<
                       const nowIso = new Date().toISOString();
                       const bundleRowLimit = Math.max(
                         1,
-                        limitSnapshotRows * bundle.pageCount
+                        bundle.cacheRowLimit ??
+                          limitSnapshotRows * bundle.pageCount
                       );
 
                       const cacheLookupStartedAt = Date.now();
@@ -1008,13 +1024,12 @@ export async function pull<
                           1,
                           maxSnapshotPages - pageIndex
                         );
-                        const cachedRowLimit = Math.max(
-                          1,
-                          Math.min(
-                            DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS,
-                            limitSnapshotRows * pagesRemaining
-                          )
-                        );
+                        const cachedRowLimit =
+                          resolveBinarySnapshotBundleRowLimit({
+                            limitSnapshotRows,
+                            pagesRemaining,
+                          });
+                        activeBundle.cacheRowLimit = cachedRowLimit;
                         const cacheLookupStartedAt = Date.now();
                         const cached: SnapshotChunkRefWithContinuation | null =
                           await readSnapshotChunkRefByPageKey(trx, {
