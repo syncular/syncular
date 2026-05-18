@@ -478,6 +478,18 @@ derived-schema deferral for app bootstrap.
   without improving the external branch-server path, because that app does not
   currently provide generated binary metadata/appender hooks. Revert the API;
   revisit only as part of a full server-generated snapshot artifact design.
+- Retained binary snapshot chunk cache-key fix. Cache lookup now uses the same
+  planned binary bundle row limit that chunk persistence uses, rounded to whole
+  snapshot pages. This fixes large page sizes such as `limitSnapshotRows >
+  DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS`, where the second bootstrap could
+  miss the cache and re-run snapshot query/encode. Unit coverage proves a
+  `60_000` row page size hits cache on the second pull without calling the
+  snapshot function. Local benchmark impact is neutral for first bootstrap:
+  100k Rust bootstrap `138.04ms -> 146.05ms` while TS drifted
+  `722.67ms -> 791.52ms`; 500k Rust bootstrap `593.35ms -> 651.77ms` while TS
+  drifted `3408.88ms -> 3759.75ms`. The retained target is cached/artifact
+  correctness: 500k cached server snapshot query and binary encode are both
+  `0ms`, with cached pull request `2ms`.
 
 ### Required Benchmark Scoreboard
 

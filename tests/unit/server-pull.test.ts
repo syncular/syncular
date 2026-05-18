@@ -361,6 +361,72 @@ describe('pull', () => {
     expect(decoded.rows).toHaveLength(5);
   });
 
+  it('uses stable binary chunk cache keys when page size exceeds bundle target', async () => {
+    let snapshotQueryCount = 0;
+    const rows = Array.from({ length: 5 }, (_, index) => ({
+      id: `task-${index}`,
+      user_id: 'u1',
+      title: `Task ${index}`,
+      server_version: 1,
+    }));
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+      snapshot: async (ctx) => {
+        snapshotQueryCount += 1;
+        const start =
+          ctx.cursor == null
+            ? 0
+            : rows.findIndex((row) => row.id > ctx.cursor!);
+        const offset = start < 0 ? rows.length : start;
+        const pageRows = rows.slice(offset, offset + ctx.limit);
+        const nextRow = rows[offset + ctx.limit - 1];
+        return {
+          rows: pageRows,
+          nextCursor:
+            offset + ctx.limit < rows.length && nextRow ? nextRow.id : null,
+        };
+      },
+    });
+
+    const pullRequest = (clientId: string) =>
+      pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        request: {
+          clientId,
+          limitCommits: 10,
+          limitSnapshotRows: 60_000,
+          maxSnapshotPages: 1,
+          snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+            },
+          ],
+        },
+      });
+
+    await pullRequest('c-large-page-cache-warm');
+    expect(snapshotQueryCount).toBe(1);
+
+    snapshotQueryCount = 0;
+    const cached = await pullRequest('c-large-page-cache-hit');
+    expect(snapshotQueryCount).toBe(0);
+    expect(cached.response.subscriptions[0]!.snapshots![0]!.isLastPage).toBe(
+      true
+    );
+  });
+
   it('uses handler-provided binary snapshot columns when available', async () => {
     const handlers = makeHandlers({
       snapshotBinaryColumns: [
