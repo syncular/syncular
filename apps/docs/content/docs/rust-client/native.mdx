@@ -94,6 +94,13 @@ the sync worker. BoltFFI hosts call `startRealtimeWorker()` and
 `syncular_native_client_start_realtime_worker(...)` and
 `syncular_native_client_stop_realtime_worker(...)`.
 
+Native presence uses the same websocket session. Swift/Kotlin call
+`joinPresence(scopeKey:metadataJson:)`, `updatePresenceMetadata(...)`,
+`leavePresence(...)`, and `presenceJson(scopeKey:)`; C hosts use the matching
+`syncular_native_client_*presence*` functions. Presence updates emit
+`PresenceChanged` events with `payloadJson.scopeKey` and `payloadJson.presence`.
+Joined scopes are remembered and re-sent after realtime reconnect.
+
 App-specific Rust wrappers can subscribe at the worker layer instead of polling
 or rebuilding their own event hub:
 

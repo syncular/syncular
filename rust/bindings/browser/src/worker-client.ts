@@ -202,6 +202,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     Set<SyncularV2ClientEventSink<SyncularV2ClientEventType>>
   >();
   #presenceByScopeKey = new Map<string, SyncularV2PresenceEntry[]>();
+  #joinedPresence = new Map<string, Record<string, unknown> | undefined>();
   #liveListeners = new Map<
     string,
     (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
@@ -701,6 +702,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   joinPresence(scopeKey: string, metadata?: Record<string, unknown>): void {
+    this.#joinedPresence.set(scopeKey, metadata);
     void this.#request({
       type: 'sendPresence',
       action: 'join',
@@ -725,6 +727,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   leavePresence(scopeKey: string): void {
+    this.#joinedPresence.delete(scopeKey);
     void this.#request({
       type: 'sendPresence',
       action: 'leave',
@@ -750,6 +753,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     scopeKey: string,
     metadata: Record<string, unknown>
   ): void {
+    if (this.#joinedPresence.has(scopeKey)) {
+      this.#joinedPresence.set(scopeKey, metadata);
+    }
     void this.#request({
       type: 'sendPresence',
       action: 'update',
@@ -1037,6 +1043,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         message: `Syncular v2 realtime is ${event.state}`,
         details: { state: event.state },
       });
+      if (event.state === 'connected') {
+        this.#rejoinPresence();
+      }
       return;
     }
     if (event.type === 'presenceEvent') {
@@ -1281,6 +1290,26 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       scopeKey,
       presence: next,
     });
+  }
+
+  #rejoinPresence(): void {
+    if (this.#joinedPresence.size === 0) return;
+    for (const [scopeKey, metadata] of this.#joinedPresence) {
+      void this.#request({
+        type: 'sendPresence',
+        action: 'join',
+        scopeKey,
+        ...(metadata === undefined ? {} : { metadata }),
+      }).catch((error) => {
+        this.#emitDiagnostic({
+          level: 'warn',
+          source: 'realtime',
+          code: 'realtime.presence_rejoin_failed',
+          message: `Syncular v2 presence rejoin failed: ${errorMessage(error)}`,
+          details: { scopeKey },
+        });
+      });
+    }
   }
 
   #rejectAll(reason: SyncularV2WorkerErrorPayload | Error): void {

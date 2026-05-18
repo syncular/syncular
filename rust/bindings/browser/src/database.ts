@@ -1,5 +1,6 @@
 import {
   applyCodecsToDbRow,
+  type BlobRef,
   type ColumnCodecDialect,
   type ColumnCodecSource,
   createColumnCodecsPlugin,
@@ -26,6 +27,7 @@ import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2Blobs,
+  SyncularV2BlobStoreOptions,
   SyncularV2Client,
   SyncularV2CrdtYjsFieldConfig,
   SyncularV2LiveQueries,
@@ -138,6 +140,11 @@ export async function createSyncularV2Database<DB>(
     debounceMs: options.sync?.mutationSyncDebounceMs ?? 10,
     isClosed: () => closed,
   });
+  const blobUploadScheduler = createBlobUploadScheduler(client, {
+    enabled: options.sync?.autoProcessBlobUploadsAfterStore ?? false,
+    debounceMs: options.sync?.blobUploadDebounceMs ?? 10,
+    isClosed: () => closed,
+  });
   const mutations = createSyncularV2Mutations<DB>({
     client,
     codecs: options.codecs,
@@ -146,7 +153,12 @@ export async function createSyncularV2Database<DB>(
     readBaseVersion: (args) => readCurrentBaseVersion(client, args),
     afterCommit: () => mutationSyncScheduler.schedule(),
   });
-  const blobs = createSyncularV2BlobClient(client);
+  const blobs = createSyncularV2BlobClient(client, {
+    afterStore: ({ options }) => {
+      if (options?.immediate) return;
+      blobUploadScheduler.schedule();
+    },
+  });
 
   return {
     db,
@@ -159,6 +171,7 @@ export async function createSyncularV2Database<DB>(
       if (closed) return;
       closed = true;
       mutationSyncScheduler.destroy();
+      blobUploadScheduler.destroy();
       try {
         await dialect.destroyLiveQueries();
         await db.destroy();
@@ -227,6 +240,62 @@ function createMutationSyncScheduler(
   };
 }
 
+function createBlobUploadScheduler(
+  client: Pick<SyncularV2Client, 'processBlobUploadQueue'>,
+  options: {
+    enabled: boolean;
+    debounceMs: number | false;
+    isClosed: () => boolean;
+  }
+): { schedule(): void; destroy(): void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> | undefined;
+  let queued = false;
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+  const run = async () => {
+    if (options.isClosed()) return;
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    inFlight = client
+      .processBlobUploadQueue()
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        inFlight = undefined;
+        if (queued && !options.isClosed()) {
+          queued = false;
+          schedule();
+        }
+      });
+    await inFlight;
+  };
+  const schedule = () => {
+    if (!options.enabled || options.isClosed()) return;
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    clear();
+    if (options.debounceMs === false || options.debounceMs <= 0) {
+      queueMicrotask(() => void run());
+      return;
+    }
+    timer = setTimeout(() => void run(), options.debounceMs);
+  };
+  return {
+    schedule,
+    destroy() {
+      clear();
+      queued = false;
+    },
+  };
+}
+
 export function createSyncularV2BlobClient(
   client: Pick<
     SyncularV2Client,
@@ -238,11 +307,22 @@ export function createSyncularV2BlobClient(
     | 'blobCacheStats'
     | 'pruneBlobCache'
     | 'clearBlobCache'
-  >
+  >,
+  hooks: {
+    afterStore?: (args: {
+      ref: BlobRef;
+      options?: SyncularV2BlobStoreOptions;
+    }) => void | Promise<void>;
+  } = {}
 ): SyncularV2Blobs {
   return {
-    async store(data, options) {
-      return client.storeBlob(await toUint8Array(data), options);
+    async store(data, storeOptions) {
+      const ref = await client.storeBlob(await toUint8Array(data), storeOptions);
+      await hooks.afterStore?.({
+        ref,
+        ...(storeOptions === undefined ? {} : { options: storeOptions }),
+      });
+      return ref;
     },
     retrieve(ref) {
       return client.retrieveBlob(ref);

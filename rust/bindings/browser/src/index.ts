@@ -1,4 +1,5 @@
 export * from './client-config';
+export * from './client';
 export * from './database';
 export * from './mutations';
 export * from './runtime-contract';

@@ -119,6 +119,32 @@ bool syncular_native_client_stop_realtime_worker(
     char **error_out
 );
 
+bool syncular_native_client_join_presence(
+    SyncularNativeHandle *handle,
+    const char *scope_key,
+    const char *metadata_json,
+    char **error_out
+);
+
+bool syncular_native_client_leave_presence(
+    SyncularNativeHandle *handle,
+    const char *scope_key,
+    char **error_out
+);
+
+bool syncular_native_client_update_presence_metadata(
+    SyncularNativeHandle *handle,
+    const char *scope_key,
+    const char *metadata_json,
+    char **error_out
+);
+
+char *syncular_native_client_presence_json(
+    SyncularNativeHandle *handle,
+    const char *scope_key,
+    char **error_out
+);
+
 bool syncular_native_client_set_auth_headers_json(
     SyncularNativeHandle *handle,
     const char *headers_json,

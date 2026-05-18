@@ -16,6 +16,7 @@ import {
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
 import {
   createSyncularV2Commit,
+  createSyncularV2BlobClient,
   createSyncularV2Dialect,
   withSyncularV2SchemaWrites,
 } from './database';
@@ -123,6 +124,57 @@ describe('Syncular v2 mutations', () => {
       base_version: 42,
     });
     expect(entry.localRow).toEqual({ id: 'comment-soft-delete', deleted: 1 });
+  });
+});
+
+describe('Syncular v2 blobs', () => {
+  it('runs store hooks with the stored blob ref and options', async () => {
+    const afterStores: unknown[] = [];
+    const blobs = createSyncularV2BlobClient(
+      {
+        async storeBlob() {
+          return {
+            hash: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+            size: 3,
+            mimeType: 'text/plain',
+          };
+        },
+        async retrieveBlob() {
+          return new Uint8Array();
+        },
+        async isBlobLocal() {
+          return true;
+        },
+        async processBlobUploadQueue() {
+          return { uploaded: 0, failed: 0 };
+        },
+        async blobUploadQueueStats() {
+          return { pending: 0, uploading: 0, failed: 0 };
+        },
+        async blobCacheStats() {
+          return { count: 0, totalBytes: 0 };
+        },
+        async pruneBlobCache() {
+          return 0;
+        },
+        async clearBlobCache() {},
+      },
+      {
+        afterStore: (args) => afterStores.push(args),
+      }
+    );
+
+    const ref = await blobs.store(new Uint8Array([1, 2, 3]), {
+      mimeType: 'text/plain',
+    });
+
+    expect(ref.mimeType).toBe('text/plain');
+    expect(afterStores).toEqual([
+      {
+        ref,
+        options: { mimeType: 'text/plain' },
+      },
+    ]);
   });
 });
 

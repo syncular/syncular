@@ -246,6 +246,67 @@ pub extern "C" fn syncular_native_client_stop_realtime_worker(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_join_presence(
+    handle: *mut SyncularNativeHandle,
+    scope_key: *const c_char,
+    metadata_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let scope_key = read_c_string(scope_key)?;
+        let metadata = read_optional_c_string(metadata_json)?
+            .map(|json| serde_json::from_str(&json))
+            .transpose()?;
+        with_client(handle, |client| client.join_presence(&scope_key, metadata))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_leave_presence(
+    handle: *mut SyncularNativeHandle,
+    scope_key: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let scope_key = read_c_string(scope_key)?;
+        with_client(handle, |client| client.leave_presence(&scope_key))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_update_presence_metadata(
+    handle: *mut SyncularNativeHandle,
+    scope_key: *const c_char,
+    metadata_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let scope_key = read_c_string(scope_key)?;
+        let metadata_json = read_c_string(metadata_json)?;
+        let metadata = serde_json::from_str(&metadata_json)?;
+        with_client(handle, |client| {
+            client.update_presence_metadata(&scope_key, metadata)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_presence_json(
+    handle: *mut SyncularNativeHandle,
+    scope_key: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let scope_key = read_c_string(scope_key)?;
+        with_client(handle, |client| client.presence_json(&scope_key))
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_set_auth_headers_json(
     handle: *mut SyncularNativeHandle,
     headers_json: *const c_char,

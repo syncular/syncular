@@ -136,6 +136,8 @@ export interface SyncularV2DatabaseSyncOptions {
   autoSyncAfterMutation?: boolean;
   mutationSyncDebounceMs?: number | false;
   rowsChangedDebounceMs?: number | false;
+  autoProcessBlobUploadsAfterStore?: boolean;
+  blobUploadDebounceMs?: number | false;
 }
 
 export interface CreateSyncularV2DatabaseOptions {
@@ -436,9 +438,7 @@ export interface SyncularV2ConflictStats {
   total: number;
 }
 
-export interface SyncularV2PresenceEntry<
-  TMetadata = Record<string, unknown>,
-> {
+export interface SyncularV2PresenceEntry<TMetadata = Record<string, unknown>> {
   clientId: string;
   actorId: string;
   joinedAt: number;
@@ -497,6 +497,12 @@ export interface SyncularV2SyncTimings {
   pullTransformMs: number;
   snapshotFetchMs: number;
   pullApplyMs: number;
+  scopeClearMs: number;
+  snapshotRowApplyMs: number;
+  snapshotChunkApplyMs: number;
+  snapshotChunkMaterializeMs: number;
+  commitApplyMs: number;
+  subscriptionStateMs: number;
   notifyMs: number;
 }
 

@@ -84,6 +84,38 @@ Generated helpers intentionally do not emit table constants, column constants,
 or canned queries. Reads stay plain Kysely. Sync-aware writes go through
 `syncular.mutations` or generated operation helpers.
 
+For apps that want a lifecycle-managed surface instead of wiring startup by
+hand, `createSyncularV2Client` wraps `createSyncularV2Database` with
+subscription setup, initial sync, optional realtime, reconnect catchup, and
+coordinated shutdown:
+
+```ts
+import { createSyncularV2Client } from '@syncular/client-rust';
+
+const syncular = await createSyncularV2Client<AppDb>({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'client-1',
+  },
+  subscriptions: [
+    {
+      id: 'tasks:user-1',
+      table: 'tasks',
+      scopes: { user_id: 'user-1' },
+    },
+  ],
+  realtime: true,
+});
+
+await syncular.destroy();
+```
+
+The managed client does not enable interval polling by default. Realtime is a
+wakeup path: websocket reconnects trigger HTTP catchup sync, and failed
+inline/binary websocket applies already fall back to pull. Use
+`lifecycle.pollIntervalMs` only for environments that explicitly need polling.
+
 Generated apps also get typed row-delta helpers for realtime/UI routing. The
 runtime event stays generic, while app code can branch on real table columns:
 
@@ -129,12 +161,17 @@ const syncular = await createSyncularAppDatabase({
     autoSyncAfterMutation: true, // default
     mutationSyncDebounceMs: 25,
     rowsChangedDebounceMs: 16,
+    autoProcessBlobUploadsAfterStore: false, // default
+    blobUploadDebounceMs: 25,
   },
 });
 ```
 
 Set `autoSyncAfterMutation: false` when an app wants to batch its own sync
-cycles explicitly.
+cycles explicitly. Set `autoProcessBlobUploadsAfterStore: true` when the
+browser should process queued blob uploads after `blobs.store()` with the same
+debounce/backpressure model. It is disabled by default so mobile/background
+hosts can choose when network blob work is allowed.
 
 ## Blobs
 
@@ -159,6 +196,8 @@ const bytes = await syncular.blobs.retrieve(avatar);
 `store()` hashes and caches bytes in Rust/WASM SQLite, then queues upload unless
 `immediate: true` is passed. Upload/download requests use the same auth header
 lifecycle as sync and talk to the server blob routes under `${baseUrl}/blobs`.
+Apps can call `processUploadQueue()` manually or opt into
+`sync.autoProcessBlobUploadsAfterStore`.
 Columns listed in `blobColumns` are typed as `BlobRef` in generated Kysely
 types and use generated codecs so SQLite stores JSON text while app code reads
 and writes structured blob refs.

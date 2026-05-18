@@ -253,6 +253,48 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func joinPresence(scopeKey: String, metadataJson: String? = nil) throws -> Bool {
+        var scopeKey = scopeKey
+        let metadataJsonBytes = boltffiEncode { writer in writer.writeOptional(metadataJson) { writer, v in writer.writeString(v) } }
+        return try scopeKey.withUTF8 { scopeKeyBuf in
+            return try metadataJsonBytes.withUnsafeBufferPointer { metadataJsonBuf in
+                let buf = boltffi_syncular_bolt_client_join_presence(handle, scopeKeyBuf.baseAddress!, UInt(scopeKeyBuf.count), metadataJsonBuf.baseAddress, UInt(metadataJsonBuf.count))
+                defer { boltffi_free_buf(buf) }
+                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+            }
+        }
+    }
+
+    public func leavePresence(scopeKey: String) throws -> Bool {
+        var scopeKey = scopeKey
+        return try scopeKey.withUTF8 { scopeKeyBuf in
+            let buf = boltffi_syncular_bolt_client_leave_presence(handle, scopeKeyBuf.baseAddress!, UInt(scopeKeyBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
+    public func updatePresenceMetadata(scopeKey: String, metadataJson: String) throws -> Bool {
+        var scopeKey = scopeKey
+        var metadataJson = metadataJson
+        return try scopeKey.withUTF8 { scopeKeyBuf in
+            return try metadataJson.withUTF8 { metadataJsonBuf in
+                let buf = boltffi_syncular_bolt_client_update_presence_metadata(handle, scopeKeyBuf.baseAddress!, UInt(scopeKeyBuf.count), metadataJsonBuf.baseAddress!, UInt(metadataJsonBuf.count))
+                defer { boltffi_free_buf(buf) }
+                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+            }
+        }
+    }
+
+    public func presenceJson(scopeKey: String) throws -> String {
+        var scopeKey = scopeKey
+        return try scopeKey.withUTF8 { scopeKeyBuf in
+            let buf = boltffi_syncular_bolt_client_presence_json(handle, scopeKeyBuf.baseAddress!, UInt(scopeKeyBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func startEventStream(capacity: UInt64) throws -> Bool {
         let buf = boltffi_syncular_bolt_client_start_event_stream(handle, capacity)
         defer { boltffi_free_buf(buf) }

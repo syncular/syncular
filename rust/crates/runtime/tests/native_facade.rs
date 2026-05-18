@@ -1793,6 +1793,54 @@ fn native_facade_can_pause_and_resume_background_worker() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn native_facade_tracks_presence_and_emits_events() -> Result<()> {
+    let path = temp_db_path("syncular-native-presence");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-presence-client"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+    let scope_key = "user:user-rust";
+
+    client.join_presence(scope_key, Some(json!({ "editing": "task-1" })))?;
+    let event = client
+        .next_event_timeout(Duration::from_secs(5))
+        .expect("presence event");
+    assert_eq!(event.kind, NativeEventKind::PresenceChanged);
+    assert_eq!(
+        event
+            .payload_json
+            .as_ref()
+            .and_then(|value| value.get("scopeKey")),
+        Some(&json!(scope_key))
+    );
+    let presence: Value = serde_json::from_str(&client.presence_json(scope_key)?)?;
+    assert_eq!(presence[0]["clientId"], "native-presence-client");
+    assert_eq!(presence[0]["metadata"]["editing"], "task-1");
+
+    client.update_presence_metadata(scope_key, json!({ "editing": "task-2" }))?;
+    let event = client
+        .next_event_timeout(Duration::from_secs(5))
+        .expect("presence update event");
+    assert_eq!(event.kind, NativeEventKind::PresenceChanged);
+    let presence: Value = serde_json::from_str(&client.presence_json(scope_key)?)?;
+    assert_eq!(presence[0]["metadata"]["editing"], "task-2");
+
+    client.leave_presence(scope_key)?;
+    let event = client
+        .next_event_timeout(Duration::from_secs(5))
+        .expect("presence leave event");
+    assert_eq!(event.kind, NativeEventKind::PresenceChanged);
+    let presence: Value = serde_json::from_str(&client.presence_json(scope_key)?)?;
+    assert_eq!(presence.as_array().map(Vec::len), Some(0));
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
 fn apply_task_upsert(
     client: &mut NativeSyncularClient,
     task_id: &str,

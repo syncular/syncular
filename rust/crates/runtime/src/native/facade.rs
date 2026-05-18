@@ -15,7 +15,8 @@ use crate::runtime_schema::runtime_schema_version;
 use crate::sqlite_query::ReadonlySqlQueryExecutor;
 use crate::store::{now_ms, ConflictSummary, OutboxSummary};
 use crate::transport::{
-    HttpSyncTransport, SyncAuthHeaderStore, SyncAuthHeaders, SyncTransportConfig,
+    HttpSyncTransport, RealtimeEvent, RealtimePresenceEntry, RealtimePresenceEvent,
+    SyncAuthHeaderStore, SyncAuthHeaders, SyncTransportConfig,
 };
 use crate::worker::{
     PersistentRealtimeWorker, SyncWorker, SyncWorkerEvent, SyncWorkerEventSubscription,
@@ -60,6 +61,7 @@ pub struct NativeSyncularClient {
     worker: Option<SyncWorker>,
     worker_event_pump: Option<JoinHandle<()>>,
     realtime_worker: Option<PersistentRealtimeWorker>,
+    presence_by_scope: Arc<Mutex<BTreeMap<String, Vec<NativePresenceEntry>>>>,
     auth_headers: SyncAuthHeaders,
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
@@ -115,6 +117,7 @@ pub enum NativeEventKind {
     RowsChanged,
     QueriesChanged,
     ConflictsChanged,
+    PresenceChanged,
     EventsOverflowed,
 }
 
@@ -184,6 +187,16 @@ pub struct NativeDiagnostic {
 pub struct NativeAuthInfo {
     pub operation: String,
     pub status: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativePresenceEntry {
+    pub client_id: String,
+    pub actor_id: String,
+    pub joined_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +347,8 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "table-level-rows-changed-events",
             "query-observer-events",
             "conflicts-changed-events",
+            "realtime-presence",
+            "presence-changed-events",
             "blob-file-api",
             "background-worker-lifecycle",
             "structured-diagnostics",
@@ -403,6 +418,7 @@ impl NativeSyncularClient {
             worker.event_source(),
         ));
         let read_executor = ReadonlySqlQueryExecutor::open(&config.db_path, app_schema, 64)?;
+        let presence_by_scope = Arc::new(Mutex::new(BTreeMap::new()));
 
         Ok(Self {
             config,
@@ -410,6 +426,7 @@ impl NativeSyncularClient {
             worker: Some(worker),
             worker_event_pump,
             realtime_worker: None,
+            presence_by_scope,
             auth_headers: SyncAuthHeaders::new(),
             field_encryption: None,
             encrypted_crdt: None,
@@ -698,7 +715,22 @@ impl NativeSyncularClient {
         ))
         .with_schema_version(self.writer.app_schema().current_schema_version());
         transport.set_auth_headers(self.auth_headers.clone());
-        self.realtime_worker = Some(PersistentRealtimeWorker::start(transport, trigger));
+        let events = self.events.clone();
+        let presence_by_scope = self.presence_by_scope.clone();
+        self.realtime_worker = Some(PersistentRealtimeWorker::start_with_event_handler(
+            transport,
+            trigger,
+            Some(Arc::new(move |event| {
+                if let RealtimeEvent::Presence(presence) = event {
+                    apply_native_presence_event(&presence_by_scope, &events, presence);
+                }
+            })),
+        ));
+        if let Some(realtime_worker) = &self.realtime_worker {
+            for (scope_key, metadata) in self.local_presence_metadata()? {
+                realtime_worker.send_presence("join", scope_key, metadata)?;
+            }
+        }
         Ok(())
     }
 
@@ -711,6 +743,86 @@ impl NativeSyncularClient {
 
     pub fn sync_worker_running(&self) -> bool {
         self.worker.is_some()
+    }
+
+    pub fn join_presence(&mut self, scope_key: &str, metadata: Option<Value>) -> Result<()> {
+        let event = RealtimePresenceEvent {
+            action: "join".to_string(),
+            scope_key: scope_key.to_string(),
+            client_id: Some(self.config.client_id.clone()),
+            actor_id: Some(self.config.actor_id.clone()),
+            metadata: metadata.clone(),
+            entries: Vec::new(),
+        };
+        apply_native_presence_event(&self.presence_by_scope, &self.events, event);
+        if let Some(realtime_worker) = &self.realtime_worker {
+            realtime_worker.send_presence("join", scope_key, metadata)?;
+        }
+        Ok(())
+    }
+
+    pub fn leave_presence(&mut self, scope_key: &str) -> Result<()> {
+        let event = RealtimePresenceEvent {
+            action: "leave".to_string(),
+            scope_key: scope_key.to_string(),
+            client_id: Some(self.config.client_id.clone()),
+            actor_id: Some(self.config.actor_id.clone()),
+            metadata: None,
+            entries: Vec::new(),
+        };
+        apply_native_presence_event(&self.presence_by_scope, &self.events, event);
+        if let Some(realtime_worker) = &self.realtime_worker {
+            realtime_worker.send_presence("leave", scope_key, None)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_presence_metadata(&mut self, scope_key: &str, metadata: Value) -> Result<()> {
+        let event = RealtimePresenceEvent {
+            action: "update".to_string(),
+            scope_key: scope_key.to_string(),
+            client_id: Some(self.config.client_id.clone()),
+            actor_id: Some(self.config.actor_id.clone()),
+            metadata: Some(metadata.clone()),
+            entries: Vec::new(),
+        };
+        apply_native_presence_event(&self.presence_by_scope, &self.events, event);
+        if let Some(realtime_worker) = &self.realtime_worker {
+            realtime_worker.send_presence("update", scope_key, Some(metadata))?;
+        }
+        Ok(())
+    }
+
+    pub fn presence_json(&self, scope_key: &str) -> Result<String> {
+        let presence = self
+            .presence_by_scope
+            .lock()
+            .map_err(|_| {
+                SyncularError::message(ErrorKind::Internal, "native presence is poisoned")
+            })?
+            .get(scope_key)
+            .cloned()
+            .unwrap_or_default();
+        Ok(serde_json::to_string(&presence)?)
+    }
+
+    fn local_presence_metadata(&self) -> Result<Vec<(String, Option<Value>)>> {
+        let client_id = self.config.client_id.as_str();
+        let joined = self
+            .presence_by_scope
+            .lock()
+            .map_err(|_| {
+                SyncularError::message(ErrorKind::Internal, "native presence is poisoned")
+            })?
+            .iter()
+            .filter_map(|(scope_key, entries)| {
+                entries
+                    .iter()
+                    .find(|entry| entry.client_id == client_id)
+                    .map(|entry| (scope_key.clone(), entry.metadata.clone()))
+            })
+            .collect();
+        Ok(joined)
     }
 
     pub fn subscribe_events(&self, capacity: usize) -> NativeEventSubscription {
@@ -2054,6 +2166,116 @@ fn rows_changed_event_with_details<'a>(
         "type": "rowsChanged",
         "source": source,
         "changedRows": changed_rows,
+    }));
+    event
+}
+
+fn apply_native_presence_event(
+    presence_by_scope: &Arc<Mutex<BTreeMap<String, Vec<NativePresenceEntry>>>>,
+    events: &NativeEventHub,
+    event: RealtimePresenceEvent,
+) {
+    let scope_key = event.scope_key.clone();
+    let Ok(mut state) = presence_by_scope.lock() else {
+        return;
+    };
+    let current = state.get(&scope_key).cloned().unwrap_or_default();
+    let next = match event.action.as_str() {
+        "snapshot" => event
+            .entries
+            .into_iter()
+            .map(native_presence_entry_from_realtime)
+            .collect::<Vec<_>>(),
+        "leave" => {
+            let Some(client_id) = event.client_id.as_deref() else {
+                return;
+            };
+            current
+                .into_iter()
+                .filter(|entry| entry.client_id != client_id)
+                .collect()
+        }
+        "update" => {
+            let Some(client_id) = event.client_id.as_deref() else {
+                return;
+            };
+            if !current.iter().any(|entry| entry.client_id == client_id) {
+                return;
+            }
+            current
+                .into_iter()
+                .map(|entry| {
+                    if entry.client_id == client_id {
+                        NativePresenceEntry {
+                            metadata: event.metadata.clone(),
+                            ..entry
+                        }
+                    } else {
+                        entry
+                    }
+                })
+                .collect()
+        }
+        "join" => {
+            let (Some(client_id), Some(actor_id)) = (event.client_id, event.actor_id) else {
+                return;
+            };
+            let joined_at = current
+                .iter()
+                .find(|entry| entry.client_id == client_id)
+                .map(|entry| entry.joined_at)
+                .unwrap_or_else(now_ms);
+            let mut next = current
+                .into_iter()
+                .filter(|entry| entry.client_id != client_id)
+                .collect::<Vec<_>>();
+            next.push(NativePresenceEntry {
+                client_id,
+                actor_id,
+                joined_at,
+                metadata: event.metadata,
+            });
+            next
+        }
+        _ => return,
+    };
+    if next.is_empty() {
+        state.remove(&scope_key);
+    } else {
+        state.insert(scope_key.clone(), next.clone());
+    }
+    drop(state);
+    events.publish_event(presence_changed_event(scope_key, next));
+}
+
+fn native_presence_entry_from_realtime(entry: RealtimePresenceEntry) -> NativePresenceEntry {
+    NativePresenceEntry {
+        client_id: entry.client_id,
+        actor_id: entry.actor_id,
+        joined_at: entry.joined_at,
+        metadata: entry.metadata,
+    }
+}
+
+fn presence_changed_event(scope_key: String, presence: Vec<NativePresenceEntry>) -> NativeEvent {
+    let mut event = native_event(
+        NativeEventKind::PresenceChanged,
+        Vec::new(),
+        Some(native_diagnostic(
+            "info",
+            "realtime",
+            "realtime.presence_changed",
+            "Native Syncular presence changed",
+            [
+                ("scopeKey", json!(scope_key.clone())),
+                ("presence", json!(presence.clone())),
+            ],
+        )),
+    );
+    event.payload_json = Some(json!({
+        "type": "presenceChanged",
+        "scopeKey": scope_key,
+        "presence": presence,
     }));
     event
 }

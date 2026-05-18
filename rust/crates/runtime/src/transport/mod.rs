@@ -5,9 +5,7 @@ use crate::binary_snapshot::decode_binary_snapshot_rows;
 use crate::binary_snapshot::SnapshotChunkRows;
 #[cfg(feature = "native")]
 use crate::binary_sync_pack::{decode_binary_sync_pack, is_binary_sync_pack_content_type};
-use crate::error::Result;
-#[cfg(feature = "native")]
-use crate::error::{ErrorKind, SyncularError};
+use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::*;
 #[cfg(feature = "native")]
 use flate2::read::GzDecoder;
@@ -17,8 +15,10 @@ use reqwest::blocking::Body as BlockingBody;
 use reqwest::blocking::Client as HttpClient;
 #[cfg(feature = "native")]
 use reqwest::Method;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "native")]
-use serde_json::{json, Value};
+use serde_json::json;
+use serde_json::Value;
 #[cfg(feature = "native")]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -142,7 +142,33 @@ pub struct RealtimeSocket {
 #[derive(Debug, Clone)]
 pub enum RealtimeEvent {
     Sync,
+    Presence(RealtimePresenceEvent),
     Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimePresenceEntry {
+    pub client_id: String,
+    pub actor_id: String,
+    pub joined_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimePresenceEvent {
+    pub action: String,
+    pub scope_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<RealtimePresenceEntry>,
 }
 
 pub trait SyncTransport {
@@ -179,6 +205,18 @@ pub trait BlobTransport {
 
 pub trait RealtimeTransport {
     fn push_commit(&mut self, commit: PushCommitRequest) -> Result<PushCommitResponse>;
+    fn send_presence(
+        &mut self,
+        action: &str,
+        scope_key: &str,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
+        let _ = (action, scope_key, metadata);
+        Err(SyncularError::message(
+            ErrorKind::Transport,
+            "realtime presence is not supported by this transport",
+        ))
+    }
     fn read_event(&mut self) -> Result<Option<RealtimeEvent>>;
     fn close(&mut self);
 }
@@ -267,10 +305,6 @@ impl SyncTransport for HttpSyncTransport {
         chunk: &SnapshotChunkRef,
         scopes: &ScopeValues,
     ) -> Result<SnapshotChunkRows> {
-        if let Some(compressed) = chunk.body.as_ref() {
-            let _ = scopes;
-            return decode_compressed_snapshot_chunk_rows(chunk, compressed);
-        }
         let url = format!(
             "{}/snapshot-chunks/{}",
             self.config.base_url.trim_end_matches('/'),
@@ -667,6 +701,23 @@ impl RealtimeTransport for RealtimeSocket {
         ))
     }
 
+    fn send_presence(
+        &mut self,
+        action: &str,
+        scope_key: &str,
+        metadata: Option<&Value>,
+    ) -> Result<()> {
+        let message = json!({
+            "type": "presence",
+            "action": action,
+            "scopeKey": scope_key,
+            "metadata": metadata,
+        });
+        self.socket
+            .send(Message::Text(message.to_string().into()))?;
+        Ok(())
+    }
+
     fn read_event(&mut self) -> Result<Option<RealtimeEvent>> {
         match self.socket.read() {
             Ok(Message::Text(text)) => {
@@ -677,6 +728,8 @@ impl RealtimeTransport for RealtimeSocket {
                 let event = value.get("event").and_then(Value::as_str).unwrap_or("");
                 if event == "sync" {
                     Ok(Some(RealtimeEvent::Sync))
+                } else if event == "presence" {
+                    Ok(read_realtime_presence_event(&value).map(RealtimeEvent::Presence))
                 } else {
                     Ok(Some(RealtimeEvent::Other(event.to_string())))
                 }
@@ -708,6 +761,16 @@ impl RealtimeTransport for RealtimeSocket {
         );
         self.socket.close(None).ok();
     }
+}
+
+#[cfg(feature = "native")]
+fn read_realtime_presence_event(value: &Value) -> Option<RealtimePresenceEvent> {
+    let presence = value
+        .get("data")
+        .and_then(|data| data.get("presence"))
+        .or_else(|| value.get("presence"))
+        .or_else(|| value.get("data"))?;
+    serde_json::from_value(presence.clone()).ok()
 }
 
 #[cfg(feature = "native")]
