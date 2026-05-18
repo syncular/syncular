@@ -6,6 +6,7 @@
 
 import { randomId, type SyncOp } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
+import { finalizeCommitIntegrity } from '../commit-integrity';
 import { toDialectJsonValue } from '../dialect/helpers';
 import type { ServerSyncDialect } from '../dialect/types';
 import { createScopeCommitIndexEntries } from '../helpers/scope-commit-index';
@@ -166,8 +167,15 @@ export async function createOplogEntries<DB extends SyncCoreDb>(args: {
           sql`, `
         )}
 	      on conflict (partition_id, "table", commit_seq) do nothing
-	    `.execute(trx);
+    `.execute(trx);
   }
+
+  await finalizeCommitIntegrity({
+    db: trx,
+    dialect,
+    partitionId,
+    commitSeq,
+  });
 
   return { commitSeq, affectedTables };
 }

@@ -9,6 +9,7 @@ import {
 } from '@syncular/core';
 import type { Insertable, Kysely, SelectQueryBuilder, SqlBool } from 'kysely';
 import { sql } from 'kysely';
+import { finalizeCommitIntegrity } from './commit-integrity';
 import {
   coerceNumber,
   parseJsonValue,
@@ -341,23 +342,28 @@ async function persistCommitOutcome<DB extends SyncCoreDb>(args: {
     .where('commit_seq', '=', args.commitSeq)
     .execute();
 
-  if (args.affectedTables.length === 0) {
-    return;
+  if (args.affectedTables.length > 0) {
+    await syncTrx
+      .insertInto('sync_table_commits')
+      .values(
+        args.affectedTables.map((table) => ({
+          partition_id: args.partitionId,
+          table,
+          commit_seq: args.commitSeq,
+        }))
+      )
+      .onConflict((oc) =>
+        oc.columns(['partition_id', 'table', 'commit_seq']).doNothing()
+      )
+      .execute();
   }
 
-  await syncTrx
-    .insertInto('sync_table_commits')
-    .values(
-      args.affectedTables.map((table) => ({
-        partition_id: args.partitionId,
-        table,
-        commit_seq: args.commitSeq,
-      }))
-    )
-    .onConflict((oc) =>
-      oc.columns(['partition_id', 'table', 'commit_seq']).doNothing()
-    )
-    .execute();
+  await finalizeCommitIntegrity({
+    db: args.trx,
+    dialect: args.dialect,
+    partitionId: args.partitionId,
+    commitSeq: args.commitSeq,
+  });
 }
 
 async function loadExistingCommitResult<DB extends SyncCoreDb>(args: {

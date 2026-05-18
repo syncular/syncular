@@ -61,6 +61,15 @@ of jumping straight into new public APIs.
 - 2026-05-19: Extended the fixture baseline to `binary-table-v1` snapshot
   chunks. The fixture covers table metadata, typed scalar cells, JSON cells,
   and nullable values in both TypeScript and Rust decoders.
+- 2026-05-19: Started the verifiable sync log slice. Server dialect schemas
+  now include nullable `commit_digest` and `commit_chain_root` columns, and
+  the normal push, external notification, and proxy oplog writers finalize
+  each new commit by hashing the persisted commit row plus ordered
+  `sync_changes` rows and chaining that digest to the previous partition root.
+  Focused tests cover deterministic roots, persisted-change tamper sensitivity,
+  old SQLite schema migration, synthetic external commits, and proxy oplog
+  compatibility. Next: expose the digest/root metadata on pull responses and
+  teach the Rust client to verify it before cursor advancement.
 
 ## Priority Roadmap
 
