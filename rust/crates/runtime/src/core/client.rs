@@ -1616,14 +1616,8 @@ where
                 limit_snapshot_rows: 50_000,
                 max_snapshot_pages: 10,
                 dedupe_rows: None,
-                snapshot_encodings: vec![
-                    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
-                    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
-                ],
-                sync_pack_encodings: vec![
-                    SYNC_PACK_ENCODING_BINARY_V1.to_string(),
-                    SYNC_PACK_ENCODING_JSON_V1.to_string(),
-                ],
+                snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
+                sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
                 subscriptions,
             })
         })
