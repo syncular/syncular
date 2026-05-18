@@ -12,6 +12,10 @@ let package = Package(
             name: "Syncular",
             targets: ["Syncular"]
         ),
+        .library(
+            name: "SyncularUI",
+            targets: ["SyncularUI"]
+        ),
     ],
     targets: [
         .binaryTarget(
@@ -21,7 +25,12 @@ let package = Package(
         .target(
             name: "Syncular",
             dependencies: ["SyncularFFI"],
-            path: "Sources"
+            path: "Sources/BoltFFI"
+        ),
+        .target(
+            name: "SyncularUI",
+            dependencies: ["Syncular"],
+            path: "Sources/SyncularUI"
         ),
     ]
 )

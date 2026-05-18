@@ -136,6 +136,9 @@ where
             println!("watching websocket for {seconds}s");
             client.watch(seconds, |event| match event {
                 RealtimeEvent::Sync => println!("ws event: sync"),
+                RealtimeEvent::Presence(event) => {
+                    println!("ws event: presence {} {}", event.action, event.scope_key)
+                }
                 RealtimeEvent::Other(event) => println!("ws event: {event}"),
             })?;
         }

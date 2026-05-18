@@ -578,6 +578,34 @@ fn native_event_stream_overflow_reports_resync_required() -> Result<()> {
 }
 
 #[test]
+fn native_event_subscription_can_be_used_as_iterators() -> Result<()> {
+    let path = temp_db_path("syncular-native-event-iterator");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-event-iterator"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    let mut events = client.event_receiver(8);
+    apply_task_upsert(&mut client, "iterator-a", "Iterator A")?;
+    let event = events.next().expect("iterator event");
+    assert_eq!(event.kind, NativeEventKind::RowsChanged);
+    assert_eq!(event.changed_rows[0].row_id.as_deref(), Some("iterator-a"));
+
+    let mut json_events = client.subscribe_events(8).into_json_iter();
+    apply_task_upsert(&mut client, "iterator-b", "Iterator B")?;
+    let event_json = json_events.next().expect("json iterator event")?;
+    let event: Value = serde_json::from_str(&event_json)?;
+    assert_eq!(event["kind"], "RowsChanged");
+    assert_eq!(event["changedRows"][0]["rowId"], "iterator-b");
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_rejected_push_emits_conflicts_changed() -> Result<()> {
     let path = temp_db_path("syncular-native-push-conflict");
     let mut config = test_config(&path, "native-push-conflict");

@@ -25,6 +25,12 @@ pub struct SyncularNativeEventSubscription {
     join: Mutex<Option<JoinHandle<()>>>,
 }
 
+pub struct SyncularNativePresenceHandle {
+    client: *mut SyncularNativeHandle,
+    scope_key: String,
+    active: Mutex<bool>,
+}
+
 pub type SyncularNativeEventCallback =
     extern "C" fn(event_json: *const c_char, user_data: *mut c_void);
 pub type SyncularNativeEventErrorCallback =
@@ -319,6 +325,94 @@ pub extern "C" fn syncular_native_client_presence_json(
     ffi_catch_string(error_out, || {
         let scope_key = read_c_string(scope_key)?;
         with_client(handle, |client| client.presence_json(&scope_key))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_join_presence_handle(
+    handle: *mut SyncularNativeHandle,
+    scope_key: *const c_char,
+    metadata_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut SyncularNativePresenceHandle {
+    clear_error(error_out);
+    ffi_catch_ptr(error_out, || {
+        let scope_key = read_c_string(scope_key)?;
+        let metadata = read_optional_c_string(metadata_json)?
+            .map(|json| serde_json::from_str(&json))
+            .transpose()?;
+        with_client(handle, |client| client.join_presence(&scope_key, metadata))?;
+        Ok(Box::into_raw(Box::new(SyncularNativePresenceHandle {
+            client: handle,
+            scope_key,
+            active: Mutex::new(true),
+        })))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_presence_handle_scope_key(
+    handle: *mut SyncularNativePresenceHandle,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        with_presence_handle(handle, |presence| Ok(presence.scope_key.clone()))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_presence_handle_update_metadata(
+    handle: *mut SyncularNativePresenceHandle,
+    metadata_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let metadata_json = read_c_string(metadata_json)?;
+        let metadata = serde_json::from_str(&metadata_json)?;
+        with_presence_handle(handle, |presence| {
+            let active = presence.active.lock().map_err(|_| {
+                SyncularError::message(ErrorKind::Internal, "native presence handle is poisoned")
+            })?;
+            if !*active {
+                return Err(SyncularError::message(
+                    ErrorKind::Config,
+                    "native presence handle is inactive",
+                ));
+            }
+            with_client(presence.client, |client| {
+                client.update_presence_metadata(&presence.scope_key, metadata)
+            })
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_presence_handle_leave(
+    handle: *mut SyncularNativePresenceHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool_value(error_out, || {
+        with_presence_handle(handle, leave_presence_handle_inner)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_presence_handle_close(
+    handle: *mut SyncularNativePresenceHandle,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        if handle.is_null() {
+            return Ok(());
+        }
+
+        let presence = unsafe { Box::from_raw(handle) };
+        let _ = leave_presence_handle_inner(&presence)?;
+        Ok(())
     })
 }
 
@@ -1205,6 +1299,35 @@ fn with_client<T>(
         .lock()
         .map_err(|_| SyncularError::message(ErrorKind::Internal, "native handle is poisoned"))?;
     f(&mut client)
+}
+
+fn with_presence_handle<T>(
+    handle: *mut SyncularNativePresenceHandle,
+    f: impl FnOnce(&SyncularNativePresenceHandle) -> Result<T>,
+) -> Result<T> {
+    if handle.is_null() {
+        return Err(SyncularError::message(
+            ErrorKind::Config,
+            "native presence handle is null",
+        ));
+    }
+
+    let handle = unsafe { &*handle };
+    f(handle)
+}
+
+fn leave_presence_handle_inner(presence: &SyncularNativePresenceHandle) -> Result<bool> {
+    let mut active = presence.active.lock().map_err(|_| {
+        SyncularError::message(ErrorKind::Internal, "native presence handle is poisoned")
+    })?;
+    if !*active {
+        return Ok(false);
+    }
+    with_client(presence.client, |client| {
+        client.leave_presence(&presence.scope_key)
+    })?;
+    *active = false;
+    Ok(true)
 }
 
 fn with_open_task<T>(

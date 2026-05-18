@@ -927,7 +927,6 @@ fn snapshot_chunk_rows_are_fetched_with_subscription_scopes() -> Result<()> {
                 .as_str()
                 .expect("snapshot chunk compression")
                 .to_string(),
-            body: None,
         }],
         scopes(),
         42,
@@ -2020,7 +2019,6 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
                 sha256: sync_conformance_str(&["snapshotChunk", "sha256"]),
                 encoding: sync_conformance_str(&["snapshotChunk", "encoding"]),
                 compression: sync_conformance_str(&["snapshotChunk", "compression"]),
-                body: None,
             }]),
             is_first_page: true,
             is_last_page: true,

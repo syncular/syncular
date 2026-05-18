@@ -13,20 +13,24 @@ use syncular_runtime::native_ffi::{
     syncular_native_client_blob_cache_stats_json,
     syncular_native_client_blob_upload_queue_stats_json, syncular_native_client_clear_blob_cache,
     syncular_native_client_close, syncular_native_client_compact_storage_json,
-    syncular_native_client_list_table_json, syncular_native_client_materialize_crdt_field_json,
+    syncular_native_client_join_presence_handle, syncular_native_client_list_table_json,
+    syncular_native_client_materialize_crdt_field_json,
     syncular_native_client_observed_queries_json, syncular_native_client_open,
     syncular_native_client_open_async, syncular_native_client_open_async_close,
     syncular_native_client_open_async_command_id, syncular_native_client_open_async_finish_timeout,
     syncular_native_client_open_async_is_finished, syncular_native_client_open_crdt_field_json,
     syncular_native_client_outbox_summaries_json, syncular_native_client_pause_sync_worker,
-    syncular_native_client_process_blob_upload_queue_json, syncular_native_client_query_json,
-    syncular_native_client_register_query_json, syncular_native_client_resume_sync_worker,
-    syncular_native_client_retrieve_blob_file, syncular_native_client_retry_conflict_keep_local,
-    syncular_native_client_set_auth_headers_json, syncular_native_client_set_encrypted_crdt_json,
+    syncular_native_client_presence_json, syncular_native_client_process_blob_upload_queue_json,
+    syncular_native_client_query_json, syncular_native_client_register_query_json,
+    syncular_native_client_resume_sync_worker, syncular_native_client_retrieve_blob_file,
+    syncular_native_client_retry_conflict_keep_local, syncular_native_client_set_auth_headers_json,
+    syncular_native_client_set_encrypted_crdt_json,
     syncular_native_client_set_field_encryption_json, syncular_native_client_store_blob_file_json,
     syncular_native_client_subscribe_events_json, syncular_native_client_sync_worker_running,
     syncular_native_client_trigger_sync, syncular_native_client_unregister_query,
     syncular_native_encryption_helper_json, syncular_native_event_subscription_close,
+    syncular_native_presence_handle_close, syncular_native_presence_handle_leave,
+    syncular_native_presence_handle_scope_key, syncular_native_presence_handle_update_metadata,
     syncular_native_runtime_manifest_json, syncular_string_free, SyncularNativeEventSubscription,
     SyncularNativeHandle,
 };
@@ -83,6 +87,8 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "table-level-rows-changed-events",
             "query-observer-events",
             "conflicts-changed-events",
+            "realtime-presence",
+            "presence-changed-events",
             "blob-file-api",
             "background-worker-lifecycle",
             "structured-diagnostics",
@@ -734,6 +740,55 @@ fn native_ffi_event_callback_subscription_does_not_hold_handle_lock() {
     );
 
     events.close();
+    assert!(syncular_native_client_close(handle, &mut error));
+    assert!(error.is_null());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_ffi_presence_handle_leaves_on_close() {
+    let path = temp_db_path("syncular-native-ffi-presence-handle");
+    let mut error = ptr::null_mut();
+    let config = ffi_config(&path, "native-ffi-presence-handle");
+
+    let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
+    assert!(!handle.is_null());
+    assert!(error.is_null());
+
+    let scope = CString::new("user:ffi-presence").unwrap();
+    let metadata = CString::new(json!({ "view": "tasks" }).to_string()).unwrap();
+    let presence = syncular_native_client_join_presence_handle(
+        handle,
+        scope.as_ptr(),
+        metadata.as_ptr(),
+        &mut error,
+    );
+    assert!(error.is_null());
+    assert!(!presence.is_null());
+
+    let scope_key = syncular_native_presence_handle_scope_key(presence, &mut error);
+    assert_eq!(take_string(scope_key), "user:ffi-presence");
+
+    let next_metadata = CString::new(json!({ "view": "done" }).to_string()).unwrap();
+    assert!(syncular_native_presence_handle_update_metadata(
+        presence,
+        next_metadata.as_ptr(),
+        &mut error,
+    ));
+    assert!(error.is_null());
+
+    let presence_json = syncular_native_client_presence_json(handle, scope.as_ptr(), &mut error);
+    assert!(error.is_null());
+    let entries: Value = serde_json::from_str(&take_string(presence_json)).unwrap();
+    assert_eq!(entries[0]["metadata"]["view"], "done");
+
+    assert!(syncular_native_presence_handle_leave(presence, &mut error));
+    assert!(error.is_null());
+    assert!(!syncular_native_presence_handle_leave(presence, &mut error));
+    assert!(error.is_null());
+
+    assert!(syncular_native_presence_handle_close(presence, &mut error));
+    assert!(error.is_null());
     assert!(syncular_native_client_close(handle, &mut error));
     assert!(error.is_null());
     let _ = std::fs::remove_file(path);

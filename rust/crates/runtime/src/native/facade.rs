@@ -234,6 +234,10 @@ pub struct NativeEventSubscription {
     queue: Arc<NativeEventQueue>,
 }
 
+pub struct NativeEventJsonIterator {
+    subscription: NativeEventSubscription,
+}
+
 struct NativeEventQueue {
     capacity: usize,
     state: Mutex<NativeEventQueueState>,
@@ -871,6 +875,10 @@ impl NativeSyncularClient {
         self.events.subscribe(capacity)
     }
 
+    pub fn event_receiver(&self, capacity: usize) -> NativeEventSubscription {
+        self.subscribe_events(capacity)
+    }
+
     pub fn next_event(&self) -> Option<NativeEvent> {
         self.default_events.next_event()
     }
@@ -1446,6 +1454,14 @@ impl NativeCrdtFieldCompactionRequest {
 }
 
 impl NativeEventSubscription {
+    pub fn recv(&self) -> Option<NativeEvent> {
+        self.next_event()
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<NativeEvent> {
+        self.next_event_timeout(timeout)
+    }
+
     pub fn next_event(&self) -> Option<NativeEvent> {
         self.queue.next_event()
     }
@@ -1464,11 +1480,31 @@ impl NativeEventSubscription {
             .map(|event| serde_json::to_string(&event).map_err(Into::into))
     }
 
+    pub fn into_json_iter(self) -> NativeEventJsonIterator {
+        NativeEventJsonIterator { subscription: self }
+    }
+
     pub fn close(&self) {
         if let Ok(mut subscribers) = self.hub.subscribers.lock() {
             subscribers.remove(&self.subscriber_id);
         }
         self.queue.close();
+    }
+}
+
+impl Iterator for NativeEventSubscription {
+    type Item = NativeEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_event()
+    }
+}
+
+impl Iterator for NativeEventJsonIterator {
+    type Item = Result<String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.subscription.next_event_json()
     }
 }
 
