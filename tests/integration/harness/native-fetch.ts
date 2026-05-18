@@ -6,5 +6,9 @@
  * a reference so integration tests can pass it to openapi-fetch.
  */
 
-// @ts-expect-error -- attaching to globalThis for cross-module access
-globalThis.__nativeFetch = globalThis.fetch;
+const nativeGlobals = globalThis as Record<string, unknown>;
+
+nativeGlobals.__nativeFetch = globalThis.fetch;
+nativeGlobals.__nativeHeaders = globalThis.Headers;
+nativeGlobals.__nativeRequest = globalThis.Request;
+nativeGlobals.__nativeResponse = globalThis.Response;

@@ -7,8 +7,9 @@
  * generated binary table payloads when table encoders are available.
  *
  * Wire versions:
- * - v5: positional envelope with refs-only snapshot chunks and grouped
- *   generated binary row payloads for incremental changes.
+ * - v6: positional envelope with refs-only snapshot chunks, per-pack table
+ *   dictionaries, and grouped generated binary row payloads for incremental
+ *   changes.
  */
 
 import {
@@ -40,7 +41,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 5;
+const VERSION = 6;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -54,6 +55,7 @@ export interface BinarySyncPackEncodeOptions {
 
 interface BinaryChangeRowGroup {
   table: string;
+  tableIndex: number;
   encoder: BinarySnapshotRowsEncoder;
   rows: unknown[];
 }
@@ -320,7 +322,7 @@ function readCommit(reader: BinarySyncPackReader): SyncCommit {
     commitSeq: reader.i64('commit seq'),
     createdAt: reader.string32('commit createdAt'),
     actorId: reader.string32('commit actorId'),
-    changes: readChangesV5(reader),
+    changes: readChangesV6(reader),
   };
 }
 
@@ -330,7 +332,19 @@ function writeChanges(
   options: BinarySyncPackEncodeOptions
 ): void {
   const encodedRowCountsByTable = new Map<string, number>();
+  const tableIndexesByName = new Map<string, number>();
+  const tableNames: string[] = [];
+  const tableIndexFor = (table: string): number => {
+    let tableIndex = tableIndexesByName.get(table);
+    if (tableIndex !== undefined) return tableIndex;
+    tableIndex = tableNames.length;
+    tableIndexesByName.set(table, tableIndex);
+    tableNames.push(table);
+    return tableIndex;
+  };
+
   for (const change of changes) {
+    tableIndexFor(change.table);
     if (change.op === 'delete' || change.row_json == null) continue;
     if (!options.changeRowEncoders?.[change.table]) continue;
     encodedRowCountsByTable.set(
@@ -356,9 +370,10 @@ function writeChanges(
     }
     let groupIndex = groupIndexesByTable.get(change.table);
     if (groupIndex === undefined) {
+      const tableIndex = tableIndexFor(change.table);
       groupIndex = groups.length;
       groupIndexesByTable.set(change.table, groupIndex);
-      groups.push({ table: change.table, encoder, rows: [] });
+      groups.push({ table: change.table, tableIndex, encoder, rows: [] });
     }
     const group = groups[groupIndex]!;
     const rowIndex = group.rows.length;
@@ -366,23 +381,31 @@ function writeChanges(
     rowRefs.set(index, { groupIndex, rowIndex });
   }
 
+  writer.array(tableNames, (nextWriter, table) => nextWriter.string16(table));
   writer.u32(changes.length);
   for (let index = 0; index < changes.length; index += 1) {
-    writeChangeMetadataV4(writer, changes[index]!, rowRefs.get(index));
+    const change = changes[index]!;
+    writeChangeMetadataV6(
+      writer,
+      change,
+      tableIndexFor(change.table),
+      rowRefs.get(index)
+    );
   }
   writer.u32(groups.length);
   for (const group of groups) {
-    writer.string16(group.table);
+    writer.u16(group.tableIndex);
     writer.bytes32(group.encoder(group.rows));
   }
 }
 
-function writeChangeMetadataV4(
+function writeChangeMetadataV6(
   writer: BinarySyncPackWriter,
   change: SyncChange,
+  tableIndex: number,
   rowRef: BinaryChangeRowRef | undefined
 ): void {
-  writer.string16(change.table);
+  writer.u16(tableIndex);
   writer.string32(change.row_id);
   writer.u8(change.op === 'upsert' ? 1 : 2);
   if (change.row_json == null) {
@@ -399,19 +422,25 @@ function writeChangeMetadataV4(
   writer.stringMap(change.scopes);
 }
 
-function readChangesV5(reader: BinarySyncPackReader): SyncChange[] {
+function readChangesV6(reader: BinarySyncPackReader): SyncChange[] {
+  const tableNames = reader.array('commit change table dictionary', (reader) =>
+    reader.string16('commit change table')
+  );
   const changeCount = reader.u32('commit changes length');
   const changes: SyncChange[] = [];
   const rowRefs: PendingBinaryChangeRowRef[] = [];
   for (let index = 0; index < changeCount; index += 1) {
-    const change = readChangeMetadataV4(reader, index, rowRefs);
+    const change = readChangeMetadataV6(reader, index, tableNames, rowRefs);
     changes.push(change);
   }
 
   const groupCount = reader.u32('binary change row group count');
   const groupRows = new Map<number, Record<string, unknown>[]>();
   for (let groupIndex = 0; groupIndex < groupCount; groupIndex += 1) {
-    const table = reader.string16('binary change row group table');
+    const table = tableNameAt(
+      tableNames,
+      reader.u16('binary change row group table index')
+    );
     const decoded = decodeBinarySnapshotTable(
       reader.bytes32('binary change row group payload')
     );
@@ -440,12 +469,13 @@ function readChangesV5(reader: BinarySyncPackReader): SyncChange[] {
   return changes;
 }
 
-function readChangeMetadataV4(
+function readChangeMetadataV6(
   reader: BinarySyncPackReader,
   changeIndex: number,
+  tableNames: readonly string[],
   rowRefs: PendingBinaryChangeRowRef[]
 ): SyncChange {
-  const table = reader.string16('change table');
+  const table = tableNameAt(tableNames, reader.u16('change table index'));
   const rowId = reader.string32('change row id');
   const opByte = reader.u8('change op');
   if (opByte !== 1 && opByte !== 2) {
@@ -475,6 +505,14 @@ function readChangeMetadataV4(
     row_version: reader.optionalI64('change row version') ?? null,
     scopes: reader.stringMap('change scopes'),
   };
+}
+
+function tableNameAt(tableNames: readonly string[], index: number): string {
+  const table = tableNames[index];
+  if (table === undefined) {
+    throw new Error(`Binary sync pack table index is invalid: ${index}`);
+  }
+  return table;
 }
 
 function writeSnapshot(

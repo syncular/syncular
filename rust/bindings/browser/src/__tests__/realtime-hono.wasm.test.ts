@@ -448,7 +448,11 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
             // Ignore malformed request bodies; route validation covers them.
           }
         }
-        return app.fetch(request, server);
+        const response = await app.fetch(request, server);
+        if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+          return response;
+        }
+        return toNativeBunResponse(response);
       },
       websocket,
       idleTimeout: 0,
@@ -511,6 +515,24 @@ function waitForLiveEvent(
       client.removeLiveQueryListener(queryId);
       resolve(event);
     });
+  });
+}
+
+async function toNativeBunResponse(response: Response): Promise<Response> {
+  const NativeResponse = (globalThis as Record<string, unknown>)
+    .__nativeResponse as typeof Response | undefined;
+  if (!NativeResponse || response instanceof NativeResponse) return response;
+
+  const headers: [string, string][] = [];
+  response.headers.forEach((value, key) => headers.push([key, value]));
+  const body =
+    response.status === 204 || response.status === 304
+      ? null
+      : await response.arrayBuffer();
+  return new NativeResponse(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 

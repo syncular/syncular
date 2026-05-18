@@ -470,8 +470,12 @@ async fn fetch_sync_response_metered(
 
     let text = response_text(&response).await?;
     record_response(stats, text.as_bytes().len());
-    serde_json::from_str(&text)
-        .map_err(|err| SyncularError::protocol(err).context("decode browser sync response"))
+    serde_json::from_str(&text).map_err(|err| {
+        let prefix = text.chars().take(120).collect::<String>();
+        SyncularError::protocol_message(format!(
+            "decode browser sync response: {err}; content-type={content_type:?}; prefix={prefix:?}"
+        ))
+    })
 }
 
 async fn fetch_bytes_metered(

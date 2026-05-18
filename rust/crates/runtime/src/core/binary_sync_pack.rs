@@ -11,7 +11,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 5;
+const VERSION: u16 = 6;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -123,18 +123,22 @@ fn read_commit(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncCommit> {
         commit_seq: reader.read_i64("commit seq")?,
         created_at: reader.read_string32("commit createdAt")?,
         actor_id: reader.read_string32("commit actorId")?,
-        changes: read_changes_v5(reader)?,
+        changes: read_changes_v6(reader)?,
     })
 }
 
-fn read_changes_v5(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
+fn read_changes_v6(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChange>> {
+    let table_names = reader.read_array("commit change table dictionary", |reader| {
+        reader.read_string16("commit change table")
+    })?;
     let change_count = reader.read_u32("commit changes length")? as usize;
     let mut changes = Vec::with_capacity(change_count);
     let mut row_refs = Vec::new();
     for change_index in 0..change_count {
-        changes.push(read_change_metadata_v4(
+        changes.push(read_change_metadata_v6(
             reader,
             change_index,
+            &table_names,
             &mut row_refs,
         )?);
     }
@@ -142,7 +146,10 @@ fn read_changes_v5(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChan
     let group_count = reader.read_u32("binary change row group count")? as usize;
     let mut group_rows = Vec::with_capacity(group_count);
     for _ in 0..group_count {
-        let table = reader.read_string16("binary change row group table")?;
+        let table = table_name_at(
+            &table_names,
+            reader.read_u16("binary change row group table index")? as usize,
+        )?;
         let payload = reader.read_bytes32("binary change row group payload")?;
         let decoded = decode_binary_snapshot_table(&payload)?;
         if decoded.table != table {
@@ -190,12 +197,13 @@ fn read_changes_v5(reader: &mut BinarySyncPackReader<'_>) -> Result<Vec<SyncChan
     Ok(changes)
 }
 
-fn read_change_metadata_v4(
+fn read_change_metadata_v6(
     reader: &mut BinarySyncPackReader<'_>,
     change_index: usize,
+    table_names: &[String],
     row_refs: &mut Vec<PendingBinaryChangeRowRef>,
 ) -> Result<SyncChange> {
-    let table = reader.read_string16("change table")?;
+    let table = table_name_at(table_names, reader.read_u16("change table index")? as usize)?;
     let row_id = reader.read_string32("change row id")?;
     let op = match reader.read_u8("change op")? {
         1 => "upsert".to_string(),
@@ -231,6 +239,12 @@ fn read_change_metadata_v4(
         row_json,
         row_version: reader.read_optional_i64("change row version")?,
         scopes: reader.read_string_map("change scopes")?,
+    })
+}
+
+fn table_name_at(table_names: &[String], index: usize) -> Result<String> {
+    table_names.get(index).cloned().ok_or_else(|| {
+        SyncularError::protocol_message(format!("binary sync pack table index is invalid: {index}"))
     })
 }
 
@@ -444,5 +458,37 @@ impl<'a> BinarySyncPackReader<'a> {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_binary_sync_pack;
+
+    #[test]
+    fn decodes_v6_table_dictionary_changes() {
+        let bytes = [
+            83, 83, 80, 49, 6, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 21, 0, 0, 0, 95, 95, 115,
+            121, 110, 99, 117, 108, 97, 114, 95, 114, 101, 97, 108, 116, 105, 109, 101, 95, 95, 6,
+            0, 97, 99, 116, 105, 118, 101, 2, 0, 0, 0, 123, 125, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 24, 0, 0, 0, 50, 48, 50, 54, 45, 48, 53, 45, 49, 56,
+            84, 48, 48, 58, 48, 48, 58, 48, 48, 46, 48, 48, 48, 90, 6, 0, 0, 0, 117, 115, 101, 114,
+            45, 97, 1, 0, 0, 0, 5, 0, 116, 97, 115, 107, 115, 1, 0, 0, 0, 0, 0, 6, 0, 0, 0, 116,
+            97, 115, 107, 45, 49, 1, 1, 59, 0, 0, 0, 123, 34, 105, 100, 34, 58, 34, 116, 97, 115,
+            107, 45, 49, 34, 44, 34, 116, 105, 116, 108, 101, 34, 58, 34, 65, 34, 44, 34, 115, 101,
+            114, 118, 101, 114, 95, 118, 101, 114, 115, 105, 111, 110, 34, 58, 49, 44, 34, 100,
+            111, 110, 101, 34, 58, 102, 97, 108, 115, 101, 125, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+            0, 7, 0, 117, 115, 101, 114, 95, 105, 100, 6, 0, 0, 0, 117, 115, 101, 114, 45, 49, 0,
+            0, 0, 0, 0,
+        ];
+        let response = decode_binary_sync_pack(&bytes).unwrap();
+        let pull = response.pull.unwrap();
+        let change = &pull.subscriptions[0].commits[0].changes[0];
+        assert_eq!(change.table, "tasks");
+        assert_eq!(change.row_id, "task-1");
+        assert_eq!(
+            change.row_json.as_ref().unwrap()["title"].as_str(),
+            Some("A")
+        );
     }
 }
