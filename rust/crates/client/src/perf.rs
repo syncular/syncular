@@ -1079,7 +1079,7 @@ fn wait_for_realtime_sync(
     while started_at.elapsed() < timeout {
         match socket.read_event()? {
             Some(RealtimeEvent::Sync) => return Ok(()),
-            Some(RealtimeEvent::Other(_)) | None => {}
+            Some(RealtimeEvent::Presence(_)) | Some(RealtimeEvent::Other(_)) | None => {}
         }
     }
     bail!("timed out waiting for realtime sync event")

@@ -137,6 +137,25 @@ client.joinPresenceHandle("user:user-rust", """{"view":"tasks"}""").use { presen
 }
 ```
 
+C hosts can use an opaque presence token when ownership should survive across
+callbacks:
+
+```c
+SyncularNativePresenceHandle *presence =
+    syncular_native_client_join_presence_handle(
+        client,
+        "user:user-rust",
+        "{\"view\":\"tasks\"}",
+        &error
+    );
+syncular_native_presence_handle_update_metadata(
+    presence,
+    "{\"view\":\"task-detail\"}",
+    &error
+);
+syncular_native_presence_handle_close(presence, &error);
+```
+
 App-specific Rust wrappers can subscribe at the worker layer instead of polling
 or rebuilding their own event hub:
 
@@ -192,6 +211,28 @@ client.forEachEventJson(256, eventJson -> {
 });
 ```
 
+Optional app-framework adapters sit beside the core bindings:
+
+```swift
+import SyncularUI
+
+@StateObject private var events = SyncularDecodedEventStore<SyncularNativeEvent>()
+
+events.start(source: client, decode: syncularDecodeNativeEvent) { event in
+    viewModel.apply(syncularEvent: event)
+}
+```
+
+```kotlin
+val events = client.nativeEventFlow(decode = ::syncularDecodeNativeEvent)
+
+@Composable
+fun TaskScreen() {
+    val state = rememberSyncularEventState(events)
+    state.value.latestEvent?.let(viewModel::applySyncularEvent)
+}
+```
+
 ## Generated Rust app pattern
 
 A Rust native app should wire the generated schema once, keep realtime hot, and
@@ -199,23 +240,20 @@ let events drive projection refresh:
 
 ```rust
 let mut client = NativeSyncularClient::builder(config)
-    .auto_sync_local_writes(true)
+    .auto_sync_local_writes(false)
     .open()?;
 
 client.set_auth_headers(headers)?;
 client.set_subscriptions(vec![task_subscription(actor_id)])?;
-
-let mut presence = client.join_presence_handle(
-    &format!("user:{actor_id}"),
-    Some(serde_json::json!({ "view": "tasks" })),
-)?;
+client.join_presence(&format!("user:{actor_id}"), Some(serde_json::json!({ "view": "tasks" })))?;
 
 let task = NewTask::new("task-1", "Realtime native task", actor_id, Some(project_id));
 let operation_json = serde_json::to_string(&task.sync_operation())?;
 let local_row_json = serde_json::to_string(&task.row_json())?;
+let events = client.event_receiver(32);
 let command_id = client.enqueue_mutation_json(&operation_json, Some(&local_row_json))?;
 
-while let Some(event) = client.next_event_timeout(Duration::from_millis(250)) {
+while let Some(event) = events.recv_timeout(Duration::from_millis(250)) {
     if event.resync_required.unwrap_or(false)
         || matches!(event.kind, NativeEventKind::EventsOverflowed)
     {
@@ -232,7 +270,8 @@ while let Some(event) = client.next_event_timeout(Duration::from_millis(250)) {
     }
 }
 
-presence.update_metadata(serde_json::json!({ "view": "done" }))?;
+client.update_presence_metadata(&format!("user:{actor_id}"), serde_json::json!({ "view": "done" }))?;
+client.leave_presence(&format!("user:{actor_id}"))?;
 client.shutdown()?;
 ```
 

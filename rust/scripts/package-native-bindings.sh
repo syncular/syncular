@@ -464,6 +464,21 @@ normalize_boltffi_kotlin_sources() {
   perl -0pi -e 's/\?: 1\.toInt\(\)/?: 1/g' "${kotlin_file}"
 }
 
+install_swift_adapter_sources() {
+  mkdir -p "${OUT_ROOT}/apple/Sources/BoltFFI" "${OUT_ROOT}/apple/Sources/SyncularUI"
+  cp "${REPO_ROOT}/rust/bindings/swift/Package.swift" "${OUT_ROOT}/apple/Package.swift"
+  cp "${REPO_ROOT}/rust/bindings/swift/Sources/BoltFFI/Syncular-runtimeConvenience.swift" \
+    "${OUT_ROOT}/apple/Sources/BoltFFI/Syncular-runtimeConvenience.swift"
+  cp "${REPO_ROOT}/rust/bindings/swift/Sources/SyncularUI/SyncularUI.swift" \
+    "${OUT_ROOT}/apple/Sources/SyncularUI/SyncularUI.swift"
+}
+
+install_kotlin_adapter_sources() {
+  mkdir -p "${OUT_ROOT}/android/kotlinx" "${OUT_ROOT}/android/compose"
+  cp -R "${REPO_ROOT}/rust/bindings/kotlin/kotlinx/." "${OUT_ROOT}/android/kotlinx/"
+  cp -R "${REPO_ROOT}/rust/bindings/kotlin/compose/." "${OUT_ROOT}/android/compose/"
+}
+
 package_apple_xcframework_zip() {
   local xcframework="${OUT_ROOT}/apple/Syncular.xcframework"
   local zip_path="${OUT_ROOT}/apple/Syncular.xcframework.zip"
@@ -601,6 +616,7 @@ for platform in "${platforms[@]}"; do
   case "${platform}" in
     apple)
       run_boltffi_pack apple
+      install_swift_adapter_sources
       package_apple_xcframework_zip
       verify_dir "${OUT_ROOT}/apple/Syncular.xcframework"
       verify_file "${OUT_ROOT}/apple/Syncular.xcframework.zip"
@@ -608,6 +624,8 @@ for platform in "${platforms[@]}"; do
       verify_file "${OUT_ROOT}/apple/Syncular.xcframework.zip.swift-checksum"
       verify_file "${OUT_ROOT}/apple/Package.swift"
       verify_file "${OUT_ROOT}/apple/Sources/BoltFFI/Syncular-runtimeBoltFFI.swift"
+      verify_file "${OUT_ROOT}/apple/Sources/BoltFFI/Syncular-runtimeConvenience.swift"
+      verify_file "${OUT_ROOT}/apple/Sources/SyncularUI/SyncularUI.swift"
       verify_file "${OUT_ROOT}/apple/include/syncular-runtime.h"
       ;;
     android)
@@ -615,7 +633,10 @@ for platform in "${platforms[@]}"; do
       run_boltffi_pack android
       normalize_android_library_names
       normalize_boltffi_kotlin_sources "${OUT_ROOT}/android/kotlin/dev/syncular/client/Syncular.kt"
+      install_kotlin_adapter_sources
       verify_file "${OUT_ROOT}/android/kotlin/dev/syncular/client/Syncular.kt"
+      verify_file "${OUT_ROOT}/android/kotlinx/dev/syncular/client/SyncularKtx.kt"
+      verify_file "${OUT_ROOT}/android/compose/dev/syncular/client/SyncularCompose.kt"
       verify_file "${OUT_ROOT}/android/kotlin/jni/jni_glue.c"
       verify_file "${OUT_ROOT}/android/include/syncular-runtime.h"
       verify_file "${OUT_ROOT}/android/jniLibs/arm64-v8a/libsyncular_runtime.so"

@@ -13,6 +13,7 @@ extern "C" {
 typedef struct SyncularNativeHandle SyncularNativeHandle;
 typedef struct SyncularNativeOpenHandle SyncularNativeOpenHandle;
 typedef struct SyncularNativeEventSubscription SyncularNativeEventSubscription;
+typedef struct SyncularNativePresenceHandle SyncularNativePresenceHandle;
 
 typedef void (*SyncularNativeEventCallback)(
     const char *event_json,
@@ -152,6 +153,38 @@ bool syncular_native_client_update_presence_metadata(
 char *syncular_native_client_presence_json(
     SyncularNativeHandle *handle,
     const char *scope_key,
+    char **error_out
+);
+
+/*
+ * Owning presence token for C hosts. Close the presence handle before closing
+ * the client handle. close() leaves the scope if leave() was not called.
+ */
+SyncularNativePresenceHandle *syncular_native_client_join_presence_handle(
+    SyncularNativeHandle *handle,
+    const char *scope_key,
+    const char *metadata_json,
+    char **error_out
+);
+
+char *syncular_native_presence_handle_scope_key(
+    SyncularNativePresenceHandle *handle,
+    char **error_out
+);
+
+bool syncular_native_presence_handle_update_metadata(
+    SyncularNativePresenceHandle *handle,
+    const char *metadata_json,
+    char **error_out
+);
+
+bool syncular_native_presence_handle_leave(
+    SyncularNativePresenceHandle *handle,
+    char **error_out
+);
+
+bool syncular_native_presence_handle_close(
+    SyncularNativePresenceHandle *handle,
     char **error_out
 );
 
