@@ -185,6 +185,7 @@ export function encodeBinarySnapshotTable(
   const writer = new BinarySnapshotWriter(
     estimateBinarySnapshotTableSize(table)
   );
+  const valueWriters = table.columns.map(createBinarySnapshotValueWriter);
   writeBinarySnapshotTableHeader(
     writer,
     table.table,
@@ -211,11 +212,59 @@ export function encodeBinarySnapshotTable(
         );
         continue;
       }
-      writeBinarySnapshotValue(writer, column, value);
+      valueWriters[index]!(writer, value);
     }
   }
 
   return writer.toUint8Array();
+}
+
+type BinarySnapshotValueWriter = (
+  writer: BinarySnapshotWriter,
+  value: unknown
+) => void;
+
+function createBinarySnapshotValueWriter(
+  column: BinarySnapshotColumn
+): BinarySnapshotValueWriter {
+  const label = `binary snapshot ${column.name}`;
+  switch (column.type) {
+    case 'string':
+      return (writer, value) => {
+        if (typeof value !== 'string') {
+          throw new Error(`${label} expected string`);
+        }
+        writer.writeString32(value, label);
+      };
+    case 'integer':
+      return (writer, value) => {
+        writer.writeInt64(value, label);
+      };
+    case 'float':
+      return (writer, value) => {
+        if (typeof value !== 'number') {
+          throw new Error(`${label} expected number`);
+        }
+        writer.writeFloat64(value);
+      };
+    case 'boolean':
+      return (writer, value) => {
+        if (typeof value !== 'boolean') {
+          throw new Error(`${label} expected boolean`);
+        }
+        writer.writeUint8(value ? 1 : 0);
+      };
+    case 'json':
+      return (writer, value) => {
+        writer.writeString32(normalizeRowJson(value), label);
+      };
+    case 'bytes':
+      return (writer, value) => {
+        const bytes = coerceBinaryBytes(value, column.name);
+        writer.writeUint32(bytes.length);
+        writer.writeBytes(bytes);
+      };
+  }
 }
 
 export class BinarySnapshotTableWriter {
