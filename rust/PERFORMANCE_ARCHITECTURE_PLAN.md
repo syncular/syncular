@@ -2694,6 +2694,10 @@ client. Overflow should close or resync the session deliberately.
     from durable SQL/object state.
 - Add deterministic tests for reconnect, resume, auth refresh, slow client
   overflow, and subscription changes.
+- Done: added realtime auth refresh coverage. A refreshed bearer token that
+  resolves to the same actor can open the websocket session and receive the
+  normal hello/capability frame, while an expired token is rejected before
+  websocket upgrade.
 - Done: added a Hono realtime integration guard for subscription changes. A
   connected websocket starts with no scope membership, receives scope wakeups
   after a pull subscription records effective scopes, then stops receiving that

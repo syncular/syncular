@@ -1160,6 +1160,83 @@ describe('createSyncServer console configuration', () => {
     await waitFor(async () => upstream.binaryMessages.length === 2);
   });
 
+  it('accepts refreshed realtime auth tokens for the same actor', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+      sync: {
+        ...options.sync,
+        authenticate: async (request) => {
+          const token = request.headers
+            .get('authorization')
+            ?.replace(/^Bearer\s+/i, '');
+          return token === 'old-token' || token === 'new-token'
+            ? { actorId: 'u1' }
+            : null;
+        },
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    await sql`
+      INSERT INTO sync_client_cursors (
+        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
+      )
+      VALUES (
+        'default', 'client-auth-refresh', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
+      )
+    `.execute(db);
+
+    const refreshed = await app.request(
+      'http://localhost/sync/realtime?clientId=client-auth-refresh&syncPackEncoding=binary-sync-pack-v1',
+      {
+        headers: {
+          Authorization: 'Bearer new-token',
+        },
+      }
+    );
+    expect(refreshed.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    const helloMessage = upstream.messages.find(
+      (message) => message.event === 'hello'
+    );
+    expect(helloMessage).toMatchObject({
+      event: 'hello',
+      data: expect.objectContaining({
+        actorId: 'u1',
+        clientId: 'client-auth-refresh',
+        syncPackEncoding: 'binary-sync-pack-v1',
+      }),
+    });
+
+    capturedEvents = null;
+    const expired = await app.request(
+      'http://localhost/sync/realtime?clientId=client-auth-refresh&syncPackEncoding=binary-sync-pack-v1',
+      {
+        headers: {
+          Authorization: 'Bearer expired-token',
+        },
+      }
+    );
+    expect(expired.status).toBe(401);
+    expect(capturedEvents).toBeNull();
+  });
+
   it('sends a websocket hello frame with session capabilities', async () => {
     const options = createOptions();
     const server = createSyncServer(options);
