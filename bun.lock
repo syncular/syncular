@@ -751,8 +751,14 @@
         "kysely-generic-sqlite": "^1.2.1",
       },
       "devDependencies": {
+        "@happy-dom/global-registrator": "^20.8.9",
         "@syncular/config": "workspace:*",
+        "@testing-library/react": "^16.3.2",
+        "@types/react": "^19.2.14",
         "hono": "^4.12.15",
+      },
+      "peerDependencies": {
+        "react": "^18.0.0 || ^19.0.0",
       },
     },
     "rust/bindings/crdt-adapters": {

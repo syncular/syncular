@@ -849,6 +849,9 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
     }
 
+    @Throws(FfiException::class)
+    fun start(): Boolean = startRealtimeWorker()
+
 
     @Throws(FfiException::class)
     fun stopRealtimeWorker(): Boolean {
@@ -857,6 +860,9 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
         val reader = WireReader(buf)
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
     }
+
+    @Throws(FfiException::class)
+    fun stop(): Boolean = stopRealtimeWorker()
 
     @Throws(FfiException::class)
     fun joinPresence(scopeKey: String, metadataJson: String? = null): Boolean {
@@ -868,6 +874,12 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+    @Throws(FfiException::class)
+    fun joinPresenceHandle(scopeKey: String, metadataJson: String? = null): SyncularPresenceHandle {
+        joinPresence(scopeKey, metadataJson)
+        return SyncularPresenceHandle(this, scopeKey)
     }
 
     @Throws(FfiException::class)
@@ -923,6 +935,19 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+    @Throws(FfiException::class)
+    fun forEachEventJson(capacity: ULong = 256uL, handler: (String) -> Boolean) {
+        startEventStream(capacity)
+        try {
+            while (true) {
+                val eventJson = nextEventJson() ?: break
+                if (!handler(eventJson)) break
+            }
+        } finally {
+            closeEventStream()
+        }
     }
 
 
@@ -1445,6 +1470,24 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+}
+
+class SyncularPresenceHandle internal constructor(
+    private val client: SyncularBoltClient,
+    val scopeKey: String,
+) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
+    @Throws(FfiException::class)
+    fun update(metadataJson: String): Boolean =
+        client.updatePresenceMetadata(scopeKey, metadataJson)
+
+    @Throws(FfiException::class)
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            client.leavePresence(scopeKey)
+        }
     }
 }
 

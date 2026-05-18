@@ -247,10 +247,18 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func start() throws -> Bool {
+        try startRealtimeWorker()
+    }
+
     public func stopRealtimeWorker() throws -> Bool {
         let buf = boltffi_syncular_bolt_client_stop_realtime_worker(handle)
         defer { boltffi_free_buf(buf) }
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func stop() throws -> Bool {
+        try stopRealtimeWorker()
     }
 
     public func joinPresence(scopeKey: String, metadataJson: String? = nil) throws -> Bool {
@@ -263,6 +271,21 @@ public final class SyncularBoltClient {
                 return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
             }
         }
+    }
+
+    public func joinPresenceHandle(scopeKey: String, metadataJson: String? = nil) throws -> SyncularPresenceHandle {
+        _ = try joinPresence(scopeKey: scopeKey, metadataJson: metadataJson)
+        return SyncularPresenceHandle(
+            scopeKey: scopeKey,
+            update: { [weak self] metadataJson in
+                guard let self else { throw FfiError(message: "Syncular client was released") }
+                _ = try self.updatePresenceMetadata(scopeKey: scopeKey, metadataJson: metadataJson)
+            },
+            leave: { [weak self] in
+                guard let self else { return }
+                _ = try self.leavePresence(scopeKey: scopeKey)
+            }
+        )
     }
 
     public func leavePresence(scopeKey: String) throws -> Bool {
@@ -311,6 +334,31 @@ public final class SyncularBoltClient {
         let buf = boltffi_syncular_bolt_client_close_event_stream(handle)
         defer { boltffi_free_buf(buf) }
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func eventJsonStream(capacity: UInt64 = 256) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached { [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                do {
+                    _ = try self.startEventStream(capacity: capacity)
+                    while !Task.isCancelled {
+                        guard let eventJson = try self.nextEventJson() else { break }
+                        continuation.yield(eventJson)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { [weak self] _ in
+                task.cancel()
+                _ = try? self?.closeEventStream()
+            }
+        }
     }
 
     public func applyLocalOperationJson(operationJson: String, localRowJson: String?) throws -> String {
@@ -742,6 +790,37 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+}
+
+public final class SyncularPresenceHandle {
+    public let scopeKey: String
+    private let updateFn: (String) throws -> Void
+    private let leaveFn: () throws -> Void
+    private var active = true
+
+    fileprivate init(
+        scopeKey: String,
+        update: @escaping (String) throws -> Void,
+        leave: @escaping () throws -> Void
+    ) {
+        self.scopeKey = scopeKey
+        self.updateFn = update
+        self.leaveFn = leave
+    }
+
+    public func update(metadataJson: String) throws {
+        try updateFn(metadataJson)
+    }
+
+    public func close() throws {
+        guard active else { return }
+        active = false
+        try leaveFn()
+    }
+
+    deinit {
+        try? close()
+    }
 }
 
 @inline(__always)

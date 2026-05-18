@@ -86,7 +86,7 @@ or canned queries. Reads stay plain Kysely. Sync-aware writes go through
 
 For apps that want a lifecycle-managed surface instead of wiring startup by
 hand, `createSyncularV2Client` wraps `createSyncularV2Database` with
-subscription setup, initial sync, optional realtime, reconnect catchup, and
+subscription setup, initial sync, realtime, reconnect catchup, and
 coordinated shutdown:
 
 ```ts
@@ -105,16 +105,100 @@ const syncular = await createSyncularV2Client<AppDb>({
       scopes: { user_id: 'user-1' },
     },
   ],
-  realtime: true,
 });
 
 await syncular.destroy();
 ```
 
-The managed client does not enable interval polling by default. Realtime is a
-wakeup path: websocket reconnects trigger HTTP catchup sync, and failed
+The managed client starts realtime by default. Pass `realtime: false` only for a
+host policy that cannot hold a websocket. Interval polling is still off by
+default: websocket reconnects trigger HTTP catchup sync, and failed
 inline/binary websocket applies already fall back to pull. Use
 `lifecycle.pollIntervalMs` only for environments that explicitly need polling.
+
+## React
+
+React apps can import the optional `@syncular/client-rust/react` entrypoint.
+The adapter owns the Rust browser client lifecycle when passed `options`, or
+can wrap an already-created managed client:
+
+```ts
+import { createSyncularV2React } from '@syncular/client-rust/react';
+
+const {
+  SyncularProvider,
+  useLiveQuery,
+  useMutation,
+  useOutboxStats,
+  usePresence,
+  useSyncularClient,
+  useSyncularConnection,
+} = createSyncularV2React<AppDb>();
+
+function AppShell({ children }: { children: React.ReactNode }) {
+  return (
+    <SyncularProvider
+      options={{
+        config: {
+          baseUrl: '/sync',
+          actorId: 'user-1',
+          clientId: 'client-1',
+        },
+        subscriptions: [
+          {
+            id: 'tasks:user-1',
+            table: 'tasks',
+            scopes: { user_id: 'user-1' },
+          },
+        ],
+        realtime: true,
+      }}
+    >
+      {children}
+    </SyncularProvider>
+  );
+}
+
+function TaskList() {
+  const syncular = useSyncularClient();
+  const tasks = useLiveQuery(
+    () =>
+      syncular.db
+        .selectFrom('tasks')
+        .select(['id', 'title'])
+        .where('user_id', '=', 'user-1'),
+    {
+      tables: ['tasks'],
+      deps: ['user-1'],
+    }
+  );
+
+  const presence = usePresence({
+    scopeKey: 'user:user-1',
+    metadata: { view: 'tasks' },
+  });
+
+  const createTask = useMutation((client, title: string) =>
+    client.mutations.tasks.insert({
+      title,
+      completed: 0,
+      user_id: 'user-1',
+    })
+  );
+
+  const connection = useSyncularConnection();
+  const outbox = useOutboxStats();
+}
+```
+
+The React entrypoint intentionally stays thin: reads still use Kysely live
+queries, writes still use generated mutations, presence stays scoped to server
+scope keys, and blob helpers wrap the Rust blob queue. `useLiveQuery` accepts
+`deps` so apps can keep query resubscription explicit even when Kysely builders
+are created during render. `SyncularProvider` does not recreate an owned client
+just because an inline `options` object changed identity; pass `optionsKey` when
+the app intentionally needs to tear down and reopen the Rust client for a new
+identity or database.
 
 Generated apps also get typed row-delta helpers for realtime/UI routing. The
 runtime event stays generic, while app code can branch on real table columns:
