@@ -560,6 +560,21 @@ derived-schema deferral for app bootstrap.
   worse: `2418.98ms -> 2708.20ms`, pull request `1002ms -> 1143ms`, server
   binary encode `356ms -> 401ms`, local apply `391ms -> 402ms`, and derived
   schema `866.17ms -> 984.63ms`. Keep the simpler `map` implementation.
+- Retained generated server snapshot metadata module. `syncular-codegen` now
+  supports `typescriptServerOutputPath` and writes a server-only TypeScript
+  artifact with row interfaces, binary snapshot columns, and generated
+  snapshot row encoders. Server apps can import this contract without importing
+  the browser/client runtime, which is the clean path toward generated server
+  binary encoding instead of generic inference. Correctness:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts
+  tests/unit/server-pull.test.ts` passed. Local 100k release scoreboard versus
+  `.context/benchmarks/browser-e2e-100k-baseline.json` was perf-neutral/noisy:
+  TS bootstrap `722.67ms -> 800.25ms`, Rust bootstrap `138.04ms -> 146.36ms`,
+  Rust request count `3 -> 3`, response bytes `765,764 -> 765,764`, server
+  binary encode `15ms`, and served Rust WASM bytes stayed at `3,327,561`.
+  This is kept as architecture/API groundwork, not as a direct performance win.
 
 ### Required Benchmark Scoreboard
 

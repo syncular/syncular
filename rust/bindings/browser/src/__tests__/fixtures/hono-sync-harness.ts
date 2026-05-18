@@ -24,9 +24,11 @@ import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
   syncularGeneratedCodecs,
+} from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
+import {
   syncularGeneratedSnapshotBinaryEncoders,
   syncularGeneratedSnapshotBinaryColumns,
-} from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../../../examples/todo-app/generated/typescript/syncular.server.generated';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2AuthHeaders,
