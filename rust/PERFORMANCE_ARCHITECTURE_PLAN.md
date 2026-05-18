@@ -2915,6 +2915,11 @@ client. Overflow should close or resync the session deliberately.
   database-backed storage path. This is a memory/Worker-safety improvement for
   the artifact path, not a latency target; the existing chunk storage and Hono
   chunk-route tests cover the behavior.
+- Done: added chunk artifact revalidation coverage for binary sync-pack
+  snapshot refs. The chunk route now has explicit tests for ETag,
+  `X-Sync-Chunk-*` metadata, and `If-None-Match` returning 304 for an
+  authorized chunk request. This is a small resume/cache correctness guard, not
+  a latency change.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 
