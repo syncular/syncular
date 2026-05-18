@@ -6,6 +6,11 @@ public final class SyncularBoltClient implements AutoCloseable {
     private final long handle;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
+    @FunctionalInterface
+    public interface SyncularEventJsonListener {
+        void onEventJson(String eventJson);
+    }
+
     private SyncularBoltClient(long handle) {
         this.handle = handle;
     }
@@ -265,6 +270,13 @@ public final class SyncularBoltClient implements AutoCloseable {
         } finally {
             closeEventStream();
         }
+    }
+
+    public void forEachEventJson(long capacity, SyncularEventJsonListener listener) {
+        forEachEventJson(capacity, eventJson -> {
+            listener.onEventJson(eventJson);
+            return true;
+        });
     }
 
     public String applyLocalOperationJson(String operationJson, java.util.Optional<String> localRowJson) {

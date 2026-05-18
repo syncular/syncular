@@ -70,6 +70,45 @@ diesel::table! {
 }
 
 diesel::table! {
+    sync_crdt_documents (document_key) {
+        document_key -> Text,
+        app_table -> Text,
+        row_id -> Text,
+        field_name -> Text,
+        state_column -> Text,
+        sync_mode -> Text,
+        state_base64 -> Nullable<Text>,
+        state_vector_base64 -> Text,
+        pending_updates -> BigInt,
+        flushed_updates -> BigInt,
+        acked_updates -> BigInt,
+        log_updates -> BigInt,
+        created_at -> BigInt,
+        updated_at -> BigInt,
+        compacted_at -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
+    sync_crdt_update_log (id) {
+        id -> Integer,
+        document_key -> Text,
+        app_table -> Text,
+        row_id -> Text,
+        field_name -> Text,
+        update_id -> Text,
+        client_commit_id -> Nullable<Text>,
+        origin -> Text,
+        status -> Text,
+        update_base64 -> Text,
+        state_vector_base64 -> Text,
+        created_at -> BigInt,
+        flushed_at -> Nullable<BigInt>,
+        acked_at -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
     sync_crdt_updates (seq) {
         seq -> Integer,
         partition_id -> Text,
@@ -170,6 +209,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     sync_blob_outbox,
     sync_conflicts,
     sync_crdt_checkpoints,
+    sync_crdt_documents,
+    sync_crdt_update_log,
     sync_crdt_updates,
     sync_migrations,
     sync_outbox_commits,

@@ -5303,6 +5303,30 @@ fn generate_swift_module(
     out.push_str("public func syncularNativeEventRequiresFullRefresh(_ event: SyncularNativeEvent) -> Bool {\n");
     out.push_str("    event.eventStreamLost\n");
     out.push_str("}\n\n");
+    out.push_str("public protocol SyncularNativeEventJsonSource {\n");
+    out.push_str(
+        "    func eventJsonStream(capacity: UInt64) -> AsyncThrowingStream<String, Error>\n",
+    );
+    out.push_str("}\n\n");
+    out.push_str("public func syncularNativeEventStream(from source: SyncularNativeEventJsonSource, capacity: UInt64 = 256) -> AsyncThrowingStream<SyncularNativeEvent, Error> {\n");
+    out.push_str("    AsyncThrowingStream { continuation in\n");
+    out.push_str("        let task = Task {\n");
+    out.push_str("            do {\n");
+    out.push_str(
+        "                for try await eventJson in source.eventJsonStream(capacity: capacity) {\n",
+    );
+    out.push_str(
+        "                    continuation.yield(try syncularDecodeNativeEvent(eventJson))\n",
+    );
+    out.push_str("                }\n");
+    out.push_str("                continuation.finish()\n");
+    out.push_str("            } catch {\n");
+    out.push_str("                continuation.finish(throwing: error)\n");
+    out.push_str("            }\n");
+    out.push_str("        }\n");
+    out.push_str("        continuation.onTermination = { _ in task.cancel() }\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
     push_swift_changed_row_helpers(&mut out, &user_tables);
     out.push_str("public struct SyncularGeneratedOperation: Codable, Equatable {\n");
     out.push_str("    public let table: String\n");
@@ -6904,6 +6928,16 @@ fn generate_kotlin_module(
         "fun syncularNativeEventRequiresFullRefresh(event: SyncularNativeEvent): Boolean =\n",
     );
     out.push_str("    event.eventStreamLost\n\n");
+    out.push_str("interface SyncularNativeEventJsonSource {\n");
+    out.push_str(
+        "    fun forEachEventJson(capacity: ULong = 256uL, handler: (String) -> Boolean)\n",
+    );
+    out.push_str("}\n\n");
+    out.push_str("fun SyncularNativeEventJsonSource.forEachNativeEvent(capacity: ULong = 256uL, handler: (SyncularNativeEvent) -> Boolean) {\n");
+    out.push_str("    forEachEventJson(capacity) { eventJson -> handler(syncularDecodeNativeEvent(eventJson)) }\n");
+    out.push_str("}\n\n");
+    out.push_str("fun syncularDecodeNativeEvents(eventJson: Iterable<String>): List<SyncularNativeEvent> =\n");
+    out.push_str("    eventJson.map(::syncularDecodeNativeEvent)\n\n");
     push_kotlin_changed_row_helpers(&mut out, &user_tables);
     if has_native_crdt {
         out.push_str(
@@ -8703,6 +8737,8 @@ mod tests {
         ));
         assert!(swift.contains("public func syncularGeneratedFieldEncryptionConfigJson"));
         assert!(swift.contains("public func syncularDecodeNativeEvent"));
+        assert!(swift.contains("public protocol SyncularNativeEventJsonSource"));
+        assert!(swift.contains("public func syncularNativeEventStream"));
         assert!(swift.contains("public final class SyncularNativeLiveQuery"));
         assert!(swift.contains("public protocol SyncularNativeJsonClient"));
         assert!(swift.contains("func applyMutationJson(mutationJson: String"));
@@ -8788,6 +8824,8 @@ mod tests {
         ));
         assert!(kotlin.contains("fun syncularGeneratedFieldEncryptionConfigJson("));
         assert!(kotlin.contains("fun syncularDecodeNativeEvent(eventJson: String)"));
+        assert!(kotlin.contains("interface SyncularNativeEventJsonSource"));
+        assert!(kotlin.contains("fun SyncularNativeEventJsonSource.forEachNativeEvent"));
         assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));
         assert!(kotlin.contains("interface SyncularNativeJsonClient"));
         assert!(kotlin.contains("fun applyMutationJson(mutationJson: String"));

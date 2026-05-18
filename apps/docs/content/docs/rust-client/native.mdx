@@ -156,9 +156,10 @@ Swift:
 
 ```swift
 try client.start()
-for try await eventJson in client.eventJsonStream(capacity: 256) {
-        let event = try syncularDecodeNativeEvent(eventJson)
-        await viewModel.apply(syncularEvent: event)
+extension SyncularBoltClient: SyncularNativeEventJsonSource {}
+
+for try await event in syncularNativeEventStream(from: client) {
+    await viewModel.apply(syncularEvent: event)
 }
 ```
 
@@ -166,9 +167,14 @@ Kotlin:
 
 ```kotlin
 client.start()
+val eventSource = object : SyncularNativeEventJsonSource {
+    override fun forEachEventJson(capacity: ULong, handler: (String) -> Boolean) {
+        client.forEachEventJson(capacity, handler)
+    }
+}
+
 scope.launch(Dispatchers.IO) {
-    client.forEachEventJson(256uL) { eventJson ->
-        val event = syncularDecodeNativeEvent(eventJson)
+    eventSource.forEachNativeEvent(256uL) { event ->
         withContext(Dispatchers.Main) {
             viewModel.applySyncularEvent(event)
         }
@@ -182,10 +188,52 @@ Java:
 ```java
 client.start();
 client.forEachEventJson(256, eventJson -> {
-    SyncularNativeEvent event = syncularDecodeNativeEvent(eventJson);
-    viewModel.applySyncularEvent(event);
-    return true;
+    viewModel.applySyncularEventJson(eventJson);
 });
+```
+
+## Generated Rust app pattern
+
+A Rust native app should wire the generated schema once, keep realtime hot, and
+let events drive projection refresh:
+
+```rust
+let mut client = NativeSyncularClient::builder(config)
+    .auto_sync_local_writes(true)
+    .open()?;
+
+client.set_auth_headers(headers)?;
+client.set_subscriptions(vec![task_subscription(actor_id)])?;
+
+let mut presence = client.join_presence_handle(
+    &format!("user:{actor_id}"),
+    Some(serde_json::json!({ "view": "tasks" })),
+)?;
+
+let task = NewTask::new("task-1", "Realtime native task", actor_id, Some(project_id));
+let operation_json = serde_json::to_string(&task.sync_operation())?;
+let local_row_json = serde_json::to_string(&task.row_json())?;
+let command_id = client.enqueue_mutation_json(&operation_json, Some(&local_row_json))?;
+
+while let Some(event) = client.next_event_timeout(Duration::from_millis(250)) {
+    if event.resync_required.unwrap_or(false)
+        || matches!(event.kind, NativeEventKind::EventsOverflowed)
+    {
+        refresh_all_projections(&mut client)?;
+        continue;
+    }
+    for task in task_changed_rows(&event.changed_rows) {
+        if let Some(row_id) = task.row_id() {
+            refresh_task_projection(&mut client, row_id)?;
+        }
+    }
+    if event.command_id.as_deref() == Some(command_id.as_str()) {
+        break;
+    }
+}
+
+presence.update_metadata(serde_json::json!({ "view": "done" }))?;
+client.shutdown()?;
 ```
 
 ## Realtime and sync
