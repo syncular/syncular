@@ -789,6 +789,7 @@ export async function pull<
 
                     interface SnapshotBundle {
                       table: string;
+                      tableIndex: number;
                       startCursor: string | null;
                       nextRowCursor: string | null;
                       isFirstPage: boolean;
@@ -806,6 +807,7 @@ export async function pull<
 
                     const createSnapshotBundle = (
                       table: string,
+                      tableIndex: number,
                       rowCursor: string | null,
                       ttlMs: number,
                       binaryColumns?: readonly BinarySnapshotColumn[],
@@ -818,6 +820,7 @@ export async function pull<
                           : [];
                       return {
                         table,
+                        tableIndex,
                         startCursor: rowCursor,
                         nextRowCursor: null,
                         isFirstPage: rowCursor == null,
@@ -835,6 +838,28 @@ export async function pull<
                         binaryRows: [],
                         inlineRows: null,
                       };
+                    };
+
+                    const snapshotBootstrapStateAfter = (args: {
+                      tableIndex: number;
+                      nextRowCursor: string | null;
+                      isLastPage: boolean;
+                    }): SyncBootstrapState | null => {
+                      if (!args.isLastPage) {
+                        return {
+                          ...effectiveState,
+                          tableIndex: args.tableIndex,
+                          rowCursor: args.nextRowCursor,
+                        };
+                      }
+                      if (args.tableIndex + 1 < effectiveState.tables.length) {
+                        return {
+                          ...effectiveState,
+                          tableIndex: args.tableIndex + 1,
+                          rowCursor: null,
+                        };
+                      }
+                      return null;
                     };
 
                     const encodeSnapshotBundlePayload = (
@@ -870,6 +895,11 @@ export async function pull<
                           rows: bundle.inlineRows,
                           isFirstPage: bundle.isFirstPage,
                           isLastPage: bundle.isLastPage,
+                          bootstrapStateAfter: snapshotBootstrapStateAfter({
+                            tableIndex: bundle.tableIndex,
+                            nextRowCursor: bundle.nextRowCursor,
+                            isLastPage: bundle.isLastPage,
+                          }),
                         });
                         return;
                       }
@@ -911,6 +941,11 @@ export async function pull<
                             chunks: [],
                             isFirstPage: bundle.isFirstPage,
                             isLastPage: bundle.isLastPage,
+                            bootstrapStateAfter: snapshotBootstrapStateAfter({
+                              tableIndex: bundle.tableIndex,
+                              nextRowCursor: bundle.nextRowCursor,
+                              isLastPage: bundle.isLastPage,
+                            }),
                           };
                           snapshots.push(snapshot);
                           pendingExternalChunkWrites.push({
@@ -967,6 +1002,11 @@ export async function pull<
                         chunks: [toResponseChunkRef(chunkRef)],
                         isFirstPage: bundle.isFirstPage,
                         isLastPage: bundle.isLastPage,
+                        bootstrapStateAfter: snapshotBootstrapStateAfter({
+                          tableIndex: bundle.tableIndex,
+                          nextRowCursor: bundle.nextRowCursor,
+                          isLastPage: bundle.isLastPage,
+                        }),
                       });
                     };
 
@@ -1005,6 +1045,7 @@ export async function pull<
                         }
                         activeBundle = createSnapshotBundle(
                           nextTableName,
+                          nextState.tableIndex,
                           nextState.rowCursor,
                           tableHandler.snapshotChunkTtlMs ??
                             24 * 60 * 60 * 1000,
@@ -1055,6 +1096,11 @@ export async function pull<
                             chunks: [toResponseChunkRef(cached)],
                             isFirstPage: nextState.rowCursor == null,
                             isLastPage: cached.isLastPage,
+                            bootstrapStateAfter: snapshotBootstrapStateAfter({
+                              tableIndex: nextState.tableIndex,
+                              nextRowCursor: cached.nextRowCursor,
+                              isLastPage: cached.isLastPage,
+                            }),
                           });
                           activeBundle = null;
                           pageIndex +=
@@ -1063,25 +1109,11 @@ export async function pull<
                               Math.ceil(cachedRowLimit / limitSnapshotRows)
                             ) - 1;
 
-                          if (cached.isLastPage) {
-                            if (
-                              nextState.tableIndex + 1 <
-                              nextState.tables.length
-                            ) {
-                              nextState = {
-                                ...nextState,
-                                tableIndex: nextState.tableIndex + 1,
-                                rowCursor: null,
-                              };
-                            } else {
-                              nextState = null;
-                            }
-                          } else {
-                            nextState = {
-                              ...nextState,
-                              rowCursor: cached.nextRowCursor,
-                            };
-                          }
+                          nextState = snapshotBootstrapStateAfter({
+                            tableIndex: nextState.tableIndex,
+                            nextRowCursor: cached.nextRowCursor,
+                            isLastPage: cached.isLastPage,
+                          });
                           continue;
                         }
                       }
@@ -1148,6 +1180,7 @@ export async function pull<
                           await flushSnapshotBundle(activeBundle);
                           activeBundle = createSnapshotBundle(
                             nextTableName,
+                            nextState.tableIndex,
                             nextState.rowCursor,
                             tableHandler.snapshotChunkTtlMs ??
                               24 * 60 * 60 * 1000,

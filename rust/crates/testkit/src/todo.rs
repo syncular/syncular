@@ -106,6 +106,7 @@ pub fn todo_snapshot_response(rows: Vec<Value>) -> CombinedResponse {
                     chunks: None,
                     is_first_page: true,
                     is_last_page: true,
+                    bootstrap_state_after: None,
                 }]),
             }],
         }),

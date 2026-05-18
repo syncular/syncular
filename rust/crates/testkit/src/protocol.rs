@@ -136,6 +136,7 @@ pub fn snapshot_page_combined_response(
                     chunks: None,
                     is_first_page,
                     is_last_page,
+                    bootstrap_state_after: None,
                 }]),
             }],
         }),
@@ -170,6 +171,7 @@ pub fn snapshot_chunks_combined_response(
                     chunks: Some(chunks),
                     is_first_page: true,
                     is_last_page: true,
+                    bootstrap_state_after: None,
                 }]),
             }],
         }),
@@ -197,6 +199,7 @@ pub fn snapshot_subscription_response(
             chunks: None,
             is_first_page: true,
             is_last_page: true,
+            bootstrap_state_after: None,
         }]),
     }
 }

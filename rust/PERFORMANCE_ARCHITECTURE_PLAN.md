@@ -2929,6 +2929,13 @@ client. Overflow should close or resync the session deliberately.
   chunk fetch fails, no rows are applied and a later pull can restart the
   snapshot fetch and apply successfully. This proves restart recovery; cached
   partial-bootstrap resume remains open.
+- Done: added snapshot checkpoint resume semantics. `binary-sync-pack-v1` wire
+  version 9 now carries per-snapshot `bootstrapStateAfter`; the server emits
+  the checkpoint for generated and cached snapshot chunks, and the browser Rust
+  client persists it after successfully applying each snapshot chunk. Browser
+  Hono coverage proves an interrupted second chunk resumes from the first
+  applied checkpoint instead of restarting from the beginning. This is a
+  correctness/resumability change, not a latency target.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 
