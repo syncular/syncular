@@ -625,6 +625,17 @@ derived-schema deferral for app bootstrap.
   aggregate p50 `7.40ms`, peak memory `472.27MB`. Against the prior accepted
   release external Rust local-query sample, list improved `0.13ms -> 0.10ms`,
   search `0.19ms -> 0.14ms`, and raw aggregate `7.68ms -> 7.40ms`.
+- Rejected conditional live-event drain for write/sync paths when no live
+  listeners are registered. Correctness tests passed, but the benchmark did
+  not improve versus the accepted read-drain removal above. Two local 100k
+  release scoreboard candidate runs measured Rust bootstrap `145.57ms` /
+  `146.36ms`, list p50 `0.23ms` / `0.22ms`, search p50 `1.49ms` /
+  `1.44ms`, and aggregate p50 `23.44ms` / `23.05ms`; the accepted read-drain
+  runs immediately before it were better on the target lanes at bootstrap
+  `136.81ms` / `141.10ms`, list p50 `0.20ms` / `0.20ms`, search p50
+  `1.32ms` / `1.34ms`, and aggregate p50 `21.84ms` / `22.10ms`. Reverted and
+  kept the simpler rule: reads do not drain live events, write/sync paths still
+  drain explicitly.
 
 ### Required Benchmark Scoreboard
 
