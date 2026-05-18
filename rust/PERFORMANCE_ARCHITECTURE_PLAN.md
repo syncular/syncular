@@ -2477,11 +2477,14 @@ client. Overflow should close or resync the session deliberately.
     `bun --cwd rust/bindings/browser tsgo`,
     `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime decodes_v7_table_and_scope_dictionary_changes`,
     and `bun run --cwd rust/bindings/browser test:wasm:hono` all passed.
+  - Follow-up cleanup: the encoder now computes each change's table/scope
+    dictionary indexes once and reuses them for row-group metadata and change
+    metadata. This removed duplicate per-change `Object.entries`/map lookups.
   - Targeted 50k sync-pack codec lane, v7 final versus retained v6:
-    generic binary encode `22.3ms -> 23.8ms` (`+1.5ms`, `+6.7%`),
-    generic binary decode `32.5ms -> 24.4ms` (`-8.1ms`, `-24.9%`),
-    generated binary encode `18.3ms -> 20.5ms` (`+2.2ms`, `+12.0%`),
-    generated binary decode `34.9ms -> 25.3ms` (`-9.6ms`, `-27.5%`).
+    generic binary encode `22.3ms -> 20.6ms` (`-1.7ms`, `-7.6%`),
+    generic binary decode `32.5ms -> 25.1ms` (`-7.4ms`, `-22.8%`),
+    generated binary encode `18.3ms -> 19.6ms` (`+1.3ms`, `+7.1%`),
+    generated binary decode `34.9ms -> 24.7ms` (`-10.2ms`, `-29.2%`).
     Generic binary response size moved `10894.3KiB -> 9478.3KiB`
     (`-1416.0KiB`, `-13.0%`); generated binary response size moved
     `6520.5KiB -> 5104.5KiB` (`-1416.0KiB`, `-21.7%`).
