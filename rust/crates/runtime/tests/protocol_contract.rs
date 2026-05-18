@@ -16,9 +16,9 @@ use syncular_runtime::fixtures::todo::{
     app_schema as demo_todo_app_schema, migrations::current_schema_version,
 };
 use syncular_runtime::protocol::{
-    BootstrapState, CombinedRequest, CombinedResponse, OperationResult, PullResponse,
-    PushBatchResponse, PushCommitResponse, SnapshotChunkRef, SubscriptionResponse, SyncChange,
-    SyncCommit, SyncSnapshot,
+    validate_pull_commit_integrity_metadata, BootstrapState, CombinedRequest, CombinedResponse,
+    OperationResult, PullResponse, PushBatchResponse, PushCommitResponse, SnapshotChunkRef,
+    SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot,
 };
 use syncular_runtime::store::SyncStore;
 use syncular_runtime::transport::{
@@ -1592,6 +1592,49 @@ fn not_ok_protocol_responses_are_rejected() -> Result<()> {
 }
 
 #[test]
+fn malformed_commit_integrity_metadata_is_rejected_before_apply() -> Result<()> {
+    let path = temp_db_path("syncular-protocol-invalid-commit-integrity");
+    let store = RusqliteStore::open(&path)?;
+    let transport = TestTransport::new();
+    let mut response = duplicate_pull_commits_response();
+    let commit = &mut response.pull.as_mut().expect("pull response").subscriptions[0].commits[0];
+    commit.commit_digest = Some("abc".to_string());
+    transport.push_http_response(response);
+    let mut client = demo_client(
+        test_config(&path, "client-invalid-integrity"),
+        store,
+        transport,
+    );
+
+    let error = client.sync_http().expect_err("invalid integrity metadata");
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+    assert!(client.list_tasks()?.is_empty());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn commit_integrity_metadata_validation_rejects_partial_or_reordered_roots() {
+    let mut pull = integrity_pull_response(vec![
+        integrity_commit(41, Some("a".repeat(64)), Some("b".repeat(64))),
+        integrity_commit(42, Some("c".repeat(64)), Some("d".repeat(64))),
+    ]);
+    validate_pull_commit_integrity_metadata(&pull).expect("complete metadata");
+
+    pull.subscriptions[0].commits[0].commit_chain_root = None;
+    let error = validate_pull_commit_integrity_metadata(&pull).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+
+    let pull = integrity_pull_response(vec![
+        integrity_commit(42, Some("a".repeat(64)), Some("b".repeat(64))),
+        integrity_commit(41, Some("c".repeat(64)), Some("d".repeat(64))),
+    ]);
+    let error = validate_pull_commit_integrity_metadata(&pull).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+}
+
+#[test]
 fn server_required_schema_version_newer_than_client_is_rejected() -> Result<()> {
     let path = temp_db_path("syncular-protocol-server-schema");
     let store = RusqliteStore::open(&path)?;
@@ -2199,6 +2242,40 @@ fn duplicate_pull_commits_response() -> CombinedResponse {
             },
         ],
     )
+}
+
+fn integrity_pull_response(commits: Vec<SyncCommit>) -> PullResponse {
+    PullResponse {
+        ok: true,
+        subscriptions: vec![SubscriptionResponse {
+            id: "sub-tasks".to_string(),
+            status: "active".to_string(),
+            scopes: scopes(),
+            bootstrap: false,
+            bootstrap_state: None,
+            next_cursor: commits
+                .last()
+                .map(|commit| commit.commit_seq)
+                .unwrap_or_default(),
+            commits,
+            snapshots: None,
+        }],
+    }
+}
+
+fn integrity_commit(
+    commit_seq: i64,
+    commit_digest: Option<String>,
+    commit_chain_root: Option<String>,
+) -> SyncCommit {
+    SyncCommit {
+        commit_seq,
+        created_at: "2026-05-19T00:00:00.000Z".to_string(),
+        actor_id: "server".to_string(),
+        commit_digest,
+        commit_chain_root,
+        changes: Vec::new(),
+    }
 }
 
 fn test_field_encryption() -> Result<FieldEncryption> {

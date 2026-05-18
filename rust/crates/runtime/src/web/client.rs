@@ -11,9 +11,10 @@ use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
-    CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
-    PushCommitRequest, ScopeValues, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
-    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SYNC_PACK_ENCODING_BINARY_V1,
+    validate_pull_commit_integrity_metadata, CombinedRequest, CombinedResponse, PullRequest,
+    PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues, SubscriptionRequest,
+    SyncChange, SyncCommit, SyncOperation, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
@@ -307,6 +308,7 @@ where
         pull: PullResponse,
         result: &mut WebSyncResult,
     ) -> Result<()> {
+        validate_pull_commit_integrity_metadata(&pull)?;
         let app_schema = self.store.app_schema();
         let include_snapshot_rows = self.config.pull.include_snapshot_rows;
         let collect_changed_rows = self.config.pull.collect_changed_rows;

@@ -76,6 +76,12 @@ of jumping straight into new public APIs.
   decoders round-trip the fields, and the shared binary fixture now includes
   the metadata. Next: Rust client verification before applying changes and
   advancing cursors.
+- 2026-05-19: Added Rust-side structural validation before applying pull
+  commits. Native and browser Rust clients now reject malformed integrity
+  metadata, partial digest/root pairs, non-hex values, and reordered
+  integrity-bearing commit sequences before local apply. This is intentionally
+  not yet cryptographic recomputation; next is canonical Rust digest/root
+  verification against the server metadata.
 
 ## Priority Roadmap
 
