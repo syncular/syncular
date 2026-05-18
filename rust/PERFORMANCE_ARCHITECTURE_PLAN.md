@@ -2954,6 +2954,12 @@ client. Overflow should close or resync the session deliberately.
     `18.1ms/26.3ms`, sizes `9478.3KiB/5104.5KiB`.
 - Prove convergence and conflict behavior across HTTP recovery and websocket
   delta delivery.
+  - Done: browser/Hono realtime coverage now proves both sides of the recovery
+    contract. Small binary websocket deltas update live queries without an HTTP
+    pull, mixed-scope binary deltas are filtered per subscribed client, and
+    oversized websocket payloads intentionally fall back to cursor-only wakeups
+    followed by an HTTP pull that refreshes the live query. Focused coverage:
+    `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
 
 ## Success Targets
 

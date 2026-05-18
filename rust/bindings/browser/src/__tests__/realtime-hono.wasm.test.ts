@@ -225,6 +225,66 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     expect(httpPullCount()).toBe(pullCountBeforeRealtimePush);
   });
 
+  it('recovers through HTTP pull when websocket delta payloads are too large', async () => {
+    const { baseUrl, connectionCount, httpPullCount } =
+      await openRealtimeServer();
+    const clientA = await openClient({
+      baseUrl,
+      clientId: 'large-delta-client-a',
+    });
+    await clientA.setSubscriptions([taskSubscription({ actorId: ACTOR_ID })]);
+    await clientA.syncOnce();
+
+    const snapshot = await clientA.subscribeQuery<{
+      id: string;
+      title: string;
+    }>('select id, title from tasks order by id', [], ['tasks']);
+    expect(snapshot.rows).toEqual([]);
+
+    await clientA.startRealtime({
+      wsUrl: `${baseUrl.replace(/^http:/, 'ws:')}/realtime`,
+      params: { token: REALTIME_TOKEN },
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 50,
+    });
+    await waitFor(() => connectionCount() === 1);
+    const pullCountBeforeRealtimePush = httpPullCount();
+    const liveEvent = waitForLiveEvent(clientA, snapshot.id);
+
+    const largeTitle = 'Large websocket fallback '.repeat(4096);
+    const clientB = await openClient({
+      baseUrl,
+      clientId: 'large-delta-client-b',
+    });
+    await clientB.applyLocalOperation(
+      newTaskOperation({
+        id: 'large-delta-task',
+        title: largeTitle,
+        user_id: ACTOR_ID,
+      }),
+      {
+        id: 'large-delta-task',
+        title: largeTitle,
+        completed: 0,
+        user_id: ACTOR_ID,
+        project_id: null,
+        server_version: 0,
+        image: null,
+        title_yjs_state: null,
+      }
+    );
+    await expect(clientB.syncPush()).resolves.toMatchObject({
+      pushedCommits: 1,
+    });
+
+    const event = await liveEvent;
+    expect(event.queryId).toBe(snapshot.id);
+    expect(event.rows).toHaveLength(1);
+    expect(event.rows[0]?.id).toBe('large-delta-task');
+    expect(event.rows[0]?.title).toHaveLength(largeTitle.length);
+    expect(httpPullCount()).toBeGreaterThan(pullCountBeforeRealtimePush);
+  });
+
   it('reconnects websocket with fresh params after auth headers change', async () => {
     const scenario = syncConformance.realtime;
     const { baseUrl, connectionCount, websocketAuthTokens } =
@@ -524,7 +584,9 @@ async function toNativeBunResponse(response: Response): Promise<Response> {
   if (!NativeResponse || response instanceof NativeResponse) return response;
 
   const headers: [string, string][] = [];
-  response.headers.forEach((value, key) => headers.push([key, value]));
+  response.headers.forEach((value, key) => {
+    headers.push([key, value]);
+  });
   const body =
     response.status === 204 || response.status === 304
       ? null
