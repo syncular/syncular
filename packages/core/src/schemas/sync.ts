@@ -11,7 +11,6 @@ import { z } from 'zod';
 import {
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODINGS,
-  SYNC_SNAPSHOT_CHUNK_TRANSFERS,
 } from '../snapshot-chunks';
 import { SYNC_PACK_ENCODINGS } from '../sync-packs';
 
@@ -166,9 +165,6 @@ export type SyncSubscriptionRequest = z.infer<
 export const SyncSnapshotChunkEncodingSchema = z.enum(
   SYNC_SNAPSHOT_CHUNK_ENCODINGS
 );
-export const SyncSnapshotChunkTransferSchema = z.enum(
-  SYNC_SNAPSHOT_CHUNK_TRANSFERS
-);
 export const SyncPackEncodingSchema = z.enum(SYNC_PACK_ENCODINGS);
 
 export const SyncPullRequestSchema = z.object({
@@ -178,7 +174,6 @@ export const SyncPullRequestSchema = z.object({
   maxSnapshotPages: z.number().int().min(1).optional(),
   dedupeRows: z.boolean().optional(),
   snapshotEncodings: z.array(SyncSnapshotChunkEncodingSchema).optional(),
-  snapshotChunkTransfer: SyncSnapshotChunkTransferSchema.optional(),
   syncPackEncodings: z.array(SyncPackEncodingSchema).optional(),
   subscriptions: z.array(SyncSubscriptionRequestSchema),
 });

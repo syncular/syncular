@@ -11,7 +11,6 @@ import {
   SyncCombinedResponseSchema,
   SYNC_PACK_ENCODING_BINARY_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-  SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
   type SyncPullResponse,
   type SyncSnapshotChunkRef,
   type SyncSpan,
@@ -78,14 +77,12 @@ function mustGetFirstChunkId(payload: SyncPullResponse): string {
   return chunkId;
 }
 
-function mustGetFirstChunk(payload: SyncPullResponse): SyncSnapshotChunkRef & {
-  body?: Uint8Array;
-} {
+function mustGetFirstChunk(payload: SyncPullResponse): SyncSnapshotChunkRef {
   const chunk = payload.subscriptions[0]?.snapshots?.[0]?.chunks?.[0];
   if (!chunk) {
     throw new Error('Expected pull bootstrap response to include a chunk.');
   }
-  return chunk as SyncSnapshotChunkRef & { body?: Uint8Array };
+  return chunk;
 }
 
 async function streamToBytes(
@@ -253,7 +250,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     ]);
   }, 10_000);
 
-  it('can return binary sync packs with separate snapshot chunk bodies', async () => {
+  it('returns binary sync packs with snapshot chunk refs only', async () => {
     await db
       .insertInto('tasks')
       .values({
@@ -297,7 +294,6 @@ describe('createSyncRoutes chunkStorage wiring', () => {
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
             snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
-            snapshotChunkTransfer: SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
             syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
             subscriptions: [
               {
@@ -324,7 +320,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     const chunk = mustGetFirstChunk(parsed);
 
     expect(chunk.encoding).toBe(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1);
-    expect(chunk.body).toBeUndefined();
+    expect('body' in chunk).toBe(false);
 
     const chunkResponse = await app.request(
       new Request(`http://localhost/sync/snapshot-chunks/${chunk.id}`, {

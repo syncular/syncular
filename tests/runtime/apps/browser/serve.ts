@@ -36,6 +36,7 @@ const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
 const wasmProfile = readWasmProfile();
 const syncSeedRows = readPositiveIntArg('--sync-seed-rows', 0);
 const syncSeedUsers = Math.max(1, readPositiveIntArg('--sync-seed-users', 1));
+const syncWsMaxInFlight = readPositiveIntArg('--sync-ws-max-in-flight', 64);
 const repoRoot = path.resolve(import.meta.dir, '../../../..');
 const rustPackageRoot = path.join(repoRoot, 'rust/bindings/browser');
 const rustPackageWasmDir = path.join(rustPackageRoot, 'dist/wasm');
@@ -347,6 +348,7 @@ async function createBenchmarkSyncRoute(
         upgradeWebSocket,
         heartbeatIntervalMs: 0,
         allowedOrigins: '*',
+        maxInFlightSyncsPerConnection: syncWsMaxInFlight,
       },
     },
   });

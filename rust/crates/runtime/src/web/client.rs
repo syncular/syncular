@@ -14,14 +14,14 @@ use crate::protocol::{
     CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
     SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-    SNAPSHOT_CHUNK_TRANSFER_SEPARATE, SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
+    SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
     AsyncSyncTransport, WebRealtimeSocket, WebSyncTransport, WebSyncTransportConfig,
 };
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
-use crate::web_store::{AsyncWebStore, WebMemoryStore, WebSubscriptionState};
+use crate::web_store::{AsyncWebStore, WebMemoryStore, WebStoreApplyTimings, WebSubscriptionState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -63,7 +63,7 @@ impl Default for WebSyncPullOptions {
             limit_snapshot_rows: 50_000,
             max_snapshot_pages: 10,
             dedupe_rows: None,
-            include_snapshot_rows: true,
+            include_snapshot_rows: false,
             collect_changed_rows: true,
             max_snapshot_changed_rows: default_max_snapshot_changed_rows(),
             collect_server_timings: false,
@@ -84,7 +84,7 @@ fn default_max_snapshot_pages() -> i64 {
 }
 
 fn default_include_snapshot_rows() -> bool {
-    true
+    false
 }
 
 fn default_collect_changed_rows() -> bool {
@@ -123,6 +123,15 @@ pub struct WebSyncTimings {
     pub pull_transform_ms: f64,
     pub snapshot_fetch_ms: f64,
     pub pull_apply_ms: f64,
+    pub scope_clear_ms: f64,
+    pub snapshot_row_apply_ms: f64,
+    pub snapshot_chunk_apply_ms: f64,
+    pub snapshot_chunk_materialize_ms: f64,
+    pub snapshot_chunk_reset_ms: f64,
+    pub snapshot_chunk_bind_ms: f64,
+    pub snapshot_chunk_step_ms: f64,
+    pub commit_apply_ms: f64,
+    pub subscription_state_ms: f64,
     pub notify_ms: f64,
 }
 
@@ -273,6 +282,7 @@ where
         let apply_started_at = timing_now_ms();
         let apply_result = self.apply_pull_response(pull, &mut result).await;
         result.timings.pull_apply_ms = elapsed_ms_since(apply_started_at);
+        add_store_apply_timings(&mut result.timings, self.store.drain_apply_timings());
         match apply_result {
             Ok(()) => self.store.commit_apply_batch().await?,
             Err(error) => {
@@ -355,20 +365,26 @@ where
 
                     let inline_rows = snapshot.rows.clone();
                     if snapshot.is_first_page {
+                        let scope_clear_started_at = timing_now_ms();
                         self.store
                             .clear_table_for_scopes_preserving_local_crdt(
                                 &snapshot_table,
                                 &sub.scopes,
                             )
                             .await?;
+                        result.timings.scope_clear_ms += elapsed_ms_since(scope_clear_started_at);
                         scope_cleared_for_snapshot = true;
                     }
                     if include_snapshot_rows {
                         snapshot_rows.extend(inline_rows.clone());
                     }
                     if !collect_changed_rows && !include_snapshot_rows {
+                        let row_apply_started_at = timing_now_ms();
                         self.store.upsert_rows(&snapshot_table, inline_rows).await?;
+                        result.timings.snapshot_row_apply_ms +=
+                            elapsed_ms_since(row_apply_started_at);
                         for rows in chunk_batches {
+                            let chunk_apply_started_at = timing_now_ms();
                             if scope_cleared_for_snapshot {
                                 self.store
                                     .insert_cleared_snapshot_chunk_rows(&snapshot_table, rows)
@@ -378,6 +394,8 @@ where
                                     .upsert_snapshot_chunk_rows(&snapshot_table, rows)
                                     .await?;
                             }
+                            result.timings.snapshot_chunk_apply_ms +=
+                                elapsed_ms_since(chunk_apply_started_at);
                         }
                     } else {
                         let mut rows_to_upsert = Vec::with_capacity(inline_rows.len());
@@ -412,9 +430,12 @@ where
                             }
                             rows_to_upsert.push(row);
                         }
+                        let row_apply_started_at = timing_now_ms();
                         self.store
                             .upsert_rows(&snapshot_table, rows_to_upsert)
                             .await?;
+                        result.timings.snapshot_row_apply_ms +=
+                            elapsed_ms_since(row_apply_started_at);
 
                         for batch in chunk_batches {
                             if scope_cleared_for_snapshot && !include_snapshot_rows {
@@ -438,12 +459,18 @@ where
                                         result.changed_rows_truncated = true;
                                     }
                                 }
+                                let chunk_apply_started_at = timing_now_ms();
                                 self.store
                                     .insert_cleared_snapshot_chunk_rows(&snapshot_table, batch)
                                     .await?;
+                                result.timings.snapshot_chunk_apply_ms +=
+                                    elapsed_ms_since(chunk_apply_started_at);
                                 continue;
                             }
+                            let materialize_started_at = timing_now_ms();
                             let chunk_rows = batch.try_into_value_rows()?;
+                            result.timings.snapshot_chunk_materialize_ms +=
+                                elapsed_ms_since(materialize_started_at);
                             let mut chunk_rows_to_upsert = Vec::with_capacity(chunk_rows.len());
                             for row in chunk_rows {
                                 let previous_row =
@@ -479,14 +506,18 @@ where
                                 }
                                 chunk_rows_to_upsert.push(row);
                             }
+                            let row_apply_started_at = timing_now_ms();
                             self.store
                                 .upsert_rows(&snapshot_table, chunk_rows_to_upsert)
                                 .await?;
+                            result.timings.snapshot_row_apply_ms +=
+                                elapsed_ms_since(row_apply_started_at);
                         }
                     }
                 }
             }
             let commits = std::mem::take(&mut sub.commits);
+            let commit_apply_started_at = timing_now_ms();
             if collect_changed_rows {
                 for commit in commits {
                     for change in commit.changes {
@@ -511,21 +542,27 @@ where
                 apply_commits_without_changed_rows(&mut self.store, app_schema, result, commits)
                     .await?;
             }
+            result.timings.commit_apply_ms += elapsed_ms_since(commit_apply_started_at);
 
+            let subscription_state_started_at = timing_now_ms();
             if sub.status == "revoked" {
                 if let Some(previous_state) = &previous_state {
+                    let scope_clear_started_at = timing_now_ms();
                     self.store
                         .clear_table_for_scopes(&previous_state.table, &previous_state.scopes)
                         .await?;
+                    result.timings.scope_clear_ms += elapsed_ms_since(scope_clear_started_at);
                     add_changed_table(&mut result.changed_tables, &previous_state.table);
                 }
                 self.store.delete_subscription_state(&sub.id).await?;
             } else {
                 if let Some(previous_state) = &previous_state {
                     if previous_state.scopes != sub.scopes {
+                        let scope_clear_started_at = timing_now_ms();
                         self.store
                             .clear_table_for_scopes(&previous_state.table, &previous_state.scopes)
                             .await?;
+                        result.timings.scope_clear_ms += elapsed_ms_since(scope_clear_started_at);
                         add_changed_table(&mut result.changed_tables, &previous_state.table);
                     }
                 }
@@ -540,6 +577,7 @@ where
                     })
                     .await?;
             }
+            result.timings.subscription_state_ms += elapsed_ms_since(subscription_state_started_at);
 
             result.subscriptions.push(WebSubscriptionResult {
                 id: sub.id,
@@ -983,7 +1021,6 @@ where
                 SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
                 SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
             ],
-            snapshot_chunk_transfer: Some(SNAPSHOT_CHUNK_TRANSFER_SEPARATE.to_string()),
             sync_pack_encodings: vec![
                 SYNC_PACK_ENCODING_BINARY_V1.to_string(),
                 SYNC_PACK_ENCODING_JSON_V1.to_string(),
@@ -1114,6 +1151,12 @@ where
         }
         Ok(())
     }
+}
+
+fn add_store_apply_timings(timings: &mut WebSyncTimings, store: WebStoreApplyTimings) {
+    timings.snapshot_chunk_reset_ms += store.snapshot_chunk_reset_ms;
+    timings.snapshot_chunk_bind_ms += store.snapshot_chunk_bind_ms;
+    timings.snapshot_chunk_step_ms += store.snapshot_chunk_step_ms;
 }
 
 impl<T, S> WebSyncularClient<T, S>
@@ -1414,7 +1457,6 @@ mod tests {
                                     sha256: "unused".to_string(),
                                     encoding: "json-row-frame-v1".to_string(),
                                     compression: "gzip".to_string(),
-                                    body: None,
                                 }]),
                                 is_first_page: true,
                                 is_last_page: true,

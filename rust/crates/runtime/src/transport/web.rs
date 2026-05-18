@@ -62,6 +62,7 @@ pub struct WebTransportStats {
     pub sync_pack_decode_ms: f64,
     pub server_bootstrap_snapshot_query_ms: f64,
     pub server_bootstrap_row_frame_encode_ms: f64,
+    pub server_bootstrap_snapshot_binary_encode_ms: f64,
     pub server_bootstrap_chunk_cache_lookup_ms: f64,
     pub server_bootstrap_chunk_gzip_ms: f64,
     pub server_bootstrap_chunk_hash_ms: f64,
@@ -73,6 +74,8 @@ pub struct WebTransportStats {
 struct WebServerBootstrapTimings {
     snapshot_query_ms: f64,
     row_frame_encode_ms: f64,
+    #[serde(default, alias = "snapshotBinaryEncodeMs")]
+    binary_encode_ms: f64,
     chunk_cache_lookup_ms: f64,
     chunk_gzip_ms: f64,
     chunk_hash_ms: f64,
@@ -192,10 +195,6 @@ impl AsyncSyncTransport for WebSyncTransport {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
         Box::pin(async move {
-            if let Some(compressed) = chunk.body.as_ref() {
-                record_snapshot_chunk_fetch(&self.stats, 0.0);
-                return decode_snapshot_rows(chunk, compressed, &self.stats).await;
-            }
             let url = format!(
                 "{}/snapshot-chunks/{}",
                 self.config.base_url.trim_end_matches('/'),
@@ -621,6 +620,7 @@ fn record_server_bootstrap_timings(
     let mut stats = stats.borrow_mut();
     stats.server_bootstrap_snapshot_query_ms += timings.snapshot_query_ms;
     stats.server_bootstrap_row_frame_encode_ms += timings.row_frame_encode_ms;
+    stats.server_bootstrap_snapshot_binary_encode_ms += timings.binary_encode_ms;
     stats.server_bootstrap_chunk_cache_lookup_ms += timings.chunk_cache_lookup_ms;
     stats.server_bootstrap_chunk_gzip_ms += timings.chunk_gzip_ms;
     stats.server_bootstrap_chunk_hash_ms += timings.chunk_hash_ms;

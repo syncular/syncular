@@ -10,10 +10,9 @@ import {
   isSyncSnapshotChunkEncoding,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-  SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
 } from '../snapshot-chunks';
 
-describe('snapshot chunk protocol negotiation', () => {
+describe('snapshot chunk protocol', () => {
   it('accepts advertised JSON and binary snapshot encodings on pull requests', () => {
     const parsed = SyncPullRequestSchema.parse({
       clientId: 'client-1',
@@ -24,7 +23,6 @@ describe('snapshot chunk protocol negotiation', () => {
         SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
         SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
       ],
-      snapshotChunkTransfer: SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE,
       subscriptions: [],
     });
 
@@ -32,9 +30,6 @@ describe('snapshot chunk protocol negotiation', () => {
       SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
       SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
     ]);
-    expect(parsed.snapshotChunkTransfer).toBe(
-      SYNC_SNAPSHOT_CHUNK_TRANSFER_SEPARATE
-    );
   });
 
   it('accepts binary snapshot chunk refs for forward-compatible transport metadata', () => {

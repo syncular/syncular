@@ -202,6 +202,7 @@ interface RustE2eTransportStats {
   syncPackDecodeMs: number;
   serverBootstrapSnapshotQueryMs: number;
   serverBootstrapRowFrameEncodeMs: number;
+  serverBootstrapSnapshotBinaryEncodeMs: number;
   serverBootstrapChunkCacheLookupMs: number;
   serverBootstrapChunkGzipMs: number;
   serverBootstrapChunkHashMs: number;
@@ -890,6 +891,15 @@ const rustTimingKeys: Array<keyof SyncularV2SyncTimings> = [
   'pullTransformMs',
   'snapshotFetchMs',
   'pullApplyMs',
+  'scopeClearMs',
+  'snapshotRowApplyMs',
+  'snapshotChunkApplyMs',
+  'snapshotChunkMaterializeMs',
+  'snapshotChunkResetMs',
+  'snapshotChunkBindMs',
+  'snapshotChunkStepMs',
+  'commitApplyMs',
+  'subscriptionStateMs',
   'notifyMs',
 ];
 
@@ -902,6 +912,15 @@ function emptyRustTimings(): SyncularV2SyncTimings {
     pullTransformMs: 0,
     snapshotFetchMs: 0,
     pullApplyMs: 0,
+    scopeClearMs: 0,
+    snapshotRowApplyMs: 0,
+    snapshotChunkApplyMs: 0,
+    snapshotChunkMaterializeMs: 0,
+    snapshotChunkResetMs: 0,
+    snapshotChunkBindMs: 0,
+    snapshotChunkStepMs: 0,
+    commitApplyMs: 0,
+    subscriptionStateMs: 0,
     notifyMs: 0,
   };
 }
@@ -1178,6 +1197,36 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric('rust_pull_request_ms', rustRun.timings.pullRequestMs);
     pushMetric('rust_snapshot_fetch_ms', rustRun.timings.snapshotFetchMs);
     pushMetric('rust_pull_apply_ms', rustRun.timings.pullApplyMs);
+    pushMetric('rust_scope_clear_ms', rustRun.timings.scopeClearMs);
+    pushMetric(
+      'rust_snapshot_row_apply_ms',
+      rustRun.timings.snapshotRowApplyMs
+    );
+    pushMetric(
+      'rust_snapshot_chunk_apply_ms',
+      rustRun.timings.snapshotChunkApplyMs
+    );
+    pushMetric(
+      'rust_snapshot_chunk_materialize_ms',
+      rustRun.timings.snapshotChunkMaterializeMs
+    );
+    pushMetric(
+      'rust_snapshot_chunk_reset_ms',
+      rustRun.timings.snapshotChunkResetMs
+    );
+    pushMetric(
+      'rust_snapshot_chunk_bind_ms',
+      rustRun.timings.snapshotChunkBindMs
+    );
+    pushMetric(
+      'rust_snapshot_chunk_step_ms',
+      rustRun.timings.snapshotChunkStepMs
+    );
+    pushMetric('rust_commit_apply_ms', rustRun.timings.commitApplyMs);
+    pushMetric(
+      'rust_subscription_state_ms',
+      rustRun.timings.subscriptionStateMs
+    );
     pushMetric('rust_changed_row_count', rustSync.changedRows.length, 'count');
     pushMetric(
       'rust_changed_rows_truncated',
@@ -1202,6 +1251,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_server_bootstrap_row_frame_encode_ms',
       rustStats.serverBootstrapRowFrameEncodeMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_snapshot_binary_encode_ms',
+      rustStats.serverBootstrapSnapshotBinaryEncodeMs
     );
     pushMetric(
       'rust_server_bootstrap_chunk_cache_lookup_ms',
@@ -1279,6 +1332,42 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       cachedRustRun.timings.snapshotFetchMs
     );
     pushMetric('rust_cached_pull_apply_ms', cachedRustRun.timings.pullApplyMs);
+    pushMetric(
+      'rust_cached_scope_clear_ms',
+      cachedRustRun.timings.scopeClearMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_row_apply_ms',
+      cachedRustRun.timings.snapshotRowApplyMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_apply_ms',
+      cachedRustRun.timings.snapshotChunkApplyMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_materialize_ms',
+      cachedRustRun.timings.snapshotChunkMaterializeMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_reset_ms',
+      cachedRustRun.timings.snapshotChunkResetMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_bind_ms',
+      cachedRustRun.timings.snapshotChunkBindMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_chunk_step_ms',
+      cachedRustRun.timings.snapshotChunkStepMs
+    );
+    pushMetric(
+      'rust_cached_commit_apply_ms',
+      cachedRustRun.timings.commitApplyMs
+    );
+    pushMetric(
+      'rust_cached_subscription_state_ms',
+      cachedRustRun.timings.subscriptionStateMs
+    );
     const cachedRustStats = await cachedRustDiagnostics.transportStats();
     pushMetric(
       'rust_cached_snapshot_chunk_decompress_ms',
@@ -1303,6 +1392,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_cached_server_bootstrap_row_frame_encode_ms',
       cachedRustStats.serverBootstrapRowFrameEncodeMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_snapshot_binary_encode_ms',
+      cachedRustStats.serverBootstrapSnapshotBinaryEncodeMs
     );
     pushMetric(
       'rust_cached_server_bootstrap_chunk_cache_lookup_ms',
@@ -1380,6 +1473,42 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       pushMetric(
         'rust_incremental_pull_apply_ms',
         incrementalRustRun.timings.pullApplyMs
+      );
+      pushMetric(
+        'rust_incremental_scope_clear_ms',
+        incrementalRustRun.timings.scopeClearMs
+      );
+      pushMetric(
+        'rust_incremental_snapshot_row_apply_ms',
+        incrementalRustRun.timings.snapshotRowApplyMs
+      );
+      pushMetric(
+        'rust_incremental_snapshot_chunk_apply_ms',
+        incrementalRustRun.timings.snapshotChunkApplyMs
+      );
+      pushMetric(
+        'rust_incremental_snapshot_chunk_materialize_ms',
+        incrementalRustRun.timings.snapshotChunkMaterializeMs
+      );
+      pushMetric(
+        'rust_incremental_snapshot_chunk_reset_ms',
+        incrementalRustRun.timings.snapshotChunkResetMs
+      );
+      pushMetric(
+        'rust_incremental_snapshot_chunk_bind_ms',
+        incrementalRustRun.timings.snapshotChunkBindMs
+      );
+      pushMetric(
+        'rust_incremental_snapshot_chunk_step_ms',
+        incrementalRustRun.timings.snapshotChunkStepMs
+      );
+      pushMetric(
+        'rust_incremental_commit_apply_ms',
+        incrementalRustRun.timings.commitApplyMs
+      );
+      pushMetric(
+        'rust_incremental_subscription_state_ms',
+        incrementalRustRun.timings.subscriptionStateMs
       );
       pushMetric(
         'rust_incremental_changed_row_count',

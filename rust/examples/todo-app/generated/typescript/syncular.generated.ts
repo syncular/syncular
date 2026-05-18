@@ -416,7 +416,7 @@ function withSyncularGeneratedCodecs(userCodecs?: ColumnCodecSource): ColumnCode
   return (column) => syncularGeneratedCodecs(column) ?? userCodecs?.(column);
 }
 
-export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
+export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {
   await ensureSyncularAppSchemaMetadata(db);
   await sql`
     CREATE TABLE IF NOT EXISTS "comments" (
@@ -453,6 +453,10 @@ export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
     ) WITHOUT ROWID
   `.execute(db);
 
+}
+
+export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {
+  await ensureSyncularAppSchemaMetadata(db);
   await validateSyncularAppSchema(db);
   await sql`
     insert into syncular_app_schema (schema_id, schema_version, updated_at)
@@ -461,6 +465,11 @@ export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
       schema_version = excluded.schema_version,
       updated_at = excluded.updated_at
   `.execute(db);
+}
+
+export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
+  await ensureSyncularAppBaseSchema(db);
+  await ensureSyncularAppDerivedSchema(db);
 }
 
 interface SyncularGeneratedColumnInfo {

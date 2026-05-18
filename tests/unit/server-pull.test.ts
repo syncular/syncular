@@ -248,6 +248,42 @@ describe('pull', () => {
     ]);
   });
 
+  it('keeps binary bootstrap snapshots chunked when resync could inline small JSON rows', async () => {
+    const handlers = makeHandlers();
+
+    await pushTask(handlers, 'task-1', 'First Task');
+    await pushTask(handlers, 'task-2', 'Second Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c2',
+        limitCommits: 10,
+        snapshotEncodings: [
+          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+        ],
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: 999999,
+          },
+        ],
+      },
+    });
+
+    const snapshot = res.response.subscriptions[0]!.snapshots![0]!;
+    expect(snapshot.rows).toEqual([]);
+    expect(snapshot.chunks?.[0]?.encoding).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+  });
+
   it('uses binary snapshot chunk continuation metadata to skip cached snapshot queries', async () => {
     let snapshotQueryCount = 0;
     const handlers = makeHandlers({

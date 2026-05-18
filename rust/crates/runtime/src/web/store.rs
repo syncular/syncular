@@ -15,6 +15,21 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct WebStoreApplyTimings {
+    pub snapshot_chunk_reset_ms: f64,
+    pub snapshot_chunk_bind_ms: f64,
+    pub snapshot_chunk_step_ms: f64,
+}
+
+impl WebStoreApplyTimings {
+    pub fn add(&mut self, other: WebStoreApplyTimings) {
+        self.snapshot_chunk_reset_ms += other.snapshot_chunk_reset_ms;
+        self.snapshot_chunk_bind_ms += other.snapshot_chunk_bind_ms;
+        self.snapshot_chunk_step_ms += other.snapshot_chunk_step_ms;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSubscriptionState {
     pub subscription_id: String,
@@ -128,6 +143,10 @@ pub trait AsyncWebStore {
 
     fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn drain_apply_timings(&mut self) -> WebStoreApplyTimings {
+        WebStoreApplyTimings::default()
     }
 
     fn clear_table_for_scopes<'a>(

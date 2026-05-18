@@ -47,7 +47,7 @@ use crate::transport::web::AsyncBlobTransport;
 use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
 use crate::web_client::{WebSyncPullOptions, WebSyncularClient, WebSyncularClientConfig};
-use crate::web_store::{AsyncWebStore, WebSubscriptionState};
+use crate::web_store::{AsyncWebStore, WebStoreApplyTimings, WebSubscriptionState};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
 use sqlite_wasm_rs as ffi;
@@ -347,6 +347,7 @@ pub struct SyncularRustOwnedSqlite {
     query_statement_cache_tick: u64,
     snapshot_statement_cache: Vec<SnapshotStatementCacheEntry>,
     snapshot_statement_cache_tick: u64,
+    apply_timings: WebStoreApplyTimings,
     live_queries: Vec<LiveQuery>,
     live_events: Vec<LiveQueryEvent>,
     row_events: Vec<RowsChangedEvent>,
@@ -485,6 +486,7 @@ impl SyncularRustOwnedSqlite {
             query_statement_cache_tick: 0,
             snapshot_statement_cache: Vec::new(),
             snapshot_statement_cache_tick: 0,
+            apply_timings: WebStoreApplyTimings::default(),
             live_queries: Vec::new(),
             live_events: Vec::new(),
             row_events: Vec::new(),
@@ -3297,9 +3299,11 @@ impl SyncularRustOwnedSqlite {
                         batch_rows,
                         mode,
                     )?;
-                    execute_prepared_binary_multirow_upsert(self.db, full_batch_stmt, batch)?;
+                    let timings =
+                        execute_prepared_binary_multirow_upsert(self.db, full_batch_stmt, batch)?;
+                    self.apply_timings.add(timings);
                 } else {
-                    execute_binary_snapshot_write(
+                    let timings = execute_binary_snapshot_write(
                         self.db,
                         table,
                         metadata.primary_key_column,
@@ -3308,6 +3312,7 @@ impl SyncularRustOwnedSqlite {
                         mode,
                         batch,
                     )?;
+                    self.apply_timings.add(timings);
                 }
             }
             Ok(())
@@ -3396,16 +3401,17 @@ impl SyncularRustOwnedSqlite {
                     batch_rows,
                     mode,
                 )?;
-                execute_prepared_binary_payload_batch(
+                let timings = execute_prepared_binary_payload_batch(
                     self.db,
                     full_batch_stmt,
                     &mut cursor,
                     batch_rows,
                 )?;
+                self.apply_timings.add(timings);
                 remaining -= batch_rows;
             }
             if remaining > 0 {
-                execute_binary_snapshot_payload_write(
+                let timings = execute_binary_snapshot_payload_write(
                     self.db,
                     table,
                     metadata.primary_key_column,
@@ -3415,6 +3421,7 @@ impl SyncularRustOwnedSqlite {
                     &mut cursor,
                     remaining,
                 )?;
+                self.apply_timings.add(timings);
             }
             cursor.assert_done()?;
             Ok(())
@@ -4004,7 +4011,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
     }
 
     fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move { self.begin_write_transaction() })
+        Box::pin(async move {
+            self.apply_timings = WebStoreApplyTimings::default();
+            self.begin_write_transaction()
+        })
     }
 
     fn commit_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
@@ -4013,6 +4023,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
 
     fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move { self.exec("ROLLBACK") })
+    }
+
+    fn drain_apply_timings(&mut self) -> WebStoreApplyTimings {
+        std::mem::take(&mut self.apply_timings)
     }
 
     fn apply_local_operation<'a>(
@@ -4842,16 +4856,20 @@ fn execute_prepared_sql(
     if reset_rc != ffi::SQLITE_OK {
         return Err(sqlite_error(db, &format!("reset {context}")));
     }
-    let clear_rc = unsafe { ffi::sqlite3_clear_bindings(stmt) };
-    if clear_rc != ffi::SQLITE_OK {
-        return Err(sqlite_error(db, &format!("clear bindings for {context}")));
+    let expected_params = unsafe { ffi::sqlite3_bind_parameter_count(stmt) };
+    if params.len() < usize::try_from(expected_params).unwrap_or(usize::MAX) {
+        let clear_rc = unsafe { ffi::sqlite3_clear_bindings(stmt) };
+        if clear_rc != ffi::SQLITE_OK {
+            return Err(sqlite_error(db, &format!("clear bindings for {context}")));
+        }
     }
     bind_params(stmt, params)?;
 
+    let columns = sqlite_statement_column_names(stmt);
     let mut rows = Vec::new();
     loop {
         match unsafe { ffi::sqlite3_step(stmt) } {
-            ffi::SQLITE_ROW => match SqliteRow::new(stmt).to_json() {
+            ffi::SQLITE_ROW => match sqlite_row_to_json(stmt, &columns) {
                 Ok(row) => rows.push(row),
                 Err(err) => {
                     let _ = unsafe { ffi::sqlite3_reset(stmt) };
@@ -4867,6 +4885,54 @@ fn execute_prepared_sql(
         }
     }
     Ok(rows)
+}
+
+fn sqlite_statement_column_names(stmt: *mut ffi::sqlite3_stmt) -> Vec<String> {
+    let column_count = unsafe { ffi::sqlite3_column_count(stmt) };
+    (0..column_count)
+        .map(|index| unsafe {
+            CStr::from_ptr(ffi::sqlite3_column_name(stmt, index))
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+fn sqlite_row_to_json(stmt: *mut ffi::sqlite3_stmt, columns: &[String]) -> Result<Value> {
+    let mut row = Map::new();
+    for (index, column) in columns.iter().enumerate() {
+        let index = index as i32;
+        let value = match unsafe { ffi::sqlite3_column_type(stmt, index) } {
+            ffi::SQLITE_NULL => Value::Null,
+            ffi::SQLITE_INTEGER => {
+                Value::Number(unsafe { ffi::sqlite3_column_int64(stmt, index) }.into())
+            }
+            ffi::SQLITE_FLOAT => {
+                serde_json::Number::from_f64(unsafe { ffi::sqlite3_column_double(stmt, index) })
+                    .map(Value::Number)
+                    .unwrap_or(Value::Null)
+            }
+            ffi::SQLITE_TEXT => sqlite_column_text_json_value(stmt, index)?,
+            _ => Value::Null,
+        };
+        row.insert(column.clone(), value);
+    }
+    Ok(Value::Object(row))
+}
+
+fn sqlite_column_text_json_value(stmt: *mut ffi::sqlite3_stmt, index: i32) -> Result<Value> {
+    let len = unsafe { ffi::sqlite3_column_bytes(stmt, index) };
+    if len < 0 {
+        return Err(SyncularError::storage(anyhow::anyhow!(
+            "sqlite text column {index} has invalid length"
+        )));
+    }
+    let ptr = unsafe { ffi::sqlite3_column_text(stmt, index) };
+    if ptr.is_null() {
+        return Ok(Value::Null);
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len as usize) };
+    Ok(Value::String(String::from_utf8_lossy(bytes).into_owned()))
 }
 
 fn sql_string(value: &str) -> String {
@@ -5270,7 +5336,7 @@ fn execute_binary_snapshot_write(
     on_conflict: Option<&str>,
     mode: BinarySnapshotWriteMode,
     rows: &[Vec<BinarySnapshotCell>],
-) -> Result<()> {
+) -> Result<WebStoreApplyTimings> {
     let stmt = prepare_binary_snapshot_write(
         db,
         table,
@@ -5280,15 +5346,19 @@ fn execute_binary_snapshot_write(
         rows.len(),
         mode,
     )?;
-    if let Err(err) = execute_prepared_binary_multirow_upsert(db, stmt, rows) {
-        let _ = finalize_stmt(
-            stmt,
-            db,
-            "finalize binary multirow upsert after step failure",
-        );
-        return Err(err);
-    }
-    finalize_stmt(stmt, db, "finalize binary multirow upsert")
+    let timings = match execute_prepared_binary_multirow_upsert(db, stmt, rows) {
+        Ok(timings) => timings,
+        Err(err) => {
+            let _ = finalize_stmt(
+                stmt,
+                db,
+                "finalize binary multirow upsert after step failure",
+            );
+            return Err(err);
+        }
+    };
+    finalize_stmt(stmt, db, "finalize binary multirow upsert")?;
+    Ok(timings)
 }
 
 fn execute_binary_snapshot_payload_write(
@@ -5300,7 +5370,7 @@ fn execute_binary_snapshot_payload_write(
     mode: BinarySnapshotWriteMode,
     cursor: &mut BinarySnapshotRowCursor<'_>,
     row_count: usize,
-) -> Result<()> {
+) -> Result<WebStoreApplyTimings> {
     let stmt = prepare_binary_snapshot_write(
         db,
         table,
@@ -5310,15 +5380,19 @@ fn execute_binary_snapshot_payload_write(
         row_count,
         mode,
     )?;
-    if let Err(err) = execute_prepared_binary_payload_batch(db, stmt, cursor, row_count) {
-        let _ = finalize_stmt(
-            stmt,
-            db,
-            "finalize binary payload multirow upsert after step failure",
-        );
-        return Err(err);
-    }
-    finalize_stmt(stmt, db, "finalize binary payload multirow upsert")
+    let timings = match execute_prepared_binary_payload_batch(db, stmt, cursor, row_count) {
+        Ok(timings) => timings,
+        Err(err) => {
+            let _ = finalize_stmt(
+                stmt,
+                db,
+                "finalize binary payload multirow upsert after step failure",
+            );
+            return Err(err);
+        }
+    };
+    finalize_stmt(stmt, db, "finalize binary payload multirow upsert")?;
+    Ok(timings)
 }
 
 fn prepare_multirow_upsert(
@@ -5442,14 +5516,25 @@ fn execute_prepared_binary_multirow_upsert(
     db: *mut ffi::sqlite3,
     stmt: *mut ffi::sqlite3_stmt,
     rows: &[Vec<BinarySnapshotCell>],
-) -> Result<()> {
+) -> Result<WebStoreApplyTimings> {
+    let mut timings = WebStoreApplyTimings::default();
+
+    let started_at = now_ms();
     let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
+    timings.snapshot_chunk_reset_ms += elapsed_ms_since(started_at);
     if reset_rc != ffi::SQLITE_OK {
         return Err(sqlite_error(db, "reset binary multirow upsert"));
     }
+
+    let started_at = now_ms();
     bind_binary_multirow_upsert(stmt, rows)?;
-    match unsafe { ffi::sqlite3_step(stmt) } {
-        ffi::SQLITE_DONE => Ok(()),
+    timings.snapshot_chunk_bind_ms += elapsed_ms_since(started_at);
+
+    let started_at = now_ms();
+    let step_rc = unsafe { ffi::sqlite3_step(stmt) };
+    timings.snapshot_chunk_step_ms += elapsed_ms_since(started_at);
+    match step_rc {
+        ffi::SQLITE_DONE => Ok(timings),
         _ => Err(sqlite_error(db, "step binary multirow upsert")),
     }
 }
@@ -5459,14 +5544,25 @@ fn execute_prepared_binary_payload_batch(
     stmt: *mut ffi::sqlite3_stmt,
     cursor: &mut BinarySnapshotRowCursor<'_>,
     row_count: usize,
-) -> Result<()> {
+) -> Result<WebStoreApplyTimings> {
+    let mut timings = WebStoreApplyTimings::default();
+
+    let started_at = now_ms();
     let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
+    timings.snapshot_chunk_reset_ms += elapsed_ms_since(started_at);
     if reset_rc != ffi::SQLITE_OK {
         return Err(sqlite_error(db, "reset binary payload multirow upsert"));
     }
+
+    let started_at = now_ms();
     bind_binary_payload_multirow_upsert(stmt, cursor, row_count)?;
-    match unsafe { ffi::sqlite3_step(stmt) } {
-        ffi::SQLITE_DONE => Ok(()),
+    timings.snapshot_chunk_bind_ms += elapsed_ms_since(started_at);
+
+    let started_at = now_ms();
+    let step_rc = unsafe { ffi::sqlite3_step(stmt) };
+    timings.snapshot_chunk_step_ms += elapsed_ms_since(started_at);
+    match step_rc {
+        ffi::SQLITE_DONE => Ok(timings),
         _ => Err(sqlite_error(db, "step binary payload multirow upsert")),
     }
 }
@@ -5510,7 +5606,7 @@ fn bind_binary_payload_multirow_upsert(
 ) -> Result<()> {
     let mut binder = BorrowedSqliteRawCellBinder { stmt, index: 1 };
     for _ in 0..row_count {
-        let read = cursor.read_next_row_with_raw_visitor(&mut binder)?;
+        let read = cursor.read_next_row_with_raw_visitor_trusted(&mut binder)?;
         if !read {
             return Err(SyncularError::protocol_message(
                 "binary snapshot ended before expected row count",
@@ -5607,6 +5703,10 @@ fn result_hash(rows: &[Value]) -> Result<String> {
 
 fn now_ms() -> i64 {
     js_sys::Date::now() as i64
+}
+
+fn elapsed_ms_since(started_at: i64) -> f64 {
+    now_ms().saturating_sub(started_at) as f64
 }
 
 struct SqliteRow<'a> {
@@ -5714,28 +5814,7 @@ impl<'a> SqliteRow<'a> {
     }
 
     fn to_json(&self) -> Result<Value> {
-        let mut row = Map::new();
-        for (index, column) in self.columns.iter().enumerate() {
-            let index = index as i32;
-            let value = match unsafe { ffi::sqlite3_column_type(self.stmt, index) } {
-                ffi::SQLITE_NULL => Value::Null,
-                ffi::SQLITE_INTEGER => {
-                    Value::Number(unsafe { ffi::sqlite3_column_int64(self.stmt, index) }.into())
-                }
-                ffi::SQLITE_FLOAT => serde_json::Number::from_f64(unsafe {
-                    ffi::sqlite3_column_double(self.stmt, index)
-                })
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-                ffi::SQLITE_TEXT => self
-                    .optional_string(column)
-                    .map(Value::String)
-                    .unwrap_or(Value::Null),
-                _ => Value::Null,
-            };
-            row.insert(column.clone(), value);
-        }
-        Ok(Value::Object(row))
+        sqlite_row_to_json(self.stmt, &self.columns)
     }
 }
 

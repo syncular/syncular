@@ -25,6 +25,7 @@ export interface SyncularV2PullOptions {
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
   dedupeRows?: boolean | null;
+  /** Defaults to false; snapshot bootstrap rows hydrate local SQLite instead of being returned. */
   includeSnapshotRows?: boolean;
   collectChangedRows?: boolean;
   maxSnapshotChangedRows?: number | null;
@@ -46,6 +47,7 @@ export interface SyncularV2TransportStats {
   syncPackDecodeMs: number;
   serverBootstrapSnapshotQueryMs: number;
   serverBootstrapRowFrameEncodeMs: number;
+  serverBootstrapSnapshotBinaryEncodeMs: number;
   serverBootstrapChunkCacheLookupMs: number;
   serverBootstrapChunkGzipMs: number;
   serverBootstrapChunkHashMs: number;
@@ -501,6 +503,9 @@ export interface SyncularV2SyncTimings {
   snapshotRowApplyMs: number;
   snapshotChunkApplyMs: number;
   snapshotChunkMaterializeMs: number;
+  snapshotChunkResetMs: number;
+  snapshotChunkBindMs: number;
+  snapshotChunkStepMs: number;
   commitApplyMs: number;
   subscriptionStateMs: number;
   notifyMs: number;

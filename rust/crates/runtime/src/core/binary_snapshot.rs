@@ -312,6 +312,30 @@ impl<'a> BinarySnapshotRowCursor<'a> {
         Ok(true)
     }
 
+    pub fn read_next_row_with_raw_visitor_trusted<V>(&mut self, visitor: &mut V) -> Result<bool>
+    where
+        V: BorrowedBinarySnapshotRawCellVisitor<'a>,
+    {
+        if self.remaining == 0 {
+            return Ok(false);
+        }
+
+        let null_bitmap = self
+            .reader
+            .read_bytes(self.null_bitmap_bytes, "binary snapshot row null bitmap")?;
+        for (column_index, column) in self.columns.iter().enumerate() {
+            let is_null = null_bitmap[column_index / 8] & (1u8 << (column_index % 8)) != 0;
+            if is_null {
+                visitor.visit_null()?;
+                continue;
+            }
+            self.reader
+                .visit_raw_cell_trusted(column.column_type, visitor)?;
+        }
+        self.remaining -= 1;
+        Ok(true)
+    }
+
     pub fn assert_done(&self) -> Result<()> {
         self.reader.assert_done()
     }
@@ -738,6 +762,51 @@ impl<'a> BinarySnapshotReader<'a> {
                     _ => Err(SyncularError::protocol_message(format!(
                         "binary snapshot {column} expected boolean byte"
                     ))),
+                }
+            }
+            BinarySnapshotColumnType::Json => {
+                visitor.visit_json_bytes(self.read_bytes32("binary snapshot json")?)
+            }
+            BinarySnapshotColumnType::Bytes => {
+                let len = self.read_u32("binary snapshot bytes length")? as usize;
+                let bytes = self.read_bytes(len, "binary snapshot bytes")?;
+                visitor.visit_bytes(bytes)
+            }
+        }
+    }
+
+    fn visit_raw_cell_trusted<V>(
+        &mut self,
+        column_type: BinarySnapshotColumnType,
+        visitor: &mut V,
+    ) -> Result<()>
+    where
+        V: BorrowedBinarySnapshotRawCellVisitor<'a>,
+    {
+        match column_type {
+            BinarySnapshotColumnType::String => {
+                visitor.visit_string_bytes(self.read_bytes32("binary snapshot string")?)
+            }
+            BinarySnapshotColumnType::Integer => {
+                visitor.visit_integer(self.read_i64("binary snapshot integer")?)
+            }
+            BinarySnapshotColumnType::Float => {
+                let value = self.read_f64("binary snapshot float")?;
+                if !value.is_finite() {
+                    return Err(SyncularError::protocol_message(
+                        "binary snapshot contained non-finite float",
+                    ));
+                }
+                visitor.visit_float(value)
+            }
+            BinarySnapshotColumnType::Boolean => {
+                let value = self.read_u8("binary snapshot boolean")?;
+                match value {
+                    0 => visitor.visit_boolean(false),
+                    1 => visitor.visit_boolean(true),
+                    _ => Err(SyncularError::protocol_message(
+                        "binary snapshot expected boolean byte",
+                    )),
                 }
             }
             BinarySnapshotColumnType::Json => {

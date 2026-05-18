@@ -36,6 +36,7 @@ interface SyncularV2RealtimeSyncMessage {
   createdAt?: string | null;
   reason?: string | null;
   requiresPull?: boolean;
+  droppedCount?: number;
   syncPackBytes?: Uint8Array;
 }
 
@@ -268,6 +269,7 @@ export class SyncularV2WorkerRealtimeController {
           inlineChanges: syncMessage.changes?.length ?? 0,
           reason: syncMessage.reason ?? null,
           requiresPull: syncMessage.requiresPull === true,
+          droppedCount: syncMessage.droppedCount ?? 0,
         },
       });
       this.#scheduleSync(syncMessage);
@@ -593,7 +595,20 @@ function readSyncularV2RealtimeSyncMessage(
   const reason = typeof record.reason === 'string' ? record.reason : null;
   const requiresPull =
     typeof record.requiresPull === 'boolean' ? record.requiresPull : undefined;
-  return { cursor, changes, actorId, createdAt, reason, requiresPull };
+  const droppedCount =
+    typeof record.droppedCount === 'number' &&
+    Number.isSafeInteger(record.droppedCount)
+      ? record.droppedCount
+      : undefined;
+  return {
+    cursor,
+    changes,
+    actorId,
+    createdAt,
+    reason,
+    requiresPull,
+    droppedCount,
+  };
 }
 
 function readSyncularV2RealtimePresenceMessage(

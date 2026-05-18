@@ -550,6 +550,53 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     );
   });
 
+  it('hydrates snapshot rows into SQLite without returning them by default', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      snapshotBundleMaxBytes: 1,
+      seedTasks: [
+        {
+          id: 'default-snapshot-task-1',
+          title: 'Default Snapshot Task 1',
+          actorId: ACTOR_A,
+        },
+        {
+          id: 'default-snapshot-task-2',
+          title: 'Default Snapshot Task 2',
+          actorId: ACTOR_A,
+        },
+      ],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'default-snapshot-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    const result = await client.syncPull();
+    expect(result.subscriptions[0]?.snapshotRows).toEqual([]);
+    expect(result.changedRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: 'tasks',
+          rowId: 'default-snapshot-task-1',
+          operation: 'insert',
+        }),
+        expect.objectContaining({
+          table: 'tasks',
+          rowId: 'default-snapshot-task-2',
+          operation: 'insert',
+        }),
+      ])
+    );
+
+    const rows = await client.listTable('tasks');
+    expect(rows).toHaveLength(2);
+  });
+
   it('emits ordered live-query refreshes after sync pulls and ignores duplicate unsubscribe', async () => {
     const scenario = syncConformance.liveQuery;
     const sync = await createHonoSyncHarness({

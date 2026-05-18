@@ -16,7 +16,10 @@ import {
   encodeBinarySnapshotTable,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
 } from '../snapshot-chunks';
-import type { SyncCombinedResponse, SyncSnapshotChunkRef } from '../schemas/sync';
+import type {
+  SyncCombinedResponse,
+  SyncSnapshotChunkRef,
+} from '../schemas/sync';
 
 describe('sync pack protocol negotiation', () => {
   it('accepts advertised JSON and binary pack encodings on pull requests', () => {
@@ -50,21 +53,21 @@ describe('sync pack protocol negotiation', () => {
     });
 
     expect(parsed.syncPackEncodings).toEqual([SYNC_PACK_ENCODING_BINARY_V1]);
-    expect(isBinarySyncPackContentType(`${SYNC_PACK_CONTENT_TYPE}; charset=binary`)).toBe(true);
+    expect(
+      isBinarySyncPackContentType(`${SYNC_PACK_CONTENT_TYPE}; charset=binary`)
+    ).toBe(true);
   });
 });
 
 describe('binary sync pack format', () => {
   it('round-trips combined push and pull responses without JSON envelope fields', () => {
-    const chunkBody = new Uint8Array([1, 2, 3, 4]);
     const chunk = {
       id: 'chunk-1',
       byteLength: 128,
       sha256: '0'.repeat(64),
       encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
       compression: 'gzip',
-      body: chunkBody,
-    } satisfies SyncSnapshotChunkRef & { body: Uint8Array };
+    } satisfies SyncSnapshotChunkRef;
     const response: SyncCombinedResponse = {
       ok: true,
       requiredSchemaVersion: 2,
@@ -138,9 +141,7 @@ describe('binary sync pack format', () => {
               {
                 table: 'tasks',
                 rows: [],
-                chunks: [
-                  chunk,
-                ],
+                chunks: [chunk],
                 isFirstPage: true,
                 isLastPage: true,
               },
@@ -152,7 +153,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(4);
+    expect(encoded[4]).toBe(5);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);
