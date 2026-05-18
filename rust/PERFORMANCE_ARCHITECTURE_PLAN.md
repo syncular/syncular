@@ -2920,6 +2920,9 @@ client. Overflow should close or resync the session deliberately.
   `X-Sync-Chunk-*` metadata, and `If-None-Match` returning 304 for an
   authorized chunk request. This is a small resume/cache correctness guard, not
   a latency change.
+- Done: added browser Rust corrupted-chunk coverage. A snapshot chunk request
+  that returns HTTP 200 with bytes that do not match the advertised digest now
+  fails before decompression/apply and leaves existing local rows intact.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 
