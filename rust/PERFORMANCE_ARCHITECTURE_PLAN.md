@@ -2461,6 +2461,41 @@ client. Overflow should close or resync the session deliberately.
     attempted for this batch, but Docker Compose did not return for either
     `up --build -d` or `ps`; both compose processes were stopped after hanging.
     Do not treat this as external branch-server evidence for or against v6.
+- Retained binary sync-pack wire version 7 with a per-pack scope dictionary.
+  Incremental change metadata now stores a `u32` scope index instead of
+  rewriting the same scope map on every changed row. Single-key scope maps use
+  a nested lookup instead of concatenated dictionary keys because the first
+  canonical-key candidate saved bytes but regressed encode CPU too much.
+  - Rejected v7 first pass: sorted/canonical scope keys reduced response bytes
+    but made the 50k codec lane too expensive:
+    generic binary encode `22.3ms -> 30.6ms`,
+    generated binary encode `18.3ms -> 28.8ms`. That version was simplified
+    before retention.
+  - Correctness guard:
+    `bun test packages/core/src/__tests__/sync-packs.test.ts`,
+    `bun --cwd packages/core tsgo`,
+    `bun --cwd rust/bindings/browser tsgo`,
+    `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime decodes_v7_table_and_scope_dictionary_changes`,
+    and `bun run --cwd rust/bindings/browser test:wasm:hono` all passed.
+  - Targeted 50k sync-pack codec lane, v7 final versus retained v6:
+    generic binary encode `22.3ms -> 23.8ms` (`+1.5ms`, `+6.7%`),
+    generic binary decode `32.5ms -> 24.4ms` (`-8.1ms`, `-24.9%`),
+    generated binary encode `18.3ms -> 20.5ms` (`+2.2ms`, `+12.0%`),
+    generated binary decode `34.9ms -> 25.3ms` (`-9.6ms`, `-27.5%`).
+    Generic binary response size moved `10894.3KiB -> 9478.3KiB`
+    (`-1416.0KiB`, `-13.0%`); generated binary response size moved
+    `6520.5KiB -> 5104.5KiB` (`-1416.0KiB`, `-21.7%`).
+  - Release browser E2E guardrail, 10k bootstrap + 1k incremental x3 realtime:
+    against the checked baseline, `rust_incremental_response_bytes`
+    `215733 -> 181948` (`-33785 bytes`, `-15.66%`),
+    `rust_realtime_binary_bytes` `639015 -> 537660`
+    (`-101355 bytes`, `-15.86%`), `rust_incremental_sync_pack_decode_ms`
+    `2 -> 1`, and realtime HTTP fallback stayed `0`. Against the immediately
+    retained v6 run, incremental bytes moved `210763 -> 181948` and realtime
+    bytes moved `624105 -> 537660`, while realtime p50 was effectively flat
+    (`69.19ms -> 70.13ms`) and p95 improved (`72.42ms -> 70.61ms`).
+    Release WASM size moved from the v6 run `3326710 -> 3328081` bytes
+    (`+1371`, `+0.04%`), still inside the size budget.
 
 ### Phase 7: Delta WebSocket Runtime
 
