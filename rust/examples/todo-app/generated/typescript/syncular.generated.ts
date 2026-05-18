@@ -569,6 +569,7 @@ export type SyncularAppSubscriptionsOption =
 
 export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {
   subscriptions?: SyncularAppSubscriptionsOption;
+  schemaInstallMode?: 'full' | 'base' | 'none';
 }
 
 export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {
@@ -610,6 +611,10 @@ function resolveSyncularAppSubscriptions(options: CreateSyncularAppDatabaseOptio
   return subscriptions ?? defaultSyncularSubscriptions(args);
 }
 
+export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {
+  await withSyncularV2SchemaWrites(database, ensureSyncularAppDerivedSchema);
+}
+
 export async function createSyncularAppDatabase(
   options: CreateSyncularAppDatabaseOptions
 ): Promise<SyncularAppDatabase> {
@@ -627,7 +632,14 @@ export async function createSyncularAppDatabase(
   });
   try {
     await assertSyncularAppRuntime(database);
-    await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);
+    const schemaInstallMode = options.schemaInstallMode ?? 'full';
+    if (schemaInstallMode === 'full') {
+      await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);
+    } else if (schemaInstallMode === 'base') {
+      await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);
+    } else if (schemaInstallMode !== 'none') {
+      throw new Error(`Unknown Syncular schemaInstallMode: ${schemaInstallMode}`);
+    }
     await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));
     return database;
   } catch (err) {
