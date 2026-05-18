@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import { createDatabase } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
+  createScopeCommitIndexEntries,
   ensureSyncSchema,
   InMemorySyncRealtimeBroadcaster,
   type SyncCoreDb,
@@ -50,6 +51,19 @@ describe('realtime broadcaster bridge', () => {
         row_version: 1,
         scopes: { user_id: 'u1' },
       })
+      .execute();
+    await db
+      .insertInto('sync_scope_commits')
+      .values(
+        createScopeCommitIndexEntries([
+          { table: 'tasks', scopes: { user_id: 'u1' } },
+        ]).map((entry) => ({
+          partition_id: 'default',
+          table: entry.table,
+          scope_key: entry.scopeKey,
+          commit_seq: commitSeq,
+        }))
+      )
       .execute();
 
     const broadcaster = new InMemorySyncRealtimeBroadcaster();
