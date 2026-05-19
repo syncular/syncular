@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 
 pub mod binary_snapshot;
 pub mod binary_sync_pack;
@@ -338,7 +339,7 @@ pub fn append_canonical_json(out: &mut String, value: &Value) -> Result<()> {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => out.push_str(&value.to_string()),
+        Value::Number(value) => write!(out, "{value}").expect("writing to String should not fail"),
         Value::String(value) => append_json_string(out, value)?,
         Value::Array(values) => {
             out.push('[');

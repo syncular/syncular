@@ -4,6 +4,7 @@ use crate::{
     Result, SubscriptionIntegrity, SyncCommit, COMMIT_INTEGRITY_GENESIS_ROOT,
     COMMIT_INTEGRITY_HEX_LENGTH, WIRE_COMMIT_CHAIN_ROOT_VERSION, WIRE_COMMIT_DIGEST_VERSION,
 };
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedCommitRoot {
@@ -163,7 +164,9 @@ fn append_wire_commit_digest_payload(
         append_json_string(out, &change.row_id)?;
         out.push_str(",\"rowVersion\":");
         match change.row_version {
-            Some(row_version) => out.push_str(&row_version.to_string()),
+            Some(row_version) => {
+                write!(out, "{row_version}").expect("writing to String should not fail")
+            }
             None => out.push_str("null"),
         }
         out.push_str(",\"scopes\":");
@@ -173,7 +176,7 @@ fn append_wire_commit_digest_payload(
         out.push('}');
     }
     out.push_str("],\"commitSeq\":");
-    out.push_str(&commit.commit_seq.to_string());
+    write!(out, "{}", commit.commit_seq).expect("writing to String should not fail");
     out.push_str(",\"createdAt\":");
     append_json_string(out, &commit.created_at)?;
     out.push_str(",\"partitionId\":");
@@ -197,7 +200,7 @@ fn append_wire_commit_chain_root_payload(
     out.push_str("{\"commitDigest\":");
     append_json_string(out, commit_digest)?;
     out.push_str(",\"commitSeq\":");
-    out.push_str(&commit_seq.to_string());
+    write!(out, "{commit_seq}").expect("writing to String should not fail");
     out.push_str(",\"partitionId\":");
     append_json_string(out, partition_id)?;
     out.push_str(",\"previousChainRoot\":");

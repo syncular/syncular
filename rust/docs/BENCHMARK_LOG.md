@@ -2319,3 +2319,55 @@ Decision:
   to browser/server noise, so future candidates should continue comparing the
   lower-level integrity/apply buckets against
   `.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json`.
+
+## 2026-05-19 - WP-04 Realtime Direct Number Writes
+
+Change:
+
+- Canonical number values, wire commit sequences, and row versions now write
+  directly into the existing `String` buffer with `write!` instead of allocating
+  temporary `to_string()` values.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-direct-number-write.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-direct-number-write-rerun.json
+```
+
+Confirmed rerun versus the retained sorted-object guard:
+
+| Metric | Sorted-object guard | Direct-number rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `91.02ms` | `91.03ms` | `+0.01ms` |
+| `rust_realtime_live_p95_ms` | `112.80ms` | `92.72ms` | `-20.08ms` |
+| `rust_realtime_overhead_p50_ms` | `22.21ms` | `22.04ms` | `-0.17ms` |
+| `rust_realtime_apply_total_ms` | `126ms` | `122ms` | `-4ms` |
+| `rust_realtime_pull_apply_total_ms` | `98ms` | `94ms` | `-4ms` |
+| `rust_realtime_integrity_verify_total_ms` | `68ms` | `69ms` | `+1ms` |
+| `rust_realtime_commit_apply_total_ms` | `25ms` | `20ms` | `-5ms` |
+| `browser_served_rust_wasm_bytes` | `7467598` | `7468173` | `+575` |
+
+Decision:
+
+- Retained. The integrity bucket is flat, but total apply and commit apply both
+  improve with minimal code and a tiny size increase. Future candidates should
+  compare against
+  `.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`.
