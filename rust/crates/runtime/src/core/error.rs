@@ -152,6 +152,12 @@ impl From<serde_json::Error> for SyncularError {
     }
 }
 
+impl From<syncular_protocol::ProtocolError> for SyncularError {
+    fn from(source: syncular_protocol::ProtocolError) -> Self {
+        Self::protocol(source)
+    }
+}
+
 impl From<std::io::Error> for SyncularError {
     fn from(source: std::io::Error) -> Self {
         Self::new(ErrorKind::Internal, source)

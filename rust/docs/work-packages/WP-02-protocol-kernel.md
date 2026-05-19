@@ -55,15 +55,34 @@ First retained slice:
   snapshot manifest digest helpers, blob APIs, and binary decoder
   implementation.
 
+Second retained slice:
+
+- `syncular-protocol` now owns the binary sync-pack decoder/reader and a small
+  protocol-local error type.
+- Runtime keeps only a thin adapter that converts protocol errors into runtime
+  errors.
+- The protocol crate decodes the current TypeScript binary sync-pack fixture
+  directly and rejects older wire versions with a clear protocol error.
+- Full binary snapshot streaming decode is not moved yet because the public
+  visitor traits are still coupled to runtime storage errors. The next split
+  should separate pure snapshot chunk decoding from runtime apply visitors.
+- Targeted sync-pack/server perf sanity stayed in the accepted noise band for a
+  protocol extraction: scoped fanout `3.3ms -> 3.5ms`, dense build
+  `38.4ms -> 41.8ms`, dense binary encode `42.7ms -> 41.4ms`, generated binary
+  encode `42.4ms -> 42.2ms`, with response bytes unchanged.
+
 Gates run:
 
+- `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
+- `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture --test protocol_contract --test protocol_fixtures`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 
 ## Next Action
 
-Move the binary sync-pack decoder/reader into `syncular-protocol` behind a
-small protocol error type or conversion layer, then keep runtime as a thin
-adapter over the protocol decoder.
+Separate pure binary snapshot chunk decoding from runtime storage visitor
+traits so `syncular-protocol` can own the wire codec without importing runtime
+store errors.

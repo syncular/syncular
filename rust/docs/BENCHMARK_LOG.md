@@ -228,3 +228,57 @@ Decision:
 - Retained. The targeted gate is flat-to-slightly-better, and the external
   Rust 500k bootstrap/local apply path improved without changing wire size or
   verification semantics.
+
+## 2026-05-19 - Protocol Crate Binary Sync-Pack Decoder Extraction
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved the Rust binary sync-pack decoder/reader from runtime into
+  `syncular-protocol`.
+- Runtime now uses a thin adapter over the protocol decoder.
+- No server encoder, browser apply, or wire bytes were intentionally changed.
+
+Command:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted:
+
+- scoped fanout 5000/20: `3.3ms`
+- dense build 5000/500: `38.4ms`
+- dense binary encode: `42.7ms`
+- dense generated binary encode: `42.4ms`
+- dense binary response bytes: `1419.1KiB`
+
+Candidate:
+
+- scoped fanout 5000/20: `3.5ms`
+- dense build 5000/500: `41.8ms`
+- dense binary encode: `41.4ms`
+- dense generated binary encode: `42.2ms`
+- dense binary response bytes: `1419.1KiB`
+
+Delta:
+
+- Scoped fanout: `+0.2ms`.
+- Dense build: `+3.4ms`, still within recent noise for this TS-side gate.
+- Dense binary encode: `-1.3ms`.
+- Dense generated binary encode: `-0.2ms`.
+- Wire bytes unchanged.
+
+Decision:
+
+- Retained. This is protocol ownership work; the maintained perf sanity gate
+  did not show a structural regression or byte growth.
