@@ -431,6 +431,16 @@ Retained fifteenth slice:
 - Decision: retained. Payload dropped by about `25%` at 100k and `27%` at 500k
   while wall time improved slightly.
 
+Retained sixteenth slice:
+
+- Added browser/Hono revocation coverage for direct SQLite artifact bootstrap.
+  The test first hydrates rows through a scoped artifact, then requests a
+  revoked scope and verifies the runtime clears the local rows.
+- Correctness gates passed:
+  `bun test src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "artifact rows when a subscription is revoked"`
+  and `bun test src/__tests__/sync-hono.wasm.test.ts` from
+  `rust/bindings/browser`.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
@@ -440,4 +450,3 @@ Turn the artifact prototype into the full bootstrap path:
   the compact artifact baseline above.
 - Decide whether native direct import needs a new store-level artifact apply
   trait before replacing the current native row-materialization path.
-- Add revocation recovery coverage for the direct import path.

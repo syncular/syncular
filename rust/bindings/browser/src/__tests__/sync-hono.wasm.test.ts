@@ -873,6 +873,66 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ]);
   });
 
+  it('clears direct SQLite artifact rows when a subscription is revoked', async () => {
+    const scenario = syncConformance.revokedSubscription;
+    let artifactDownloads = 0;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      precomputedTaskSnapshotArtifact: {
+        actorId: ACTOR_A,
+        artifactId: 'browser-sqlite-artifact-revocation',
+        rowLimit: 50_000,
+      },
+      seedTasks: [
+        {
+          id: scenario.seedTask.id,
+          title: scenario.seedTask.title,
+          actorId: ACTOR_A,
+          serverVersion: scenario.seedTask.serverVersion,
+        },
+      ],
+      edgeGate: (request) => {
+        if (new URL(request.url).pathname.includes('/snapshot-artifacts/')) {
+          artifactDownloads += 1;
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: `${scenario.clientId}-artifact`,
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      pull: {
+        includeSnapshotRows: false,
+        collectChangedRows: false,
+        limitSnapshotRows: 50_000,
+        maxSnapshotPages: 1,
+      },
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    await client.syncPull();
+
+    expect(artifactDownloads).toBe(1);
+    await expect(client.listTable('tasks')).resolves.toContainEqual(
+      expect.objectContaining({ id: scenario.seedTask.id, user_id: ACTOR_A })
+    );
+
+    await client.setSubscriptions([
+      taskSubscription({ actorId: scenario.revokedActorId }),
+    ]);
+    const result = await client.syncPull();
+
+    expect(result.subscriptions[0]).toMatchObject({
+      id: syncConformance.subscription.id,
+      table: syncConformance.subscription.table,
+      status: scenario.expectedStatus,
+      scopes: scenario.expectedScopes,
+    });
+    await expect(client.listTable('tasks')).resolves.toEqual([]);
+  });
+
   it('hydrates snapshot rows into SQLite without returning them by default', async () => {
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
