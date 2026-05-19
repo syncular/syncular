@@ -622,6 +622,17 @@ Rejected 100k artifact bundle-cap probe:
 - Keep the current `50k` bundle cap until the import path can release attached
   SQLite artifact buffers before the end of the apply transaction.
 
+Rejected SQLite-owned deserialize-buffer probe:
+
+- Copied decompressed artifact bodies into `sqlite3_malloc64` memory and used
+  `SQLITE_DESERIALIZE_FREEONCLOSE` so SQLite owned the buffers instead of
+  retaining Rust `Vec<u8>` values.
+- Rejected because external peak memory only moved `746.92MB -> 746.81MB`,
+  while external bootstrap regressed `4845.39ms -> 5682.5ms` and local apply
+  regressed `1392ms -> 1617ms`.
+- Ownership transfer is not enough; the next real memory work needs an import
+  shape that can release or detach artifact DBs before full apply commit.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
