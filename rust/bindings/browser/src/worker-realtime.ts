@@ -366,12 +366,9 @@ export class SyncularV2WorkerRealtimeController {
           : cursor,
       -1
     );
-    const messageCursor =
-      message?.changes &&
-      message.changes.length > 0 &&
-      Number.isFinite(message.cursor)
-        ? message.cursor!
-        : -1;
+    const messageCursor = Number.isFinite(message?.cursor)
+      ? message!.cursor!
+      : -1;
     const cursor = Math.max(subscriptionCursor, messageCursor);
     if (!Number.isSafeInteger(cursor) || cursor < 0) return;
     try {

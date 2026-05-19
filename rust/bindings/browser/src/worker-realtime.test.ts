@@ -234,6 +234,11 @@ describe('Syncular v2 worker realtime', () => {
 
     await waitFor(() => client.syncPulls === 1);
     client.resolvePull();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    expect(JSON.parse(sockets[0]!.sent[0]!)).toEqual({
+      type: 'ack',
+      cursor: 55,
+    });
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'realtime.sync_wakeup',
@@ -282,6 +287,11 @@ describe('Syncular v2 worker realtime', () => {
 
     await waitFor(() => client.syncPulls === 1);
     client.resolvePull();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    expect(JSON.parse(sockets[0]!.sent[0]!)).toEqual({
+      type: 'ack',
+      cursor: 99,
+    });
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'realtime.sync_wakeup',

@@ -1484,3 +1484,48 @@ Decision:
   path stayed active in the benchmark with zero HTTP realtime fallbacks.
 - No directly comparable prior local WP-04 benchmark was logged, so this run is
   the baseline for the next realtime runtime slices.
+
+## 2026-05-19 - Realtime Recovery Cursor ACK
+
+Commit: this slice
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Change:
+
+- Browser worker realtime now ACKs the websocket cursor that triggered a
+  successful recovery pull, even when the message was cursor-only and the pull
+  result does not report a larger subscription cursor.
+- Added worker-level assertions for cursor-only and resync-required recovery
+  ACKs.
+
+Correctness gates:
+
+```bash
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --output=.context/benchmarks/wp04-realtime-recovery-ack.json
+```
+
+Browser release E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `34.46ms` | `34.12ms` |
+| `rust_incremental_pull_ms` | `18.91ms` | `18.37ms` |
+| `rust_realtime_live_ms` | `70.19ms` | `71.99ms` |
+| `rust_realtime_live_p95_ms` | `71.7ms` | `73.25ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `537675` | `537675` |
+
+Decision:
+
+- Retained. This is a recovery-only ACK correctness fix; the normal binary
+  websocket fast path still used zero HTTP realtime fallbacks and identical
+  binary event count/bytes. The small live-time movement is benchmark noise.

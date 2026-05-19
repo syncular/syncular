@@ -121,7 +121,9 @@ read-only review:
     browser worker so recovery-marked websocket messages always use HTTP pull
     instead of inline apply. The browser realtime gate stayed on the binary fast
     path with `rust_realtime_http_request_count=0` and `15` binary websocket
-    events.
+    events. Cursor-only recovery pulls now ACK the triggering websocket cursor
+    after successful recovery so the server can clear in-flight state even when
+    the pull result has no larger subscription cursor.
 
 ## Next
 
