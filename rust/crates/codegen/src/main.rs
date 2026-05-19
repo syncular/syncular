@@ -4753,6 +4753,37 @@ fn generate_typescript_module(
     out.push_str(&format!(
         "}} satisfies Record<{app_table_key_type}, SyncularGeneratedTableConfig>;\n\n"
     ));
+    out.push_str("export interface SyncularGeneratedLocalReadModel {\n");
+    out.push_str("  name: string;\n");
+    out.push_str("  outputTable: keyof SyncularAppDb;\n");
+    out.push_str("  setupSql: readonly string[];\n");
+    out.push_str("  rebuildSql: readonly string[];\n");
+    out.push_str("}\n\n");
+    out.push_str("export const syncularGeneratedLocalReadModels = [\n");
+    for read_model in &local_read_models {
+        out.push_str("  {\n");
+        out.push_str(&format!("    name: {},\n", ts_string(&read_model.name)));
+        out.push_str(&format!(
+            "    outputTable: {},\n",
+            ts_string(&read_model.output_table)
+        ));
+        out.push_str("    setupSql: [\n");
+        for sql_statement in &read_model.setup_sql {
+            out.push_str("      `");
+            out.push_str(&ts_template_literal_content(sql_statement));
+            out.push_str("`,\n");
+        }
+        out.push_str("    ],\n");
+        out.push_str("    rebuildSql: [\n");
+        for sql_statement in &read_model.rebuild_sql {
+            out.push_str("      `");
+            out.push_str(&ts_template_literal_content(sql_statement));
+            out.push_str("`,\n");
+        }
+        out.push_str("    ],\n");
+        out.push_str("  },\n");
+    }
+    out.push_str("] as const satisfies readonly SyncularGeneratedLocalReadModel[];\n\n");
     out.push_str("export const syncularGeneratedAppSchema = {\n");
     out.push_str("  schemaVersion: syncularGeneratedSchemaVersion,\n");
     out.push_str("  tables: [\n");
@@ -9563,6 +9594,10 @@ mod tests {
         assert!(output.contains("syncular_task_counts: SyncularTaskCountRow;"));
         assert!(output.contains("export interface SyncularTaskCountRow"));
         assert!(output.contains("task_count: number;"));
+        assert!(output.contains("export const syncularGeneratedLocalReadModels"));
+        assert!(output.contains("outputTable: 'syncular_task_counts'"));
+        assert!(output.contains("setupSql: ["));
+        assert!(output.contains("rebuildSql: ["));
         assert!(output.contains("CREATE TABLE IF NOT EXISTS \"syncular_task_counts\""));
         assert!(output.contains(
             "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_insert\""

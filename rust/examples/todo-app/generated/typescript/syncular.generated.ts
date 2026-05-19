@@ -99,6 +99,67 @@ export const syncularGeneratedTableConfig = {
   },
 } satisfies Record<'comments' | 'projects' | 'tasks', SyncularGeneratedTableConfig>;
 
+export interface SyncularGeneratedLocalReadModel {
+  name: string;
+  outputTable: keyof SyncularAppDb;
+  setupSql: readonly string[];
+  rebuildSql: readonly string[];
+}
+
+export const syncularGeneratedLocalReadModels = [
+  {
+    name: 'taskCountsByUserCompletion',
+    outputTable: 'syncular_task_counts',
+    setupSql: [
+      `CREATE TABLE IF NOT EXISTS "syncular_task_counts" (
+  "user_id" TEXT NOT NULL,
+  "completed" INTEGER NOT NULL,
+  "task_count" INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY ("user_id", "completed")
+)`,
+      `CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_insert"
+AFTER INSERT ON "tasks"
+BEGIN
+  INSERT INTO "syncular_task_counts" ("user_id", "completed", "task_count")
+  VALUES (new."user_id", new."completed", 1)
+  ON CONFLICT("user_id", "completed") DO UPDATE SET
+    "task_count" = "task_count" + 1;
+END`,
+      `CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_delete"
+AFTER DELETE ON "tasks"
+BEGIN
+  UPDATE "syncular_task_counts"
+  SET "task_count" = "task_count" - 1
+  WHERE "user_id" = old."user_id"
+          AND "completed" = old."completed";
+  DELETE FROM "syncular_task_counts" WHERE "task_count" <= 0;
+END`,
+      `CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_update_group"
+AFTER UPDATE OF "user_id", "completed" ON "tasks"
+WHEN old."user_id" IS NOT new."user_id"
+        OR old."completed" IS NOT new."completed"
+BEGIN
+  UPDATE "syncular_task_counts"
+  SET "task_count" = "task_count" - 1
+  WHERE "user_id" = old."user_id"
+          AND "completed" = old."completed";
+  DELETE FROM "syncular_task_counts" WHERE "task_count" <= 0;
+  INSERT INTO "syncular_task_counts" ("user_id", "completed", "task_count")
+  VALUES (new."user_id", new."completed", 1)
+  ON CONFLICT("user_id", "completed") DO UPDATE SET
+    "task_count" = "task_count" + 1;
+END`,
+    ],
+    rebuildSql: [
+      `DELETE FROM "syncular_task_counts"`,
+      `INSERT INTO "syncular_task_counts" ("user_id", "completed", "task_count")
+SELECT "user_id", "completed", count(*)
+FROM "tasks"
+GROUP BY "user_id", "completed"`,
+    ],
+  },
+] as const satisfies readonly SyncularGeneratedLocalReadModel[];
+
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,
   tables: [

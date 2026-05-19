@@ -3128,3 +3128,57 @@ Decision:
   next WP-06 slice must wire the generated read model into the benchmark app and
   compare aggregate/local-query performance against the accepted TS/Rust
   baselines.
+
+## 2026-05-19 - Accepted WP-06 Browser Read-Model Benchmark Lane
+
+Change:
+
+- Generated TypeScript modules now export `syncularGeneratedLocalReadModels`
+  with the declared read-model name, output table, setup SQL, and rebuild SQL.
+  This makes the local read-model contract consumable by host packages instead
+  of trapping it inside installer internals.
+- Browser runtime local-query metrics now emit both raw aggregate and generated
+  read-model aggregate timings.
+- Browser scoreboard comparisons now include read-model aggregate p50/p95 rows.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=1000 --query-iterations=5 --wasm-profile=release --json --output=.context/benchmarks/wp06-read-model-scoreboard-1k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-scoreboard-100k.json
+```
+
+100k browser scoreboard:
+
+| Metric | TS | Rust | Rust/TS |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `828.69ms` | `221.41ms` | `0.27x` |
+| Local list p50 | `0.55ms` | `0.23ms` | `0.42x` |
+| Local search p50 | `3.98ms` | `1.51ms` | `0.38x` |
+| Raw aggregate p50 | `161.09ms` | `23.00ms` | `0.14x` |
+| Raw aggregate p95 | `184.08ms` | `23.90ms` | `0.13x` |
+| Read-model aggregate p50 | `0.53ms` | `0.05ms` | `0.09x` |
+| Read-model aggregate p95 | `0.76ms` | `0.10ms` | `0.13x` |
+
+Decision:
+
+- Accepted. This keeps aggregate optimization explicit and app-declared, while
+  the scoreboard continues to report raw aggregate performance so regressions
+  are not hidden.
+- External app-style proof is still outstanding. The external benchmark still
+  has a hand-written derived-schema fixture and must be switched to the
+  generated read-model contract before WP-06 can be closed.
+- Root `bun run tsgo` was not used as a gate because it currently fails in
+  unrelated `@syncular/tests-unit` server-pull stream/hash type errors. The
+  targeted package checks above passed.
