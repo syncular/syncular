@@ -66,6 +66,9 @@ Retained first slice:
 - The generated TypeScript installer now executes read-model setup/rebuild from
   `syncularGeneratedLocalReadModels`, so the exported contract is the installer
   source of truth instead of duplicated generated SQL.
+- `syncular.schema.json` now carries each local read model's generated
+  `setupSql` and `rebuildSql`, making the SQLite read-model contract available
+  to non-TS host tooling without duplicating SQL generation.
 - No hidden runtime cache, default index, or compatibility branch was added.
 
 Correctness gates passed:
@@ -85,6 +88,7 @@ Benchmark gate:
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=1000 --query-iterations=5 --wasm-profile=release --json --output=.context/benchmarks/wp06-read-model-scoreboard-1k.json
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-scoreboard-100k.json
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-installer-contract-100k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-schema-json-read-model-sql-100k.json
 ```
 
 100k local-query results:
@@ -106,6 +110,15 @@ run:
 | Bootstrap | `221.41ms` | `209.01ms` |
 | Raw aggregate p50 | `23.00ms` | `22.91ms` |
 | Read-model aggregate p50 | `0.05ms` | `0.05ms` |
+
+After adding read-model SQL to `syncular.schema.json`, the 100k browser gate was
+again neutral-to-better versus the contract-backed installer run:
+
+| Metric | Previous Rust | Schema SQL contract |
+| --- | ---: | ---: |
+| Bootstrap | `209.01ms` | `207.08ms` |
+| Raw aggregate p50 | `22.91ms` | `21.98ms` |
+| Read-model aggregate p50 | `0.05ms` | `0.04ms` |
 
 The browser benchmark proves the declared read model is visible to typed Kysely
 and avoids the expensive aggregate scan. It does not yet prove external app

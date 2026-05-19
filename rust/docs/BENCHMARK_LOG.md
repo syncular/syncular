@@ -3223,3 +3223,46 @@ Decision:
 
 - Accepted. The change reduces generated complexity and did not introduce a
   measurable performance regression in the browser gate.
+
+## 2026-05-19 - Accepted WP-06 Schema JSON Read-Model SQL Contract
+
+Change:
+
+- `syncular.schema.json` now includes generated `setupSql` and `rebuildSql` for
+  each local read model.
+- This lets non-TS host tooling consume the same SQLite read-model contract
+  without importing generated TypeScript or duplicating SQL generation.
+- Schema contract tests now require read-model SQL arrays when read models are
+  declared.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-schema-json-read-model-sql-100k.json
+```
+
+Compared with the previous contract-backed installer run:
+
+| Metric | Previous Rust | Schema SQL contract |
+| --- | ---: | ---: |
+| Bootstrap | `209.01ms` | `207.08ms` |
+| Pull apply | `139ms` | `139ms` |
+| Raw aggregate p50 | `22.91ms` | `21.98ms` |
+| Read-model aggregate p50 | `0.05ms` | `0.04ms` |
+| Read-model aggregate p95 | `0.12ms` | `0.07ms` |
+
+Decision:
+
+- Accepted. This is a schema-contract change with no runtime hot-path cost, and
+  the measured browser gate stayed neutral-to-better.
