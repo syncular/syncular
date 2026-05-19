@@ -72,8 +72,8 @@ read-only review:
 
 - `[~]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
   - Extract the real Rust protocol crate before expanding binary v2.
-  - Next action: inventory protocol-owned types/codecs that still live in the
-    runtime/server packages, then move only the stable shared surface.
+  - Next action: move the binary sync-pack decoder/reader into
+    `syncular-protocol` behind a small protocol error type or conversion layer.
 
 ## Next
 

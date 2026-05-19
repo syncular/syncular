@@ -3,16 +3,16 @@ use crate::error::{Result, SyncularError};
 use crate::protocol::{
     CombinedResponse, OperationResult, PullResponse, PushBatchResponse, PushCommitResponse,
     SnapshotChunkRef, SubscriptionIntegrity, SubscriptionResponse, SyncChange, SyncCommit,
-    SyncSnapshot,
+    SyncSnapshot, BINARY_SYNC_PACK_WIRE_VERSION,
 };
 use serde_json::{Map, Value};
 
-pub const SYNC_PACK_ENCODING_JSON_V1: &str = "json-v1";
-pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
-pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
+pub use crate::protocol::{
+    SYNC_PACK_CONTENT_TYPE, SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1,
+};
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 13;
+const VERSION: u16 = BINARY_SYNC_PACK_WIRE_VERSION;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
