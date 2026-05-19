@@ -156,6 +156,15 @@ pub trait SyncTransport {
         chunk: &SnapshotChunkRef,
         scopes: &ScopeValues,
     ) -> Result<SnapshotChunkRows>;
+    fn fetch_snapshot_artifact_bytes(
+        &self,
+        _artifact: &ScopedSnapshotArtifactRef,
+        _scopes: &ScopeValues,
+    ) -> Result<Vec<u8>> {
+        Err(SyncularError::protocol_message(
+            "snapshot artifact transport is not implemented",
+        ))
+    }
     fn connect_realtime(&self) -> Result<Self::Realtime>;
 }
 
@@ -305,6 +314,37 @@ impl SyncTransport for HttpSyncTransport {
         syncular_protocol::validate_snapshot_chunk_format(chunk)?;
         let compressed = response.bytes()?.to_vec();
         decode_compressed_snapshot_chunk_rows(chunk, &compressed)
+    }
+
+    fn fetch_snapshot_artifact_bytes(
+        &self,
+        artifact: &ScopedSnapshotArtifactRef,
+        scopes: &ScopeValues,
+    ) -> Result<Vec<u8>> {
+        let url = format!(
+            "{}/snapshot-artifacts/{}",
+            self.config.base_url.trim_end_matches('/'),
+            artifact.id
+        );
+        let request = self
+            .http
+            .get(&url)
+            .header("x-syncular-snapshot-scopes", serde_json::to_string(scopes)?);
+        let response = self
+            .apply_auth(request, "GET", &url, &[])?
+            .send()
+            .map_err(|err| SyncularError::transport(err).context(format!("GET {url}")))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(SyncularError::message(
+                ErrorKind::Transport,
+                format!("snapshot artifact failed with HTTP {status}: {body}"),
+            ));
+        }
+        let bytes = response.bytes()?.to_vec();
+        validate_snapshot_artifact_bytes(artifact, &bytes)?;
+        Ok(bytes)
     }
 
     fn connect_realtime(&self) -> Result<RealtimeSocket> {
@@ -862,6 +902,29 @@ fn decode_compressed_snapshot_chunk_rows(
     decoder.read_to_end(&mut decoded)?;
 
     decode_snapshot_chunk_rows(chunk, &decoded)
+}
+
+#[cfg(feature = "native")]
+fn validate_snapshot_artifact_bytes(
+    artifact: &ScopedSnapshotArtifactRef,
+    bytes: &[u8],
+) -> Result<()> {
+    syncular_protocol::validate_scoped_snapshot_artifact_ref(artifact)?;
+    if bytes.len() as i64 != artifact.byte_length {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact byte length mismatch: expected {}, got {}",
+            artifact.byte_length,
+            bytes.len()
+        )));
+    }
+    let actual_hash = hex::encode(Sha256::digest(bytes));
+    if actual_hash != artifact.sha256 {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact sha256 mismatch: expected {}, got {}",
+            artifact.sha256, actual_hash
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native")]

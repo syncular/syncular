@@ -183,13 +183,26 @@ Retained sixth slice:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
   and `bun run build:wasm:dev` from `rust/bindings/browser`.
 
+Retained seventh slice:
+
+- Added canonical Rust protocol validation for scoped artifact refs, not only
+  manifests.
+- Added native and browser transport methods for downloading artifact bodies
+  from `/snapshot-artifacts/:artifactId` with the scoped snapshot header.
+- Both transports validate the artifact ref, byte length, and SHA-256 before
+  returning bytes to future apply code.
+- Correctness gates passed:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
+  and `bun run build:wasm:dev` from `rust/bindings/browser`.
+
 ## Next Action
 
 Build the artifact body path:
 
 - how background/precompute jobs create scoped SQLite artifact bodies and insert
   matching metadata rows;
-- how browser/native clients download, verify, and apply artifact bodies;
+- how browser/native clients apply verified artifact bodies;
 - how revocation and interrupted artifact apply recover without app-side
   special handling.
 

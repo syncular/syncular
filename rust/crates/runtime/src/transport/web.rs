@@ -8,7 +8,7 @@ use crate::protocol::{
 };
 use crate::protocol::{
     CombinedRequest, CombinedResponse, PushCommitRequest, RealtimePushRequest, ScopeValues,
-    SnapshotChunkRef, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    ScopedSnapshotArtifactRef, SnapshotChunkRef, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
@@ -100,6 +100,18 @@ pub trait AsyncSyncTransport {
         chunk: &'a SnapshotChunkRef,
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>>;
+
+    fn fetch_snapshot_artifact_bytes<'a>(
+        &'a self,
+        _artifact: &'a ScopedSnapshotArtifactRef,
+        _scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::protocol_message(
+                "snapshot artifact transport is not implemented",
+            ))
+        })
+    }
 
     fn connect_realtime(&self) -> Result<Self::Realtime>;
 }
@@ -212,6 +224,30 @@ impl AsyncSyncTransport for WebSyncTransport {
                     .await?;
             record_snapshot_chunk_fetch(&self.stats, elapsed_ms_since(fetch_started_at));
             decode_snapshot_rows(chunk, &compressed, &self.stats).await
+        })
+    }
+
+    fn fetch_snapshot_artifact_bytes<'a>(
+        &'a self,
+        artifact: &'a ScopedSnapshotArtifactRef,
+        scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>> {
+        Box::pin(async move {
+            let url = format!(
+                "{}/snapshot-artifacts/{}",
+                self.config.base_url.trim_end_matches('/'),
+                artifact.id
+            );
+            let mut headers = vec![(
+                "x-syncular-snapshot-scopes".to_string(),
+                serde_json::to_string(scopes)?,
+            )];
+            headers.extend(effective_auth_headers(&self.auth_headers));
+            let bytes =
+                fetch_bytes_metered(&url, &headers, self.abort_signal.as_ref(), &self.stats)
+                    .await?;
+            validate_snapshot_artifact_bytes(artifact, &bytes).await?;
+            Ok(bytes)
         })
     }
 
@@ -737,6 +773,29 @@ async fn decode_snapshot_rows(
         record_snapshot_chunk_rows(stats, rows);
     }
     rows
+}
+
+async fn validate_snapshot_artifact_bytes(
+    artifact: &ScopedSnapshotArtifactRef,
+    bytes: &[u8],
+) -> Result<()> {
+    syncular_protocol::validate_scoped_snapshot_artifact_ref(artifact)?;
+    if bytes.len() as i64 != artifact.byte_length {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact byte length mismatch: expected {}, got {}",
+            artifact.byte_length,
+            bytes.len()
+        )));
+    }
+    let actual_hash = sha256_digest(bytes).await?;
+    let actual_hash = hex::encode(actual_hash);
+    if actual_hash != artifact.sha256 {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact sha256 mismatch: expected {}, got {}",
+            artifact.sha256, actual_hash
+        )));
+    }
+    Ok(())
 }
 
 async fn decode_snapshot_chunk_bytes(
