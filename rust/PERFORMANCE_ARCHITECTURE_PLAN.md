@@ -2961,6 +2961,28 @@ client. Overflow should close or resync the session deliberately.
     and served Rust WASM bytes moved `3328084 -> 3353028`.
     Report:
     `.context/benchmarks/browser-e2e-snapshot-manifest-v11-10k.json`.
+- Done: added canonical subscription-stream commit root verification and
+  persisted Rust verified roots. This is a correctness/security change, but it
+  is not free on dense incremental pulls because each delivered commit now
+  carries `partitionId`, `previousChainRoot`, `commitDigest`, and
+  `commitChainRoot`, and the server hashes each commit fragment.
+  - Targeted local perf slice, two repeat runs after the change:
+    `server_scoped_incremental_pull_fanout_5000_20` `3.2ms` / `3.4ms`
+    (previous retained guard was about `2.2-2.7ms`).
+    `server_dense_incremental_pull_build_5000_500` `41.6ms` / `43.7ms`
+    (previous retained dense build was about `33.9-36.5ms`).
+    `server_dense_incremental_pull_build_binary_encode_5000_500`
+    `45.2ms` / `43.0ms` (previous retained binary encode was about
+    `37.8-41.6ms`).
+    `server_dense_incremental_pull_build_generated_binary_encode_5000_500`
+    `46.9ms` / `44.5ms` (previous retained generated encode was about
+    `36.1-43.4ms`).
+  - Dense 5k response bytes moved to `2535.6KiB`; this is expected because
+    one-row commit pages now include three 64-character hex roots/digests per
+    commit. The next optimization should keep the verification semantics but
+    reduce wire and hash overhead, likely by moving roots/digests to compact
+    binary fields in the sync-pack path and/or replacing canonical JSON hashing
+    with a framed canonical hash payload shared by TypeScript and Rust.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 
