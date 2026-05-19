@@ -20,7 +20,9 @@ import type {
   SyncularV2RowsChangedEvent,
 } from './index';
 
-GlobalRegistrator.register();
+if (!GlobalRegistrator.isRegistered) {
+  GlobalRegistrator.register();
+}
 
 describe('@syncular/client-rust/react', () => {
   it('joins presence on mount, exposes members, and leaves on unmount', async () => {
@@ -284,6 +286,7 @@ class FakeManagedClient {
         pushMs: 0,
         pullMs: 0,
         pullRequestMs: 0,
+        syncPackDecodeMs: 0,
         pullTransformMs: 0,
         snapshotFetchMs: 0,
         pullApplyMs: 0,

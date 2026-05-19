@@ -890,6 +890,7 @@ const rustTimingKeys: Array<keyof SyncularV2SyncTimings> = [
   'pushMs',
   'pullMs',
   'pullRequestMs',
+  'syncPackDecodeMs',
   'pullTransformMs',
   'snapshotFetchMs',
   'pullApplyMs',
@@ -911,6 +912,7 @@ function emptyRustTimings(): SyncularV2SyncTimings {
     pushMs: 0,
     pullMs: 0,
     pullRequestMs: 0,
+    syncPackDecodeMs: 0,
     pullTransformMs: 0,
     snapshotFetchMs: 0,
     pullApplyMs: 0,
@@ -1622,6 +1624,12 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         const binaryApplyTotalSamples = binaryEvents.map((event) =>
           Number(event.details?.totalMs ?? 0)
         );
+        const binaryDecodeSamples = binaryEvents.map((event) =>
+          Number(event.details?.syncPackDecodeMs ?? 0)
+        );
+        const binaryTransformSamples = binaryEvents.map((event) =>
+          Number(event.details?.pullTransformMs ?? 0)
+        );
         const binaryApplyPullSamples = binaryEvents.map((event) =>
           Number(event.details?.pullApplyMs ?? 0)
         );
@@ -1635,6 +1643,8 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         const realtimePush = summarizeSamples(realtimePushSamples);
         const realtimeOverhead = summarizeSamples(realtimeOverheadSamples);
         const realtimeApplyTotal = summarizeSamples(binaryApplyTotalSamples);
+        const realtimeDecode = summarizeSamples(binaryDecodeSamples);
+        const realtimeTransform = summarizeSamples(binaryTransformSamples);
         const realtimePullApply = summarizeSamples(binaryApplyPullSamples);
         const realtimeCommitApply = summarizeSamples(binaryApplyCommitSamples);
         const realtimeNotify = summarizeSamples(binaryApplyNotifySamples);
@@ -1677,6 +1687,24 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           pushMetric,
           'rust_realtime_apply_total',
           realtimeApplyTotal
+        );
+        pushMetric(
+          'rust_realtime_sync_pack_decode_total_ms',
+          binaryDecodeSamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_sync_pack_decode',
+          realtimeDecode
+        );
+        pushMetric(
+          'rust_realtime_pull_transform_total_ms',
+          binaryTransformSamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_pull_transform',
+          realtimeTransform
         );
         pushMetric(
           'rust_realtime_pull_apply_total_ms',

@@ -407,6 +407,7 @@ export class SyncularV2WorkerRealtimeController {
           details: {
             bytes: message.syncPackBytes.byteLength,
             totalMs: result.timings.totalMs,
+            syncPackDecodeMs: result.timings.syncPackDecodeMs,
             pullTransformMs: result.timings.pullTransformMs,
             pullApplyMs: result.timings.pullApplyMs,
             commitApplyMs: result.timings.commitApplyMs,
