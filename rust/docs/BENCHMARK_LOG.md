@@ -282,3 +282,67 @@ Decision:
 
 - Retained. This is protocol ownership work; the maintained perf sanity gate
   did not show a structural regression or byte growth.
+
+## 2026-05-19 - Protocol Crate Binary Snapshot Decoder Extraction
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved binary snapshot table/row/payload decoding into `syncular-protocol`.
+- Runtime now keeps `SnapshotChunkRows` and SQLite visitor adapters, but the
+  binary wire parser is protocol-owned.
+- Binary sync-pack row groups now reuse the protocol binary snapshot decoder
+  instead of carrying a second local row-group decoder.
+- Added `wasm-opt --all-features` to release WASM packaging after the default
+  size gate exposed raw-size drift.
+
+Size gate:
+
+- Before optimizer fix: release full WASM raw `3,417,217` bytes, `9.1KiB` over
+  the `3.25MiB` budget.
+- After optimizer fix: release full WASM raw `3,375,951` bytes, `31.2KiB`
+  under budget; gzip `1.33MiB`, `19.6KiB` under budget.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --baseline=.context/benchmarks/browser-e2e-100k-baseline.json \
+  --fail-on-regression
+```
+
+Previous accepted:
+
+- Rust bootstrap: `138.04ms`
+- Rust pull apply: `73ms`
+- Rust snapshot chunk apply: `62ms`
+- Rust snapshot chunk bind: `33ms`
+- Rust served WASM bytes: `3,326,638`
+
+Candidate:
+
+- Rust bootstrap: `141.24ms`
+- Rust pull apply: `74ms`
+- Rust snapshot chunk apply: `65ms`
+- Rust snapshot chunk bind: `37ms`
+- Rust served WASM bytes: `3,375,951`
+
+Delta:
+
+- Rust bootstrap: `+3.2ms`, below the regression gate.
+- Rust pull apply: `+1ms`.
+- Rust snapshot chunk apply: `+3ms`.
+- Rust snapshot chunk bind: `+4ms`.
+- Rust served WASM bytes: `+49,313` bytes (`+1.48%`), below the regression
+  gate and under the raw/gzip budgets.
+
+Decision:
+
+- Retained. The protocol extraction keeps the browser benchmark inside the
+  accepted gate, and the release package now passes the raw/gzip size budget
+  again.

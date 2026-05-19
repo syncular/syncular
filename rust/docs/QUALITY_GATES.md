@@ -47,7 +47,7 @@ CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
 ```
 
 ```bash
-bun --cwd rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser build:wasm
 ```
 
 ## TypeScript Packages
@@ -64,29 +64,28 @@ bun run --cwd packages/server-dialect-postgres tsgo
 Use release WASM for retained decisions.
 
 ```bash
-bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --baseline=../../../.context/benchmarks/browser-e2e-100k-baseline.json \
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --baseline=.context/benchmarks/browser-e2e-100k-baseline.json \
   --fail-on-regression
 ```
 
 ```bash
-bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts \
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
   --query-iterations=0 \
-  --baseline=../../../.context/benchmarks/browser-e2e-incremental-realtime-baseline.json \
+  --baseline=.context/benchmarks/browser-e2e-incremental-realtime-baseline.json \
   --fail-on-regression
 ```
 
 ```bash
 SYNCULAR_BROWSER_PERF_ROWS=500000 \
-  bun ../../../tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --query-iterations=0 \
-  --baseline=../../../.context/benchmarks/browser-e2e-500k-baseline.json \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
   --fail-on-regression
 ```
 
-Run these from the browser test harness directory expected by the script, as
-documented in the reference performance plan.
+Run these from the repo root.
 
 ## Targeted Server Perf
 
@@ -106,7 +105,7 @@ online-propagation, or reconnect behavior.
 ```bash
 cd /Users/bkniffler/GitHub/sync/offline-sync-bench
 
-bun --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
 
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
   docker compose -f stacks/syncular/docker-compose.yml up --build -d

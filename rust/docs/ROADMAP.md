@@ -72,8 +72,8 @@ read-only review:
 
 - `[~]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
   - Extract the real Rust protocol crate before expanding binary v2.
-  - Next action: separate pure binary snapshot chunk decoding from runtime
-    storage visitor traits so protocol can own the remaining wire codec.
+  - Next action: move remaining pure canonical payload/digest and snapshot
+    manifest validation helpers from runtime into protocol-crate APIs.
 
 ## Next
 

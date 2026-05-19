@@ -62,7 +62,7 @@ branch:
   ```bash
   cd /Users/bkniffler/GitHub/sync/offline-sync-bench
 
-  bun --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+  bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
 
   SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
     docker compose -f stacks/syncular/docker-compose.yml up --build -d

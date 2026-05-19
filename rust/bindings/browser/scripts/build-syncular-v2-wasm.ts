@@ -268,6 +268,7 @@ function optimizeWasmRelease(wasmPath: string): void {
   const result = Bun.spawnSync(
     [
       'wasm-opt',
+      '--all-features',
       '-Oz',
       '--strip-producers',
       '--zero-filled-memory',

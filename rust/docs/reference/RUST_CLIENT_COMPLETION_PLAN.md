@@ -844,7 +844,7 @@ Done when:
   story.
 
 Suggested verification:
-`bun --cwd rust/bindings/browser build:wasm`,
+`bun run --cwd rust/bindings/browser build:wasm`,
 `bun --cwd rust/bindings/browser size:wasm`, browser benchmarks, and package
 typecheck.
 

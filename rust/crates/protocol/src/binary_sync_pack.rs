@@ -1,3 +1,4 @@
+use crate::binary_snapshot::decode_binary_snapshot_table;
 use crate::error::{ProtocolError, Result};
 use crate::{
     CombinedResponse, OperationResult, PullResponse, PushBatchResponse, PushCommitResponse,
@@ -11,52 +12,12 @@ pub use crate::{SYNC_PACK_CONTENT_TYPE, SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_
 const MAGIC: &[u8; 4] = b"SSP1";
 const VERSION: u16 = BINARY_SYNC_PACK_WIRE_VERSION;
 const FLAG_NONE: u16 = 0;
-const BINARY_SNAPSHOT_MAGIC: &[u8; 4] = b"SBT1";
-const BINARY_SNAPSHOT_VERSION: u16 = 1;
-const BINARY_SNAPSHOT_COLUMN_FLAG_NULLABLE: u8 = 1;
 
 struct PendingBinaryChangeRowRef {
     change_index: usize,
     table: String,
     group_index: usize,
     row_index: usize,
-}
-
-struct DecodedSyncPackBinarySnapshotTable {
-    table: String,
-    rows: Vec<Map<String, Value>>,
-}
-
-struct SyncPackBinarySnapshotColumn {
-    name: String,
-    column_type: SyncPackBinarySnapshotColumnType,
-    nullable: bool,
-}
-
-#[derive(Clone, Copy)]
-enum SyncPackBinarySnapshotColumnType {
-    String,
-    Integer,
-    Float,
-    Boolean,
-    Json,
-    Bytes,
-}
-
-impl SyncPackBinarySnapshotColumnType {
-    fn from_tag(tag: u8) -> Result<Self> {
-        match tag {
-            1 => Ok(Self::String),
-            2 => Ok(Self::Integer),
-            3 => Ok(Self::Float),
-            4 => Ok(Self::Boolean),
-            5 => Ok(Self::Json),
-            6 => Ok(Self::Bytes),
-            _ => Err(ProtocolError::message(format!(
-                "unsupported binary snapshot type tag: {tag}"
-            ))),
-        }
-    }
 }
 
 pub fn is_binary_sync_pack_content_type(content_type: Option<&str>) -> bool {
@@ -389,73 +350,6 @@ fn read_snapshot_chunk_ref(reader: &mut BinarySyncPackReader<'_>) -> Result<Snap
     })
 }
 
-fn decode_binary_snapshot_table(bytes: &[u8]) -> Result<DecodedSyncPackBinarySnapshotTable> {
-    let mut reader = BinarySyncPackReader::new(bytes);
-    reader.expect_magic(BINARY_SNAPSHOT_MAGIC, "binary snapshot table")?;
-
-    let version = reader.read_u16("binary snapshot version")?;
-    if version != BINARY_SNAPSHOT_VERSION {
-        return Err(ProtocolError::message(format!(
-            "unsupported binary snapshot version: {version}"
-        )));
-    }
-    let flags = reader.read_u16("binary snapshot flags")?;
-    if flags != FLAG_NONE {
-        return Err(ProtocolError::message(format!(
-            "unsupported binary snapshot flags: {flags}"
-        )));
-    }
-
-    let table = reader.read_string16("binary snapshot table name")?;
-    let column_count = reader.read_u16("binary snapshot column count")? as usize;
-    let mut columns = Vec::with_capacity(column_count);
-    for _ in 0..column_count {
-        let name = reader.read_string16("binary snapshot column name")?;
-        let column_type = SyncPackBinarySnapshotColumnType::from_tag(
-            reader.read_u8("binary snapshot column type")?,
-        )?;
-        let column_flags = reader.read_u8("binary snapshot column flags")?;
-        if column_flags & !BINARY_SNAPSHOT_COLUMN_FLAG_NULLABLE != 0 {
-            return Err(ProtocolError::message(format!(
-                "unsupported binary snapshot column flags: {column_flags}"
-            )));
-        }
-        columns.push(SyncPackBinarySnapshotColumn {
-            name,
-            column_type,
-            nullable: column_flags & BINARY_SNAPSHOT_COLUMN_FLAG_NULLABLE != 0,
-        });
-    }
-
-    let row_count = reader.read_u32("binary snapshot row count")? as usize;
-    let null_bitmap_bytes = columns.len().div_ceil(8);
-    let mut rows = Vec::with_capacity(row_count);
-    for _ in 0..row_count {
-        let null_bitmap =
-            reader.read_bytes(null_bitmap_bytes, "binary snapshot row null bitmap")?;
-        let mut row = Map::with_capacity(columns.len());
-        for (column_index, column) in columns.iter().enumerate() {
-            let is_null = null_bitmap[column_index / 8] & (1u8 << (column_index % 8)) != 0;
-            if is_null {
-                if !column.nullable {
-                    return Err(ProtocolError::message(format!(
-                        "binary snapshot column {} is not nullable",
-                        column.name
-                    )));
-                }
-                row.insert(column.name.clone(), Value::Null);
-                continue;
-            }
-            let value = reader.read_binary_snapshot_json_value(column.column_type, &column.name)?;
-            row.insert(column.name.clone(), value);
-        }
-        rows.push(row);
-    }
-    reader.assert_done()?;
-
-    Ok(DecodedSyncPackBinarySnapshotTable { table, rows })
-}
-
 struct BinarySyncPackReader<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -519,11 +413,6 @@ impl<'a> BinarySyncPackReader<'a> {
         Ok(i64::from_le_bytes(bytes))
     }
 
-    fn read_f64(&mut self, label: &str) -> Result<f64> {
-        let bytes = self.read_array_bytes::<8>(label)?;
-        Ok(f64::from_le_bytes(bytes))
-    }
-
     fn read_optional_i64(&mut self, label: &str) -> Result<Option<i64>> {
         self.read_optional_value(|reader| reader.read_i64(label))
     }
@@ -561,51 +450,6 @@ impl<'a> BinarySyncPackReader<'a> {
             _ => Err(ProtocolError::message(format!(
                 "{label} expected JSON object"
             ))),
-        }
-    }
-
-    fn read_binary_snapshot_json_value(
-        &mut self,
-        column_type: SyncPackBinarySnapshotColumnType,
-        column: &str,
-    ) -> Result<Value> {
-        match column_type {
-            SyncPackBinarySnapshotColumnType::String => {
-                Ok(Value::String(self.read_string32("binary snapshot string")?))
-            }
-            SyncPackBinarySnapshotColumnType::Integer => Ok(Value::Number(
-                serde_json::Number::from(self.read_i64("binary snapshot integer")?),
-            )),
-            SyncPackBinarySnapshotColumnType::Float => {
-                let value = self.read_f64("binary snapshot float")?;
-                serde_json::Number::from_f64(value)
-                    .map(Value::Number)
-                    .ok_or_else(|| {
-                        ProtocolError::message(format!(
-                            "binary snapshot {column} contained non-finite float"
-                        ))
-                    })
-            }
-            SyncPackBinarySnapshotColumnType::Boolean => {
-                let value = self.read_u8("binary snapshot boolean")?;
-                match value {
-                    0 => Ok(Value::Bool(false)),
-                    1 => Ok(Value::Bool(true)),
-                    _ => Err(ProtocolError::message(format!(
-                        "binary snapshot {column} expected boolean byte"
-                    ))),
-                }
-            }
-            SyncPackBinarySnapshotColumnType::Json => self.read_json("binary snapshot json"),
-            SyncPackBinarySnapshotColumnType::Bytes => {
-                let length = self.read_u32("binary snapshot bytes length")? as usize;
-                Ok(Value::Array(
-                    self.read_bytes(length, "binary snapshot bytes")?
-                        .iter()
-                        .map(|byte| Value::Number(serde_json::Number::from(*byte)))
-                        .collect(),
-                ))
-            }
         }
     }
 
