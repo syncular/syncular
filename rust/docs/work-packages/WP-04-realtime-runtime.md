@@ -191,8 +191,33 @@ Retained seventh slice:
 - Decision: retained. The gain is modest, but the code uses the existing
   statement cache and removes one-off prepare/finalize handling.
 
+Retained eighth slice:
+
+- Browser realtime batched upserts now treat emitted upsert row payloads as the
+  canonical server row and pass them through unchanged. The hot path no longer
+  looks up generated table metadata or rewrites the primary key/server-version
+  fields for every realtime change.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts`,
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`, and
+  `bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts`.
+- Browser dev E2E gate:
+  `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=dev --json --output=.context/benchmarks/wp04-realtime-canonical-row-pass-through.json`.
+- Result: previous WP-04 guard `rust_realtime_live_ms=84.31`,
+  `rust_realtime_live_p95_ms=85.16`,
+  `rust_realtime_apply_total_ms=160`,
+  `rust_realtime_pull_apply_total_ms=134`; current
+  `rust_realtime_live_ms=82.27`, `rust_realtime_live_p95_ms=83.61`,
+  `rust_realtime_apply_total_ms=155`,
+  `rust_realtime_pull_apply_total_ms=131`.
+- Decision: retained. This is a small but measurable win, and the code is
+  simpler because the Rust client no longer patches canonical server rows.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-cached-app-upsert.json`.
+`.context/benchmarks/wp04-realtime-canonical-row-pass-through.json`.

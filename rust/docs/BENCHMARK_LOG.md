@@ -1777,3 +1777,51 @@ Decision:
 
 - Retained. The gain is small but measurable, and the implementation removes
   one-off statement lifecycle handling in favor of the existing cache.
+
+## 2026-05-19 - WP-04 Canonical Realtime Row Pass-Through
+
+Change:
+
+- Browser realtime batched upserts now pass emitted upsert row payloads through
+  as canonical server rows instead of rewriting primary-key and server-version
+  fields on every change.
+- This removes per-change generated table metadata lookup from the
+  no-changed-rows realtime fast path.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-canonical-row-pass-through.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `84.31ms` | `82.27ms` |
+| `rust_realtime_live_p95_ms` | `85.16ms` | `83.61ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_apply_total_ms` | `160ms` | `155ms` |
+| `rust_realtime_pull_apply_total_ms` | `134ms` | `131ms` |
+| `rust_realtime_apply_total_p50_ms` | `11ms` | `10ms` |
+| `browser_served_rust_wasm_bytes` | `7464753` | `7463118` |
+
+Decision:
+
+- Retained. This is a measurable small win and also simplifies the realtime hot
+  path by relying on the server's canonical emitted row contract.
