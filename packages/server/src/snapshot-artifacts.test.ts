@@ -11,6 +11,8 @@ import {
   insertScopedSnapshotArtifact,
   readScopedSnapshotArtifact,
   readScopedSnapshotArtifactRefByPageKey,
+  storeScopedSnapshotArtifact,
+  type SnapshotArtifactStorage,
 } from './snapshot-artifacts';
 
 interface TestDb extends SyncCoreDb {}
@@ -186,5 +188,54 @@ describe('scoped snapshot artifacts', () => {
     });
 
     expect(otherManifest.digest).not.toBe(manifest.digest);
+  });
+
+  it('stores artifact bodies through storage before inserting metadata', async () => {
+    const bodies = new Map<string, Uint8Array>();
+    const storage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async storeArtifact(artifact) {
+        bodies.set(artifact.artifactId, artifact.body);
+        return { blobHash: `memory:${artifact.artifactId}` };
+      },
+      async readArtifact(artifact) {
+        return bodies.get(artifact.artifactId) ?? null;
+      },
+    };
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'workspace-1',
+      subscriptionId: 'sub-tasks',
+      scopes: { user_id: 'user-1' },
+      schemaVersion: 7,
+      features: ['blobs'],
+    });
+    const body = new Uint8Array([1, 2, 3, 4, 5]);
+
+    const ref = await storeScopedSnapshotArtifact(db, storage, {
+      artifactId: 'artifact-body-1',
+      partitionId: 'workspace-1',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 5,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      body,
+      featureSet: ['blobs'],
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const row = await readScopedSnapshotArtifact(db, ref.id);
+
+    expect(ref.id).toBe('artifact-body-1');
+    expect(ref.byteLength).toBe(body.byteLength);
+    expect(row?.blobHash).toBe('memory:artifact-body-1');
+    expect(row?.sha256).toBe(ref.sha256);
+    const storedBody = await storage.readArtifact(row!);
+    expect(Array.from(storedBody!)).toEqual(Array.from(body));
   });
 });

@@ -1866,6 +1866,15 @@ where
             let mut prepared_snapshots = Vec::new();
             if let Some(snapshots) = sub.snapshots.as_ref() {
                 for snapshot in snapshots {
+                    if snapshot
+                        .artifacts
+                        .as_ref()
+                        .is_some_and(|artifacts| !artifacts.is_empty())
+                    {
+                        return Err(SyncularError::protocol_message(
+                            "snapshot artifacts are not supported by this runtime yet",
+                        ));
+                    }
                     let mut chunk_batches = Vec::new();
                     if let Some(chunks) = &snapshot.chunks {
                         for chunk in chunks {
