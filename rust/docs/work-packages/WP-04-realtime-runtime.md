@@ -248,6 +248,28 @@ Rejected probe:
   to justify the runtime regression and noisier code.
 - Decision: rejected and reverted.
 
+Rejected probe:
+
+- Tried avoiding per-row table-name cloning in the browser realtime upsert
+  batching path, cloning the table only when a new table batch starts.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts`,
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`, and
+  `bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-table-clone-elision.json` and
+  `.context/benchmarks/wp04-realtime-table-clone-elision-rerun.json`.
+- Result versus the retained overhead guard was not a win: rerun realtime p50
+  `82.05 -> 100.03`, overhead p50 `22.63 -> 23.91`,
+  realtime apply total `160ms -> 165ms`, and pull-apply total `133ms -> 137ms`.
+  WASM bytes improved slightly `7463118 -> 7462690`, but not enough to justify
+  keeping the change.
+- Decision: rejected and reverted.
+
 Retained measurement slice:
 
 - Browser realtime benchmark now emits `rust_realtime_overhead_*` samples,

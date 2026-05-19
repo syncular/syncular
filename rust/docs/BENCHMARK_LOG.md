@@ -1936,3 +1936,55 @@ Decision:
 
 - Retained as measurement infrastructure. Future realtime changes should compare
   both end-to-end live latency and the derived Rust/browser overhead lane.
+
+## 2026-05-19 - WP-04 Rejected Realtime Table Clone Elision
+
+Change tested:
+
+- Avoided cloning the table name for every batchable realtime upsert row in the
+  browser web client batching path. The candidate only cloned the table when a
+  new table batch started.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-table-clone-elision.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-table-clone-elision-rerun.json
+```
+
+Confirmed rerun versus previous guard:
+
+| Metric | Previous WP-04 guard | Candidate rerun |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.05ms` | `100.03ms` |
+| `rust_realtime_live_p95_ms` | `83.99ms` | `101.44ms` |
+| `rust_realtime_overhead_p50_ms` | `22.63ms` | `23.91ms` |
+| `rust_realtime_overhead_p95_ms` | `23.99ms` | `25.83ms` |
+| `rust_realtime_apply_total_ms` | `160ms` | `165ms` |
+| `rust_realtime_pull_apply_total_ms` | `133ms` | `137ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7462690` |
+
+Decision:
+
+- Rejected and reverted. The candidate slightly reduced WASM bytes but regressed
+  the runtime lane on two runs, including the explicit Rust/browser overhead
+  metric.
