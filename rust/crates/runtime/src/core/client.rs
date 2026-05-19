@@ -1593,7 +1593,7 @@ where
                 .then(|| SnapshotArtifactsRequest {
                     schema_version: self.schema_version.to_string(),
                     artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
-                    compressions: vec![SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string()],
+                    compressions: vec![SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string()],
                     feature_set: Vec::new(),
                 });
         self.store.transaction(|tx| {

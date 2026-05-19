@@ -15,7 +15,6 @@ import {
   randomId,
   type ScopeValues,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
@@ -172,15 +171,12 @@ function resolveSnapshotArtifactSelection(
   ) {
     return null;
   }
-  if (
-    request.compressions &&
-    !request.compressions.includes(SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE)
-  ) {
+  if (!request.compressions?.includes(SYNC_SNAPSHOT_CHUNK_COMPRESSION)) {
     return null;
   }
   return {
     artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-    compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
     schemaVersion: request.schemaVersion,
     featureSet: normalizeFeatureSet(request.featureSet),
   };

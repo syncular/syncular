@@ -1,6 +1,10 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
+import {
+  createDatabase,
+  gunzipBytes,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+} from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
@@ -146,7 +150,7 @@ describe('scoped snapshot artifacts', () => {
       rowLimit: 50_000,
       artifactKind: 'sqlite-snapshot-v1',
       schemaVersion: '7',
-      compression: 'none',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
     });
     const byId = await readScopedSnapshotArtifact(db, 'artifact-1');
 
@@ -328,6 +332,7 @@ describe('scoped snapshot artifacts', () => {
     });
 
     expect(ref.id).toBe('artifact-sqlite-1');
+    expect(ref.compression).toBe(SYNC_SNAPSHOT_CHUNK_COMPRESSION);
     expect(ref.rowCount).toBe(1);
     expect(ref.manifest.scopeDigest).toBe(
       (
@@ -343,7 +348,7 @@ describe('scoped snapshot artifacts', () => {
     const row = await readScopedSnapshotArtifact(db, ref.id);
     const storedBody = await storage.readArtifact(row!);
     expect(storedBody).toBeTruthy();
-    const artifactDb = Database.deserialize(storedBody!);
+    const artifactDb = Database.deserialize(await gunzipBytes(storedBody!));
     try {
       expect(
         artifactDb

@@ -324,6 +324,39 @@ Retained eleventh slice:
   `rust_response_bytes=3169482`. Cached bootstrap moved `76.45ms` to
   `60.59ms`.
 
+Retained twelfth slice:
+
+- Switched the current scoped SQLite artifact path from uncompressed artifact
+  bodies to gzip bodies. Rust native and browser clients now advertise gzip
+  artifact compression, server pull only selects gzip artifacts, and runtime
+  transports validate the compressed body hash/length before returning decoded
+  SQLite bytes to storage.
+- The Bun scoped SQLite artifact encoder now gzips the serialized SQLite file
+  at level 1. Server artifact helper defaults also now use gzip so new
+  artifact keys are not silently created for the uncompressed path.
+- Runtime artifact apply rejects non-gzip artifact refs on the current path.
+- Correctness gates passed:
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
+  `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture`,
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd rust/bindings/browser build:wasm`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test src/__tests__/sync-hono.wasm.test.ts` from
+  `rust/bindings/browser`.
+- Targeted server perf gate stayed in noise on rerun:
+  `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`.
+- Browser release E2E, 100k rows, query iterations disabled:
+  uncompressed direct SQLite artifacts `rust_bootstrap_ms=108.73`,
+  `rust_pull_apply_ms=69`, `rust_response_bytes=3169482`,
+  `rust_cached_bootstrap_ms=60.59`, `browser_js_heap_used_delta_bytes=2616444`;
+  gzip direct SQLite artifacts `rust_bootstrap_ms=107.82`,
+  `rust_pull_apply_ms=68`, `rust_response_bytes=1033377`,
+  `rust_cached_bootstrap_ms=61.77`, `browser_js_heap_used_delta_bytes=2754568`.
+- Decision: retained. Wall time stayed flat, cached bootstrap stayed within
+  local noise, and artifact response bytes dropped by about `67%`.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
@@ -331,7 +364,5 @@ Turn the artifact prototype into the full bootstrap path:
 - Add native Diesel direct artifact import or another non-JSON path.
 - Extend artifact precompute to multiple pages and the external app-style
   benchmark stack, then measure 500k bootstrap against TS/Rust row chunks.
-- Reduce artifact transfer size; the current uncompressed SQLite body improves
-  wall time but is much larger on the wire than gzipped binary chunks.
 - Add interrupted artifact apply and revocation recovery tests for the direct
   import path.
