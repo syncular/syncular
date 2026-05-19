@@ -80,6 +80,7 @@ type RawSyncResult = {
     pull_request_ms?: number;
     sync_pack_decode_ms?: number;
     pull_transform_ms?: number;
+    integrity_verify_ms?: number;
     snapshot_fetch_ms?: number;
     pull_apply_ms?: number;
     scope_clear_ms?: number;
@@ -553,6 +554,7 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
       pullRequestMs: raw.timings?.pull_request_ms ?? 0,
       syncPackDecodeMs: raw.timings?.sync_pack_decode_ms ?? 0,
       pullTransformMs: raw.timings?.pull_transform_ms ?? 0,
+      integrityVerifyMs: raw.timings?.integrity_verify_ms ?? 0,
       snapshotFetchMs: raw.timings?.snapshot_fetch_ms ?? 0,
       pullApplyMs: raw.timings?.pull_apply_ms ?? 0,
       scopeClearMs: raw.timings?.scope_clear_ms ?? 0,

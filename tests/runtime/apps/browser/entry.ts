@@ -892,6 +892,7 @@ const rustTimingKeys: Array<keyof SyncularV2SyncTimings> = [
   'pullRequestMs',
   'syncPackDecodeMs',
   'pullTransformMs',
+  'integrityVerifyMs',
   'snapshotFetchMs',
   'pullApplyMs',
   'scopeClearMs',
@@ -914,6 +915,7 @@ function emptyRustTimings(): SyncularV2SyncTimings {
     pullRequestMs: 0,
     syncPackDecodeMs: 0,
     pullTransformMs: 0,
+    integrityVerifyMs: 0,
     snapshotFetchMs: 0,
     pullApplyMs: 0,
     scopeClearMs: 0,
@@ -1630,11 +1632,17 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         const binaryTransformSamples = binaryEvents.map((event) =>
           Number(event.details?.pullTransformMs ?? 0)
         );
+        const binaryIntegritySamples = binaryEvents.map((event) =>
+          Number(event.details?.integrityVerifyMs ?? 0)
+        );
         const binaryApplyPullSamples = binaryEvents.map((event) =>
           Number(event.details?.pullApplyMs ?? 0)
         );
         const binaryApplyCommitSamples = binaryEvents.map((event) =>
           Number(event.details?.commitApplyMs ?? 0)
+        );
+        const binarySubscriptionStateSamples = binaryEvents.map((event) =>
+          Number(event.details?.subscriptionStateMs ?? 0)
         );
         const binaryApplyNotifySamples = binaryEvents.map((event) =>
           Number(event.details?.notifyMs ?? 0)
@@ -1645,8 +1653,12 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         const realtimeApplyTotal = summarizeSamples(binaryApplyTotalSamples);
         const realtimeDecode = summarizeSamples(binaryDecodeSamples);
         const realtimeTransform = summarizeSamples(binaryTransformSamples);
+        const realtimeIntegrity = summarizeSamples(binaryIntegritySamples);
         const realtimePullApply = summarizeSamples(binaryApplyPullSamples);
         const realtimeCommitApply = summarizeSamples(binaryApplyCommitSamples);
+        const realtimeSubscriptionState = summarizeSamples(
+          binarySubscriptionStateSamples
+        );
         const realtimeNotify = summarizeSamples(binaryApplyNotifySamples);
         pushMetric('realtime_rows', realtimeRows * realtimeIterations, 'rows');
         pushMetric('realtime_iterations', realtimeIterations, 'count');
@@ -1707,6 +1719,15 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           realtimeTransform
         );
         pushMetric(
+          'rust_realtime_integrity_verify_total_ms',
+          binaryIntegritySamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_integrity_verify',
+          realtimeIntegrity
+        );
+        pushMetric(
           'rust_realtime_pull_apply_total_ms',
           binaryApplyPullSamples.reduce((sum, value) => sum + value, 0)
         );
@@ -1723,6 +1744,15 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           pushMetric,
           'rust_realtime_commit_apply',
           realtimeCommitApply
+        );
+        pushMetric(
+          'rust_realtime_subscription_state_total_ms',
+          binarySubscriptionStateSamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_subscription_state',
+          realtimeSubscriptionState
         );
         pushMetric(
           'rust_realtime_notify_total_ms',

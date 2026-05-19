@@ -137,15 +137,21 @@ read-only review:
     longer rewrites canonical server row payloads before batching them into
     SQLite, and the benchmark now reports a derived Rust/browser realtime
     overhead lane plus sync-pack decode/transform timing in addition to
-    end-to-end live latency.
+    end-to-end live latency. The latest retained instrumentation splits
+    realtime apply into integrity verification, commit apply, subscription
+    state persistence, and notify timing; current evidence says canonical
+    integrity verification is the real Rust-side realtime hotspot, not
+    subscription-state SQLite writes. A sorted-map canonicalization probe was
+    rejected and reverted after benchmark regression.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json` as
-  the current local comparison point.
+  `.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json` as the
+  current local comparison point, and rerun the guard before each candidate
+  when machine state is noisy.
 
 ## Later
 

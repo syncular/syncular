@@ -128,6 +128,7 @@ pub struct WebSyncTimings {
     pub pull_request_ms: f64,
     pub sync_pack_decode_ms: f64,
     pub pull_transform_ms: f64,
+    pub integrity_verify_ms: f64,
     pub snapshot_fetch_ms: f64,
     pub pull_apply_ms: f64,
     pub scope_clear_ms: f64,
@@ -778,6 +779,7 @@ where
             ));
         }
 
+        let subscription_state_started_at = timing_now_ms();
         let Some(mut state) = self.store.subscription_state(&subscription.id).await? else {
             return Err(SyncularError::protocol_message(format!(
                 "realtime sync-pack subscription {} has no active local state",
@@ -804,12 +806,16 @@ where
         }
 
         let stored_root = self.store.verified_root(&subscription.id).await?;
+        result.timings.subscription_state_ms += elapsed_ms_since(subscription_state_started_at);
+
+        let integrity_verify_started_at = timing_now_ms();
         let verified_root = verify_subscription_commit_integrity(
             &subscription.id,
             stored_root.as_ref().map(|root| root.root.as_str()),
             subscription.integrity.as_ref(),
             &subscription.commits,
         )?;
+        result.timings.integrity_verify_ms += elapsed_ms_since(integrity_verify_started_at);
 
         result.subscriptions.push(WebSubscriptionResult {
             id: subscription.id.clone(),
@@ -821,9 +827,12 @@ where
             commits: Vec::new(),
         });
 
+        let commit_apply_started_at = timing_now_ms();
         self.apply_realtime_commits(result, &subscription.id, subscription.commits)
             .await?;
+        result.timings.commit_apply_ms += elapsed_ms_since(commit_apply_started_at);
 
+        let subscription_state_started_at = timing_now_ms();
         if state.cursor < subscription.next_cursor {
             state.cursor = subscription.next_cursor;
         }
@@ -839,6 +848,7 @@ where
                 })
                 .await?;
         }
+        result.timings.subscription_state_ms += elapsed_ms_since(subscription_state_started_at);
 
         Ok(())
     }

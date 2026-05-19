@@ -309,8 +309,52 @@ Retained measurement slice:
   lower-level split metrics as well as live latency because browser/server
   scheduling noise is visible in this lane.
 
+Retained measurement slice:
+
+- Browser Rust realtime diagnostics now split `applyMs` into sync-pack decode,
+  integrity verification, commit apply, subscription state persistence, and
+  notify timing.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol integrity --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-integrity-state-split.json` and
+  `.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json`.
+- Current measured split against the previous decode/transform guard:
+  first split `rust_realtime_live_ms=93.93`, `apply_total=164ms`,
+  `integrity_verify=104ms`, `commit_apply=23ms`, `subscription_state=8ms`;
+  latest rerun `rust_realtime_live_ms=121.39`, `apply_total=237ms`,
+  `integrity_verify=159ms`, `commit_apply=37ms`, and
+  `subscription_state=5ms`. The latest rerun is noisier, but both runs point to
+  integrity verification as the dominant realtime Rust-side cost.
+- Decision: retained as measurement infrastructure. This is not a performance
+  win; it makes the next real optimization target explicit.
+
+Rejected probe:
+
+- Tried using `serde_json::Map` iteration as a sorted-map fast path inside
+  canonical integrity hashing.
+- Correctness gates passed, but the benchmark rejected it:
+  `.context/benchmarks/wp04-realtime-sorted-map-integrity.json` and
+  `.context/benchmarks/wp04-realtime-sorted-map-integrity-rerun.json`.
+- Rerun versus the first integrity/state split:
+  `rust_realtime_live_ms=93.93 -> 126.06`,
+  `rust_realtime_apply_total_ms=164 -> 229`,
+  `rust_realtime_pull_apply_total_ms=135 -> 187`,
+  `rust_realtime_integrity_verify_total_ms=104 -> 148`, and
+  `browser_served_rust_wasm_bytes=7463799 -> 7443592`.
+- Decision: rejected and reverted. The byte-size reduction did not justify the
+  runtime regression. Avoid more local canonicalization micro-probes unless they
+  have a clear benchmark-backed reason.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json`.
+`.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json`, with a
+fresh pre-change rerun when machine state is noisy.

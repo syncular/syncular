@@ -409,6 +409,7 @@ export class SyncularV2WorkerRealtimeController {
             totalMs: result.timings.totalMs,
             syncPackDecodeMs: result.timings.syncPackDecodeMs,
             pullTransformMs: result.timings.pullTransformMs,
+            integrityVerifyMs: result.timings.integrityVerifyMs,
             pullApplyMs: result.timings.pullApplyMs,
             commitApplyMs: result.timings.commitApplyMs,
             subscriptionStateMs: result.timings.subscriptionStateMs,
