@@ -1005,7 +1005,7 @@ describe('createSyncServer console configuration', () => {
     });
   });
 
-  it('replays recent binary websocket deltas on reconnect before falling back to pull', async () => {
+  it('requires pull on reconnect when no verified websocket delta pack exists', async () => {
     const options = createOptions();
     let capturedEvents: WSEvents | null = null;
     const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
@@ -1024,14 +1024,14 @@ describe('createSyncServer console configuration', () => {
     const app = new Hono();
     app.route('/sync', server.syncRoutes);
 
-    await sql`
-      INSERT INTO sync_client_cursors (
-        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
-      )
-      VALUES (
-        'default', 'client-replay', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
-      )
-    `.execute(db);
+    const subscribed = await app.request(
+      createPullRequest({
+        clientId: 'client-replay',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(subscribed.status).toBe(200);
 
     const push = await app.request(
       createPushRequest({
@@ -1053,19 +1053,15 @@ describe('createSyncServer console configuration', () => {
     const upstream = createUpstreamSocketHarness();
     events.onOpen(new Event('open'), upstream.ws);
 
-    expect(upstream.binaryMessages).toHaveLength(1);
-    const replay = decodeBinarySyncPack(upstream.binaryMessages[0]!);
-    expect(replay.pull?.subscriptions[0]?.commits[0]?.changes[0]?.row_id).toBe(
-      'task-1'
-    );
+    expect(upstream.binaryMessages).toHaveLength(0);
     expect(
       upstream.messages.some(
         (message) =>
           message.event === 'sync' &&
           isRecord(message.data) &&
-          message.data.reason === 'reconnect-catchup'
+          message.data.requiresPull === true
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('enforces binary websocket backpressure through the realtime route', async () => {
@@ -1087,14 +1083,14 @@ describe('createSyncServer console configuration', () => {
     const app = new Hono();
     app.route('/sync', server.syncRoutes);
 
-    await sql`
-      INSERT INTO sync_client_cursors (
-        partition_id, client_id, actor_id, cursor, effective_scopes, updated_at
-      )
-      VALUES (
-        'default', 'client-binary-slow', 'u1', 0, ${JSON.stringify({ user_id: 'u1' })}, ${new Date().toISOString()}
-      )
-    `.execute(db);
+    const subscribed = await app.request(
+      createPullRequest({
+        clientId: 'client-binary-slow',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(subscribed.status).toBe(200);
 
     const response = await app.request(
       'http://localhost/sync/realtime?clientId=client-binary-slow&syncPackEncoding=binary-sync-pack-v1'
@@ -1119,6 +1115,16 @@ describe('createSyncServer console configuration', () => {
     expect(firstPush.status).toBe(200);
 
     await waitFor(async () => upstream.binaryMessages.length === 1);
+    const firstPack = decodeBinarySyncPack(upstream.binaryMessages[0]!);
+    const firstSubscription = firstPack.pull?.subscriptions[0];
+    expect(firstSubscription?.id).toBe('tasks-sub');
+    expect(firstSubscription?.integrity).toMatchObject({
+      commitSeq: 1,
+      partitionId: 'default',
+    });
+    expect(firstSubscription?.commits[0]?.changes[0]?.row_id).toBe(
+      'task-backpressure-1'
+    );
 
     const secondPush = await app.request(
       createPushRequest({
@@ -1158,6 +1164,83 @@ describe('createSyncServer console configuration', () => {
     expect(thirdPush.status).toBe(200);
 
     await waitFor(async () => upstream.binaryMessages.length === 2);
+  });
+
+  it('chains verified roots across consecutive websocket binary deltas', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const server = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const subscribed = await app.request(
+      createPullRequest({
+        clientId: 'client-root-chain',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(subscribed.status).toBe(200);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-root-chain&syncPackEncoding=binary-sync-pack-v1'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    const firstPush = await app.request(
+      createPushRequest({
+        clientCommitId: 'commit-root-chain-1',
+        clientId: 'writer-client',
+        rowId: 'task-root-chain-1',
+      })
+    );
+    expect(firstPush.status).toBe(200);
+    await waitFor(async () => upstream.binaryMessages.length === 1);
+
+    const firstPack = decodeBinarySyncPack(upstream.binaryMessages[0]!);
+    const firstIntegrity = firstPack.pull?.subscriptions[0]?.integrity;
+    expect(firstIntegrity).toMatchObject({
+      previousChainRoot: '0'.repeat(64),
+      commitSeq: 1,
+    });
+
+    await events.onMessage(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'ack', cursor: 1 }),
+      }),
+      upstream.ws
+    );
+
+    const secondPush = await app.request(
+      createPushRequest({
+        clientCommitId: 'commit-root-chain-2',
+        clientId: 'writer-client',
+        rowId: 'task-root-chain-2',
+      })
+    );
+    expect(secondPush.status).toBe(200);
+    await waitFor(async () => upstream.binaryMessages.length === 2);
+
+    const secondPack = decodeBinarySyncPack(upstream.binaryMessages[1]!);
+    expect(secondPack.pull?.subscriptions[0]?.integrity).toMatchObject({
+      previousChainRoot: firstIntegrity?.commitChainRoot,
+      commitSeq: 2,
+    });
   });
 
   it('accepts refreshed realtime auth tokens for the same actor', async () => {
