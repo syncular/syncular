@@ -45,7 +45,7 @@ import type { SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
 import {
-  attachWireCommitIntegrity,
+  createWireSubscriptionIntegrity,
   SYNCULAR_COMMIT_GENESIS_ROOT,
 } from './commit-integrity';
 import {
@@ -1438,7 +1438,6 @@ export async function pull<
                         lastCommit.commitSeq !== item.commitSeq
                       ) {
                         commits.push({
-                          partitionId,
                           commitSeq: item.commitSeq,
                           createdAt: item.createdAt,
                           actorId: item.actorId,
@@ -1448,7 +1447,7 @@ export async function pull<
                       }
                       lastCommit.changes.push(item.change);
                     }
-                    await attachWireCommitIntegrity({
+                    const integrity = await createWireSubscriptionIntegrity({
                       partitionId,
                       subscriptionId: sub.id,
                       previousRoot:
@@ -1464,6 +1463,7 @@ export async function pull<
                       scopes: effectiveScopes,
                       bootstrap: false,
                       nextCursor,
+                      ...(integrity ? { integrity } : {}),
                       commits,
                     });
                     nextCursors.push(nextCursor);
@@ -1478,7 +1478,6 @@ export async function pull<
                     let commit = commits[commits.length - 1];
                     if (!commit || commit.commitSeq !== seq) {
                       commit = {
-                        partitionId,
                         commitSeq: seq,
                         createdAt: r.created_at,
                         actorId: r.actor_id,
@@ -1498,7 +1497,7 @@ export async function pull<
                     commit.changes.push(change);
                   }
 
-                  await attachWireCommitIntegrity({
+                  const integrity = await createWireSubscriptionIntegrity({
                     partitionId,
                     subscriptionId: sub.id,
                     previousRoot:
@@ -1529,6 +1528,7 @@ export async function pull<
                     scopes: effectiveScopes,
                     bootstrap: false,
                     nextCursor,
+                    ...(integrity ? { integrity } : {}),
                     commits,
                   });
                   nextCursors.push(nextCursor);

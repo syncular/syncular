@@ -1267,6 +1267,7 @@ impl SyncTransport for EncryptedCrdtPullTransport {
                         bootstrap: true,
                         bootstrap_state: None,
                         next_cursor: 1,
+                        integrity: None,
                         commits: Vec::new(),
                         snapshots: Some(vec![SyncSnapshot {
                             table: "tasks".to_string(),
@@ -1294,15 +1295,12 @@ impl SyncTransport for EncryptedCrdtPullTransport {
                         bootstrap: false,
                         bootstrap_state: None,
                         next_cursor: 2,
+                        integrity: None,
                         snapshots: None,
                         commits: vec![SyncCommit {
-                            partition_id: None,
                             commit_seq: 2,
                             created_at: "2026-05-10T00:00:00.000Z".to_string(),
                             actor_id: "remote-user".to_string(),
-                            previous_chain_root: None,
-                            commit_digest: None,
-                            commit_chain_root: None,
                             changes: vec![SyncChange {
                                 table: CRDT_UPDATES_TABLE.to_string(),
                                 row_id: self.encrypted_update["update_id"]
@@ -1360,6 +1358,7 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
                         bootstrap: true,
                         bootstrap_state: None,
                         next_cursor: 1,
+                        integrity: None,
                         commits: Vec::new(),
                         snapshots: Some(vec![SyncSnapshot {
                             table: "tasks".to_string(),
@@ -1387,15 +1386,12 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
                         bootstrap: false,
                         bootstrap_state: None,
                         next_cursor: 7,
+                        integrity: None,
                         snapshots: None,
                         commits: vec![SyncCommit {
-                            partition_id: None,
                             commit_seq: 7,
                             created_at: "2026-05-10T00:00:00.000Z".to_string(),
                             actor_id: "remote-user".to_string(),
-                            previous_chain_root: None,
-                            commit_digest: None,
-                            commit_chain_root: None,
                             changes: vec![SyncChange {
                                 table: CRDT_CHECKPOINTS_TABLE.to_string(),
                                 row_id: self.encrypted_checkpoint["checkpoint_id"]

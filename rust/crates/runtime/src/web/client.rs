@@ -333,6 +333,7 @@ where
             let verified_root = verify_subscription_commit_integrity(
                 &sub.id,
                 stored_root.as_ref().map(|root| root.root.as_str()),
+                sub.integrity.as_ref(),
                 &sub.commits,
             )?;
             let table = self
@@ -670,14 +671,11 @@ where
                         bootstrap: false,
                         bootstrap_state: None,
                         next_cursor: commit_seq,
+                        integrity: None,
                         commits: vec![SyncCommit {
-                            partition_id: None,
                             commit_seq,
                             created_at: request.created_at.unwrap_or_else(|| now_ms().to_string()),
                             actor_id: request.actor_id.unwrap_or_else(|| "server".to_string()),
-                            previous_chain_root: None,
-                            commit_digest: None,
-                            commit_chain_root: None,
                             changes: request.changes,
                         }],
                         snapshots: None,
@@ -1514,6 +1512,7 @@ mod tests {
                             bootstrap: true,
                             bootstrap_state: None,
                             next_cursor: 1,
+                            integrity: None,
                             commits: Vec::new(),
                             snapshots: Some(vec![SyncSnapshot {
                                 table: "tasks".to_string(),

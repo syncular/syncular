@@ -193,17 +193,24 @@ export const SyncChangeSchema = z.object({
 export type SyncChange = z.infer<typeof SyncChangeSchema>;
 
 export const SyncCommitSchema = z.object({
-  partitionId: z.string().optional(),
   commitSeq: z.number().int(),
   createdAt: z.string(),
   actorId: z.string(),
-  previousChainRoot: z.string().optional(),
-  commitDigest: z.string().optional(),
-  commitChainRoot: z.string().optional(),
   changes: z.array(SyncChangeSchema),
 });
 
 export type SyncCommit = z.infer<typeof SyncCommitSchema>;
+
+export const SyncPullSubscriptionIntegritySchema = z.object({
+  partitionId: z.string(),
+  previousChainRoot: z.string(),
+  commitChainRoot: z.string(),
+  commitSeq: z.number().int(),
+});
+
+export type SyncPullSubscriptionIntegrity = z.infer<
+  typeof SyncPullSubscriptionIntegritySchema
+>;
 
 export const SyncSnapshotChunkRefSchema = z.object({
   id: z.string(),
@@ -260,6 +267,7 @@ export const SyncPullSubscriptionResponseSchema = z.object({
   bootstrap: z.boolean(),
   bootstrapState: SyncBootstrapStateSchema.nullable().optional(),
   nextCursor: z.number().int(),
+  integrity: SyncPullSubscriptionIntegritySchema.optional(),
   commits: z.array(SyncCommitSchema),
   snapshots: z.array(SyncSnapshotSchema).optional(),
 });

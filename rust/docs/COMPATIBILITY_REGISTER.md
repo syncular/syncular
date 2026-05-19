@@ -57,6 +57,7 @@ exception.
 | `apply_local_operation_json` / `enqueue_local_operation_json` aliases | `Removed` | Rust client, native facade, C FFI, BoltFFI bindings, browser runtime low-level APIs, tests/docs | Mutation naming is the canonical low-level write contract. No old generated/native callers are preserved |
 | `actorScopeColumn` / `projectScopeColumn` codegen config fields | `Removed` | `rust/crates/codegen/src/main.rs` | Explicit named scopes are the only config model. Codegen now rejects unknown keys instead of carrying deprecated fields |
 | Server Hono legacy sync CORS shape | `Removed` | `packages/server-hono/src/routes.ts` | Hono-style `cors: origin` / `cors: { origin }` is the single sync route CORS contract |
+| Per-commit pull integrity fields | `Removed` | `SyncCommit` TS/Rust contract and `binary-sync-pack-v1` wire v13 | Pull integrity now lives on subscription-level metadata. The current path does not carry `partitionId`, `previousChainRoot`, `commitDigest`, or `commitChainRoot` on every commit |
 
 ## Items That Are Not Compatibility Debt
 

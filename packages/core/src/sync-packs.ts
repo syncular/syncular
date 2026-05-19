@@ -16,6 +16,8 @@
  * - v11: per-snapshot manifest metadata for chunk ordering/integrity.
  * - v12: per-commit partition id and previous chain root for canonical wire
  *   commit verification.
+ * - v13: subscription-level integrity roots replace repeated per-commit root
+ *   metadata.
  */
 
 import type {
@@ -25,6 +27,7 @@ import type {
   SyncOperationResult,
   SyncPullResponse,
   SyncPullSubscriptionResponse,
+  SyncPullSubscriptionIntegrity,
   SyncPushBatchCommitResponse,
   SyncPushBatchResponse,
   SyncSnapshot,
@@ -47,7 +50,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 12;
+const VERSION = 13;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -318,6 +321,7 @@ function writeSubscriptionResponse(
   writer.bool(subscription.bootstrap);
   writer.optionalJson(subscription.bootstrapState ?? undefined);
   writer.i64(subscription.nextCursor);
+  writer.optionalValue(subscription.integrity, writeSubscriptionIntegrity);
   writer.array(subscription.commits, (nextWriter, commit) =>
     writeCommit(nextWriter, commit, options)
   );
@@ -339,6 +343,8 @@ function readSubscriptionResponse(
   subscription.bootstrapState =
     (bootstrapState as SyncPullSubscriptionResponse['bootstrapState']) ?? null;
   subscription.nextCursor = reader.i64('subscription next cursor');
+  const integrity = reader.optionalValue(readSubscriptionIntegrity);
+  if (integrity) subscription.integrity = integrity;
   subscription.commits = reader.array('subscription commits', readCommit);
   const snapshots = reader.optionalArray(
     'subscription snapshots',
@@ -348,38 +354,47 @@ function readSubscriptionResponse(
   return subscription;
 }
 
+function writeSubscriptionIntegrity(
+  writer: BinarySyncPackWriter,
+  integrity: SyncPullSubscriptionIntegrity
+): void {
+  writer.string32(integrity.partitionId);
+  writer.string32(integrity.previousChainRoot);
+  writer.string32(integrity.commitChainRoot);
+  writer.i64(integrity.commitSeq);
+}
+
+function readSubscriptionIntegrity(
+  reader: BinarySyncPackReader
+): SyncPullSubscriptionIntegrity {
+  return {
+    partitionId: reader.string32('subscription integrity partitionId'),
+    previousChainRoot: reader.string32(
+      'subscription integrity previous chain root'
+    ),
+    commitChainRoot: reader.string32('subscription integrity chain root'),
+    commitSeq: reader.i64('subscription integrity commit seq'),
+  };
+}
+
 function writeCommit(
   writer: BinarySyncPackWriter,
   commit: SyncCommit,
   options: BinarySyncPackEncodeOptions
 ): void {
-  writer.optionalString32(commit.partitionId);
   writer.i64(commit.commitSeq);
   writer.string32(commit.createdAt);
   writer.string32(commit.actorId);
-  writer.optionalString32(commit.previousChainRoot);
-  writer.optionalString32(commit.commitDigest);
-  writer.optionalString32(commit.commitChainRoot);
   writeChanges(writer, commit.changes, options);
 }
 
 function readCommit(reader: BinarySyncPackReader): SyncCommit {
-  const partitionId = reader.optionalString32('commit partitionId');
   const commit: SyncCommit = {
     commitSeq: reader.i64('commit seq'),
     createdAt: reader.string32('commit createdAt'),
     actorId: reader.string32('commit actorId'),
     changes: [],
   };
-  if (partitionId !== undefined) commit.partitionId = partitionId;
-  const previousChainRoot = reader.optionalString32('commit previous root');
-  if (previousChainRoot !== undefined) {
-    commit.previousChainRoot = previousChainRoot;
-  }
-  const commitDigest = reader.optionalString32('commit digest');
-  if (commitDigest !== undefined) commit.commitDigest = commitDigest;
-  const commitChainRoot = reader.optionalString32('commit chain root');
-  if (commitChainRoot !== undefined) commit.commitChainRoot = commitChainRoot;
   commit.changes = readChangesV8(reader);
   return commit;
 }

@@ -337,6 +337,7 @@ pub fn default_combined_response(request: &CombinedRequest) -> CombinedResponse 
                     bootstrap: false,
                     bootstrap_state: None,
                     next_cursor: subscription.cursor.max(0),
+                    integrity: None,
                     commits: Vec::new(),
                     snapshots: None,
                 })

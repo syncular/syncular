@@ -73,9 +73,9 @@ read-only review:
 - `[~]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
   - Reduce the verified-root performance overhead without weakening the
     correctness contract.
-  - Next action: move pull integrity metadata toward page/subscription-level
-    roots and compact binary metadata, then rerun targeted server perf and
-    browser/offline-sync benchmarks.
+  - Next action: update the external app-style Rust benchmark adapter for the
+    current mutation API, then continue reducing canonical JSON allocation in
+    the integrity hot path under the same perf gate.
 
 ## Next
 

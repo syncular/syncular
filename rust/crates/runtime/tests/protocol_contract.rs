@@ -20,7 +20,8 @@ use syncular_runtime::protocol::{
     validate_pull_snapshot_manifests, wire_commit_chain_root, wire_commit_digest, BootstrapState,
     CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushBatchResponse,
     PushCommitResponse, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
-    SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT,
+    SubscriptionIntegrity, SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot,
+    COMMIT_INTEGRITY_GENESIS_ROOT,
 };
 use syncular_runtime::store::{SyncStore, SyncStoreTx};
 use syncular_runtime::transport::{
@@ -1599,8 +1600,13 @@ fn malformed_commit_integrity_metadata_is_rejected_before_apply() -> Result<()> 
     let store = RusqliteStore::open(&path)?;
     let transport = TestTransport::new();
     let mut response = duplicate_pull_commits_response();
-    let commit = &mut response.pull.as_mut().expect("pull response").subscriptions[0].commits[0];
-    commit.commit_digest = Some("abc".to_string());
+    let subscription = &mut response.pull.as_mut().expect("pull response").subscriptions[0];
+    subscription.integrity = Some(SubscriptionIntegrity {
+        partition_id: "default".to_string(),
+        previous_chain_root: "abc".to_string(),
+        commit_chain_root: "b".repeat(64),
+        commit_seq: subscription.commits.last().expect("test commit").commit_seq,
+    });
     transport.push_http_response(response);
     let mut client = demo_client(
         test_config(&path, "client-invalid-integrity"),
@@ -1627,18 +1633,12 @@ fn canonical_commit_integrity_is_recomputed_and_verified_root_is_persisted() -> 
         row_version: Some(10),
         scopes: scopes(),
     };
-    let commit = verified_wire_commit(10, change)?;
-    let expected_root = commit
-        .commit_chain_root
-        .clone()
-        .expect("verified commit root");
+    let (commit, integrity) = verified_wire_commit(10, change)?;
+    let expected_root = integrity.commit_chain_root.clone();
     let transport = TestTransport::new();
-    transport.push_http_response(commits_combined_response(
-        "sub-tasks",
-        scopes(),
-        10,
-        vec![commit],
-    ));
+    let mut response = commits_combined_response("sub-tasks", scopes(), 10, vec![commit]);
+    response.pull.as_mut().expect("pull").subscriptions[0].integrity = Some(integrity);
+    transport.push_http_response(response);
     let store = RusqliteStore::open(&path)?;
     let mut client = demo_client(
         test_config(&path, "client-valid-integrity"),
@@ -1672,15 +1672,12 @@ fn canonical_commit_integrity_rejects_tampered_commit_before_apply() -> Result<(
         row_version: Some(10),
         scopes: scopes(),
     };
-    let mut commit = verified_wire_commit(10, change)?;
+    let (mut commit, integrity) = verified_wire_commit(10, change)?;
     commit.changes[0].row_json = Some(task_row("task-integrity", "Tampered", 10));
     let transport = TestTransport::new();
-    transport.push_http_response(commits_combined_response(
-        "sub-tasks",
-        scopes(),
-        10,
-        vec![commit],
-    ));
+    let mut response = commits_combined_response("sub-tasks", scopes(), 10, vec![commit]);
+    response.pull.as_mut().expect("pull").subscriptions[0].integrity = Some(integrity);
+    transport.push_http_response(response);
     let store = RusqliteStore::open(&path)?;
     let mut client = demo_client(
         test_config(&path, "client-tampered-integrity"),
@@ -1697,21 +1694,35 @@ fn canonical_commit_integrity_rejects_tampered_commit_before_apply() -> Result<(
 }
 
 #[test]
-fn commit_integrity_metadata_validation_rejects_partial_or_reordered_roots() {
-    let mut pull = integrity_pull_response(vec![
-        integrity_commit(41, Some("a".repeat(64)), Some("b".repeat(64))),
-        integrity_commit(42, Some("c".repeat(64)), Some("d".repeat(64))),
-    ]);
+fn commit_integrity_metadata_validation_rejects_malformed_or_mismatched_roots() {
+    let mut pull = integrity_pull_response(
+        vec![integrity_commit(41), integrity_commit(42)],
+        Some(SubscriptionIntegrity {
+            partition_id: "default".to_string(),
+            previous_chain_root: "a".repeat(64),
+            commit_chain_root: "b".repeat(64),
+            commit_seq: 42,
+        }),
+    );
     validate_pull_commit_integrity_metadata(&pull).expect("complete metadata");
 
-    pull.subscriptions[0].commits[0].commit_chain_root = None;
+    pull.subscriptions[0]
+        .integrity
+        .as_mut()
+        .expect("integrity")
+        .commit_chain_root = "bad".to_string();
     let error = validate_pull_commit_integrity_metadata(&pull).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Protocol);
 
-    let pull = integrity_pull_response(vec![
-        integrity_commit(42, Some("a".repeat(64)), Some("b".repeat(64))),
-        integrity_commit(41, Some("c".repeat(64)), Some("d".repeat(64))),
-    ]);
+    let pull = integrity_pull_response(
+        vec![integrity_commit(41), integrity_commit(42)],
+        Some(SubscriptionIntegrity {
+            partition_id: "default".to_string(),
+            previous_chain_root: "a".repeat(64),
+            commit_chain_root: "b".repeat(64),
+            commit_seq: 41,
+        }),
+    );
     let error = validate_pull_commit_integrity_metadata(&pull).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Protocol);
 }
@@ -2210,6 +2221,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             bootstrap: snapshots.is_some(),
             bootstrap_state,
             next_cursor: 42,
+            integrity: None,
             commits,
             snapshots,
         }],
@@ -2341,30 +2353,25 @@ fn duplicate_pull_commits_response() -> CombinedResponse {
         sync_conformance_i64(&["repeatedPull", "expectedCursor"]),
         vec![
             SyncCommit {
-                partition_id: None,
                 commit_seq: 90,
                 created_at: "2026-05-08T00:00:00.000Z".to_string(),
                 actor_id: "server".to_string(),
-                previous_chain_root: None,
-                commit_digest: None,
-                commit_chain_root: None,
                 changes: vec![change.clone()],
             },
             SyncCommit {
-                partition_id: None,
                 commit_seq: 90,
                 created_at: "2026-05-08T00:00:00.000Z".to_string(),
                 actor_id: "server".to_string(),
-                previous_chain_root: None,
-                commit_digest: None,
-                commit_chain_root: None,
                 changes: vec![change],
             },
         ],
     )
 }
 
-fn integrity_pull_response(commits: Vec<SyncCommit>) -> PullResponse {
+fn integrity_pull_response(
+    commits: Vec<SyncCommit>,
+    integrity: Option<SubscriptionIntegrity>,
+) -> PullResponse {
     PullResponse {
         ok: true,
         subscriptions: vec![SubscriptionResponse {
@@ -2377,49 +2384,49 @@ fn integrity_pull_response(commits: Vec<SyncCommit>) -> PullResponse {
                 .last()
                 .map(|commit| commit.commit_seq)
                 .unwrap_or_default(),
+            integrity,
             commits,
             snapshots: None,
         }],
     }
 }
 
-fn integrity_commit(
-    commit_seq: i64,
-    commit_digest: Option<String>,
-    commit_chain_root: Option<String>,
-) -> SyncCommit {
-    let has_integrity = commit_digest.is_some() || commit_chain_root.is_some();
+fn integrity_commit(commit_seq: i64) -> SyncCommit {
     SyncCommit {
-        partition_id: has_integrity.then(|| "default".to_string()),
         commit_seq,
         created_at: "2026-05-19T00:00:00.000Z".to_string(),
         actor_id: "server".to_string(),
-        previous_chain_root: has_integrity.then(|| "0".repeat(64)),
-        commit_digest,
-        commit_chain_root,
         changes: Vec::new(),
     }
 }
 
-fn verified_wire_commit(commit_seq: i64, change: SyncChange) -> Result<SyncCommit> {
-    let mut commit = SyncCommit {
-        partition_id: Some("default".to_string()),
+fn verified_wire_commit(
+    commit_seq: i64,
+    change: SyncChange,
+) -> Result<(SyncCommit, SubscriptionIntegrity)> {
+    let commit = SyncCommit {
         commit_seq,
         created_at: "2026-05-19T00:00:00.000Z".to_string(),
         actor_id: "server".to_string(),
-        previous_chain_root: Some(COMMIT_INTEGRITY_GENESIS_ROOT.to_string()),
-        commit_digest: None,
-        commit_chain_root: None,
         changes: vec![change],
     };
-    commit.commit_digest = Some(wire_commit_digest("default", "sub-tasks", &commit)?);
-    commit.commit_chain_root = Some(wire_commit_chain_root(
+    let commit_digest = wire_commit_digest("default", "sub-tasks", &commit)?;
+    let commit_chain_root = wire_commit_chain_root(
         "default",
         "sub-tasks",
         COMMIT_INTEGRITY_GENESIS_ROOT,
-        &commit,
-    )?);
-    Ok(commit)
+        commit_seq,
+        &commit_digest,
+    )?;
+    Ok((
+        commit,
+        SubscriptionIntegrity {
+            partition_id: "default".to_string(),
+            previous_chain_root: COMMIT_INTEGRITY_GENESIS_ROOT.to_string(),
+            commit_chain_root,
+            commit_seq,
+        },
+    ))
 }
 
 fn snapshot_manifest_pull_response(
@@ -2435,6 +2442,7 @@ fn snapshot_manifest_pull_response(
             bootstrap: true,
             bootstrap_state: None,
             next_cursor: 42,
+            integrity: None,
             commits: Vec::new(),
             snapshots: Some(vec![SyncSnapshot {
                 table: "tasks".to_string(),

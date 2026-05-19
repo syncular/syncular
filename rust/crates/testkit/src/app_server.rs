@@ -507,6 +507,7 @@ impl AppTestServer {
                 bootstrap: !rows.is_empty(),
                 bootstrap_state: None,
                 next_cursor,
+                integrity: None,
                 commits: Vec::new(),
                 snapshots: Some(vec![SyncSnapshot {
                     table: subscription.table.clone(),
@@ -543,13 +544,9 @@ impl AppTestServer {
                             None
                         } else {
                             Some(SyncCommit {
-                                partition_id: None,
                                 commit_seq: commit.commit_seq,
                                 created_at: self.created_at(commit.commit_seq),
                                 actor_id: self.options.actor_id.clone(),
-                                previous_chain_root: None,
-                                commit_digest: None,
-                                commit_chain_root: None,
                                 changes,
                             })
                         }
@@ -573,6 +570,7 @@ impl AppTestServer {
             bootstrap: false,
             bootstrap_state: None,
             next_cursor,
+            integrity: None,
             commits,
             snapshots: None,
         }

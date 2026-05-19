@@ -264,12 +264,14 @@ describe('commit integrity metadata', () => {
         ],
       },
     });
-    const commit = response.response.subscriptions[0]!.commits[0]!;
+    const subscription = response.response.subscriptions[0]!;
+    const commit = subscription.commits[0]!;
+    const integrity = subscription.integrity!;
 
-    expect(commit.partitionId).toBe('default');
-    expect(commit.previousChainRoot).toBe(SYNCULAR_COMMIT_GENESIS_ROOT);
-    expect(commit.commitDigest).toMatch(sha256HexPattern);
-    expect(commit.commitChainRoot).toMatch(sha256HexPattern);
+    expect(integrity.partitionId).toBe('default');
+    expect(integrity.previousChainRoot).toBe(SYNCULAR_COMMIT_GENESIS_ROOT);
+    expect(integrity.commitChainRoot).toMatch(sha256HexPattern);
+    expect(integrity.commitSeq).toBe(commit.commitSeq);
 
     await pushCommit({
       db,
@@ -306,13 +308,16 @@ describe('commit integrity metadata', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: commit.commitSeq,
-            verifiedRoot: commit.commitChainRoot,
+            verifiedRoot: integrity.commitChainRoot,
           },
         ],
       },
     });
-    const nextCommit = next.response.subscriptions[0]!.commits[0]!;
-    expect(nextCommit.previousChainRoot).toBe(commit.commitChainRoot);
-    expect(nextCommit.commitChainRoot).toMatch(sha256HexPattern);
+    const nextSubscription = next.response.subscriptions[0]!;
+    const nextCommit = nextSubscription.commits[0]!;
+    const nextIntegrity = nextSubscription.integrity!;
+    expect(nextIntegrity.previousChainRoot).toBe(integrity.commitChainRoot);
+    expect(nextIntegrity.commitChainRoot).toMatch(sha256HexPattern);
+    expect(nextIntegrity.commitSeq).toBe(nextCommit.commitSeq);
   });
 });

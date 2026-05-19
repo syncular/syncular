@@ -1903,6 +1903,7 @@ where
                 let verified_root = verify_subscription_commit_integrity(
                     &sub.id,
                     stored_root.as_ref().map(|root| root.root.as_str()),
+                    sub.integrity.as_ref(),
                     &sub.commits,
                 )?;
 

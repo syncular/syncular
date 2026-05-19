@@ -122,15 +122,17 @@ describe('binary sync pack format', () => {
             bootstrap: false,
             bootstrapState: null,
             nextCursor: 42,
+            integrity: {
+              partitionId: 'default',
+              previousChainRoot: '0'.repeat(64),
+              commitChainRoot: 'b'.repeat(64),
+              commitSeq: 42,
+            },
             commits: [
               {
-                partitionId: 'default',
                 commitSeq: 42,
                 createdAt: '2026-05-17T10:00:00.000Z',
                 actorId: 'user-2',
-                previousChainRoot: '0'.repeat(64),
-                commitDigest: 'a'.repeat(64),
-                commitChainRoot: 'b'.repeat(64),
                 changes: [
                   {
                     table: 'tasks',
@@ -177,7 +179,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(12);
+    expect(encoded[4]).toBe(13);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);

@@ -279,45 +279,60 @@ pub struct SubscriptionResponse {
     pub bootstrap_state: Option<BootstrapState>,
     #[serde(rename = "nextCursor")]
     pub next_cursor: i64,
+    pub integrity: Option<SubscriptionIntegrity>,
     pub commits: Vec<SyncCommit>,
     pub snapshots: Option<Vec<SyncSnapshot>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncCommit {
-    #[serde(rename = "partitionId", skip_serializing_if = "Option::is_none")]
-    pub partition_id: Option<String>,
-    #[serde(rename = "commitSeq")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubscriptionIntegrity {
+    pub partition_id: String,
+    pub previous_chain_root: String,
+    pub commit_chain_root: String,
     pub commit_seq: i64,
-    #[serde(rename = "createdAt")]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SyncCommit {
+    pub commit_seq: i64,
     pub created_at: String,
-    #[serde(rename = "actorId")]
     pub actor_id: String,
-    #[serde(rename = "previousChainRoot", skip_serializing_if = "Option::is_none")]
-    pub previous_chain_root: Option<String>,
-    #[serde(rename = "commitDigest", skip_serializing_if = "Option::is_none")]
-    pub commit_digest: Option<String>,
-    #[serde(rename = "commitChainRoot", skip_serializing_if = "Option::is_none")]
-    pub commit_chain_root: Option<String>,
     pub changes: Vec<SyncChange>,
 }
 
 pub fn validate_pull_commit_integrity_metadata(response: &PullResponse) -> Result<()> {
     for subscription in &response.subscriptions {
-        let mut previous_integrity_commit_seq = None;
-        for commit in &subscription.commits {
-            validate_commit_integrity_metadata(&subscription.id, commit)?;
-            if commit.commit_digest.is_some() {
-                if let Some(previous) = previous_integrity_commit_seq {
-                    if commit.commit_seq <= previous {
-                        return Err(SyncularError::protocol_message(format!(
-                            "subscription {} integrity-bearing commit sequence must be strictly increasing: {} after {}",
-                            subscription.id, commit.commit_seq, previous
-                        )));
-                    }
-                }
-                previous_integrity_commit_seq = Some(commit.commit_seq);
-            }
+        let Some(integrity) = &subscription.integrity else {
+            continue;
+        };
+        if subscription.commits.is_empty() {
+            return Err(SyncularError::protocol_message(format!(
+                "subscription {} has integrity metadata without commits",
+                subscription.id
+            )));
+        }
+        validate_commit_integrity_hex(
+            "previousChainRoot",
+            &subscription.id,
+            integrity.commit_seq,
+            &integrity.previous_chain_root,
+        )?;
+        validate_commit_integrity_hex(
+            "commitChainRoot",
+            &subscription.id,
+            integrity.commit_seq,
+            &integrity.commit_chain_root,
+        )?;
+        let Some(last_commit) = subscription.commits.last() else {
+            continue;
+        };
+        if last_commit.commit_seq != integrity.commit_seq {
+            return Err(SyncularError::protocol_message(format!(
+                "subscription {} integrity commitSeq mismatch: expected {}, got {}",
+                subscription.id, last_commit.commit_seq, integrity.commit_seq
+            )));
         }
     }
     Ok(())
@@ -326,62 +341,47 @@ pub fn validate_pull_commit_integrity_metadata(response: &PullResponse) -> Resul
 pub fn verify_subscription_commit_integrity(
     subscription_id: &str,
     stored_root: Option<&str>,
+    integrity: Option<&SubscriptionIntegrity>,
     commits: &[SyncCommit],
 ) -> Result<Option<VerifiedCommitRoot>> {
+    let Some(integrity) = integrity else {
+        return Ok(None);
+    };
     let mut expected_previous_root = stored_root
         .filter(|root| !root.is_empty())
         .unwrap_or(COMMIT_INTEGRITY_GENESIS_ROOT)
         .to_string();
-    let mut final_root = None;
 
-    for commit in commits {
-        validate_commit_integrity_metadata(subscription_id, commit)?;
-        let Some(partition_id) = commit.partition_id.as_deref() else {
-            continue;
-        };
-        let commit_digest = commit.commit_digest.as_deref().expect("validated digest");
-        let previous_chain_root = commit
-            .previous_chain_root
-            .as_deref()
-            .expect("validated previous chain root");
-        let commit_chain_root = commit
-            .commit_chain_root
-            .as_deref()
-            .expect("validated chain root");
-
-        if previous_chain_root != expected_previous_root {
-            return Err(SyncularError::protocol_message(format!(
-                "subscription {subscription_id} commit {} previousChainRoot mismatch: expected {}, got {}",
-                commit.commit_seq, expected_previous_root, previous_chain_root
-            )));
-        }
-
-        let actual_digest = wire_commit_digest(partition_id, subscription_id, commit)?;
-        if actual_digest != commit_digest {
-            return Err(SyncularError::protocol_message(format!(
-                "subscription {subscription_id} commit {} commitDigest mismatch: expected {}, got {}",
-                commit.commit_seq, commit_digest, actual_digest
-            )));
-        }
-
-        let actual_root =
-            wire_commit_chain_root(partition_id, subscription_id, previous_chain_root, commit)?;
-        if actual_root != commit_chain_root {
-            return Err(SyncularError::protocol_message(format!(
-                "subscription {subscription_id} commit {} commitChainRoot mismatch: expected {}, got {}",
-                commit.commit_seq, commit_chain_root, actual_root
-            )));
-        }
-
-        expected_previous_root = commit_chain_root.to_string();
-        final_root = Some(VerifiedCommitRoot {
-            partition_id: partition_id.to_string(),
-            commit_seq: commit.commit_seq,
-            root: commit_chain_root.to_string(),
-        });
+    if integrity.previous_chain_root != expected_previous_root {
+        return Err(SyncularError::protocol_message(format!(
+            "subscription {subscription_id} previousChainRoot mismatch: expected {}, got {}",
+            expected_previous_root, integrity.previous_chain_root
+        )));
     }
 
-    Ok(final_root)
+    for commit in commits {
+        let actual_digest = wire_commit_digest(&integrity.partition_id, subscription_id, commit)?;
+        expected_previous_root = wire_commit_chain_root_from_digest(
+            &integrity.partition_id,
+            subscription_id,
+            &expected_previous_root,
+            commit.commit_seq,
+            &actual_digest,
+        )?;
+    }
+
+    if expected_previous_root != integrity.commit_chain_root {
+        return Err(SyncularError::protocol_message(format!(
+            "subscription {subscription_id} commitChainRoot mismatch: expected {}, got {}",
+            integrity.commit_chain_root, expected_previous_root
+        )));
+    }
+
+    Ok(Some(VerifiedCommitRoot {
+        partition_id: integrity.partition_id.clone(),
+        commit_seq: integrity.commit_seq,
+        root: integrity.commit_chain_root.clone(),
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -492,41 +492,6 @@ fn validate_snapshot_manifest(subscription_id: &str, snapshot: &SyncSnapshot) ->
     Ok(())
 }
 
-fn validate_commit_integrity_metadata(subscription_id: &str, commit: &SyncCommit) -> Result<()> {
-    match (
-        &commit.partition_id,
-        &commit.previous_chain_root,
-        &commit.commit_digest,
-        &commit.commit_chain_root,
-    ) {
-        (None, None, None, None) => Ok(()),
-        (Some(_), Some(previous_chain_root), Some(commit_digest), Some(commit_chain_root)) => {
-            validate_commit_integrity_hex(
-                "previousChainRoot",
-                subscription_id,
-                commit.commit_seq,
-                previous_chain_root,
-            )?;
-            validate_commit_integrity_hex(
-                "commitDigest",
-                subscription_id,
-                commit.commit_seq,
-                commit_digest,
-            )?;
-            validate_commit_integrity_hex(
-                "commitChainRoot",
-                subscription_id,
-                commit.commit_seq,
-                commit_chain_root,
-            )
-        }
-        _ => Err(SyncularError::protocol_message(format!(
-            "subscription {} commit {} integrity metadata must include partitionId, previousChainRoot, commitDigest, and commitChainRoot",
-            subscription_id, commit.commit_seq
-        ))),
-    }
-}
-
 pub fn wire_commit_digest(
     partition_id: &str,
     subscription_id: &str,
@@ -580,12 +545,25 @@ pub fn wire_commit_chain_root(
     partition_id: &str,
     subscription_id: &str,
     previous_chain_root: &str,
-    commit: &SyncCommit,
+    commit_seq: i64,
+    commit_digest: &str,
 ) -> Result<String> {
-    let commit_digest = commit
-        .commit_digest
-        .as_deref()
-        .ok_or_else(|| SyncularError::protocol_message("missing commitDigest"))?;
+    wire_commit_chain_root_from_digest(
+        partition_id,
+        subscription_id,
+        previous_chain_root,
+        commit_seq,
+        commit_digest,
+    )
+}
+
+pub fn wire_commit_chain_root_from_digest(
+    partition_id: &str,
+    subscription_id: &str,
+    previous_chain_root: &str,
+    commit_seq: i64,
+    commit_digest: &str,
+) -> Result<String> {
     let mut value = Map::new();
     value.insert(
         "version".to_string(),
@@ -599,7 +577,7 @@ pub fn wire_commit_chain_root(
         "subscriptionId".to_string(),
         Value::String(subscription_id.to_string()),
     );
-    value.insert("commitSeq".to_string(), Value::from(commit.commit_seq));
+    value.insert("commitSeq".to_string(), Value::from(commit_seq));
     value.insert(
         "previousChainRoot".to_string(),
         Value::String(previous_chain_root.to_string()),
