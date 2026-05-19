@@ -216,6 +216,14 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    syncular_task_counts (user_id, completed) {
+        user_id -> Text,
+        completed -> Integer,
+        task_count -> Integer,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     sync_blob_cache,
     sync_blob_outbox,
@@ -231,4 +239,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     comments,
     projects,
     tasks,
+    syncular_task_counts,
 );

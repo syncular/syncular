@@ -51,8 +51,12 @@ Retained first slice:
 - Generated TypeScript schema installers create the read-model table/triggers
   and rebuild only when the output table is first installed or the generated
   schema version changes.
+- Generated read-model output tables are included in the TypeScript Kysely DB
+  interface and Rust Diesel schema, but they are not included in app-table
+  sync/mutation metadata.
 - The todo example declares `taskCountsByUserCompletion`, and its Rust test
-  proves rebuild plus update/delete invalidation.
+  proves rebuild plus update/delete invalidation and typed Diesel read-model
+  queries.
 - No hidden runtime cache, default index, or compatibility branch was added.
 
 Correctness gates passed:

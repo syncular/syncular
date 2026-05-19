@@ -157,6 +157,16 @@ mod tests {
 
         let counts = task_counts(&mut conn);
         assert_eq!(counts, vec![(0, 1), (1, 1)]);
+        let typed_counts: Vec<(i32, i32)> = schema::syncular_task_counts::dsl::syncular_task_counts
+            .filter(schema::syncular_task_counts::dsl::user_id.eq("user-rust"))
+            .order(schema::syncular_task_counts::dsl::completed.asc())
+            .select((
+                schema::syncular_task_counts::dsl::completed,
+                schema::syncular_task_counts::dsl::task_count,
+            ))
+            .load(&mut conn)
+            .expect("typed Diesel read-model query");
+        assert_eq!(typed_counts, counts);
 
         fn task_counts(conn: &mut SqliteConnection) -> Vec<(i32, i32)> {
             diesel::sql_query(
