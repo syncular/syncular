@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+pub mod binary_sync_pack;
+pub mod error;
+
+pub use error::{ProtocolError, Result};
+
 pub const COMMIT_INTEGRITY_HEX_LENGTH: usize = 64;
 pub const COMMIT_INTEGRITY_GENESIS_ROOT: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
@@ -271,13 +276,13 @@ pub fn sha256_hex(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 
-pub fn canonical_json_string(value: &Value) -> Result<String, serde_json::Error> {
+pub fn canonical_json_string(value: &Value) -> Result<String> {
     let mut out = String::new();
     append_canonical_json(&mut out, value)?;
     Ok(out)
 }
 
-pub fn append_canonical_json(out: &mut String, value: &Value) -> Result<(), serde_json::Error> {
+pub fn append_canonical_json(out: &mut String, value: &Value) -> Result<()> {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
@@ -300,10 +305,7 @@ pub fn append_canonical_json(out: &mut String, value: &Value) -> Result<(), serd
     Ok(())
 }
 
-pub fn append_canonical_object(
-    out: &mut String,
-    values: &Map<String, Value>,
-) -> Result<(), serde_json::Error> {
+pub fn append_canonical_object(out: &mut String, values: &Map<String, Value>) -> Result<()> {
     let mut keys = values.keys().collect::<Vec<_>>();
     keys.sort();
     out.push('{');
