@@ -84,6 +84,9 @@ Rejected larger import-path probe:
   issue is that `sqlite-wasm-rs` exposes the header declaration but does not
   compile SQLite with `SQLITE_ENABLE_CARRAY`, so there is no linked
   implementation in the browser artifact.
+- A Rust-backed SQLite virtual table import was tested and reverted. It avoided
+  per-cell binds but forced per-cell SQLite virtual-table callbacks into Rust,
+  regressing 500k chunk apply from the restored `310ms` band to `410ms`.
 
 Feasibility notes:
 
@@ -100,8 +103,7 @@ Next implementation direction:
 
 - Do not spend more time on JSON import, direct `sqlite3_carray_bind`, or small
   bind-loop changes.
-- Prototype a purpose-built length-aware import path if we want to reduce
-  per-cell bind calls without losing arbitrary text/blob correctness. It should
-  not introduce unresolved browser WASM imports.
+- Prototype a lower-level length-aware import path only if it runs closer to
+  SQLite storage than virtual-table callbacks. Avoid callback-per-cell designs.
 - Treat SQLite snapshot artifacts as a separate gated experiment only for
   explicitly scoped artifacts; do not optimize for full-partition bootstrap.

@@ -166,6 +166,71 @@ Decision:
   A future carray-like approach would need to live behind a purpose-built
   runtime/import extension that does not introduce unresolved JS/WASM imports.
 
+## 2026-05-19 - Rejected WP-03 Virtual Table Import Probe
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Registered an internal Rust-backed SQLite virtual table inside the browser
+  WASM runtime.
+- For cleared binary snapshot inserts, loaded each binary snapshot batch into
+  borrowed row views and executed `INSERT INTO app_table SELECT c0, c1, ... FROM
+  temp.syncular_snapshot_import`.
+- This avoided per-cell `sqlite3_bind_*` calls and avoided JSON parsing, but
+  shifted the hot path to SQLite virtual-table callbacks back into Rust for
+  every selected cell.
+
+Compile/build gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+```
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+- Both passed.
+- Raw WASM grew to `3.21MiB` with `36.9KiB` headroom.
+
+Immediate restored control before probe:
+
+- `rust_bootstrap_ms=625.3`, `rust_pull_apply_ms=356`,
+  `rust_snapshot_chunk_apply_ms=310`, `rust_snapshot_chunk_bind_ms=174`,
+  `rust_snapshot_chunk_step_ms=126`, `rust_cached_bootstrap_ms=337.54`,
+  `rust_cached_snapshot_chunk_apply_ms=291`.
+
+Candidate browser gate:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+- `rust_bootstrap_ms=762.66`, `rust_pull_apply_ms=466`,
+  `rust_snapshot_chunk_apply_ms=410`, `rust_snapshot_chunk_bind_ms=198`,
+  `rust_snapshot_chunk_step_ms=199`, `rust_cached_bootstrap_ms=461.49`,
+  `rust_cached_snapshot_chunk_apply_ms=403`.
+
+Decision:
+
+- Rejected and reverted. The virtual-table callback path was materially slower
+  than the current multirow bind path and increased memory pressure.
+- The result suggests reducing bind count via SQLite virtual-table callbacks is
+  not enough; a future import path would need to run closer to SQLite's storage
+  layer or import a scoped SQLite artifact directly.
+
 ## 2026-05-19 - Rejected WP-03 Browser Apply Probes
 
 Commit: not retained

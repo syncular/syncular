@@ -72,10 +72,11 @@ read-only review:
 
 - `[~]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
-    `sqlite3_carray_bind` import were rejected. The external app-style gate is
-    working again. Next step is a purpose-built length-aware import extension or
-    a strictly scoped artifact prototype, not whole-partition artifact
-    optimization.
+    `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
+    import was also rejected because callback-per-cell was slower than binding.
+    The external app-style gate is working again. Next step is a lower-level
+    import path or a strictly scoped artifact prototype, not whole-partition
+    artifact optimization.
 
 ## Next
 
