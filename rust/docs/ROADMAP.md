@@ -121,14 +121,16 @@ read-only review:
     row-chunk path is now measured externally again. Scoped artifacts now select
     correctly in the external app-style benchmark when precomputed with the
     server's `60k` bundled artifact key: Rust 500k bootstrap improves
-    `6099.68ms -> 4830.08ms` and local apply improves `1692ms -> 1392ms`.
-    Gzip level 9 reduced external artifact bytes `3.94MB -> 3.53MB`, but bytes
-    and peak memory are still worse than row chunks (`3.29MB`, `694.38MB`);
-    artifact peak memory is now `758.2MB`. Browser artifact apply now moves
-    fetched artifact bytes into SQLite deserialize instead of cloning them.
-    Immediate artifact `DETACH` before commit was rejected because SQLite
-    reports the attached DB as locked. A 16k SQLite page-size probe was rejected
-    because it increased artifact bytes without meaningful wall-time gain.
+    `6099.68ms -> 4845.39ms` and local apply improves `1692ms -> 1392ms`.
+    Gzip level 9 reduced external artifact bytes `3.94MB -> 3.53MB`, and the
+    browser path now streams artifact fetch/apply one body at a time inside the
+    apply transaction, reducing peak memory `758.2MB -> 746.92MB`. Bytes and
+    peak memory are still worse than row chunks (`3.29MB`, `694.38MB`).
+    Browser artifact apply also moves fetched artifact bytes into SQLite
+    deserialize instead of cloning them. Immediate artifact `DETACH` before
+    commit was rejected because SQLite reports the attached DB as locked. A
+    16k SQLite page-size probe was rejected because it increased artifact bytes
+    without meaningful wall-time gain.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained

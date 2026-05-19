@@ -583,13 +583,26 @@ Retained twentieth slice:
   `750.48MB -> 758.2MB`, so the next accepted slice must target artifact
   memory/retention or transaction shape, not only compressed body size.
 
+Retained twenty-first slice:
+
+- Browser pull no longer batches all decompressed SQLite artifact bodies before
+  apply. It validates artifact refs first, then fetches and applies each body
+  inside the existing apply transaction.
+- This keeps rollback safety for corrupt/failing later artifact fetches while
+  avoiding retention of every decompressed SQLite image for the snapshot.
+- External app-style scoped artifact peak memory improved
+  `758.2MB -> 746.92MB`; local 500k JS heap after moved
+  `16853576 -> 16451448`. Wall time stayed flat/noisy, and local apply stayed
+  `1392ms`.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
 - Reduce scoped artifact memory first, then bytes if available. The external
   gate now proves artifact selection and faster Rust bootstrap, and gzip9
-  reduced transferred bytes, but peak memory is still worse than row chunks.
+  reduced transferred bytes, but peak memory is still worse than row chunks
+  (`746.92MB` versus `694.38MB`).
 - Continue body-shape work only if it preserves direct SQLite import, keeps
   `snapshotChunkCount=0`, and improves either external peak memory or response
   bytes without regressing the compact artifact local baseline.
