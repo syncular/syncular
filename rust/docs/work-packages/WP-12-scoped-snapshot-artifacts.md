@@ -516,13 +516,25 @@ Rejected 100k artifact page-size probe:
   until a dedicated slice proves direct artifact selection still happens and
   beats the compact 50k baseline.
 
+External normal row-chunk benchmark restored:
+
+- The Docker app-style stack is responsive again, and the normal Rust binary
+  row-chunk bootstrap now runs against the Postgres-backed branch server after
+  binary snapshot encoding started accepting database-driver integer strings
+  and `Date` timestamp values.
+- Latest normal external pair:
+  TS 500k bootstrap `3855.10ms`, Rust 500k bootstrap `6099.68ms`;
+  TS 500k local apply `2114.80ms`, Rust 500k local apply `1692ms`;
+  Rust derived schema work is still `3213.03ms`.
+- This is not scoped artifact evidence. It is the row-chunk/app-style baseline
+  to compare against before proving artifact precompute in the external stack.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
 - Run the external app-style benchmark stack with scoped artifact precompute
-  once Docker is responsive, and compare it against the existing TS/Rust
-  app-style baseline.
+  and compare it against the restored normal TS/Rust app-style baseline above.
 - Continue body-shape work only if it preserves direct SQLite import and beats
   the compact artifact baseline above.
 - Do not change the browser artifact page size above `50k` unless direct

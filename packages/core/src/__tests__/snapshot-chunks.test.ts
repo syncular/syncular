@@ -192,6 +192,19 @@ describe('binary snapshot table format', () => {
     ]);
   });
 
+  it('accepts integer strings from database drivers', () => {
+    const encoded = encodeBinarySnapshotTable({
+      table: 'numbers',
+      columns: [{ name: 'value', type: 'integer' }],
+      rows: [{ value: '42' }, { value: '-7' }],
+    });
+
+    expect(decodeBinarySnapshotTable(encoded).rows).toEqual([
+      { value: 42 },
+      { value: -7 },
+    ]);
+  });
+
   it('round-trips typed table rows', () => {
     const encoded = encodeBinarySnapshotTable({
       table: 'tasks',
@@ -269,6 +282,19 @@ describe('binary snapshot table format', () => {
 
     expect(decodeBinarySnapshotTable(writer.finish()).rows).toEqual([
       { title: 'München 日本語' },
+    ]);
+  });
+
+  it('accepts dates for string columns from database drivers', () => {
+    const timestamp = new Date('2026-05-19T20:00:00.000Z');
+    const encoded = encodeBinarySnapshotTable({
+      table: 'events',
+      columns: [{ name: 'updated_at', type: 'string' }],
+      rows: [{ updated_at: timestamp }],
+    });
+
+    expect(decodeBinarySnapshotTable(encoded).rows).toEqual([
+      { updated_at: '2026-05-19T20:00:00.000Z' },
     ]);
   });
 });
