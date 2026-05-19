@@ -3035,3 +3035,57 @@ Decision:
   by transferring ownership of the same backing bytes to SQLite; it needs a
   transaction/import shape that can actually detach or release artifact DBs
   earlier.
+
+## 2026-05-19 - Rejected WP-12 Staged Temp-Table Artifact Import
+
+Probe:
+
+- Fetched and validated SQLite artifact bodies before the apply transaction,
+  attached/deserialized each artifact outside the transaction, copied rows into
+  temporary SQLite tables, detached the artifact DB immediately, then inserted
+  from those temp tables inside the normal apply transaction.
+- This preserves rollback safety for app rows and releases attached artifact
+  buffers earlier, but adds a second SQLite copy of the snapshot rows.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-staged-artifact-temp-table-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | Staged temp table |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `458.58ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `225ms` |
+| Local 500k `rust_snapshot_row_apply_ms` | `197ms` | `224ms` |
+| Local 500k JS heap after | `16451448` | `7153720` |
+| External 500k bootstrap | `4845.39ms` | `7461.99ms` |
+| External 500k local apply | `1392ms` | `1655ms` |
+| External 500k response bytes | `3527317` | `3527322` |
+| External 500k peak memory | `746.92MB` | `752.83MB` |
+
+Decision:
+
+- Rejected and reverted. The local JS heap win did not translate to external
+  peak memory; external memory worsened and bootstrap regressed heavily. A
+  temp-table staging copy is not the right shape for the artifact path.

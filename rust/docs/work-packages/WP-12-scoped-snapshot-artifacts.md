@@ -633,6 +633,19 @@ Rejected SQLite-owned deserialize-buffer probe:
 - Ownership transfer is not enough; the next real memory work needs an import
   shape that can release or detach artifact DBs before full apply commit.
 
+Rejected staged temp-table artifact import:
+
+- Staged artifact rows outside the apply transaction by copying attached
+  artifact DB rows into temp tables, detaching immediately, then applying from
+  temp tables inside the transaction.
+- Rejected because the local JS heap win did not carry to external peak memory:
+  external peak memory worsened `746.92MB -> 752.83MB`, local apply regressed
+  `1392ms -> 1655ms`, and 500k bootstrap regressed
+  `4845.39ms -> 7461.99ms`.
+- This confirms a generic SQLite-to-SQLite staging copy is too expensive. The
+  remaining viable memory path needs either true early detach without staging
+  copies, or a different bootstrap state model.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
