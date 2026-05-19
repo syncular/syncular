@@ -128,9 +128,18 @@ read-only review:
     peak memory are still worse than row chunks (`3.29MB`, `694.38MB`).
     Browser artifact apply also moves fetched artifact bytes into SQLite
     deserialize instead of cloning them. Immediate artifact `DETACH` before
-    commit was rejected because SQLite reports the attached DB as locked. A
-    16k SQLite page-size probe was rejected because it increased artifact bytes
-    without meaningful wall-time gain.
+    commit was rejected because SQLite reports the attached DB as locked. The
+    nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
+    temp-table staging probes were all rejected. Small artifact shape/memory
+    probes are paused until a larger bootstrap transaction/state design can
+    release artifact databases earlier without row-copy staging.
+- `[~]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
+  - First retained slice adds explicit `countBy` read models to
+    `syncular.codegen.json`. The generator now emits the read-model contract in
+    `syncular.schema.json`, Rust SQL constants, and TypeScript schema
+    installers that create table/triggers and rebuild only on first install or
+    schema-version change. The todo fixture proves rebuild, update, and delete
+    invalidation. This is opt-in app intent, not a hidden runtime cache.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained
@@ -172,19 +181,17 @@ read-only review:
 
 ## Next
 
-- Continue [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
-  by reducing scoped artifact bytes and peak memory while preserving direct
-  SQLite import and `snapshotChunkCount=0` in the external app-style benchmark.
-  The next retained change must compare against
-  `.results/2026-05-19T20-35-44-641Z/syncular-rust/bootstrap.json` externally
-  and `.context/benchmarks/wp12-owned-artifact-bytes-500k-rerun.json` locally.
+- Continue [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
+  by making generated read models visible to the browser/external benchmark
+  harness and measuring the aggregate/local-query lane against the accepted TS
+  and Rust baselines. Keep the feature explicit: no default hidden indexes,
+  read models, or query caches.
 
 ## Later
 
 - `[x]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 - `[x]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 - `[ ]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
-- `[ ]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
 - `[ ]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
 - `[ ]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)

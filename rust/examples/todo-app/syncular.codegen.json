@@ -6,6 +6,16 @@
   "nativeKotlinOutputPath": "generated/kotlin/SyncularApp.kt",
   "nativeAndroidKotlinOutputPath": "generated/kotlin/android/SyncularApp.kt",
   "nativeAndroidKotlinPackage": "dev.syncular.client.generated",
+  "localReadModels": [
+    {
+      "name": "taskCountsByUserCompletion",
+      "kind": "countBy",
+      "sourceTable": "tasks",
+      "outputTable": "syncular_task_counts",
+      "dimensions": ["user_id", "completed"],
+      "countColumn": "task_count"
+    }
+  ],
   "tables": {
     "projects": {
       "subscriptionId": "sub-projects",

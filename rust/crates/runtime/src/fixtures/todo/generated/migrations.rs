@@ -70,6 +70,33 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalReadModelSql {
+    pub name: &'static str,
+    pub output_table: &'static str,
+    pub setup_sql: &'static [&'static str],
+    pub rebuild_sql: &'static [&'static str],
+}
+
+pub const TASKCOUNTSBYUSERCOMPLETION_SETUP_SQL: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS \"syncular_task_counts\" (\n  \"user_id\" TEXT NOT NULL,\n  \"completed\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"user_id\", \"completed\")\n)",
+    "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_insert\"\nAFTER INSERT ON \"tasks\"\nBEGIN\n  INSERT INTO \"syncular_task_counts\" (\"user_id\", \"completed\", \"task_count\")\n  VALUES (new.\"user_id\", new.\"completed\", 1)\n  ON CONFLICT(\"user_id\", \"completed\") DO UPDATE SET\n    \"task_count\" = \"task_count\" + 1;\nEND",
+    "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_delete\"\nAFTER DELETE ON \"tasks\"\nBEGIN\n  UPDATE \"syncular_task_counts\"\n  SET \"task_count\" = \"task_count\" - 1\n  WHERE \"user_id\" = old.\"user_id\"\n          AND \"completed\" = old.\"completed\";\n  DELETE FROM \"syncular_task_counts\" WHERE \"task_count\" <= 0;\nEND",
+    "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_update_group\"\nAFTER UPDATE OF \"user_id\", \"completed\" ON \"tasks\"\nWHEN old.\"user_id\" IS NOT new.\"user_id\"\n        OR old.\"completed\" IS NOT new.\"completed\"\nBEGIN\n  UPDATE \"syncular_task_counts\"\n  SET \"task_count\" = \"task_count\" - 1\n  WHERE \"user_id\" = old.\"user_id\"\n          AND \"completed\" = old.\"completed\";\n  DELETE FROM \"syncular_task_counts\" WHERE \"task_count\" <= 0;\n  INSERT INTO \"syncular_task_counts\" (\"user_id\", \"completed\", \"task_count\")\n  VALUES (new.\"user_id\", new.\"completed\", 1)\n  ON CONFLICT(\"user_id\", \"completed\") DO UPDATE SET\n    \"task_count\" = \"task_count\" + 1;\nEND",
+];
+
+pub const TASKCOUNTSBYUSERCOMPLETION_REBUILD_SQL: &[&str] = &[
+    "DELETE FROM \"syncular_task_counts\"",
+    "INSERT INTO \"syncular_task_counts\" (\"user_id\", \"completed\", \"task_count\")\nSELECT \"user_id\", \"completed\", count(*)\nFROM \"tasks\"\nGROUP BY \"user_id\", \"completed\"",
+];
+
+pub const LOCAL_READ_MODELS: &[LocalReadModelSql] = &[LocalReadModelSql {
+    name: "taskCountsByUserCompletion",
+    output_table: "syncular_task_counts",
+    setup_sql: TASKCOUNTSBYUSERCOMPLETION_SETUP_SQL,
+    rebuild_sql: TASKCOUNTSBYUSERCOMPLETION_REBUILD_SQL,
+}];
+
 pub fn current_schema_version() -> i32 {
     latest_schema_version(MIGRATIONS)
 }

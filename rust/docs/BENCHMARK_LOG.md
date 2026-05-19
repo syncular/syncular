@@ -3089,3 +3089,39 @@ Decision:
 - Rejected and reverted. The local JS heap win did not translate to external
   peak memory; external memory worsened and bootstrap regressed heavily. A
   temp-table staging copy is not the right shape for the artifact path.
+
+## 2026-05-19 - Accepted WP-06 Generated Count Read-Model Contract
+
+Change:
+
+- Added opt-in `localReadModels` codegen support for explicit `countBy` read
+  models.
+- Generated `syncular.schema.json` now records the read-model contract.
+- Generated Rust migrations expose read-model setup/rebuild SQL constants.
+- Generated TypeScript schema installers create table/triggers and rebuild only
+  when the output table is first installed or the generated schema version
+  changes.
+- The todo fixture declares `taskCountsByUserCompletion` and proves rebuild,
+  update, and delete invalidation.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+```
+
+Benchmark gate:
+
+- Not run for this slice. This change adds generator output and fixture
+  coverage only; no runtime hot path or external benchmark app uses the
+  generated read-model contract yet.
+
+Decision:
+
+- Accepted. The feature is explicit app intent, not a hidden runtime cache. The
+  next WP-06 slice must wire the generated read model into the benchmark app and
+  compare aggregate/local-query performance against the accepted TS/Rust
+  baselines.
