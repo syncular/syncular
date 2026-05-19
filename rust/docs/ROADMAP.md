@@ -140,8 +140,15 @@ read-only review:
     installers that create table/triggers and rebuild only on first install or
     schema-version change. Generated read-model tables are now typed in Kysely
     and Diesel query surfaces while staying out of app-table sync/mutation
-    metadata. The todo fixture proves rebuild, update, delete invalidation, and
-    typed Diesel reads. This is opt-in app intent, not a hidden runtime cache.
+    metadata, and TypeScript now exports `syncularGeneratedLocalReadModels` so
+    host packages can consume the generated setup/rebuild contract. The todo
+    fixture proves rebuild, update, delete invalidation, and typed Diesel reads.
+    Browser scoreboard now measures raw aggregate and read-model aggregate lanes:
+    at 100k rows, Rust read-model aggregate p50 is `0.05ms` vs TS `0.53ms`
+    while raw aggregate remains visible (`23.00ms` Rust vs `161.09ms` TS). This
+    is opt-in app intent, not a hidden runtime cache. External benchmark wiring
+    still needs to replace the hand-written derived-schema fixture with the
+    generated contract.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained

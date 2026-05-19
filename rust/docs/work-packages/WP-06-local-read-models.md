@@ -51,12 +51,18 @@ Retained first slice:
 - Generated TypeScript schema installers create the read-model table/triggers
   and rebuild only when the output table is first installed or the generated
   schema version changes.
+- Generated TypeScript modules now export
+  `syncularGeneratedLocalReadModels`, including setup and rebuild SQL, so host
+  packages can consume the generated contract instead of carrying hand-written
+  derived-schema fixtures.
 - Generated read-model output tables are included in the TypeScript Kysely DB
   interface and Rust Diesel schema, but they are not included in app-table
   sync/mutation metadata.
 - The todo example declares `taskCountsByUserCompletion`, and its Rust test
   proves rebuild plus update/delete invalidation and typed Diesel read-model
   queries.
+- Browser local-query scoreboard now emits raw aggregate and generated
+  read-model aggregate lanes for both TS and Rust.
 - No hidden runtime cache, default index, or compatibility branch was added.
 
 Correctness gates passed:
@@ -66,18 +72,40 @@ cargo fmt --manifest-path rust/Cargo.toml --all
 cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
 cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
 bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
 ```
 
 Benchmark gate:
 
-- Not run for this slice because the retained change only adds opt-in generator
-  output and fixture coverage. No runtime hot path or external benchmark app
-  uses the generated read-model contract yet.
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=1000 --query-iterations=5 --wasm-profile=release --json --output=.context/benchmarks/wp06-read-model-scoreboard-1k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-scoreboard-100k.json
+```
+
+100k local-query results:
+
+| Metric | TS | Rust | Rust/TS |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `828.69ms` | `221.41ms` | `0.27x` |
+| Local list p50 | `0.55ms` | `0.23ms` | `0.42x` |
+| Local search p50 | `3.98ms` | `1.51ms` | `0.38x` |
+| Raw aggregate p50 | `161.09ms` | `23.00ms` | `0.14x` |
+| Read-model aggregate p50 | `0.53ms` | `0.05ms` | `0.09x` |
+
+The browser benchmark proves the declared read model is visible to typed Kysely
+and avoids the expensive aggregate scan. It does not yet prove external app
+adoption because the external benchmark still carries a hand-written local
+derived-schema fixture.
+
+Root `bun run tsgo` was not used as a gate because it currently fails in
+unrelated `@syncular/tests-unit` server-pull stream/hash type errors. The
+relevant package checks above passed.
 
 ## Next Action
 
-Wire the generated read-model declarations into the browser/external benchmark
-app instead of the current hand-written `RUST_LOCAL_DERIVED_SCHEMA_STATEMENTS`,
-then run the browser local-query and external local-query/bootstrap gates. The
-target evidence is aggregate-query speedup with explicit write amplification
-and no hidden raw-query regression.
+Wire the generated read-model declarations into the external benchmark app
+instead of the current hand-written `RUST_LOCAL_DERIVED_SCHEMA_STATEMENTS`, then
+run the external local-query/bootstrap gates. The target evidence is
+aggregate-query speedup with explicit write amplification and no hidden
+raw-query regression.

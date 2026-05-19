@@ -193,6 +193,8 @@ const baselineComparisonMetrics = [
   'rust_local_search_p50_ms',
   'ts_aggregate_p50_ms',
   'rust_aggregate_p50_ms',
+  'ts_aggregate_read_model_p50_ms',
+  'rust_aggregate_read_model_p50_ms',
   'ts_incremental_push_ms',
   'rust_incremental_pull_ms',
   'rust_incremental_pull_request_ms',
@@ -832,6 +834,16 @@ function buildComparisons(metrics: ScoreboardMetric[]): Array<{
     ['local_search_p95', 'ts_local_search_p95_ms', 'rust_local_search_p95_ms'],
     ['aggregate_p50', 'ts_aggregate_p50_ms', 'rust_aggregate_p50_ms'],
     ['aggregate_p95', 'ts_aggregate_p95_ms', 'rust_aggregate_p95_ms'],
+    [
+      'aggregate_read_model_p50',
+      'ts_aggregate_read_model_p50_ms',
+      'rust_aggregate_read_model_p50_ms',
+    ],
+    [
+      'aggregate_read_model_p95',
+      'ts_aggregate_read_model_p95_ms',
+      'rust_aggregate_read_model_p95_ms',
+    ],
   ] as const;
   return pairs
     .map(([name, tsName, rustName]) => {

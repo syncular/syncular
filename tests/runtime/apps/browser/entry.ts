@@ -1860,6 +1860,24 @@ async function collectLocalQueryMetrics(args: {
     assert(rows.length > 0, `${args.prefix} aggregate query returned no rows`);
   });
   emitTimedSamples(args.pushMetric, `${args.prefix}_aggregate`, aggregate);
+
+  const aggregateReadModel = await measureSamples(args.iterations, async () => {
+    const rows = await args.db
+      .selectFrom('syncular_task_counts')
+      .select(['completed', 'task_count'])
+      .where('user_id', '=', args.actorId)
+      .orderBy('completed')
+      .execute();
+    assert(
+      rows.length > 0,
+      `${args.prefix} aggregate read-model query returned no rows`
+    );
+  });
+  emitTimedSamples(
+    args.pushMetric,
+    `${args.prefix}_aggregate_read_model`,
+    aggregateReadModel
+  );
 }
 
 async function measureSamples(
