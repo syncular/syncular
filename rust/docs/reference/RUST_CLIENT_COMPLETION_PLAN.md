@@ -1,8 +1,13 @@
 # Rust Client Completion Plan
 
-This is the active plan for finishing the Rust-first Syncular client. It
-supersedes the older feature-parity, query-rewrite, native-client, FFI,
-foundation, and WASM split notes.
+Reference note: this file preserves the long-form completion history. Current
+status and next actions live in [`../ROADMAP.md`](../ROADMAP.md) and
+[`../work-packages/`](../work-packages/).
+
+This was the active plan for finishing the Rust-first Syncular client. It
+superseded the older feature-parity, query-rewrite, native-client, FFI,
+foundation, and WASM split notes before the operational roadmap was split into
+the current docs structure.
 
 Status legend: `[ ]` not started, `[~]` in progress, `[x]` done, `[!]` blocked
 or needs a design decision.
@@ -376,14 +381,14 @@ Goal: keep future work visible without blocking the Rust client foundation.
   Not required now because the Rust client keeps compatibility with the
   existing JS server. Blocked until a Rust server trait/ABI exists.
 - `[x]` Pure Rust server or edge proxy investigation.
-  Decision captured in `rust/SERVER_EDGE_INVESTIGATION.md`: do not start a
+  Decision captured in `rust/docs/reference/SERVER_EDGE_INVESTIGATION.md`: do not start a
   Cloudflare Worker WASM server rewrite without a concrete product bottleneck.
 - `[x]` Optional adapter packages for editor integrations.
   Current deliverable is `@syncular/client-rust-crdt-adapters`; keep
   TipTap/ProseMirror, Excalidraw, and markdown-specific behavior outside core.
 - `[x]` Optional storage/package variants for deployments that do not need
   blobs, E2EE, CRDT, or realtime.
-  Decision captured in `rust/FEATURE_VARIANTS_DECISION.md`: the
+  Decision captured in `rust/docs/reference/FEATURE_VARIANTS_DECISION.md`: the
   no-CRDT/no-E2EE/no-blob core build now has real byte savings, variant builds
   produce manifest/catalog metadata, and core conformance covers local schema
   opens plus Hono sync. Keep one npm package and avoid separate wrapper
@@ -1215,7 +1220,7 @@ Progress:
   `windows-latest` to run the same packaging path and upload the
   `syncular_runtime_jni.dll` artifact. This still needs real GitHub runner
   execution to close the Windows packaging verification blocker.
-- `rust/NATIVE_PACKAGING.md`, runtime README, and local project integration
+- `rust/docs/reference/NATIVE_PACKAGING.md`, runtime README, and local project integration
   docs now describe the repeatable packaging command and real app-shell smokes.
 - Rechecked Linux JVM packaging locally after WP-09: after seeding the Rust
   target download cache from a direct CDN download, `rustup target add
@@ -1325,7 +1330,7 @@ Progress:
   `bun run rust:crdt-adapters:test`.
 - Linked the adapter package from `rust/bindings/browser/README.md` so browser
   consumers can find the CRDT field guidance without treating it as core API.
-- Added `rust/SERVER_EDGE_INVESTIGATION.md`. Current decision: do not start a
+- Added `rust/docs/reference/SERVER_EDGE_INVESTIGATION.md`. Current decision: do not start a
   Rust Cloudflare Worker server replacement now. A future Rust server should
   begin with a protocol-kernel crate or an edge proxy only when there is a
   concrete product target; Rust push plugins stay blocked until a Rust server
@@ -1334,7 +1339,7 @@ Progress:
   has a stable verification command.
 - Wired `rust:crdt-adapters:test` into `rust:ci:browser` so the example cannot
   rot separately from the browser package.
-- Added `rust/FEATURE_VARIANTS_DECISION.md`. Current decision: keep one npm
+- Added `rust/docs/reference/FEATURE_VARIANTS_DECISION.md`. Current decision: keep one npm
   package, but publish full/core WASM artifacts inside that package and let
   generated apps choose by schema-derived runtime features.
 - Landed the first concrete variant foundation step: `yrs` is optional behind

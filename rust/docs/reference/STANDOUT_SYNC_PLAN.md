@@ -1,5 +1,9 @@
 # Syncular Standout Sync Plan
 
+Reference note: this file preserves the standout sync architecture rationale.
+Current priority and execution tracking live in [`../ROADMAP.md`](../ROADMAP.md)
+and [`../work-packages/`](../work-packages/).
+
 ## Goal
 
 Make Syncular stand out as the server-authoritative sync system for apps that
