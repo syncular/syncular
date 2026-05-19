@@ -1895,3 +1895,44 @@ Decision:
 
 - Rejected and reverted. The size reduction is real, but the runtime lane did
   not improve and the code is more verbose.
+
+## 2026-05-19 - WP-04 Realtime Overhead Metric
+
+Change:
+
+- Browser E2E realtime scoring now records `rust_realtime_overhead_*` metrics:
+  per-iteration live query propagation latency minus TS push duration.
+- This separates Rust/browser websocket/apply/live-query overhead from server
+  push noise when reviewing future realtime changes.
+
+Correctness gate:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-overhead-metric.json
+```
+
+Current guard:
+
+| Metric | Value |
+| --- | ---: |
+| `rust_realtime_live_ms` | `82.05ms` |
+| `rust_realtime_live_p95_ms` | `83.99ms` |
+| `rust_realtime_overhead_p50_ms` | `22.63ms` |
+| `rust_realtime_overhead_p95_ms` | `23.99ms` |
+| `rust_realtime_http_request_count` | `0` |
+| `rust_realtime_binary_events` | `15` |
+| `browser_served_rust_wasm_bytes` | `7463118` |
+
+Decision:
+
+- Retained as measurement infrastructure. Future realtime changes should compare
+  both end-to-end live latency and the derived Rust/browser overhead lane.

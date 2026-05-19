@@ -1572,6 +1572,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         await rustDiagnostics.resetTransportStats();
         const realtimeLiveSamples: number[] = [];
         const realtimePushSamples: number[] = [];
+        const realtimeOverheadSamples: number[] = [];
         let expectedRealtimeRows = options.rows + incrementalRows;
         let pushedRealtimeCommits = 0;
         let liveCount = { count: expectedRealtimeRows };
@@ -1600,8 +1601,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
             realtimePushPromise,
             liveCountPromise,
           ]);
+          const liveMs = nextLiveCount.at - realtimeStartedAt;
           realtimePushSamples.push(realtimePush.pushMs);
-          realtimeLiveSamples.push(nextLiveCount.at - realtimeStartedAt);
+          realtimeLiveSamples.push(liveMs);
+          realtimeOverheadSamples.push(Math.max(0, liveMs - realtimePush.pushMs));
           pushedRealtimeCommits += realtimePush.pushedCommits;
           liveCount = nextLiveCount;
         }
@@ -1630,6 +1633,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         );
         const realtimeLive = summarizeSamples(realtimeLiveSamples);
         const realtimePush = summarizeSamples(realtimePushSamples);
+        const realtimeOverhead = summarizeSamples(realtimeOverheadSamples);
         const realtimeApplyTotal = summarizeSamples(binaryApplyTotalSamples);
         const realtimePullApply = summarizeSamples(binaryApplyPullSamples);
         const realtimeCommitApply = summarizeSamples(binaryApplyCommitSamples);
@@ -1647,6 +1651,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         pushMetric('rust_realtime_live_p95_ms', realtimeLive.p95);
         pushMetric('rust_realtime_live_min_ms', realtimeLive.min);
         pushMetric('rust_realtime_live_max_ms', realtimeLive.max);
+        emitTimedSamples(pushMetric, 'rust_realtime_overhead', realtimeOverhead);
         pushMetric(
           'rust_realtime_http_request_count',
           realtimeRustStats.requestCount,

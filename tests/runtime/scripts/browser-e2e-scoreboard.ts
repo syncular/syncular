@@ -205,6 +205,8 @@ const baselineComparisonMetrics = [
   'ts_realtime_push_p95_ms',
   'rust_realtime_live_ms',
   'rust_realtime_live_p95_ms',
+  'rust_realtime_overhead_p50_ms',
+  'rust_realtime_overhead_p95_ms',
   'rust_realtime_http_request_count',
   'rust_realtime_http_request_bytes',
   'rust_realtime_http_response_bytes',

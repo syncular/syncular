@@ -133,17 +133,18 @@ read-only review:
     the wasm boundary. The browser scoreboard now reports Rust-side realtime
     apply timing breakdowns; current evidence points at pull/apply work rather
     than notification. Browser SQLite app-row upserts now reuse the existing
-    prepared-statement cache for realtime batches, and realtime commit apply no
+    prepared-statement cache for realtime batches, realtime commit apply no
     longer rewrites canonical server row payloads before batching them into
-    SQLite.
+    SQLite, and the benchmark now reports a derived Rust/browser realtime
+    overhead lane in addition to end-to-end live latency.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-canonical-row-pass-through.json` as the
-  current local comparison point.
+  `.context/benchmarks/wp04-realtime-overhead-metric.json` as the current local
+  comparison point.
 
 ## Later
 
