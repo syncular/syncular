@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   createDatabase,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
@@ -78,7 +78,7 @@ describe('pull scoped snapshot artifacts', () => {
       scopes: { user_id: 'u1' },
       schemaVersion: 7,
       artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-      compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
       features: [],
     });
     await insertScopedSnapshotArtifact(db, {
@@ -98,6 +98,7 @@ describe('pull scoped snapshot artifacts', () => {
       sha256: 'a'.repeat(64),
       byteLength: 2048,
       blobHash: 'sha256:artifact-1',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
@@ -129,7 +130,7 @@ describe('pull scoped snapshot artifacts', () => {
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
-          compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
+          compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
         },
         subscriptions: [
           {
@@ -169,7 +170,7 @@ describe('pull scoped snapshot artifacts', () => {
       scopes: { user_id: 'u2' },
       schemaVersion: 7,
       artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-      compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
       features: [],
     });
     await insertScopedSnapshotArtifact(db, {
@@ -189,6 +190,7 @@ describe('pull scoped snapshot artifacts', () => {
       sha256: 'b'.repeat(64),
       byteLength: 1024,
       blobHash: 'sha256:artifact-u2',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
@@ -227,7 +229,7 @@ describe('pull scoped snapshot artifacts', () => {
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
-          compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
+          compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
         },
         subscriptions: [
           {

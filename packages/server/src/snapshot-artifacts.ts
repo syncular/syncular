@@ -16,6 +16,7 @@ import {
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   type SyncScopedSnapshotArtifactKind,
   type SyncSnapshotArtifactCompression,
   sha256Hex,
@@ -299,7 +300,7 @@ export async function createScopedSnapshotArtifactScopeCacheKey(
       schemaVersion: String(input.schemaVersion),
       artifactKind:
         input.artifactKind ?? SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-      compression: input.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      compression: input.compression ?? SYNC_SNAPSHOT_CHUNK_COMPRESSION,
       features: normalizeFeatures(input.features),
       scopeDigest,
     })
@@ -342,7 +343,7 @@ export async function createScopedSnapshotArtifactManifestForPage(args: {
     nextRowCursor: args.nextRowCursor,
     isFirstPage: args.isFirstPage,
     isLastPage: args.isLastPage,
-    compression: args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    compression: args.compression ?? SYNC_SNAPSHOT_CHUNK_COMPRESSION,
     byteLength: args.byteLength,
     sha256: args.sha256,
     featureSet: normalizeFeatures(args.featureSet),
@@ -429,8 +430,7 @@ export async function insertScopedSnapshotArtifact<DB extends SyncCoreDb>(
 ): Promise<ScopedSnapshotArtifactRef> {
   const artifactKind =
     args.artifactKind ?? SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
-  const compression =
-    args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
+  const compression = args.compression ?? SYNC_SNAPSHOT_CHUNK_COMPRESSION;
   const schemaVersion = String(args.schemaVersion);
   const rowCursorKey = args.rowCursor ?? '';
   const featureSet = normalizeFeatures(args.featureSet);
@@ -573,8 +573,7 @@ export async function storeScopedSnapshotArtifact<DB extends SyncCoreDb>(
 
   const artifactKind =
     args.artifactKind ?? SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
-  const compression =
-    args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
+  const compression = args.compression ?? SYNC_SNAPSHOT_CHUNK_COMPRESSION;
   const artifactId = args.artifactId ?? randomId();
   const schemaVersion = String(args.schemaVersion);
   const featureSet = normalizeFeatures(args.featureSet);

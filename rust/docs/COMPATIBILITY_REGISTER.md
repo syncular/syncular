@@ -59,6 +59,7 @@ exception.
 | Server Hono legacy sync CORS shape | `Removed` | `packages/server-hono/src/routes.ts` | Hono-style `cors: origin` / `cors: { origin }` is the single sync route CORS contract |
 | Per-commit pull integrity fields | `Removed` | `SyncCommit` TS/Rust contract and `binary-sync-pack-v1` wire v13 | Pull integrity now lives on subscription-level metadata. The current path does not carry `partitionId`, `previousChainRoot`, `commitDigest`, or `commitChainRoot` on every commit |
 | Browser SQLite artifact JSON materialization path | `Removed` | `rust/crates/runtime/src/web/client.rs`, `rust/crates/runtime/src/web/sqlite_wasm_store.rs` | Browser artifacts are now requested only for direct apply modes. Pull modes needing changed rows, returned snapshot rows, field encryption, or encrypted CRDT transforms use snapshot chunks instead of a browser artifact-to-JSON branch |
+| Uncompressed SQLite artifact runtime selection | `Removed` | Rust native/browser artifact capability requests and server pull artifact selection | Current scoped SQLite artifact bodies are gzip-compressed. Runtime transports decode after verifying compressed bytes, and non-gzip artifact refs fail clearly on the current path |
 
 ## Items That Are Not Compatibility Debt
 

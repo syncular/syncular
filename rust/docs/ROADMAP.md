@@ -90,10 +90,12 @@ read-only review:
     explicitly, outside the pull hot path. Browser owned SQLite can now
     advertise schema-bound artifact support, download verified artifact bodies,
     deserialize them through `sqlite3_deserialize`, and directly import rows
-    through an attached in-memory SQLite schema when the pull mode does not need
-    per-row transforms. Native direct artifact import, multi-page artifact
-    precompute, artifact transfer-size reduction, and external 500k benchmark
-    coverage remain open.
+    through an attached in-memory SQLite schema when the pull mode does not
+    need per-row transforms. The current artifact body path is gzip-compressed
+    end to end and cuts 100k artifact response bytes by about `67%` while
+    keeping direct-import wall time flat. Native direct artifact import,
+    multi-page artifact precompute, interrupted/revocation recovery tests, and
+    external 500k benchmark coverage remain open.
 
 ## Next
 

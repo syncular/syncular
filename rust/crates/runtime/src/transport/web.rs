@@ -8,8 +8,8 @@ use crate::protocol::{
 };
 use crate::protocol::{
     CombinedRequest, CombinedResponse, PushCommitRequest, RealtimePushRequest, ScopeValues,
-    ScopedSnapshotArtifactRef, SnapshotChunkRef, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+    ScopedSnapshotArtifactRef, SnapshotChunkRef, SNAPSHOT_CHUNK_COMPRESSION_GZIP,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
@@ -246,8 +246,7 @@ impl AsyncSyncTransport for WebSyncTransport {
             let bytes =
                 fetch_bytes_metered(&url, &headers, self.abort_signal.as_ref(), &self.stats)
                     .await?;
-            validate_snapshot_artifact_bytes(artifact, &bytes).await?;
-            Ok(bytes)
+            decode_snapshot_artifact_bytes(artifact, &bytes).await
         })
     }
 
@@ -796,6 +795,28 @@ async fn validate_snapshot_artifact_bytes(
         )));
     }
     Ok(())
+}
+
+async fn decode_snapshot_artifact_bytes(
+    artifact: &ScopedSnapshotArtifactRef,
+    compressed: &[u8],
+) -> Result<Vec<u8>> {
+    validate_snapshot_artifact_bytes(artifact, compressed).await?;
+    if artifact.compression != SNAPSHOT_CHUNK_COMPRESSION_GZIP {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot artifact compression {}",
+            artifact.compression
+        )));
+    }
+    match decompress_gzip_with_browser(compressed).await {
+        Ok(Some(decoded)) => Ok(decoded),
+        Ok(None) | Err(_) => {
+            let mut decoder = GzDecoder::new(compressed);
+            let mut decoded = Vec::new();
+            decoder.read_to_end(&mut decoded)?;
+            Ok(decoded)
+        }
+    }
 }
 
 async fn decode_snapshot_chunk_bytes(

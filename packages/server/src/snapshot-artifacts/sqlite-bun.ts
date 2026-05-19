@@ -1,13 +1,15 @@
 import { Database } from 'bun:sqlite';
 import type { BinarySnapshotColumn } from '@syncular/core';
 import {
+  gzipBytes,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
 } from '@syncular/core';
 import type { ScopedSnapshotSqliteArtifactEncoder } from '../snapshot-artifacts';
 
 export interface BunSqliteSnapshotArtifactEncoderOptions {
   withoutRowid?: boolean;
+  gzipLevel?: number;
 }
 
 function quoteSqliteIdentifier(identifier: string): string {
@@ -111,8 +113,15 @@ export function createBunSqliteSnapshotArtifactEncoder(
 ): ScopedSnapshotSqliteArtifactEncoder {
   return {
     artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-    compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
-    encode: ({ table, columns, rows }) =>
-      encodeBunSqliteSnapshotArtifact({ table, columns, rows, options }),
+    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+    encode: async ({ table, columns, rows }) => {
+      const raw = encodeBunSqliteSnapshotArtifact({
+        table,
+        columns,
+        rows,
+        options,
+      });
+      return gzipBytes(raw, { level: options.gzipLevel ?? 1 });
+    },
   };
 }

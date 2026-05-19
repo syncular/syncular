@@ -343,8 +343,7 @@ impl SyncTransport for HttpSyncTransport {
             ));
         }
         let bytes = response.bytes()?.to_vec();
-        validate_snapshot_artifact_bytes(artifact, &bytes)?;
-        Ok(bytes)
+        decode_snapshot_artifact_bytes(artifact, &bytes)
     }
 
     fn connect_realtime(&self) -> Result<RealtimeSocket> {
@@ -925,6 +924,24 @@ fn validate_snapshot_artifact_bytes(
         )));
     }
     Ok(())
+}
+
+#[cfg(feature = "native")]
+fn decode_snapshot_artifact_bytes(
+    artifact: &ScopedSnapshotArtifactRef,
+    compressed: &[u8],
+) -> Result<Vec<u8>> {
+    validate_snapshot_artifact_bytes(artifact, compressed)?;
+    if artifact.compression != SNAPSHOT_CHUNK_COMPRESSION_GZIP {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot artifact compression {}",
+            artifact.compression
+        )));
+    }
+    let mut decoder = GzDecoder::new(compressed);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
+    Ok(decoded)
 }
 
 #[cfg(feature = "native")]

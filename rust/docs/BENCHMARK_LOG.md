@@ -1070,3 +1070,95 @@ Decision:
 - Retained. The direct browser artifact path now has a real benchmark lane and
   improves wall time and heap usage enough to justify the small WASM size
   increase. Keep iterating on artifact transfer size and native direct import.
+
+## 2026-05-19 - Gzip Scoped SQLite Artifacts
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Current Rust native/browser artifact capability requests now advertise gzip
+  scoped SQLite artifacts.
+- Server pull selection now only selects gzip scoped SQLite artifacts.
+- Bun SQLite artifact precompute stores gzip artifact bodies by default.
+- Native and browser transports validate compressed bytes, then return decoded
+  SQLite bytes to storage/apply.
+
+Correctness gates:
+
+```bash
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser tsgo
+bun test src/__tests__/sync-hono.wasm.test.ts
+```
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted WP-12 server perf run:
+
+- `sync_pack_json_encode_50000`: `10.9ms`
+- `sync_pack_json_decode_50000`: `26.8ms`
+- `sync_pack_binary_encode_50000`: `19.5ms`
+- `sync_pack_binary_decode_50000`: `24.5ms`
+- `sync_pack_binary_generated_encode_50000`: `18.1ms`
+- `sync_pack_binary_generated_decode_50000`: `23.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.3ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.2ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.4ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.7ms`
+
+Current rerun:
+
+- `sync_pack_json_encode_50000`: `10.9ms`
+- `sync_pack_json_decode_50000`: `26.8ms`
+- `sync_pack_binary_encode_50000`: `18.9ms`
+- `sync_pack_binary_decode_50000`: `24.9ms`
+- `sync_pack_binary_generated_encode_50000`: `17.1ms`
+- `sync_pack_binary_generated_decode_50000`: `25.5ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.3ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.3ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `44.0ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `42.9ms`
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | Uncompressed direct artifact | Gzip direct artifact |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `108.73ms` | `107.82ms` |
+| `rust_pull_request_ms` | `36ms` | `36ms` |
+| `rust_pull_apply_ms` | `69ms` | `68ms` |
+| `rust_snapshot_row_apply_ms` | `20ms` | `21ms` |
+| `rust_snapshot_chunk_apply_ms` | `34ms` | `35ms` |
+| `rust_response_bytes` | `3169482` | `1033377` |
+| `rust_cached_bootstrap_ms` | `60.59ms` | `61.77ms` |
+| `browser_js_heap_used_delta_bytes` | `2616444` | `2754568` |
+
+Row-chunk guardrail after the same change:
+
+- `rust_bootstrap_ms=140.81`
+- `rust_pull_apply_ms=75`
+- `rust_response_bytes=766877`
+- `rust_cached_bootstrap_ms=75.35`
+
+Decision:
+
+- Retained. First bootstrap stayed flat, cached bootstrap moved only `+1.18ms`,
+  and scoped SQLite artifact response bytes dropped by about `67%`.
+- The artifact response is still larger than binary row chunks for 100k rows,
+  but direct artifact import remains faster on wall time. Next WP-12 work should
+  prove the same shape at 500k with external app-style artifact precompute.

@@ -16,7 +16,7 @@ use crate::protocol::{
     CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
     SyncCommit, SyncOperation, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-    SNAPSHOT_ARTIFACT_COMPRESSION_NONE, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
@@ -1131,7 +1131,7 @@ where
                 SnapshotArtifactsRequest {
                     schema_version: self.schema_version().to_string(),
                     artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
-                    compressions: vec![SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string()],
+                    compressions: vec![SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string()],
                     feature_set: Vec::new(),
                 }
             }),
@@ -1516,7 +1516,7 @@ mod tests {
         snapshot_manifest_digest, CombinedResponse, PullResponse, ScopedSnapshotArtifactManifest,
         ScopedSnapshotArtifactRef, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
         SubscriptionResponse, SyncSnapshot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-        SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+        SNAPSHOT_CHUNK_COMPRESSION_GZIP,
     };
     use crate::transport::web::WebRealtimeSocket;
     use serde_json::{json, Map, Value};
@@ -1735,7 +1735,7 @@ mod tests {
             next_row_cursor: None,
             is_first_page: true,
             is_last_page: true,
-            compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+            compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
             byte_length: 64,
             sha256: "a".repeat(64),
             feature_set: Vec::new(),

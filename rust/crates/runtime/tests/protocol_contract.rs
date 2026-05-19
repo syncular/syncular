@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::io::Write;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -7,6 +8,7 @@ use diesel::sql_query;
 use diesel::sql_types::{BigInt, Integer, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, RunQueryDsl};
+use flate2::{write::GzEncoder, Compression};
 use rusqlite::params;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -29,7 +31,7 @@ use syncular_runtime::protocol::{
     PushCommitResponse, ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef,
     SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef, SubscriptionIntegrity,
     SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT,
-    SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_CHUNK_COMPRESSION_GZIP,
 };
 use syncular_runtime::store::{SyncStore, SyncStoreTx};
 use syncular_runtime::transport::{
@@ -334,14 +336,15 @@ fn http_sync_rejects_snapshot_artifacts_before_mutating_store() -> Result<()> {
 #[test]
 fn http_sync_diesel_applies_snapshot_artifact_rows() -> Result<()> {
     let path = temp_db_path("syncular-protocol-artifact-applied");
-    let artifact_bytes =
+    let raw_artifact_bytes =
         sqlite_snapshot_artifact_bytes_for_test("artifact-task", "Artifact snapshot", 77)?;
+    let artifact_bytes = gzip_bytes_for_test(&raw_artifact_bytes)?;
     let artifact = sqlite_snapshot_artifact_ref_for_test(&artifact_bytes, 1)?;
     let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
     let transport = TestTransport::new();
     let handle = transport.handle();
     let artifact_for_response = artifact.clone();
-    transport.push_snapshot_artifact_bytes(artifact_bytes);
+    transport.push_snapshot_artifact_bytes(raw_artifact_bytes);
     transport.push_http_response_fn(move |request| {
         let mut response =
             snapshot_artifact_combined_response_with_ref(artifact_for_response.clone());
@@ -2630,6 +2633,12 @@ fn sqlite_snapshot_artifact_bytes_for_test(
     Ok(conn.serialize_database_to_buffer().as_slice().to_vec())
 }
 
+fn gzip_bytes_for_test(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(bytes)?;
+    Ok(encoder.finish()?)
+}
+
 fn sqlite_snapshot_artifact_ref_for_test(
     bytes: &[u8],
     row_count: i64,
@@ -2651,7 +2660,7 @@ fn sqlite_snapshot_artifact_ref_for_test(
         next_row_cursor: None,
         is_first_page: true,
         is_last_page: true,
-        compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+        compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
         byte_length: bytes.len() as i64,
         sha256,
         feature_set: Vec::new(),
@@ -2689,7 +2698,7 @@ fn snapshot_artifact_ref_for_test() -> ScopedSnapshotArtifactRef {
         next_row_cursor: None,
         is_first_page: true,
         is_last_page: true,
-        compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+        compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
         byte_length: 64,
         sha256: "a".repeat(64),
         feature_set: Vec::new(),
