@@ -65,7 +65,7 @@ Decision:
 
 ## 2026-05-19 - Subscription-Level Pull Integrity
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `f8558547`
 
 Work package: [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 
@@ -141,7 +141,7 @@ Decision:
 
 ## 2026-05-19 - Streaming Commit Integrity Payloads
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `d68ebdfd`
 
 Work package: [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 
@@ -346,3 +346,41 @@ Decision:
 - Retained. The protocol extraction keeps the browser benchmark inside the
   accepted gate, and the release package now passes the raw/gzip size budget
   again.
+
+## 2026-05-19 - Protocol Crate Integrity And Snapshot Manifest APIs
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved wire commit digest/root calculation, commit integrity metadata
+  validation, subscription verified-root recomputation, snapshot manifest
+  digesting, and snapshot manifest validation into `syncular-protocol`.
+- Runtime keeps thin wrappers that convert `ProtocolError` into
+  `SyncularError`, so existing runtime callers still get runtime error kinds.
+- No server encoder, browser apply path, storage path, or wire bytes were
+  intentionally changed.
+
+Performance gate:
+
+- Not run. This is a protocol ownership extraction with no hot-path browser or
+  server implementation change. The retained proof is the protocol/wire-format
+  gate plus runtime contract coverage.
+
+Protocol gates:
+
+- `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+
+Decision:
+
+- Retained. Protocol ownership moved without adding compatibility branches or
+  changing the runtime application/store behavior.

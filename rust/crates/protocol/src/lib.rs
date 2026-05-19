@@ -5,8 +5,16 @@ use sha2::{Digest, Sha256};
 pub mod binary_snapshot;
 pub mod binary_sync_pack;
 pub mod error;
+pub mod integrity;
+pub mod snapshot_manifest;
 
 pub use error::{ProtocolError, Result};
+pub use integrity::{
+    validate_pull_commit_integrity_metadata, verify_subscription_commit_integrity,
+    wire_commit_chain_root, wire_commit_chain_root_from_digest, wire_commit_digest,
+    VerifiedCommitRoot,
+};
+pub use snapshot_manifest::{snapshot_manifest_digest, validate_pull_snapshot_manifests};
 
 pub const COMMIT_INTEGRITY_HEX_LENGTH: usize = 64;
 pub const COMMIT_INTEGRITY_GENESIS_ROOT: &str =
