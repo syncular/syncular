@@ -4,10 +4,16 @@ use sha2::{Digest, Sha256};
 
 pub mod binary_snapshot;
 pub mod binary_sync_pack;
+pub mod blob;
 pub mod error;
 pub mod integrity;
 pub mod snapshot_manifest;
 
+pub use blob::{
+    blob_hash, validate_blob_bytes, validate_blob_digest, validate_blob_hash,
+    BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest,
+    BlobUploadInitResponse,
+};
 pub use error::{ProtocolError, Result};
 pub use integrity::{
     validate_pull_commit_integrity_metadata, verify_subscription_commit_integrity,

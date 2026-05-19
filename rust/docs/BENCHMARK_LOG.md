@@ -384,3 +384,37 @@ Decision:
 
 - Retained. Protocol ownership moved without adding compatibility branches or
   changing the runtime application/store behavior.
+
+## 2026-05-19 - Protocol Crate Blob Wire APIs
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved blob wire structs and blob hash/validation helpers into
+  `syncular-protocol`.
+- Runtime still owns file/reader hashing, upload/download transport, queued
+  blob work, local cache behavior, and store integration.
+- Runtime wrappers preserve `SyncularError` conversion for validation calls.
+
+Performance gate:
+
+- Not run. This is a protocol ownership extraction with no browser/server hot
+  path or wire-byte change.
+
+Protocol/runtime gates:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+
+Decision:
+
+- Retained. Blob protocol ownership moved without changing runtime transport or
+  storage behavior.
