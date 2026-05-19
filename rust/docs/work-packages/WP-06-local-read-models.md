@@ -1,6 +1,6 @@
 # WP-06 Local Read Models
 
-Status: `[~]` started
+Status: `[x]` accepted for the initial `countBy` read-model contract
 
 ## Goal
 
@@ -69,6 +69,8 @@ Retained first slice:
 - `syncular.schema.json` now carries each local read model's generated
   `setupSql` and `rebuildSql`, making the SQLite read-model contract available
   to non-TS host tooling without duplicating SQL generation.
+- The external `offline-sync-bench` Rust adapter was verified locally against a
+  generated Syncular schema contract instead of hand-written read-model SQL.
 - No hidden runtime cache, default index, or compatibility branch was added.
 
 Correctness gates passed:
@@ -121,18 +123,45 @@ again neutral-to-better versus the contract-backed installer run:
 | Read-model aggregate p50 | `0.05ms` | `0.04ms` |
 
 The browser benchmark proves the declared read model is visible to typed Kysely
-and avoids the expensive aggregate scan. It does not yet prove external app
-adoption because the external benchmark still carries a hand-written local
-derived-schema fixture.
+and avoids the expensive aggregate scan.
+
+External app-style local-query gate after wiring the local
+`offline-sync-bench` checkout to generated schema-contract SQL:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis docker compose -f stacks/syncular/docker-compose.yml up --build -d
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario local-query
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario local-query
+```
+
+Results:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Local list p50 | `0.21ms` | `0.66ms` |
+| Local search p50 | `0.09ms` | `0.88ms` |
+| Aggregate p50 | `5.94ms` raw | `0.08ms` read model |
+| Rust raw aggregate p50 | n/a | `60.88ms` |
+| Rust bootstrap | n/a | `1363.56ms` |
+
+Compared with the earlier dev-WASM external Rust sample, list stayed in band
+(`0.67ms -> 0.66ms`), search improved (`0.97ms -> 0.88ms`), read-model
+aggregate stayed flat (`0.08ms -> 0.08ms`), and raw aggregate was in the same
+band (`60.15ms -> 60.88ms`). This is not comparable to the much faster release
+WASM external sample; this run intentionally followed the dev-WASM external
+gate command.
 
 Root `bun run tsgo` was not used as a gate because it currently fails in
 unrelated `@syncular/tests-unit` server-pull stream/hash type errors. The
-relevant package checks above passed.
+relevant package checks above passed. The external full `bun run typecheck`
+currently fails in existing branch-server package/type drift around server
+artifact exports; a targeted `tsc` check for `src/adapters/syncular-rust.ts`
+passes.
 
 ## Next Action
 
-Wire the generated read-model declarations into the external benchmark app
-instead of the current hand-written `RUST_LOCAL_DERIVED_SCHEMA_STATEMENTS`, then
-run the external local-query/bootstrap gates. The target evidence is
-aggregate-query speedup with explicit write amplification and no hidden
-raw-query regression.
+Initial `countBy` read models are accepted. Future read-model work should be a
+new scoped WP for additional read-model kinds or for moving more app schema
+installation out of host hand-written code.

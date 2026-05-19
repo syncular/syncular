@@ -133,7 +133,7 @@ read-only review:
     temp-table staging probes were all rejected. Small artifact shape/memory
     probes are paused until a larger bootstrap transaction/state design can
     release artifact databases earlier without row-copy staging.
-- `[~]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
+- `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
     `syncular.codegen.json`. The generator now emits the read-model contract in
     `syncular.schema.json`, Rust SQL constants, and TypeScript schema
@@ -150,9 +150,13 @@ read-only review:
     Browser scoreboard now measures raw aggregate and read-model aggregate lanes:
     at 100k rows, Rust read-model aggregate p50 is `0.05ms` vs TS `0.53ms`
     while raw aggregate remains visible (`23.00ms` Rust vs `161.09ms` TS). This
-    is opt-in app intent, not a hidden runtime cache. External benchmark wiring
-    still needs to replace the hand-written derived-schema fixture with the
-    generated contract.
+    is opt-in app intent, not a hidden runtime cache. The local
+    `offline-sync-bench` Rust adapter was also wired to generated
+    `syncular.schema.json` SQL instead of hand-written read-model fixtures; the
+    dev-WASM external local-query gate stayed in band (`0.67ms -> 0.66ms` list
+    p50, `0.97ms -> 0.88ms` search p50, `0.08ms -> 0.08ms` read-model
+    aggregate p50). Initial `countBy` read models are accepted; new read-model
+    kinds should be tracked as separate work.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained

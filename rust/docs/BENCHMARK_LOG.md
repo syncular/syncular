@@ -3266,3 +3266,63 @@ Decision:
 
 - Accepted. This is a schema-contract change with no runtime hot-path cost, and
   the measured browser gate stayed neutral-to-better.
+
+## 2026-05-19 - Accepted WP-06 External Generated Read-Model Wiring
+
+Change:
+
+- In the local `/Users/bkniffler/GitHub/sync/offline-sync-bench` checkout, added
+  a Syncular codegen manifest and SQLite migration for the benchmark schema.
+- Generated `stacks/syncular/syncular-app/syncular.schema.json` and changed the
+  Rust adapter to build local derived schema from that generated contract:
+  table indexes plus `localReadModels[*].setupSql/rebuildSql`.
+- Removed the Rust adapter's hand-written read-model table/trigger SQL from the
+  local checkout. This keeps the benchmark on the same generated contract apps
+  are expected to use.
+
+Correctness gates:
+
+```bash
+cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/Cargo.toml -p syncular-codegen -- --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bunx tsc --noEmit --allowImportingTsExtensions --moduleResolution Bundler --module ESNext --target ES2022 --strict --types bun --skipLibCheck src/adapters/syncular-rust.ts
+```
+
+External full `bun run typecheck` still fails in existing branch-server
+package/type drift around server artifact exports, so it was not used as the
+gate for this adapter-only wiring.
+
+Benchmark gate:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis docker compose -f stacks/syncular/docker-compose.yml up --build -d
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario local-query
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario local-query
+```
+
+Results:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Local list p50 | `0.21ms` | `0.66ms` |
+| Local search p50 | `0.09ms` | `0.88ms` |
+| Aggregate p50 | `5.94ms` raw | `0.08ms` read model |
+| Rust raw aggregate p50 | n/a | `60.88ms` |
+| Rust bootstrap | n/a | `1363.56ms` |
+
+Compared with the previous dev-WASM external Rust sample:
+
+| Metric | Previous Rust | Generated schema contract |
+| --- | ---: | ---: |
+| Local list p50 | `0.67ms` | `0.66ms` |
+| Local search p50 | `0.97ms` | `0.88ms` |
+| Read-model aggregate p50 | `0.08ms` | `0.08ms` |
+| Raw aggregate p50 | `60.15ms` | `60.88ms` |
+
+Decision:
+
+- Accepted. The benchmark now uses generated read-model SQL without adding
+  hidden caching or changing the query contract, and the dev-WASM external gate
+  stayed in the same performance band.
