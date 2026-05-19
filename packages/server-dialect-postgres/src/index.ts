@@ -357,6 +357,66 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .execute();
 
     await db.schema
+      .createTable('sync_snapshot_artifacts')
+      .ifNotExists()
+      .addColumn('artifact_id', 'text', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('scope_key', 'text', (col) => col.notNull())
+      .addColumn('subscription_id', 'text', (col) => col.notNull())
+      .addColumn('table', 'text', (col) => col.notNull())
+      .addColumn('artifact_kind', 'text', (col) => col.notNull())
+      .addColumn('schema_version', 'text', (col) => col.notNull())
+      .addColumn('as_of_commit_seq', 'bigint', (col) => col.notNull())
+      .addColumn('row_cursor', 'text', (col) => col.notNull().defaultTo(''))
+      .addColumn('row_limit', 'integer', (col) => col.notNull())
+      .addColumn('row_count', 'integer', (col) => col.notNull())
+      .addColumn('next_row_cursor', 'text')
+      .addColumn('is_first_page', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .addColumn('is_last_page', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('compression', 'text', (col) => col.notNull())
+      .addColumn('sha256', 'text', (col) => col.notNull())
+      .addColumn('byte_length', 'integer', (col) => col.notNull())
+      .addColumn('manifest_digest', 'text', (col) => col.notNull())
+      .addColumn('feature_set_json', 'text', (col) => col.notNull())
+      .addColumn('manifest_json', 'text', (col) => col.notNull())
+      .addColumn('blob_hash', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'timestamptz', (col) =>
+        col.notNull().defaultTo(sql`now()`)
+      )
+      .addColumn('expires_at', 'timestamptz', (col) => col.notNull())
+      .execute();
+
+    await db.schema
+      .createIndex('idx_sync_snapshot_artifacts_expires_at')
+      .ifNotExists()
+      .on('sync_snapshot_artifacts')
+      .columns(['expires_at'])
+      .execute();
+
+    await db.schema
+      .createIndex('idx_sync_snapshot_artifacts_page_key')
+      .ifNotExists()
+      .on('sync_snapshot_artifacts')
+      .columns([
+        'partition_id',
+        'scope_key',
+        'subscription_id',
+        'table',
+        'as_of_commit_seq',
+        'row_cursor',
+        'row_limit',
+        'artifact_kind',
+        'schema_version',
+        'compression',
+      ])
+      .unique()
+      .execute();
+
+    await db.schema
       .createTable('sync_crdt_updates')
       .ifNotExists()
       .addColumn('seq', 'bigserial', (col) => col.primaryKey())

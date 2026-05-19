@@ -133,6 +133,62 @@ export interface SyncSnapshotChunksTable {
 }
 
 /**
+ * Cached scoped snapshot artifacts.
+ *
+ * Artifacts are larger immutable bootstrap payloads, such as scoped SQLite
+ * snapshot files, addressed by a verified manifest and stored in object
+ * storage via blob_hash.
+ */
+export interface SyncSnapshotArtifactsTable {
+  /** Opaque artifact id */
+  artifact_id: string;
+  /** Logical partition key (tenant / demo / workspace) */
+  partition_id: string;
+  /** Effective scope key this artifact belongs to */
+  scope_key: string;
+  /** Stable subscription id this artifact serves */
+  subscription_id: string;
+  /** App table represented by the artifact */
+  table: string;
+  /** Artifact format (e.g. 'sqlite-snapshot-v1') */
+  artifact_kind: string;
+  /** App schema/cache semantic version */
+  schema_version: string;
+  /** Snapshot as-of commit sequence */
+  as_of_commit_seq: number;
+  /** Snapshot row cursor key (empty string represents null) */
+  row_cursor: string;
+  /** Snapshot row limit used to produce this artifact */
+  row_limit: number;
+  /** Number of rows included in the artifact */
+  row_count: number;
+  /** Cursor after this artifact; null means no next row for this table */
+  next_row_cursor?: string | null;
+  /** 1 when this artifact starts at the table's first page */
+  is_first_page: number;
+  /** 1 when this artifact reaches the end of the table snapshot */
+  is_last_page: number;
+  /** Artifact compression algorithm */
+  compression: string;
+  /** Hex-encoded sha256 of artifact body bytes */
+  sha256: string;
+  /** Byte length of artifact body bytes */
+  byte_length: number;
+  /** Hex digest of the scoped artifact manifest */
+  manifest_digest: string;
+  /** Normalized JSON feature set */
+  feature_set_json: string;
+  /** Canonical manifest JSON */
+  manifest_json: string;
+  /** Reference to blob storage */
+  blob_hash: string;
+  /** Created timestamp */
+  created_at: Generated<string>;
+  /** Expiration timestamp (server may delete after this) */
+  expires_at: string;
+}
+
+/**
  * Shared encrypted CRDT update log.
  *
  * One physical table stores updates for every encrypted CRDT field. The logical
@@ -218,6 +274,7 @@ export interface SyncCoreDb {
   sync_table_commits: SyncTableCommitsTable;
   sync_scope_commits: SyncScopeCommitsTable;
   sync_snapshot_chunks: SyncSnapshotChunksTable;
+  sync_snapshot_artifacts: SyncSnapshotArtifactsTable;
 }
 
 /**
