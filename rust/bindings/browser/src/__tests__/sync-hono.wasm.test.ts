@@ -47,8 +47,15 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
     await first.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
-    await expect(first.syncOnce()).resolves.toMatchObject({
+    const firstResult = await first.syncOnce();
+    expect(firstResult).toMatchObject({
       pushedCommits: 0,
+    });
+    expect(firstResult.bootstrap).toMatchObject({
+      criticalReady: true,
+      interactiveReady: true,
+      complete: true,
+      pendingSubscriptionIds: [],
     });
 
     let refreshCount = 0;

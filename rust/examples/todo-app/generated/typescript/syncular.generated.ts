@@ -20,6 +20,7 @@ export interface SyncularSubscriptionSpec {
   table: string;
   scopes: Record<string, string | string[]>;
   params: Record<string, unknown>;
+  bootstrapPhase?: number;
 }
 
 export interface SyncularSubscriptionArgs {

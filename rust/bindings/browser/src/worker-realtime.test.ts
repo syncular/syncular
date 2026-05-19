@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type {
+  SyncularV2BootstrapStatus,
   SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryEvent,
   SyncularV2SyncResult,
@@ -663,7 +664,9 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
         resolve({
           changedTables: [],
           changedRows: [],
+          changedRowsTruncated: false,
           subscriptions: [],
+          bootstrap: zeroBootstrapStatus(),
           pushedCommits: 0,
           timings: zeroSyncTimings(),
         })
@@ -678,6 +681,7 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
     return {
       changedTables: ['tasks'],
       changedRows: [],
+      changedRowsTruncated: false,
       subscriptions: [
         {
           id: 'tasks-subscription',
@@ -685,10 +689,45 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
           status: 'active',
           scopes: {},
           nextCursor: 44,
+          bootstrapPhase: 0,
+          bootstrapState: null,
+          ready: true,
+          phase: 'live',
+          progressPercent: 100,
           snapshotRows: [],
           commits: [],
         },
       ],
+      bootstrap: {
+        ...zeroBootstrapStatus(),
+        channelPhase: 'live',
+        expectedSubscriptionIds: ['tasks-subscription'],
+        readySubscriptionIds: ['tasks-subscription'],
+        subscriptions: [
+          {
+            id: 'tasks-subscription',
+            table: 'tasks',
+            expected: true,
+            ready: true,
+            status: 'active',
+            phase: 'live',
+            progressPercent: 100,
+            cursor: 44,
+            bootstrapState: null,
+            bootstrapPhase: 0,
+          },
+        ],
+        phases: [
+          {
+            phase: 0,
+            expectedSubscriptionIds: ['tasks-subscription'],
+            readySubscriptionIds: ['tasks-subscription'],
+            pendingSubscriptionIds: [],
+            isReady: true,
+            progressPercent: 100,
+          },
+        ],
+      },
       pushedCommits: 0,
       timings: zeroSyncTimings(),
     };
@@ -734,6 +773,23 @@ function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
     commitApplyMs: 0,
     subscriptionStateMs: 0,
     notifyMs: 0,
+  };
+}
+
+function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
+  return {
+    channelPhase: 'idle',
+    progressPercent: 100,
+    isBootstrapping: false,
+    criticalReady: true,
+    interactiveReady: true,
+    complete: true,
+    activePhase: null,
+    expectedSubscriptionIds: [],
+    readySubscriptionIds: [],
+    pendingSubscriptionIds: [],
+    subscriptions: [],
+    phases: [],
   };
 }
 

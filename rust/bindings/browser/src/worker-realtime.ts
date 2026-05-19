@@ -304,6 +304,11 @@ export class SyncularV2WorkerRealtimeController {
       const result = await this.#syncForMessage(message);
       if (this.#stopped) return;
       this.#ackRealtimeCursor(socket, message, result);
+      this.controllerOptions.postEvent({
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        type: 'bootstrapChanged',
+        bootstrap: result.bootstrap,
+      });
       if (result.changedTables.length > 0 || result.changedRows.length > 0) {
         this.controllerOptions.postEvent({
           protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -311,6 +316,7 @@ export class SyncularV2WorkerRealtimeController {
           source: 'remotePull',
           changedTables: result.changedTables,
           changedRows: result.changedRows,
+          changedRowsTruncated: result.changedRowsTruncated,
         });
       }
       const events = this.controllerOptions

@@ -187,12 +187,14 @@ public struct SyncularSubscriptionSpec: Codable, Equatable {
     public let table: String
     public let scopes: [String: SyncularJsonValue]
     public let params: [String: SyncularJsonValue]
+    public let bootstrapPhase: Int64
 
-    public init(id: String, table: String, scopes: [String: SyncularJsonValue], params: [String: SyncularJsonValue] = [:]) {
+    public init(id: String, table: String, scopes: [String: SyncularJsonValue], params: [String: SyncularJsonValue] = [:], bootstrapPhase: Int64 = 0) {
         self.id = id
         self.table = table
         self.scopes = scopes
         self.params = params
+        self.bootstrapPhase = bootstrapPhase
     }
 
     public func jsonString() throws -> String {

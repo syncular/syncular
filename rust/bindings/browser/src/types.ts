@@ -25,6 +25,10 @@ export interface SyncularV2PullOptions {
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
   dedupeRows?: boolean | null;
+  /** Numeric bootstrap phase considered critical. Defaults to 0. */
+  criticalBootstrapPhase?: number;
+  /** Numeric bootstrap phase considered interactive. Defaults to 1. */
+  interactiveBootstrapPhase?: number;
   /** Defaults to false; snapshot bootstrap rows hydrate local SQLite instead of being returned. */
   includeSnapshotRows?: boolean;
   collectChangedRows?: boolean;
@@ -402,6 +406,11 @@ export interface SyncularV2SubscriptionSpec {
   table: string;
   scopes: Record<string, string | string[]>;
   params?: Record<string, unknown>;
+  /**
+   * Local-only startup phase. Lower phases bootstrap first; ready or currently
+   * bootstrapping higher phases continue to participate in pull requests.
+   */
+  bootstrapPhase?: number;
 }
 
 export interface SyncularV2ChangedRow {
@@ -470,6 +479,7 @@ export interface SyncularV2BlobUploadErrorEvent {
 
 export interface SyncularV2ClientEventMap {
   rowsChanged: SyncularV2RowsChangedEvent;
+  bootstrapChanged: SyncularV2BootstrapStatus;
   outboxChanged: SyncularV2OutboxStats;
   conflictsChanged: SyncularV2ConflictStats;
   blobUploadCompleted: SyncularV2BlobUploadEvent;
@@ -488,6 +498,7 @@ export interface SyncularV2SyncResult {
   changedRows: SyncularV2ChangedRow[];
   changedRowsTruncated: boolean;
   subscriptions: SyncularV2SubscriptionResult[];
+  bootstrap: SyncularV2BootstrapStatus;
   pushedCommits: number;
   timings: SyncularV2SyncTimings;
 }
@@ -539,8 +550,71 @@ export interface SyncularV2SubscriptionResult {
   status: string;
   scopes: Record<string, string | string[]>;
   nextCursor: number;
+  bootstrapPhase: number;
+  bootstrapState: SyncularV2BootstrapState | null;
+  ready: boolean;
+  phase: SyncularV2BootstrapSubscriptionPhase;
+  progressPercent: number;
   snapshotRows: unknown[];
   commits: unknown[];
+}
+
+export interface SyncularV2BootstrapState {
+  asOfCommitSeq: number;
+  tables: string[];
+  tableIndex: number;
+  rowCursor: string | null;
+}
+
+export type SyncularV2BootstrapSubscriptionPhase =
+  | 'pending'
+  | 'bootstrapping'
+  | 'live'
+  | 'error'
+  | string;
+
+export type SyncularV2BootstrapChannelPhase =
+  | 'idle'
+  | 'bootstrapping'
+  | 'live'
+  | 'error'
+  | string;
+
+export interface SyncularV2BootstrapSubscriptionStatus {
+  id: string;
+  table: string;
+  expected: boolean;
+  ready: boolean;
+  status: string | null;
+  phase: SyncularV2BootstrapSubscriptionPhase;
+  progressPercent: number;
+  cursor: number | null;
+  bootstrapState: SyncularV2BootstrapState | null;
+  bootstrapPhase: number;
+}
+
+export interface SyncularV2BootstrapPhaseStatus {
+  phase: number;
+  expectedSubscriptionIds: string[];
+  readySubscriptionIds: string[];
+  pendingSubscriptionIds: string[];
+  isReady: boolean;
+  progressPercent: number;
+}
+
+export interface SyncularV2BootstrapStatus {
+  channelPhase: SyncularV2BootstrapChannelPhase;
+  progressPercent: number;
+  isBootstrapping: boolean;
+  criticalReady: boolean;
+  interactiveReady: boolean;
+  complete: boolean;
+  activePhase: number | null;
+  expectedSubscriptionIds: string[];
+  readySubscriptionIds: string[];
+  pendingSubscriptionIds: string[];
+  subscriptions: SyncularV2BootstrapSubscriptionStatus[];
+  phases: SyncularV2BootstrapPhaseStatus[];
 }
 
 export interface SyncularV2SchemaState {

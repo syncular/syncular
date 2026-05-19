@@ -829,12 +829,16 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   ): Promise<SyncularV2SyncResult> {
     await this.#refreshAuthHeaders();
     try {
-      return await this.#requestAndDrain<SyncularV2SyncResult>(request);
+      const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
+      this.#emitBootstrapChanged(result);
+      return result;
     } catch (error) {
       const shouldRetry = await this.#resolveAuthRetry(error, 'sync');
       if (!shouldRetry) throw error;
       await this.#refreshAuthHeaders();
-      return this.#requestAndDrain<SyncularV2SyncResult>(request);
+      const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
+      this.#emitBootstrapChanged(result);
+      return result;
     }
   }
 
@@ -1034,6 +1038,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       });
       return;
     }
+    if (event.type === 'bootstrapChanged') {
+      this.#emitClientEvent('bootstrapChanged', event.bootstrap);
+      return;
+    }
     if (event.type === 'realtimeState') {
       this.#realtimeState = event.state;
       this.#emitDiagnostic({
@@ -1126,6 +1134,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       }
     }
     this.#emitClientEvent('rowsChanged', event);
+  }
+
+  #emitBootstrapChanged(result: SyncularV2SyncResult): void {
+    this.#emitClientEvent('bootstrapChanged', result.bootstrap);
   }
 
   async #emitOperationalState(): Promise<void> {

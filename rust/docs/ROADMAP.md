@@ -139,6 +139,18 @@ read-only review:
     `10.40MB -> 2.60MB`; external app-style artifacts now use a `40k`
     precompute row limit and report 500k bootstrap `1334.25ms`, local apply
     `198ms`, and peak memory `707.92MB` with `snapshotChunkCount=0`.
+- `[~]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
+  - First retained slice restores the pre-Rust staged-bootstrap principle in
+    the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
+    now carry local-only `bootstrapPhase`; Rust native/web pull selection only
+    starts the lowest pending phase while continuing ready or already
+    bootstrapping higher phases. Browser sync results carry per-subscription
+    checkpoint metadata, and the TypeScript binding derives the aggregate
+    `criticalReady` / `interactiveReady` / `complete` status plus phase
+    summaries without adding that aggregate machinery to the WASM binary. The
+    browser worker/realtime event bus now emits `bootstrapChanged`. Release
+    package size remains under budget (`3.29MiB` raw, `1.36MiB` gzip), and the
+    local 100k release artifact guard stayed flat (`147.84ms -> 147.15ms`).
 - `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
     `syncular.codegen.json`. The generator now emits the read-model contract in
@@ -213,12 +225,14 @@ read-only review:
 
 ## Next
 
-- Continue the larger bootstrap/performance architecture in
-  [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
-  / [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md):
-  make artifact phase/checkpoint semantics explicit enough for readiness events
-  and partial progress, then benchmark against the current external 500k
-  artifact baseline (`1334.25ms`, `707.92MB` peak).
+- Continue [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md):
+  add app-facing staged-bootstrap docs and decide whether native Rust/FFI needs
+  a small aggregate bootstrap-status helper or whether phase-aware
+  subscriptions plus worker events are sufficient.
+- Then continue the larger bootstrap/performance architecture in
+  [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
+  benchmark against the current external 500k artifact baseline (`1334.25ms`,
+  `707.92MB` peak).
 
 ## Later
 

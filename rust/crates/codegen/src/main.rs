@@ -3008,7 +3008,7 @@ fn generate_subscription_function(table: &TableInfo, config: &TableCodegenConfig
         }
     }
     out.push_str(&format!(
-        "\n    SubscriptionSpec {{\n        id: \"{}\".to_string(),\n        table: \"{}\".to_string(),\n        scopes,\n        params,\n    }}\n}}\n\n",
+        "\n    SubscriptionSpec {{\n        id: \"{}\".to_string(),\n        table: \"{}\".to_string(),\n        scopes,\n        params,\n        bootstrap_phase: 0,\n    }}\n}}\n\n",
         config.subscription_id(&table.name),
         table.name
     ));
@@ -3070,7 +3070,7 @@ fn generate_encrypted_crdt_subscription_function(
         double_quoted_string(&field.field)
     ));
     out.push_str(&format!(
-        "\n    SubscriptionSpec {{\n        id: \"sub-{}-{}-crdt-{}\".to_string(),\n        table: \"{}\".to_string(),\n        scopes,\n        params,\n    }}\n}}\n\n",
+        "\n    SubscriptionSpec {{\n        id: \"sub-{}-{}-crdt-{}\".to_string(),\n        table: \"{}\".to_string(),\n        scopes,\n        params,\n        bootstrap_phase: 0,\n    }}\n}}\n\n",
         table.name, field.field, suffix, system_table
     ));
     out
@@ -4617,6 +4617,7 @@ fn generate_typescript_module(
     out.push_str("  table: string;\n");
     out.push_str("  scopes: Record<string, string | string[]>;\n");
     out.push_str("  params: Record<string, unknown>;\n");
+    out.push_str("  bootstrapPhase?: number;\n");
     out.push_str("}\n\n");
     out.push_str("export interface SyncularSubscriptionArgs {\n");
     out.push_str("  actorId: string;\n");
@@ -5781,12 +5782,14 @@ fn generate_swift_module(
     out.push_str("    public let id: String\n");
     out.push_str("    public let table: String\n");
     out.push_str("    public let scopes: [String: SyncularJsonValue]\n");
-    out.push_str("    public let params: [String: SyncularJsonValue]\n\n");
-    out.push_str("    public init(id: String, table: String, scopes: [String: SyncularJsonValue], params: [String: SyncularJsonValue] = [:]) {\n");
+    out.push_str("    public let params: [String: SyncularJsonValue]\n");
+    out.push_str("    public let bootstrapPhase: Int64\n\n");
+    out.push_str("    public init(id: String, table: String, scopes: [String: SyncularJsonValue], params: [String: SyncularJsonValue] = [:], bootstrapPhase: Int64 = 0) {\n");
     out.push_str("        self.id = id\n");
     out.push_str("        self.table = table\n");
     out.push_str("        self.scopes = scopes\n");
     out.push_str("        self.params = params\n");
+    out.push_str("        self.bootstrapPhase = bootstrapPhase\n");
     out.push_str("    }\n\n");
     out.push_str("    public func jsonString() throws -> String {\n");
     out.push_str("        let encoder = JSONEncoder()\n");
@@ -7309,12 +7312,14 @@ fn generate_kotlin_module(
     out.push_str("    val table: String,\n");
     out.push_str("    val scopes: Map<String, Any?>,\n");
     out.push_str("    val params: Map<String, Any?> = emptyMap(),\n");
+    out.push_str("    val bootstrapPhase: Long = 0,\n");
     out.push_str(") {\n");
     out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
     out.push_str("        \"id\" to id,\n");
     out.push_str("        \"table\" to table,\n");
     out.push_str("        \"scopes\" to scopes,\n");
     out.push_str("        \"params\" to params,\n");
+    out.push_str("        \"bootstrapPhase\" to bootstrapPhase,\n");
     out.push_str("    )\n\n");
     out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
     out.push_str("}\n\n");

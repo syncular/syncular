@@ -513,6 +513,7 @@ function syncResultDetails(value: unknown): Record<string, unknown> {
     changedRowsTruncated: result.changedRowsTruncated === true,
     changedTableCount: changedTables.length,
     changedRowCount: changedRows.length,
+    bootstrap: objectRecord(result.bootstrap),
     pushedCommits:
       typeof result.pushedCommits === 'number' ? result.pushedCommits : 0,
   };

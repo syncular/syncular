@@ -12,6 +12,9 @@ import type {
   SyncularV2BlobCacheStats,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
+  SyncularV2BootstrapState,
+  SyncularV2BootstrapStatus,
+  SyncularV2BootstrapSubscriptionPhase,
   SyncularV2ChangedRow,
   SyncularV2ClientConfig,
   SyncularV2ConflictSummary,
@@ -30,6 +33,7 @@ import type {
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
+  SyncularV2PullOptions,
   SyncularV2RowsChangedEvent,
   SyncularV2RowsChangedSink,
   SyncularV2RuntimeArtifact,
@@ -69,9 +73,15 @@ type RawSyncResult = {
     status: string;
     scopes: Record<string, string | string[]>;
     next_cursor: number;
+    bootstrap_phase?: number;
+    bootstrap_state?: RawBootstrapState | null;
+    ready?: boolean;
+    phase?: SyncularV2BootstrapSubscriptionPhase;
+    progress_percent?: number;
     snapshot_rows?: unknown[];
     commits?: unknown[];
   }>;
+  bootstrap?: RawBootstrapStatus;
   pushed_commits?: number;
   timings?: {
     total_ms?: number;
@@ -96,6 +106,46 @@ type RawSyncResult = {
   };
 };
 
+type RawBootstrapState = {
+  asOfCommitSeq?: number;
+  tables?: string[];
+  tableIndex?: number;
+  rowCursor?: string | null;
+};
+
+type RawBootstrapStatus = {
+  channel_phase?: string;
+  progress_percent?: number;
+  is_bootstrapping?: boolean;
+  critical_ready?: boolean;
+  interactive_ready?: boolean;
+  complete?: boolean;
+  active_phase?: number | null;
+  expected_subscription_ids?: string[];
+  ready_subscription_ids?: string[];
+  pending_subscription_ids?: string[];
+  subscriptions?: Array<{
+    id: string;
+    table: string;
+    expected?: boolean;
+    ready?: boolean;
+    status?: string | null;
+    phase?: SyncularV2BootstrapSubscriptionPhase;
+    progress_percent?: number;
+    cursor?: number | null;
+    bootstrap_state?: RawBootstrapState | null;
+    bootstrap_phase?: number;
+  }>;
+  phases?: Array<{
+    phase?: number;
+    expected_subscription_ids?: string[];
+    ready_subscription_ids?: string[];
+    pending_subscription_ids?: string[];
+    is_ready?: boolean;
+    progress_percent?: number;
+  }>;
+};
+
 type RawConflictSummary = {
   id: string;
   client_commit_id: string;
@@ -106,6 +156,18 @@ type RawConflictSummary = {
   server_version: number | null;
   resolved_at: number | null;
   resolution: string | null;
+};
+
+type SyncularV2BootstrapSubscriptionStatusEntry = {
+  id: string;
+  table: string;
+  status: string | null;
+  ready: boolean;
+  phase: SyncularV2BootstrapSubscriptionPhase;
+  progressPercent: number;
+  cursor: number | null;
+  bootstrapState: SyncularV2BootstrapState | null;
+  bootstrapPhase: number;
 };
 
 export async function openSyncularV2RustClient(
@@ -131,7 +193,8 @@ export async function openSyncularV2RustClient(
       wasmGlueUrl,
       wasmUrl,
       rust: rustRuntimeInfo,
-    })
+    }),
+    config.pull
   );
 }
 
@@ -144,13 +207,21 @@ function loadSyncularV2WasmGlueFromUrl(
 
 export class SyncularV2RustClient {
   #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
+  #subscriptions: SyncularV2SubscriptionSpec[] = [];
+  #bootstrapById = new Map<
+    string,
+    SyncularV2BootstrapSubscriptionStatusEntry
+  >();
 
   constructor(
     private readonly raw: RawSyncularV2RustClient,
-    private readonly runtime: SyncularV2RuntimeInfo
+    private readonly runtime: SyncularV2RuntimeInfo,
+    private readonly pullOptions: SyncularV2PullOptions | undefined
   ) {}
 
   setSubscriptions(subscriptions: readonly SyncularV2SubscriptionSpec[]): void {
+    this.#subscriptions = [...subscriptions];
+    this.#bootstrapById.clear();
     this.raw.setSubscriptionsJson(JSON.stringify(subscriptions));
   }
 
@@ -211,7 +282,9 @@ export class SyncularV2RustClient {
   }
 
   async syncPull(): Promise<SyncularV2SyncResult> {
-    const result = parseSyncResult(await this.raw.syncPullJson());
+    const result = this.#decorateSyncResult(
+      parseSyncResult(await this.raw.syncPullJson())
+    );
     this.#emitRowsChanged('remotePull', result);
     return result;
   }
@@ -219,8 +292,8 @@ export class SyncularV2RustClient {
   async applyRealtimeSyncPack(
     bytes: Uint8Array
   ): Promise<SyncularV2SyncResult> {
-    const result = parseSyncResult(
-      await this.raw.applyRealtimeSyncPackBytes(bytes)
+    const result = this.#decorateSyncResult(
+      parseSyncResult(await this.raw.applyRealtimeSyncPackBytes(bytes))
     );
     this.#emitRowsChanged('remotePull', result);
     return result;
@@ -228,7 +301,9 @@ export class SyncularV2RustClient {
 
   async syncPush(): Promise<SyncularV2SyncResult> {
     try {
-      const result = parseSyncResult(await this.raw.syncPushJson());
+      const result = this.#decorateSyncResult(
+        parseSyncResult(await this.raw.syncPushJson())
+      );
       this.#emitRowsChanged('localWrite', result);
       return result;
     } catch (error) {
@@ -239,7 +314,9 @@ export class SyncularV2RustClient {
 
   async syncOnce(): Promise<SyncularV2SyncResult> {
     try {
-      const result = parseSyncResult(await this.raw.syncOnceJson());
+      const result = this.#decorateSyncResult(
+        parseSyncResult(await this.raw.syncOnceJson())
+      );
       this.#emitRowsChanged('remotePull', result);
       return result;
     } catch (error) {
@@ -480,6 +557,30 @@ export class SyncularV2RustClient {
     return this.runtime;
   }
 
+  #decorateSyncResult(result: SyncularV2SyncResult): SyncularV2SyncResult {
+    for (const subscription of result.subscriptions) {
+      this.#bootstrapById.set(subscription.id, {
+        id: subscription.id,
+        table: subscription.table,
+        status: subscription.status,
+        ready: subscription.ready,
+        phase: subscription.phase,
+        progressPercent: subscription.progressPercent,
+        cursor: subscription.nextCursor,
+        bootstrapState: subscription.bootstrapState,
+        bootstrapPhase: subscription.bootstrapPhase,
+      });
+    }
+    return {
+      ...result,
+      bootstrap: buildBootstrapStatus(
+        this.#subscriptions,
+        this.#bootstrapById,
+        this.pullOptions
+      ),
+    };
+  }
+
   #emitRowsChanged(
     source: 'localWrite' | 'remotePull',
     result: SyncularV2SyncResult
@@ -543,9 +644,15 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
       status: subscription.status,
       scopes: subscription.scopes,
       nextCursor: subscription.next_cursor,
+      bootstrapPhase: subscription.bootstrap_phase ?? 0,
+      bootstrapState: parseBootstrapState(subscription.bootstrap_state),
+      ready: subscription.ready === true,
+      phase: subscription.phase ?? 'pending',
+      progressPercent: subscription.progress_percent ?? 0,
       snapshotRows: subscription.snapshot_rows ?? [],
       commits: subscription.commits ?? [],
     })),
+    bootstrap: parseBootstrapStatus(raw.bootstrap),
     pushedCommits: raw.pushed_commits ?? 0,
     timings: {
       totalMs: raw.timings?.total_ms ?? 0,
@@ -570,6 +677,192 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
       notifyMs: raw.timings?.notify_ms ?? 0,
     },
   };
+}
+
+function parseBootstrapState(
+  state: RawBootstrapState | null | undefined
+): SyncularV2BootstrapStatus['subscriptions'][number]['bootstrapState'] {
+  if (!state) return null;
+  return {
+    asOfCommitSeq: state.asOfCommitSeq ?? 0,
+    tables: state.tables ?? [],
+    tableIndex: state.tableIndex ?? 0,
+    rowCursor: state.rowCursor ?? null,
+  };
+}
+
+function parseBootstrapStatus(
+  raw: RawBootstrapStatus | null | undefined
+): SyncularV2BootstrapStatus {
+  return {
+    channelPhase: raw?.channel_phase ?? 'idle',
+    progressPercent: raw?.progress_percent ?? 100,
+    isBootstrapping: raw?.is_bootstrapping === true,
+    criticalReady: raw?.critical_ready ?? true,
+    interactiveReady: raw?.interactive_ready ?? true,
+    complete: raw?.complete ?? true,
+    activePhase: raw?.active_phase ?? null,
+    expectedSubscriptionIds: raw?.expected_subscription_ids ?? [],
+    readySubscriptionIds: raw?.ready_subscription_ids ?? [],
+    pendingSubscriptionIds: raw?.pending_subscription_ids ?? [],
+    subscriptions: (raw?.subscriptions ?? []).map((subscription) => ({
+      id: subscription.id,
+      table: subscription.table,
+      expected: subscription.expected ?? true,
+      ready: subscription.ready === true,
+      status: subscription.status ?? null,
+      phase: subscription.phase ?? 'pending',
+      progressPercent: subscription.progress_percent ?? 0,
+      cursor: subscription.cursor ?? null,
+      bootstrapState: parseBootstrapState(subscription.bootstrap_state),
+      bootstrapPhase: subscription.bootstrap_phase ?? 0,
+    })),
+    phases: (raw?.phases ?? []).map((phase) => ({
+      phase: phase.phase ?? 0,
+      expectedSubscriptionIds: phase.expected_subscription_ids ?? [],
+      readySubscriptionIds: phase.ready_subscription_ids ?? [],
+      pendingSubscriptionIds: phase.pending_subscription_ids ?? [],
+      isReady: phase.is_ready === true,
+      progressPercent: phase.progress_percent ?? 0,
+    })),
+  };
+}
+
+function buildBootstrapStatus(
+  configuredSubscriptions: readonly SyncularV2SubscriptionSpec[],
+  cachedById: ReadonlyMap<string, SyncularV2BootstrapSubscriptionStatusEntry>,
+  pullOptions: SyncularV2PullOptions | undefined
+): SyncularV2BootstrapStatus {
+  const criticalPhase = normalizeBootstrapPhase(
+    pullOptions?.criticalBootstrapPhase
+  );
+  const interactivePhase = Math.max(
+    criticalPhase,
+    normalizeBootstrapPhase(pullOptions?.interactiveBootstrapPhase ?? 1)
+  );
+  const subscriptions = configuredSubscriptions.map((spec) => {
+    const cached = cachedById.get(spec.id);
+    const bootstrapPhase = normalizeBootstrapPhase(spec.bootstrapPhase);
+    return {
+      id: spec.id,
+      table: spec.table,
+      expected: true,
+      ready: cached?.ready ?? false,
+      status: cached?.status ?? null,
+      phase: cached?.phase ?? 'pending',
+      progressPercent: cached?.progressPercent ?? 0,
+      cursor: cached?.cursor ?? null,
+      bootstrapState: cached?.bootstrapState ?? null,
+      bootstrapPhase,
+    };
+  });
+  const expectedSubscriptionIds = subscriptions.map((subscription) => subscription.id);
+  const readySubscriptionIds = subscriptions
+    .filter((subscription) => subscription.ready)
+    .map((subscription) => subscription.id);
+  const pendingSubscriptionIds = subscriptions
+    .filter((subscription) => !subscription.ready)
+    .map((subscription) => subscription.id);
+  const complete = pendingSubscriptionIds.length === 0;
+  const criticalReady = subscriptions.every(
+    (subscription) =>
+      subscription.bootstrapPhase > criticalPhase || subscription.ready
+  );
+  const interactiveReady = subscriptions.every(
+    (subscription) =>
+      subscription.bootstrapPhase > interactivePhase || subscription.ready
+  );
+  const activePhase =
+    subscriptions
+      .filter((subscription) => !subscription.ready)
+      .reduce<number | null>(
+        (lowest, subscription) =>
+          lowest === null || subscription.bootstrapPhase < lowest
+            ? subscription.bootstrapPhase
+            : lowest,
+        null
+      ) ?? null;
+  const hasError = subscriptions.some(
+    (subscription) => subscription.phase === 'error'
+  );
+  const isBootstrapping = subscriptions.some(
+    (subscription) => !subscription.ready && subscription.phase !== 'error'
+  );
+  const channelPhase = hasError
+    ? 'error'
+    : isBootstrapping
+      ? 'bootstrapping'
+      : complete && expectedSubscriptionIds.length > 0
+        ? 'live'
+        : 'idle';
+  const progressPercent =
+    subscriptions.length === 0
+      ? 100
+      : Math.round(
+          subscriptions.reduce(
+            (sum, subscription) => sum + subscription.progressPercent,
+            0
+          ) / subscriptions.length
+        );
+  const phaseMap = new Map<
+    number,
+    {
+      expectedSubscriptionIds: string[];
+      readySubscriptionIds: string[];
+      pendingSubscriptionIds: string[];
+      progressPercent: number;
+    }
+  >();
+  for (const subscription of subscriptions) {
+    const phase = phaseMap.get(subscription.bootstrapPhase) ?? {
+      expectedSubscriptionIds: [],
+      readySubscriptionIds: [],
+      pendingSubscriptionIds: [],
+      progressPercent: 0,
+    };
+    phase.expectedSubscriptionIds.push(subscription.id);
+    phase.progressPercent += subscription.progressPercent;
+    if (subscription.ready) {
+      phase.readySubscriptionIds.push(subscription.id);
+    } else {
+      phase.pendingSubscriptionIds.push(subscription.id);
+    }
+    phaseMap.set(subscription.bootstrapPhase, phase);
+  }
+  const phases = [...phaseMap.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([phase, summary]) => ({
+      phase,
+      expectedSubscriptionIds: summary.expectedSubscriptionIds,
+      readySubscriptionIds: summary.readySubscriptionIds,
+      pendingSubscriptionIds: summary.pendingSubscriptionIds,
+      isReady: summary.pendingSubscriptionIds.length === 0,
+      progressPercent:
+        summary.expectedSubscriptionIds.length === 0
+          ? 100
+          : Math.round(
+              summary.progressPercent / summary.expectedSubscriptionIds.length
+            ),
+    }));
+
+  return {
+    channelPhase,
+    progressPercent,
+    isBootstrapping,
+    criticalReady,
+    interactiveReady,
+    complete,
+    activePhase,
+    expectedSubscriptionIds,
+    readySubscriptionIds,
+    pendingSubscriptionIds,
+    subscriptions,
+    phases,
+  };
+}
+
+function normalizeBootstrapPhase(value: number | null | undefined): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0;
 }
 
 function parseConflictSummaries(value: string): SyncularV2ConflictSummary[] {

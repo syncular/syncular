@@ -3,7 +3,10 @@ import {
   SYNCULAR_V2_PACKAGE_NAME,
   SYNCULAR_V2_PACKAGE_VERSION,
 } from './runtime-contract';
-import type { SyncularV2DiagnosticEvent } from './types';
+import type {
+  SyncularV2BootstrapStatus,
+  SyncularV2DiagnosticEvent,
+} from './types';
 import {
   createSyncularV2WorkerClient,
   SyncularV2WorkerClient,
@@ -565,7 +568,10 @@ describe('Syncular v2 worker client', () => {
       ok: true,
       value: {
         changedTables: [],
+        changedRows: [],
+        changedRowsTruncated: false,
         subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
         pushedCommits: 0,
       },
     });
@@ -581,7 +587,10 @@ describe('Syncular v2 worker client', () => {
 
     await expect(syncPromise).resolves.toEqual({
       changedTables: [],
+      changedRows: [],
+      changedRowsTruncated: false,
       subscriptions: [],
+      bootstrap: zeroBootstrapStatus(),
       pushedCommits: 0,
     });
   });
@@ -740,7 +749,10 @@ describe('Syncular v2 worker client', () => {
       ok: true,
       value: {
         changedTables: ['tasks'],
+        changedRows: [],
+        changedRowsTruncated: false,
         subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
         pushedCommits: 0,
       },
     });
@@ -756,7 +768,10 @@ describe('Syncular v2 worker client', () => {
 
     await expect(syncPromise).resolves.toEqual({
       changedTables: ['tasks'],
+      changedRows: [],
+      changedRowsTruncated: false,
       subscriptions: [],
+      bootstrap: zeroBootstrapStatus(),
       pushedCommits: 0,
     });
     expect(expiredStatuses).toEqual([401]);
@@ -978,8 +993,12 @@ describe('Syncular v2 worker client', () => {
       requestTimeoutMs: 100,
     });
     const rowsEvents: unknown[] = [];
+    const bootstrapEvents: unknown[] = [];
     const presenceEvents: unknown[] = [];
     client.addEventListener('rowsChanged', (event) => rowsEvents.push(event));
+    client.addEventListener('bootstrapChanged', (event) =>
+      bootstrapEvents.push(event)
+    );
     client.addEventListener('presenceChanged', (event) =>
       presenceEvents.push(event)
     );
@@ -990,6 +1009,14 @@ describe('Syncular v2 worker client', () => {
       source: 'remotePull',
       changedTables: ['tasks'],
       changedRows: [],
+    });
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'bootstrapChanged',
+      bootstrap: {
+        ...zeroBootstrapStatus(),
+        channelPhase: 'live',
+      },
     });
     worker.emit({
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -1011,6 +1038,12 @@ describe('Syncular v2 worker client', () => {
         source: 'remotePull',
         changedTables: ['tasks'],
         changedRows: [],
+      },
+    ]);
+    expect(bootstrapEvents).toEqual([
+      {
+        ...zeroBootstrapStatus(),
+        channelPhase: 'live',
       },
     ]);
     expect(presenceEvents).toEqual([
@@ -1333,4 +1366,21 @@ async function waitForMessages(
   throw new Error(
     `expected ${count} worker messages, got ${worker.messages.length}`
   );
+}
+
+function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
+  return {
+    channelPhase: 'idle',
+    progressPercent: 100,
+    isBootstrapping: false,
+    criticalReady: true,
+    interactiveReady: true,
+    complete: true,
+    activePhase: null,
+    expectedSubscriptionIds: [],
+    readySubscriptionIds: [],
+    pendingSubscriptionIds: [],
+    subscriptions: [],
+    phases: [],
+  };
 }
