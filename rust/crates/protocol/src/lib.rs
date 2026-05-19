@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+pub mod binary_snapshot;
 pub mod binary_sync_pack;
 pub mod error;
 

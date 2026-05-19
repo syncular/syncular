@@ -404,10 +404,10 @@ fn diesel_client_applies_local_encrypted_crdt_text_update() -> Result<()> {
     let operations = outbox_operations(&mut conn)?;
     assert_eq!(operations.len(), 2);
     let encrypted_operation = operations
-        .last()
-        .and_then(|ops| ops.first())
+        .iter()
+        .flatten()
+        .find(|operation| operation.table == CRDT_UPDATES_TABLE)
         .ok_or_else(|| SyncularError::protocol_message("missing encrypted CRDT outbox op"))?;
-    assert_eq!(encrypted_operation.table, CRDT_UPDATES_TABLE);
     let payload = encrypted_operation.payload.as_ref().expect("payload");
     assert!(payload.get("ciphertext").and_then(Value::as_str).is_some());
     assert!(payload.get("update_base64").is_none());
@@ -488,10 +488,10 @@ fn sync_worker_enqueues_encrypted_crdt_yjs_update() -> Result<()> {
     let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
     let operations = outbox_operations(&mut conn)?;
     let encrypted_operation = operations
-        .last()
-        .and_then(|ops| ops.first())
+        .iter()
+        .flatten()
+        .find(|operation| operation.table == CRDT_UPDATES_TABLE)
         .ok_or_else(|| SyncularError::protocol_message("missing encrypted CRDT worker op"))?;
-    assert_eq!(encrypted_operation.table, CRDT_UPDATES_TABLE);
     let payload = encrypted_operation.payload.as_ref().expect("payload");
     assert!(payload.get("ciphertext").and_then(Value::as_str).is_some());
     assert!(payload.get("update_base64").is_none());

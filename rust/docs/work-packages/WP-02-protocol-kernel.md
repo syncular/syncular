@@ -71,18 +71,40 @@ Second retained slice:
   `38.4ms -> 41.8ms`, dense binary encode `42.7ms -> 41.4ms`, generated binary
   encode `42.4ms -> 42.2ms`, with response bytes unchanged.
 
+Third retained slice:
+
+- `syncular-protocol` now owns binary snapshot table/row/payload decoding and
+  row-frame decoding.
+- Runtime `binary_snapshot` is now a thin adapter that keeps
+  `SnapshotChunkRows` and runtime-error SQLite visitor adapters.
+- Binary sync-pack row groups now call the protocol binary snapshot decoder
+  instead of maintaining a duplicate private table decoder.
+- Release WASM packaging now runs `wasm-opt --all-features`; this reduced the
+  current full artifact from `3,417,217` raw bytes to `3,375,951` raw bytes and
+  restored budget headroom.
+- Store tests no longer rely on outbox commit timestamp ordering for encrypted
+  CRDT assertions.
+- Browser 100k scoreboard stayed inside the accepted regression gate:
+  `rust_bootstrap_ms` `138.04 -> 141.24`, `rust_pull_apply_ms` `73 -> 74`,
+  `rust_snapshot_chunk_apply_ms` `62 -> 65`, and served WASM bytes
+  `3,326,638 -> 3,375,951` (`+1.48%`, under budget).
+
 Gates run:
 
 - `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
 - `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`
+- `bun run --cwd rust/bindings/browser build:wasm`
+- `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --baseline=.context/benchmarks/browser-e2e-100k-baseline.json --fail-on-regression`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
-- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture --test protocol_contract --test protocol_fixtures`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture --test protocol_contract --test protocol_fixtures --test store_backends`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 
 ## Next Action
 
-Separate pure binary snapshot chunk decoding from runtime storage visitor
-traits so `syncular-protocol` can own the wire codec without importing runtime
-store errors.
+Move the remaining pure protocol helpers that are still runtime-owned
+(`core/protocol.rs` canonical payload/digest helpers and snapshot manifest
+validation) behind protocol-crate APIs, while keeping runtime application and
+store behavior out of the protocol crate.

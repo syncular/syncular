@@ -3,7 +3,7 @@ use crate::app_schema::{
     validate_app_schema_runtime_features, AppSchema, AppSchemaJson, AppTableMetadata,
 };
 use crate::binary_snapshot::{
-    BinarySnapshotCell, BinarySnapshotPayload, BinarySnapshotRowCursor, BorrowedBinarySnapshotCell,
+    BinarySnapshotCell, BinarySnapshotPayload, BinarySnapshotRowCursor,
     BorrowedBinarySnapshotRawCellVisitor, DecodedBinarySnapshotRows, SnapshotChunkRows,
 };
 use crate::client::{sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow};
@@ -377,7 +377,6 @@ struct SnapshotStatementCacheEntry {
 #[derive(Debug)]
 struct LiveQuery {
     id: String,
-    sql: String,
     params: Vec<Value>,
     tables: Vec<String>,
     last_hash: String,
@@ -3708,7 +3707,6 @@ impl SyncularRustOwnedSqlite {
         let last_hash = result_hash(&rows)?;
         self.live_queries.push(LiveQuery {
             id: id.clone(),
-            sql: sql.to_string(),
             params,
             tables,
             last_hash,
@@ -5267,33 +5265,6 @@ fn bind_binary_snapshot_cell(
     bind_sqlite_parameter_result(rc, index)
 }
 
-fn bind_borrowed_binary_snapshot_cell(
-    stmt: *mut ffi::sqlite3_stmt,
-    index: i32,
-    value: BorrowedBinarySnapshotCell<'_>,
-) -> Result<()> {
-    let rc = match value {
-        BorrowedBinarySnapshotCell::Null => unsafe { ffi::sqlite3_bind_null(stmt, index) },
-        BorrowedBinarySnapshotCell::String(value) => {
-            bind_text_bytes_static(stmt, index, value.as_bytes())?
-        }
-        BorrowedBinarySnapshotCell::Integer(value) => unsafe {
-            ffi::sqlite3_bind_int64(stmt, index, value)
-        },
-        BorrowedBinarySnapshotCell::Float(value) => unsafe {
-            ffi::sqlite3_bind_double(stmt, index, value)
-        },
-        BorrowedBinarySnapshotCell::Boolean(value) => unsafe {
-            ffi::sqlite3_bind_int(stmt, index, i32::from(value))
-        },
-        BorrowedBinarySnapshotCell::Json(value) => {
-            bind_text_bytes_static(stmt, index, value.as_bytes())?
-        }
-        BorrowedBinarySnapshotCell::Bytes(value) => bind_blob_bytes_static(stmt, index, value)?,
-    };
-    bind_sqlite_parameter_result(rc, index)
-}
-
 fn bind_text_bytes(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]) -> Result<i32> {
     let len = i32::try_from(bytes.len())
         .map_err(|_| SyncularError::protocol_message("SQL text parameter is too large"))?;
@@ -5318,20 +5289,6 @@ fn bind_text_bytes_static(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]
             bytes.as_ptr() as *const c_char,
             len,
             ffi::SQLITE_STATIC(),
-        )
-    })
-}
-
-fn bind_blob_bytes(stmt: *mut ffi::sqlite3_stmt, index: i32, bytes: &[u8]) -> Result<i32> {
-    let len = i32::try_from(bytes.len())
-        .map_err(|_| SyncularError::protocol_message("SQL blob parameter is too large"))?;
-    Ok(unsafe {
-        ffi::sqlite3_bind_blob(
-            stmt,
-            index,
-            bytes.as_ptr().cast::<c_void>(),
-            len,
-            ffi::SQLITE_TRANSIENT(),
         )
     })
 }

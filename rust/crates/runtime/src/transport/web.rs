@@ -400,34 +400,6 @@ async fn fetch_bytes(
     Ok(Uint8Array::new(&buffer).to_vec())
 }
 
-async fn fetch_json_metered(
-    method: &str,
-    url: &str,
-    body: Option<String>,
-    headers: &[(String, String)],
-    abort_signal: Option<&JsValue>,
-    stats: &Rc<RefCell<WebTransportStats>>,
-) -> Result<JsValue> {
-    record_request(
-        stats,
-        body.as_ref().map_or(0, |value| value.as_bytes().len()),
-    );
-    let response = fetch_response(method, url, body, headers, abort_signal).await?;
-    let status = response.status();
-    if !response.ok() {
-        let body = response_text(&response).await.unwrap_or_default();
-        record_response(stats, body.as_bytes().len());
-        return Err(SyncularError::message(
-            ErrorKind::Transport,
-            format!("browser fetch failed with HTTP {status}: {body}"),
-        ));
-    }
-    let text = response_text(&response).await?;
-    record_response(stats, text.as_bytes().len());
-    js_sys::JSON::parse(&text)
-        .map_err(|err| js_error(ErrorKind::Transport, "parse browser response json", err))
-}
-
 async fn fetch_sync_response_metered(
     method: &str,
     url: &str,
