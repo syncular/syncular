@@ -44,3 +44,4 @@ to this shape.
 21. [`WP-21 Query Observation And Live Query Precision`](WP-21-query-observation-live-query-precision.md)
 22. [`WP-22 Undo/Redo Mutation History`](WP-22-undo-redo-mutation-history.md)
 23. [`WP-23 Time Travel And Audit Inspection`](WP-23-time-travel-audit-inspection.md)
+24. [`WP-24 Blob Hardening And Production Polish`](WP-24-blob-hardening-production-polish.md)
