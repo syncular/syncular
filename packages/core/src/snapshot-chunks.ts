@@ -449,10 +449,7 @@ function createBinarySnapshotValueWriter(
   switch (column.type) {
     case 'string':
       return (writer, value) => {
-        if (typeof value !== 'string') {
-          throw new Error(`${label} expected string`);
-        }
-        writer.writeString32(value, label);
+        writer.writeString32(binarySnapshotString(value, label), label);
       };
     case 'integer':
       return (writer, value) => {
@@ -528,15 +525,12 @@ export class BinarySnapshotTableWriter {
     );
   }
 
-  writeString(value: string, label: string): void {
+  writeString(value: string | Date, label: string): void {
     this.currentNullBitmapOffset();
-    if (typeof value !== 'string') {
-      throw new Error(`${label} expected string`);
-    }
-    this.writer.writeString32(value, label);
+    this.writer.writeString32(binarySnapshotString(value, label), label);
   }
 
-  writeInteger(value: number | bigint, label: string): void {
+  writeInteger(value: number | bigint | string, label: string): void {
     this.currentNullBitmapOffset();
     this.writer.writeInt64(value, label);
   }
@@ -728,10 +722,18 @@ function binarySnapshotInt64(value: unknown, label: string): bigint {
     bigint = value;
   } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
     bigint = BigInt(value);
+  } else if (typeof value === 'string' && /^-?\d+$/.test(value)) {
+    bigint = BigInt(value);
   } else {
     throw new Error(`${label} expected a safe integer or bigint`);
   }
   return bigint;
+}
+
+function binarySnapshotString(value: unknown, label: string): string {
+  if (typeof value === 'string') return value;
+  if (value instanceof Date) return value.toISOString();
+  throw new Error(`${label} expected string`);
 }
 
 function coerceBinaryBytes(value: unknown, columnName: string): Uint8Array {

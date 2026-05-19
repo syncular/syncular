@@ -2371,3 +2371,71 @@ Decision:
   improve with minimal code and a tiny size increase. Future candidates should
   compare against
   `.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`.
+
+## 2026-05-19 - External App-Style Rust Benchmark Unblocked
+
+Change:
+
+- Binary snapshot integer columns now accept integer strings from database
+  drivers, and binary snapshot string columns now accept `Date` values by
+  encoding them as ISO strings.
+- This fixes the external Postgres-backed branch server path that failed Rust
+  binary bootstrap with `binary snapshot server_version expected a safe integer
+  or bigint`, then `binary snapshot updated_at expected string`.
+
+Correctness gates:
+
+```bash
+bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts
+bun test packages/server-hono/src/__tests__/pull-chunk-storage.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts
+```
+
+External app-style gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+
+bun run bench:run -- --stack syncular --scenario bootstrap
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario online-propagation
+bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+Valid external results:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Bootstrap 100k | `780.11ms` | `1221.43ms` |
+| Bootstrap 500k | `3855.10ms` | `6099.68ms` |
+| 500k pull request | `1214.76ms` | `1031ms` |
+| 500k snapshot fetch | `78.14ms` | `152ms` |
+| 500k local apply | `2114.80ms` | `1692ms` |
+| 500k peak memory | `478.70MB` | `694.38MB` |
+| Local list p50 | `0.24ms` | `0.56ms` |
+| Local search p50 | `0.09ms` | `0.87ms` |
+| Aggregate read-model p50 | n/a | `0.08ms` |
+| Aggregate raw SQL p50 | `6.12ms` | `59.73ms` |
+| Rust online mirror p50 | n/a | `27.81ms` |
+| Rust online mirror p95 | n/a | `39.00ms` |
+| Rust reconnect 25 | n/a | `93.74ms` |
+| Rust reconnect 100 | n/a | `222.97ms` |
+| Rust reconnect 250 | n/a | `2118.61ms` |
+
+Notes:
+
+- TS online-propagation and reconnect-storm failed with the existing snapshot
+  chunk integrity mismatch, so those scenarios only have Rust-valid results in
+  this run.
+- Rust total bootstrap is still slower at large row counts, but the binary path
+  now has valid external evidence again. The remaining 500k Rust total is
+  dominated by `derived_schema_ms_500000=3213.03ms` plus
+  `local_apply_ms_500000=1692ms`.

@@ -103,17 +103,23 @@ read-only review:
     down from `6.50MB` before compaction. Browser direct artifact correctness
     now covers corrupted downloads and subscription revocation clearing. The
     high-level Hono server factory can now serve scoped artifacts, and the Bun
-    SQLite artifact encoder handles Postgres-style snapshot values. Native
-    direct artifact import via temp-file attach was rejected because Diesel
+    SQLite artifact encoder handles Postgres-style snapshot values. The normal
+    external app-style benchmark is unblocked again after binary snapshot
+    encoding learned to accept Postgres-style integer strings and `Date`
+    timestamp values from database drivers; the latest normal row-chunk Rust
+    500k bootstrap is `6099.68ms` versus TS `3855.10ms`, with Rust local apply
+    faster (`1692ms` versus `2114.80ms`) but derived schema work still
+    expensive (`3213.03ms`). Native direct artifact import via temp-file attach
+    was rejected because Diesel
     cannot detach the artifact database cleanly inside the active transaction;
     native stays on verified artifact row projection until a raw SQLite
     deserialize hook or no-row-delta pull mode exists. The browser benchmark
     harness now records the actual Rust pull request limits and artifact
     capability bit, plus server artifact-cache lookup timing. A 100k artifact
     page-size probe was rejected because it fell back to binary chunks and was
-    about `2.35x` slower than the 50k direct artifact baseline. External Docker
-    app-style benchmark evidence remains open; the local Docker daemon was
-    unresponsive during the latest attempt.
+    about `2.35x` slower than the 50k direct artifact baseline. The normal
+    row-chunk path is now measured externally again; scoped artifact app-style
+    evidence remains a separate open gate.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained
