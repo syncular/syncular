@@ -16,9 +16,11 @@ use syncular_runtime::fixtures::todo::{
     app_schema as demo_todo_app_schema, migrations::current_schema_version,
 };
 use syncular_runtime::protocol::{
-    validate_pull_commit_integrity_metadata, BootstrapState, CombinedRequest, CombinedResponse,
+    snapshot_manifest_digest, validate_pull_commit_integrity_metadata,
+    validate_pull_snapshot_manifests, BootstrapState, CombinedRequest, CombinedResponse,
     OperationResult, PullResponse, PushBatchResponse, PushCommitResponse, SnapshotChunkRef,
-    SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot,
+    SnapshotManifest, SnapshotManifestChunkRef, SubscriptionResponse, SyncChange, SyncCommit,
+    SyncSnapshot,
 };
 use syncular_runtime::store::SyncStore;
 use syncular_runtime::transport::{
@@ -1635,6 +1637,31 @@ fn commit_integrity_metadata_validation_rejects_partial_or_reordered_roots() {
 }
 
 #[test]
+fn snapshot_manifest_validation_rejects_missing_or_tampered_manifests() -> Result<()> {
+    let chunk = SnapshotChunkRef {
+        id: "chunk-1".to_string(),
+        byte_length: 128,
+        sha256: "0".repeat(64),
+        encoding: "binary-table-v1".to_string(),
+        compression: "gzip".to_string(),
+    };
+    let manifest = snapshot_manifest_for_test("tasks", &chunk)?;
+    let mut pull = snapshot_manifest_pull_response(chunk.clone(), Some(manifest));
+    validate_pull_snapshot_manifests(&pull).expect("valid manifest");
+
+    pull.subscriptions[0].snapshots.as_mut().unwrap()[0].manifest = None;
+    let error = validate_pull_snapshot_manifests(&pull).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+
+    let mut tampered_manifest = snapshot_manifest_for_test("tasks", &chunk)?;
+    tampered_manifest.chunks[0].sha256 = "1".repeat(64);
+    let pull = snapshot_manifest_pull_response(chunk, Some(tampered_manifest));
+    let error = validate_pull_snapshot_manifests(&pull).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+    Ok(())
+}
+
+#[test]
 fn server_required_schema_version_newer_than_client_is_rejected() -> Result<()> {
     let path = temp_db_path("syncular-protocol-server-schema");
     let store = RusqliteStore::open(&path)?;
@@ -2040,6 +2067,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             table: "tasks".to_string(),
             rows: vec![encrypted_task_row()],
             chunks: None,
+            manifest: None,
             is_first_page: true,
             is_last_page: true,
             bootstrap_state_after: None,
@@ -2048,15 +2076,14 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
             table: "tasks".to_string(),
             rows: vec![blob_reference_task_row()],
             chunks: None,
+            manifest: None,
             is_first_page: true,
             is_last_page: true,
             bootstrap_state_after: None,
         }]),
         MockMode::RejectPush | MockMode::EncryptedConflict => None,
-        MockMode::EncryptedChunkedSnapshot => Some(vec![SyncSnapshot {
-            table: "tasks".to_string(),
-            rows: Vec::new(),
-            chunks: Some(vec![SnapshotChunkRef {
+        MockMode::EncryptedChunkedSnapshot => {
+            let chunk = SnapshotChunkRef {
                 id: sync_conformance_str(&["snapshotChunk", "chunkId"]),
                 byte_length: sync_conformance_i64(&["snapshotChunk", "byteLength"])
                     .try_into()
@@ -2064,11 +2091,19 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
                 sha256: sync_conformance_str(&["snapshotChunk", "sha256"]),
                 encoding: sync_conformance_str(&["snapshotChunk", "encoding"]),
                 compression: sync_conformance_str(&["snapshotChunk", "compression"]),
-            }]),
-            is_first_page: true,
-            is_last_page: true,
-            bootstrap_state_after: None,
-        }]),
+            };
+            Some(vec![SyncSnapshot {
+                table: "tasks".to_string(),
+                rows: Vec::new(),
+                chunks: Some(vec![chunk.clone()]),
+                manifest: Some(
+                    snapshot_manifest_for_test("tasks", &chunk).expect("snapshot manifest"),
+                ),
+                is_first_page: true,
+                is_last_page: true,
+                bootstrap_state_after: None,
+            }])
+        }
         MockMode::WakeupPull => Some(vec![SyncSnapshot {
             table: "tasks".to_string(),
             rows: vec![task_row(
@@ -2077,6 +2112,7 @@ fn pull_response_for(mode: MockMode) -> PullResponse {
                 sync_conformance_i64(&["realtime", "task", "serverVersion"]),
             )],
             chunks: None,
+            manifest: None,
             is_first_page: true,
             is_last_page: true,
             bootstrap_state_after: None,
@@ -2276,6 +2312,57 @@ fn integrity_commit(
         commit_chain_root,
         changes: Vec::new(),
     }
+}
+
+fn snapshot_manifest_pull_response(
+    chunk: SnapshotChunkRef,
+    manifest: Option<SnapshotManifest>,
+) -> PullResponse {
+    PullResponse {
+        ok: true,
+        subscriptions: vec![SubscriptionResponse {
+            id: "sub-tasks".to_string(),
+            status: "active".to_string(),
+            scopes: scopes(),
+            bootstrap: true,
+            bootstrap_state: None,
+            next_cursor: 42,
+            commits: Vec::new(),
+            snapshots: Some(vec![SyncSnapshot {
+                table: "tasks".to_string(),
+                rows: Vec::new(),
+                chunks: Some(vec![chunk]),
+                manifest,
+                is_first_page: true,
+                is_last_page: true,
+                bootstrap_state_after: None,
+            }]),
+        }],
+    }
+}
+
+fn snapshot_manifest_for_test(table: &str, chunk: &SnapshotChunkRef) -> Result<SnapshotManifest> {
+    let mut manifest = SnapshotManifest {
+        version: 1,
+        digest: String::new(),
+        table: table.to_string(),
+        as_of_commit_seq: 42,
+        scope_digest: "c".repeat(64),
+        row_cursor: None,
+        row_limit: 1000,
+        next_row_cursor: None,
+        is_first_page: true,
+        is_last_page: true,
+        chunks: vec![SnapshotManifestChunkRef {
+            id: chunk.id.clone(),
+            byte_length: chunk.byte_length,
+            sha256: chunk.sha256.clone(),
+            encoding: chunk.encoding.clone(),
+            compression: chunk.compression.clone(),
+        }],
+    };
+    manifest.digest = snapshot_manifest_digest(&manifest)?;
+    Ok(manifest)
 }
 
 fn test_field_encryption() -> Result<FieldEncryption> {

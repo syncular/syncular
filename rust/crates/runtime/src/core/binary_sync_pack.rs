@@ -11,7 +11,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 10;
+const VERSION: u16 = 11;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -306,17 +306,23 @@ fn scope_values_at(
 }
 
 fn read_snapshot(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncSnapshot> {
-    Ok(SyncSnapshot {
+    let mut snapshot = SyncSnapshot {
         table: reader.read_string16("snapshot table")?,
         rows: reader.read_array("snapshot rows", |reader| reader.read_json("snapshot row"))?,
         chunks: reader.read_optional_array("snapshot chunks", read_snapshot_chunk_ref)?,
+        manifest: None,
         is_first_page: reader.read_bool("snapshot first page")?,
         is_last_page: reader.read_bool("snapshot last page")?,
         bootstrap_state_after: reader
             .read_optional_json("snapshot bootstrap state after")?
             .map(serde_json::from_value)
             .transpose()?,
-    })
+    };
+    snapshot.manifest = reader
+        .read_optional_json("snapshot manifest")?
+        .map(serde_json::from_value)
+        .transpose()?;
+    Ok(snapshot)
 }
 
 fn read_snapshot_chunk_ref(reader: &mut BinarySyncPackReader<'_>) -> Result<SnapshotChunkRef> {

@@ -212,10 +212,37 @@ export const SyncSnapshotChunkRefSchema = z.object({
 
 export type SyncSnapshotChunkRef = z.infer<typeof SyncSnapshotChunkRefSchema>;
 
+export const SyncSnapshotManifestChunkSchema = z.object({
+  id: z.string(),
+  byteLength: z.number().int(),
+  sha256: z.string(),
+  encoding: SyncSnapshotChunkEncodingSchema,
+  compression: z.literal(SYNC_SNAPSHOT_CHUNK_COMPRESSION),
+});
+
+export const SyncSnapshotManifestSchema = z.object({
+  version: z.literal(1),
+  digest: z.string(),
+  table: z.string(),
+  asOfCommitSeq: z.number().int(),
+  scopeDigest: z.string(),
+  rowCursor: z.string().nullable(),
+  rowLimit: z.number().int().min(1),
+  nextRowCursor: z.string().nullable(),
+  isFirstPage: z.boolean(),
+  isLastPage: z.boolean(),
+  chunks: z.array(SyncSnapshotManifestChunkSchema),
+});
+
+export type SyncSnapshotManifest = z.infer<
+  typeof SyncSnapshotManifestSchema
+>;
+
 export const SyncSnapshotSchema = z.object({
   table: z.string(),
   rows: z.array(z.unknown()),
   chunks: z.array(SyncSnapshotChunkRefSchema).optional(),
+  manifest: SyncSnapshotManifestSchema.optional(),
   isFirstPage: z.boolean(),
   isLastPage: z.boolean(),
   bootstrapStateAfter: SyncBootstrapStateSchema.nullable().optional(),

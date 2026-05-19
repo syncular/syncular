@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import {
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
+  createSnapshotManifest,
   encodeBinarySnapshotTable,
   encodeSnapshotRows,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
@@ -24,7 +25,7 @@ mkdirSync(fixturesDir, { recursive: true });
 writeFixture('json-combined-sync-v1.json', jsonCombinedSyncFixture());
 writeFixture(
   'binary-sync-pack-v1-combined-response.json',
-  binarySyncPackFixture()
+  await binarySyncPackFixture()
 );
 writeFixture('binary-snapshot-table-v1-tasks.json', binarySnapshotFixture());
 writeFixture('json-row-frame-v1-tasks.json', jsonRowFrameFixture());
@@ -197,7 +198,14 @@ function jsonCombinedSyncFixture() {
   };
 }
 
-function binarySyncPackFixture() {
+async function binarySyncPackFixture() {
+  const chunk = {
+    id: 'chunk-1',
+    byteLength: 128,
+    sha256: '0'.repeat(64),
+    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    compression: 'gzip' as const,
+  };
   const decodedResponse = {
     ok: true,
     requiredSchemaVersion: 2,
@@ -263,22 +271,25 @@ function binarySyncPackFixture() {
               ],
             },
           ],
-          snapshots: [
-            {
-              table: 'tasks',
-              rows: [],
-              chunks: [
-                {
-                  id: 'chunk-1',
-                  byteLength: 128,
-                  sha256:
-                    '0000000000000000000000000000000000000000000000000000000000000000',
-                  encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-                  compression: 'gzip',
-                },
-              ],
-              isFirstPage: true,
-              isLastPage: true,
+            snapshots: [
+              {
+                table: 'tasks',
+                rows: [],
+                chunks: [chunk],
+                manifest: await createSnapshotManifest({
+                  version: 1,
+                  table: 'tasks',
+                  asOfCommitSeq: 42,
+                  scopeDigest: 'c'.repeat(64),
+                  rowCursor: null,
+                  rowLimit: 1000,
+                  nextRowCursor: null,
+                  isFirstPage: true,
+                  isLastPage: true,
+                  chunks: [chunk],
+                }),
+                isFirstPage: true,
+                isLastPage: true,
               bootstrapStateAfter: null,
             },
           ],

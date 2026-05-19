@@ -1281,6 +1281,7 @@ impl SyncTransport for EncryptedCrdtPullTransport {
                                 "title_yjs_state": null
                             })],
                             chunks: None,
+                            manifest: None,
                             is_first_page: true,
                             is_last_page: true,
                             bootstrap_state_after: None,
@@ -1371,6 +1372,7 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
                                 "title_yjs_state": null
                             })],
                             chunks: None,
+                            manifest: None,
                             is_first_page: true,
                             is_last_page: true,
                             bootstrap_state_after: None,

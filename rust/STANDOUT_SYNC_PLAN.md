@@ -114,6 +114,13 @@ of jumping straight into new public APIs.
   optional, but malformed partial metadata, non-hex roots, and reordered
   integrity-bearing commits now fail with protocol errors before rows are
   applied.
+- 2026-05-19: Added chunked snapshot manifest metadata and validation.
+  `binary-sync-pack-v1` wire version 11 now carries a per-snapshot manifest
+  with ordered chunk refs, row cursor bounds, scope digest, page flags, and a
+  manifest digest. Rust native/browser clients reject missing or tampered
+  chunked snapshot manifests before fetching/applying chunk rows. The shared
+  fixtures, TypeScript schemas, Rust protocol contracts, Hono chunk routes,
+  testkit helper, and browser/Hono WASM sync coverage have been updated.
 
 ## Priority Roadmap
 

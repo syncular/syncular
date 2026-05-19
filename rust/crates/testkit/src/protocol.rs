@@ -1,8 +1,9 @@
 use serde_json::{Map, Value};
 use syncular_runtime::protocol::{
-    BootstrapState, CombinedRequest, CombinedResponse, OperationResult, PullResponse,
-    PushBatchResponse, PushCommitResponse, ScopeValues, SnapshotChunkRef, SubscriptionResponse,
-    SyncChange, SyncCommit, SyncSnapshot,
+    snapshot_manifest_digest, BootstrapState, CombinedRequest, CombinedResponse, OperationResult,
+    PullResponse, PushBatchResponse, PushCommitResponse, ScopeValues, SnapshotChunkRef,
+    SnapshotManifest, SnapshotManifestChunkRef, SubscriptionResponse, SyncChange, SyncCommit,
+    SyncSnapshot,
 };
 
 pub fn scope_values(items: impl IntoIterator<Item = (impl Into<String>, Value)>) -> ScopeValues {
@@ -134,6 +135,7 @@ pub fn snapshot_page_combined_response(
                     table: table.to_string(),
                     rows,
                     chunks: None,
+                    manifest: None,
                     is_first_page,
                     is_last_page,
                     bootstrap_state_after: None,
@@ -150,6 +152,7 @@ pub fn snapshot_chunks_combined_response(
     scopes: ScopeValues,
     next_cursor: i64,
 ) -> CombinedResponse {
+    let manifest = snapshot_manifest_for_chunks(table, next_cursor, &chunks);
     CombinedResponse {
         ok: true,
         required_schema_version: None,
@@ -169,6 +172,7 @@ pub fn snapshot_chunks_combined_response(
                     table: table.to_string(),
                     rows: Vec::new(),
                     chunks: Some(chunks),
+                    manifest: Some(manifest),
                     is_first_page: true,
                     is_last_page: true,
                     bootstrap_state_after: None,
@@ -176,6 +180,37 @@ pub fn snapshot_chunks_combined_response(
             }],
         }),
     }
+}
+
+fn snapshot_manifest_for_chunks(
+    table: &str,
+    as_of_commit_seq: i64,
+    chunks: &[SnapshotChunkRef],
+) -> SnapshotManifest {
+    let mut manifest = SnapshotManifest {
+        version: 1,
+        digest: String::new(),
+        table: table.to_string(),
+        as_of_commit_seq,
+        scope_digest: "0".repeat(64),
+        row_cursor: None,
+        row_limit: 1000,
+        next_row_cursor: None,
+        is_first_page: true,
+        is_last_page: true,
+        chunks: chunks
+            .iter()
+            .map(|chunk| SnapshotManifestChunkRef {
+                id: chunk.id.clone(),
+                byte_length: chunk.byte_length,
+                sha256: chunk.sha256.clone(),
+                encoding: chunk.encoding.clone(),
+                compression: chunk.compression.clone(),
+            })
+            .collect(),
+    };
+    manifest.digest = snapshot_manifest_digest(&manifest).expect("test snapshot manifest digest");
+    manifest
 }
 
 pub fn snapshot_subscription_response(
@@ -197,6 +232,7 @@ pub fn snapshot_subscription_response(
             table: table.to_string(),
             rows,
             chunks: None,
+            manifest: None,
             is_first_page: true,
             is_last_page: true,
             bootstrap_state_after: None,

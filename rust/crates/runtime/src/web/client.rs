@@ -11,10 +11,10 @@ use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
-    validate_pull_commit_integrity_metadata, CombinedRequest, CombinedResponse, PullRequest,
-    PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues, SubscriptionRequest,
-    SyncChange, SyncCommit, SyncOperation, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SYNC_PACK_ENCODING_BINARY_V1,
+    validate_pull_commit_integrity_metadata, validate_pull_snapshot_manifests, CombinedRequest,
+    CombinedResponse, PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
+    SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
@@ -310,6 +310,7 @@ where
         result: &mut WebSyncResult,
     ) -> Result<()> {
         validate_pull_commit_integrity_metadata(&pull)?;
+        validate_pull_snapshot_manifests(&pull)?;
         let app_schema = self.store.app_schema();
         let include_snapshot_rows = self.config.pull.include_snapshot_rows;
         let collect_changed_rows = self.config.pull.collect_changed_rows;
@@ -1408,7 +1409,8 @@ fn is_auth_transport_error(error: &SyncularError) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::{
-        CombinedResponse, PullResponse, SnapshotChunkRef, SubscriptionResponse, SyncSnapshot,
+        snapshot_manifest_digest, CombinedResponse, PullResponse, SnapshotChunkRef,
+        SnapshotManifest, SnapshotManifestChunkRef, SubscriptionResponse, SyncSnapshot,
     };
     use crate::transport::web::WebRealtimeSocket;
     use serde_json::{json, Map, Value};
@@ -1451,6 +1453,14 @@ mod tests {
             _request: &'a CombinedRequest,
         ) -> Pin<Box<dyn Future<Output = Result<CombinedResponse>> + 'a>> {
             Box::pin(async move {
+                let chunk = SnapshotChunkRef {
+                    id: "missing-chunk".to_string(),
+                    byte_length: 1,
+                    sha256: "0".repeat(64),
+                    encoding: "json-row-frame-v1".to_string(),
+                    compression: "gzip".to_string(),
+                };
+                let manifest = snapshot_manifest_for_test(&chunk)?;
                 Ok(CombinedResponse {
                     ok: true,
                     required_schema_version: None,
@@ -1469,13 +1479,8 @@ mod tests {
                             snapshots: Some(vec![SyncSnapshot {
                                 table: "tasks".to_string(),
                                 rows: vec![task_row("incoming-inline-task", "p0")],
-                                chunks: Some(vec![SnapshotChunkRef {
-                                    id: "missing-chunk".to_string(),
-                                    byte_length: 1,
-                                    sha256: "unused".to_string(),
-                                    encoding: "json-row-frame-v1".to_string(),
-                                    compression: "gzip".to_string(),
-                                }]),
+                                chunks: Some(vec![chunk]),
+                                manifest: Some(manifest),
                                 is_first_page: true,
                                 is_last_page: true,
                                 bootstrap_state_after: None,
@@ -1515,6 +1520,30 @@ mod tests {
             "image": null,
             "title_yjs_state": null
         })
+    }
+
+    fn snapshot_manifest_for_test(chunk: &SnapshotChunkRef) -> Result<SnapshotManifest> {
+        let mut manifest = SnapshotManifest {
+            version: 1,
+            digest: String::new(),
+            table: "tasks".to_string(),
+            as_of_commit_seq: 1,
+            scope_digest: "0".repeat(64),
+            row_cursor: None,
+            row_limit: 1000,
+            next_row_cursor: None,
+            is_first_page: true,
+            is_last_page: true,
+            chunks: vec![SnapshotManifestChunkRef {
+                id: chunk.id.clone(),
+                byte_length: chunk.byte_length,
+                sha256: chunk.sha256.clone(),
+                encoding: chunk.encoding.clone(),
+                compression: chunk.compression.clone(),
+            }],
+        };
+        manifest.digest = snapshot_manifest_digest(&manifest)?;
+        Ok(manifest)
     }
 
     fn scopes() -> ScopeValues {
