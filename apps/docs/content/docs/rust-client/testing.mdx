@@ -52,7 +52,7 @@ fn two_clients_sync_through_stateful_server() {
         },
     ).unwrap();
 
-    writer.client.apply_local_operation_json(
+    writer.client.apply_mutation_json(
         &serde_json::json!({
             "table": "notes",
             "row_id": "note-1",

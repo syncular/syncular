@@ -965,7 +965,7 @@ where
         }
     }
 
-    pub async fn apply_local_operation_json(
+    pub async fn apply_mutation_json(
         &mut self,
         operation_json: &str,
         local_row_json: Option<&str>,
@@ -979,7 +979,7 @@ where
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         let client_commit_id = self
             .store
-            .apply_local_operation(operation.clone(), local_row.clone())
+            .apply_mutation(operation.clone(), local_row.clone())
             .await?;
         let changed_rows = sync_changed_row_for_local_operation(
             self.store.app_schema(),

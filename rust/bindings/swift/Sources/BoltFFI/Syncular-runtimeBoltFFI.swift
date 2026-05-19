@@ -325,30 +325,6 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
-    public func applyLocalOperationJson(operationJson: String, localRowJson: String?) throws -> String {
-        var operationJson = operationJson
-        let localRowJsonBytes = boltffiEncode { writer in writer.writeOptional(localRowJson) { writer, v in writer.writeString(v) } }
-        return try operationJson.withUTF8 { operationJsonBuf in
-            return try localRowJsonBytes.withUnsafeBufferPointer { localRowJsonBuf in
-                let buf = boltffi_syncular_bolt_client_apply_local_operation_json(handle, operationJsonBuf.baseAddress!, UInt(operationJsonBuf.count), localRowJsonBuf.baseAddress, UInt(localRowJsonBuf.count))
-                defer { boltffi_free_buf(buf) }
-                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
-            }
-        }
-    }
-
-    public func enqueueLocalOperationJson(operationJson: String, localRowJson: String?) throws -> String {
-        var operationJson = operationJson
-        let localRowJsonBytes = boltffiEncode { writer in writer.writeOptional(localRowJson) { writer, v in writer.writeString(v) } }
-        return try operationJson.withUTF8 { operationJsonBuf in
-            return try localRowJsonBytes.withUnsafeBufferPointer { localRowJsonBuf in
-                let buf = boltffi_syncular_bolt_client_enqueue_local_operation_json(handle, operationJsonBuf.baseAddress!, UInt(operationJsonBuf.count), localRowJsonBuf.baseAddress, UInt(localRowJsonBuf.count))
-                defer { boltffi_free_buf(buf) }
-                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
-            }
-        }
-    }
-
     public func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
         var mutationJson = mutationJson
         let localRowJsonBytes = boltffiEncode { writer in writer.writeOptional(localRowJson) { writer, v in writer.writeString(v) } }

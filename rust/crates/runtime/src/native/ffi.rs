@@ -489,40 +489,6 @@ pub extern "C" fn syncular_native_encryption_helper_json(
 }
 
 #[no_mangle]
-pub extern "C" fn syncular_native_client_apply_local_operation_json(
-    handle: *mut SyncularNativeHandle,
-    operation_json: *const c_char,
-    local_row_json: *const c_char,
-    error_out: *mut *mut c_char,
-) -> *mut c_char {
-    clear_error(error_out);
-    ffi_catch_string(error_out, || {
-        let operation_json = read_c_string(operation_json)?;
-        let local_row_json = read_optional_c_string(local_row_json)?;
-        with_client(handle, |client| {
-            client.apply_local_operation_json(&operation_json, local_row_json.as_deref())
-        })
-    })
-}
-
-#[no_mangle]
-pub extern "C" fn syncular_native_client_enqueue_local_operation_json(
-    handle: *mut SyncularNativeHandle,
-    operation_json: *const c_char,
-    local_row_json: *const c_char,
-    error_out: *mut *mut c_char,
-) -> *mut c_char {
-    clear_error(error_out);
-    ffi_catch_string(error_out, || {
-        let operation_json = read_c_string(operation_json)?;
-        let local_row_json = read_optional_c_string(local_row_json)?;
-        with_client(handle, |client| {
-            client.enqueue_local_operation_json(&operation_json, local_row_json.as_deref())
-        })
-    })
-}
-
-#[no_mangle]
 pub extern "C" fn syncular_native_client_apply_mutation_json(
     handle: *mut SyncularNativeHandle,
     mutation_json: *const c_char,

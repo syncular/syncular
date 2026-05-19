@@ -55,7 +55,7 @@ struct TableInfo {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct CodegenConfig {
     tables: BTreeMap<String, TableCodegenConfig>,
     schema_output_path: Option<PathBuf>,
@@ -70,10 +70,8 @@ struct CodegenConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct TableCodegenConfig {
-    actor_scope_column: Option<String>,
-    project_scope_column: Option<String>,
     subscription_id: Option<String>,
     subscription_params: BTreeMap<String, JsonValue>,
     scopes: Vec<ScopeCodegenConfig>,
@@ -86,7 +84,7 @@ struct TableCodegenConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct CrdtYjsFieldConfig {
     field: String,
     state_column: String,
@@ -110,7 +108,7 @@ impl Default for CrdtYjsFieldConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct EncryptedFieldConfig {
     field: String,
     scope: Option<String>,
@@ -118,7 +116,7 @@ struct EncryptedFieldConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct ScopeCodegenConfig {
     name: Option<String>,
     column: String,
@@ -889,8 +887,6 @@ fn schema_backed_codegen_inputs(
         table_configs.insert(
             table.name.clone(),
             TableCodegenConfig {
-                actor_scope_column: None,
-                project_scope_column: None,
                 subscription_id: Some(table.subscription.id),
                 subscription_params: table.subscription.params,
                 scopes,
@@ -1871,13 +1867,6 @@ fn validate_codegen_config(tables: &[TableInfo], config: &CodegenConfig) -> Resu
             .ok_or_else(|| {
                 anyhow::anyhow!("syncular.codegen.json references unknown table {table_name}")
             })?;
-        if table_config.actor_scope_column.is_some() || table_config.project_scope_column.is_some()
-        {
-            bail!(
-                "syncular.codegen.json table {table_name} uses deprecated actorScopeColumn/projectScopeColumn; use explicit scopes instead"
-            );
-        }
-
         let primary_keys = table
             .columns
             .iter()
@@ -8305,8 +8294,6 @@ mod tests {
         scopes: Vec<ScopeCodegenConfig>,
     ) -> TableCodegenConfig {
         TableCodegenConfig {
-            actor_scope_column: None,
-            project_scope_column: None,
             subscription_id: Some(subscription_id.to_string()),
             subscription_params: BTreeMap::new(),
             scopes,

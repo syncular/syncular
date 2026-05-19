@@ -91,9 +91,9 @@ export interface SyncularV2MutationsMeta {
 export interface SyncularV2MutationsOptions {
   client: Pick<
     SyncularV2Client,
-    | 'applyLocalOperation'
-    | 'applyLocalOperationsBatch'
-    | 'applyLocalOperationsCommit'
+    | 'applyMutation'
+    | 'applyMutationsBatch'
+    | 'applyMutationsCommit'
     | 'applyYjsEnvelopeToPayload'
     | 'executeSql'
   >;
@@ -608,7 +608,7 @@ export function createSyncularV2Commit<DB>(
     const result = await fn(tx as MutationsTx<DB>);
     if (operations.length === 0) throw new Error('No mutations were enqueued');
     const clientCommitId =
-      await options.client.applyLocalOperationsCommit(batch);
+      await options.client.applyMutationsCommit(batch);
     const meta = {
       operations,
       localMutations,

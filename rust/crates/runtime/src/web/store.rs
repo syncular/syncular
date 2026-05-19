@@ -53,7 +53,7 @@ pub trait AsyncWebStore {
         default_app_schema()
     }
 
-    fn apply_local_operation<'a>(
+    fn apply_mutation<'a>(
         &'a mut self,
         operation: SyncOperation,
         local_row: Option<Value>,
@@ -312,7 +312,7 @@ impl WebMemoryStore {
 }
 
 impl AsyncWebStore for WebMemoryStore {
-    fn apply_local_operation<'a>(
+    fn apply_mutation<'a>(
         &'a mut self,
         operation: SyncOperation,
         local_row: Option<Value>,
@@ -879,7 +879,7 @@ mod tests {
             base_version: Some(0),
         };
 
-        let client_commit_id = block_on(store.apply_local_operation(operation, None))?;
+        let client_commit_id = block_on(store.apply_mutation(operation, None))?;
         assert!(!client_commit_id.is_empty());
         assert_eq!(store.row_count("tasks"), 1);
         assert_eq!(store.outbox_count(), 1);
@@ -924,7 +924,7 @@ mod tests {
             payload: None,
             base_version: Some(1),
         };
-        block_on(store.apply_local_operation(operation, None))?;
+        block_on(store.apply_mutation(operation, None))?;
         let pending = block_on(store.pending_outbox(20))?;
 
         block_on(store.mark_outbox_failed(
@@ -1070,7 +1070,7 @@ mod tests {
             })),
             base_version: Some(1),
         };
-        block_on(store.apply_local_operation(operation, None))?;
+        block_on(store.apply_mutation(operation, None))?;
         Ok(block_on(store.pending_outbox(20))?
             .into_iter()
             .next()

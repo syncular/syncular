@@ -81,21 +81,21 @@ export type RustOperationResult =
       server_row?: unknown;
     };
 
-export interface SyncularWebStoreLocalOperation {
+export interface SyncularWebStoreMutation {
   operation: SyncOperation;
   localRow?: unknown | null;
 }
 
 export interface SyncularWebStoreHost {
-  applyLocalOperation(
+  applyMutation(
     operation: SyncOperation,
     localRow: unknown | null
   ): Promise<string>;
-  applyLocalOperationsBatch(
-    operations: SyncularWebStoreLocalOperation[]
+  applyMutationsBatch(
+    operations: SyncularWebStoreMutation[]
   ): Promise<string[]>;
-  applyLocalOperationsCommit(
-    operations: SyncularWebStoreLocalOperation[]
+  applyMutationsCommit(
+    operations: SyncularWebStoreMutation[]
   ): Promise<string>;
   pendingOutbox(limit: number): Promise<RustOutboxCommit[]>;
   markOutboxSending(rowId: string): Promise<void>;
@@ -162,8 +162,8 @@ export async function createSyncularWebStoreHost<DB extends object>(
   };
 
   return {
-    async applyLocalOperation(operation, localRow) {
-      const [clientCommitId] = await applyLocalOperationsBatch(
+    async applyMutation(operation, localRow) {
+      const [clientCommitId] = await applyMutationsBatch(
         db,
         tableConfig,
         {
@@ -175,14 +175,14 @@ export async function createSyncularWebStoreHost<DB extends object>(
       return clientCommitId;
     },
 
-    applyLocalOperationsBatch(operations) {
-      return applyLocalOperationsBatch(db, tableConfig, {
+    applyMutationsBatch(operations) {
+      return applyMutationsBatch(db, tableConfig, {
         schemaVersion,
         operations,
       });
     },
-    applyLocalOperationsCommit(operations) {
-      return applyLocalOperationsCommit(db, tableConfig, {
+    applyMutationsCommit(operations) {
+      return applyMutationsCommit(db, tableConfig, {
         schemaVersion,
         operations,
       });
@@ -365,12 +365,12 @@ export async function createSyncularWebStoreHost<DB extends object>(
   };
 }
 
-async function applyLocalOperationsBatch(
+async function applyMutationsBatch(
   db: Kysely<HostDb>,
   tableConfig: TableConfigResolver,
   args: {
     schemaVersion: number;
-    operations: SyncularWebStoreLocalOperation[];
+    operations: SyncularWebStoreMutation[];
   }
 ): Promise<string[]> {
   if (args.operations.length === 0) return [];
@@ -388,7 +388,7 @@ async function applyLocalOperationsBatch(
           operation.row_id
         );
       } else if (operation.op === 'upsert') {
-        const row = rowFromLocalOperation(
+        const row = rowFromMutation(
           operation,
           item.localRow ?? null,
           table.primaryKeyColumn
@@ -417,17 +417,17 @@ async function applyLocalOperationsBatch(
   return clientCommitIds;
 }
 
-async function applyLocalOperationsCommit(
+async function applyMutationsCommit(
   db: Kysely<HostDb>,
   tableConfig: TableConfigResolver,
   args: {
     schemaVersion: number;
-    operations: SyncularWebStoreLocalOperation[];
+    operations: SyncularWebStoreMutation[];
   }
 ): Promise<string> {
   if (args.operations.length === 0) {
     throw new Error(
-      'applyLocalOperationsCommit requires at least one operation'
+      'applyMutationsCommit requires at least one operation'
     );
   }
 
@@ -435,7 +435,7 @@ async function applyLocalOperationsCommit(
     const operations: SyncOperation[] = [];
     for (const item of args.operations) {
       const operation = item.operation;
-      await applyLocalOperationRow(trx, tableConfig, item);
+      await applyMutationRow(trx, tableConfig, item);
       operations.push(operation);
     }
 
@@ -450,10 +450,10 @@ async function applyLocalOperationsCommit(
   });
 }
 
-async function applyLocalOperationRow(
+async function applyMutationRow(
   db: DbExecutor,
   tableConfig: TableConfigResolver,
-  item: SyncularWebStoreLocalOperation
+  item: SyncularWebStoreMutation
 ): Promise<void> {
   const operation = item.operation;
   const table = tableConfig(operation.table);
@@ -468,7 +468,7 @@ async function applyLocalOperationRow(
   }
 
   if (operation.op === 'upsert') {
-    const row = rowFromLocalOperation(
+    const row = rowFromMutation(
       operation,
       item.localRow ?? null,
       table.primaryKeyColumn
@@ -496,7 +496,7 @@ function objectRow(value: unknown): AnyRow {
   return { ...(value as AnyRow) };
 }
 
-function rowFromLocalOperation(
+function rowFromMutation(
   operation: SyncOperation,
   localRow: unknown,
   primaryKeyColumn: string

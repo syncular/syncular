@@ -493,7 +493,7 @@ fn crdt_helpers_assert_materialized_text() {
     let mut fixture = open_todo_client().expect("todo fixture");
     fixture
         .client
-        .apply_local_operation_json(
+        .apply_mutation_json(
             &json!({
                 "table": "tasks",
                 "row_id": "crdt-testkit-1",

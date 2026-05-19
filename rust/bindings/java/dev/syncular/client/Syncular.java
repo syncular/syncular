@@ -943,12 +943,16 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_resume_sync_worker(long handle);
     static native byte[] boltffi_syncular_bolt_client_sync_worker_running(long handle);
     static native byte[] boltffi_syncular_bolt_client_start_realtime_worker(long handle);
+    static native byte[] boltffi_syncular_bolt_client_start(long handle);
     static native byte[] boltffi_syncular_bolt_client_stop_realtime_worker(long handle);
+    static native byte[] boltffi_syncular_bolt_client_stop(long handle);
+    static native byte[] boltffi_syncular_bolt_client_join_presence(long handle, byte[] scopeKey, ByteBuffer metadataJson);
+    static native byte[] boltffi_syncular_bolt_client_leave_presence(long handle, byte[] scopeKey);
+    static native byte[] boltffi_syncular_bolt_client_update_presence_metadata(long handle, byte[] scopeKey, byte[] metadataJson);
+    static native byte[] boltffi_syncular_bolt_client_presence_json(long handle, byte[] scopeKey);
     static native byte[] boltffi_syncular_bolt_client_start_event_stream(long handle, long capacity);
     static native byte[] boltffi_syncular_bolt_client_next_event_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_close_event_stream(long handle);
-    static native byte[] boltffi_syncular_bolt_client_apply_local_operation_json(long handle, byte[] operationJson, ByteBuffer localRowJson);
-    static native byte[] boltffi_syncular_bolt_client_enqueue_local_operation_json(long handle, byte[] operationJson, ByteBuffer localRowJson);
     static native byte[] boltffi_syncular_bolt_client_apply_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
     static native byte[] boltffi_syncular_bolt_client_enqueue_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
     static native byte[] boltffi_syncular_bolt_client_enqueue_yjs_update_json(long handle, byte[] updateJson);

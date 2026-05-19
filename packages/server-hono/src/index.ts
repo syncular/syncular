@@ -36,7 +36,6 @@ export {
   createSyncRoutes,
   getSyncRealtimeUnsubscribe,
   getSyncWebSocketConnectionManager,
-  type LegacySyncCorsOptions,
   type NormalizedSyncCorsConfig,
   normalizeSyncCorsConfig,
   type SyncCorsOptions,

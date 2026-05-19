@@ -279,7 +279,7 @@ class RustOwnedSqliteWorkerClient {
     return client;
   }
 
-  applyLocalOperationsBatch(
+  applyMutationsBatch(
     operations: Array<{
       operation: ReturnType<typeof makeTaskOperation>;
       localRow?: unknown | null;
@@ -1878,7 +1878,7 @@ async function runHostStore(): Promise<{
       schemaVersion: 11,
     });
 
-    const clientCommitId = await host.applyLocalOperation(
+    const clientCommitId = await host.applyMutation(
       {
         table: 'tasks',
         row_id: 'host-task-1',
@@ -2000,7 +2000,7 @@ async function runRustOwnedSqlite(): Promise<{
         clearOnInit: true,
       },
     });
-    const clientCommitIds = db.applyLocalOperationsBatch([
+    const clientCommitIds = db.applyMutationsBatch([
       {
         operation: makeTaskOperation(
           'rust-owned-idb-task',
@@ -2092,7 +2092,7 @@ async function runRustOwnedSqliteOpfsWorker(): Promise<{
       storage: 'opfsSahPool',
       clearOnInit: true,
     });
-    const clientCommitIds = await worker.applyLocalOperationsBatch([
+    const clientCommitIds = await worker.applyMutationsBatch([
       {
         operation: makeTaskOperation(
           'rust-owned-opfs-task',
@@ -2138,7 +2138,7 @@ async function runRustOwnedStoreParity(): Promise<{
       },
     });
 
-    const [clientCommitId] = db.applyLocalOperationsBatch([
+    const [clientCommitId] = db.applyMutationsBatch([
       {
         operation: {
           table: 'tasks',
@@ -2330,7 +2330,7 @@ async function runRustOwnedKyselyLive(): Promise<{
       },
     });
 
-    await client.applyLocalOperation(
+    await client.applyMutation(
       newTaskOperation({
         id: 'kysely-live-client-write',
         title: 'Kysely live client write',
@@ -2441,7 +2441,7 @@ async function runRustOwnedSqliteClient(params: {
       'runtime storage mismatch'
     );
 
-    const clientCommitId = await client.applyLocalOperation(
+    const clientCommitId = await client.applyMutation(
       newTaskOperation(
         {
           id: 'rust-owned-client-task-1',
@@ -2571,7 +2571,7 @@ async function runLocalMutationBenchmark(
           warmupOperations,
           countRows: (table) => rustOwnedSqliteIdb.countRows(table),
           applyBatch: (prefix, startIndex, count) => {
-            rustOwnedSqliteIdb.applyLocalOperationsBatch(
+            rustOwnedSqliteIdb.applyMutationsBatch(
               Array.from({ length: count }, (_, index) => ({
                 operation: makeTaskOperation(
                   prefix,
@@ -2593,7 +2593,7 @@ async function runLocalMutationBenchmark(
         countRows: (table) => rustOwnedSqliteOpfsWorker.countRows(table),
         applyBatch: (prefix, startIndex, count) =>
           rustOwnedSqliteOpfsWorker
-            .applyLocalOperationsBatch(
+            .applyMutationsBatch(
               Array.from({ length: count }, (_, index) => ({
                 operation: makeTaskOperation(
                   prefix,
@@ -2678,7 +2678,7 @@ async function runFeatureWorkloadBenchmark(
     });
     const { client, db, mutations, blobs, live } = syncular;
 
-    await client.applyLocalOperationsCommit([
+    await client.applyMutationsCommit([
       {
         operation: newProjectOperation(
           {
@@ -2690,7 +2690,7 @@ async function runFeatureWorkloadBenchmark(
         ),
       },
     ]);
-    await client.applyLocalOperationsCommit(
+    await client.applyMutationsCommit(
       Array.from({ length: operations * 4 }, (_, index) => ({
         operation: newTaskOperation(
           {
@@ -2764,7 +2764,7 @@ async function runFeatureWorkloadBenchmark(
     subscription.unsubscribe();
     assert(liveEvents > 1, 'expected live query refresh events');
 
-    await client.applyLocalOperation(
+    await client.applyMutation(
       newTaskOperation(
         {
           id: 'feature-crdt-task',
@@ -2864,7 +2864,7 @@ async function runFeatureWorkloadBenchmark(
       warmupOperations,
       client,
       run: async (prefix, startIndex, count) => {
-        await client.applyLocalOperationsCommit(
+        await client.applyMutationsCommit(
           Array.from({ length: count }, (_, index) => {
             const absoluteIndex = startIndex + index;
             const taskId = `${prefix}-multi-task-${absoluteIndex}`;
@@ -2944,7 +2944,7 @@ async function runFeatureWorkloadBenchmark(
     await encryptedClient.setEncryptedCrdt({
       keys: { default: new Uint8Array(32).fill(19) },
     });
-    await encryptedClient.applyLocalOperationsCommit([
+    await encryptedClient.applyMutationsCommit([
       {
         operation: newProjectOperation(
           {
@@ -2964,7 +2964,7 @@ async function runFeatureWorkloadBenchmark(
       warmupOperations,
       client: encryptedClient,
       run: async (prefix, startIndex, count) => {
-        await encryptedClient.applyLocalOperationsCommit(
+        await encryptedClient.applyMutationsCommit(
           Array.from({ length: count }, (_, index) => {
             const absoluteIndex = startIndex + index;
             return {
@@ -2989,7 +2989,7 @@ async function runFeatureWorkloadBenchmark(
       },
     });
 
-    await encryptedClient.applyLocalOperation(
+    await encryptedClient.applyMutation(
       newTaskOperation(
         {
           id: 'feature-encrypted-crdt-task',

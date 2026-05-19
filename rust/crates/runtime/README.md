@@ -21,7 +21,7 @@ that a Rust/Diesel client can:
 3. push over HTTP
 4. pull snapshots/commits
 5. apply remote rows locally
-6. connect to Syncular WebSocket realtime and pull after `sync` wake-ups
+6. connect to Syncular WebSocket realtime for deltas, push, and recovery sync
 
 ## Shape
 
@@ -68,11 +68,10 @@ backend.
 `web-client` adds `WebSyncularClient`, `AsyncWebStore`, and `WebMemoryStore`.
 The client performs async push/pull requests, fetches snapshot chunks, applies
 snapshots/commits through the async store, and returns JSON-friendly
-changed-table/subscription results. The async store boundary now includes local
-operation application, pending outbox status transitions, conflict summaries,
+changed-table/subscription results. The async store boundary now includes mutation
+application, pending outbox status transitions, conflict summaries,
 manual conflict resolution, and keep-local conflict retry. `WebMemoryStore` is a
-testable placeholder for the eventual OPFS/sqlite-wasm or JS-hosted persistent
-store.
+testable placeholder for Rust-owned browser SQLite.
 
 `web-store` adds `WebHostStore`, a wasm-only adapter that implements
 `AsyncWebStore` by delegating to a JavaScript object. That path is legacy
@@ -83,7 +82,7 @@ backed by a Kysely SQLite database:
 
 ```ts
 type SyncularWebStoreHost = {
-  applyLocalOperation(operation: SyncOperation, localRow: unknown | null): Promise<string>
+  applyMutation(operation: SyncOperation, localRow: unknown | null): Promise<string>
   pendingOutbox(limit: number): Promise<OutboxCommit[]>
   markOutboxSending(rowId: string): Promise<void>
   markOutboxAcked(rowId: string, response: PushCommitResponse): Promise<void>
@@ -148,7 +147,7 @@ instead of only ignoring the eventual response.
 
 That packaged client is smoke-tested in Chromium through the generated
 OPFS-first v2 Worker path, Kysely/live queries over Rust-owned SQLite, and a
-local operation -> push -> pull flow over the existing Syncular HTTP server. The
+mutation -> push -> pull flow over the existing Syncular HTTP server. The
 browser suite still keeps separate wa-sqlite, IndexedDB, and host-store contract
 checks for parity, but those do not define the packaged Rust client artifact.
 
@@ -210,8 +209,8 @@ debugging and compatibility helper, but generated app clients should prefer
 typed query builders that feed `query_json`. `apply_mutation_json(mutation, localRow)`
 accepts Syncular mutation JSON, applies it locally against a generated app
 table, enqueues it in the outbox, emits `RowsChanged`, and optionally triggers
-sync. `apply_local_operation_json` remains as the compatibility alias for older
-wrappers, but generated app clients should use mutation naming.
+sync. The old local-operation JSON aliases are removed; generated app clients
+and low-level bindings use mutation naming.
 `native_ffi` adds a narrow C ABI over the same facade: JSON config in, opaque
 handle out, explicit string free, JSON reads/callback events, and the same JSON error
 payloads as native events. `rust/bindings/c/syncular_native.h` remains a
@@ -399,8 +398,7 @@ the subscription id, server version column, soft-delete column, and blob
 columns. The generator turns migrations plus config into a versioned
 `syncular.schema.json` contract, then emits Rust, TypeScript/Kysely, Swift, and
 Kotlin app-local modules from that contract. Every app table must have metadata,
-scope sources must be declared, deprecated
-`actorScopeColumn`/`projectScopeColumn` shortcuts are rejected, the server
+scope sources must be declared, unknown/deprecated config keys are rejected, the server
 version column must exist, and each app table must have exactly one primary key.
 Native low-level bindings stay app-agnostic: app-generated Swift/Kotlin helpers
 route through `applyMutationJson` and `queryJson` instead of binding-specific
@@ -448,10 +446,12 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
   patch-task-title <task-id> "Renamed task"
 ```
 
-## WebSocket wake-up mode
+## WebSocket realtime mode
 
-Syncular WebSocket realtime is a wake-up channel. Data still flows through the
-normal HTTP pull path. To watch for realtime events:
+Syncular WebSocket realtime is a runtime-owned transport. It can deliver compact
+row deltas when the server can safely filter them for the connection, and it
+falls back to cursor sync when the payload is too large or a full recovery is
+required. To watch for realtime events:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
@@ -472,7 +472,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
 ```
 
 The initial `sync` is important because the server uses the client's last-known
-effective scopes to route realtime wake-ups.
+effective scopes to route scoped realtime messages.
 
 ## WebSocket push mode
 
@@ -529,8 +529,8 @@ If a subscription is revoked, the client clears rows for the previously stored
 scopes and deletes local subscription state. The next pull for that subscription
 starts from cursor `-1`.
 
-Realtime WebSocket `sync` wake-ups trigger the normal HTTP sync path. Data still
-flows through HTTP pull unless a future transport adds inline realtime changes.
+Realtime WebSocket messages can apply scoped row deltas directly when possible.
+Cursor-only and recovery messages trigger the normal HTTP sync path.
 
 ## Concurrency
 
@@ -551,8 +551,7 @@ and `stop()` is the convenience form that does both. Cancellation is cooperative
 an in-flight sync is not aborted, but no further queued work is run after stop.
 
 Native UI shells should prefer the additive queued runtime methods for unbounded
-or bursty work. `enqueue_local_operation_json()`, `enqueue_mutation_json()`,
-`enqueue_yjs_update_json()`, `enqueue_sync_now()`, and
+or bursty work. `enqueue_mutation_json()`, `enqueue_yjs_update_json()`, `enqueue_sync_now()`, and
 `enqueue_resolve_conflict()` return a command id immediately; durability and
 sync state are reported later through ordered native events. Snapshot refresh,
 storage compaction, and local blob-cache file work also have queued variants:
@@ -563,10 +562,10 @@ command queue is bounded, so callers get `ErrorKind::Busy` instead of unbounded
 memory growth when a UI produces work faster than the runtime can drain it.
 
 Yjs persistence uses a short coalescing window before SQLite/outbox writes.
-Multiple updates for the same `(table, row_id, field)` are written as one local
-operation, while the UI can keep applying editor updates in memory immediately.
+Multiple updates for the same `(table, row_id, field)` are written as one
+mutation, while the UI can keep applying editor updates in memory immediately.
 The direct synchronous APIs remain available for CLI/tests/simple apps and for
-bounded, measured local operations.
+bounded, measured mutations.
 
 ## Native App Lifecycle
 

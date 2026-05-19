@@ -403,31 +403,31 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return this.#request({ type: 'drainLiveQueryEvents' });
   }
 
-  async applyLocalOperation(
+  async applyMutation(
     operation: SyncOperation,
     localRow?: unknown
   ): Promise<string> {
     return this.#requestAndDrain({
-      type: 'applyLocalOperation',
+      type: 'applyMutation',
       operation,
       localRow,
     });
   }
 
-  async applyLocalOperationsBatch(
+  async applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]> {
     return this.#requestAndDrain({
-      type: 'applyLocalOperationsBatch',
+      type: 'applyMutationsBatch',
       operations,
     });
   }
 
-  async applyLocalOperationsCommit(
+  async applyMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string> {
     return this.#requestAndDrain({
-      type: 'applyLocalOperationsCommit',
+      type: 'applyMutationsCommit',
       operations,
     });
   }
@@ -1373,9 +1373,9 @@ function shouldEmitOperationalState(
   type: SyncularV2WorkerRequestInput['type']
 ): boolean {
   return (
-    type === 'applyLocalOperation' ||
-    type === 'applyLocalOperationsBatch' ||
-    type === 'applyLocalOperationsCommit' ||
+    type === 'applyMutation' ||
+    type === 'applyMutationsBatch' ||
+    type === 'applyMutationsCommit' ||
     type === 'syncPull' ||
     type === 'syncPush' ||
     type === 'syncOnce' ||

@@ -58,9 +58,9 @@ enum WorkerCommand {
         emit_started: bool,
         transport: WorkerSyncTransport,
     },
-    ApplyLocalOperationJson {
+    ApplyMutationJson {
         command_id: String,
-        operation_json: String,
+        mutation_json: String,
         local_row_json: Option<String>,
         auto_sync: bool,
     },
@@ -383,15 +383,15 @@ fn clone_worker_error(error: &SyncularError) -> SyncularError {
 }
 
 pub trait SyncWorkerClientExt {
-    fn apply_worker_local_operation_json(
+    fn apply_worker_mutation_json(
         &mut self,
-        operation_json: &str,
+        mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String>;
 
-    fn apply_worker_local_operation(
+    fn apply_worker_mutation(
         &mut self,
-        operation: SyncOperation,
+        mutation: SyncOperation,
         local_row: Option<Value>,
     ) -> Result<String>;
 
@@ -515,22 +515,22 @@ impl<T> SyncWorkerClientExt for SyncularClient<DieselSqliteStore, T>
 where
     T: SyncTransport + BlobTransport,
 {
-    fn apply_worker_local_operation_json(
+    fn apply_worker_mutation_json(
         &mut self,
-        operation_json: &str,
+        mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
-        self.apply_local_operation_json(operation_json, local_row_json)
+        self.apply_mutation_json(mutation_json, local_row_json)
     }
 
-    fn apply_worker_local_operation(
+    fn apply_worker_mutation(
         &mut self,
-        operation: SyncOperation,
+        mutation: SyncOperation,
         local_row: Option<Value>,
     ) -> Result<String> {
-        let operation_json = serde_json::to_string(&operation)?;
+        let mutation_json = serde_json::to_string(&mutation)?;
         let local_row_json = local_row.as_ref().map(serde_json::to_string).transpose()?;
-        self.apply_local_operation_json(&operation_json, local_row_json.as_deref())
+        self.apply_mutation_json(&mutation_json, local_row_json.as_deref())
     }
 
     fn worker_current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
@@ -732,22 +732,22 @@ impl<T> SyncWorkerClientExt for SyncularClient<RusqliteStore, T>
 where
     T: SyncTransport,
 {
-    fn apply_worker_local_operation_json(
+    fn apply_worker_mutation_json(
         &mut self,
-        operation_json: &str,
+        mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
-        self.apply_local_operation_json(operation_json, local_row_json)
+        self.apply_mutation_json(mutation_json, local_row_json)
     }
 
-    fn apply_worker_local_operation(
+    fn apply_worker_mutation(
         &mut self,
-        operation: SyncOperation,
+        mutation: SyncOperation,
         local_row: Option<Value>,
     ) -> Result<String> {
-        let operation_json = serde_json::to_string(&operation)?;
+        let mutation_json = serde_json::to_string(&mutation)?;
         let local_row_json = local_row.as_ref().map(serde_json::to_string).transpose()?;
-        self.apply_local_operation_json(&operation_json, local_row_json.as_deref())
+        self.apply_mutation_json(&mutation_json, local_row_json.as_deref())
     }
 
     fn worker_current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
@@ -1400,16 +1400,16 @@ impl SyncWorker {
         self.trigger_sync_inner(Some(command_id), true, WorkerSyncTransport::WebSocket)
     }
 
-    pub fn enqueue_local_operation_json(
+    pub fn enqueue_mutation_json(
         &self,
         command_id: String,
-        operation_json: String,
+        mutation_json: String,
         local_row_json: Option<String>,
         auto_sync: bool,
     ) -> Result<()> {
-        self.try_send(WorkerCommand::ApplyLocalOperationJson {
+        self.try_send(WorkerCommand::ApplyMutationJson {
             command_id,
-            operation_json,
+            mutation_json,
             local_row_json,
             auto_sync,
         })
@@ -1669,9 +1669,9 @@ where
             emit_started,
             transport,
         ),
-        WorkerCommand::ApplyLocalOperationJson {
+        WorkerCommand::ApplyMutationJson {
             command_id,
-            operation_json,
+            mutation_json,
             local_row_json,
             auto_sync,
         } => {
@@ -1688,11 +1688,11 @@ where
                     return false;
                 }
             }
-            let should_sync = apply_local_operation_json(
+            let should_sync = apply_mutation_json(
                 client,
                 event_tx,
                 command_id,
-                &operation_json,
+                &mutation_json,
                 local_row_json.as_deref(),
                 auto_sync,
             );
@@ -2115,20 +2115,20 @@ where
                 Ok(WorkerCommand::SetEncryptedCrdt(encryption)) => {
                     client.set_encrypted_crdt(encryption);
                 }
-                Ok(WorkerCommand::ApplyLocalOperationJson {
+                Ok(WorkerCommand::ApplyMutationJson {
                     command_id,
-                    operation_json,
+                    mutation_json,
                     local_row_json,
                     auto_sync,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
                         next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
-                    if apply_local_operation_json(
+                    if apply_mutation_json(
                         client,
                         event_tx,
                         command_id,
-                        &operation_json,
+                        &mutation_json,
                         local_row_json.as_deref(),
                         auto_sync,
                     ) {
@@ -2378,11 +2378,11 @@ fn run_sync<S, T>(
     }
 }
 
-fn apply_local_operation_json<S, T>(
+fn apply_mutation_json<S, T>(
     client: &mut SyncularClient<S, T>,
     event_tx: &SyncWorkerEventHub,
     command_id: String,
-    operation_json: &str,
+    mutation_json: &str,
     local_row_json: Option<&str>,
     auto_sync: bool,
 ) -> bool
@@ -2392,14 +2392,14 @@ where
     SyncularClient<S, T>: SyncWorkerClientExt,
 {
     let started = Instant::now();
-    let operation = serde_json::from_str::<SyncOperation>(operation_json).ok();
-    let table = operation
+    let mutation = serde_json::from_str::<SyncOperation>(mutation_json).ok();
+    let table = mutation
         .as_ref()
-        .map(|operation| operation.table.clone())
+        .map(|mutation| mutation.table.clone())
         .unwrap_or_else(|| "unknown".to_string());
-    let previous_row = operation.as_ref().and_then(|operation| {
+    let previous_row = mutation.as_ref().and_then(|mutation| {
         client
-            .worker_current_row_json(&operation.table, &operation.row_id)
+            .worker_current_row_json(&mutation.table, &mutation.row_id)
             .ok()
             .flatten()
     });
@@ -2408,14 +2408,14 @@ where
         .transpose()
         .ok()
         .flatten();
-    match client.apply_worker_local_operation_json(operation_json, local_row_json) {
+    match client.apply_worker_mutation_json(mutation_json, local_row_json) {
         Ok(client_commit_id) => {
-            let changed_rows = operation
+            let changed_rows = mutation
                 .as_ref()
-                .and_then(|operation| {
+                .and_then(|mutation| {
                     sync_changed_row_for_local_operation(
                         client.app_schema(),
-                        operation,
+                        mutation,
                         previous_row.as_ref(),
                         local_row.as_ref(),
                         Some(client_commit_id.clone()),
@@ -2987,14 +2987,14 @@ where
             payload.insert(YJS_PAYLOAD_KEY.to_string(), Value::Object(envelope));
             Value::Object(payload)
         };
-        let operation = SyncOperation {
+        let mutation = SyncOperation {
             table: key.table.clone(),
             row_id: key.row_id.clone(),
             op: "upsert".to_string(),
             payload: Some(payload),
             base_version: None,
         };
-        match client.apply_worker_local_operation(operation, batch.materialized) {
+        match client.apply_worker_mutation(mutation, batch.materialized) {
             Ok(client_commit_id) => {
                 should_sync |= batch.auto_sync;
                 let crdt_event_payload_json = client

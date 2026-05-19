@@ -161,7 +161,7 @@ describe('generated app conformance', () => {
           title_yjs_state: 'state-base64',
         };
       },
-      async applyLocalOperationsCommit(batch) {
+      async applyMutationsCommit(batch) {
         capturedBatch = batch;
         return 'commit-yjs';
       },
@@ -212,13 +212,13 @@ function fakeClient(): SyncularV2Client {
     async startRealtime() {},
     async stopRealtime() {},
     async setSubscriptions() {},
-    async applyLocalOperation() {
+    async applyMutation() {
       return 'commit';
     },
-    async applyLocalOperationsBatch(operations) {
+    async applyMutationsBatch(operations) {
       return operations.map((_, index) => `commit-${index}`);
     },
-    async applyLocalOperationsCommit() {
+    async applyMutationsCommit() {
       return 'commit';
     },
     async buildYjsTextUpdate() {

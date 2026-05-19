@@ -648,7 +648,7 @@ fn native_facade_rejected_push_emits_conflicts_changed() -> Result<()> {
 }
 
 #[test]
-fn native_facade_applies_generic_local_operation_json() -> Result<()> {
+fn native_facade_applies_generic_mutation_json() -> Result<()> {
     let path = temp_db_path("syncular-native-generic-operation");
     let mut client = open_demo_native_with_options(
         test_config(&path, "native-generic-operation"),
@@ -670,7 +670,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
         "base_version": 0
     })
     .to_string();
-    let commit_id = client.apply_local_operation_json(&operation, None)?;
+    let commit_id = client.apply_mutation_json(&operation, None)?;
     assert!(!commit_id.is_empty());
 
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
@@ -717,7 +717,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
         "base_version": 0
     })
     .to_string();
-    client.apply_local_operation_json(&update, None)?;
+    client.apply_mutation_json(&update, None)?;
     let local_event = client
         .next_event_timeout(Duration::from_millis(100))
         .expect("generic update rows changed event");
@@ -737,7 +737,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
         "base_version": 0
     })
     .to_string();
-    client.apply_local_operation_json(&delete, None)?;
+    client.apply_mutation_json(&delete, None)?;
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(tasks_json.as_array().map(Vec::len), Some(0));
     let delete_event = client
@@ -748,7 +748,7 @@ fn native_facade_applies_generic_local_operation_json() -> Result<()> {
     assert!(delete_event.changed_rows[0].changed_fields.is_empty());
 
     let error = client
-        .apply_local_operation_json(
+        .apply_mutation_json(
             &json!({
                 "table": "sync_outbox_commits",
                 "row_id": "x",
@@ -817,7 +817,7 @@ fn native_facade_opens_with_generated_app_schema_json() -> Result<()> {
     let tables_json: Value = serde_json::from_str(&client.app_tables_json()?)?;
     assert_eq!(tables_json, json!(["notes"]));
 
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "notes",
             "row_id": "note-1",
@@ -838,7 +838,7 @@ fn native_facade_opens_with_generated_app_schema_json() -> Result<()> {
 
     client.pause_sync_worker()?;
     client.resume_sync_worker()?;
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "notes",
             "row_id": "note-1",
@@ -881,7 +881,7 @@ fn native_facade_can_open_and_migrate_on_background_task() -> Result<()> {
     assert_eq!(tables_json.as_array().map(Vec::len), Some(3));
     assert_eq!(tables_json[0], "comments");
     assert_eq!(tables_json[2], "tasks");
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "task-async-open",
@@ -908,7 +908,7 @@ fn native_facade_can_open_and_migrate_on_background_task() -> Result<()> {
 }
 
 #[test]
-fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
+fn native_facade_enqueues_mutation_on_worker() -> Result<()> {
     let path = temp_db_path("syncular-native-enqueue-operation");
     let mut client = open_demo_native_with_options(
         test_config(&path, "native-enqueue-operation"),
@@ -930,8 +930,8 @@ fn native_facade_enqueues_local_operation_on_worker() -> Result<()> {
         "base_version": 0
     })
     .to_string();
-    let command_id = client.enqueue_local_operation_json(&operation, None)?;
-    assert!(command_id.starts_with("native-local-write-"));
+    let command_id = client.enqueue_mutation_json(&operation, None)?;
+    assert!(command_id.starts_with("native-mutation-"));
 
     let committed = client
         .next_event_timeout(Duration::from_secs(2))
@@ -1689,7 +1689,7 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
         "base_version": 0
     })
     .to_string();
-    client.apply_local_operation_json(&operation, None)?;
+    client.apply_mutation_json(&operation, None)?;
 
     let rows_event = client
         .next_event_timeout(Duration::from_millis(100))
@@ -1706,7 +1706,7 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
     assert_eq!(query_event.queries, vec!["task-list".to_string()]);
 
     client.unregister_query("task-list")?;
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "query-observer-task",
@@ -1798,7 +1798,7 @@ fn native_facade_replaces_duplicate_query_observer_dependencies() -> Result<()> 
 
     client.unregister_query("live-list")?;
     client.unregister_query("live-list")?;
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "query-replace-task",
@@ -1967,7 +1967,7 @@ fn apply_task_upsert(
     task_id: &str,
     title: &str,
 ) -> Result<String> {
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": task_id,
@@ -1990,7 +1990,7 @@ fn apply_project_upsert(
     project_id: &str,
     name: &str,
 ) -> Result<String> {
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "projects",
             "row_id": project_id,

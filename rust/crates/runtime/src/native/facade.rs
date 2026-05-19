@@ -487,27 +487,19 @@ impl NativeSyncularClient {
         Ok(command_id)
     }
 
-    pub fn enqueue_local_operation_json(
-        &self,
-        operation_json: &str,
-        local_row_json: Option<&str>,
-    ) -> Result<String> {
-        let command_id = self.next_command_id("local-write")?;
-        self.worker()?.enqueue_local_operation_json(
-            command_id.clone(),
-            operation_json.to_string(),
-            local_row_json.map(str::to_string),
-            self.auto_sync_local_writes,
-        )?;
-        Ok(command_id)
-    }
-
     pub fn enqueue_mutation_json(
         &self,
         mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
-        self.enqueue_local_operation_json(mutation_json, local_row_json)
+        let command_id = self.next_command_id("mutation")?;
+        self.worker()?.enqueue_mutation_json(
+            command_id.clone(),
+            mutation_json.to_string(),
+            local_row_json.map(str::to_string),
+            self.auto_sync_local_writes,
+        )?;
+        Ok(command_id)
     }
 
     pub fn enqueue_yjs_update_json(&self, update_json: &str) -> Result<String> {
@@ -903,12 +895,12 @@ impl NativeSyncularClient {
         self.default_events.next_event_json_timeout(timeout)
     }
 
-    pub fn apply_local_operation_json(
+    pub fn apply_mutation_json(
         &mut self,
-        operation_json: &str,
+        mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
-        let operation: crate::protocol::SyncOperation = serde_json::from_str(operation_json)?;
+        let operation: crate::protocol::SyncOperation = serde_json::from_str(mutation_json)?;
         let table = operation.table.clone();
         let previous_row = self
             .writer
@@ -916,7 +908,7 @@ impl NativeSyncularClient {
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         let client_commit_id = self
             .writer
-            .apply_local_operation_json(operation_json, local_row_json)?;
+            .apply_mutation_json(mutation_json, local_row_json)?;
         let changed_rows = sync_changed_row_for_local_operation(
             self.writer.app_schema(),
             &operation,
@@ -933,14 +925,6 @@ impl NativeSyncularClient {
         );
         self.trigger_after_local_write()?;
         Ok(client_commit_id)
-    }
-
-    pub fn apply_mutation_json(
-        &mut self,
-        mutation_json: &str,
-        local_row_json: Option<&str>,
-    ) -> Result<String> {
-        self.apply_local_operation_json(mutation_json, local_row_json)
     }
 
     pub fn open_crdt_field_json(&self, request_json: &str) -> Result<String> {

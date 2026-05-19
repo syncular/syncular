@@ -45,7 +45,7 @@ export interface SyncularGeneratedTableConfig {
   encryptedFields: readonly { field: string; scope: string; rowIdField: string }[];
 }
 
-export const syncularGeneratedSchemaVersion = 6 as const;
+export const syncularGeneratedSchemaVersion = 7 as const;
 const syncularGeneratedSchemaId = 'syncular-app';
 
 export const syncularGeneratedRequiredRuntimeFeatures = [

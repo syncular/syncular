@@ -97,20 +97,20 @@ impl SyncularWasmClient {
         self.inner.transport().reset_stats();
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationJson)]
-    pub async fn apply_local_operation_json(
+    #[wasm_bindgen(js_name = applyMutationJson)]
+    pub async fn apply_mutation_json(
         &mut self,
         operation_json: &str,
         local_row_json: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         self.inner
-            .apply_local_operation_json(operation_json, local_row_json.as_deref())
+            .apply_mutation_json(operation_json, local_row_json.as_deref())
             .await
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationsBatchJson)]
-    pub async fn apply_local_operations_batch_json(
+    #[wasm_bindgen(js_name = applyMutationsBatchJson)]
+    pub async fn apply_mutations_batch_json(
         &mut self,
         operations_json: &str,
     ) -> std::result::Result<String, JsValue> {
@@ -127,14 +127,14 @@ impl SyncularWasmClient {
             .collect::<Vec<_>>();
         self.inner
             .store_mut()
-            .apply_local_operations_batch(&operations)
+            .apply_mutations_batch(&operations)
             .await
             .and_then(|client_commit_ids| Ok(serde_json::to_string(&client_commit_ids)?))
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationsCommitJson)]
-    pub async fn apply_local_operations_commit_json(
+    #[wasm_bindgen(js_name = applyMutationsCommitJson)]
+    pub async fn apply_mutations_commit_json(
         &mut self,
         operations_json: &str,
     ) -> std::result::Result<String, JsValue> {
@@ -151,7 +151,7 @@ impl SyncularWasmClient {
             .collect::<Vec<_>>();
         self.inner
             .store_mut()
-            .apply_local_operations_commit(&operations)
+            .apply_mutations_commit(&operations)
             .await
             .and_then(|client_commit_id| Ok(serde_json::to_string(&client_commit_id)?))
             .map_err(error_to_js)

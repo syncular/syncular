@@ -2077,12 +2077,12 @@ where
         Ok(serde_json::to_string(&self.store.list_table_json(table)?)?)
     }
 
-    pub fn apply_local_operation_json(
+    pub fn apply_mutation_json(
         &mut self,
-        operation_json: &str,
+        mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
-        let operation: SyncOperation = serde_json::from_str(operation_json)?;
+        let operation: SyncOperation = serde_json::from_str(mutation_json)?;
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         self.store.apply_local_operation(operation, local_row)
     }
@@ -2164,12 +2164,12 @@ where
         Ok(serde_json::to_string(&self.store.list_table_json(table)?)?)
     }
 
-    pub fn apply_local_operation_json(
+    pub fn apply_mutation_json(
         &mut self,
-        operation_json: &str,
+        mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
-        let operation: SyncOperation = serde_json::from_str(operation_json)?;
+        let operation: SyncOperation = serde_json::from_str(mutation_json)?;
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         self.store.apply_local_operation(operation, local_row)
     }

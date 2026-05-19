@@ -279,8 +279,9 @@ client.shutdown()?;
 
 HTTP sync is the normal path. WebSocket sync is available for native hosts
 through `enqueueSyncWebsocket` when the server route supports Syncular's
-WebSocket push transport. Realtime notifications remain wake-ups; persisted
-row state still comes from sync.
+WebSocket transport. Scoped row deltas can apply directly when the server can
+send them safely; cursor-only and recovery messages trigger the normal sync
+path.
 
 ## Rich editors
 

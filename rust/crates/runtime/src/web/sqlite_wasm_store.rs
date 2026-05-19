@@ -499,21 +499,21 @@ impl SyncularRustOwnedSqlite {
         Ok(store)
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationsBatchJson)]
-    pub fn apply_local_operations_batch_json(
+    #[wasm_bindgen(js_name = applyMutationsBatchJson)]
+    pub fn apply_mutations_batch_json(
         &mut self,
         operations_json: &str,
     ) -> std::result::Result<String, JsValue> {
-        self.apply_local_operations_batch_json_inner(operations_json)
+        self.apply_mutations_batch_json_inner(operations_json)
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationsCommitJson)]
-    pub fn apply_local_operations_commit_json(
+    #[wasm_bindgen(js_name = applyMutationsCommitJson)]
+    pub fn apply_mutations_commit_json(
         &mut self,
         operations_json: &str,
     ) -> std::result::Result<String, JsValue> {
-        self.apply_local_operations_commit_json_inner(operations_json)
+        self.apply_mutations_commit_json_inner(operations_json)
             .map_err(error_to_js)
     }
 
@@ -836,14 +836,14 @@ impl SyncularRustOwnedSqliteClient {
         self.inner.transport().reset_stats();
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationJson)]
-    pub async fn apply_local_operation_json(
+    #[wasm_bindgen(js_name = applyMutationJson)]
+    pub async fn apply_mutation_json(
         &mut self,
         operation_json: &str,
         local_row_json: Option<String>,
     ) -> std::result::Result<String, JsValue> {
         self.inner
-            .apply_local_operation_json(operation_json, local_row_json.as_deref())
+            .apply_mutation_json(operation_json, local_row_json.as_deref())
             .await
             .map_err(error_to_js)
     }
@@ -1431,25 +1431,25 @@ impl SyncularRustOwnedSqliteClient {
         self.inner.store_mut().drain_rows_changed_events_json()
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationsBatchJson)]
-    pub fn apply_local_operations_batch_json(
+    #[wasm_bindgen(js_name = applyMutationsBatchJson)]
+    pub fn apply_mutations_batch_json(
         &mut self,
         operations_json: &str,
     ) -> std::result::Result<String, JsValue> {
         self.inner
             .store_mut()
-            .apply_local_operations_batch_json_inner(operations_json)
+            .apply_mutations_batch_json_inner(operations_json)
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = applyLocalOperationsCommitJson)]
-    pub fn apply_local_operations_commit_json(
+    #[wasm_bindgen(js_name = applyMutationsCommitJson)]
+    pub fn apply_mutations_commit_json(
         &mut self,
         operations_json: &str,
     ) -> std::result::Result<String, JsValue> {
         self.inner
             .store_mut()
-            .apply_local_operations_commit_json_inner(operations_json)
+            .apply_mutations_commit_json_inner(operations_json)
             .map_err(error_to_js)
     }
 
@@ -2307,7 +2307,7 @@ impl SyncularRustOwnedSqlite {
         result
     }
 
-    fn apply_local_operations_batch_json_inner(&mut self, operations_json: &str) -> Result<String> {
+    fn apply_mutations_batch_json_inner(&mut self, operations_json: &str) -> Result<String> {
         let operations: Vec<RustOwnedLocalOperationBatchEntry> =
             serde_json::from_str(operations_json).map_err(SyncularError::protocol)?;
         let mut client_commit_ids = Vec::with_capacity(operations.len());
@@ -2354,15 +2354,12 @@ impl SyncularRustOwnedSqlite {
         Ok(serde_json::to_string(&client_commit_ids)?)
     }
 
-    fn apply_local_operations_commit_json_inner(
-        &mut self,
-        operations_json: &str,
-    ) -> Result<String> {
+    fn apply_mutations_commit_json_inner(&mut self, operations_json: &str) -> Result<String> {
         let operations: Vec<RustOwnedLocalOperationBatchEntry> =
             serde_json::from_str(operations_json).map_err(SyncularError::protocol)?;
         if operations.is_empty() {
             return Err(SyncularError::protocol_message(
-                "applyLocalOperationsCommit requires at least one operation",
+                "applyMutationsCommit requires at least one operation",
             ));
         }
         let mut changed_tables = Vec::new();
@@ -4031,7 +4028,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         std::mem::take(&mut self.apply_timings)
     }
 
-    fn apply_local_operation<'a>(
+    fn apply_mutation<'a>(
         &'a mut self,
         operation: SyncOperation,
         local_row: Option<Value>,

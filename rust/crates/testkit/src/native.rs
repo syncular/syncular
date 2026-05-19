@@ -210,7 +210,7 @@ pub fn apply_native_todo_task_upsert(
     task_id: &str,
     title: &str,
 ) -> Result<String> {
-    client.apply_local_operation_json(&todo_task_upsert_operation_json(task_id, title), None)
+    client.apply_mutation_json(&todo_task_upsert_operation_json(task_id, title), None)
 }
 
 pub fn assert_native_error_kind(event: &NativeEvent, expected: ErrorKind) {

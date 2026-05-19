@@ -39,7 +39,7 @@ fn rust_client_exposes_generic_crdt_field_text_flow() -> Result<()> {
     let mut client =
         SyncularClient::with_app_schema_parts(test_config(&path), store, NoopTransport, app_schema);
 
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "crdt-field-task",
@@ -163,7 +163,7 @@ fn server_merge_crdt_field_enforces_bounded_pending_update_queue() -> Result<()>
     let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
     let mut client =
         SyncularClient::with_app_schema_parts(test_config(&path), store, NoopTransport, app_schema);
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "crdt-document-backpressure-task",
@@ -213,7 +213,7 @@ fn rust_client_crdt_text_rejects_non_empty_plain_text_without_state() -> Result<
     let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
     let mut client =
         SyncularClient::with_app_schema_parts(test_config(&path), store, NoopTransport, app_schema);
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "crdt-field-plain-seed-task",
@@ -336,7 +336,7 @@ fn rust_client_exposes_encrypted_crdt_field_through_same_identity() -> Result<()
         SyncularClient::with_app_schema_parts(test_config(&path), store, NoopTransport, app_schema);
     client.set_encrypted_crdt(Some(test_encrypted_crdt()?));
 
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "encrypted-crdt-field-task",
@@ -655,7 +655,7 @@ fn encrypted_crdt_local_edit_survives_first_bootstrap_snapshot() -> Result<()> {
     );
     client.set_encrypted_crdt(Some(test_encrypted_crdt()?));
 
-    client.apply_local_operation_json(
+    client.apply_mutation_json(
         &json!({
             "table": "tasks",
             "row_id": "encrypted-prebootstrap-task",
