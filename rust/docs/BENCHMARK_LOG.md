@@ -103,6 +103,65 @@ Decision:
   apply-path experiment needs either a length-aware native import extension or
   a narrowly scoped SQLite artifact prototype that respects per-user scopes.
 
+## 2026-05-19 - Rejected WP-03 CARRAY Import Probe
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- For cleared binary snapshot inserts, attempted a `carray()` import path using
+  one bound array per column.
+- Text and JSON columns used `SQLITE_CARRAY_BLOB` with `struct iovec` plus
+  `CAST(value AS TEXT)`, so the design would have preserved byte lengths
+  better than `CARRAY_TEXT`.
+- Nullable columns used an optional `INT64` null-flag carray.
+
+Compile gate:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+```
+
+- Passed.
+
+Release build:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+- Passed.
+- Raw WASM grew from `3.21MiB` to `3.22MiB`, still under budget.
+
+Browser gate:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+- Failed before producing metrics:
+  `Failed to resolve module specifier "env". Relative references must start with either "/", "./", or "../".`
+- The failure appears when `sqlite3_carray_bind` is referenced from the WASM
+  runtime, so this is not a retainable path in the current browser package.
+
+Decision:
+
+- Rejected and reverted.
+- Do not rely on direct `sqlite3_carray_bind` from the current browser runtime.
+  A future carray-like approach would need to live behind a purpose-built
+  runtime/import extension that does not introduce unresolved JS/WASM imports.
+
 ## 2026-05-19 - Rejected WP-03 Browser Apply Probes
 
 Commit: not retained
