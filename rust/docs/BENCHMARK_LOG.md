@@ -1162,3 +1162,71 @@ Decision:
 - The artifact response is still larger than binary row chunks for 100k rows,
   but direct artifact import remains faster on wall time. Next WP-12 work should
   prove the same shape at 500k with external app-style artifact precompute.
+
+## 2026-05-19 - Multi-Page Scoped SQLite Artifact Precompute
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Added `precomputeScopedSnapshotArtifacts(...)`, which follows snapshot
+  `nextCursor` values and stores every scoped SQLite artifact page for a
+  subscription/table/scope.
+- Updated the browser Hono fixture and browser E2E benchmark server to
+  precompute all artifact pages instead of only the first page.
+- Added server coverage that reads a later artifact page by page key.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test src/__tests__/sync-hono.wasm.test.ts
+```
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | One artifact page + one row chunk | Multi-page artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `107.82ms` | `68.6ms` |
+| `rust_pull_request_ms` | `36ms` | `7ms` |
+| `rust_snapshot_fetch_ms` | `11ms` | `14ms` |
+| `rust_pull_apply_ms` | `68ms` | `58ms` |
+| `rust_snapshot_row_apply_ms` | `21ms` | `43ms` |
+| `rust_snapshot_chunk_apply_ms` | `35ms` | `0ms` |
+| `rust_response_bytes` | `1033377` | `1300566` |
+| `rust_snapshot_chunk_binary_count` | `1` | `0` |
+| `rust_cached_bootstrap_ms` | `61.77ms` | `48.36ms` |
+
+Decision:
+
+- Retained. This removes the remaining row-chunk fetch/apply from the 100k
+  artifact lane, improves first bootstrap by about `36%`, and improves cached
+  bootstrap by about `22%`.
+- Response bytes increase compared with the one-page artifact lane because both
+  pages now travel as SQLite artifacts, but the wall-time win is large enough
+  to keep. Next benchmark step is 500k and the external app-style stack.
+
+500k browser release E2E follow-up:
+
+| Metric | Row chunks | Multi-page artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `618.95ms` | `268.44ms` |
+| `rust_pull_request_ms` | `270ms` | `8ms` |
+| `rust_snapshot_fetch_ms` | `44ms` | `60ms` |
+| `rust_pull_apply_ms` | `345ms` | `252ms` |
+| `rust_snapshot_row_apply_ms` | `0ms` | `191ms` |
+| `rust_snapshot_chunk_apply_ms` | `299ms` | `0ms` |
+| `rust_response_bytes` | `3783097` | `6500487` |
+| `rust_snapshot_chunk_binary_count` | `10` | `0` |
+| `rust_cached_bootstrap_ms` | `337.61ms` | `248.64ms` |
+
+500k decision:
+
+- Still retained. Multi-page artifacts improve first bootstrap by about `57%`
+  and cached bootstrap by about `26%` against row chunks.
+- The artifact payload is about `72%` larger than binary row chunks at 500k.
+  Next body-shape work must reduce bytes while preserving direct SQLite import.

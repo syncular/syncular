@@ -16,7 +16,7 @@ import {
   createServerHandler,
   createServerHandlerCollection,
   ensureSyncSchema,
-  precomputeScopedSnapshotArtifact,
+  precomputeScopedSnapshotArtifacts,
   readSnapshotChunk,
   type SnapshotArtifactStorage,
   type SyncCoreDb,
@@ -421,7 +421,7 @@ async function createBenchmarkSnapshotArtifactStorage(args: {
       return artifactBodies.get(artifact.id) ?? null;
     },
   };
-  await precomputeScopedSnapshotArtifact({
+  await precomputeScopedSnapshotArtifacts({
     db: args.db,
     storage,
     handlers: args.handlers,
@@ -435,6 +435,7 @@ async function createBenchmarkSnapshotArtifactStorage(args: {
     rowCursor: null,
     rowLimit: args.rowLimit,
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    artifactIdPrefix: 'browser-e2e-sqlite-artifact',
     encoder: createBunSqliteSnapshotArtifactEncoder(),
   });
   return storage;
