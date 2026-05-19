@@ -2439,3 +2439,60 @@ Notes:
   now has valid external evidence again. The remaining 500k Rust total is
   dominated by `derived_schema_ms_500000=3213.03ms` plus
   `local_apply_ms_500000=1692ms`.
+
+## 2026-05-19 - WP-04 One-Pass Canonical Object Write
+
+Change:
+
+- Canonical object writing now writes optimistically in map iteration order and
+  only truncates/sorts when it actually sees out-of-order keys.
+- This keeps the canonical fallback for unsorted maps, but avoids the previous
+  pre-scan plus second pass for the normal sorted `serde_json::Map` path.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-one-pass-canonical-object.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json
+```
+
+Compared against
+`.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`:
+
+| Metric | Previous | Current | Rerun |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `91.03ms` | `92.06ms` | `88.60ms` |
+| `rust_realtime_live_p95_ms` | `92.72ms` | `102.45ms` | `90.47ms` |
+| `rust_realtime_overhead_p50_ms` | `22.04ms` | `21.24ms` | `21.86ms` |
+| `rust_realtime_apply_total_ms` | `122ms` | `121ms` | `125ms` |
+| `rust_realtime_pull_apply_total_ms` | `94ms` | `93ms` | `95ms` |
+| `rust_realtime_integrity_verify_total_ms` | `69ms` | `65ms` | `66ms` |
+| `rust_realtime_subscription_state_total_ms` | `5ms` | `3ms` | `6ms` |
+| `browser_served_rust_wasm_bytes` | `7468173` | `7468747` | `7468747` |
+
+Decision:
+
+- Retained as a modest integrity-hot-path improvement. End-to-end apply is
+  effectively flat/noisy, but the targeted integrity bucket improves in both
+  runs without weakening the verified root contract. Future candidates should
+  compare against
+  `.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`.

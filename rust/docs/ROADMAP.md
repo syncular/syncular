@@ -155,15 +155,18 @@ read-only review:
     browser guard. A guarded sorted-object fast path then reduced integrity
     verification further to `68ms` while keeping canonical fallback behavior.
     Direct numeric writes trimmed total realtime apply further to `122ms`.
+    One-pass canonical object writing now avoids the sorted-key pre-scan on the
+    normal sorted-map path, moving integrity verification to `65/66ms` across
+    two runs while total apply stayed flat/noisy.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-direct-number-write-rerun.json` as the
-  current local comparison point, and rerun the guard before each candidate when
-  machine state is noisy.
+  `.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json` as
+  the current local comparison point, and rerun the guard before each candidate
+  when machine state is noisy.
 
 ## Later
 
