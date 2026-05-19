@@ -207,6 +207,13 @@ pub struct SyncReport {
     pub conflicts_changed: bool,
 }
 
+#[derive(Debug, Clone)]
+struct PreparedSnapshot {
+    snapshot: SyncSnapshot,
+    chunk_batches: Vec<SnapshotChunkRows>,
+    artifact_rows: Vec<Value>,
+}
+
 impl SyncReport {
     pub fn table_changed(table: impl Into<String>) -> Self {
         Self {
@@ -262,6 +269,39 @@ impl SyncReport {
         }
         self.changed_rows.extend(other.changed_rows);
     }
+}
+
+fn validate_sqlite_snapshot_artifact_for_apply(
+    artifact: &ScopedSnapshotArtifactRef,
+    subscription_id: &str,
+    table: &str,
+) -> Result<()> {
+    validate_scoped_snapshot_artifact_ref(artifact)?;
+    if artifact.artifact_kind != SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1 {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot artifact kind {}",
+            artifact.artifact_kind
+        )));
+    }
+    if artifact.compression != SNAPSHOT_ARTIFACT_COMPRESSION_NONE {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot artifact compression {}",
+            artifact.compression
+        )));
+    }
+    if artifact.manifest.subscription_id != subscription_id {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact subscription mismatch: expected {}, got {}",
+            subscription_id, artifact.manifest.subscription_id
+        )));
+    }
+    if artifact.manifest.table != table {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact table mismatch: expected {}, got {}",
+            table, artifact.manifest.table
+        )));
+    }
+    Ok(())
 }
 
 pub fn sync_changed_row_for_operation(
@@ -1580,6 +1620,14 @@ where
 
     fn build_pull_request(&mut self) -> Result<PullRequest> {
         let specs = self.subscriptions.clone();
+        let snapshot_artifacts =
+            self.store
+                .supports_sqlite_snapshot_artifacts()
+                .then(|| SnapshotArtifactsRequest {
+                    artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
+                    compressions: vec![SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string()],
+                    feature_set: Vec::new(),
+                });
         self.store.transaction(|tx| {
             let mut subscriptions = Vec::new();
             for spec in specs {
@@ -1626,7 +1674,7 @@ where
                 max_snapshot_pages: 10,
                 dedupe_rows: None,
                 snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
-                snapshot_artifacts: None,
+                snapshot_artifacts,
                 sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
                 subscriptions,
             })
@@ -1866,14 +1914,31 @@ where
             let mut prepared_snapshots = Vec::new();
             if let Some(snapshots) = sub.snapshots.as_ref() {
                 for snapshot in snapshots {
-                    if snapshot
-                        .artifacts
-                        .as_ref()
-                        .is_some_and(|artifacts| !artifacts.is_empty())
-                    {
-                        return Err(SyncularError::protocol_message(
-                            "snapshot artifacts are not supported by this runtime yet",
-                        ));
+                    let mut artifact_rows = Vec::new();
+                    if let Some(artifacts) = &snapshot.artifacts {
+                        if !artifacts.is_empty() && !self.store.supports_sqlite_snapshot_artifacts()
+                        {
+                            return Err(SyncularError::protocol_message(
+                                "snapshot artifacts are not supported by this store",
+                            ));
+                        }
+                        for artifact in artifacts {
+                            validate_sqlite_snapshot_artifact_for_apply(
+                                artifact,
+                                &sub.id,
+                                &snapshot.table,
+                            )?;
+                            let bytes = self
+                                .transport
+                                .fetch_snapshot_artifact_bytes(artifact, &sub.scopes)?;
+                            let rows = self
+                                .store
+                                .decode_sqlite_snapshot_artifact_rows(&snapshot.table, &bytes)?;
+                            for row in rows {
+                                artifact_rows
+                                    .push(self.transform_snapshot_row(&snapshot.table, row)?);
+                            }
+                        }
                     }
                     let mut chunk_batches = Vec::new();
                     if let Some(chunks) = &snapshot.chunks {
@@ -1887,11 +1952,16 @@ where
                     }
                     if snapshot.is_first_page
                         || !snapshot.rows.is_empty()
+                        || !artifact_rows.is_empty()
                         || chunk_batches.iter().any(|rows| !rows.is_empty())
                     {
                         report.add_changed_table(&snapshot.table);
                     }
-                    prepared_snapshots.push((snapshot.clone(), chunk_batches));
+                    prepared_snapshots.push(PreparedSnapshot {
+                        snapshot: snapshot.clone(),
+                        chunk_batches,
+                        artifact_rows,
+                    });
                 }
             }
 
@@ -1926,7 +1996,8 @@ where
                         snapshot_cleared_tables.insert(prev.table.clone());
                     }
                 }
-                for (snapshot, chunk_batches) in &prepared_snapshots {
+                for prepared in &prepared_snapshots {
+                    let snapshot = &prepared.snapshot;
                     if snapshot.is_first_page {
                         tx.clear_table_for_scopes_preserving_local_crdt(
                             &snapshot.table,
@@ -1950,7 +2021,20 @@ where
                             }
                         }
 
-                        for chunk_rows in chunk_batches {
+                        tx.upsert_rows(&snapshot.table, &prepared.artifact_rows, None)?;
+                        for row in &prepared.artifact_rows {
+                            if let Some(changed_row) = sync_changed_row_for_snapshot(
+                                self.app_schema,
+                                &snapshot.table,
+                                row,
+                                None,
+                                &sub.id,
+                            ) {
+                                report.add_changed_row(changed_row);
+                            }
+                        }
+
+                        for chunk_rows in &prepared.chunk_batches {
                             tx.upsert_snapshot_chunk_rows(&snapshot.table, chunk_rows, None)?;
                             for changed_row in sync_changed_rows_for_cleared_snapshot_chunk(
                                 self.app_schema,
@@ -1962,7 +2046,7 @@ where
                             }
                         }
                     } else {
-                        for row in &snapshot.rows {
+                        for row in snapshot.rows.iter().chain(prepared.artifact_rows.iter()) {
                             let previous_row =
                                 row_id_for_metadata(self.app_schema, &snapshot.table, row)
                                     .map(|row_id| tx.current_row_json(&snapshot.table, &row_id))
@@ -1979,7 +2063,7 @@ where
                                 report.add_changed_row(changed_row);
                             }
                         }
-                        for chunk_rows in chunk_batches {
+                        for chunk_rows in &prepared.chunk_batches {
                             let chunk_rows = chunk_rows.clone().try_into_value_rows()?;
                             for row in &chunk_rows {
                                 let previous_row =

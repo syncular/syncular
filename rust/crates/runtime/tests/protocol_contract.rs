@@ -2,8 +2,15 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use diesel::connection::SimpleConnection;
+use diesel::sql_query;
+use diesel::sql_types::{BigInt, Integer, Nullable, Text};
+use diesel::sqlite::SqliteConnection;
+use diesel::{Connection, RunQueryDsl};
 use rusqlite::params;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+use syncular_protocol::scoped_snapshot_artifact_manifest_digest;
 use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
@@ -319,6 +326,56 @@ fn http_sync_rejects_snapshot_artifacts_before_mutating_store() -> Result<()> {
     let tasks = client.list_tasks()?;
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].id, "local-before-artifact");
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn http_sync_diesel_applies_snapshot_artifact_rows() -> Result<()> {
+    let path = temp_db_path("syncular-protocol-artifact-applied");
+    let artifact_bytes =
+        sqlite_snapshot_artifact_bytes_for_test("artifact-task", "Artifact snapshot", 77)?;
+    let artifact = sqlite_snapshot_artifact_ref_for_test(&artifact_bytes, 1)?;
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    let artifact_for_response = artifact.clone();
+    transport.push_snapshot_artifact_bytes(artifact_bytes);
+    transport.push_http_response_fn(move |request| {
+        let mut response =
+            snapshot_artifact_combined_response_with_ref(artifact_for_response.clone());
+        response.push = default_combined_response(request).push;
+        Ok(response)
+    });
+    let config = test_config(&path, "client-artifact-applied");
+    let mut client = demo_client(config, store, transport);
+
+    let report = client.sync_http()?;
+    assert_eq!(report.changed_tables, vec!["tasks".to_string()]);
+    assert!(report
+        .changed_rows
+        .iter()
+        .any(|row| { row.table == "tasks" && row.row_id.as_deref() == Some("artifact-task") }));
+
+    let request = handle
+        .last_request()
+        .expect("artifact sync should send a request");
+    assert!(request
+        .pull
+        .and_then(|pull| pull.snapshot_artifacts)
+        .is_some());
+
+    let fetches = handle.artifact_fetches();
+    assert_eq!(fetches.len(), 1);
+    assert_eq!(fetches[0].artifact.id, artifact.id);
+    assert_eq!(fetches[0].scopes, scopes());
+
+    let tasks = client.list_tasks()?;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "artifact-task");
+    assert_eq!(tasks[0].title, "Artifact snapshot");
+    assert_eq!(tasks[0].server_version, 77);
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -2497,6 +2554,12 @@ fn snapshot_manifest_pull_response(
 }
 
 fn snapshot_artifact_combined_response() -> CombinedResponse {
+    snapshot_artifact_combined_response_with_ref(snapshot_artifact_ref_for_test())
+}
+
+fn snapshot_artifact_combined_response_with_ref(
+    artifact: ScopedSnapshotArtifactRef,
+) -> CombinedResponse {
     CombinedResponse {
         ok: true,
         required_schema_version: None,
@@ -2517,7 +2580,7 @@ fn snapshot_artifact_combined_response() -> CombinedResponse {
                     table: "tasks".to_string(),
                     rows: Vec::new(),
                     chunks: None,
-                    artifacts: Some(vec![snapshot_artifact_ref_for_test()]),
+                    artifacts: Some(vec![artifact]),
                     manifest: None,
                     is_first_page: true,
                     is_last_page: true,
@@ -2526,6 +2589,87 @@ fn snapshot_artifact_combined_response() -> CombinedResponse {
             }],
         }),
     }
+}
+
+fn sqlite_snapshot_artifact_bytes_for_test(
+    id: &str,
+    title: &str,
+    server_version: i64,
+) -> Result<Vec<u8>> {
+    let mut conn = SqliteConnection::establish(":memory:")?;
+    conn.batch_execute(
+        r#"
+        create table tasks (
+          id text primary key,
+          title text not null,
+          completed integer not null default 0,
+          user_id text not null,
+          project_id text null,
+          server_version bigint not null default 0,
+          image text null,
+          title_yjs_state text null
+        ) without rowid;
+        "#,
+    )?;
+    sql_query(
+        r#"
+        insert into tasks (
+          id, title, completed, user_id, project_id, server_version, image, title_yjs_state
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind::<Text, _>(id)
+    .bind::<Text, _>(title)
+    .bind::<Integer, _>(0)
+    .bind::<Text, _>(sync_conformance_str(&["actors", "rust", "actorId"]))
+    .bind::<Nullable<Text>, _>(Some(sync_conformance_str(&["actors", "rust", "projectId"])))
+    .bind::<BigInt, _>(server_version)
+    .bind::<Nullable<Text>, _>(None::<String>)
+    .bind::<Nullable<Text>, _>(None::<String>)
+    .execute(&mut conn)?;
+    Ok(conn.serialize_database_to_buffer().as_slice().to_vec())
+}
+
+fn sqlite_snapshot_artifact_ref_for_test(
+    bytes: &[u8],
+    row_count: i64,
+) -> Result<ScopedSnapshotArtifactRef> {
+    let sha256 = hex::encode(Sha256::digest(bytes));
+    let mut manifest = ScopedSnapshotArtifactManifest {
+        version: 1,
+        artifact_kind: SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string(),
+        digest: "0".repeat(64),
+        partition_id: "default".to_string(),
+        subscription_id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        schema_version: current_schema_version().to_string(),
+        as_of_commit_seq: 42,
+        scope_digest: "0".repeat(64),
+        row_cursor: None,
+        row_limit: 50_000,
+        row_count,
+        next_row_cursor: None,
+        is_first_page: true,
+        is_last_page: true,
+        compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+        byte_length: bytes.len() as i64,
+        sha256,
+        feature_set: Vec::new(),
+    };
+    manifest.digest = scoped_snapshot_artifact_manifest_digest(&manifest)?;
+    Ok(ScopedSnapshotArtifactRef {
+        id: "artifact-1".to_string(),
+        byte_length: manifest.byte_length,
+        sha256: manifest.sha256.clone(),
+        manifest_digest: manifest.digest.clone(),
+        artifact_kind: manifest.artifact_kind.clone(),
+        compression: manifest.compression.clone(),
+        row_count: manifest.row_count,
+        next_row_cursor: manifest.next_row_cursor.clone(),
+        is_first_page: manifest.is_first_page,
+        is_last_page: manifest.is_last_page,
+        manifest,
+    })
 }
 
 fn snapshot_artifact_ref_for_test() -> ScopedSnapshotArtifactRef {

@@ -1,5 +1,5 @@
 use crate::binary_snapshot::SnapshotChunkRows;
-use crate::error::Result;
+use crate::error::{Result, SyncularError};
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -116,6 +116,20 @@ pub trait SyncStore {
         Self: 'a;
 
     fn transaction<T>(&mut self, f: impl FnOnce(&mut Self::Tx<'_>) -> Result<T>) -> Result<T>;
+
+    fn supports_sqlite_snapshot_artifacts(&self) -> bool {
+        false
+    }
+
+    fn decode_sqlite_snapshot_artifact_rows(
+        &self,
+        _table: &str,
+        _artifact_bytes: &[u8],
+    ) -> Result<Vec<Value>> {
+        Err(SyncularError::protocol_message(
+            "snapshot artifacts are not supported by this store",
+        ))
+    }
 }
 
 pub trait SyncStoreTx {
