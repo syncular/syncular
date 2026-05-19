@@ -179,6 +179,7 @@ interface E2eScoreboardOptions {
   rustIncludeSnapshotRows?: boolean;
   rustCollectChangedRows?: boolean;
   rustMaxSnapshotChangedRows?: number | null;
+  rustSnapshotRowsPerPage?: number | null;
 }
 
 interface E2eScoreboardMetric {
@@ -204,6 +205,7 @@ interface RustE2eTransportStats {
   serverBootstrapRowFrameEncodeMs: number;
   serverBootstrapSnapshotBinaryEncodeMs: number;
   serverBootstrapChunkCacheLookupMs: number;
+  serverBootstrapArtifactCacheLookupMs: number;
   serverBootstrapChunkGzipMs: number;
   serverBootstrapChunkHashMs: number;
   serverBootstrapChunkPersistMs: number;
@@ -1133,7 +1135,8 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
       collectChangedRows: options.rustCollectChangedRows ?? false,
       collectServerTimings: true,
-      limitSnapshotRows: E2E_SNAPSHOT_ROWS_PER_PAGE,
+      limitSnapshotRows:
+        options.rustSnapshotRowsPerPage ?? E2E_SNAPSHOT_ROWS_PER_PAGE,
       maxSnapshotPages: E2E_MAX_SNAPSHOT_PAGES,
     };
     if (options.rustMaxSnapshotChangedRows !== undefined) {
@@ -1259,6 +1262,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_server_bootstrap_chunk_cache_lookup_ms',
       rustStats.serverBootstrapChunkCacheLookupMs
+    );
+    pushMetric(
+      'rust_server_bootstrap_artifact_cache_lookup_ms',
+      rustStats.serverBootstrapArtifactCacheLookupMs
     );
     pushMetric(
       'rust_server_bootstrap_chunk_gzip_ms',
@@ -1400,6 +1407,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_cached_server_bootstrap_chunk_cache_lookup_ms',
       cachedRustStats.serverBootstrapChunkCacheLookupMs
+    );
+    pushMetric(
+      'rust_cached_server_bootstrap_artifact_cache_lookup_ms',
+      cachedRustStats.serverBootstrapArtifactCacheLookupMs
     );
     pushMetric(
       'rust_cached_server_bootstrap_chunk_gzip_ms',

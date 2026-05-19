@@ -107,7 +107,11 @@ read-only review:
     direct artifact import via temp-file attach was rejected because Diesel
     cannot detach the artifact database cleanly inside the active transaction;
     native stays on verified artifact row projection until a raw SQLite
-    deserialize hook or no-row-delta pull mode exists. External Docker
+    deserialize hook or no-row-delta pull mode exists. The browser benchmark
+    harness now records the actual Rust pull request limits and artifact
+    capability bit, plus server artifact-cache lookup timing. A 100k artifact
+    page-size probe was rejected because it fell back to binary chunks and was
+    about `2.35x` slower than the 50k direct artifact baseline. External Docker
     app-style benchmark evidence remains open; the local Docker daemon was
     unresponsive during the latest attempt.
 

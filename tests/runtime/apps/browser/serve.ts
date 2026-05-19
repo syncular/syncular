@@ -365,6 +365,10 @@ async function createBenchmarkSyncRoute(
     },
     sync: {
       rateLimit: false,
+      maxPullLimitSnapshotRows: Math.max(
+        50_000,
+        benchmarkSnapshotArtifactRowLimit
+      ),
       maxPullMaxSnapshotPages: 100,
       websocket: {
         enabled: true,

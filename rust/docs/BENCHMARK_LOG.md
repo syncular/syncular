@@ -1374,3 +1374,65 @@ Decision:
   needs either a clean raw-SQLite schema-deserialize hook on the active
   connection or a native pull mode that deliberately does not require row-level
   changed-row events.
+
+## 2026-05-19 - Artifact Page-Size Measurement Guard
+
+Commit: pending
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- The browser E2E scoreboard can now pass a scoped artifact row-limit through
+  to the benchmark server and align the Rust pull `limitSnapshotRows` with
+  that value.
+- The scoreboard records the first observed Rust pull request's
+  `limitSnapshotRows`, `maxSnapshotPages`, and artifact capability bit. This
+  prevents benchmark reports from trusting intended config when the request
+  body says something else.
+- Browser transport stats now include
+  `serverBootstrapArtifactCacheLookupMs`, so artifact lookup cost/miss behavior
+  is visible beside chunk-cache timings.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+cargo fmt --manifest-path rust/Cargo.toml --all
+```
+
+Benchmark gates:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --sync-snapshot-artifacts --rows=500000 --output=.context/benchmarks/wp12-artifact-50k-observed.json
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --sync-snapshot-artifacts --rows=500000 --sync-snapshot-artifact-row-limit=100000 --output=.context/benchmarks/wp12-artifact-100k-artifact-timing.json
+```
+
+Browser release E2E, 500k rows:
+
+| Metric | Previous compact artifact baseline | 50k observed | 100k attempted |
+| --- | ---: | ---: | ---: |
+| `benchmark_rust_observed_limit_snapshot_rows` | n/a | `50000` | `100000` |
+| `benchmark_rust_observed_snapshot_artifacts` | n/a | `1` | `1` |
+| `rust_bootstrap_ms` | `260.82ms` | `262.13ms` | `615.11ms` |
+| `rust_pull_request_ms` | `7ms` | `7ms` | `267ms` |
+| `rust_snapshot_fetch_ms` | `54ms` | `54ms` | `41ms` |
+| `rust_pull_apply_ms` | `245ms` | `246ms` | `344ms` |
+| `rust_snapshot_row_apply_ms` | `189ms` | `191ms` | `1ms` |
+| `rust_snapshot_chunk_apply_ms` | `0ms` | `0ms` | `301ms` |
+| `rust_snapshot_chunk_binary_count` | `0` | `0` | `10` |
+| `rust_response_bytes` | `4738745` | `4738745` | `3783097` |
+| `rust_cached_bootstrap_ms` | `235.69ms` | `233.96ms` | `358.34ms` |
+
+Decision:
+
+- Retained the measurement guard. It is low-complexity and caught a bad
+  benchmark interpretation immediately.
+- Rejected changing the artifact page size from `50k` to `100k`. The observed
+  request did ask for artifacts at `100k`, but the server artifact lookup
+  missed and the response fell back to binary chunks. That made bootstrap
+  about `2.35x` slower than the 50k direct artifact path despite fewer response
+  bytes.
+- Keep the current `50k` artifact page shape. Only revisit larger pages if a
+  dedicated slice proves the server can select direct artifacts and beats the
+  compact artifact baseline end to end.

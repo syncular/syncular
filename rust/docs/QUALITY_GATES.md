@@ -85,6 +85,23 @@ bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts.json
 ```
 
+For artifact page-size experiments, pass the row-limit explicitly and require
+the report to show both the intended and observed request shape:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/browser-e2e-500k-sqlite-artifacts-50k.json
+```
+
+Keep a page-size change only if `benchmark_rust_observed_limit_snapshot_rows`
+matches the requested limit, `benchmark_rust_observed_snapshot_artifacts=1`,
+`rust_snapshot_chunk_binary_count=0`, and the retained run beats the previous
+compact artifact baseline. The 100k probe on May 19, 2026 failed this gate by
+falling back to `10` binary chunks.
+
 ```bash
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \

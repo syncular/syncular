@@ -49,6 +49,7 @@ export interface SyncularV2TransportStats {
   serverBootstrapRowFrameEncodeMs: number;
   serverBootstrapSnapshotBinaryEncodeMs: number;
   serverBootstrapChunkCacheLookupMs: number;
+  serverBootstrapArtifactCacheLookupMs: number;
   serverBootstrapChunkGzipMs: number;
   serverBootstrapChunkHashMs: number;
   serverBootstrapChunkPersistMs: number;

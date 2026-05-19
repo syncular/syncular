@@ -480,6 +480,42 @@ Rejected native direct-import probe:
   gains an explicit no-row-deltas pull mode where row-level event metadata is
   not part of the contract.
 
+Retained eighteenth slice:
+
+- Added benchmark guardrails for scoped artifact page-size experiments. The
+  browser E2E scoreboard now passes an explicit artifact row-limit into the
+  benchmark server, aligns the Rust pull page size with that limit, and records
+  the actual Rust pull request's `limitSnapshotRows`, `maxSnapshotPages`, and
+  artifact capability bit.
+- Added browser transport timing for server artifact-cache lookup so reports can
+  show whether artifact lookup happened separately from snapshot chunk cache
+  lookup.
+- Correctness gates passed: `bun run --cwd rust/bindings/browser tsgo` and
+  `cargo fmt --manifest-path rust/Cargo.toml --all`.
+- Browser release E2E, 500k rows with scoped snapshot artifacts:
+  previous compact artifact baseline `rust_bootstrap_ms=260.82`,
+  `rust_pull_apply_ms=245`, `rust_snapshot_row_apply_ms=189`,
+  `rust_response_bytes=4738745`, `rust_cached_bootstrap_ms=235.69`; 50k
+  observed guard run `rust_bootstrap_ms=262.13`, `rust_pull_apply_ms=246`,
+  `rust_snapshot_row_apply_ms=191`, `rust_response_bytes=4738745`,
+  `rust_cached_bootstrap_ms=233.96`.
+- Decision: retained. The guard adds little complexity and prevents mistaking an
+  intended benchmark option for the actual pull request shape.
+
+Rejected 100k artifact page-size probe:
+
+- Ran the same 500k browser artifact lane with
+  `--sync-snapshot-artifact-row-limit=100000`. The observed Rust pull request
+  did advertise artifacts and `limitSnapshotRows=100000`.
+- Result: rejected. Server artifact lookup missed and the response fell back to
+  `10` binary chunks. The run produced `rust_bootstrap_ms=615.11`,
+  `rust_pull_request_ms=267`, `rust_snapshot_chunk_apply_ms=301`,
+  `rust_snapshot_chunk_binary_count=10`, `rust_response_bytes=3783097`, and
+  `rust_cached_bootstrap_ms=358.34`.
+- Keep the current `50k` page size. Larger pages are not a valid optimization
+  until a dedicated slice proves direct artifact selection still happens and
+  beats the compact 50k baseline.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
@@ -489,5 +525,8 @@ Turn the artifact prototype into the full bootstrap path:
   app-style baseline.
 - Continue body-shape work only if it preserves direct SQLite import and beats
   the compact artifact baseline above.
+- Do not change the browser artifact page size above `50k` unless direct
+  artifact selection is proven by `rust_snapshot_chunk_binary_count=0` and the
+  benchmark beats the current compact artifact baseline.
 - Keep native Diesel on verified artifact row projection until the raw SQLite
   attach/deserialization constraint has a clean solution.
