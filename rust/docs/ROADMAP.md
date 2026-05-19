@@ -71,9 +71,10 @@ read-only review:
 ## Now
 
 - `[~]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
-  - Small bind-loop/cache probes were rejected; next step is a scoped,
-    CF-compatible import-path experiment, not whole-partition artifact
-    optimization.
+  - Small bind-loop/cache probes and SQLite `json_each()` import were rejected.
+    The external app-style gate is working again. Next step is a real
+    length-aware import extension or a strictly scoped artifact prototype, not
+    whole-partition artifact optimization.
 
 ## Next
 

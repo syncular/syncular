@@ -62,6 +62,23 @@ fit scoped/CF-worker-compatible sync:
 Start with the external app-style benchmark before and after the change, then
 run the local 100k/500k browser gates if the external result is promising.
 
+Current external baseline after restoring the benchmark stack:
+
+- TS 500k bootstrap: `3415.92ms`.
+- Rust 500k bootstrap: `2382.23ms`.
+- TS 500k local apply: `1901.25ms`.
+- Rust 500k local apply: `422ms`.
+- TS local list/search p50: `0.08ms` / `0.06ms`.
+- Rust local list/search p50: `0.11ms` / `0.16ms`.
+- TS aggregate p50: `5.25ms`.
+- Rust read-model aggregate p50: `0.01ms`; raw SQL aggregate p50: `7.25ms`.
+
+Rejected larger import-path probe:
+
+- Columnar JSON import through SQLite `json_each()` was tested and reverted.
+  The 500k browser gate timed out during worker close after the apply path
+  failed to complete normally, so JSON import should not be the next direction.
+
 Feasibility notes:
 
 - `sqlite-wasm-rs` exposes `sqlite3_serialize`, `sqlite3_deserialize`, and the
@@ -70,6 +87,13 @@ Feasibility notes:
   `char*` based and does not carry byte lengths. That makes it a poor default
   for arbitrary SQLite text values unless we add strict text constraints or a
   custom length-aware import path.
-- The external Docker-based app benchmark stack hung while checking this batch,
-  so the next implementation attempt should first restore a working external
-  benchmark run before accepting any architecture result.
+- The external Docker-based app benchmark stack was restored with
+  `orbctl stop && orbctl start`; keep using it as the app-style gate.
+
+Next implementation direction:
+
+- Do not spend more time on JSON import or small bind-loop changes.
+- Prototype a real length-aware import path if we want to reduce per-cell bind
+  calls without losing arbitrary text/blob correctness.
+- Treat SQLite snapshot artifacts as a separate gated experiment only for
+  explicitly scoped artifacts; do not optimize for full-partition bootstrap.
