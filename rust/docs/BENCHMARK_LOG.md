@@ -1825,3 +1825,37 @@ Decision:
 
 - Retained. This is a measurable small win and also simplifies the realtime hot
   path by relying on the server's canonical emitted row contract.
+
+## 2026-05-19 - WP-04 Rejected Binary Row-Group Sidecar Apply
+
+Change tested:
+
+- Prototype retained binary sync-pack row-group payloads as sidecar metadata on
+  decoded commits and applied clean single-table upsert commits through the
+  existing binary snapshot payload writer after integrity verification.
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-direct-binary-row-groups.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Candidate |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.27ms` | `83.79ms` |
+| `rust_realtime_live_p95_ms` | `83.61ms` | `85.81ms` |
+| `rust_realtime_apply_total_ms` | `155ms` | `162ms` |
+| `rust_realtime_pull_apply_total_ms` | `131ms` | `137ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7470682` |
+
+Decision:
+
+- Rejected and reverted. Applying retained binary payloads after already
+  decoding them into row maps for commit integrity adds size and does not help
+  the realtime lane. The direct binary path only makes sense if the protocol can
+  avoid JSON/map materialization on the hot path.

@@ -2560,6 +2560,12 @@ client. Overflow should close or resync the session deliberately.
   as canonical server rows and no longer rewrites primary-key/server-version
   fields before batching. Dev-WASM realtime p50 moved `84.31ms -> 82.27ms`, p95
   `85.16ms -> 83.61ms`, and Rust apply total `160ms -> 155ms`.
+- Rejected: retaining binary sync-pack row-group payloads as sidecar metadata and
+  applying those payloads after integrity verification. It regressed realtime
+  p50 `82.27ms -> 83.79ms`, p95 `83.61ms -> 85.81ms`, Rust apply total
+  `155ms -> 162ms`, and WASM size `7463118 -> 7470682`. A worthwhile direct
+  binary realtime path must avoid JSON/map materialization before integrity/apply,
+  not keep two row representations.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
 - Next: design the heavier websocket-first session protocol with server
