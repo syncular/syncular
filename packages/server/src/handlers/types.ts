@@ -272,6 +272,9 @@ export interface ServerTableHandler<
   /** Table name */
   table: string;
 
+  /** Primary key column for row ids and artifact/import metadata. */
+  primaryKeyColumn?: string;
+
   /** Scope patterns used by this handler */
   scopePatterns: ScopePattern[];
 

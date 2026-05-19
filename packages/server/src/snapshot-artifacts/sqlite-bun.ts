@@ -60,6 +60,7 @@ function sqliteValueForColumn(
 
 export function encodeBunSqliteSnapshotArtifact(args: {
   table: string;
+  primaryKeyColumn?: string;
   columns: readonly BinarySnapshotColumn[];
   rows: readonly Record<string, unknown>[];
   options?: BunSqliteSnapshotArtifactEncoderOptions;
@@ -73,14 +74,26 @@ export function encodeBunSqliteSnapshotArtifact(args: {
   const db = new Database(':memory:');
   try {
     const table = quoteSqliteIdentifier(args.table);
+    const canUseWithoutRowid =
+      args.options?.withoutRowid !== false &&
+      args.primaryKeyColumn != null &&
+      args.columns.some((column) => column.name === args.primaryKeyColumn);
+    if (args.options?.withoutRowid === true && !canUseWithoutRowid) {
+      throw new Error(
+        `Cannot encode SQLite snapshot artifact for ${args.table} without rowid: primary key column is missing from snapshot columns`
+      );
+    }
     const columnsSql = args.columns
-      .map(
-        (column) =>
-          `${quoteSqliteIdentifier(column.name)} ${sqliteColumnType(column)}`
-      )
+      .map((column) => {
+        const primaryKey =
+          canUseWithoutRowid && column.name === args.primaryKeyColumn
+            ? ' primary key'
+            : '';
+        return `${quoteSqliteIdentifier(column.name)} ${sqliteColumnType(column)}${primaryKey}`;
+      })
       .join(', ');
     db.exec(
-      `create table ${table} (${columnsSql})${args.options?.withoutRowid ? ' without rowid' : ''}`
+      `create table ${table} (${columnsSql})${canUseWithoutRowid ? ' without rowid' : ''}`
     );
 
     if (args.rows.length > 0) {
@@ -114,14 +127,15 @@ export function createBunSqliteSnapshotArtifactEncoder(
   return {
     artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
     compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-    encode: async ({ table, columns, rows }) => {
+    encode: async ({ table, primaryKeyColumn, columns, rows }) => {
       const raw = encodeBunSqliteSnapshotArtifact({
         table,
+        primaryKeyColumn,
         columns,
         rows,
         options,
       });
-      return gzipBytes(raw, { level: options.gzipLevel ?? 1 });
+      return gzipBytes(raw, { level: options.gzipLevel ?? 6 });
     },
   };
 }

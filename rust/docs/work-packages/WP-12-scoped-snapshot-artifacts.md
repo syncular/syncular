@@ -402,12 +402,42 @@ Retained fourteenth slice:
   `rust_snapshot_row_apply_ms=191`, `rust_snapshot_chunk_apply_ms=0`,
   `rust_response_bytes=6500487`, `rust_cached_bootstrap_ms=248.64`.
 
+Retained fifteenth slice:
+
+- Reduced scoped SQLite artifact body size while keeping the direct import path.
+  Server handlers now expose primary-key metadata to artifact encoders, and the
+  Bun SQLite artifact encoder creates primary-key `WITHOUT ROWID` artifact
+  tables when the generated snapshot columns include that primary key.
+- Raised the default artifact gzip level from `1` to `6`. This is background
+  precompute work, not pull hot-path work.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test src/__tests__/sync-hono.wasm.test.ts` from
+  `rust/bindings/browser`.
+- Browser release E2E, 100k rows, query iterations disabled:
+  previous multi-page artifacts `rust_bootstrap_ms=68.6`,
+  `rust_pull_apply_ms=58`, `rust_response_bytes=1300566`,
+  `rust_cached_bootstrap_ms=48.36`; compact artifacts
+  `rust_bootstrap_ms=66.47`, `rust_pull_apply_ms=56`,
+  `rust_response_bytes=976972`, `rust_cached_bootstrap_ms=45.39`.
+- Browser release E2E, 500k rows, query iterations disabled:
+  previous multi-page artifacts `rust_bootstrap_ms=268.44`,
+  `rust_pull_apply_ms=252`, `rust_response_bytes=6500487`,
+  `rust_cached_bootstrap_ms=248.64`; compact artifacts
+  `rust_bootstrap_ms=260.82`, `rust_pull_apply_ms=245`,
+  `rust_response_bytes=4738745`, `rust_cached_bootstrap_ms=235.69`.
+- Decision: retained. Payload dropped by about `25%` at 100k and `27%` at 500k
+  while wall time improved slightly.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
 - Wire the external app-style benchmark stack to precompute scoped artifacts.
-- Reduce artifact body size without losing the direct SQLite import path.
+- Continue body-shape work only if it preserves direct SQLite import and beats
+  the compact artifact baseline above.
 - Decide whether native direct import needs a new store-level artifact apply
   trait before replacing the current native row-materialization path.
 - Add revocation recovery coverage for the direct import path.

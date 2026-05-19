@@ -228,6 +228,7 @@ function createEncryptedCrdtUpdateHandler<
 ): ServerTableHandler<DB, Auth> {
   return {
     table: SYNC_CRDT_UPDATES_TABLE,
+    primaryKeyColumn: 'update_id',
     snapshotBinaryColumns: CRDT_UPDATE_BINARY_COLUMNS,
     snapshotBinaryEncoder: CRDT_UPDATE_BINARY_ENCODER,
     scopePatterns: options.scopePatterns ?? [],
@@ -285,6 +286,7 @@ function createEncryptedCrdtCheckpointHandler<
 ): ServerTableHandler<DB, Auth> {
   return {
     table: SYNC_CRDT_CHECKPOINTS_TABLE,
+    primaryKeyColumn: 'checkpoint_id',
     snapshotBinaryColumns: CRDT_CHECKPOINT_BINARY_COLUMNS,
     snapshotBinaryEncoder: CRDT_CHECKPOINT_BINARY_ENCODER,
     scopePatterns: options.scopePatterns ?? [],
