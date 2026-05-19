@@ -22,7 +22,10 @@ import {
   type SnapshotArtifactStorage,
   storeScopedSnapshotArtifact,
 } from './snapshot-artifacts';
-import { createBunSqliteSnapshotArtifactEncoder } from './snapshot-artifacts/sqlite-bun';
+import {
+  createBunSqliteSnapshotArtifactEncoder,
+  encodeBunSqliteSnapshotArtifact,
+} from './snapshot-artifacts/sqlite-bun';
 
 interface TasksTable {
   id: string;
@@ -388,6 +391,46 @@ describe('scoped snapshot artifacts', () => {
           user_id: 'user-1',
           title: 'Artifact task',
           server_version: 42,
+        },
+      ]);
+    } finally {
+      artifactDb.close();
+    }
+  });
+
+  it('encodes Postgres-style snapshot values into typed SQLite artifacts', () => {
+    const body = encodeBunSqliteSnapshotArtifact({
+      table: 'tasks',
+      primaryKeyColumn: 'id',
+      columns: [
+        { name: 'id', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+        { name: 'score', type: 'float' },
+        { name: 'updated_at', type: 'string' },
+      ],
+      rows: [
+        {
+          id: 'task-1',
+          server_version: '42',
+          score: '12.5',
+          updated_at: new Date('2026-05-19T10:11:12.000Z'),
+        },
+      ],
+    });
+    const artifactDb = Database.deserialize(body);
+    try {
+      expect(
+        artifactDb
+          .query(
+            'select id, server_version, score, updated_at from tasks order by id'
+          )
+          .all()
+      ).toEqual([
+        {
+          id: 'task-1',
+          server_version: 42,
+          score: 12.5,
+          updated_at: '2026-05-19T10:11:12.000Z',
         },
       ]);
     } finally {

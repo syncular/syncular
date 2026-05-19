@@ -100,10 +100,13 @@ read-only review:
     artifact benchmark and moving Rust bootstrap to `68.6ms`. At 500k rows,
     compact browser artifacts are `260.82ms` versus `618.95ms` for row chunks;
     artifact bytes are now `4.74MB` after `WITHOUT ROWID` plus gzip level 6,
-    down from `6.50MB` before compaction. Native direct artifact import,
-    and external app-style benchmark coverage remain open. Browser direct
-    artifact correctness now covers corrupted downloads and subscription
-    revocation clearing.
+    down from `6.50MB` before compaction. Browser direct artifact correctness
+    now covers corrupted downloads and subscription revocation clearing. The
+    high-level Hono server factory can now serve scoped artifacts, and the Bun
+    SQLite artifact encoder handles Postgres-style snapshot values. Native
+    direct artifact import and external Docker app-style benchmark evidence
+    remain open; the local Docker daemon was unresponsive during the latest
+    attempt.
 
 ## Next
 

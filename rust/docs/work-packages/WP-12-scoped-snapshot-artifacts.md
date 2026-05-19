@@ -441,11 +441,36 @@ Retained sixteenth slice:
   and `bun test src/__tests__/sync-hono.wasm.test.ts` from
   `rust/bindings/browser`.
 
+Retained seventeenth slice:
+
+- Exposed `snapshotArtifactStorage` through the high-level Hono
+  `createSyncServer(...)` facade. App-style servers can now use the normal
+  server factory and still serve scoped SQLite artifacts.
+- Hardened the Bun SQLite artifact encoder for Postgres-backed snapshots by
+  converting numeric strings, bigint integers, float strings, and `Date`
+  timestamp values into typed SQLite artifact values.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts`,
+  `bun run --cwd packages/server tsgo`, and
+  `bun run --cwd packages/server-hono tsgo`.
+- Browser release E2E, 500k rows with scoped snapshot artifacts:
+  previous compact artifact baseline `rust_bootstrap_ms=260.82`,
+  `rust_pull_apply_ms=245`, `rust_snapshot_row_apply_ms=189`,
+  `rust_response_bytes=4738745`, `rust_cached_bootstrap_ms=235.69`; current
+  `rust_bootstrap_ms=259`, `rust_pull_apply_ms=243`,
+  `rust_snapshot_row_apply_ms=189`, `rust_response_bytes=4738745`,
+  `rust_cached_bootstrap_ms=232.48`.
+- External app-style Docker benchmarking is still blocked locally because
+  Docker commands hung before returning daemon status. The Syncular-side server
+  facade needed by that harness is now in place.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
-- Wire the external app-style benchmark stack to precompute scoped artifacts.
+- Run the external app-style benchmark stack with scoped artifact precompute
+  once Docker is responsive, and compare it against the existing TS/Rust
+  app-style baseline.
 - Continue body-shape work only if it preserves direct SQLite import and beats
   the compact artifact baseline above.
 - Decide whether native direct import needs a new store-level artifact apply
