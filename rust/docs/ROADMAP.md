@@ -84,8 +84,9 @@ read-only review:
     contract, server metadata table/helpers, authenticated artifact route, and
     pull-response artifact reference/eligibility contract are in place. Artifact
     body storage writes have a canonical helper and runtimes fail closed before
-    apply support; next is scoped SQLite artifact materialization plus verified
-    client download/apply.
+    apply support. Native/browser transports can download and verify artifact
+    bytes; next is scoped SQLite artifact materialization plus verified client
+    apply.
 
 ## Next
 

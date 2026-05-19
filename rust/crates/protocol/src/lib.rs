@@ -32,9 +32,9 @@ pub use realtime::{
 };
 pub use snapshot_artifact::{
     scoped_snapshot_artifact_manifest_digest, validate_scoped_snapshot_artifact_manifest,
-    ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef,
-    SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
-    SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    validate_scoped_snapshot_artifact_ref, ScopedSnapshotArtifactManifest,
+    ScopedSnapshotArtifactRef, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+    SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION, SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
 };
 pub use snapshot_chunk::{
     decode_snapshot_chunk_sha256, validate_snapshot_chunk_format,

@@ -137,6 +137,67 @@ pub fn validate_scoped_snapshot_artifact_manifest(
     Ok(())
 }
 
+pub fn validate_scoped_snapshot_artifact_ref(artifact: &ScopedSnapshotArtifactRef) -> Result<()> {
+    if artifact.id.is_empty() {
+        return Err(ProtocolError::message(
+            "scoped snapshot artifact id must not be empty",
+        ));
+    }
+    validate_scoped_snapshot_artifact_manifest(&artifact.manifest)?;
+    if artifact.manifest_digest != artifact.manifest.digest {
+        return Err(ProtocolError::message(format!(
+            "scoped snapshot artifact ref manifest digest mismatch: {} != {}",
+            artifact.manifest_digest, artifact.manifest.digest
+        )));
+    }
+    if artifact.artifact_kind != artifact.manifest.artifact_kind {
+        return Err(ProtocolError::message(format!(
+            "scoped snapshot artifact ref kind mismatch: {} != {}",
+            artifact.artifact_kind, artifact.manifest.artifact_kind
+        )));
+    }
+    if artifact.compression != artifact.manifest.compression {
+        return Err(ProtocolError::message(format!(
+            "scoped snapshot artifact ref compression mismatch: {} != {}",
+            artifact.compression, artifact.manifest.compression
+        )));
+    }
+    if artifact.byte_length != artifact.manifest.byte_length {
+        return Err(ProtocolError::message(format!(
+            "scoped snapshot artifact ref byte length mismatch: {} != {}",
+            artifact.byte_length, artifact.manifest.byte_length
+        )));
+    }
+    if artifact.sha256 != artifact.manifest.sha256 {
+        return Err(ProtocolError::message(format!(
+            "scoped snapshot artifact ref sha256 mismatch: {} != {}",
+            artifact.sha256, artifact.manifest.sha256
+        )));
+    }
+    if artifact.row_count != artifact.manifest.row_count {
+        return Err(ProtocolError::message(format!(
+            "scoped snapshot artifact ref row count mismatch: {} != {}",
+            artifact.row_count, artifact.manifest.row_count
+        )));
+    }
+    if artifact.next_row_cursor != artifact.manifest.next_row_cursor {
+        return Err(ProtocolError::message(
+            "scoped snapshot artifact ref next cursor mismatch",
+        ));
+    }
+    if artifact.is_first_page != artifact.manifest.is_first_page {
+        return Err(ProtocolError::message(
+            "scoped snapshot artifact ref first-page flag mismatch",
+        ));
+    }
+    if artifact.is_last_page != artifact.manifest.is_last_page {
+        return Err(ProtocolError::message(
+            "scoped snapshot artifact ref last-page flag mismatch",
+        ));
+    }
+    Ok(())
+}
+
 pub fn scoped_snapshot_artifact_manifest_digest(
     manifest: &ScopedSnapshotArtifactManifest,
 ) -> Result<String> {
@@ -284,5 +345,30 @@ mod tests {
                 .contains("scoped snapshot artifact digest mismatch"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn validates_scoped_snapshot_artifact_refs() {
+        let mut manifest = artifact(vec!["blobs".to_string()]);
+        manifest.digest = scoped_snapshot_artifact_manifest_digest(&manifest).expect("digest");
+        let artifact = ScopedSnapshotArtifactRef {
+            id: "artifact-1".to_string(),
+            byte_length: manifest.byte_length,
+            sha256: manifest.sha256.clone(),
+            manifest_digest: manifest.digest.clone(),
+            artifact_kind: manifest.artifact_kind.clone(),
+            compression: manifest.compression.clone(),
+            row_count: manifest.row_count,
+            next_row_cursor: manifest.next_row_cursor.clone(),
+            is_first_page: manifest.is_first_page,
+            is_last_page: manifest.is_last_page,
+            manifest,
+        };
+
+        validate_scoped_snapshot_artifact_ref(&artifact).expect("valid artifact ref");
+
+        let mut mismatched = artifact.clone();
+        mismatched.sha256 = "c".repeat(64);
+        assert!(validate_scoped_snapshot_artifact_ref(&mismatched).is_err());
     }
 }
