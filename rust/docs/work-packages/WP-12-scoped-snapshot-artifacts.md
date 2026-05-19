@@ -229,12 +229,35 @@ Important limitation: this first native apply path still materializes artifact
 rows as JSON values before applying them. It proves the verified protocol and
 recovery shape, but it is not yet the final performance path.
 
+Retained ninth slice:
+
+- Added `precomputeScopedSnapshotArtifact(...)` to the server package. It is an
+  explicit background/precompute API that calls a registered table snapshot,
+  encodes one scoped page through a pluggable SQLite artifact encoder, stores
+  the body, and inserts the verified scoped artifact metadata row.
+- Added a Bun-only SQLite artifact encoder at
+  `@syncular/server/snapshot-artifacts/sqlite-bun`. This keeps SQLite file
+  generation out of the generic server pull path and out of Cloudflare Worker
+  runtime code.
+- Added a test that precomputes a scoped artifact from generated
+  `snapshotBinaryColumns`, stores the body, and deserializes the resulting
+  SQLite database to prove the rows are present.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd packages/server-hono tsgo`, and
+  `bun run --cwd packages/core tsgo`.
+- Targeted server perf gate passed after the change:
+  `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`.
+  Compared with the prior same-session targeted run, metrics stayed in noise:
+  scoped incremental fanout remained `3.4ms`, dense build moved `39.3ms` to
+  `39.9ms`, binary encode moved `43.6ms` to `43.1ms`, and generated binary
+  encode moved `44.3ms` to `45.1ms`.
+
 ## Next Action
 
-Build the artifact production and fast-apply path:
+Build the browser/direct fast-apply path:
 
-- how background/precompute jobs create scoped SQLite artifact bodies and insert
-  matching metadata rows;
 - how browser clients apply verified artifact bodies;
 - how native clients avoid JSON materialization by attaching/importing artifact
   rows directly or otherwise using generated fixed-column apply;
