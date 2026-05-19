@@ -7,15 +7,16 @@ use crate::protocol::{
     BlobUploadInitResponse,
 };
 use crate::protocol::{
-    CombinedRequest, CombinedResponse, PushCommitRequest, ScopeValues, SnapshotChunkRef,
-    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+    CombinedRequest, CombinedResponse, PushCommitRequest, RealtimePushRequest, ScopeValues,
+    SnapshotChunkRef, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use flate2::read::GzDecoder;
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::future::Future;
@@ -336,15 +337,9 @@ impl WebRealtimeSocket {
 
     pub fn send_push_commit(&self, commit: PushCommitRequest) -> Result<String> {
         let request_id = uuid::Uuid::new_v4().to_string();
-        let message = json!({
-            "type": "push",
-            "requestId": request_id,
-            "clientCommitId": commit.client_commit_id,
-            "operations": commit.operations,
-            "schemaVersion": commit.schema_version,
-        });
+        let message = RealtimePushRequest::from_commit(request_id.clone(), commit);
         self.socket
-            .send_with_str(&message.to_string())
+            .send_with_str(&serde_json::to_string(&message)?)
             .map_err(|err| js_error(ErrorKind::Transport, "send browser websocket push", err))?;
         Ok(request_id)
     }

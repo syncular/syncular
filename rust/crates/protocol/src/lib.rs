@@ -7,6 +7,7 @@ pub mod binary_sync_pack;
 pub mod blob;
 pub mod error;
 pub mod integrity;
+pub mod realtime;
 pub mod snapshot_manifest;
 
 pub use blob::{
@@ -19,6 +20,13 @@ pub use integrity::{
     validate_pull_commit_integrity_metadata, verify_subscription_commit_integrity,
     wire_commit_chain_root, wire_commit_chain_root_from_digest, wire_commit_digest,
     VerifiedCommitRoot,
+};
+pub use realtime::{
+    realtime_presence_event_from_value, realtime_push_response_from_value, RealtimePresenceEntry,
+    RealtimePresenceEvent, RealtimePresenceRequest, RealtimePushRequest, RealtimePushResponseData,
+    RealtimeServerMessage, REALTIME_CLIENT_MESSAGE_PRESENCE, REALTIME_CLIENT_MESSAGE_PUSH,
+    REALTIME_SERVER_EVENT_PRESENCE, REALTIME_SERVER_EVENT_PUSH_RESPONSE,
+    REALTIME_SERVER_EVENT_SYNC,
 };
 pub use snapshot_manifest::{snapshot_manifest_digest, validate_pull_snapshot_manifests};
 
