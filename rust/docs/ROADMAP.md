@@ -71,8 +71,9 @@ read-only review:
 ## Now
 
 - `[~]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
-  - Small bind-loop/cache probes were rejected; continue only with larger
-    import/artifact architecture experiments under benchmark gates.
+  - Small bind-loop/cache probes were rejected; next step is a scoped,
+    CF-compatible import-path experiment, not whole-partition artifact
+    optimization.
 
 ## Next
 
