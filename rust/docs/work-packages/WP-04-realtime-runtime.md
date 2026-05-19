@@ -401,9 +401,35 @@ Rejected probe:
 - Decision: rejected and reverted. The abstraction is not worth carrying
   without a measurable win.
 
+Retained optimization slice:
+
+- Canonical object writing now checks whether keys are already sorted and uses
+  direct map iteration in that case, falling back to key sorting only when
+  needed.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-sorted-object-fast-path.json`,
+  `.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun.json`, and
+  `.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json`.
+- Confirmed rerun versus the retained string-writer guard:
+  `rust_realtime_live_ms=92.55 -> 91.02`,
+  `rust_realtime_apply_total_ms=128 -> 126`,
+  `rust_realtime_pull_apply_total_ms=103 -> 98`,
+  `rust_realtime_integrity_verify_total_ms=76 -> 68`,
+  `rust_realtime_overhead_p95_ms=24.18 -> 23.22`, and
+  `browser_served_rust_wasm_bytes=7465224 -> 7467598`.
+- Decision: retained. The total live metric is mostly flat, but the lower-level
+  integrity bucket consistently improves and the fallback keeps canonical
+  correctness if object iteration is not sorted.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-json-string-writer-rerun.json`, with a fresh
-pre-change rerun when machine state is noisy.
+`.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json`, with a
+fresh pre-change rerun when machine state is noisy.
