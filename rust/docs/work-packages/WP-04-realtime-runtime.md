@@ -427,9 +427,33 @@ Retained optimization slice:
   integrity bucket consistently improves and the fallback keeps canonical
   correctness if object iteration is not sorted.
 
+Retained optimization slice:
+
+- Canonical numbers, wire commit sequences, and row versions now write directly
+  into the existing canonical payload buffer instead of allocating temporary
+  `to_string()` values.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-direct-number-write.json` and
+  `.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`.
+- Confirmed rerun versus the retained sorted-object guard:
+  `rust_realtime_live_ms=91.02 -> 91.03`,
+  `rust_realtime_live_p95_ms=112.80 -> 92.72`,
+  `rust_realtime_apply_total_ms=126 -> 122`,
+  `rust_realtime_pull_apply_total_ms=98 -> 94`,
+  `rust_realtime_commit_apply_total_ms=25 -> 20`, and
+  `browser_served_rust_wasm_bytes=7467598 -> 7468173`.
+- Decision: retained. This does not materially reduce integrity verification,
+  but it reduces total apply/commit overhead with minimal complexity.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json`, with a
+`.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`, with a
 fresh pre-change rerun when machine state is noisy.
