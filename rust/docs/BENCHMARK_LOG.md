@@ -2264,3 +2264,58 @@ Decision:
 - Rejected and reverted. Avoid the generic streaming sink abstraction for this
   path unless a future design can prove a win; the current version made the hot
   bucket slower and increased WASM size.
+
+## 2026-05-19 - WP-04 Realtime Sorted Object Fast Path
+
+Change:
+
+- `append_canonical_object` now checks whether object keys are already sorted.
+  If they are, it writes the object through direct map iteration; if not, it
+  falls back to the canonical key sort path.
+- This preserves canonical correctness while avoiding the key-vector allocation
+  and second map lookup for the current BTree-backed `serde_json::Map` build.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-object-fast-path.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json
+```
+
+Confirmed rerun versus the retained string-writer guard:
+
+| Metric | String-writer guard | Sorted-object rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `92.55ms` | `91.02ms` | `-1.53ms` |
+| `rust_realtime_overhead_p50_ms` | `22.19ms` | `22.21ms` | `+0.02ms` |
+| `rust_realtime_overhead_p95_ms` | `24.18ms` | `23.22ms` | `-0.96ms` |
+| `rust_realtime_apply_total_ms` | `128ms` | `126ms` | `-2ms` |
+| `rust_realtime_pull_apply_total_ms` | `103ms` | `98ms` | `-5ms` |
+| `rust_realtime_integrity_verify_total_ms` | `76ms` | `68ms` | `-8ms` |
+| `rust_realtime_integrity_verify_p50_ms` | `5ms` | `5ms` | `0ms` |
+| `browser_served_rust_wasm_bytes` | `7465224` | `7467598` | `+2374` |
+
+Decision:
+
+- Retained. This is a small guarded fast path with a consistent integrity-bucket
+  win across the confirmation runs. End-to-end live latency is mostly flat due
+  to browser/server noise, so future candidates should continue comparing the
+  lower-level integrity/apply buckets against
+  `.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json`.

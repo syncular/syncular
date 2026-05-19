@@ -358,24 +358,48 @@ pub fn append_canonical_json(out: &mut String, value: &Value) -> Result<()> {
 }
 
 pub fn append_canonical_object(out: &mut String, values: &Map<String, Value>) -> Result<()> {
-    let mut keys = values.keys().collect::<Vec<_>>();
-    keys.sort();
     out.push('{');
-    for (index, key) in keys.into_iter().enumerate() {
-        if index > 0 {
-            out.push(',');
+    if object_keys_are_sorted(values) {
+        for (index, (key, value)) in values.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            append_json_string(out, key)?;
+            out.push(':');
+            append_canonical_json(out, value)?;
         }
-        append_json_string(out, key)?;
-        out.push(':');
-        append_canonical_json(
-            out,
-            values
-                .get(key)
-                .expect("serde_json object key should resolve"),
-        )?;
+    } else {
+        let mut keys = values.keys().collect::<Vec<_>>();
+        keys.sort();
+        for (index, key) in keys.into_iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            append_json_string(out, key)?;
+            out.push(':');
+            append_canonical_json(
+                out,
+                values
+                    .get(key)
+                    .expect("serde_json object key should resolve"),
+            )?;
+        }
     }
     out.push('}');
     Ok(())
+}
+
+fn object_keys_are_sorted(values: &Map<String, Value>) -> bool {
+    let mut previous: Option<&str> = None;
+    for key in values.keys() {
+        if let Some(previous) = previous {
+            if previous > key.as_str() {
+                return false;
+            }
+        }
+        previous = Some(key);
+    }
+    true
 }
 
 pub(crate) fn append_json_string(out: &mut String, value: &str) -> Result<()> {

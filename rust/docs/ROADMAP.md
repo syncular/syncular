@@ -146,16 +146,17 @@ read-only review:
     integrity recovery replaced per-string canonical JSON allocations with an
     in-place string writer, cutting realtime integrity verification
     `159ms -> 76ms` and total realtime apply `237ms -> 128ms` on the local
-    browser guard.
+    browser guard. A guarded sorted-object fast path then reduced integrity
+    verification further to `68ms` while keeping canonical fallback behavior.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-json-string-writer-rerun.json` as the
-  current local comparison point, and rerun the guard before each candidate when
-  machine state is noisy.
+  `.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json` as
+  the current local comparison point, and rerun the guard before each candidate
+  when machine state is noisy.
 
 ## Later
 
