@@ -11,7 +11,6 @@ function createConn(args: {
   clientId: string;
   onSync: (
     cursor: number,
-    changes?: unknown[],
     metadata?: WebSocketSyncMetadata
   ) => void;
   onSyncPack?: (bytes: Uint8Array) => void;
@@ -33,9 +32,9 @@ function createConn(args: {
     transportPath: 'direct',
     syncPackEncoding: args.syncPackEncoding ?? null,
     sendHello() {},
-    sendSync(cursor, changes, metadata) {
+    sendSync(cursor, metadata) {
       if (!open) return;
-      args.onSync(cursor, changes, metadata);
+      args.onSync(cursor, metadata);
     },
     sendSyncPack(bytes) {
       if (!open) return;
@@ -135,33 +134,42 @@ describe('WebSocketConnectionManager (scopes)', () => {
 
   it('sends binary sync packs only to connections that negotiated them', () => {
     const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
-    const seen: Array<{ clientId: string; kind: 'json' | 'binary' }> = [];
+    const seen: Array<{
+      clientId: string;
+      kind: 'wake' | 'binary';
+      metadata?: WebSocketSyncMetadata;
+    }> = [];
     const syncPack = new Uint8Array([0x53, 0x53, 0x50, 0x31]);
 
     const binary = createConn({
       actorId: 'u1',
       clientId: 'binary',
       syncPackEncoding: 'binary-sync-pack-v1',
-      onSync: () => seen.push({ clientId: 'binary', kind: 'json' }),
+      onSync: (_cursor, metadata) =>
+        seen.push({ clientId: 'binary', kind: 'wake', metadata }),
       onSyncPack: () => seen.push({ clientId: 'binary', kind: 'binary' }),
     });
     const json = createConn({
       actorId: 'u1',
       clientId: 'json',
-      onSync: () => seen.push({ clientId: 'json', kind: 'json' }),
+      onSync: (_cursor, metadata) =>
+        seen.push({ clientId: 'json', kind: 'wake', metadata }),
       onSyncPack: () => seen.push({ clientId: 'json', kind: 'binary' }),
     });
 
     mgr.register(binary, ['s']);
     mgr.register(json, ['s']);
     mgr.notifyScopeKeys(['s'], 123, {
-      changes: [{ table: 'tasks', row_id: 'task-1' }],
       syncPack,
     });
 
     expect(seen).toEqual([
       { clientId: 'binary', kind: 'binary' },
-      { clientId: 'json', kind: 'json' },
+      {
+        clientId: 'json',
+        kind: 'wake',
+        metadata: { reason: 'payload-too-large', requiresPull: true },
+      },
     ]);
   });
 
@@ -216,11 +224,11 @@ describe('WebSocketConnectionManager (scopes)', () => {
     expect(mgr.replayScopeKeys(conn, ['s'], 9, 11)).toBe(false);
   });
 
-  it('supports per-connection inline deltas for mixed scopes', () => {
+  it('supports per-connection binary packs for mixed scopes', () => {
     const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
     const seen: Array<{
       clientId: string;
-      kind: 'json' | 'binary';
+      kind: 'wake' | 'binary';
       value: unknown;
     }> = [];
 
@@ -228,8 +236,8 @@ describe('WebSocketConnectionManager (scopes)', () => {
       actorId: 'u1',
       clientId: 'binary-1',
       syncPackEncoding: 'binary-sync-pack-v1',
-      onSync: (_cursor, changes) =>
-        seen.push({ clientId: 'binary-1', kind: 'json', value: changes }),
+      onSync: (_cursor, metadata) =>
+        seen.push({ clientId: 'binary-1', kind: 'wake', value: metadata }),
       onSyncPack: (bytes) =>
         seen.push({
           clientId: 'binary-1',
@@ -241,8 +249,8 @@ describe('WebSocketConnectionManager (scopes)', () => {
       actorId: 'u2',
       clientId: 'binary-2',
       syncPackEncoding: 'binary-sync-pack-v1',
-      onSync: (_cursor, changes) =>
-        seen.push({ clientId: 'binary-2', kind: 'json', value: changes }),
+      onSync: (_cursor, metadata) =>
+        seen.push({ clientId: 'binary-2', kind: 'wake', value: metadata }),
       onSyncPack: (bytes) =>
         seen.push({
           clientId: 'binary-2',
@@ -253,8 +261,8 @@ describe('WebSocketConnectionManager (scopes)', () => {
     const json = createConn({
       actorId: 'u2',
       clientId: 'json',
-      onSync: (_cursor, changes) =>
-        seen.push({ clientId: 'json', kind: 'json', value: changes }),
+      onSync: (_cursor, metadata) =>
+        seen.push({ clientId: 'json', kind: 'wake', value: metadata }),
       onSyncPack: (bytes) =>
         seen.push({ clientId: 'json', kind: 'binary', value: bytes }),
     });
@@ -263,9 +271,6 @@ describe('WebSocketConnectionManager (scopes)', () => {
     mgr.register(binary2, ['s2']);
     mgr.register(json, ['s2']);
     mgr.notifyScopeKeys(['s1', 's2'], 123, {
-      changesForConnection: (connection) => [
-        { row_id: `row-${connection.clientId}` },
-      ],
       syncPackForConnection: (connection) =>
         connection.clientId === 'binary-1'
           ? new Uint8Array([1])
@@ -279,8 +284,8 @@ describe('WebSocketConnectionManager (scopes)', () => {
       { clientId: 'binary-2', kind: 'binary', value: [2] },
       {
         clientId: 'json',
-        kind: 'json',
-        value: [{ row_id: 'row-json' }],
+        kind: 'wake',
+        value: { reason: 'payload-too-large', requiresPull: true },
       },
     ]);
   });
@@ -289,31 +294,23 @@ describe('WebSocketConnectionManager (scopes)', () => {
     const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
     const seen: Array<{
       cursor: number;
-      changes?: unknown[];
       metadata?: WebSocketSyncMetadata;
     }> = [];
-    const json = createConn({
+    const binary = createConn({
       actorId: 'u1',
-      clientId: 'json',
-      onSync: (cursor, changes, metadata) =>
-        seen.push({ cursor, changes, metadata }),
+      clientId: 'binary',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: (cursor, metadata) => seen.push({ cursor, metadata }),
     });
 
-    mgr.register(json, ['s']);
+    mgr.register(binary, ['s']);
     mgr.notifyScopeKeys(['s'], 123, {
-      changes: [
-        {
-          table: 'tasks',
-          row_id: 'large',
-          row_json: { title: 'x'.repeat(80 * 1024) },
-        },
-      ],
+      syncPack: new Uint8Array(80 * 1024),
     });
 
     expect(seen).toEqual([
       {
         cursor: 123,
-        changes: undefined,
         metadata: { reason: 'payload-too-large', requiresPull: true },
       },
     ]);
@@ -326,14 +323,12 @@ describe('WebSocketConnectionManager (scopes)', () => {
     });
     const seen: Array<{
       cursor: number;
-      changes?: unknown[];
       metadata?: WebSocketSyncMetadata;
     }> = [];
     const conn = createConn({
       actorId: 'u1',
       clientId: 'slow',
-      onSync: (cursor, changes, metadata) =>
-        seen.push({ cursor, changes, metadata }),
+      onSync: (cursor, metadata) => seen.push({ cursor, metadata }),
     });
 
     mgr.register(conn, ['s']);
@@ -345,17 +340,14 @@ describe('WebSocketConnectionManager (scopes)', () => {
     expect(seen).toEqual([
       {
         cursor: 1,
-        changes: undefined,
         metadata: { reason: 'server-wakeup', requiresPull: true },
       },
       {
         cursor: 2,
-        changes: undefined,
         metadata: { reason: 'server-wakeup', requiresPull: true },
       },
       {
         cursor: 3,
-        changes: undefined,
         metadata: {
           reason: 'resync-required',
           requiresPull: true,
@@ -364,7 +356,6 @@ describe('WebSocketConnectionManager (scopes)', () => {
       },
       {
         cursor: 4,
-        changes: undefined,
         metadata: {
           reason: 'resync-required',
           requiresPull: true,
@@ -378,7 +369,6 @@ describe('WebSocketConnectionManager (scopes)', () => {
 
     expect(seen.at(-1)).toEqual({
       cursor: 5,
-      changes: undefined,
       metadata: { reason: 'server-wakeup', requiresPull: true },
     });
   });
@@ -390,14 +380,12 @@ describe('WebSocketConnectionManager (scopes)', () => {
     });
     const seen: Array<{
       cursor: number;
-      changes?: unknown[];
       metadata?: WebSocketSyncMetadata;
     }> = [];
     const conn = createConn({
       actorId: 'u1',
       clientId: 'catching-up',
-      onSync: (cursor, changes, metadata) =>
-        seen.push({ cursor, changes, metadata }),
+      onSync: (cursor, metadata) => seen.push({ cursor, metadata }),
     });
 
     mgr.register(conn, ['s']);
@@ -410,22 +398,18 @@ describe('WebSocketConnectionManager (scopes)', () => {
     expect(seen).toEqual([
       {
         cursor: 1,
-        changes: undefined,
         metadata: { reason: 'server-wakeup', requiresPull: true },
       },
       {
         cursor: 2,
-        changes: undefined,
         metadata: { reason: 'server-wakeup', requiresPull: true },
       },
       {
         cursor: 3,
-        changes: undefined,
         metadata: { reason: 'server-wakeup', requiresPull: true },
       },
       {
         cursor: 4,
-        changes: undefined,
         metadata: {
           reason: 'resync-required',
           requiresPull: true,
@@ -450,7 +434,7 @@ describe('WebSocketConnectionManager (scopes)', () => {
       actorId: 'u1',
       clientId: 'binary-slow',
       syncPackEncoding: 'binary-sync-pack-v1',
-      onSync: (cursor, _changes, metadata) =>
+      onSync: (cursor, metadata) =>
         seen.push({ cursor, kind: 'sync', metadata }),
       onSyncPack: (bytes) =>
         seen.push({ kind: 'binary', value: bytes[0] ?? 0 }),

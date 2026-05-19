@@ -214,19 +214,6 @@ export class SyncularV2RustClient {
     return result;
   }
 
-  async applyRealtimeChanges(request: {
-    cursor: number;
-    changes: unknown[];
-    actorId?: string | null;
-    createdAt?: string | null;
-  }): Promise<SyncularV2SyncResult> {
-    const result = parseSyncResult(
-      await this.raw.applyRealtimeChangesJson(JSON.stringify(request))
-    );
-    this.#emitRowsChanged('remotePull', result);
-    return result;
-  }
-
   async applyRealtimeSyncPack(
     bytes: Uint8Array
   ): Promise<SyncularV2SyncResult> {

@@ -42,9 +42,8 @@ recovery/checkpoint paths.
 Retained first slice:
 
 - Browser worker realtime now treats `requiresPull=true` and `droppedCount > 0`
-  as authoritative recovery metadata. If a websocket sync event includes inline
-  changes but also says recovery is required, the worker runs HTTP pull and does
-  not apply the inline changes.
+  as authoritative recovery metadata. Recovery-marked websocket messages run
+  HTTP pull instead of applying any websocket-local row payload.
 - Correctness gates passed:
   `bun test rust/bindings/browser/src/worker-realtime.test.ts`,
   `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`,
@@ -108,7 +107,36 @@ Retained third slice:
   regression is explicit; the next slice should recover integrity-pack overhead
   or move repeated root hashing/metadata work off the hot path.
 
+Retained fourth slice:
+
+- Removed the browser/public inline JSON websocket apply surface:
+  `applyRealtimeChanges`, `applyRealtimeChangesJson`, the Rust
+  `apply_realtime_changes` path, and the synthetic
+  `__syncular_realtime__` subscription branch.
+- Removed server-side bounded JSON websocket delta delivery. The realtime
+  manager now sends binary sync-packs to clients that negotiated
+  `binary-sync-pack-v1`; clients without an eligible binary frame receive an
+  explicit pull-required wakeup.
+- Correctness gates passed:
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd packages/server-hono tsgo`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gate:
+  `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=dev --json --output=.context/benchmarks/wp04-realtime-no-json-deltas.json`.
+- Result: previous WP-04 guard `rust_realtime_live_ms=107.12`,
+  `rust_realtime_live_p95_ms=110.48`, `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`, `rust_realtime_binary_bytes=540300`;
+  current `rust_realtime_live_ms=99.19`,
+  `rust_realtime_live_p95_ms=108.07`, `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`, `rust_realtime_binary_bytes=540300`.
+- Decision: retained. It removes obsolete protocol surface and slightly reduces
+  measured live-time overhead without weakening verified per-subscription roots.
+
 ## Next Action
 
-Recover the added realtime integrity overhead without weakening the verified
-per-subscription root contract.
+Continue recovering realtime integrity overhead without weakening the verified
+per-subscription root contract. Next candidates should be measured against
+`.context/benchmarks/wp04-realtime-no-json-deltas.json`.

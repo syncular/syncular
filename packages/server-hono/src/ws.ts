@@ -1,7 +1,7 @@
 /**
  * @syncular/server-hono - WebSocket helpers for realtime sync wake-ups
  *
- * WebSockets can deliver bounded inline deltas and fall back to wake-ups.
+ * WebSockets deliver binary sync-pack deltas or explicit pull-required wake-ups.
  * Also supports presence tracking for collaborative features.
  */
 
@@ -54,15 +54,12 @@ export interface WsHelloData {
 }
 
 export type WebSocketSyncReason =
-  | 'commit'
   | 'payload-too-large'
   | 'reconnect-catchup'
   | 'resync-required'
   | 'server-wakeup';
 
 export interface WebSocketSyncMetadata {
-  actorId?: string;
-  createdAt?: string;
   reason?: WebSocketSyncReason;
   requiresPull?: boolean;
   droppedCount?: number;
@@ -71,15 +68,11 @@ export interface WebSocketSyncMetadata {
 interface WebSocketReplayRecord {
   scopeKeys: string[];
   cursor: number;
-  changes?: unknown[];
   syncPack?: Uint8Array;
-  changesForConnection?: (connection: WebSocketConnection) => unknown[];
   syncPackForConnection?: (
     connection: WebSocketConnection
   ) => Uint8Array | undefined;
   hasSharedPayload: boolean;
-  actorId?: string;
-  createdAt?: string;
 }
 
 export interface WebSocketRealtimeSubscription {
@@ -127,14 +120,10 @@ export interface SyncWebSocketEvent {
     reason?: WebSocketSyncReason;
     /** Negotiated binary sync-pack encoding, if any */
     syncPackEncoding?: WebSocketSyncPackEncoding | null;
-    /** Commit actor metadata (for sync events with inline changes) */
-    actorId?: string;
     /** Client/device id (for hello events) */
     clientId?: string;
     /** Transport path used by this connection */
     transportPath?: 'direct' | 'relay';
-    /** Commit timestamp metadata (for sync events with inline changes) */
-    createdAt?: string;
     /** Error message (for error events) */
     error?: string;
     /** Presence data (for presence events) */
@@ -164,12 +153,8 @@ export interface SyncWebSocketEvent {
 export interface WebSocketConnection {
   /** Send session/capability handshake metadata */
   sendHello(data: WsHelloData): void;
-  /** Send a sync notification, optionally with inline change data */
-  sendSync(
-    cursor: number,
-    changes?: unknown[],
-    metadata?: WebSocketSyncMetadata
-  ): void;
+  /** Send a sync wake-up notification. */
+  sendSync(cursor: number, metadata?: WebSocketSyncMetadata): void;
   /** Send an encoded binary sync-pack delta */
   sendSyncPack(bytes: Uint8Array): void;
   /** Send a heartbeat */
@@ -252,25 +237,12 @@ export function createWebSocketConnection(
       );
       if (!ok) closed = true;
     },
-    sendSync(
-      cursor: number,
-      changes?: unknown[],
-      metadata?: WebSocketSyncMetadata
-    ) {
+    sendSync(cursor: number, metadata?: WebSocketSyncMetadata) {
       if (!connection.isOpen) return;
       const payload: Record<string, unknown> = {
         cursor,
         timestamp: Date.now(),
       };
-      if (changes && changes.length > 0) {
-        payload.changes = changes;
-      }
-      if (metadata?.actorId) {
-        payload.actorId = metadata.actorId;
-      }
-      if (metadata?.createdAt) {
-        payload.createdAt = metadata.createdAt;
-      }
       if (metadata?.reason) {
         payload.reason = metadata.reason;
       }
@@ -889,10 +861,10 @@ export class WebSocketConnectionManager {
   // =========================================================================
 
   /**
-   * Maximum serialized size (bytes) for inline WS change delivery.
-   * Larger payloads fall back to cursor-only notification.
+   * Maximum encoded sync-pack size sent directly over a websocket frame.
+   * Larger payloads fall back to explicit HTTP pull recovery.
    */
-  private static readonly WS_INLINE_MAX_BYTES = 64 * 1024;
+  private static readonly WS_SYNC_PACK_MAX_BYTES = 64 * 1024;
 
   /**
    * Notify clients that new data is available for the given scopes.
@@ -903,43 +875,26 @@ export class WebSocketConnectionManager {
     cursor: number,
     opts?: {
       excludeClientIds?: string[];
-      changes?: unknown[];
       syncPack?: Uint8Array;
-      changesForConnection?: (connection: WebSocketConnection) => unknown[];
       syncPackForConnection?: (
         connection: WebSocketConnection
       ) => Uint8Array | undefined;
-      actorId?: string;
-      createdAt?: string;
     }
   ): void {
-    // Size guard: only deliver inline changes if under threshold
-    let inlineChanges: unknown[] | undefined;
-    const hasSharedChanges = (opts?.changes?.length ?? 0) > 0;
-    if (opts?.changes && opts.changes.length > 0) {
-      const serialized = JSON.stringify(opts.changes);
-      if (serialized.length <= WebSocketConnectionManager.WS_INLINE_MAX_BYTES) {
-        inlineChanges = opts.changes;
-      }
-    }
-    const inlineSyncPack =
+    const websocketSyncPack =
       opts?.syncPack &&
-      opts.syncPack.byteLength <= WebSocketConnectionManager.WS_INLINE_MAX_BYTES
+      opts.syncPack.byteLength <=
+        WebSocketConnectionManager.WS_SYNC_PACK_MAX_BYTES
         ? opts.syncPack
         : undefined;
     const replayRecord: WebSocketReplayRecord = {
       scopeKeys: [...scopeKeys],
       cursor,
-      changes: inlineChanges,
-      syncPack: inlineSyncPack,
-      changesForConnection: opts?.changesForConnection,
+      syncPack: websocketSyncPack,
       syncPackForConnection: opts?.syncPackForConnection,
       hasSharedPayload:
-        hasSharedChanges ||
         opts?.syncPack !== undefined ||
         opts?.syncPackForConnection !== undefined,
-      actorId: opts?.actorId,
-      createdAt: opts?.createdAt,
     };
     this.rememberReplayRecord(replayRecord);
 
@@ -963,7 +918,7 @@ export class WebSocketConnectionManager {
         return;
       }
       this.markSyncSent(conn, cursor);
-      conn.sendSync(cursor, undefined, {
+      conn.sendSync(cursor, {
         reason: 'server-wakeup',
         requiresPull: true,
       });
@@ -1088,7 +1043,7 @@ export class WebSocketConnectionManager {
     state.resyncRequired = true;
     state.lastSentCursor = Math.max(state.lastSentCursor, cursor);
     state.droppedCount += 1;
-    connection.sendSync(cursor, undefined, {
+    connection.sendSync(cursor, {
       reason: 'resync-required',
       requiresPull: true,
       droppedCount: state.droppedCount,
@@ -1130,7 +1085,7 @@ export class WebSocketConnectionManager {
     if (
       connectionSyncPack &&
       connectionSyncPack.byteLength <=
-        WebSocketConnectionManager.WS_INLINE_MAX_BYTES &&
+        WebSocketConnectionManager.WS_SYNC_PACK_MAX_BYTES &&
       connection.syncPackEncoding === 'binary-sync-pack-v1'
     ) {
       this.markSyncSent(connection, record.cursor);
@@ -1138,29 +1093,10 @@ export class WebSocketConnectionManager {
       return;
     }
 
-    const connectionChanges =
-      record.changesForConnection?.(connection) ?? record.changes;
-    const canSendConnectionChanges =
-      connectionChanges &&
-      connectionChanges.length > 0 &&
-      JSON.stringify(connectionChanges).length <=
-        WebSocketConnectionManager.WS_INLINE_MAX_BYTES;
-    if (canSendConnectionChanges) {
-      this.markSyncSent(connection, record.cursor);
-      connection.sendSync(record.cursor, connectionChanges, {
-        actorId: record.actorId,
-        createdAt: record.createdAt,
-        reason: 'commit',
-      });
-      return;
-    }
-
     this.markSyncSent(connection, record.cursor);
-    connection.sendSync(record.cursor, undefined, {
+    connection.sendSync(record.cursor, {
       reason:
-        connectionSyncPack ||
-        connectionChanges?.length ||
-        record.hasSharedPayload
+        connectionSyncPack || record.hasSharedPayload
           ? 'payload-too-large'
           : 'server-wakeup',
       requiresPull: true,

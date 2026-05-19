@@ -2291,12 +2291,12 @@ client. Overflow should close or resync the session deliberately.
     `rust_incremental_pull_apply_ms` stayed `14`,
     sync-pack decode noise `9 -> 10`.
   - Decision: reverted; not enough signal for the extra conditional logic.
-- Retained first websocket delta slice: the browser worker can now apply the
-  existing JSON inline websocket `changes` payload directly through Rust-owned
-  SQLite instead of treating every realtime frame as a pull wakeup.
+- Superseded first websocket delta slice: the browser worker briefly supported
+  applying JSON websocket `changes` payloads directly through Rust-owned SQLite
+  instead of treating every realtime frame as a pull wakeup.
   - Guard: inline apply only runs for non-empty changes with a finite cursor
     and an empty local outbox; otherwise it falls back to HTTP pull.
-  - Measurement/validation: the worker unit test asserts `syncPulls === 0`
+  - Measurement/validation at the time: the worker unit test asserted `syncPulls === 0`
     for an inline frame, and the real Hono/WASM websocket test counts combined
     HTTP pull requests and proves the live-query update arrives with `0`
     additional HTTP pulls after the realtime push.
@@ -2305,14 +2305,17 @@ client. Overflow should close or resync the session deliberately.
     `rust_incremental_pull_ms` `7.2`, request `6`, apply `0`, sync-pack decode
     `1`. This lane is not the target win; the target win is removing the extra
     realtime HTTP round trip for inline websocket payloads.
+  - Later WP-04 decision: removed. The current Rust-first realtime path is
+    binary sync-pack delivery or explicit pull-required wakeup; JSON websocket
+    row deltas are not part of the retained protocol.
 - Retained binary websocket delta-pack slice: browser realtime now advertises
   `syncPackEncoding=binary-sync-pack-v1`, Hono encodes the same generated
   binary sync-pack format used by HTTP pull, and the worker routes `SSP1`
   binary frames directly into Rust-owned SQLite.
   - Guard: only negotiated clients receive binary frames; non-negotiated
-    clients keep the JSON inline/cursor fallback, and oversized inline payloads
-    still fall back to pull wakeups. Mixed-scope commits also use cursor-only
-    wakeups until the server can filter inline rows per connection.
+    clients receive explicit pull-required wakeups, and oversized binary packs
+    also fall back to pull wakeups. Mixed-scope commits use per-connection
+    scoped binary packs.
   - Measurement/validation: server manager coverage proves binary frames go
     only to negotiated clients, worker coverage proves `0` HTTP pulls for a
     binary frame, and the real Hono/WASM websocket test proves a negotiated
@@ -2373,9 +2376,9 @@ client. Overflow should close or resync the session deliberately.
     a measurement gate, not as a runtime optimization.
 - Retained mixed-scope websocket filtering: Hono no longer falls back to
   cursor-only wakeups just because one pushed commit touches multiple scopes.
-  The websocket manager now accepts per-connection bounded inline deltas, and
-  the Hono route filters emitted changes by each connection's effective
-  subscription scopes before encoding a binary sync-pack.
+  The websocket manager now accepts per-connection binary sync-packs, and the
+  Hono route filters emitted changes by each connection's effective subscription
+  scopes before encoding a binary sync-pack.
   - Correctness guard: the browser/Hono WASM realtime test now pushes one
     mixed-scope commit and proves two connected clients receive only their own
     scoped rows while `httpPullCount()` does not increase.
@@ -2398,15 +2401,15 @@ client. Overflow should close or resync the session deliberately.
     preserving bounded payload fallback and the shared-pack fast path for
     single-scope commits.
 - Retained first ack/resume reliability slice for websocket delta delivery.
-  The browser worker now sends `{type:"ack", cursor}` after successful inline
-  or binary realtime apply, Hono records monotonic cursor acks without
+  The browser worker now sends `{type:"ack", cursor}` after successful binary
+  realtime apply or pull recovery, Hono records monotonic cursor acks without
   replacing effective scopes, and reconnecting websocket sessions receive a
   cursor-only catch-up wakeup when their recorded server cursor lags the latest
   partition commit.
-  - Correctness guard: worker unit coverage asserts inline and binary applies
-    send cursor acks; server route coverage asserts cursor acks update only the
-    cursor and preserve effective scopes; server route coverage also asserts a
-    reconnecting stale cursor receives a catch-up wakeup.
+  - Correctness guard: worker unit coverage asserts binary applies and recovery
+    pulls send cursor acks; server route coverage asserts cursor acks update
+    only the cursor and preserve effective scopes; server route coverage also
+    asserts a reconnecting stale cursor receives a catch-up wakeup.
   - Integration guard: the browser/Hono WASM realtime suite still passes,
     including direct binary websocket delta apply, mixed-scope filtering, and
     auth-param reconnect.
@@ -2537,8 +2540,8 @@ client. Overflow should close or resync the session deliberately.
 - Done: bounded binary delta packs stream over websocket for negotiated clients.
 - Done: browser E2E scoreboard has a Rust realtime latency/bytes lane with
   HTTP fallback counters.
-- Done: mixed-scope commits can still use inline websocket deltas by filtering
-  per connected client's effective scopes.
+- Done: mixed-scope commits use per-connection binary websocket packs filtered
+  by each connected client's effective scopes.
 - Done: browser websocket clients ack successfully applied realtime cursors;
   Hono records monotonic realtime acks and sends reconnect catch-up wakeups
   when the recorded cursor lags.
@@ -2871,7 +2874,7 @@ client. Overflow should close or resync the session deliberately.
     binary `11138.4KiB`; generated decode `46.6ms` vs generic binary decode
     `57.9ms`.
 - Done: added an indexed realtime change-scope selector and switched
-  mixed-scope websocket inline delta filtering to use it. The connection
+  mixed-scope websocket binary-pack filtering to use it. The connection
   registry already indexed scope keys to target connections; this removes the
   remaining per-connection full change scan when a commit touches many scopes.
   - Measurement gate:
@@ -3036,9 +3039,9 @@ client. Overflow should close or resync the session deliberately.
   - Done: added binary sync-pack backpressure coverage. Binary websocket
     deltas now have the same tested in-flight limit semantics as cursor-only
     wakeups: once `resync-required` is emitted, the client must ACK the
-    recovery cursor before inline binary deltas resume.
+    recovery cursor before binary deltas resume.
   - Done: added a Hono route-level guard for the same contract. A configured
-    realtime route now proves active binary websocket clients receive inline
+    realtime route now proves active binary websocket clients receive binary
     packs up to the in-flight limit, then a `resync-required` frame, then
     binary packs again after ACKing the recovery cursor.
 - Prove convergence and conflict behavior across HTTP recovery and websocket

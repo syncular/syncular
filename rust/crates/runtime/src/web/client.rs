@@ -141,18 +141,6 @@ pub struct WebSyncTimings {
     pub notify_ms: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WebRealtimeChangesRequest {
-    pub cursor: i64,
-    #[serde(default)]
-    pub changes: Vec<SyncChange>,
-    #[serde(default)]
-    pub actor_id: Option<String>,
-    #[serde(default)]
-    pub created_at: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSubscriptionResult {
     pub id: String,
@@ -694,50 +682,6 @@ where
         Ok(serde_json::to_string(&self.sync_pull().await?)?)
     }
 
-    pub async fn apply_realtime_changes(
-        &mut self,
-        request: WebRealtimeChangesRequest,
-    ) -> Result<WebSyncResult> {
-        let total_started_at = timing_now_ms();
-        if request.changes.is_empty() {
-            let mut result = WebSyncResult::default();
-            result.timings.total_ms = elapsed_ms_since(total_started_at);
-            result.timings.pull_ms = result.timings.total_ms;
-            return Ok(result);
-        }
-
-        let commit_seq = request.cursor;
-        self.apply_realtime_combined_response(
-            CombinedResponse {
-                ok: true,
-                required_schema_version: None,
-                latest_schema_version: None,
-                push: None,
-                pull: Some(PullResponse {
-                    ok: true,
-                    subscriptions: vec![crate::protocol::SubscriptionResponse {
-                        id: "__syncular_realtime__".to_string(),
-                        status: "active".to_string(),
-                        scopes: ScopeValues::new(),
-                        bootstrap: false,
-                        bootstrap_state: None,
-                        next_cursor: commit_seq,
-                        integrity: None,
-                        commits: vec![SyncCommit {
-                            commit_seq,
-                            created_at: request.created_at.unwrap_or_else(|| now_ms().to_string()),
-                            actor_id: request.actor_id.unwrap_or_else(|| "server".to_string()),
-                            changes: request.changes,
-                        }],
-                        snapshots: None,
-                    }],
-                }),
-            },
-            total_started_at,
-        )
-        .await
-    }
-
     pub async fn apply_realtime_sync_pack_bytes(&mut self, bytes: &[u8]) -> Result<WebSyncResult> {
         let total_started_at = timing_now_ms();
         let response = decode_binary_sync_pack(bytes)?;
@@ -763,7 +707,7 @@ where
         if !self.store.pending_outbox(1).await?.is_empty() {
             return Err(SyncularError::message(
                 ErrorKind::Busy,
-                "realtime inline changes require an empty local outbox",
+                "realtime sync-pack apply requires an empty local outbox",
             ));
         }
 
@@ -822,23 +766,6 @@ where
         result: &mut WebSyncResult,
         subscription: crate::protocol::SubscriptionResponse,
     ) -> Result<()> {
-        if subscription.id == "__syncular_realtime__" {
-            result.subscriptions.push(WebSubscriptionResult {
-                id: subscription.id.clone(),
-                table: "__syncular_realtime__".to_string(),
-                status: subscription.status.clone(),
-                scopes: subscription.scopes.clone(),
-                next_cursor: subscription.next_cursor,
-                snapshot_rows: Vec::new(),
-                commits: subscription.commits.clone(),
-            });
-            self.apply_realtime_commits(result, "__syncular_realtime__", subscription.commits)
-                .await?;
-            return self
-                .advance_realtime_subscription_cursors(subscription.next_cursor)
-                .await;
-        }
-
         if subscription.status != "active" {
             return Err(SyncularError::protocol_message(
                 "realtime sync-pack cannot revoke subscriptions",
@@ -908,13 +835,6 @@ where
         }
 
         Ok(())
-    }
-
-    pub async fn apply_realtime_changes_json(&mut self, request_json: &str) -> Result<String> {
-        let request: WebRealtimeChangesRequest = serde_json::from_str(request_json)?;
-        Ok(serde_json::to_string(
-            &self.apply_realtime_changes(request).await?,
-        )?)
     }
 
     pub async fn sync_push(&mut self) -> Result<WebSyncResult> {
@@ -1059,16 +979,13 @@ where
                         .current_row_json(&change.table, &change.row_id)
                         .await?;
                     self.store.apply_change(change.clone()).await?;
-                    if let Some(mut changed_row) = sync_changed_row_for_change(
+                    if let Some(changed_row) = sync_changed_row_for_change(
                         app_schema,
                         &change,
                         previous_row.as_ref(),
                         commit.commit_seq,
                         subscription_id,
                     ) {
-                        if subscription_id == "__syncular_realtime__" {
-                            changed_row.subscription_id = None;
-                        }
                         result.changed_rows.push(changed_row);
                     }
                 }
@@ -1076,30 +993,6 @@ where
             Ok(())
         } else {
             apply_commits_without_changed_rows(&mut self.store, app_schema, result, commits).await
-        }
-    }
-
-    async fn advance_realtime_subscription_cursors(&mut self, cursor: i64) -> Result<()> {
-        let mut saw_active_state = false;
-        for spec in &self.subscriptions {
-            let Some(mut state) = self.store.subscription_state(&spec.id).await? else {
-                continue;
-            };
-            if state.status == "revoked" {
-                continue;
-            }
-            saw_active_state = true;
-            if state.cursor < cursor {
-                state.cursor = cursor;
-                self.store.upsert_subscription_state(state).await?;
-            }
-        }
-        if saw_active_state {
-            Ok(())
-        } else {
-            Err(SyncularError::protocol_message(
-                "realtime inline changes require an active subscription state",
-            ))
         }
     }
 
