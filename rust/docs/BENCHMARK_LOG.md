@@ -1377,7 +1377,7 @@ Decision:
 
 ## 2026-05-19 - Artifact Page-Size Measurement Guard
 
-Commit: pending
+Commit: `c6654b9d`
 
 Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
 
@@ -1436,3 +1436,51 @@ Decision:
 - Keep the current `50k` artifact page shape. Only revisit larger pages if a
   dedicated slice proves the server can select direct artifacts and beats the
   compact artifact baseline end to end.
+
+## 2026-05-19 - Realtime Requires-Pull Guard
+
+Commit: this slice
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Change:
+
+- Browser worker realtime now treats `requiresPull=true` or
+  `droppedCount > 0` as authoritative recovery metadata. If a websocket sync
+  event contains inline changes but is marked recovery-only, the worker runs
+  HTTP pull and does not apply the inline changes.
+- Added a worker-level regression test covering the mixed payload shape:
+  `changes` present, `requiresPull=true`, and `droppedCount=1`.
+
+Correctness gates:
+
+```bash
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --output=.context/benchmarks/wp04-realtime-requires-pull.json
+```
+
+Browser release E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Current |
+| --- | ---: |
+| `rust_bootstrap_ms` | `34.46ms` |
+| `rust_incremental_pull_ms` | `18.91ms` |
+| `rust_realtime_live_ms` | `70.19ms` |
+| `rust_realtime_live_p95_ms` | `71.7ms` |
+| `rust_realtime_http_request_count` | `0` |
+| `rust_realtime_binary_events` | `15` |
+| `rust_realtime_binary_bytes` | `537675` |
+
+Decision:
+
+- Retained. This is a recovery-semantics fix; the normal websocket binary fast
+  path stayed active in the benchmark with zero HTTP realtime fallbacks.
+- No directly comparable prior local WP-04 benchmark was logged, so this run is
+  the baseline for the next realtime runtime slices.
