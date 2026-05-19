@@ -36,6 +36,7 @@ interface ScoreboardWindow {
       rustIncludeSnapshotRows: boolean;
       rustCollectChangedRows: boolean;
       rustMaxSnapshotChangedRows?: number | null;
+      rustSnapshotRowsPerPage?: number | null;
     }): Promise<ScoreboardResult>;
   };
 }
@@ -125,6 +126,17 @@ const rustMaxSnapshotChangedRows = optionalNumberArg(
   '--rust-max-snapshot-changed-rows'
 );
 const syncSnapshotArtifacts = booleanArg('--sync-snapshot-artifacts', false);
+const syncSnapshotArtifactRowLimit = optionalPositiveNumberArg(
+  '--sync-snapshot-artifact-row-limit'
+);
+const rustSnapshotRowsPerPage = optionalPositiveNumberArg(
+  '--rust-snapshot-rows-per-page'
+);
+const effectiveSyncSnapshotArtifactRowLimit = syncSnapshotArtifacts
+  ? (syncSnapshotArtifactRowLimit ?? rustSnapshotRowsPerPage ?? 50_000)
+  : undefined;
+const effectiveRustSnapshotRowsPerPage =
+  rustSnapshotRowsPerPage ?? effectiveSyncSnapshotArtifactRowLimit;
 const wasmProfile = wasmProfileArg(
   '--wasm-profile',
   process.env.SYNCULAR_BROWSER_WASM_PROFILE ?? 'release'
@@ -167,12 +179,14 @@ const baselineComparisonMetrics = [
   'rust_server_bootstrap_row_frame_encode_ms',
   'rust_server_bootstrap_snapshot_binary_encode_ms',
   'rust_cached_bootstrap_ms',
+  'rust_server_bootstrap_artifact_cache_lookup_ms',
   'rust_cached_request_count',
   'rust_cached_response_bytes',
   'rust_cached_pull_apply_ms',
   'rust_cached_snapshot_chunk_apply_ms',
   'rust_cached_server_bootstrap_row_frame_encode_ms',
   'rust_cached_server_bootstrap_snapshot_binary_encode_ms',
+  'rust_cached_server_bootstrap_artifact_cache_lookup_ms',
   'ts_local_list_p50_ms',
   'rust_local_list_p50_ms',
   'ts_local_search_p50_ms',
@@ -209,6 +223,11 @@ let browser: Browser | undefined;
 let page: Page | undefined;
 let browserErrors: BrowserErrorCollector | undefined;
 const failedResponses: string[] = [];
+const observedRustPullRequests: Array<{
+  limitSnapshotRows?: number;
+  maxSnapshotPages?: number;
+  requestsSnapshotArtifacts: boolean;
+}> = [];
 
 try {
   if (!existsSync(chromium.executablePath())) {
@@ -229,6 +248,9 @@ try {
   ];
   if (syncSnapshotArtifacts) {
     serveArgs.push('--sync-snapshot-artifacts');
+    serveArgs.push(
+      `--sync-snapshot-artifact-row-limit=${effectiveSyncSnapshotArtifactRowLimit}`
+    );
   }
   assetProc = Bun.spawn(serveArgs, {
     cwd: path.resolve(import.meta.dir, '..'),
@@ -248,6 +270,9 @@ try {
   page.on('response', (response) => {
     if (response.status() < 400) return;
     failedResponses.push(`${response.status()} ${response.url()}`);
+  });
+  page.on('request', (request) => {
+    observeRustPullRequest(request.url(), request.method(), request.postData());
   });
   await page.goto(assetUrl);
   await page.waitForFunction(() => window.__runtimeReady === true, {
@@ -274,6 +299,7 @@ try {
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
       rustMaxSnapshotChangedRows,
+      rustSnapshotRowsPerPage: effectiveRustSnapshotRowsPerPage,
     }
   );
 
@@ -296,6 +322,25 @@ try {
       syncSnapshotArtifacts ? 1 : 0,
       'count'
     ),
+    ...(syncSnapshotArtifacts
+      ? [
+          metric(
+            'benchmark_sync_snapshot_artifact_row_limit',
+            effectiveSyncSnapshotArtifactRowLimit!,
+            'rows'
+          ),
+        ]
+      : []),
+    ...(effectiveRustSnapshotRowsPerPage != null
+      ? [
+          metric(
+            'benchmark_rust_snapshot_rows_per_page',
+            effectiveRustSnapshotRowsPerPage,
+            'rows'
+          ),
+        ]
+      : []),
+    ...observedRustPullRequestMetrics(observedRustPullRequests[0]),
     ...result.metrics,
     ...resourceMetrics(resourcesAfterLoad, resourcesAfterBenchmark),
     ...servedAssetMetrics,
@@ -332,7 +377,9 @@ try {
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
       rustMaxSnapshotChangedRows,
+      rustSnapshotRowsPerPage: effectiveRustSnapshotRowsPerPage,
       syncSnapshotArtifacts,
+      syncSnapshotArtifactRowLimit: effectiveSyncSnapshotArtifactRowLimit,
     },
     metrics,
     comparisons: buildComparisons(metrics),
@@ -379,7 +426,17 @@ try {
         `rust-max-snapshot-changed-rows=${rustMaxSnapshotChangedRows}`
       );
     }
+    if (effectiveRustSnapshotRowsPerPage != null) {
+      console.log(
+        `rust-snapshot-rows-per-page=${effectiveRustSnapshotRowsPerPage}`
+      );
+    }
     console.log(`sync-snapshot-artifacts=${syncSnapshotArtifacts}`);
+    if (syncSnapshotArtifacts) {
+      console.log(
+        `sync-snapshot-artifact-row-limit=${effectiveSyncSnapshotArtifactRowLimit}`
+      );
+    }
     console.log('');
     console.log(formatMetrics(report.metrics));
     const comparisons = report.comparisons;
@@ -644,6 +701,84 @@ function memoryMetrics(
   return metrics;
 }
 
+function observeRustPullRequest(
+  requestUrl: string,
+  method: string,
+  postData: string | null
+) {
+  if (method !== 'POST' || !postData) return;
+  const url = new URL(requestUrl);
+  if (!url.pathname.endsWith('/sync')) return;
+  try {
+    const body = JSON.parse(postData) as {
+      clientId?: unknown;
+      pull?: {
+        limitSnapshotRows?: unknown;
+        maxSnapshotPages?: unknown;
+        snapshotArtifacts?: unknown;
+      };
+    };
+    if (
+      typeof body.clientId !== 'string' ||
+      !body.clientId.startsWith('rust-e2e') ||
+      body.pull == null
+    ) {
+      return;
+    }
+    observedRustPullRequests.push({
+      limitSnapshotRows:
+        typeof body.pull.limitSnapshotRows === 'number'
+          ? body.pull.limitSnapshotRows
+          : undefined,
+      maxSnapshotPages:
+        typeof body.pull.maxSnapshotPages === 'number'
+          ? body.pull.maxSnapshotPages
+          : undefined,
+      requestsSnapshotArtifacts: body.pull.snapshotArtifacts != null,
+    });
+  } catch {
+    // Best-effort benchmark observation only.
+  }
+}
+
+function observedRustPullRequestMetrics(
+  request:
+    | {
+        limitSnapshotRows?: number;
+        maxSnapshotPages?: number;
+        requestsSnapshotArtifacts: boolean;
+      }
+    | undefined
+): ScoreboardMetric[] {
+  if (!request) return [];
+  const metrics = [
+    metric(
+      'benchmark_rust_observed_snapshot_artifacts',
+      request.requestsSnapshotArtifacts ? 1 : 0,
+      'count'
+    ),
+  ];
+  if (request.limitSnapshotRows != null) {
+    metrics.push(
+      metric(
+        'benchmark_rust_observed_limit_snapshot_rows',
+        request.limitSnapshotRows,
+        'rows'
+      )
+    );
+  }
+  if (request.maxSnapshotPages != null) {
+    metrics.push(
+      metric(
+        'benchmark_rust_observed_max_snapshot_pages',
+        request.maxSnapshotPages,
+        'count'
+      )
+    );
+  }
+  return metrics;
+}
+
 function metric(
   name: string,
   value: number,
@@ -885,6 +1020,16 @@ function optionalNumberArg(name: string): number | undefined {
   if (!raw) return undefined;
   const value = Number(raw.slice(name.length + 1));
   if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+  return Math.floor(value);
+}
+
+function optionalPositiveNumberArg(name: string): number | undefined {
+  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  if (!raw) return undefined;
+  const value = Number(raw.slice(name.length + 1));
+  if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`Invalid ${name}: ${raw}`);
   }
   return Math.floor(value);

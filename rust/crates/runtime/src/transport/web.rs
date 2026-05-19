@@ -65,6 +65,7 @@ pub struct WebTransportStats {
     pub server_bootstrap_row_frame_encode_ms: f64,
     pub server_bootstrap_snapshot_binary_encode_ms: f64,
     pub server_bootstrap_chunk_cache_lookup_ms: f64,
+    pub server_bootstrap_artifact_cache_lookup_ms: f64,
     pub server_bootstrap_chunk_gzip_ms: f64,
     pub server_bootstrap_chunk_hash_ms: f64,
     pub server_bootstrap_chunk_persist_ms: f64,
@@ -78,6 +79,8 @@ struct WebServerBootstrapTimings {
     #[serde(default, alias = "snapshotBinaryEncodeMs")]
     binary_encode_ms: f64,
     chunk_cache_lookup_ms: f64,
+    #[serde(default)]
+    artifact_cache_lookup_ms: f64,
     chunk_gzip_ms: f64,
     chunk_hash_ms: f64,
     chunk_persist_ms: f64,
@@ -628,6 +631,7 @@ fn record_server_bootstrap_timings(
     stats.server_bootstrap_row_frame_encode_ms += timings.row_frame_encode_ms;
     stats.server_bootstrap_snapshot_binary_encode_ms += timings.binary_encode_ms;
     stats.server_bootstrap_chunk_cache_lookup_ms += timings.chunk_cache_lookup_ms;
+    stats.server_bootstrap_artifact_cache_lookup_ms += timings.artifact_cache_lookup_ms;
     stats.server_bootstrap_chunk_gzip_ms += timings.chunk_gzip_ms;
     stats.server_bootstrap_chunk_hash_ms += timings.chunk_hash_ms;
     stats.server_bootstrap_chunk_persist_ms += timings.chunk_persist_ms;
