@@ -464,6 +464,22 @@ Retained seventeenth slice:
   Docker commands hung before returning daemon status. The Syncular-side server
   facade needed by that harness is now in place.
 
+Rejected native direct-import probe:
+
+- Tried a Diesel native direct-import prototype that wrote verified SQLite
+  artifact bytes to a temp file, attached that file inside the active sync
+  transaction, imported rows with `INSERT INTO ... SELECT ...`, and generated
+  row-level event metadata from the attached artifact table.
+- Rejected before retention because `DETACH` fails with `database ... is locked`
+  inside the active Diesel transaction. Deferring detach until after commit
+  would leak random attached schemas through the connection and make rollback
+  behavior fragile.
+- Native therefore stays on verified artifact row projection for now. Revisit
+  direct native import only if Diesel exposes a clean raw SQLite
+  schema-deserialize hook for the active connection, or if the native client
+  gains an explicit no-row-deltas pull mode where row-level event metadata is
+  not part of the contract.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
@@ -473,5 +489,5 @@ Turn the artifact prototype into the full bootstrap path:
   app-style baseline.
 - Continue body-shape work only if it preserves direct SQLite import and beats
   the compact artifact baseline above.
-- Decide whether native direct import needs a new store-level artifact apply
-  trait before replacing the current native row-materialization path.
+- Keep native Diesel on verified artifact row projection until the raw SQLite
+  attach/deserialization constraint has a clean solution.
