@@ -1,4 +1,4 @@
-import { sha256Hex } from '@syncular/core';
+import { sha256Hex, type SyncCommit } from '@syncular/core';
 import { sql } from 'kysely';
 import {
   coerceIsoString,
@@ -11,6 +11,10 @@ import type { SyncCoreDb } from './schema';
 export const SYNCULAR_COMMIT_DIGEST_VERSION = 'syncular-commit-digest-v1';
 export const SYNCULAR_COMMIT_CHAIN_ROOT_VERSION =
   'syncular-commit-chain-root-v1';
+export const SYNCULAR_WIRE_COMMIT_DIGEST_VERSION =
+  'syncular-wire-commit-digest-v1';
+export const SYNCULAR_WIRE_COMMIT_CHAIN_ROOT_VERSION =
+  'syncular-wire-commit-chain-root-v1';
 export const SYNCULAR_COMMIT_GENESIS_ROOT = '0'.repeat(64);
 
 export interface FinalizedCommitIntegrity {
@@ -105,6 +109,65 @@ export async function finalizeCommitIntegrity<DB extends SyncCoreDb>(args: {
     commitChainRoot,
     previousChainRoot,
   };
+}
+
+export async function attachWireCommitIntegrity(args: {
+  partitionId: string;
+  subscriptionId: string;
+  previousRoot?: string | null;
+  commits: SyncCommit[];
+}): Promise<void> {
+  let previousChainRoot = args.previousRoot || SYNCULAR_COMMIT_GENESIS_ROOT;
+  for (const commit of args.commits) {
+    commit.partitionId = args.partitionId;
+    commit.previousChainRoot = previousChainRoot;
+    const commitDigest = await wireCommitDigest({
+      partitionId: args.partitionId,
+      subscriptionId: args.subscriptionId,
+      commit,
+    });
+    commit.commitDigest = commitDigest;
+    const commitChainRoot = await sha256Hex(
+      canonicalStringify({
+        version: SYNCULAR_WIRE_COMMIT_CHAIN_ROOT_VERSION,
+        partitionId: args.partitionId,
+        subscriptionId: args.subscriptionId,
+        commitSeq: commit.commitSeq,
+        previousChainRoot,
+        commitDigest,
+      })
+    );
+    commit.commitChainRoot = commitChainRoot;
+    previousChainRoot = commitChainRoot;
+  }
+}
+
+export async function wireCommitDigest(args: {
+  partitionId: string;
+  subscriptionId: string;
+  commit: SyncCommit;
+}): Promise<string> {
+  return sha256Hex(
+    canonicalStringify({
+      version: SYNCULAR_WIRE_COMMIT_DIGEST_VERSION,
+      partitionId: args.partitionId,
+      subscriptionId: args.subscriptionId,
+      commitSeq: args.commit.commitSeq,
+      createdAt: args.commit.createdAt,
+      actorId: args.commit.actorId,
+      changes: args.commit.changes.map((change) => ({
+        table: change.table,
+        rowId: change.row_id,
+        op: change.op,
+        row: toCanonicalJson(parseJsonValue(change.row_json)),
+        rowVersion:
+          change.row_version === null || change.row_version === undefined
+            ? null
+            : coerceNumber(change.row_version),
+        scopes: toCanonicalJson(parseJsonValue(change.scopes)),
+      })),
+    })
+  );
 }
 
 async function readPersistedCommit<DB extends SyncCoreDb>(args: {

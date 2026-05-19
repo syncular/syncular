@@ -4,8 +4,8 @@ use crate::error::{Result, SyncularError};
 use crate::protocol::*;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, DemoTaskStore, OutboxCommit, OutboxSummary,
-    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, Task, MAX_SYNC_RETRIES,
-    SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, Task, VerifiedRoot,
+    MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -638,6 +638,72 @@ impl SyncStoreTx for RusqliteTx<'_> {
         self.tx.execute(
             r#"
             delete from sync_subscription_state
+            where state_id = ?1 and subscription_id = ?2
+            "#,
+            params![state_id, subscription_id],
+        )?;
+        Ok(())
+    }
+
+    fn verified_root(
+        &mut self,
+        state_id: &str,
+        subscription_id: &str,
+    ) -> Result<Option<VerifiedRoot>> {
+        self.tx
+            .query_row(
+                r#"
+                select state_id, subscription_id, partition_id, commit_seq, root
+                from sync_verified_roots
+                where state_id = ?1 and subscription_id = ?2
+                limit 1
+                "#,
+                params![state_id, subscription_id],
+                |row| {
+                    Ok(VerifiedRoot {
+                        state_id: row.get(0)?,
+                        subscription_id: row.get(1)?,
+                        partition_id: row.get(2)?,
+                        commit_seq: row.get(3)?,
+                        root: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    fn upsert_verified_root(&mut self, root: &VerifiedRoot) -> Result<()> {
+        let now = now_ms();
+        self.tx.execute(
+            r#"
+            insert into sync_verified_roots (
+                state_id, subscription_id, partition_id, commit_seq, root,
+                created_at, updated_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            on conflict (state_id, subscription_id) do update set
+                partition_id = excluded.partition_id,
+                commit_seq = excluded.commit_seq,
+                root = excluded.root,
+                updated_at = excluded.updated_at
+            "#,
+            params![
+                root.state_id,
+                root.subscription_id,
+                root.partition_id,
+                root.commit_seq,
+                root.root,
+                now,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn delete_verified_root(&mut self, state_id: &str, subscription_id: &str) -> Result<()> {
+        self.tx.execute(
+            r#"
+            delete from sync_verified_roots
             where state_id = ?1 and subscription_id = ?2
             "#,
             params![state_id, subscription_id],

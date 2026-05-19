@@ -1,4 +1,4 @@
-pub const RUNTIME_SCHEMA_VERSION: i32 = 6;
+pub const RUNTIME_SCHEMA_VERSION: i32 = 7;
 
 pub fn runtime_schema_version() -> i32 {
     RUNTIME_SCHEMA_VERSION
@@ -14,6 +14,17 @@ CREATE TABLE IF NOT EXISTS sync_subscription_state (
   cursor BIGINT NOT NULL,
   bootstrap_state_json TEXT NULL,
   status TEXT NOT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (state_id, subscription_id)
+);
+
+CREATE TABLE IF NOT EXISTS sync_verified_roots (
+  state_id TEXT NOT NULL,
+  subscription_id TEXT NOT NULL,
+  partition_id TEXT NOT NULL,
+  commit_seq BIGINT NOT NULL,
+  root TEXT NOT NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   PRIMARY KEY (state_id, subscription_id)

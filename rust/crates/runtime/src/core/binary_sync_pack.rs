@@ -11,7 +11,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 11;
+const VERSION: u16 = 12;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -158,9 +158,11 @@ fn read_subscription_response(
 
 fn read_commit(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncCommit> {
     Ok(SyncCommit {
+        partition_id: reader.read_optional_string32("commit partitionId")?,
         commit_seq: reader.read_i64("commit seq")?,
         created_at: reader.read_string32("commit createdAt")?,
         actor_id: reader.read_string32("commit actorId")?,
+        previous_chain_root: reader.read_optional_string32("commit previous root")?,
         commit_digest: reader.read_optional_string32("commit digest")?,
         commit_chain_root: reader.read_optional_string32("commit chain root")?,
         changes: read_changes_v8(reader)?,

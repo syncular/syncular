@@ -45,6 +45,10 @@ import type { SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
 import {
+  attachWireCommitIntegrity,
+  SYNCULAR_COMMIT_GENESIS_ROOT,
+} from './commit-integrity';
+import {
   createSnapshotChunkScopeCacheKey,
   insertSnapshotChunk,
   readSnapshotChunkRefByPageKey,
@@ -1382,8 +1386,6 @@ export async function pull<
                         commitSeq: number;
                         createdAt: string;
                         actorId: string;
-                        commitDigest: string | null;
-                        commitChainRoot: string | null;
                         change: SyncChange;
                       }
                     >();
@@ -1409,8 +1411,6 @@ export async function pull<
                         commitSeq: r.commit_seq,
                         createdAt: r.created_at,
                         actorId: r.actor_id,
-                        commitDigest: r.commit_digest,
-                        commitChainRoot: r.commit_chain_root,
                         change,
                       });
                     }
@@ -1438,21 +1438,25 @@ export async function pull<
                         lastCommit.commitSeq !== item.commitSeq
                       ) {
                         commits.push({
+                          partitionId,
                           commitSeq: item.commitSeq,
                           createdAt: item.createdAt,
                           actorId: item.actorId,
-                          ...(item.commitDigest
-                            ? { commitDigest: item.commitDigest }
-                            : {}),
-                          ...(item.commitChainRoot
-                            ? { commitChainRoot: item.commitChainRoot }
-                            : {}),
                           changes: [item.change],
                         });
                         continue;
                       }
                       lastCommit.changes.push(item.change);
                     }
+                    await attachWireCommitIntegrity({
+                      partitionId,
+                      subscriptionId: sub.id,
+                      previousRoot:
+                        typeof sub.verifiedRoot === 'string'
+                          ? sub.verifiedRoot
+                          : SYNCULAR_COMMIT_GENESIS_ROOT,
+                      commits,
+                    });
 
                     subResponses.push({
                       id: sub.id,
@@ -1474,15 +1478,10 @@ export async function pull<
                     let commit = commits[commits.length - 1];
                     if (!commit || commit.commitSeq !== seq) {
                       commit = {
+                        partitionId,
                         commitSeq: seq,
                         createdAt: r.created_at,
                         actorId: r.actor_id,
-                        ...(r.commit_digest
-                          ? { commitDigest: r.commit_digest }
-                          : {}),
-                        ...(r.commit_chain_root
-                          ? { commitChainRoot: r.commit_chain_root }
-                          : {}),
                         changes: [],
                       };
                       commits.push(commit);
@@ -1498,6 +1497,16 @@ export async function pull<
                     };
                     commit.changes.push(change);
                   }
+
+                  await attachWireCommitIntegrity({
+                    partitionId,
+                    subscriptionId: sub.id,
+                    previousRoot:
+                      typeof sub.verifiedRoot === 'string'
+                        ? sub.verifiedRoot
+                        : SYNCULAR_COMMIT_GENESIS_ROOT,
+                    commits,
+                  });
 
                   nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
 

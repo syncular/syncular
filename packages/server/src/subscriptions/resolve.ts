@@ -26,6 +26,7 @@ export interface ResolvedSubscription {
   params: Record<string, unknown> | undefined;
   cursor: number;
   bootstrapState?: SyncSubscriptionRequest['bootstrapState'];
+  verifiedRoot?: string;
   status: 'active' | 'revoked';
 }
 
@@ -267,6 +268,7 @@ export async function resolveEffectiveScopesForSubscriptions<
           params: sub.params,
           cursor: sub.cursor,
           bootstrapState: sub.bootstrapState ?? null,
+          verifiedRoot: sub.verifiedRoot,
           status: 'revoked',
         });
         continue;
@@ -283,6 +285,7 @@ export async function resolveEffectiveScopesForSubscriptions<
         params: sub.params,
         cursor: sub.cursor,
         bootstrapState: sub.bootstrapState ?? null,
+        verifiedRoot: sub.verifiedRoot,
         status: 'revoked',
       });
       continue;
@@ -312,6 +315,7 @@ export async function resolveEffectiveScopesForSubscriptions<
         params: sub.params,
         cursor: sub.cursor,
         bootstrapState: sub.bootstrapState ?? null,
+        verifiedRoot: sub.verifiedRoot,
         status: 'revoked',
       });
       continue;
@@ -325,6 +329,7 @@ export async function resolveEffectiveScopesForSubscriptions<
         params: sub.params,
         cursor: sub.cursor,
         bootstrapState: sub.bootstrapState ?? null,
+        verifiedRoot: sub.verifiedRoot,
         status: 'revoked',
       });
       continue;
@@ -337,6 +342,7 @@ export async function resolveEffectiveScopesForSubscriptions<
       params: sub.params,
       cursor: sub.cursor,
       bootstrapState: sub.bootstrapState ?? null,
+      verifiedRoot: sub.verifiedRoot,
       status: 'active',
     });
   }

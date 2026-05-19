@@ -156,6 +156,7 @@ export const SyncSubscriptionRequestSchema = z.object({
   params: z.record(z.string(), z.unknown()).optional(),
   cursor: z.number().int(),
   bootstrapState: SyncBootstrapStateSchema.nullable().optional(),
+  verifiedRoot: z.string().optional(),
 });
 
 export type SyncSubscriptionRequest = z.infer<
@@ -192,9 +193,11 @@ export const SyncChangeSchema = z.object({
 export type SyncChange = z.infer<typeof SyncChangeSchema>;
 
 export const SyncCommitSchema = z.object({
+  partitionId: z.string().optional(),
   commitSeq: z.number().int(),
   createdAt: z.string(),
   actorId: z.string(),
+  previousChainRoot: z.string().optional(),
   commitDigest: z.string().optional(),
   commitChainRoot: z.string().optional(),
   changes: z.array(SyncChangeSchema),

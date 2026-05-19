@@ -32,7 +32,7 @@ use crate::protocol::*;
 use crate::store::MAX_BLOB_UPLOAD_RETRIES;
 use crate::store::{
     next_retry_at, now_ms, OutboxCommit, SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx,
-    MAX_SYNC_RETRIES,
+    VerifiedRoot, MAX_SYNC_RETRIES,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
@@ -1592,6 +1592,12 @@ where
                     })
                     .transpose()?
                     .unwrap_or(false);
+                let verified_root = if scopes_changed {
+                    None
+                } else {
+                    tx.verified_root(DEFAULT_STATE_ID, &spec.id)?
+                        .map(|root| root.root)
+                };
                 subscriptions.push(SubscriptionRequest {
                     id: spec.id,
                     table: spec.table,
@@ -1610,6 +1616,7 @@ where
                             .map(|json| serde_json::from_str(&json))
                             .transpose()?
                     },
+                    verified_root,
                 });
             }
 
@@ -1838,6 +1845,7 @@ where
                         tx.clear_table_for_scopes(&prev.table, &scopes)?;
                         report.add_changed_table(&prev.table);
                     }
+                    tx.delete_verified_root(DEFAULT_STATE_ID, &sub.id)?;
                     tx.delete_subscription_state(DEFAULT_STATE_ID, &sub.id)
                 })?;
                 continue;
@@ -1884,11 +1892,19 @@ where
                     let previous_scopes: ScopeValues = serde_json::from_str(&prev.scopes_json)?;
                     if previous_scopes != sub.scopes {
                         tx.clear_table_for_scopes(&prev.table, &previous_scopes)?;
+                        tx.delete_verified_root(DEFAULT_STATE_ID, &sub.id)?;
                         report.add_changed_table(&prev.table);
                     } else {
                         previous_scopes_match = true;
                     }
                 }
+
+                let stored_root = tx.verified_root(DEFAULT_STATE_ID, &sub.id)?;
+                let verified_root = verify_subscription_commit_integrity(
+                    &sub.id,
+                    stored_root.as_ref().map(|root| root.root.as_str()),
+                    &sub.commits,
+                )?;
 
                 let mut snapshot_cleared_tables = HashSet::new();
                 if let Some(prev) = previous_state.as_ref() {
@@ -2007,6 +2023,15 @@ where
                         .transpose()?,
                     status: sub.status.clone(),
                 })?;
+                if let Some(root) = verified_root {
+                    tx.upsert_verified_root(&VerifiedRoot {
+                        state_id: DEFAULT_STATE_ID.to_string(),
+                        subscription_id: sub.id.clone(),
+                        partition_id: root.partition_id,
+                        commit_seq: root.commit_seq,
+                        root: root.root,
+                    })?;
+                }
 
                 Ok(())
             })?;

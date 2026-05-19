@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::io::Read;
+use syncular_protocol::{canonical_json_string, sha256_hex};
+pub use syncular_protocol::{
+    COMMIT_INTEGRITY_GENESIS_ROOT, COMMIT_INTEGRITY_HEX_LENGTH, WIRE_COMMIT_CHAIN_ROOT_VERSION,
+    WIRE_COMMIT_DIGEST_VERSION,
+};
 use uuid::Uuid;
 
 pub type ScopeValues = Map<String, Value>;
@@ -11,7 +16,6 @@ pub const SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1: &str = "json-row-frame-v1";
 pub const SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1: &str = "binary-table-v1";
 pub const SYNC_PACK_ENCODING_JSON_V1: &str = "json-v1";
 pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
-pub const COMMIT_INTEGRITY_HEX_LENGTH: usize = 64;
 pub const SNAPSHOT_MANIFEST_VERSION: i32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +172,8 @@ pub struct SubscriptionRequest {
     pub cursor: i64,
     #[serde(rename = "bootstrapState", skip_serializing_if = "Option::is_none")]
     pub bootstrap_state: Option<BootstrapState>,
+    #[serde(rename = "verifiedRoot", skip_serializing_if = "Option::is_none")]
+    pub verified_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,12 +285,16 @@ pub struct SubscriptionResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncCommit {
+    #[serde(rename = "partitionId", skip_serializing_if = "Option::is_none")]
+    pub partition_id: Option<String>,
     #[serde(rename = "commitSeq")]
     pub commit_seq: i64,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "actorId")]
     pub actor_id: String,
+    #[serde(rename = "previousChainRoot", skip_serializing_if = "Option::is_none")]
+    pub previous_chain_root: Option<String>,
     #[serde(rename = "commitDigest", skip_serializing_if = "Option::is_none")]
     pub commit_digest: Option<String>,
     #[serde(rename = "commitChainRoot", skip_serializing_if = "Option::is_none")]
@@ -311,6 +321,74 @@ pub fn validate_pull_commit_integrity_metadata(response: &PullResponse) -> Resul
         }
     }
     Ok(())
+}
+
+pub fn verify_subscription_commit_integrity(
+    subscription_id: &str,
+    stored_root: Option<&str>,
+    commits: &[SyncCommit],
+) -> Result<Option<VerifiedCommitRoot>> {
+    let mut expected_previous_root = stored_root
+        .filter(|root| !root.is_empty())
+        .unwrap_or(COMMIT_INTEGRITY_GENESIS_ROOT)
+        .to_string();
+    let mut final_root = None;
+
+    for commit in commits {
+        validate_commit_integrity_metadata(subscription_id, commit)?;
+        let Some(partition_id) = commit.partition_id.as_deref() else {
+            continue;
+        };
+        let commit_digest = commit.commit_digest.as_deref().expect("validated digest");
+        let previous_chain_root = commit
+            .previous_chain_root
+            .as_deref()
+            .expect("validated previous chain root");
+        let commit_chain_root = commit
+            .commit_chain_root
+            .as_deref()
+            .expect("validated chain root");
+
+        if previous_chain_root != expected_previous_root {
+            return Err(SyncularError::protocol_message(format!(
+                "subscription {subscription_id} commit {} previousChainRoot mismatch: expected {}, got {}",
+                commit.commit_seq, expected_previous_root, previous_chain_root
+            )));
+        }
+
+        let actual_digest = wire_commit_digest(partition_id, subscription_id, commit)?;
+        if actual_digest != commit_digest {
+            return Err(SyncularError::protocol_message(format!(
+                "subscription {subscription_id} commit {} commitDigest mismatch: expected {}, got {}",
+                commit.commit_seq, commit_digest, actual_digest
+            )));
+        }
+
+        let actual_root =
+            wire_commit_chain_root(partition_id, subscription_id, previous_chain_root, commit)?;
+        if actual_root != commit_chain_root {
+            return Err(SyncularError::protocol_message(format!(
+                "subscription {subscription_id} commit {} commitChainRoot mismatch: expected {}, got {}",
+                commit.commit_seq, commit_chain_root, actual_root
+            )));
+        }
+
+        expected_previous_root = commit_chain_root.to_string();
+        final_root = Some(VerifiedCommitRoot {
+            partition_id: partition_id.to_string(),
+            commit_seq: commit.commit_seq,
+            root: commit_chain_root.to_string(),
+        });
+    }
+
+    Ok(final_root)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedCommitRoot {
+    pub partition_id: String,
+    pub commit_seq: i64,
+    pub root: String,
 }
 
 pub fn validate_pull_snapshot_manifests(response: &PullResponse) -> Result<()> {
@@ -415,9 +493,20 @@ fn validate_snapshot_manifest(subscription_id: &str, snapshot: &SyncSnapshot) ->
 }
 
 fn validate_commit_integrity_metadata(subscription_id: &str, commit: &SyncCommit) -> Result<()> {
-    match (&commit.commit_digest, &commit.commit_chain_root) {
-        (None, None) => Ok(()),
-        (Some(commit_digest), Some(commit_chain_root)) => {
+    match (
+        &commit.partition_id,
+        &commit.previous_chain_root,
+        &commit.commit_digest,
+        &commit.commit_chain_root,
+    ) {
+        (None, None, None, None) => Ok(()),
+        (Some(_), Some(previous_chain_root), Some(commit_digest), Some(commit_chain_root)) => {
+            validate_commit_integrity_hex(
+                "previousChainRoot",
+                subscription_id,
+                commit.commit_seq,
+                previous_chain_root,
+            )?;
             validate_commit_integrity_hex(
                 "commitDigest",
                 subscription_id,
@@ -432,10 +521,94 @@ fn validate_commit_integrity_metadata(subscription_id: &str, commit: &SyncCommit
             )
         }
         _ => Err(SyncularError::protocol_message(format!(
-            "subscription {} commit {} integrity metadata must include both commitDigest and commitChainRoot",
+            "subscription {} commit {} integrity metadata must include partitionId, previousChainRoot, commitDigest, and commitChainRoot",
             subscription_id, commit.commit_seq
         ))),
     }
+}
+
+pub fn wire_commit_digest(
+    partition_id: &str,
+    subscription_id: &str,
+    commit: &SyncCommit,
+) -> Result<String> {
+    let changes = commit
+        .changes
+        .iter()
+        .map(|change| {
+            let row_version = change.row_version.map(Value::from).unwrap_or(Value::Null);
+            let mut value = Map::new();
+            value.insert("table".to_string(), Value::String(change.table.clone()));
+            value.insert("rowId".to_string(), Value::String(change.row_id.clone()));
+            value.insert("op".to_string(), Value::String(change.op.clone()));
+            value.insert(
+                "row".to_string(),
+                change.row_json.clone().unwrap_or(Value::Null),
+            );
+            value.insert("rowVersion".to_string(), row_version);
+            value.insert("scopes".to_string(), Value::Object(change.scopes.clone()));
+            Value::Object(value)
+        })
+        .collect::<Vec<_>>();
+    let mut value = Map::new();
+    value.insert(
+        "version".to_string(),
+        Value::String(WIRE_COMMIT_DIGEST_VERSION.to_string()),
+    );
+    value.insert(
+        "partitionId".to_string(),
+        Value::String(partition_id.to_string()),
+    );
+    value.insert(
+        "subscriptionId".to_string(),
+        Value::String(subscription_id.to_string()),
+    );
+    value.insert("commitSeq".to_string(), Value::from(commit.commit_seq));
+    value.insert(
+        "createdAt".to_string(),
+        Value::String(commit.created_at.clone()),
+    );
+    value.insert(
+        "actorId".to_string(),
+        Value::String(commit.actor_id.clone()),
+    );
+    value.insert("changes".to_string(), Value::Array(changes));
+    Ok(sha256_hex(&canonical_json_string(&Value::Object(value))?))
+}
+
+pub fn wire_commit_chain_root(
+    partition_id: &str,
+    subscription_id: &str,
+    previous_chain_root: &str,
+    commit: &SyncCommit,
+) -> Result<String> {
+    let commit_digest = commit
+        .commit_digest
+        .as_deref()
+        .ok_or_else(|| SyncularError::protocol_message("missing commitDigest"))?;
+    let mut value = Map::new();
+    value.insert(
+        "version".to_string(),
+        Value::String(WIRE_COMMIT_CHAIN_ROOT_VERSION.to_string()),
+    );
+    value.insert(
+        "partitionId".to_string(),
+        Value::String(partition_id.to_string()),
+    );
+    value.insert(
+        "subscriptionId".to_string(),
+        Value::String(subscription_id.to_string()),
+    );
+    value.insert("commitSeq".to_string(), Value::from(commit.commit_seq));
+    value.insert(
+        "previousChainRoot".to_string(),
+        Value::String(previous_chain_root.to_string()),
+    );
+    value.insert(
+        "commitDigest".to_string(),
+        Value::String(commit_digest.to_string()),
+    );
+    Ok(sha256_hex(&canonical_json_string(&Value::Object(value))?))
 }
 
 fn validate_commit_integrity_hex(
