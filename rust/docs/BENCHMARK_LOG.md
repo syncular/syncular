@@ -18,6 +18,175 @@ Decision:
 Notes:
 ```
 
+## 2026-05-19 - WP-04 Release Realtime Guard
+
+Commit: measurement only
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 \
+  --incremental-rows=1000 \
+  --realtime-iterations=3 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --json \
+  --output=.context/benchmarks/wp04-realtime-release-current-2026-05-19.json
+```
+
+Result:
+
+- `rust_realtime_live_ms=86.54`
+- `rust_realtime_live_p95_ms=88.81`
+- `rust_realtime_overhead_p50_ms=16.75`
+- `rust_realtime_overhead_p95_ms=17.65`
+- `rust_realtime_http_request_count=0`
+- `rust_realtime_binary_events=15`
+- `rust_realtime_apply_total_ms=25`
+- `rust_realtime_sync_pack_decode_total_ms=6`
+- `rust_realtime_integrity_verify_total_ms=6`
+- `rust_realtime_commit_apply_total_ms=6`
+- `browser_served_rust_wasm_bytes=3445771`
+
+Decision:
+
+- Treat this as the release-mode WP-04 guard. Dev-WASM integrity timings were
+  useful for finding obvious waste, but release-WASM no longer shows realtime
+  integrity verification as a meaningful bottleneck. Pause WP-04 micro-probes
+  unless a release-mode benchmark regresses.
+
+## 2026-05-19 - Rejected WP-04 Numeric Formatter Probe
+
+Commit: not retained
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Replace `write!`/temporary number strings in canonical integrity payloads
+  with direct `itoa`/`ryu` formatting for JSON numbers, row versions, and commit
+  sequences.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Fresh pre-change guard:
+
+- `.context/benchmarks/wp04-realtime-prechange-2026-05-19.json`
+- `rust_realtime_live_ms=90.69`
+- `rust_realtime_live_p95_ms=92.95`
+- `rust_realtime_overhead_p50_ms=23.33`
+- `rust_realtime_overhead_p95_ms=23.40`
+- `rust_realtime_apply_total_ms=132`
+- `rust_realtime_integrity_verify_total_ms=68`
+- `browser_served_rust_wasm_bytes=7470941`
+
+Candidate rerun:
+
+- `.context/benchmarks/wp04-realtime-number-format-itoa-ryu-rerun.json`
+- `rust_realtime_live_ms=93.63`
+- `rust_realtime_live_p95_ms=94.70`
+- `rust_realtime_overhead_p50_ms=22.98`
+- `rust_realtime_overhead_p95_ms=24.32`
+- `rust_realtime_apply_total_ms=123`
+- `rust_realtime_integrity_verify_total_ms=63`
+- `browser_served_rust_wasm_bytes=7503209`
+
+Decision:
+
+- Rejected and reverted. The targeted integrity bucket improved by `5ms`, but
+  realtime live latency and p95 overhead regressed across two runs, and the
+  dependency change grew the browser WASM bundle by about `32KiB`.
+
+## 2026-05-19 - Rejected WP-12 Separate-SQLite Artifact Streaming
+
+Commit: not retained
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Open each SQLite snapshot artifact in a separate temporary SQLite handle,
+  stream rows into the main database with prepared multirow inserts, then close
+  the artifact DB immediately.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Candidate:
+
+- 100k artifact: `rust_bootstrap_ms=164.55`,
+  `rust_pull_apply_ms=155`, `rust_snapshot_row_apply_ms=140`.
+- 500k artifact: `rust_bootstrap_ms=738.07`,
+  `rust_pull_apply_ms=726`, `rust_snapshot_row_apply_ms=665`,
+  `rust_response_bytes=4214831`.
+
+Decision:
+
+- Rejected and reverted. The heap direction was better, but the candidate
+  rebuilt a row-copy path and regressed badly versus the retained direct
+  attached-artifact baseline (`~66ms` at 100k, `260-280ms` at 500k).
+
+## 2026-05-19 - Rejected WP-12 Segmented Artifact Apply
+
+Commit: not retained
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Keep direct attached-schema `INSERT ... SELECT`, but commit after each
+  non-final artifact snapshot, persist `bootstrapStateAfter`, detach the
+  artifact schema, and begin the next apply segment.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Candidate:
+
+- 100k artifact: `rust_bootstrap_ms=147.69`,
+  `rust_pull_apply_ms=138`, `rust_snapshot_row_apply_ms=122`.
+- 500k artifact: `rust_bootstrap_ms=605.27`,
+  `rust_pull_apply_ms=594`, `rust_snapshot_row_apply_ms=531`,
+  `rust_response_bytes=4214831`.
+
+Decision:
+
+- Rejected and reverted. It reduced heap versus retained direct import, but
+  still more than doubled local 500k artifact wall time. The next artifact
+  memory design must avoid row-copy staging and repeated transaction
+  boundaries.
+
 ## 2026-05-19 - Rejected WP-03 Columnar JSON Import Probe
 
 Commit: not retained

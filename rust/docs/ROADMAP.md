@@ -130,9 +130,12 @@ read-only review:
     deserialize instead of cloning them. Immediate artifact `DETACH` before
     commit was rejected because SQLite reports the attached DB as locked. The
     nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
-    temp-table staging probes were all rejected. Small artifact shape/memory
+    temp-table staging probes were all rejected. Separate-SQLite row streaming
+    and segmented artifact apply were also rejected because they reduced memory
+    pressure only by regressing wall time heavily. Small artifact shape/memory
     probes are paused until a larger bootstrap transaction/state design can
-    release artifact databases earlier without row-copy staging.
+    release artifact databases earlier without row-copy staging or repeated
+    commit/rebegin overhead.
 - `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
     `syncular.codegen.json`. The generator now emits the read-model contract in
@@ -196,15 +199,24 @@ read-only review:
     Direct numeric writes trimmed total realtime apply further to `122ms`.
     One-pass canonical object writing now avoids the sorted-key pre-scan on the
     normal sorted-map path, moving integrity verification to `65/66ms` across
-    two runs while total apply stayed flat/noisy.
+    two runs while total apply stayed flat/noisy. A follow-up `itoa`/`ryu`
+    numeric formatting probe was rejected because it improved integrity
+    verification modestly but regressed end-to-end realtime latency and grew the
+    browser WASM bundle. A current release-WASM guard shows realtime integrity
+    is no longer the bottleneck: `rust_realtime_apply_total_ms=25`,
+    `rust_realtime_integrity_verify_total_ms=6`,
+    `rust_realtime_overhead_p50_ms=16.75`, and
+    `rust_realtime_http_request_count=0`.
 
 ## Next
 
-- Continue [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
-  by making generated read models visible to the browser/external benchmark
-  harness and measuring the aggregate/local-query lane against the accepted TS
-  and Rust baselines. Keep the feature explicit: no default hidden indexes,
-  read models, or query caches.
+- Move from WP-04 micro-optimization back to the larger bootstrap/performance
+  architecture. The next useful client-side performance work is
+  [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+  / [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md):
+  design a state/phase model that can release direct artifact resources without
+  row-copy staging or repeated transaction boundaries, and measure it against
+  the current external 500k artifact baseline.
 
 ## Later
 

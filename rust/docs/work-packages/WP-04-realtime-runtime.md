@@ -497,9 +497,58 @@ Rejected probe:
 - Decision: rejected and reverted. The tiny integrity movement did not justify
   a magic capacity heuristic, live latency regressed, and WASM grew.
 
+Rejected probe:
+
+- Tried replacing `write!`/temporary numeric formatting in canonical payloads
+  with direct `itoa`/`ryu` writers for JSON numbers, row versions, and commit
+  sequences.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Fresh pre-change guard:
+  `.context/benchmarks/wp04-realtime-prechange-2026-05-19.json`.
+- Browser dev E2E candidate gates:
+  `.context/benchmarks/wp04-realtime-number-format-itoa-ryu.json` and
+  `.context/benchmarks/wp04-realtime-number-format-itoa-ryu-rerun.json`.
+- Rerun versus the fresh pre-change guard:
+  `rust_realtime_live_ms=90.69 -> 93.63`,
+  `rust_realtime_live_p95_ms=92.95 -> 94.70`,
+  `rust_realtime_overhead_p50_ms=23.33 -> 22.98`,
+  `rust_realtime_overhead_p95_ms=23.40 -> 24.32`,
+  `rust_realtime_apply_total_ms=132 -> 123`,
+  `rust_realtime_integrity_verify_total_ms=68 -> 63`, and
+  `browser_served_rust_wasm_bytes=7470941 -> 7503209`.
+- Decision: rejected and reverted. The integrity bucket improved modestly, but
+  end-to-end realtime latency and p95 overhead regressed across both candidate
+  runs, and the added dependencies grew the WASM bundle by about `32KiB`.
+
+Release measurement checkpoint:
+
+- Current accepted WP-04 state was measured with release WASM:
+  `.context/benchmarks/wp04-realtime-release-current-2026-05-19.json`.
+- Result:
+  `rust_realtime_live_ms=86.54`,
+  `rust_realtime_live_p95_ms=88.81`,
+  `rust_realtime_overhead_p50_ms=16.75`,
+  `rust_realtime_overhead_p95_ms=17.65`,
+  `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`,
+  `rust_realtime_apply_total_ms=25`,
+  `rust_realtime_sync_pack_decode_total_ms=6`,
+  `rust_realtime_integrity_verify_total_ms=6`,
+  `rust_realtime_commit_apply_total_ms=6`, and
+  `browser_served_rust_wasm_bytes=3445771`.
+- Decision: use this as the release-mode guard for future WP-04 work. The
+  dev-WASM integrity bucket was useful for finding obvious waste, but release
+  mode no longer shows integrity verification as a meaningful bottleneck.
+
 ## Next Action
 
-Continue recovering realtime integrity overhead without weakening the verified
-per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`, with
-a fresh pre-change rerun when machine state is noisy.
+Pause WP-04 micro-optimizations unless a release-mode benchmark shows a real
+regression. Future realtime protocol changes should compare against
+`.context/benchmarks/wp04-realtime-release-current-2026-05-19.json` and keep
+`rust_realtime_http_request_count=0` for the normal websocket fast path.

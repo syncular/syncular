@@ -646,6 +646,35 @@ Rejected staged temp-table artifact import:
   remaining viable memory path needs either true early detach without staging
   copies, or a different bootstrap state model.
 
+Rejected separate-SQLite row streaming importer:
+
+- Tried opening each downloaded artifact body as a separate temporary SQLite
+  handle and streaming rows into the main database with prepared multirow
+  inserts, closing the artifact handle immediately after its rows were copied.
+- Correctness passed for wasm check/build and targeted browser artifact tests.
+- Rejected because the current direct attached-schema import is much faster:
+  local 100k artifact bootstrap regressed to `164.55ms`, and local 500k
+  artifact bootstrap regressed to `738.07ms` with `665ms` spent in artifact row
+  apply. The retained compact artifact guard is roughly `66ms` at 100k and
+  `260-280ms` at 500k.
+- The probe reduced local heap pressure, but it effectively rebuilt the
+  row-copy path. Do not retry row streaming unless it has a generated typed
+  import path that avoids generic row materialization and bind work.
+
+Rejected segmented artifact apply transaction:
+
+- Tried keeping the fast attached-schema `INSERT ... SELECT` import while
+  committing after each non-final artifact page, persisting
+  `bootstrapStateAfter`, detaching the artifact schema, and beginning the next
+  apply segment.
+- Correctness passed for wasm check/build and targeted browser artifact tests.
+- Rejected because the repeated commit/detach/rebegin shape still regressed
+  local artifact throughput: 100k artifact bootstrap `147.69ms`, 500k artifact
+  bootstrap `605.27ms`, and 500k artifact row apply `531ms`.
+- This reduced heap versus the retained direct import, but not enough to justify
+  more than doubling the 500k artifact wall time. The next memory design must
+  avoid both row-copy staging and repeated apply transaction boundaries.
+
 ## Next Action
 
 Pause small artifact body/page/buffer probes.
@@ -654,8 +683,9 @@ Pause small artifact body/page/buffer probes.
   `4845.39ms`, local apply `1392ms`, response bytes `3527317`, peak memory
   `746.92MB`, and `snapshotChunkCount=0`.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
-  temp-table staging probes were all rejected. They either regressed wall time
-  or failed to improve external peak memory.
+  temp-table staging probes were all rejected. Separate-SQLite row streaming and
+  segmented artifact apply were also rejected. These either regressed wall time
+  or failed to improve external peak memory enough to justify their complexity.
 - The next useful artifact-memory step needs a larger bootstrap state design:
   release/detach artifact databases before full commit without copying rows
   into staging tables, or split bootstrap state so direct artifact import does
