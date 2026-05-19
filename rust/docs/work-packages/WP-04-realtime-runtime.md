@@ -216,6 +216,24 @@ Retained eighth slice:
 - Decision: retained. This is a small but measurable win, and the code is
   simpler because the Rust client no longer patches canonical server rows.
 
+Rejected probe:
+
+- Tried retaining binary sync-pack row-group payloads as a sidecar on decoded
+  commits, then applying clean single-table upsert commits through the existing
+  binary snapshot payload writer after integrity verification.
+- Browser dev E2E gate:
+  `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=dev --json --output=.context/benchmarks/wp04-realtime-direct-binary-row-groups.json`.
+- Result versus the retained eighth slice:
+  `rust_realtime_live_ms=82.27 -> 83.79`,
+  `rust_realtime_live_p95_ms=83.61 -> 85.81`,
+  `rust_realtime_apply_total_ms=155 -> 162`,
+  `rust_realtime_pull_apply_total_ms=131 -> 137`, and
+  `browser_served_rust_wasm_bytes=7463118 -> 7470682`.
+- Decision: rejected and reverted. Keeping binary row payloads in addition to
+  decoded rows adds code/size and did not improve this lane. A future direct
+  binary realtime path must avoid the JSON/map materialization itself, not only
+  reuse the binary payload after decoding it for integrity.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
