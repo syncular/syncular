@@ -290,10 +290,10 @@ bash rust/scripts/package-native-bindings.sh --all
 ```
 
 The script writes to `.context/native-packages` by default. See
-`rust/NATIVE_PACKAGING.md` for output layout, Android SDK/NDK environment
-variables, targeted `--apple` / `--android` / `--java` commands, Linux JVM
-cross-packaging notes, SwiftPM checksums, and the Android AAR/Maven publication
-flow.
+`rust/docs/reference/NATIVE_PACKAGING.md` for output layout, Android SDK/NDK
+environment variables, targeted `--apple` / `--android` / `--java` commands,
+Linux JVM cross-packaging notes, SwiftPM checksums, and the Android AAR/Maven
+publication flow.
 Android packaging requires bundled SQLite, so `native` enables
 `libsqlite3-sys/bundled` instead of linking a device/sysroot `sqlite3`.
 

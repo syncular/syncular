@@ -1,5 +1,10 @@
 # Rust Client Performance Architecture Plan
 
+Reference note: this file preserves performance architecture detail. Current
+benchmark gates live in [`../QUALITY_GATES.md`](../QUALITY_GATES.md), retained
+measurements live in [`../BENCHMARK_LOG.md`](../BENCHMARK_LOG.md), and active
+work packages live in [`../work-packages/`](../work-packages/).
+
 ## Goal
 
 Make the Rust client win on its own architecture instead of matching the TypeScript client implementation detail for detail. The current Rust WASM path is now functional and benchmarked. Release WASM is the relevant browser baseline; dev WASM is useful for local correctness but overstates apply/decompress costs by a large margin.
@@ -1312,7 +1317,7 @@ client. Overflow should close or resync the session deliberately.
   - the server emits JSON row-frame chunks by default and binary chunks when
     requested by Rust-capable clients
   - generated HTTP OpenAPI/transport types now expose the widened encoding contract
-- Documented the proposed `binary-table-v1` wire format in `rust/BINARY_SNAPSHOT_CHUNK_FORMAT.md`.
+- Documented the proposed `binary-table-v1` wire format in `rust/docs/reference/BINARY_SNAPSHOT_CHUNK_FORMAT.md`.
 - Added tested core helpers for encoding/decoding `binary-table-v1` payloads. These lock down the table/column/value byte layout for the server encoder and Rust decoder work.
 - Added protocol negotiation fields.
 - Added server-side generic binary table inference/encoding for snapshot rows.
