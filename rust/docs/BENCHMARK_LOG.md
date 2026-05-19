@@ -2978,3 +2978,60 @@ Decision:
   slightly, but made both apply time and peak memory worse. Keep the `50k`
   bundle cap until a different transaction/import shape can release artifact
   buffers earlier.
+
+## 2026-05-19 - Rejected WP-12 SQLite-Owned Deserialize Buffer
+
+Probe:
+
+- Copied each decompressed SQLite artifact body into memory allocated with
+  `sqlite3_malloc64`, then called `sqlite3_deserialize` with
+  `SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_READONLY`.
+- This allowed SQLite to own the deserialized buffer and removed the explicit
+  Rust `Vec<u8>` retention in `AttachedSnapshotArtifact`, but it introduced a
+  transient copy and still could not release the attached DB before transaction
+  commit.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-owned-deserialize-buffer-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | SQLite-owned buffer |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `304.59ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `287ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4214831` |
+| Local 500k JS heap after | `16451448` | `16226040` |
+| External 500k bootstrap | `4845.39ms` | `5682.5ms` |
+| External 500k local apply | `1392ms` | `1617ms` |
+| External 500k response bytes | `3527317` | `3527346` |
+| External 500k peak memory | `746.92MB` | `746.81MB` |
+
+Decision:
+
+- Rejected and reverted. Peak memory barely moved, while both local and
+  external bootstrap/apply regressed. The retained-buffer problem is not solved
+  by transferring ownership of the same backing bytes to SQLite; it needs a
+  transaction/import shape that can actually detach or release artifact DBs
+  earlier.
