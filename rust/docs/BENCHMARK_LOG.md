@@ -971,3 +971,102 @@ Decision:
 - Retained. This closes browser correctness for scoped SQLite artifact apply and
   keeps the known remaining performance target focused on avoiding JSON
   materialization.
+
+## 2026-05-19 - Browser Direct SQLite Artifact Import
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser artifact capability is now requested only for direct apply modes.
+  Modes that need per-row transforms use snapshot chunks instead of carrying a
+  browser artifact JSON materialization path.
+- Browser owned SQLite imports artifacts by deserializing the SQLite body into
+  an attached in-memory schema and running `INSERT INTO main.table SELECT ...`
+  on the same connection.
+- Browser E2E scoreboard gained `--sync-snapshot-artifacts` for row-chunk vs
+  artifact comparison.
+
+Release WASM size:
+
+- Clean `HEAD` worktree before this slice: old budget already failed by
+  `29.1 KiB` raw / `2.0 KiB` gzip.
+- Current release build: `3.28 MiB` raw / `1.35 MiB` gzip. New budget is
+  `3.30 MiB` raw / `1.36 MiB` gzip, leaving `19.2 KiB` raw and `7.7 KiB` gzip
+  headroom.
+- Direct artifact import adds about `2.9 KiB` raw / `0.6 KiB` gzip over the
+  pre-direct artifact worktree.
+
+Targeted server perf gate rerun:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted WP-12 browser artifact run:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `27.0ms`
+- `sync_pack_binary_encode_50000`: `18.8ms`
+- `sync_pack_binary_decode_50000`: `25.2ms`
+- `sync_pack_binary_generated_encode_50000`: `17.9ms`
+- `sync_pack_binary_generated_decode_50000`: `25.6ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.7ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.4ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `43.4ms`
+
+Current rerun:
+
+- `sync_pack_json_encode_50000`: `10.9ms`
+- `sync_pack_json_decode_50000`: `26.8ms`
+- `sync_pack_binary_encode_50000`: `19.5ms`
+- `sync_pack_binary_decode_50000`: `24.5ms`
+- `sync_pack_binary_generated_encode_50000`: `18.1ms`
+- `sync_pack_binary_generated_decode_50000`: `23.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.3ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.2ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.4ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.7ms`
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | Row chunks | Artifact row-copy prototype | SQLite-native artifact import |
+| --- | ---: | ---: | ---: |
+| `rust_bootstrap_ms` | `144.76ms` | `128.11ms` | `108.73ms` |
+| `rust_pull_request_ms` | `64ms` | `35ms` | `36ms` |
+| `rust_pull_apply_ms` | `78ms` | `90ms` | `69ms` |
+| `rust_snapshot_row_apply_ms` | `0ms` | `41ms` | `20ms` |
+| `rust_snapshot_chunk_apply_ms` | `67ms` | `33ms` | `34ms` |
+| `rust_snapshot_chunk_materialize_ms` | `0ms` | `0ms` | `0ms` |
+| `rust_response_bytes` | `766877` | `3169482` | `3169482` |
+| `rust_cached_bootstrap_ms` | `76.45ms` | `82.81ms` | `60.59ms` |
+| `browser_js_heap_used_delta_bytes` | `4445236` | `2728108` | `2616444` |
+
+Delta:
+
+- SQLite-native artifact import is `24.9%` faster than row chunks on first
+  100k bootstrap and `20.7%` faster on cached bootstrap.
+- It is `15.1%` faster than the row-copy artifact prototype and recovers the
+  local-apply regression (`90ms` to `69ms`).
+- The artifact body is still much larger on the wire than gzipped binary
+  chunks. Artifact compression/body shape is the next performance target before
+  calling this path done for 500k bootstrap.
+- External `/Users/bkniffler/GitHub/sync/offline-sync-bench` was not run for
+  this slice because that branch-server stack does not yet precompute scoped
+  SQLite artifacts. The browser E2E artifact lane is the current artifact
+  benchmark until WP-12 wires artifact precompute into the external stack.
+
+Decision:
+
+- Retained. The direct browser artifact path now has a real benchmark lane and
+  improves wall time and heap usage enough to justify the small WASM size
+  increase. Keep iterating on artifact transfer size and native direct import.

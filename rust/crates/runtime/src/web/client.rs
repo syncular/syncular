@@ -25,7 +25,8 @@ use crate::transport::web::{
 };
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use crate::web_store::{
-    AsyncWebStore, WebMemoryStore, WebStoreApplyTimings, WebSubscriptionState, WebVerifiedRoot,
+    AsyncWebStore, WebMemoryStore, WebSnapshotArtifactApplyMode, WebStoreApplyTimings,
+    WebSubscriptionState, WebVerifiedRoot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -356,7 +357,8 @@ where
                 let mut scope_cleared_for_snapshot = continuing_cleared_snapshot;
                 for snapshot in snapshots {
                     let snapshot_table = snapshot.table.clone();
-                    let mut artifact_rows = Vec::new();
+                    let direct_artifact_apply = self.should_request_sqlite_snapshot_artifacts();
+                    let mut artifact_bodies = Vec::new();
                     if let Some(artifacts) = &snapshot.artifacts {
                         if !artifacts.is_empty() && !self.store.supports_sqlite_snapshot_artifacts()
                         {
@@ -377,16 +379,12 @@ where
                                 .await?;
                             result.timings.snapshot_fetch_ms +=
                                 elapsed_ms_since(snapshot_fetch_started_at);
-                            let materialize_started_at = timing_now_ms();
-                            let rows = self
-                                .store
-                                .decode_sqlite_snapshot_artifact_rows(&snapshot_table, &bytes)
-                                .await?;
-                            result.timings.snapshot_chunk_materialize_ms +=
-                                elapsed_ms_since(materialize_started_at);
-                            for row in rows {
-                                artifact_rows
-                                    .push(self.transform_snapshot_row(&snapshot_table, row)?);
+                            if direct_artifact_apply {
+                                artifact_bodies.push(bytes);
+                            } else {
+                                return Err(SyncularError::protocol_message(
+                                    "sqlite snapshot artifacts require direct browser apply",
+                                ));
                             }
                         }
                     }
@@ -418,14 +416,13 @@ where
                         .sum::<usize>();
                     if snapshot.is_first_page
                         || !snapshot.rows.is_empty()
-                        || !artifact_rows.is_empty()
+                        || !artifact_bodies.is_empty()
                         || chunk_row_count > 0
                     {
                         add_changed_table(&mut result.changed_tables, &snapshot_table);
                     }
 
-                    let mut inline_rows = snapshot.rows.clone();
-                    inline_rows.extend(artifact_rows);
+                    let inline_rows = snapshot.rows.clone();
                     if snapshot.is_first_page {
                         let scope_clear_started_at = timing_now_ms();
                         self.store
@@ -445,6 +442,19 @@ where
                         self.store.upsert_rows(&snapshot_table, inline_rows).await?;
                         result.timings.snapshot_row_apply_ms +=
                             elapsed_ms_since(row_apply_started_at);
+                        for bytes in artifact_bodies {
+                            let artifact_apply_started_at = timing_now_ms();
+                            let mode = if scope_cleared_for_snapshot {
+                                WebSnapshotArtifactApplyMode::Insert
+                            } else {
+                                WebSnapshotArtifactApplyMode::Upsert
+                            };
+                            self.store
+                                .apply_sqlite_snapshot_artifact_rows(&snapshot_table, &bytes, mode)
+                                .await?;
+                            result.timings.snapshot_row_apply_ms +=
+                                elapsed_ms_since(artifact_apply_started_at);
+                        }
                         for rows in chunk_batches {
                             let chunk_apply_started_at = timing_now_ms();
                             if scope_cleared_for_snapshot {
@@ -1117,7 +1127,7 @@ where
             max_snapshot_pages: self.config.pull.max_snapshot_pages,
             dedupe_rows: self.config.pull.dedupe_rows,
             snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
-            snapshot_artifacts: self.store.supports_sqlite_snapshot_artifacts().then(|| {
+            snapshot_artifacts: self.should_request_sqlite_snapshot_artifacts().then(|| {
                 SnapshotArtifactsRequest {
                     schema_version: self.schema_version().to_string(),
                     artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
@@ -1132,6 +1142,14 @@ where
 
     fn sync_pack_encodings(&self) -> Vec<String> {
         vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()]
+    }
+
+    fn should_request_sqlite_snapshot_artifacts(&self) -> bool {
+        self.store.supports_sqlite_snapshot_artifacts()
+            && !self.config.pull.collect_changed_rows
+            && !self.config.pull.include_snapshot_rows
+            && self.field_encryption.is_none()
+            && self.encrypted_crdt.is_none()
     }
 
     async fn prepare_push(&mut self) -> Result<Vec<OutboxCommit>> {

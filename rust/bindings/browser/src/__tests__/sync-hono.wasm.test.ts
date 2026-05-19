@@ -789,14 +789,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
 
-    await expect(client.syncPull()).resolves.toMatchObject({
+    const result = await client.syncPull();
+    expect(result).toMatchObject({
       subscriptions: [
-        {
-          id: syncConformance.subscription.id,
-          snapshotRows: [],
-        },
+        { id: syncConformance.subscription.id, snapshotRows: [] },
       ],
     });
+    expect(result.timings.snapshotChunkMaterializeMs).toBe(0);
 
     expect(artifactDownloads).toBe(1);
     expect(chunkDownloads).toBe(0);

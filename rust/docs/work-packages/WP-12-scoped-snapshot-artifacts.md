@@ -287,17 +287,51 @@ Retained tenth slice:
   `39.4ms`, binary encode moved `43.1ms` to `43.6ms`, and generated binary
   encode moved `45.1ms` to `43.4ms`.
 
+Retained eleventh slice:
+
+- Browser owned SQLite now requests scoped SQLite artifacts only when the
+  current pull mode can apply them directly: no returned snapshot rows, no
+  changed-row collection, no field encryption transform, and no encrypted CRDT
+  runtime transform. If a server sends an artifact outside that mode, the
+  browser client fails clearly instead of materializing rows as JSON.
+- The browser artifact apply path now deserializes the SQLite artifact into an
+  attached in-memory schema on the same SQLite connection and imports rows with
+  `INSERT INTO main.table SELECT ... FROM artifact.table`. Attached artifact
+  buffers stay alive until the surrounding apply transaction commits or rolls
+  back, then the schemas are detached.
+- Added a browser E2E scoreboard switch,
+  `--sync-snapshot-artifacts`, so artifact bootstrap can be measured against
+  the existing row-chunk lane.
+- Ratcheted the full browser WASM size budget from `3.25 MiB` raw / `1.35 MiB`
+  gzip to `3.30 MiB` raw / `1.36 MiB` gzip. A clean `HEAD` worktree was already
+  over the old budget by `29.1 KiB` raw / `2.0 KiB` gzip; this slice adds about
+  `2.9 KiB` raw / `0.6 KiB` gzip for direct artifact import.
+- Correctness gates passed:
+  `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
+  `bun run --cwd rust/bindings/browser build:wasm`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test src/__tests__/sync-hono.wasm.test.ts` from
+  `rust/bindings/browser`.
+- Targeted server perf gate stayed in noise on rerun:
+  `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`.
+- Browser release E2E, 100k rows, query iterations disabled:
+  row chunks `rust_bootstrap_ms=144.76`, `rust_pull_apply_ms=78`,
+  `rust_snapshot_chunk_apply_ms=67`, `rust_response_bytes=766877`;
+  direct SQLite artifacts with SQLite-native import
+  `rust_bootstrap_ms=108.73`, `rust_pull_apply_ms=69`,
+  `rust_snapshot_row_apply_ms=20`, `rust_snapshot_chunk_apply_ms=34`,
+  `rust_response_bytes=3169482`. Cached bootstrap moved `76.45ms` to
+  `60.59ms`.
+
 ## Next Action
 
-Build the direct fast-apply path:
+Turn the artifact prototype into the full bootstrap path:
 
-- how native clients avoid JSON materialization by attaching/importing artifact
-  rows directly or otherwise using generated fixed-column apply;
-- how browser clients avoid JSON row materialization by importing/copying the
-  artifact table into the owned database with fixed-column apply;
-- how revocation and interrupted artifact apply recover without app-side
-  special handling.
-
-The first runtime implementation should be a gated prototype for one generated
-app schema and one scoped subscription, with benchmark evidence against the
-current row-chunk baseline.
+- Add native Diesel direct artifact import or another non-JSON path.
+- Extend artifact precompute to multiple pages and the external app-style
+  benchmark stack, then measure 500k bootstrap against TS/Rust row chunks.
+- Reduce artifact transfer size; the current uncompressed SQLite body improves
+  wall time but is much larger on the wire than gzipped binary chunks.
+- Add interrupted artifact apply and revocation recovery tests for the direct
+  import path.

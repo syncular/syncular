@@ -14,21 +14,24 @@ import {
 } from '@syncular/dialect-wa-sqlite';
 import {
   createServerHandler,
+  createServerHandlerCollection,
   ensureSyncSchema,
+  precomputeScopedSnapshotArtifact,
   readSnapshotChunk,
+  type SnapshotArtifactStorage,
   type SyncCoreDb,
   type SyncServerAuth,
 } from '@syncular/server';
+import { createBunSqliteSnapshotArtifactEncoder } from '@syncular/server/snapshot-artifacts/sqlite-bun';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
 import { createSyncRoutes } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import {
   syncularGeneratedCodecs,
+  syncularGeneratedSchemaVersion,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import {
-  syncularGeneratedServerSnapshotBinary,
-} from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
+import { syncularGeneratedServerSnapshotBinary } from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 
 type BunServer = ReturnType<typeof Bun.serve>;
 
@@ -37,7 +40,14 @@ const port = portArg ? Number.parseInt(portArg.split('=')[1]!, 10) : 0;
 const wasmProfile = readWasmProfile();
 const syncSeedRows = readPositiveIntArg('--sync-seed-rows', 0);
 const syncSeedUsers = Math.max(1, readPositiveIntArg('--sync-seed-users', 1));
+const syncSnapshotArtifacts =
+  process.argv.includes('--sync-snapshot-artifacts') ||
+  process.env.SYNCULAR_BROWSER_E2E_SNAPSHOT_ARTIFACTS === 'true';
 const syncWsMaxInFlight = readPositiveIntArg('--sync-ws-max-in-flight', 64);
+const benchmarkSnapshotArtifactRowLimit = readPositiveIntArg(
+  '--sync-snapshot-artifact-row-limit',
+  50_000
+);
 const repoRoot = path.resolve(import.meta.dir, '../../../..');
 const rustPackageRoot = path.join(repoRoot, 'rust/bindings/browser');
 const rustPackageWasmDir = path.join(rustPackageRoot, 'dist/wasm');
@@ -311,27 +321,40 @@ async function createBenchmarkSyncRoute(
   await ensureSyncSchema(db, dialect);
   await ensureBenchmarkTasksTable(db);
   await seedBenchmarkTasks(db, rows, users);
+  const taskHandler = createServerHandler<
+    BenchmarkSyncServerDb,
+    BenchmarkSyncClientDb,
+    'tasks',
+    BenchmarkSyncAuthContext
+  >({
+    table: 'tasks',
+    scopes: ['user:{user_id}'],
+    codecs: syncularGeneratedCodecs,
+    snapshotBundleMaxBytes: Number.MAX_SAFE_INTEGER,
+    resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+  });
+  const handlerCollection = createServerHandlerCollection<
+    BenchmarkSyncServerDb,
+    BenchmarkSyncAuthContext
+  >([taskHandler], {
+    snapshotBinary: syncularGeneratedServerSnapshotBinary,
+  });
+  const snapshotArtifactStorage = syncSnapshotArtifacts
+    ? await createBenchmarkSnapshotArtifactStorage({
+        db,
+        handlers: handlerCollection,
+        rowLimit: benchmarkSnapshotArtifactRowLimit,
+      })
+    : undefined;
   const syncRoutes = createSyncRoutes<
     BenchmarkSyncServerDb,
     BenchmarkSyncAuthContext
   >({
     db,
     dialect,
-    handlers: [
-      createServerHandler<
-        BenchmarkSyncServerDb,
-        BenchmarkSyncClientDb,
-        'tasks',
-        BenchmarkSyncAuthContext
-      >({
-        table: 'tasks',
-        scopes: ['user:{user_id}'],
-        codecs: syncularGeneratedCodecs,
-        snapshotBundleMaxBytes: Number.MAX_SAFE_INTEGER,
-        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-      }),
-    ],
+    handlers: handlerCollection.handlers,
     snapshotBinary: syncularGeneratedServerSnapshotBinary,
+    snapshotArtifactStorage,
     authenticate: async (c) => {
       const actorId =
         c.req.header('x-actor-id') ??
@@ -375,6 +398,46 @@ async function createBenchmarkSyncRoute(
     }
     return app.fetch(request, server);
   };
+}
+
+async function createBenchmarkSnapshotArtifactStorage(args: {
+  db: ReturnType<typeof createDatabase<BenchmarkSyncServerDb>>;
+  handlers: ReturnType<
+    typeof createServerHandlerCollection<
+      BenchmarkSyncServerDb,
+      BenchmarkSyncAuthContext
+    >
+  >;
+  rowLimit: number;
+}): Promise<SnapshotArtifactStorage> {
+  const artifactBodies = new Map<string, Uint8Array>();
+  const storage: SnapshotArtifactStorage = {
+    name: 'browser-e2e-memory-artifacts',
+    async storeArtifact(artifact) {
+      artifactBodies.set(artifact.artifactId, artifact.body);
+      return { blobHash: `memory:${artifact.artifactId}` };
+    },
+    async readArtifact(artifact) {
+      return artifactBodies.get(artifact.id) ?? null;
+    },
+  };
+  await precomputeScopedSnapshotArtifact({
+    db: args.db,
+    storage,
+    handlers: args.handlers,
+    auth: { actorId: 'browser-e2e-user', partitionId: 'browser-e2e' },
+    partitionId: 'browser-e2e',
+    subscriptionId: 'sub-tasks',
+    table: 'tasks',
+    scopes: { user_id: 'browser-e2e-user' },
+    schemaVersion: syncularGeneratedSchemaVersion,
+    asOfCommitSeq: 0,
+    rowCursor: null,
+    rowLimit: args.rowLimit,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    encoder: createBunSqliteSnapshotArtifactEncoder(),
+  });
+  return storage;
 }
 
 async function ensureBenchmarkTasksTable(

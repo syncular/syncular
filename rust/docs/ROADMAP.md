@@ -89,9 +89,11 @@ read-only review:
     background/precompute can now create scoped Bun SQLite artifact bodies
     explicitly, outside the pull hot path. Browser owned SQLite can now
     advertise schema-bound artifact support, download verified artifact bodies,
-    deserialize them through `sqlite3_deserialize`, and apply rows through the
-    existing snapshot apply path. Native/browser direct artifact import without
-    JSON row materialization remains open.
+    deserialize them through `sqlite3_deserialize`, and directly import rows
+    through an attached in-memory SQLite schema when the pull mode does not need
+    per-row transforms. Native direct artifact import, multi-page artifact
+    precompute, artifact transfer-size reduction, and external 500k benchmark
+    coverage remain open.
 
 ## Next
 
