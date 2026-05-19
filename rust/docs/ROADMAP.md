@@ -93,9 +93,11 @@ read-only review:
     through an attached in-memory SQLite schema when the pull mode does not
     need per-row transforms. The current artifact body path is gzip-compressed
     end to end and cuts 100k artifact response bytes by about `67%` while
-    keeping direct-import wall time flat. Native direct artifact import,
-    multi-page artifact precompute, interrupted/revocation recovery tests, and
-    external 500k benchmark coverage remain open.
+    keeping direct-import wall time flat. Browser direct artifact recovery now
+    rejects corrupted artifact downloads before local rows are mutated and
+    recovers on the next pull. Native direct artifact import, multi-page
+    artifact precompute, revocation recovery coverage, and external 500k
+    benchmark coverage remain open.
 
 ## Next
 
