@@ -52,10 +52,32 @@ function sqliteValueForColumn(
       }
       return value;
     case 'integer':
+      if (typeof value === 'bigint') return safeSqliteInteger(value);
+      if (typeof value === 'string' && /^-?\d+$/.test(value))
+        return safeSqliteInteger(BigInt(value));
+      return value;
     case 'float':
+      if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : value;
+      }
+      return value;
     case 'string':
+      if (value instanceof Date) return value.toISOString();
       return value;
   }
+}
+
+function safeSqliteInteger(value: bigint): number {
+  if (
+    value > BigInt(Number.MAX_SAFE_INTEGER) ||
+    value < BigInt(Number.MIN_SAFE_INTEGER)
+  ) {
+    throw new Error(
+      `Cannot encode SQLite snapshot artifact integer outside JavaScript safe range: ${value}`
+    );
+  }
+  return Number(value);
 }
 
 export function encodeBunSqliteSnapshotArtifact(args: {

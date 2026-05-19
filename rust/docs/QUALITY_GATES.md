@@ -124,11 +124,13 @@ cd /Users/bkniffler/GitHub/sync/offline-sync-bench
 bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
 
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
   docker compose -f stacks/syncular/docker-compose.yml up --build -d
 
 export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
 export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
 export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
 
 bun run bench:run -- --stack syncular --scenario bootstrap
 bun run bench:run -- --stack syncular-rust --scenario bootstrap

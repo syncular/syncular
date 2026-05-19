@@ -1285,3 +1285,55 @@ Decision:
   both first and cached bootstrap stayed slightly faster.
 - The compact artifact path is now the baseline for future artifact body-shape
   experiments.
+
+## 2026-05-19 - Artifact Server Facade And Postgres Value Encoding
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- `@syncular/server-hono` `createSyncServer(...)` now accepts and forwards
+  `snapshotArtifactStorage`, so app-style servers can use the high-level Hono
+  factory instead of dropping down to `createSyncRoutes(...)` just to serve
+  scoped SQLite artifacts.
+- The Bun SQLite artifact encoder now normalizes Postgres-style snapshot values
+  into typed SQLite values: numeric strings for integer/float columns, bigint
+  integers, and `Date` values for string timestamp columns.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd packages/server-hono tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --sync-snapshot-artifacts --rows=500000
+```
+
+Browser release E2E, 500k rows:
+
+| Metric | Previous compact artifacts | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `260.82ms` | `259ms` |
+| `rust_pull_request_ms` | `7ms` | `8ms` |
+| `rust_snapshot_fetch_ms` | `54ms` | `53ms` |
+| `rust_pull_apply_ms` | `245ms` | `243ms` |
+| `rust_snapshot_row_apply_ms` | `189ms` | `189ms` |
+| `rust_response_bytes` | `4738745` | `4738745` |
+| `rust_cached_bootstrap_ms` | `235.69ms` | `232.48ms` |
+
+Decision:
+
+- Retained. The code is a small correctness/ergonomics improvement for
+  app-style artifact servers and Postgres-backed snapshots. Browser artifact
+  performance stayed flat to slightly faster with identical response bytes.
+- External Docker-based app-style benchmarking could not be run in this slice
+  because Docker commands hung before returning daemon status. The external
+  harness path is documented in `QUALITY_GATES.md`; rerun it once Docker is
+  responsive.
