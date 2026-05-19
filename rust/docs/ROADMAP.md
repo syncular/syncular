@@ -70,17 +70,13 @@ read-only review:
 
 ## Now
 
-- `[~]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
-  - Reduce the verified-root performance overhead without weakening the
-    correctness contract.
-  - Next action: update the external app-style Rust benchmark adapter for the
-    current mutation API, then continue reducing canonical JSON allocation in
-    the integrity hot path under the same perf gate.
+- `[~]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+  - Extract the real Rust protocol crate before expanding binary v2.
+  - Next action: inventory protocol-owned types/codecs that still live in the
+    runtime/server packages, then move only the stable shared surface.
 
 ## Next
 
-- `[ ]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
-  - Extract the real Rust protocol crate before expanding binary v2.
 - `[ ]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Continue generated direct-to-SQLite apply work under benchmark gates.
 - `[ ]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
@@ -89,6 +85,7 @@ read-only review:
 
 ## Later
 
+- `[x]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 - `[ ]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
 - `[ ]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
 - `[ ]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)

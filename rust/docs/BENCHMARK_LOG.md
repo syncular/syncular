@@ -138,3 +138,93 @@ Decision:
   gate.
 - Follow-up: update the external app-style Rust adapter to the current
   `applyMutationJson` API before using online-propagation/reconnect numbers.
+
+## 2026-05-19 - Streaming Commit Integrity Payloads
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Server commit integrity canonical JSON now writes directly to a string
+  buffer instead of allocating a full canonical object graph.
+- Rust wire commit/root verification now writes fixed canonical payloads
+  directly and uses a shared canonical object writer for arbitrary row/scope
+  values.
+- External offline-sync-bench Rust adapter was updated outside this repo from
+  the removed `applyLocalOperation` API to `applyMutation` so online/reconnect
+  benches exercise the current API.
+
+Targeted command:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted:
+
+- scoped fanout 5000/20: `3.2ms`
+- dense build 5000/500: `39.4ms`
+- dense binary encode: `42.2ms`
+- dense generated binary encode: `42.4ms`
+- dense binary response bytes: `1419.1KiB`
+
+Candidate:
+
+- Run 1 had a dense binary encode outlier (`48.4ms`) and was rerun.
+- Run 2:
+  - scoped fanout 5000/20: `3.3ms`
+  - dense build 5000/500: `38.4ms`
+  - dense binary encode: `42.7ms`
+  - dense generated binary encode: `42.4ms`
+  - dense binary response bytes: `1419.1KiB`
+
+Delta:
+
+- Dense build: `39.4ms -> 38.4ms`.
+- Dense binary encode: `42.2ms -> 42.7ms` (effectively flat in this noisy gate).
+- Dense generated binary encode: `42.4ms -> 42.4ms`.
+- Wire bytes unchanged.
+
+External app-style benchmark after rebuilding Rust WASM and branch server:
+
+- TS bootstrap 500k: `3703.4ms`; pull request `1106.64ms`; local apply
+  `1967.93ms`; response bytes `3652810`; peak memory `477.81MB`.
+- Rust bootstrap 500k: `6084.08ms`; pull request `1036ms`; local apply
+  `1736ms`; response bytes `3303063`; peak memory `685.66MB`;
+  derived schema `3105.75ms`.
+- Previous Rust bootstrap 500k: `6354.51ms`; pull request `1089ms`; local
+  apply `1840ms`; peak memory `681.2MB`; derived schema `3210.75ms`.
+- Current Rust vs TS: Rust is `1.64x` slower overall at 500k, but Rust pull
+  request and local apply are faster in this run. The remaining gap is still
+  dominated by benchmark-side derived schema time and memory.
+
+External local-query after the same rebuild:
+
+- TS list/search/aggregate p50: `0.09ms` / `0.07ms` / `5.14ms`.
+- Rust list/search/read-model aggregate p50: `0.42ms` / `0.72ms` / `0.06ms`.
+- Rust raw aggregate p50: `56.94ms`.
+- Previous Rust list/search/read-model/raw aggregate p50:
+  `0.51ms` / `0.80ms` / `0.07ms` / `59.7ms`.
+
+External Rust realtime/reconnect after the same rebuild:
+
+- Online propagation: write ack `9.34ms`, p50 `23.04ms`, p95 `44.33ms`.
+- Previous online propagation: p50 `28.64ms`, p95 `40.01ms`.
+- Reconnect convergence 25/100/250 clients:
+  `151.21ms` / `231.3ms` / `2109.74ms`.
+- Previous reconnect 25/100/250 clients:
+  `127.88ms` / `249.4ms` / `2118.53ms`.
+
+Decision:
+
+- Retained. The targeted gate is flat-to-slightly-better, and the external
+  Rust 500k bootstrap/local apply path improved without changing wire size or
+  verification semantics.

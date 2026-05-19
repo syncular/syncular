@@ -1,6 +1,6 @@
 # WP-01 Protocol Integrity
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -53,14 +53,24 @@ Latest retained correctness commit: `ec5adcfa`.
 
 Latest perf note commit: `ab142e5f`.
 
-Current working slice restored Hono pull forwarding for client-provided
+Retained slices restored Hono pull forwarding for client-provided
 `verifiedRoot`, so browser workers can keep root continuity across ordered
 live-query refreshes instead of tripping a `previousChainRoot` mismatch.
 
-Current working slice also moved pull integrity to subscription-level metadata
+Retained slices also moved pull integrity to subscription-level metadata
 and advanced the binary sync-pack wire version to `13`. Per-commit
 `partitionId` / `previousChainRoot` / `commitDigest` / `commitChainRoot`
 metadata is no longer part of the current `SyncCommit` contract.
+
+The latest retained slice removed avoidable canonical object allocation from
+the server and Rust verification hot paths while keeping the same canonical
+payload bytes:
+
+- Server commit integrity now writes canonical JSON directly to a string
+  buffer.
+- Rust wire commit/root verification now writes fixed canonical payloads
+  directly and uses a shared canonical object writer for arbitrary row/scope
+  values.
 
 Targeted server perf moved in the intended direction:
 
@@ -69,15 +79,23 @@ Targeted server perf moved in the intended direction:
 - Dense binary encode: `43.0-45.2ms -> 42.2ms`.
 
 External app-style bootstrap completed after rebuilding the branch server:
-Rust 500k bootstrap is `6354.51ms` versus TS `3730.62ms`; Rust local apply is
-`1840ms` versus TS `1978.08ms`. The current Rust gap in that run is dominated
-by `derived_schema_ms` (`3210.75ms`) and memory, not binary decode.
+Rust 500k bootstrap is `6084.08ms` versus TS `3703.4ms`; Rust local apply is
+`1736ms` versus TS `1967.93ms`. The current Rust gap in that run is dominated
+by `derived_schema_ms` (`3105.75ms`) and memory, not binary decode or local
+apply.
+
+External Rust realtime/reconnect is valid again after updating the external
+benchmark adapter to the current mutation API:
+
+- Online propagation p50/p95: `23.04ms` / `44.33ms`.
+- Reconnect convergence 25/100/250 clients:
+  `151.21ms` / `231.3ms` / `2109.74ms`.
 
 The current overhead is documented in [`../BENCHMARK_LOG.md`](../BENCHMARK_LOG.md).
 
 ## Next Action
 
-Update the external offline-sync-bench Rust adapter to the current
-`applyMutationJson` API so online-propagation and reconnect can be measured
-again, then continue reducing canonical JSON allocation in the integrity hot
-path.
+Move to [`WP-02 Protocol Kernel`](WP-02-protocol-kernel.md) before expanding
+binary v2 further. WP-01 is accepted: Rust verifies delivered commit streams,
+persists verified roots, compacted pull integrity metadata, and benchmarked the
+remaining overhead.

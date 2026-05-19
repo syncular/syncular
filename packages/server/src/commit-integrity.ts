@@ -49,14 +49,6 @@ interface PersistedChangeRow {
   scopes: unknown;
 }
 
-type CanonicalJson =
-  | null
-  | string
-  | number
-  | boolean
-  | CanonicalJson[]
-  | { [key: string]: CanonicalJson };
-
 export async function finalizeCommitIntegrity<DB extends SyncCoreDb>(args: {
   db: DbExecutor<DB>;
   dialect: ServerSyncDialect;
@@ -74,17 +66,17 @@ export async function finalizeCommitIntegrity<DB extends SyncCoreDb>(args: {
       clientId: commit.client_id,
       clientCommitId: commit.client_commit_id,
       createdAt: coerceIsoString(commit.created_at),
-      meta: toCanonicalJson(parseJsonValue(commit.meta)),
-      result: toCanonicalJson(parseJsonValue(commit.result_json)),
+      meta: parseJsonValue(commit.meta),
+      result: parseJsonValue(commit.result_json),
       changeCount: coerceNumber(commit.change_count) ?? changes.length,
       affectedTables: args.dialect.dbToArray(commit.affected_tables).sort(),
       changes: changes.map((change) => ({
         table: change.table,
         rowId: change.row_id,
         op: change.op,
-        row: toCanonicalJson(parseJsonValue(change.row_json)),
+        row: parseJsonValue(change.row_json),
         rowVersion: coerceNumber(change.row_version),
-        scopes: toCanonicalJson(parseJsonValue(change.scopes)),
+        scopes: parseJsonValue(change.scopes),
       })),
     })
   );
@@ -156,27 +148,7 @@ export async function wireCommitDigest(args: {
   subscriptionId: string;
   commit: SyncCommit;
 }): Promise<string> {
-  return sha256Hex(
-    canonicalStringify({
-      version: SYNCULAR_WIRE_COMMIT_DIGEST_VERSION,
-      partitionId: args.partitionId,
-      subscriptionId: args.subscriptionId,
-      commitSeq: args.commit.commitSeq,
-      createdAt: args.commit.createdAt,
-      actorId: args.commit.actorId,
-      changes: args.commit.changes.map((change) => ({
-        table: change.table,
-        rowId: change.row_id,
-        op: change.op,
-        row: toCanonicalJson(parseJsonValue(change.row_json)),
-        rowVersion:
-          change.row_version === null || change.row_version === undefined
-            ? null
-            : coerceNumber(change.row_version),
-        scopes: toCanonicalJson(parseJsonValue(change.scopes)),
-      })),
-    })
-  );
+  return sha256Hex(wireCommitDigestPayload(args));
 }
 
 export async function wireCommitChainRootFromDigest(args: {
@@ -186,16 +158,7 @@ export async function wireCommitChainRootFromDigest(args: {
   previousChainRoot: string;
   commitDigest: string;
 }): Promise<string> {
-  return sha256Hex(
-    canonicalStringify({
-      version: SYNCULAR_WIRE_COMMIT_CHAIN_ROOT_VERSION,
-      partitionId: args.partitionId,
-      subscriptionId: args.subscriptionId,
-      commitSeq: args.commitSeq,
-      previousChainRoot: args.previousChainRoot,
-      commitDigest: args.commitDigest,
-    })
-  );
+  return sha256Hex(wireCommitChainRootPayload(args));
 }
 
 async function readPersistedCommit<DB extends SyncCoreDb>(args: {
@@ -271,46 +234,138 @@ async function readPreviousChainRoot<DB extends SyncCoreDb>(args: {
 }
 
 function canonicalStringify(value: unknown): string {
-  return JSON.stringify(toCanonicalJson(value));
+  const out: string[] = [];
+  appendCanonicalJson(out, value);
+  return out.join('');
 }
 
-function toCanonicalJson(value: unknown): CanonicalJson {
+function wireCommitDigestPayload(args: {
+  partitionId: string;
+  subscriptionId: string;
+  commit: SyncCommit;
+}): string {
+  const out: string[] = [];
+  out.push('{"actorId":');
+  appendCanonicalJson(out, args.commit.actorId);
+  out.push(',"changes":[');
+  args.commit.changes.forEach((change, index) => {
+    if (index > 0) out.push(',');
+    out.push('{"op":');
+    appendCanonicalJson(out, change.op);
+    out.push(',"row":');
+    appendCanonicalJson(out, parseJsonValue(change.row_json));
+    out.push(',"rowId":');
+    appendCanonicalJson(out, change.row_id);
+    out.push(',"rowVersion":');
+    appendCanonicalJson(
+      out,
+      change.row_version === null || change.row_version === undefined
+        ? null
+        : coerceNumber(change.row_version)
+    );
+    out.push(',"scopes":');
+    appendCanonicalJson(out, parseJsonValue(change.scopes));
+    out.push(',"table":');
+    appendCanonicalJson(out, change.table);
+    out.push('}');
+  });
+  out.push('],"commitSeq":');
+  appendCanonicalJson(out, args.commit.commitSeq);
+  out.push(',"createdAt":');
+  appendCanonicalJson(out, args.commit.createdAt);
+  out.push(',"partitionId":');
+  appendCanonicalJson(out, args.partitionId);
+  out.push(',"subscriptionId":');
+  appendCanonicalJson(out, args.subscriptionId);
+  out.push(',"version":');
+  appendCanonicalJson(out, SYNCULAR_WIRE_COMMIT_DIGEST_VERSION);
+  out.push('}');
+  return out.join('');
+}
+
+function wireCommitChainRootPayload(args: {
+  partitionId: string;
+  subscriptionId: string;
+  commitSeq: number;
+  previousChainRoot: string;
+  commitDigest: string;
+}): string {
+  const out: string[] = [];
+  out.push('{"commitDigest":');
+  appendCanonicalJson(out, args.commitDigest);
+  out.push(',"commitSeq":');
+  appendCanonicalJson(out, args.commitSeq);
+  out.push(',"partitionId":');
+  appendCanonicalJson(out, args.partitionId);
+  out.push(',"previousChainRoot":');
+  appendCanonicalJson(out, args.previousChainRoot);
+  out.push(',"subscriptionId":');
+  appendCanonicalJson(out, args.subscriptionId);
+  out.push(',"version":');
+  appendCanonicalJson(out, SYNCULAR_WIRE_COMMIT_CHAIN_ROOT_VERSION);
+  out.push('}');
+  return out.join('');
+}
+
+function appendCanonicalJson(out: string[], value: unknown): void {
   if (value === null || value === undefined) {
-    return null;
+    out.push('null');
+    return;
   }
   if (typeof value === 'string' || typeof value === 'boolean') {
-    return value;
+    out.push(JSON.stringify(value));
+    return;
   }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
       throw new Error('Cannot canonicalize non-finite number');
     }
-    return value;
+    out.push(JSON.stringify(value));
+    return;
   }
   if (typeof value === 'bigint') {
-    return value.toString();
+    out.push(JSON.stringify(value.toString()));
+    return;
   }
   if (value instanceof Date) {
-    return value.toISOString();
+    out.push(JSON.stringify(value.toISOString()));
+    return;
   }
   if (value instanceof Uint8Array) {
-    return {
-      bytesHex: Array.from(value)
-        .map((byte) => byte.toString(16).padStart(2, '0'))
-        .join(''),
-    };
+    out.push('{"bytesHex":');
+    out.push(
+      JSON.stringify(
+        Array.from(value)
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join('')
+      )
+    );
+    out.push('}');
+    return;
   }
   if (Array.isArray(value)) {
-    return value.map(toCanonicalJson);
+    out.push('[');
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) out.push(',');
+      appendCanonicalJson(out, value[index]);
+    }
+    out.push(']');
+    return;
   }
   if (typeof value === 'object') {
     const object = value as Record<string, unknown>;
-    const result: { [key: string]: CanonicalJson } = {};
-    for (const key of Object.keys(object).sort()) {
-      result[key] = toCanonicalJson(object[key]);
-    }
-    return result;
+    out.push('{');
+    Object.keys(object)
+      .sort()
+      .forEach((key, index) => {
+        if (index > 0) out.push(',');
+        out.push(JSON.stringify(key));
+        out.push(':');
+        appendCanonicalJson(out, object[key]);
+      });
+    out.push('}');
+    return;
   }
 
-  return String(value);
+  out.push(JSON.stringify(String(value)));
 }
