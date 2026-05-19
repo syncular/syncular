@@ -1,0 +1,137 @@
+# WP-25 File Asset Sync
+
+Status: `[ ]` planned
+
+## Goal
+
+Make Syncular a strong foundation for Dropbox-like photos and file syncing by
+syncing file metadata as server-authoritative rows while using blobs only for
+verified byte storage and transfer.
+
+Core principle: files, folders, versions, sharing, conflicts, and cache policy
+are app data models; blobs are content-addressed byte objects.
+
+## Scope
+
+- Generated file/folder metadata schema patterns for apps that want file sync:
+  files, folders, file versions, shares, local availability, and trash/restore
+  state.
+- File versioning semantics built on normal Syncular commits and file-version
+  rows.
+- Folder tree operations: create, rename, move, soft delete, restore, and
+  scoped sharing.
+- Conflict semantics for rename, move, delete-vs-update, duplicate names,
+  concurrent version edits, and folder delete with child updates.
+- Client file lifecycle states: local-only, uploading, uploaded, committed,
+  downloading, available, online-only, pinned, evicted, conflicted, and failed.
+- Cache/download policy helpers: selective sync, pin for offline, online-only
+  placeholders, eviction, and priority queues.
+- Server helpers that authorize blob download/upload through visible
+  file/version rows, building on WP-24 blob authorization.
+- Testkit scenarios for multi-client file convergence, sharing revocation,
+  conflicts, trash/restore, and missing/corrupted blob bodies.
+
+## Non-Scope
+
+- Putting file/folder semantics directly into generic blob storage.
+- Storing file bytes in app rows, snapshot chunks, or sync commits.
+- Rewriting history for rollback or conflict repair.
+- A built-in Dropbox product UI.
+- Editor-specific document APIs.
+- Mandatory file schema for apps that only need raw blob references.
+
+## Acceptance Criteria
+
+- Apps can generate or adopt a file asset schema where file metadata syncs
+  through normal subscriptions, mutations, conflict handling, and scoped access.
+- Blob bytes remain separate content-addressed objects referenced by
+  `BlobRef`/file-version rows.
+- File version history is inspectable without rewriting commits or exposing
+  unauthorized data.
+- File conflicts produce explicit Syncular conflicts or app-visible file
+  conflict rows instead of silent overwrites.
+- Sharing revocation clears synced file metadata and can trigger local cache
+  eviction for no-longer-authorized blob bodies.
+- The default blob authorization helper from WP-24 can authorize file blobs by
+  checking visible file/version rows.
+- Client lifecycle events and diagnostics explain why a file is not available,
+  not synced, not downloadable, evicted, or conflicted.
+- Browser and native clients have aligned semantics, with native allowed to use
+  stronger file-streaming paths.
+
+## Required Gates
+
+- Generator tests for file asset schema helpers where generated output changes.
+- Runtime/native store tests for file metadata mutation/conflict flows.
+- Browser worker/WASM tests for generated file rows, blob refs, availability
+  state, and revocation clearing.
+- Server authorization tests for file/version-row-backed blob access.
+- Testkit multi-client file scenarios for rename, move, delete-vs-update,
+  version conflict, sharing revocation, and trash/restore.
+- Blob gates from WP-24 when file asset work touches blob transfer,
+  authorization, cache, or encryption.
+- Console/diagnostic tests when file lifecycle surfaces are added.
+
+## Accept / Reject Rule
+
+- Retain file asset work only if it preserves the boundary between synced file
+  metadata and blob byte transfer.
+- Reject any design that grants blob access from hash knowledge alone.
+- Reject rollback behavior that rewrites server commits, cursors, or verified
+  roots.
+- Reject hidden file caches or indexes that change local query semantics
+  without explicit app intent.
+- Reject default whole-partition file sync assumptions; folder/file sharing must
+  respect arbitrary scoped subscriptions.
+
+## Current Evidence
+
+Syncular already has several prerequisites:
+
+- Generated app schemas support `blobColumns` and `BlobRef` types.
+- Mutations/outbox, conflicts, dynamic subscriptions, scope revocation clearing,
+  realtime wakeups, and local SQLite reads are already part of the Rust-first
+  model.
+- Native and browser blob APIs can stage, upload, retrieve, cache, prune, and
+  sync blob references through app rows.
+- WP-13, WP-15, WP-18, WP-19, WP-20, and WP-24 define the surrounding
+  observability, error, limits, security, repair, and blob-hardening work this
+  feature needs.
+
+Current gap: Syncular has blob byte handling, but not a first-class file asset
+model for folders, versions, sharing, lifecycle state, selective sync, or
+Dropbox-like conflict behavior.
+
+## Suggested App Schema
+
+Initial generated/reference schema:
+
+- `files`: stable file or folder identity, parent id, name, kind, current
+  version id, size, mime type, owner/sharing scope, deleted/trash state, and
+  local availability policy.
+- `file_versions`: immutable version rows with blob ref, content hash, size,
+  actor id, created time, and optional previous version.
+- `file_shares`: explicit share grants or inherited folder sharing metadata.
+- `file_conflicts`: app-visible conflict records for cases that cannot be
+  merged safely.
+
+This schema is a reference pattern, not a required global Syncular system
+schema.
+
+## First Slice
+
+Add a reference file asset schema and conformance scenario:
+
+1. Define generated/example tables for `files` and `file_versions`.
+2. Add generated mutations for create file, create folder, attach new version,
+   rename, move, soft delete, and restore.
+3. Use `BlobRef` in `file_versions`, not in file row payload bytes.
+4. Add a two-client test where one client uploads a file/version, another pulls
+   metadata, downloads the blob through row-backed authorization, then sees
+   revocation clear the file metadata.
+
+## Next Action
+
+Design the reference file asset schema and decide whether it belongs as a
+generated optional template, a testkit fixture, or both. Keep WP-24 as the blob
+byte-transfer foundation and WP-25 as the file/photo metadata product layer.
