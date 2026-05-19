@@ -57,6 +57,24 @@ Retained first slice:
 - Decision: retained. The normal binary websocket fast path stayed active, and
   recovery-marked payloads no longer bypass pull recovery.
 
+Retained second slice:
+
+- Browser worker realtime now ACKs the websocket cursor that triggered a
+  successful recovery pull, even for cursor-only recovery messages where the
+  pull result does not report a larger subscription cursor.
+- Correctness gates passed:
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts` and
+  `bun run --cwd rust/bindings/browser tsgo`.
+- Browser release E2E gate:
+  `bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --output=.context/benchmarks/wp04-realtime-recovery-ack.json`.
+- Result: previous WP-04 guard `rust_realtime_live_ms=70.19`,
+  `rust_realtime_live_p95_ms=71.7`, `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`; current `rust_realtime_live_ms=71.99`,
+  `rust_realtime_live_p95_ms=73.25`, `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`.
+- Decision: retained. The normal binary websocket fast path stayed active; the
+  change only fixes recovery cursor acknowledgement semantics.
+
 ## Next Action
 
 Unify websocket delta verification with the same stable event/root semantics
