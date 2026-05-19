@@ -595,6 +595,23 @@ Retained twenty-first slice:
   `16853576 -> 16451448`. Wall time stayed flat/noisy, and local apply stayed
   `1392ms`.
 
+Rejected nullable-column elision probe:
+
+- Tried omitting artifact columns when a nullable generated column was null for
+  every row in the artifact page.
+- Rejected because external peak memory only moved `746.92MB -> 745.73MB`,
+  while external bootstrap regressed `4845.39ms -> 5641.22ms`, external local
+  apply regressed `1392ms -> 1567ms`, and local compressed response bytes
+  worsened `4214831 -> 4407824`.
+
+Rejected attached-schema PRAGMA probe:
+
+- Tested the two-argument `pragma_table_info(table, schema)` form needed for
+  variable artifact column sets.
+- Rejected because it regressed the current fixed-column hot path:
+  external bootstrap `4845.39ms -> 6118.45ms`, external local apply
+  `1392ms -> 1705ms`, and peak memory `746.92MB -> 755.36MB`.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:

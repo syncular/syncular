@@ -2831,3 +2831,98 @@ Decision:
   meaningful enough for the tiny complexity reduction, but it is not a full
   solution: scoped artifacts remain above the row-chunk memory baseline
   (`746.92MB` versus `694.38MB`).
+
+## 2026-05-19 - Rejected WP-12 Nullable Column Elision
+
+Probe:
+
+- Tried omitting nullable SQLite artifact columns when every row in the artifact
+  page had `null` for that column.
+- The client already builds `INSERT ... SELECT` from artifact table columns, so
+  the shape was semantically plausible, but the current browser store's
+  attached-table column introspection did not support missing artifact columns.
+  A supporting attached-schema PRAGMA fix was therefore tested as well.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-elide-null-artifact-columns-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | Nullable column elision |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `289.26ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `270ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4407824` |
+| External 500k bootstrap | `4845.39ms` | `5641.22ms` |
+| External 500k local apply | `1392ms` | `1567ms` |
+| External 500k response bytes | `3527317` | `3527361` |
+| External 500k peak memory | `746.92MB` | `745.73MB` |
+
+Decision:
+
+- Rejected and reverted. The external memory improvement was only `1.19MB`,
+  while local and external apply/bootstrapping regressed and local compressed
+  bytes worsened.
+
+## 2026-05-19 - Rejected WP-12 Attached PRAGMA Schema Fix In Hot Path
+
+Probe:
+
+- Tested changing browser SQLite artifact column discovery from
+  `{schema}.pragma_table_info(table)` to the two-argument
+  `pragma_table_info(table, schema)` form. This was required by the nullable
+  column elision probe because the existing query resolves to the main table
+  shape for attached artifact DBs.
+
+Benchmark:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-attached-pragma-schema-fix-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | Attached PRAGMA schema fix |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `354.1ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `330ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4214831` |
+| External 500k bootstrap | `4845.39ms` | `6118.45ms` |
+| External 500k local apply | `1392ms` | `1705ms` |
+| External 500k response bytes | `3527317` | `3527353` |
+| External 500k peak memory | `746.92MB` | `755.36MB` |
+
+Decision:
+
+- Rejected and reverted. It is a correctness support path for future variable
+  artifact schemas, but it regresses the current hot path and nullable column
+  elision was also rejected.
