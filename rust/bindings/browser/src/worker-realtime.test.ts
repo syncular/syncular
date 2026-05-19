@@ -665,6 +665,7 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
           changedRows: [],
           subscriptions: [],
           pushedCommits: 0,
+          timings: zeroSyncTimings(),
         })
       );
     });
@@ -689,6 +690,7 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
         },
       ],
       pushedCommits: 0,
+      timings: zeroSyncTimings(),
     };
   }
 
@@ -709,6 +711,28 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
     if (!resolve) throw new Error('No pending sync pull to resolve');
     resolve();
   }
+}
+
+function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
+  return {
+    totalMs: 0,
+    pushMs: 0,
+    pullMs: 0,
+    pullRequestMs: 0,
+    pullTransformMs: 0,
+    snapshotFetchMs: 0,
+    pullApplyMs: 0,
+    scopeClearMs: 0,
+    snapshotRowApplyMs: 0,
+    snapshotChunkApplyMs: 0,
+    snapshotChunkMaterializeMs: 0,
+    snapshotChunkResetMs: 0,
+    snapshotChunkBindMs: 0,
+    snapshotChunkStepMs: 0,
+    commitApplyMs: 0,
+    subscriptionStateMs: 0,
+    notifyMs: 0,
+  };
 }
 
 class FakeRealtimeSocket implements SyncularV2WorkerRealtimeSocket {

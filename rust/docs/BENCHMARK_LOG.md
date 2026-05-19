@@ -1687,3 +1687,49 @@ Decision:
   the websocket apply result.
 - Realtime p50 improved from `99.19ms` to `88.67ms` (`-10.6%`) and p95 from
   `108.07ms` to `97.53ms` (`-9.8%`) with the binary fast path unchanged.
+
+## 2026-05-19 - WP-04 Realtime Apply Timing Metrics
+
+Change:
+
+- `realtime.binary_applied` diagnostics now include Rust-side apply timing
+  breakdowns from the sync result.
+- Browser E2E scoreboard now reports realtime apply total, pull-apply,
+  commit-apply, and notify totals/p50/p95 values.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-apply-timings.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `88.67ms` | `85.32ms` |
+| `rust_realtime_live_p95_ms` | `97.53ms` | `86.52ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `540300` | `540300` |
+| `rust_realtime_apply_total_p50_ms` | `n/a` | `11ms` |
+| `rust_realtime_pull_apply_p50_ms` | `n/a` | `9ms` |
+| `rust_realtime_notify_p50_ms` | `n/a` | `0ms` |
+| `browser_served_syncular_worker_js_bytes` | `46999` | `47446` |
+
+Decision:
+
+- Retained as measurement infrastructure. The new numbers show the remaining
+  client-side realtime cost is in pull/apply, with notification effectively
+  negligible in this lane.

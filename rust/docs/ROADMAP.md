@@ -130,14 +130,16 @@ read-only review:
     been removed from the browser worker, Rust wasm API, and server manager;
     current realtime delivery is binary sync-pack or explicit pull-required
     wakeup. Realtime apply results no longer echo applied commit rows back over
-    the wasm boundary.
+    the wasm boundary. The browser scoreboard now reports Rust-side realtime
+    apply timing breakdowns; current evidence points at pull/apply work rather
+    than notification.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-slim-result.json` as the current local
+  `.context/benchmarks/wp04-realtime-apply-timings.json` as the current local
   comparison point.
 
 ## Later
