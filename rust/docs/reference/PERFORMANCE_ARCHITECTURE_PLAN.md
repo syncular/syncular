@@ -2571,6 +2571,10 @@ client. Overflow should close or resync the session deliberately.
   incremental sync-pack decode `9ms -> 10ms`. WASM size improved
   `7463118 -> 7416004`, but the runtime tradeoff and extra verbosity were not
   worth retaining.
+- Done: browser E2E realtime scoring now emits derived Rust/browser overhead
+  metrics by subtracting TS push duration from live-query propagation latency.
+  Current 10k/1k/x3 dev-WASM guard: live p50 `82.05ms`, live p95 `83.99ms`,
+  overhead p50 `22.63ms`, overhead p95 `23.99ms`, HTTP realtime fallback `0`.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
 - Next: design the heavier websocket-first session protocol with server
