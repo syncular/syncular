@@ -2048,3 +2048,115 @@ Decision:
   sync-pack decoding across 15 frames; transform/integrity rounds to `0ms` in
   this scenario. Future realtime performance work should compare against
   `.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json`.
+
+## 2026-05-19 - WP-04 Realtime Integrity/State Metrics
+
+Change:
+
+- Split browser Rust realtime apply timings further into
+  `integrityVerifyMs`, `commitApplyMs`, and `subscriptionStateMs`.
+- Browser diagnostics and the E2E scoreboard now report
+  `rust_realtime_integrity_verify_*` and
+  `rust_realtime_subscription_state_*` metrics for binary websocket frames.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol integrity --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-integrity-state-split.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json
+```
+
+Confirmed measurement versus previous accepted decode/transform guard:
+
+| Metric | Decode/transform guard | First split | Latest split rerun |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `95.34ms` | `93.93ms` | `121.39ms` |
+| `rust_realtime_overhead_p50_ms` | `24.08ms` | `24.68ms` | `31.01ms` |
+| `rust_realtime_apply_total_ms` | `158ms` | `164ms` | `237ms` |
+| `rust_realtime_pull_apply_total_ms` | `129ms` | `135ms` | `201ms` |
+| `rust_realtime_sync_pack_decode_total_ms` | `23ms` | `23ms` | `29ms` |
+| `rust_realtime_integrity_verify_total_ms` | n/a | `104ms` | `159ms` |
+| `rust_realtime_commit_apply_total_ms` | `0ms` | `23ms` | `37ms` |
+| `rust_realtime_subscription_state_total_ms` | n/a | `8ms` | `5ms` |
+| `browser_served_rust_wasm_bytes` | `7463464` | `7463799` | `7463799` |
+
+Decision:
+
+- Retained as measurement infrastructure, not as a speed improvement. The first
+  split run was effectively neutral against the previous guard, while the
+  repeat was noisier. Both runs identify the same target: canonical commit/root
+  integrity verification dominates realtime Rust apply cost; subscription state
+  persistence is small. Future realtime optimization should start by rerunning
+  `.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json` and
+  compare lower-level timing buckets as well as end-to-end live latency.
+
+## 2026-05-19 - WP-04 Rejected Sorted-Map Integrity Canonicalization
+
+Change:
+
+- Tried replacing canonical JSON object key sorting with a branch that used the
+  current `serde_json::Map` iteration order when available.
+
+Correctness gates passed before rejection:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol integrity --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-map-integrity.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-map-integrity-rerun.json
+```
+
+Confirmed rerun versus the first integrity/state split:
+
+| Metric | Integrity/state split | Sorted-map candidate |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `93.93ms` | `126.06ms` |
+| `rust_realtime_overhead_p50_ms` | `24.68ms` | `35.45ms` |
+| `rust_realtime_apply_total_ms` | `164ms` | `229ms` |
+| `rust_realtime_pull_apply_total_ms` | `135ms` | `187ms` |
+| `rust_realtime_integrity_verify_total_ms` | `104ms` | `148ms` |
+| `rust_realtime_commit_apply_total_ms` | `23ms` | `34ms` |
+| `browser_served_rust_wasm_bytes` | `7463799` | `7443592` |
+
+Decision:
+
+- Rejected and reverted. The candidate reduced WASM bytes by about `20KB`, but
+  regressed every runtime bucket that matters. The next integrity improvement
+  should be a protocol/digest shape change that avoids repeated canonical JSON
+  work, not another local map-iteration micro-probe.

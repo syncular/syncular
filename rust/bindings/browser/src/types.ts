@@ -499,6 +499,7 @@ export interface SyncularV2SyncTimings {
   pullRequestMs: number;
   syncPackDecodeMs: number;
   pullTransformMs: number;
+  integrityVerifyMs: number;
   snapshotFetchMs: number;
   pullApplyMs: number;
   scopeClearMs: number;

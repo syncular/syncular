@@ -288,6 +288,7 @@ class FakeManagedClient {
         pullRequestMs: 0,
         syncPackDecodeMs: 0,
         pullTransformMs: 0,
+        integrityVerifyMs: 0,
         snapshotFetchMs: 0,
         pullApplyMs: 0,
         scopeClearMs: 0,
