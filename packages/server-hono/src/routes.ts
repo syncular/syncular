@@ -4,6 +4,7 @@
  * Provides:
  * - POST /      (combined push + pull in one round-trip)
  * - GET  /snapshot-chunks/:chunkId (download encoded snapshot chunks)
+ * - GET  /snapshot-artifacts/:artifactId (download scoped snapshot artifacts)
  * - GET  /realtime (optional WebSocket "wake up" notifications)
  */
 
@@ -34,6 +35,7 @@ import type {
   ServerSnapshotBinaryMetadata,
   ServerSyncDialect,
   ServerTableHandler,
+  SnapshotArtifactStorage,
   SnapshotChunkStorage,
   SqlFamily,
   SyncCoreDb,
@@ -55,6 +57,7 @@ import {
   pull,
   pushCommit,
   pushCommitBatch,
+  readScopedSnapshotArtifact,
   readSnapshotChunk,
   recordClientCursor,
   resolveEffectiveScopesForSubscriptions,
@@ -314,6 +317,11 @@ export interface CreateSyncRoutesOptions<
    */
   chunkStorage?: SnapshotChunkStorage;
   /**
+   * Optional scoped snapshot artifact body storage adapter.
+   * Artifact metadata is stored in SQL; bodies are always external.
+   */
+  snapshotArtifactStorage?: SnapshotArtifactStorage;
+  /**
    * Optional scope cache backend for resolveScopes() results.
    * Request-local memoization is always applied for every pull.
    */
@@ -342,6 +350,9 @@ export interface CreateSyncRoutesOptions<
 
 const snapshotChunkParamsSchema = z.object({
   chunkId: z.string().min(1),
+});
+const snapshotArtifactParamsSchema = z.object({
+  artifactId: z.string().min(1),
 });
 const snapshotChunkQuerySchema = z.object({
   scopes: z.string().optional(),
@@ -2575,6 +2586,154 @@ export function createSyncRoutes<
           'X-Sync-Chunk-Sha256': chunk.sha256,
           'X-Sync-Chunk-Encoding': chunk.encoding,
           'X-Sync-Chunk-Compression': chunk.compression,
+        },
+      });
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /snapshot-artifacts/:artifactId
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/snapshot-artifacts/:artifactId',
+    describeRoute({
+      tags: ['sync'],
+      summary: 'Download scoped snapshot artifact',
+      description: 'Download a verified, scoped bootstrap snapshot artifact',
+      responses: {
+        200: {
+          description: 'Scoped snapshot artifact bytes',
+          content: {
+            'application/octet-stream': {
+              schema: resolver(z.string()),
+            },
+          },
+        },
+        304: {
+          description: 'Not modified (cached)',
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        403: {
+          description: 'Forbidden',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        404: {
+          description: 'Not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', snapshotArtifactParamsSchema),
+    zValidator('query', snapshotChunkQuerySchema),
+    async (c) => {
+      const auth = await getAuth(c);
+      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      const artifactStorage = options.snapshotArtifactStorage;
+      if (!artifactStorage) return c.json({ error: 'NOT_FOUND' }, 404);
+
+      const partitionId = auth.partitionId ?? 'default';
+      const query = c.req.valid('query');
+      const requestedArtifactScopes = readSnapshotScopeValues(c, query.scopes);
+      const { artifactId } = c.req.valid('param');
+
+      const artifact = await readScopedSnapshotArtifact(options.db, artifactId);
+      if (!artifact) return c.json({ error: 'NOT_FOUND' }, 404);
+      if (artifact.partitionId !== partitionId) {
+        return c.json({ error: 'FORBIDDEN' }, 403);
+      }
+
+      const nowIso = new Date().toISOString();
+      if (artifact.expiresAt <= nowIso) {
+        return c.json({ error: 'NOT_FOUND' }, 404);
+      }
+
+      if (!requestedArtifactScopes) {
+        return c.json(
+          {
+            error: 'INVALID_REQUEST',
+            message: 'Snapshot artifact scope values are required',
+          },
+          400
+        );
+      }
+
+      try {
+        const resolved = await resolveEffectiveScopesForSubscriptions({
+          db: options.db,
+          auth,
+          subscriptions: [
+            {
+              id: artifact.subscriptionId,
+              table: artifact.table,
+              scopes: requestedArtifactScopes,
+              cursor: 0,
+            },
+          ],
+          handlers: handlerRegistry,
+          scopeCache: options.scopeCache,
+        });
+        const scopeAuth = resolved[0];
+        if (!scopeAuth || scopeAuth.status !== 'active') {
+          return c.json({ error: 'FORBIDDEN' }, 403);
+        }
+
+        const scopeHash = await scopesToSnapshotChunkScopeKey(scopeAuth.scopes);
+        const scopedArtifactKeyMatches =
+          artifact.scopeKey.startsWith('snapshot-artifact-v1:') &&
+          artifact.scopeKey.endsWith(`:scope:${scopeHash}`);
+        if (!scopedArtifactKeyMatches) {
+          return c.json({ error: 'FORBIDDEN' }, 403);
+        }
+      } catch (error) {
+        if (error instanceof InvalidSubscriptionScopeError) {
+          return c.json({ error: 'FORBIDDEN' }, 403);
+        }
+        throw error;
+      }
+
+      const etag = `"sha256:${artifact.sha256}"`;
+      const ifNoneMatch = c.req.header('if-none-match');
+      if (ifNoneMatch && ifNoneMatch === etag) {
+        return new Response(null, {
+          status: 304,
+          headers: {
+            ETag: etag,
+            'Cache-Control': 'private, max-age=0',
+            Vary: 'Authorization, X-Syncular-Snapshot-Scopes',
+          },
+        });
+      }
+
+      let body: Uint8Array | ReadableStream<Uint8Array> | null = null;
+      if (artifactStorage.readArtifactStream) {
+        body = await artifactStorage.readArtifactStream(artifact);
+      }
+      body ??= await artifactStorage.readArtifact(artifact);
+      if (!body) return c.json({ error: 'NOT_FOUND' }, 404);
+
+      return new Response(body as BodyInit, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(artifact.byteLength),
+          ETag: etag,
+          'Cache-Control': 'private, max-age=0',
+          Vary: 'Authorization, X-Syncular-Snapshot-Scopes',
+          'X-Sync-Artifact-Id': artifact.artifactId,
+          'X-Sync-Artifact-Sha256': artifact.sha256,
+          'X-Sync-Artifact-Kind': artifact.artifactKind,
+          'X-Sync-Artifact-Compression': artifact.compression,
+          'X-Sync-Artifact-Manifest-Digest': artifact.manifestDigest,
         },
       });
     }

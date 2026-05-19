@@ -113,12 +113,25 @@ Retained second slice:
   `bun run --cwd packages/server-dialect-sqlite tsgo`, and
   `bun run --cwd packages/server-dialect-postgres tsgo`.
 
+Retained third slice:
+
+- Added an explicit `SnapshotArtifactStorage` interface for artifact body
+  reads.
+- Added authenticated `GET /snapshot-artifacts/:artifactId` route in
+  `@syncular/server-hono`.
+- The route requires caller-provided scope values, recomputes effective scopes
+  through normal handler auth, verifies the scoped artifact key, honors ETag
+  caching, and serves artifact body bytes with artifact metadata headers.
+- Correctness gates passed:
+  `bun test packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/server/src/snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/server-hono tsgo`, and
+  `bun run --cwd packages/server tsgo`.
+
 ## Next Action
 
-Design the route contract and storage-body adapter around the manifest:
+Design how pull responses advertise artifact eligibility:
 
 - how pull responses advertise artifact eligibility;
-- how `/snapshot-artifacts/:artifactId` authorizes and serves body bytes;
 - how object storage writes are represented without generating SQLite files in
   the Worker/D1 hot path;
 - how clients fall back to row chunks when artifacts are missing or stale;

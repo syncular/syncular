@@ -17,8 +17,11 @@ import {
   type SyncTelemetry,
 } from '@syncular/core';
 import {
+  createScopedSnapshotArtifactScopeCacheKey,
   createServerHandler,
   ensureSyncSchema,
+  insertScopedSnapshotArtifact,
+  type SnapshotArtifactStorage,
   type SnapshotChunkStorage,
   type SyncCoreDb,
 } from '@syncular/server';
@@ -576,6 +579,117 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
     ]);
+  });
+
+  it('requires scope-bound authorization for scoped snapshot artifact downloads', async () => {
+    const artifactBodies = new Map<string, Uint8Array>();
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-1',
+      scopes: { user_id: 'u1' },
+      schemaVersion: 7,
+      features: ['blobs'],
+    });
+
+    const inserted = await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-1',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-1',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      sha256: 'b'.repeat(64),
+      byteLength: body.length,
+      featureSet: ['blobs'],
+      blobHash: 'sha256:artifact-body',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    artifactBodies.set(inserted.id, body);
+
+    const artifactStorage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async readArtifact(artifact) {
+        const bytes = artifactBodies.get(artifact.id);
+        return bytes ? new Uint8Array(bytes) : null;
+      },
+    };
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+      snapshotArtifactStorage: artifactStorage,
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const noScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+        },
+      })
+    );
+    expect(noScopesResponse.status).toBe(400);
+
+    const wrongScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u2' }),
+        },
+      })
+    );
+    expect(wrongScopesResponse.status).toBe(403);
+
+    const validScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+    expect(validScopesResponse.status).toBe(200);
+    expect(validScopesResponse.headers.get('x-sync-artifact-id')).toBe(
+      inserted.id
+    );
+    expect(
+      validScopesResponse.headers.get('x-sync-artifact-manifest-digest')
+    ).toBe(inserted.manifestDigest);
+    expect(new Uint8Array(await validScopesResponse.arrayBuffer())).toEqual(
+      body
+    );
+
+    const cachedResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+          'if-none-match': `"sha256:${inserted.sha256}"`,
+        },
+      })
+    );
+    expect(cachedResponse.status).toBe(304);
   });
 
   it('rejects reusing a client id from another actor', async () => {
