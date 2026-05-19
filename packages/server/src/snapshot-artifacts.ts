@@ -150,6 +150,18 @@ export interface PrecomputeScopedSnapshotArtifactArgs<
   encoder: ScopedSnapshotSqliteArtifactEncoder;
 }
 
+export interface PrecomputeScopedSnapshotArtifactsArgs<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+> extends Omit<
+    PrecomputeScopedSnapshotArtifactArgs<DB, Auth>,
+    'artifactId' | 'rowCursor'
+  > {
+  rowCursor?: string | null;
+  artifactIdPrefix?: string;
+  maxPages?: number;
+}
+
 type ScopedSnapshotArtifactDbRow = {
   artifact_id: string;
   partition_id: string;
@@ -706,6 +718,34 @@ export async function precomputeScopedSnapshotArtifact<
     expiresAt: args.expiresAt,
     artifactKind: args.encoder.artifactKind,
   });
+}
+
+export async function precomputeScopedSnapshotArtifacts<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+>(
+  args: PrecomputeScopedSnapshotArtifactsArgs<DB, Auth>
+): Promise<ScopedSnapshotArtifactRef[]> {
+  const maxPages = args.maxPages ?? Number.MAX_SAFE_INTEGER;
+  if (maxPages < 1) {
+    throw new Error(`maxPages must be positive: ${maxPages}`);
+  }
+
+  const refs: ScopedSnapshotArtifactRef[] = [];
+  let rowCursor = args.rowCursor ?? null;
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    const ref = await precomputeScopedSnapshotArtifact({
+      ...args,
+      rowCursor,
+      artifactId: args.artifactIdPrefix
+        ? `${args.artifactIdPrefix}-${pageIndex}`
+        : undefined,
+    });
+    refs.push(ref);
+    if (ref.isLastPage || ref.nextRowCursor == null) break;
+    rowCursor = ref.nextRowCursor;
+  }
+  return refs;
 }
 
 export async function readScopedSnapshotArtifact<DB extends SyncCoreDb>(

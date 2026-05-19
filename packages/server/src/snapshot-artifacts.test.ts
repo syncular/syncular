@@ -16,6 +16,7 @@ import {
   createScopedSnapshotArtifactScopeCacheKey,
   insertScopedSnapshotArtifact,
   precomputeScopedSnapshotArtifact,
+  precomputeScopedSnapshotArtifacts,
   readScopedSnapshotArtifact,
   readScopedSnapshotArtifactRefByPageKey,
   type SnapshotArtifactStorage,
@@ -36,6 +37,20 @@ interface TestDb extends SyncCoreDb {
 
 interface ClientDb {
   tasks: TasksTable;
+}
+
+function createMemoryArtifactStorage(): SnapshotArtifactStorage {
+  const bodies = new Map<string, Uint8Array>();
+  return {
+    name: 'memory-artifacts',
+    async storeArtifact(artifact) {
+      bodies.set(artifact.artifactId, artifact.body);
+      return { blobHash: `memory:${artifact.artifactId}` };
+    },
+    async readArtifact(artifact) {
+      return bodies.get(artifact.artifactId) ?? null;
+    },
+  };
 }
 
 describe('scoped snapshot artifacts', () => {
@@ -367,5 +382,84 @@ describe('scoped snapshot artifacts', () => {
     } finally {
       artifactDb.close();
     }
+  });
+
+  it('precomputes all pages for a scoped Bun SQLite artifact snapshot', async () => {
+    const storage = createMemoryArtifactStorage();
+    const rows = [
+      { id: 'task-1', user_id: 'user-1', title: 'One', server_version: 1 },
+      { id: 'task-2', user_id: 'user-1', title: 'Two', server_version: 2 },
+      { id: 'task-3', user_id: 'user-1', title: 'Three', server_version: 3 },
+    ];
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        snapshotBinaryColumns: [
+          { name: 'id', type: 'string' },
+          { name: 'user_id', type: 'string' },
+          { name: 'title', type: 'string' },
+          { name: 'server_version', type: 'integer' },
+        ],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        snapshot: async (ctx) => {
+          const start = ctx.cursor ? Number(ctx.cursor) : 0;
+          const pageRows = rows.slice(start, start + ctx.limit);
+          const next = start + pageRows.length;
+          return {
+            rows: pageRows,
+            nextCursor: next < rows.length ? String(next) : null,
+          };
+        },
+      }),
+    ]);
+
+    const refs = await precomputeScopedSnapshotArtifacts({
+      db,
+      storage,
+      handlers,
+      auth: { actorId: 'user-1' },
+      partitionId: 'default',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      scopes: { user_id: 'user-1' },
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 2,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      artifactIdPrefix: 'artifact-page',
+      encoder: createBunSqliteSnapshotArtifactEncoder(),
+    });
+
+    expect(refs.map((ref) => ref.id)).toEqual([
+      'artifact-page-0',
+      'artifact-page-1',
+    ]);
+    expect(refs.map((ref) => ref.manifest.rowCursor)).toEqual([null, '2']);
+    expect(refs[0]?.nextRowCursor).toBe('2');
+    expect(refs[0]?.isLastPage).toBe(false);
+    expect(refs[1]?.nextRowCursor).toBeNull();
+    expect(refs[1]?.isLastPage).toBe(true);
+
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-tasks',
+      scopes: { user_id: 'user-1' },
+      schemaVersion: 7,
+    });
+    const secondPage = await readScopedSnapshotArtifactRefByPageKey(db, {
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      asOfCommitSeq: 42,
+      rowCursor: '2',
+      rowLimit: 2,
+      artifactKind: 'sqlite-snapshot-v1',
+      schemaVersion: '7',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+    });
+    expect(secondPage?.id).toBe('artifact-page-1');
   });
 });

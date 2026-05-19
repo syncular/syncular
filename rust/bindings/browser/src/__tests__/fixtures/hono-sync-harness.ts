@@ -10,7 +10,7 @@ import {
   createServerHandlerCollection,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
-  precomputeScopedSnapshotArtifact,
+  precomputeScopedSnapshotArtifacts,
   type SnapshotArtifactStorage,
   type SyncAuthResult,
   type SyncBlobDb,
@@ -167,7 +167,7 @@ export async function createHonoSyncHarness(
           return artifactBodies.get(artifact.id) ?? null;
         },
       };
-      await precomputeScopedSnapshotArtifact({
+      await precomputeScopedSnapshotArtifacts({
         db,
         storage: snapshotArtifactStorage,
         handlers: handlerCollection,
@@ -182,7 +182,7 @@ export async function createHonoSyncHarness(
         rowCursor: null,
         rowLimit: options.precomputedTaskSnapshotArtifact.rowLimit ?? 50_000,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        artifactId: options.precomputedTaskSnapshotArtifact.artifactId,
+        artifactIdPrefix: options.precomputedTaskSnapshotArtifact.artifactId,
         encoder: createBunSqliteSnapshotArtifactEncoder(),
       });
     }

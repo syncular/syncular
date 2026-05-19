@@ -368,12 +368,46 @@ Retained thirteenth slice:
   and `bun test src/__tests__/sync-hono.wasm.test.ts` from
   `rust/bindings/browser`.
 
+Retained fourteenth slice:
+
+- Added `precomputeScopedSnapshotArtifacts(...)` so server/background jobs can
+  precompute every scoped SQLite artifact page by following each page's
+  `nextCursor`.
+- Updated the browser Hono fixture and browser E2E benchmark server to
+  precompute all artifact pages instead of only the first page.
+- Added a server test proving multi-page artifact metadata can be read back by
+  page key for later cursors.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test src/__tests__/sync-hono.wasm.test.ts` from
+  `rust/bindings/browser`.
+- Browser release E2E, 100k rows, query iterations disabled:
+  previous gzip artifact lane `rust_bootstrap_ms=107.82`,
+  `rust_pull_request_ms=36`, `rust_pull_apply_ms=68`,
+  `rust_snapshot_chunk_apply_ms=35`, `rust_response_bytes=1033377`,
+  `rust_cached_bootstrap_ms=61.77`; multi-page artifacts
+  `rust_bootstrap_ms=68.6`, `rust_pull_request_ms=7`,
+  `rust_pull_apply_ms=58`, `rust_snapshot_chunk_apply_ms=0`,
+  `rust_response_bytes=1300566`, `rust_cached_bootstrap_ms=48.36`.
+- Decision: retained. Full artifact coverage removes the remaining 50k-row
+  chunk fetch/apply from the 100k artifact lane and improves first bootstrap by
+  about `36%` despite a larger artifact response than the one-page mixed path.
+- Browser release E2E, 500k rows, query iterations disabled:
+  row chunks `rust_bootstrap_ms=618.95`, `rust_pull_apply_ms=345`,
+  `rust_snapshot_chunk_apply_ms=299`, `rust_response_bytes=3783097`,
+  `rust_cached_bootstrap_ms=337.61`; multi-page artifacts
+  `rust_bootstrap_ms=268.44`, `rust_pull_apply_ms=252`,
+  `rust_snapshot_row_apply_ms=191`, `rust_snapshot_chunk_apply_ms=0`,
+  `rust_response_bytes=6500487`, `rust_cached_bootstrap_ms=248.64`.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
-- Add native Diesel direct artifact import or another non-JSON path.
-- Extend artifact precompute to multiple pages and the external app-style
-  benchmark stack, then measure 500k bootstrap against TS/Rust row chunks.
-- Add revocation recovery coverage for the direct import path and decide
-  whether native direct import needs a new store-level artifact apply trait.
+- Wire the external app-style benchmark stack to precompute scoped artifacts.
+- Reduce artifact body size without losing the direct SQLite import path.
+- Decide whether native direct import needs a new store-level artifact apply
+  trait before replacing the current native row-materialization path.
+- Add revocation recovery coverage for the direct import path.
