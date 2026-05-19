@@ -157,7 +157,7 @@ export function createBunSqliteSnapshotArtifactEncoder(
         rows,
         options,
       });
-      return gzipBytes(raw, { level: options.gzipLevel ?? 6 });
+      return gzipBytes(raw, { level: options.gzipLevel ?? 9 });
     },
   };
 }
