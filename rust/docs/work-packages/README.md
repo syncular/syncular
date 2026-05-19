@@ -33,3 +33,4 @@ to this shape.
 10. [`WP-10 Browser Package And Docs`](WP-10-browser-package-docs.md)
 11. [`WP-11 Server Edge And Offline Auth`](WP-11-server-edge-offline-auth.md)
 12. [`WP-12 Scoped Snapshot Artifacts`](WP-12-scoped-snapshot-artifacts.md)
+13. [`WP-13 Observability And Debuggability`](WP-13-observability-debuggability.md)

@@ -157,6 +157,7 @@ read-only review:
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
+- `[ ]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
 
 ## Blocked / External
 
