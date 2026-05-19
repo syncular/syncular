@@ -2552,6 +2552,10 @@ client. Overflow should close or resync the session deliberately.
 - Done: browser realtime diagnostics and scoreboard metrics now expose
   Rust-side binary apply timing. Current 10k/1k/x3 dev-WASM evidence:
   realtime apply p50 `11ms`, pull/apply p50 `9ms`, notify p50 `0ms`.
+- Done: app-row upsert batches now reuse the browser SQLite prepared-statement
+  cache instead of preparing/finalizing per realtime batch. The measured win is
+  modest (`85.32ms -> 84.31ms` realtime p50), but the implementation removes a
+  one-off statement lifecycle path.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
 - Next: design the heavier websocket-first session protocol with server

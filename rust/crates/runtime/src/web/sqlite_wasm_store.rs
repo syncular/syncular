@@ -3244,49 +3244,41 @@ impl SyncularRustOwnedSqlite {
         };
         let batch_rows = snapshot_write_batch_rows(columns.len());
         let mut batch = Vec::with_capacity(batch_rows);
-        let mut full_batch_stmt: *mut ffi::sqlite3_stmt = ptr::null_mut();
-        let write_result = (|| -> Result<()> {
-            for row in rows {
-                let row = self.materialize_app_row_object(table, row, metadata)?;
-                batch.push(row);
-                if batch.len() == batch_rows {
-                    if full_batch_stmt.is_null() {
-                        full_batch_stmt = prepare_multirow_upsert(
-                            self.db,
-                            table,
-                            metadata.primary_key_column,
-                            &columns,
-                            &on_conflict,
-                            batch_rows,
-                        )?;
-                    }
-                    execute_prepared_multirow_upsert(self.db, full_batch_stmt, &batch, &columns)?;
-                    batch.clear();
-                }
-            }
-            if !batch.is_empty() {
-                execute_multirow_upsert(
-                    self.db,
+
+        for row in rows {
+            let row = self.materialize_app_row_object(table, row, metadata)?;
+            batch.push(row);
+            if batch.len() == batch_rows {
+                let stmt = self.cached_binary_snapshot_statement(
                     table,
                     metadata.primary_key_column,
                     &columns,
-                    &on_conflict,
-                    &batch,
+                    Some(&on_conflict),
+                    batch.len(),
+                    BinarySnapshotWriteMode::Upsert,
                 )?;
-            }
-            Ok(())
-        })();
-        if !full_batch_stmt.is_null() {
-            let finalize_result = finalize_stmt(
-                full_batch_stmt,
-                self.db,
-                "finalize reusable multirow row write",
-            );
-            if write_result.is_ok() {
-                finalize_result?;
+                execute_prepared_multirow_upsert(
+                    self.db,
+                    stmt,
+                    &batch,
+                    &columns,
+                    "app row upsert",
+                )?;
+                batch.clear();
             }
         }
-        write_result
+        if !batch.is_empty() {
+            let stmt = self.cached_binary_snapshot_statement(
+                table,
+                metadata.primary_key_column,
+                &columns,
+                Some(&on_conflict),
+                batch.len(),
+                BinarySnapshotWriteMode::Upsert,
+            )?;
+            execute_prepared_multirow_upsert(self.db, stmt, &batch, &columns, "app row upsert")?;
+        }
+        Ok(())
     }
 
     fn write_binary_snapshot_rows(
@@ -5521,7 +5513,7 @@ fn execute_multirow_upsert(
         on_conflict,
         rows.len(),
     )?;
-    if let Err(err) = execute_prepared_multirow_upsert(db, stmt, rows, columns) {
+    if let Err(err) = execute_prepared_multirow_upsert(db, stmt, rows, columns, "multirow upsert") {
         let _ = finalize_stmt(stmt, db, "finalize multirow upsert after step failure");
         return Err(err);
     }
@@ -5694,10 +5686,11 @@ fn execute_prepared_multirow_upsert(
     stmt: *mut ffi::sqlite3_stmt,
     rows: &[Map<String, Value>],
     columns: &[String],
+    context: &str,
 ) -> Result<()> {
     let reset_rc = unsafe { ffi::sqlite3_reset(stmt) };
     if reset_rc != ffi::SQLITE_OK {
-        return Err(sqlite_error(db, "reset multirow upsert"));
+        return Err(sqlite_error(db, &format!("reset {context}")));
     }
     if let Err(err) = bind_multirow_upsert(stmt, rows, columns) {
         return Err(err);
@@ -5705,7 +5698,7 @@ fn execute_prepared_multirow_upsert(
     match unsafe { ffi::sqlite3_step(stmt) } {
         ffi::SQLITE_DONE => {}
         _ => {
-            let err = sqlite_error(db, "step multirow upsert");
+            let err = sqlite_error(db, &format!("step {context}"));
             return Err(err);
         }
     }

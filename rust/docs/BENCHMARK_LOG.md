@@ -1733,3 +1733,47 @@ Decision:
 - Retained as measurement infrastructure. The new numbers show the remaining
   client-side realtime cost is in pull/apply, with notification effectively
   negligible in this lane.
+
+## 2026-05-19 - WP-04 Cached App-Row Upsert Statements
+
+Change:
+
+- Browser SQLite `write_app_rows` now reuses the existing prepared-statement
+  cache for multi-row app upserts instead of preparing/finalizing a statement
+  per batch.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-cached-app-upsert.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `85.32ms` | `84.31ms` |
+| `rust_realtime_live_p95_ms` | `86.52ms` | `85.16ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_apply_total_ms` | `165ms` | `160ms` |
+| `rust_realtime_pull_apply_total_ms` | `138ms` | `134ms` |
+| `rust_realtime_pull_apply_p50_ms` | `9ms` | `9ms` |
+| `browser_served_rust_wasm_bytes` | `7465575` | `7464753` |
+
+Decision:
+
+- Retained. The gain is small but measurable, and the implementation removes
+  one-off statement lifecycle handling in favor of the existing cache.
