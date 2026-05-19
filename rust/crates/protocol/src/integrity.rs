@@ -1,8 +1,8 @@
 use crate::ProtocolError;
 use crate::{
-    append_canonical_json, append_canonical_object, sha256_hex, PullResponse, Result,
-    SubscriptionIntegrity, SyncCommit, COMMIT_INTEGRITY_GENESIS_ROOT, COMMIT_INTEGRITY_HEX_LENGTH,
-    WIRE_COMMIT_CHAIN_ROOT_VERSION, WIRE_COMMIT_DIGEST_VERSION,
+    append_canonical_json, append_canonical_object, append_json_string, sha256_hex, PullResponse,
+    Result, SubscriptionIntegrity, SyncCommit, COMMIT_INTEGRITY_GENESIS_ROOT,
+    COMMIT_INTEGRITY_HEX_LENGTH, WIRE_COMMIT_CHAIN_ROOT_VERSION, WIRE_COMMIT_DIGEST_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,11 +207,6 @@ fn append_wire_commit_chain_root_payload(
     out.push_str(",\"version\":");
     append_json_string(out, WIRE_COMMIT_CHAIN_ROOT_VERSION)?;
     out.push('}');
-    Ok(())
-}
-
-fn append_json_string(out: &mut String, value: &str) -> Result<()> {
-    out.push_str(&serde_json::to_string(value)?);
     Ok(())
 }
 

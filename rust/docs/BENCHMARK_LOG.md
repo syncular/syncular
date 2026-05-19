@@ -2160,3 +2160,64 @@ Decision:
   regressed every runtime bucket that matters. The next integrity improvement
   should be a protocol/digest shape change that avoids repeated canonical JSON
   work, not another local map-iteration micro-probe.
+
+## 2026-05-19 - WP-04 Realtime Canonical JSON String Writer
+
+Change:
+
+- Replaced per-string `serde_json::to_string` allocation in Rust canonical JSON
+  integrity payload writing with an in-place JSON string writer.
+- Reused the same writer for canonical object keys and wire commit metadata
+  strings.
+- Added protocol tests that compare the custom string escaping against
+  `serde_json::to_string` for quotes, backslashes, control characters, and
+  unicode.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-json-string-writer.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-json-string-writer-rerun.json
+```
+
+Confirmed rerun versus the previous accepted integrity/state split:
+
+| Metric | Previous guard | Current rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `121.39ms` | `92.55ms` | `-28.84ms` |
+| `rust_realtime_live_p95_ms` | `158.51ms` | `92.98ms` | `-65.53ms` |
+| `rust_realtime_overhead_p50_ms` | `31.01ms` | `22.19ms` | `-8.82ms` |
+| `rust_realtime_apply_total_ms` | `237ms` | `128ms` | `-109ms` |
+| `rust_realtime_pull_apply_total_ms` | `201ms` | `103ms` | `-98ms` |
+| `rust_realtime_integrity_verify_total_ms` | `159ms` | `76ms` | `-83ms` |
+| `rust_realtime_integrity_verify_p50_ms` | `10ms` | `5ms` | `-5ms` |
+| `rust_realtime_commit_apply_total_ms` | `37ms` | `22ms` | `-15ms` |
+| `rust_realtime_sync_pack_decode_total_ms` | `29ms` | `21ms` | `-8ms` |
+| `browser_served_rust_wasm_bytes` | `7463799` | `7465224` | `+1425` |
+
+Decision:
+
+- Retained. This is a simple implementation change with a clear benchmark win:
+  integrity verification dropped by about `52%` on the rerun, and total
+  realtime Rust apply dropped by about `46%`. The small WASM size increase is
+  acceptable for this runtime gain. Future WP-04 candidates should compare
+  against `.context/benchmarks/wp04-realtime-json-string-writer-rerun.json`.
