@@ -9,12 +9,12 @@ import {
   decodeBinarySnapshotTable,
   encodeBinarySnapshotTable,
   isSyncSnapshotChunkEncoding,
-  scopedSnapshotArtifactDigestPayload,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+  scopedSnapshotArtifactDigestPayload,
 } from '../snapshot-chunks';
 
 describe('snapshot chunk protocol', () => {
@@ -42,6 +42,7 @@ describe('snapshot chunk protocol', () => {
       clientId: 'client-1',
       limitCommits: 50,
       snapshotArtifacts: {
+        schemaVersion: '7',
         artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
         compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
         featureSet: ['blobs', 'crdt-yjs'],
@@ -50,6 +51,7 @@ describe('snapshot chunk protocol', () => {
     });
 
     expect(parsed.snapshotArtifacts).toEqual({
+      schemaVersion: '7',
       artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
       compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
       featureSet: ['blobs', 'crdt-yjs'],

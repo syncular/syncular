@@ -108,6 +108,8 @@ pub struct SubscriptionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotArtifactsRequest {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: String,
     #[serde(rename = "artifactKinds")]
     pub artifact_kinds: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

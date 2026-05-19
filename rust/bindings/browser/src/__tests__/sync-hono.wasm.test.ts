@@ -741,6 +741,75 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     );
   });
 
+  it('applies scoped SQLite snapshot artifacts on the browser path', async () => {
+    let artifactDownloads = 0;
+    let chunkDownloads = 0;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      precomputedTaskSnapshotArtifact: {
+        actorId: ACTOR_A,
+        artifactId: 'browser-sqlite-artifact-1',
+        rowLimit: 50_000,
+      },
+      seedTasks: [
+        {
+          id: 'artifact-browser-task-1',
+          title: 'Artifact Browser Task 1',
+          actorId: ACTOR_A,
+        },
+        {
+          id: 'artifact-browser-task-2',
+          title: 'Artifact Browser Task 2',
+          actorId: ACTOR_A,
+        },
+      ],
+      edgeGate: (request) => {
+        const url = new URL(request.url);
+        if (url.pathname.includes('/snapshot-artifacts/')) {
+          artifactDownloads += 1;
+        }
+        if (url.pathname.includes('/snapshot-chunks/')) {
+          chunkDownloads += 1;
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'sqlite-artifact-browser-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      pull: {
+        includeSnapshotRows: false,
+        collectChangedRows: false,
+        limitSnapshotRows: 50_000,
+        maxSnapshotPages: 1,
+      },
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      subscriptions: [
+        {
+          id: syncConformance.subscription.id,
+          snapshotRows: [],
+        },
+      ],
+    });
+
+    expect(artifactDownloads).toBe(1);
+    expect(chunkDownloads).toBe(0);
+    const rows = await client.listTable('tasks');
+    expect(rows).toHaveLength(2);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'artifact-browser-task-1' }),
+        expect.objectContaining({ id: 'artifact-browser-task-2' }),
+      ])
+    );
+  });
+
   it('hydrates snapshot rows into SQLite without returning them by default', async () => {
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],

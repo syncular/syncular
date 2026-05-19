@@ -179,6 +179,7 @@ export const SyncSnapshotArtifactCompressionSchema = z.union([
 ]);
 
 export const SyncSnapshotArtifactsRequestSchema = z.object({
+  schemaVersion: z.string().min(1),
   artifactKinds: z.array(SyncScopedSnapshotArtifactKindSchema).min(1),
   compressions: z.array(SyncSnapshotArtifactCompressionSchema).optional(),
   featureSet: z.array(z.string()).optional(),
@@ -265,9 +266,7 @@ export const SyncSnapshotManifestSchema = z.object({
   chunks: z.array(SyncSnapshotManifestChunkSchema),
 });
 
-export type SyncSnapshotManifest = z.infer<
-  typeof SyncSnapshotManifestSchema
->;
+export type SyncSnapshotManifest = z.infer<typeof SyncSnapshotManifestSchema>;
 
 export const SyncScopedSnapshotArtifactManifestSchema = z.object({
   version: z.literal(SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION),

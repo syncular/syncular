@@ -4,15 +4,19 @@ import { createBunSqliteDialect } from '../../../../../../packages/dialect-bun-s
 import {
   createBlobManager,
   createDatabaseBlobStorageAdapter,
-  createHmacTokenSigner,
   createEncryptedCrdtSystemHandlers,
+  createHmacTokenSigner,
   createServerHandler,
+  createServerHandlerCollection,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
-  type SyncBlobDb,
+  precomputeScopedSnapshotArtifact,
+  type SnapshotArtifactStorage,
   type SyncAuthResult,
+  type SyncBlobDb,
   type SyncCoreDb,
 } from '../../../../../../packages/server/src';
+import { createBunSqliteSnapshotArtifactEncoder } from '../../../../../../packages/server/src/snapshot-artifacts/sqlite-bun';
 import { createSqliteServerDialect } from '../../../../../../packages/server-dialect-sqlite/src';
 import { createBlobRoutes } from '../../../../../../packages/server-hono/src/blobs';
 import { createSyncRoutes } from '../../../../../../packages/server-hono/src/routes';
@@ -24,10 +28,9 @@ import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
   syncularGeneratedCodecs,
+  syncularGeneratedSchemaVersion,
 } from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
-import {
-  syncularGeneratedServerSnapshotBinary,
-} from '../../../../../examples/todo-app/generated/typescript/syncular.server.generated';
+import { syncularGeneratedServerSnapshotBinary } from '../../../../../examples/todo-app/generated/typescript/syncular.server.generated';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2AuthHeaders,
@@ -46,6 +49,12 @@ export interface CreateHonoSyncHarnessOptions {
   seedTasks?: readonly HonoTaskSeed[];
   edgeGate?: (request: Request) => Response | Promise<Response> | null;
   snapshotBundleMaxBytes?: number;
+  precomputedTaskSnapshotArtifact?: {
+    actorId: string;
+    artifactId?: string;
+    asOfCommitSeq?: number;
+    rowLimit?: number;
+  };
   requiredSchemaVersion?: number;
   latestSchemaVersion?: number;
 }
@@ -118,33 +127,71 @@ export async function createHonoSyncHarness(
       options.actors.map((actor) => [actor.token, actor.actorId])
     );
     const syncRouteAuthHeaders: string[] = [];
+    const taskHandler = createServerHandler<
+      HonoSyncServerDb,
+      HonoSyncClientDb,
+      'tasks',
+      HonoAuthContext
+    >({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      codecs: syncularGeneratedCodecs,
+      snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+    const handlers = [
+      taskHandler,
+      ...createEncryptedCrdtSystemHandlers<HonoSyncServerDb, HonoAuthContext>({
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        authorizeUpdate: ({ ctx, row }) => row.scopes.user_id === ctx.actorId,
+        authorizeCheckpoint: ({ ctx, row }) =>
+          row.scopes.user_id === ctx.actorId,
+      }),
+    ];
+    const handlerCollection = createServerHandlerCollection<
+      HonoSyncServerDb,
+      HonoAuthContext
+    >(handlers, {
+      snapshotBinary: syncularGeneratedServerSnapshotBinary,
+    });
+    let snapshotArtifactStorage: SnapshotArtifactStorage | undefined;
+    if (options.precomputedTaskSnapshotArtifact) {
+      const artifactBodies = new Map<string, Uint8Array>();
+      snapshotArtifactStorage = {
+        name: 'hono-memory-artifacts',
+        async storeArtifact(artifact) {
+          artifactBodies.set(artifact.artifactId, artifact.body);
+          return { blobHash: `memory:${artifact.artifactId}` };
+        },
+        async readArtifact(artifact) {
+          return artifactBodies.get(artifact.id) ?? null;
+        },
+      };
+      await precomputeScopedSnapshotArtifact({
+        db,
+        storage: snapshotArtifactStorage,
+        handlers: handlerCollection,
+        auth: { actorId: options.precomputedTaskSnapshotArtifact.actorId },
+        partitionId: 'default',
+        subscriptionId: 'sub-tasks',
+        table: 'tasks',
+        scopes: { user_id: options.precomputedTaskSnapshotArtifact.actorId },
+        schemaVersion: syncularGeneratedSchemaVersion,
+        asOfCommitSeq:
+          options.precomputedTaskSnapshotArtifact.asOfCommitSeq ?? 0,
+        rowCursor: null,
+        rowLimit: options.precomputedTaskSnapshotArtifact.rowLimit ?? 50_000,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        artifactId: options.precomputedTaskSnapshotArtifact.artifactId,
+        encoder: createBunSqliteSnapshotArtifactEncoder(),
+      });
+    }
     const syncRoutes = createSyncRoutes<HonoSyncServerDb, HonoAuthContext>({
       db,
       dialect: serverDialect,
-      handlers: [
-        createServerHandler<
-          HonoSyncServerDb,
-          HonoSyncClientDb,
-          'tasks',
-          HonoAuthContext
-        >({
-          table: 'tasks',
-          scopes: ['user:{user_id}'],
-          codecs: syncularGeneratedCodecs,
-          snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
-          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-        }),
-        ...createEncryptedCrdtSystemHandlers<
-          HonoSyncServerDb,
-          HonoAuthContext
-        >({
-          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-          authorizeUpdate: ({ ctx, row }) => row.scopes.user_id === ctx.actorId,
-          authorizeCheckpoint: ({ ctx, row }) =>
-            row.scopes.user_id === ctx.actorId,
-        }),
-      ],
+      handlers: handlerCollection.handlers,
       snapshotBinary: syncularGeneratedServerSnapshotBinary,
+      snapshotArtifactStorage,
       authenticate: async (c) => {
         const authorization = c.req.header('authorization');
         if (authorization) syncRouteAuthHeaders.push(authorization);
@@ -216,7 +263,8 @@ export async function createHonoSyncHarness(
           baseUrl,
           clientId: clientOptions.clientId,
           actorId: clientOptions.actorId,
-          fileName: clientOptions.fileName ?? `${clientOptions.clientId}.sqlite`,
+          fileName:
+            clientOptions.fileName ?? `${clientOptions.clientId}.sqlite`,
           storage: 'memory',
           clearOnInit: true,
           appSchema: clientOptions.appSchema,

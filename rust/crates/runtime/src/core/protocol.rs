@@ -23,6 +23,39 @@ pub use syncular_protocol::{
 };
 use uuid::Uuid;
 
+pub fn validate_sqlite_snapshot_artifact_for_apply(
+    artifact: &ScopedSnapshotArtifactRef,
+    subscription_id: &str,
+    table: &str,
+) -> Result<()> {
+    validate_scoped_snapshot_artifact_ref(artifact)?;
+    if artifact.artifact_kind != SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1 {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot artifact kind {}",
+            artifact.artifact_kind
+        )));
+    }
+    if artifact.compression != SNAPSHOT_ARTIFACT_COMPRESSION_NONE {
+        return Err(SyncularError::protocol_message(format!(
+            "unsupported snapshot artifact compression {}",
+            artifact.compression
+        )));
+    }
+    if artifact.manifest.subscription_id != subscription_id {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact subscription mismatch: expected {}, got {}",
+            subscription_id, artifact.manifest.subscription_id
+        )));
+    }
+    if artifact.manifest.table != table {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact table mismatch: expected {}, got {}",
+            table, artifact.manifest.table
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncularMutationKind {
     Insert,

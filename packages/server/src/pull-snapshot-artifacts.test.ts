@@ -127,6 +127,7 @@ describe('pull scoped snapshot artifacts', () => {
         maxSnapshotPages: 1,
         snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
+          schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
           compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
         },
@@ -224,6 +225,7 @@ describe('pull scoped snapshot artifacts', () => {
         maxSnapshotPages: 1,
         snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
+          schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
           compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
         },

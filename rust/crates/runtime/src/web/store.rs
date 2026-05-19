@@ -178,6 +178,22 @@ pub trait AsyncWebStore {
         WebStoreApplyTimings::default()
     }
 
+    fn supports_sqlite_snapshot_artifacts(&self) -> bool {
+        false
+    }
+
+    fn decode_sqlite_snapshot_artifact_rows<'a>(
+        &'a mut self,
+        _table: &'a str,
+        _artifact_bytes: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::protocol_message(
+                "snapshot artifacts are not supported by this store",
+            ))
+        })
+    }
+
     fn clear_table_for_scopes<'a>(
         &'a mut self,
         table: &'a str,

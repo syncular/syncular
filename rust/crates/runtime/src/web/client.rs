@@ -12,9 +12,11 @@ use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
     validate_pull_commit_integrity_metadata, validate_pull_snapshot_manifests,
-    verify_subscription_commit_integrity, CombinedRequest, CombinedResponse, PullRequest,
-    PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues, SubscriptionRequest,
-    SyncChange, SyncCommit, SyncOperation, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    validate_sqlite_snapshot_artifact_for_apply, verify_subscription_commit_integrity,
+    CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
+    PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
+    SyncCommit, SyncOperation, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+    SNAPSHOT_ARTIFACT_COMPRESSION_NONE, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
@@ -354,14 +356,39 @@ where
                 let mut scope_cleared_for_snapshot = continuing_cleared_snapshot;
                 for snapshot in snapshots {
                     let snapshot_table = snapshot.table.clone();
-                    if snapshot
-                        .artifacts
-                        .as_ref()
-                        .is_some_and(|artifacts| !artifacts.is_empty())
-                    {
-                        return Err(SyncularError::protocol_message(
-                            "snapshot artifacts are not supported by this runtime yet",
-                        ));
+                    let mut artifact_rows = Vec::new();
+                    if let Some(artifacts) = &snapshot.artifacts {
+                        if !artifacts.is_empty() && !self.store.supports_sqlite_snapshot_artifacts()
+                        {
+                            return Err(SyncularError::protocol_message(
+                                "snapshot artifacts are not supported by this store",
+                            ));
+                        }
+                        for artifact in artifacts {
+                            validate_sqlite_snapshot_artifact_for_apply(
+                                artifact,
+                                &sub.id,
+                                &snapshot_table,
+                            )?;
+                            let snapshot_fetch_started_at = timing_now_ms();
+                            let bytes = self
+                                .transport
+                                .fetch_snapshot_artifact_bytes(artifact, &sub.scopes)
+                                .await?;
+                            result.timings.snapshot_fetch_ms +=
+                                elapsed_ms_since(snapshot_fetch_started_at);
+                            let materialize_started_at = timing_now_ms();
+                            let rows = self
+                                .store
+                                .decode_sqlite_snapshot_artifact_rows(&snapshot_table, &bytes)
+                                .await?;
+                            result.timings.snapshot_chunk_materialize_ms +=
+                                elapsed_ms_since(materialize_started_at);
+                            for row in rows {
+                                artifact_rows
+                                    .push(self.transform_snapshot_row(&snapshot_table, row)?);
+                            }
+                        }
                     }
                     let mut chunk_batches = Vec::new();
                     if let Some(chunks) = &snapshot.chunks {
@@ -389,11 +416,16 @@ where
                         .iter()
                         .map(SnapshotChunkRows::row_count)
                         .sum::<usize>();
-                    if snapshot.is_first_page || !snapshot.rows.is_empty() || chunk_row_count > 0 {
+                    if snapshot.is_first_page
+                        || !snapshot.rows.is_empty()
+                        || !artifact_rows.is_empty()
+                        || chunk_row_count > 0
+                    {
                         add_changed_table(&mut result.changed_tables, &snapshot_table);
                     }
 
-                    let inline_rows = snapshot.rows.clone();
+                    let mut inline_rows = snapshot.rows.clone();
+                    inline_rows.extend(artifact_rows);
                     if snapshot.is_first_page {
                         let scope_clear_started_at = timing_now_ms();
                         self.store
@@ -1085,7 +1117,14 @@ where
             max_snapshot_pages: self.config.pull.max_snapshot_pages,
             dedupe_rows: self.config.pull.dedupe_rows,
             snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
-            snapshot_artifacts: None,
+            snapshot_artifacts: self.store.supports_sqlite_snapshot_artifacts().then(|| {
+                SnapshotArtifactsRequest {
+                    schema_version: self.schema_version().to_string(),
+                    artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
+                    compressions: vec![SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string()],
+                    feature_set: Vec::new(),
+                }
+            }),
             sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
             subscriptions,
         })

@@ -254,13 +254,47 @@ Retained ninth slice:
   `39.9ms`, binary encode moved `43.6ms` to `43.1ms`, and generated binary
   encode moved `44.3ms` to `45.1ms`.
 
+Retained tenth slice:
+
+- Made artifact capability requests schema-bound with
+  `snapshotArtifacts.schemaVersion`. This removes the route-level
+  schema-version fallback for artifact lookup and keeps the artifact cache key
+  explicit in the protocol request.
+- Browser owned SQLite now advertises SQLite snapshot artifacts only when the
+  store capability is present.
+- Browser pull applies verified SQLite artifact bodies by deserializing the body
+  into a temporary read-only in-memory SQLite database via `sqlite3_deserialize`,
+  projecting rows from the artifact table, running the snapshot row transform,
+  and applying through the existing snapshot-row path.
+- Added a Hono/WASM browser test that precomputes a scoped Bun SQLite artifact,
+  serves it through `/snapshot-artifacts/:artifactId`, verifies that no snapshot
+  chunks are fetched, and confirms the artifact rows land in Rust-owned SQLite.
+- Correctness gates passed:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture`,
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/core tsgo`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd packages/server-hono tsgo`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun run build:wasm:dev` from `rust/bindings/browser`, and
+  `bun test src/__tests__/sync-hono.wasm.test.ts` from `rust/bindings/browser`.
+- Targeted server perf gate passed after the change:
+  `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`.
+  Compared with the previous WP-12 precompute run, metrics stayed in local
+  noise: scoped fanout moved `3.4ms` to `3.7ms`, dense build moved `39.9ms` to
+  `39.4ms`, binary encode moved `43.1ms` to `43.6ms`, and generated binary
+  encode moved `45.1ms` to `43.4ms`.
+
 ## Next Action
 
-Build the browser/direct fast-apply path:
+Build the direct fast-apply path:
 
-- how browser clients apply verified artifact bodies;
 - how native clients avoid JSON materialization by attaching/importing artifact
   rows directly or otherwise using generated fixed-column apply;
+- how browser clients avoid JSON row materialization by importing/copying the
+  artifact table into the owned database with fixed-column apply;
 - how revocation and interrupted artifact apply recover without app-side
   special handling.
 
