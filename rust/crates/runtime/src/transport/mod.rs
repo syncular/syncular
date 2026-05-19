@@ -302,7 +302,7 @@ impl SyncTransport for HttpSyncTransport {
                 format!("snapshot chunk failed with HTTP {status}: {body}"),
             ));
         }
-        validate_snapshot_chunk_format(chunk)?;
+        syncular_protocol::validate_snapshot_chunk_format(chunk)?;
         let compressed = response.bytes()?.to_vec();
         decode_compressed_snapshot_chunk_rows(chunk, &compressed)
     }
@@ -853,17 +853,9 @@ fn decode_compressed_snapshot_chunk_rows(
     chunk: &SnapshotChunkRef,
     compressed: &[u8],
 ) -> Result<SnapshotChunkRows> {
-    validate_snapshot_chunk_format(chunk)?;
+    syncular_protocol::validate_snapshot_chunk_format(chunk)?;
     let actual_hash = hex::encode(Sha256::digest(compressed));
-    if actual_hash != chunk.sha256 {
-        return Err(SyncularError::message(
-            ErrorKind::Protocol,
-            format!(
-                "snapshot chunk hash mismatch: expected {}, got {}",
-                chunk.sha256, actual_hash
-            ),
-        ));
-    }
+    syncular_protocol::validate_snapshot_chunk_hash_hex(chunk, &actual_hash)?;
 
     let mut decoder = GzDecoder::new(compressed);
     let mut decoded = Vec::new();
@@ -873,26 +865,8 @@ fn decode_compressed_snapshot_chunk_rows(
 }
 
 #[cfg(feature = "native")]
-fn validate_snapshot_chunk_format(chunk: &SnapshotChunkRef) -> Result<()> {
-    if chunk.compression != "gzip" {
-        return Err(SyncularError::protocol_message(format!(
-            "unsupported snapshot chunk compression: {}",
-            chunk.compression
-        )));
-    }
-    match chunk.encoding.as_str() {
-        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 | SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
-            Ok(())
-        }
-        encoding => Err(SyncularError::protocol_message(format!(
-            "unsupported snapshot chunk encoding: {encoding}"
-        ))),
-    }
-}
-
-#[cfg(feature = "native")]
 fn decode_snapshot_chunk_rows(chunk: &SnapshotChunkRef, bytes: &[u8]) -> Result<SnapshotChunkRows> {
-    validate_snapshot_chunk_format(chunk)?;
+    syncular_protocol::validate_snapshot_chunk_format(chunk)?;
 
     match chunk.encoding.as_str() {
         SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 => {

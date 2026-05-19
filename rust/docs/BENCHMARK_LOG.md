@@ -456,3 +456,56 @@ Decision:
 
 - Retained. The protocol split removed duplicated JSON assembly and stayed
   under browser package budgets.
+
+## 2026-05-19 - Protocol Crate Snapshot Chunk Validation
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved snapshot chunk format/hash validation into `syncular-protocol`.
+- Native and browser transports now call shared protocol validation while still
+  owning HTTP fetch, gzip decompression, row decoding dispatch, timing, and
+  store application.
+
+Browser scoreboard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --baseline=.context/benchmarks/browser-e2e-100k-baseline.json \
+  --fail-on-regression
+```
+
+Previous accepted:
+
+- Rust bootstrap: `138.04ms`
+- Rust pull apply: `73ms`
+- Rust snapshot chunk apply: `62ms`
+- Rust snapshot chunk bind: `33ms`
+- Rust served WASM bytes: `3,326,638`
+
+Candidate:
+
+- Rust bootstrap: `140.9ms`
+- Rust pull apply: `74ms`
+- Rust snapshot chunk apply: `64ms`
+- Rust snapshot chunk bind: `36ms`
+- Rust served WASM bytes: `3,362,390`
+
+Delta:
+
+- Rust bootstrap: `+2.87ms`, below the regression gate.
+- Rust pull apply: `+1ms`.
+- Rust snapshot chunk apply: `+2ms`.
+- Rust snapshot chunk bind: `+3ms`.
+- Rust served WASM bytes: `+35,752` bytes (`+1.07%`), below the regression
+  gate and under the raw/gzip budgets.
+
+Decision:
+
+- Retained. The remaining duplicated protocol validation moved into the
+  protocol crate and browser performance/size stayed inside the accepted gate.

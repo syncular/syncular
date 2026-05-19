@@ -8,6 +8,7 @@ pub mod blob;
 pub mod error;
 pub mod integrity;
 pub mod realtime;
+pub mod snapshot_chunk;
 pub mod snapshot_manifest;
 
 pub use blob::{
@@ -27,6 +28,11 @@ pub use realtime::{
     RealtimeServerMessage, REALTIME_CLIENT_MESSAGE_PRESENCE, REALTIME_CLIENT_MESSAGE_PUSH,
     REALTIME_SERVER_EVENT_PRESENCE, REALTIME_SERVER_EVENT_PUSH_RESPONSE,
     REALTIME_SERVER_EVENT_SYNC,
+};
+pub use snapshot_chunk::{
+    decode_snapshot_chunk_sha256, validate_snapshot_chunk_format,
+    validate_snapshot_chunk_hash_bytes, validate_snapshot_chunk_hash_hex,
+    SNAPSHOT_CHUNK_COMPRESSION_GZIP,
 };
 pub use snapshot_manifest::{snapshot_manifest_digest, validate_pull_snapshot_manifests};
 

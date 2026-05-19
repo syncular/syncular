@@ -1,6 +1,6 @@
 # WP-02 Protocol Kernel
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -124,6 +124,29 @@ Sixth retained slice:
   release full WASM raw `3,365,458` bytes, `41.4KiB` under budget; gzip
   `1.33MiB`, `24.1KiB` under budget.
 
+Seventh retained slice:
+
+- `syncular-protocol` now owns snapshot chunk format/hash validation.
+- Native and browser transports call the shared validation while still owning
+  fetch/decompression/timing/row-dispatch/store behavior.
+- Browser 100k scoreboard stayed inside the accepted regression gate:
+  `rust_bootstrap_ms` `138.04 -> 140.9`, `rust_pull_apply_ms` `73 -> 74`,
+  `rust_snapshot_chunk_apply_ms` `62 -> 64`, `rust_snapshot_chunk_bind_ms`
+  `33 -> 36`, and served WASM bytes `3,326,638 -> 3,362,390` (`+1.07%`,
+  under budget).
+
+Final audit:
+
+- Remaining public items in runtime `core/protocol.rs` are mutation/outbox
+  ergonomics, runtime error wrappers over protocol APIs, ID generation, and
+  IO/file blob hashing. Those are runtime/application concerns, not protocol
+  crate ownership gaps.
+- Remaining public realtime/transport items under runtime are socket ownership,
+  transport config, auth signing, runtime events, reconnect/backoff, and
+  fanout behavior. Those are runtime concerns, not protocol wire-shape gaps.
+- Remaining browser/native store structs are local execution, timing,
+  diagnostics, bindings, or app-store behavior. They are outside WP-02.
+
 Gates run:
 
 - `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
@@ -134,6 +157,7 @@ Gates run:
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `bun run --cwd rust/bindings/browser build:wasm`
+- `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --baseline=.context/benchmarks/browser-e2e-100k-baseline.json --fail-on-regression`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture --test protocol_contract --test protocol_fixtures --test store_backends`
@@ -141,6 +165,6 @@ Gates run:
 
 ## Next Action
 
-Run a final WP-02 audit for protocol-shaped structs/functions still owned by
-runtime, then run the full protocol/runtime/browser gate needed to close this
-work package or record the exact remaining protocol-kernel gap.
+WP-02 is closed. Start
+[`WP-03 Binary Apply Performance`](WP-03-binary-apply-performance.md) with the
+latest accepted browser scoreboard and external app-style benchmark baselines.
