@@ -70,13 +70,17 @@ read-only review:
 
 ## Now
 
-- `[~]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+- `[!]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
     import was also rejected because callback-per-cell was slower than binding.
-    The external app-style gate is working again. Next step is a lower-level
-    import path or a strictly scoped artifact prototype, not whole-partition
-    artifact optimization.
+    The accepted browser path is binary-table direct payload apply. Further
+    client apply micro-probes are stopped; the remaining large-bootstrap work
+    needs a scoped artifact design.
+- `[ ]` [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+  - New continuation of the WP-03 performance findings. Design and benchmark a
+    scoped, content-addressed artifact path without whole-partition assumptions
+    or Worker-hot-path SQLite file generation.
 
 ## Next
 
