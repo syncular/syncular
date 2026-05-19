@@ -148,7 +148,9 @@ pub struct WebSubscriptionResult {
     pub status: String,
     pub scopes: ScopeValues,
     pub next_cursor: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshot_rows: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commits: Vec<SyncCommit>,
 }
 
@@ -812,7 +814,7 @@ where
             scopes: subscription.scopes.clone(),
             next_cursor: subscription.next_cursor,
             snapshot_rows: Vec::new(),
-            commits: subscription.commits.clone(),
+            commits: Vec::new(),
         });
 
         self.apply_realtime_commits(result, &subscription.id, subscription.commits)
@@ -1643,6 +1645,10 @@ mod tests {
                 .first()
                 .and_then(|row| row.subscription_id.as_deref()),
             Some("sub-tasks")
+        );
+        assert_eq!(
+            result.subscriptions.first().map(|sub| sub.commits.len()),
+            Some(0)
         );
         let verified =
             block_on(client.store_mut().verified_root("sub-tasks"))?.expect("verified root");

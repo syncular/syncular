@@ -135,8 +135,33 @@ Retained fourth slice:
 - Decision: retained. It removes obsolete protocol surface and slightly reduces
   measured live-time overhead without weakening verified per-subscription roots.
 
+Retained fifth slice:
+
+- Realtime apply no longer echoes applied commit payloads back through
+  `WebSyncResult.subscriptions[].commits`. The worker only needs changed-row
+  metadata plus subscription cursors for events/ACKs, so returning the full
+  commit rows was duplicate wasm-boundary serialization.
+- Empty subscription `snapshotRows` and `commits` are skipped in the serialized
+  browser result while TS parsing still defaults them to empty arrays.
+- Correctness gates passed:
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gate:
+  `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=dev --json --output=.context/benchmarks/wp04-realtime-slim-result.json`.
+- Result: previous WP-04 guard `rust_realtime_live_ms=99.19`,
+  `rust_realtime_live_p95_ms=108.07`, `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`, `rust_realtime_binary_bytes=540300`;
+  current `rust_realtime_live_ms=88.67`,
+  `rust_realtime_live_p95_ms=97.53`, `rust_realtime_http_request_count=0`,
+  `rust_realtime_binary_events=15`, `rust_realtime_binary_bytes=540300`.
+- Decision: retained. This removes duplicate result materialization and is a
+  simpler contract for the browser realtime worker.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-no-json-deltas.json`.
+`.context/benchmarks/wp04-realtime-slim-result.json`.

@@ -2545,6 +2545,10 @@ client. Overflow should close or resync the session deliberately.
 - Done: browser websocket clients ack successfully applied realtime cursors;
   Hono records monotonic realtime acks and sends reconnect catch-up wakeups
   when the recorded cursor lags.
+- Done: realtime apply results no longer echo applied commits back over the
+  wasm boundary. The worker only needs changed-row metadata plus subscription
+  cursors, so commit rows remain an input to local apply and integrity
+  verification, not a duplicated JSON output.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
 - Next: design the heavier websocket-first session protocol with server
