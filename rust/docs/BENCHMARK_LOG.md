@@ -231,7 +231,7 @@ Decision:
 
 ## 2026-05-19 - Protocol Crate Binary Sync-Pack Decoder Extraction
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `a4f2ac7a`
 
 Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 
@@ -285,7 +285,7 @@ Decision:
 
 ## 2026-05-19 - Protocol Crate Binary Snapshot Decoder Extraction
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `d68ebdfd`
 
 Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 
@@ -349,7 +349,7 @@ Decision:
 
 ## 2026-05-19 - Protocol Crate Integrity And Snapshot Manifest APIs
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `2caf32c3`
 
 Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 
@@ -387,7 +387,7 @@ Decision:
 
 ## 2026-05-19 - Protocol Crate Blob Wire APIs
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `d9391567`
 
 Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 
@@ -421,7 +421,7 @@ Decision:
 
 ## 2026-05-19 - Protocol Crate Realtime Wire Shapes
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `1a639b37`
 
 Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 
@@ -459,7 +459,7 @@ Decision:
 
 ## 2026-05-19 - Protocol Crate Snapshot Chunk Validation
 
-Commit: uncommitted working tree before this slice was committed
+Commit: `e4f6bb63`
 
 Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 
