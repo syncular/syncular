@@ -1616,8 +1616,24 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           (sum, event) => sum + Number(event.details?.bytes ?? 0),
           0
         );
+        const binaryApplyTotalSamples = binaryEvents.map((event) =>
+          Number(event.details?.totalMs ?? 0)
+        );
+        const binaryApplyPullSamples = binaryEvents.map((event) =>
+          Number(event.details?.pullApplyMs ?? 0)
+        );
+        const binaryApplyCommitSamples = binaryEvents.map((event) =>
+          Number(event.details?.commitApplyMs ?? 0)
+        );
+        const binaryApplyNotifySamples = binaryEvents.map((event) =>
+          Number(event.details?.notifyMs ?? 0)
+        );
         const realtimeLive = summarizeSamples(realtimeLiveSamples);
         const realtimePush = summarizeSamples(realtimePushSamples);
+        const realtimeApplyTotal = summarizeSamples(binaryApplyTotalSamples);
+        const realtimePullApply = summarizeSamples(binaryApplyPullSamples);
+        const realtimeCommitApply = summarizeSamples(binaryApplyCommitSamples);
+        const realtimeNotify = summarizeSamples(binaryApplyNotifySamples);
         pushMetric('realtime_rows', realtimeRows * realtimeIterations, 'rows');
         pushMetric('realtime_iterations', realtimeIterations, 'count');
         pushMetric('ts_realtime_push_ms', realtimePush.p50);
@@ -1648,6 +1664,38 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         );
         pushMetric('rust_realtime_binary_events', binaryEvents.length, 'count');
         pushMetric('rust_realtime_binary_bytes', binaryBytes, 'bytes');
+        pushMetric(
+          'rust_realtime_apply_total_ms',
+          binaryApplyTotalSamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_apply_total',
+          realtimeApplyTotal
+        );
+        pushMetric(
+          'rust_realtime_pull_apply_total_ms',
+          binaryApplyPullSamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_pull_apply',
+          realtimePullApply
+        );
+        pushMetric(
+          'rust_realtime_commit_apply_total_ms',
+          binaryApplyCommitSamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_commit_apply',
+          realtimeCommitApply
+        );
+        pushMetric(
+          'rust_realtime_notify_total_ms',
+          binaryApplyNotifySamples.reduce((sum, value) => sum + value, 0)
+        );
+        emitTimedSamples(pushMetric, 'rust_realtime_notify', realtimeNotify);
         pushMetric('rust_realtime_rows', liveCount.count, 'rows');
         assert(
           realtimeRustStats.requestCount === 0,

@@ -160,8 +160,24 @@ Retained fifth slice:
 - Decision: retained. This removes duplicate result materialization and is a
   simpler contract for the browser realtime worker.
 
+Retained sixth slice:
+
+- Browser realtime diagnostics now include Rust-side binary apply timings, and
+  the browser scoreboard aggregates realtime apply, pull-apply, commit-apply,
+  and notify p50/p95/total metrics.
+- Browser dev E2E gate:
+  `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=dev --json --output=.context/benchmarks/wp04-realtime-apply-timings.json`.
+- Result: previous WP-04 guard `rust_realtime_live_ms=88.67`,
+  `rust_realtime_live_p95_ms=97.53`; current `rust_realtime_live_ms=85.32`,
+  `rust_realtime_live_p95_ms=86.52`. New timing metrics show
+  `rust_realtime_apply_total_p50_ms=11`,
+  `rust_realtime_pull_apply_p50_ms=9`, and
+  `rust_realtime_notify_p50_ms=0`.
+- Decision: retained as benchmark instrumentation. The next optimization should
+  target realtime pull/apply, not notification.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-slim-result.json`.
+`.context/benchmarks/wp04-realtime-apply-timings.json`.

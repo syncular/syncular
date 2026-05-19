@@ -406,6 +406,14 @@ export class SyncularV2WorkerRealtimeController {
           message: 'Syncular v2 realtime binary sync-pack applied',
           details: {
             bytes: message.syncPackBytes.byteLength,
+            totalMs: result.timings.totalMs,
+            pullTransformMs: result.timings.pullTransformMs,
+            pullApplyMs: result.timings.pullApplyMs,
+            commitApplyMs: result.timings.commitApplyMs,
+            subscriptionStateMs: result.timings.subscriptionStateMs,
+            notifyMs: result.timings.notifyMs,
+            changedRows: result.changedRows.length,
+            changedRowsTruncated: result.changedRowsTruncated,
           },
         });
         return result;
