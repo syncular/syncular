@@ -45,6 +45,28 @@ pub struct ScopedSnapshotArtifactManifest {
     pub feature_set: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedSnapshotArtifactRef {
+    pub id: String,
+    #[serde(rename = "byteLength")]
+    pub byte_length: i64,
+    pub sha256: String,
+    #[serde(rename = "manifestDigest")]
+    pub manifest_digest: String,
+    #[serde(rename = "artifactKind")]
+    pub artifact_kind: String,
+    pub compression: String,
+    #[serde(rename = "rowCount")]
+    pub row_count: i64,
+    #[serde(rename = "nextRowCursor")]
+    pub next_row_cursor: Option<String>,
+    #[serde(rename = "isFirstPage")]
+    pub is_first_page: bool,
+    #[serde(rename = "isLastPage")]
+    pub is_last_page: bool,
+    pub manifest: ScopedSnapshotArtifactManifest,
+}
+
 pub fn validate_scoped_snapshot_artifact_manifest(
     manifest: &ScopedSnapshotArtifactManifest,
 ) -> Result<()> {

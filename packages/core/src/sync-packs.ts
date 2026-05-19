@@ -18,6 +18,7 @@
  *   commit verification.
  * - v13: subscription-level integrity roots replace repeated per-commit root
  *   metadata.
+ * - v14: snapshots can advertise scoped artifact refs.
  */
 
 import type {
@@ -50,7 +51,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 13;
+const VERSION = 14;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -675,6 +676,7 @@ function writeSnapshot(
   writer.bool(snapshot.isLastPage);
   writer.optionalJson(snapshot.bootstrapStateAfter ?? undefined);
   writer.optionalJson(snapshot.manifest ?? undefined);
+  writer.optionalJson(snapshot.artifacts ?? undefined);
 }
 
 function readSnapshot(reader: BinarySyncPackReader): SyncSnapshot {
@@ -698,6 +700,10 @@ function readSnapshot(reader: BinarySyncPackReader): SyncSnapshot {
     | SyncSnapshot['manifest']
     | undefined;
   if (manifest !== undefined) snapshot.manifest = manifest;
+  const artifacts = reader.optionalJson('snapshot artifacts') as
+    | SyncSnapshot['artifacts']
+    | undefined;
+  if (artifacts !== undefined) snapshot.artifacts = artifacts;
   return snapshot;
 }
 

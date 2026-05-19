@@ -8,8 +8,12 @@ import {
   SyncPullRequestSchema,
 } from '../schemas/sync';
 import {
+  createScopedSnapshotArtifactManifest,
   createSnapshotManifest,
   encodeBinarySnapshotTable,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
 } from '../snapshot-chunks';
 import {
@@ -179,7 +183,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(13);
+    expect(encoded[4]).toBe(14);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);
@@ -254,5 +258,73 @@ describe('binary sync pack format', () => {
 
     expect(decodeBinarySyncPack(encoded)).toEqual(response);
     expect(encoded.length).toBeLessThan(encodeBinarySyncPack(response).length);
+  });
+
+  it('round-trips scoped snapshot artifact refs', async () => {
+    const artifactManifest = await createScopedSnapshotArtifactManifest({
+      version: SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+      artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+      partitionId: 'workspace-1',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: '7',
+      asOfCommitSeq: 42,
+      scopeDigest: 'a'.repeat(64),
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 10,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      byteLength: 4096,
+      sha256: 'b'.repeat(64),
+      featureSet: ['blobs'],
+    });
+    const response: SyncCombinedResponse = {
+      ok: true,
+      pull: {
+        ok: true,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            status: 'active',
+            scopes: { user_id: 'user-1' },
+            bootstrap: true,
+            bootstrapState: null,
+            nextCursor: 42,
+            commits: [],
+            snapshots: [
+              {
+                table: 'tasks',
+                rows: [],
+                artifacts: [
+                  {
+                    id: 'artifact-1',
+                    byteLength: 4096,
+                    sha256: 'b'.repeat(64),
+                    manifestDigest: artifactManifest.digest,
+                    artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+                    compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+                    rowCount: 10,
+                    nextRowCursor: null,
+                    isFirstPage: true,
+                    isLastPage: true,
+                    manifest: artifactManifest,
+                  },
+                ],
+                isFirstPage: true,
+                isLastPage: true,
+                bootstrapStateAfter: null,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    expect(decodeBinarySyncPack(encodeBinarySyncPack(response))).toEqual(
+      response
+    );
   });
 });

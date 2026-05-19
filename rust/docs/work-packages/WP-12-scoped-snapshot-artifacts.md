@@ -127,14 +127,28 @@ Retained third slice:
   `bun run --cwd packages/server-hono tsgo`, and
   `bun run --cwd packages/server tsgo`.
 
+Retained fourth slice:
+
+- Extended the shared pull protocol so `SyncSnapshot` can carry scoped artifact
+  refs.
+- Added artifact ref schemas in `@syncular/core` and Rust protocol structs.
+- Bumped `binary-sync-pack-v1` wire version to `14` because the positional
+  snapshot record now includes optional artifact refs.
+- Regenerated the cross-language binary sync-pack fixture.
+- Correctness gates passed:
+  `bun test packages/core/src/__tests__/sync-packs.test.ts packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
+  and `bun run --cwd packages/core tsgo`.
+
 ## Next Action
 
-Design how pull responses advertise artifact eligibility:
+Wire server-side artifact eligibility into pull responses:
 
-- how pull responses advertise artifact eligibility;
 - how object storage writes are represented without generating SQLite files in
   the Worker/D1 hot path;
-- how clients fall back to row chunks when artifacts are missing or stale;
+- how clients recover through the current row-chunk pull path when artifacts
+  are missing or stale, without adding a negotiated legacy protocol branch;
 - how revocation and interrupted artifact apply recover.
 
 The first runtime implementation should be a gated prototype for one generated

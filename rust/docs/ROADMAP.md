@@ -81,8 +81,9 @@ read-only review:
   - New continuation of the WP-03 performance findings. Design and benchmark a
     scoped, content-addressed artifact path without whole-partition assumptions
     or Worker-hot-path SQLite file generation. The shared TS/Rust manifest
-    contract, server metadata table/helpers, and authenticated artifact route
-    are in place; next is pull-response eligibility.
+    contract, server metadata table/helpers, authenticated artifact route, and
+    pull-response artifact reference contract are in place; next is
+    server-side artifact eligibility/generation and client apply.
 
 ## Next
 
