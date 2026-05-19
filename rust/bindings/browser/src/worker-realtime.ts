@@ -13,27 +13,14 @@ import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export interface SyncularV2WorkerRealtimeClient {
   syncPull(): Promise<SyncularV2SyncResult>;
-  applyRealtimeChanges?(
-    request: SyncularV2RealtimeChangesRequest
-  ): Promise<SyncularV2SyncResult>;
   applyRealtimeSyncPack?(bytes: Uint8Array): Promise<SyncularV2SyncResult>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<SyncularV2LiveQueryEvent<Row>>;
 }
 
-export interface SyncularV2RealtimeChangesRequest {
-  cursor: number;
-  changes: unknown[];
-  actorId?: string | null;
-  createdAt?: string | null;
-}
-
 interface SyncularV2RealtimeSyncMessage {
   cursor?: number;
-  changes?: unknown[];
-  actorId?: string | null;
-  createdAt?: string | null;
   reason?: string | null;
   requiresPull?: boolean;
   droppedCount?: number;
@@ -266,7 +253,6 @@ export class SyncularV2WorkerRealtimeController {
         code: 'realtime.sync_wakeup',
         message: 'Syncular v2 realtime sync wakeup received',
         details: {
-          inlineChanges: syncMessage.changes?.length ?? 0,
           reason: syncMessage.reason ?? null,
           requiresPull: syncMessage.requiresPull === true,
           droppedCount: syncMessage.droppedCount ?? 0,
@@ -402,7 +388,6 @@ export class SyncularV2WorkerRealtimeController {
           cursor: message.cursor ?? null,
           reason: message.reason ?? null,
           droppedCount: message.droppedCount ?? 0,
-          inlineChanges: message.changes?.length ?? 0,
         },
       });
       return client.syncPull();
@@ -432,42 +417,6 @@ export class SyncularV2WorkerRealtimeController {
             'Syncular v2 realtime binary sync-pack apply failed; falling back to pull',
           details: {
             bytes: message.syncPackBytes.byteLength,
-          },
-        });
-      }
-    }
-    if (
-      message?.changes &&
-      message.changes.length > 0 &&
-      Number.isFinite(message.cursor) &&
-      typeof client.applyRealtimeChanges === 'function'
-    ) {
-      try {
-        const result = await client.applyRealtimeChanges({
-          cursor: message.cursor!,
-          changes: message.changes,
-          actorId: message.actorId ?? null,
-          createdAt: message.createdAt ?? null,
-        });
-        this.#diagnostic({
-          level: 'debug',
-          code: 'realtime.inline_applied',
-          message: 'Syncular v2 realtime inline changes applied',
-          details: {
-            cursor: message.cursor,
-            changes: message.changes.length,
-          },
-        });
-        return result;
-      } catch {
-        this.#diagnostic({
-          level: 'warn',
-          code: 'realtime.inline_fallback',
-          message:
-            'Syncular v2 realtime inline apply failed; falling back to pull',
-          details: {
-            cursor: message.cursor,
-            changes: message.changes.length,
           },
         });
       }
@@ -605,10 +554,6 @@ function readSyncularV2RealtimeSyncMessage(
   if (!data || typeof data !== 'object') return {};
   const record = data as Record<string, unknown>;
   const cursor = typeof record.cursor === 'number' ? record.cursor : undefined;
-  const changes = Array.isArray(record.changes) ? record.changes : undefined;
-  const actorId = typeof record.actorId === 'string' ? record.actorId : null;
-  const createdAt =
-    typeof record.createdAt === 'string' ? record.createdAt : null;
   const reason = typeof record.reason === 'string' ? record.reason : null;
   const requiresPull =
     typeof record.requiresPull === 'boolean' ? record.requiresPull : undefined;
@@ -619,9 +564,6 @@ function readSyncularV2RealtimeSyncMessage(
       : undefined;
   return {
     cursor,
-    changes,
-    actorId,
-    createdAt,
     reason,
     requiresPull,
     droppedCount,

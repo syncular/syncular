@@ -119,20 +119,25 @@ read-only review:
     overflow recovery, and runtime-owned reconnect/backoff. First retained
     slice makes `requiresPull=true`/`droppedCount>0` authoritative in the
     browser worker so recovery-marked websocket messages always use HTTP pull
-    instead of inline apply. The browser realtime gate stayed on the binary fast
-    path with `rust_realtime_http_request_count=0` and `15` binary websocket
+    instead of local row-payload apply. The browser realtime gate stayed on the
+    binary fast path with `rust_realtime_http_request_count=0` and `15` binary websocket
     events. Cursor-only recovery pulls now ACK the triggering websocket cursor
     after successful recovery so the server can clear in-flight state even when
     the pull result has no larger subscription cursor. Websocket binary deltas
     now carry real subscription IDs plus pull-compatible integrity roots, and
     browser Rust realtime apply verifies/persists those roots before local row
-    changes are reported.
+    changes are reported. The obsolete inline JSON websocket delta path has
+    been removed from the browser worker, Rust wasm API, and server manager;
+    current realtime delivery is binary sync-pack or explicit pull-required
+    wakeup.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
-  by recovering the added realtime integrity overhead without weakening the
-  verified per-subscription root contract.
+  by recovering the remaining realtime integrity overhead without weakening the
+  verified per-subscription root contract. Use
+  `.context/benchmarks/wp04-realtime-no-json-deltas.json` as the current local
+  comparison point.
 
 ## Later
 

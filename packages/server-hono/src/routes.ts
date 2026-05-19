@@ -100,9 +100,6 @@ export interface SyncAuthResult extends SyncServerAuth {}
 
 /**
  * WebSocket configuration for realtime sync.
- *
- * Note: this endpoint may send bounded inline deltas, but clients must still
- * support HTTP pull for recovery and large payloads.
  */
 export interface SyncWebSocketConfig {
   enabled?: boolean;
@@ -3073,7 +3070,7 @@ export function createSyncRoutes<
               latestCommitSeq
             );
             if (!replayed) {
-              conn.sendSync(latestCommitSeq, undefined, {
+              conn.sendSync(latestCommitSeq, {
                 reason: 'reconnect-catchup',
                 requiresPull: true,
               });

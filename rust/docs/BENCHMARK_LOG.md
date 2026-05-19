@@ -1585,3 +1585,57 @@ Decision:
   directly comparable with older release-lane guards. The realtime lane still
   shows added overhead; the next WP-04 slice should recover that overhead without
   weakening integrity verification.
+
+## 2026-05-19 - WP-04 Remove JSON Websocket Delta Path
+
+Change:
+
+- Removed the browser worker/public Rust inline JSON websocket apply path
+  (`applyRealtimeChanges`, wasm `applyRealtimeChangesJson`, Rust
+  `apply_realtime_changes`) and the synthetic `__syncular_realtime__`
+  subscription branch.
+- Removed server-side bounded JSON websocket deltas. Realtime now sends binary
+  sync-pack frames when the connection negotiated `binary-sync-pack-v1`; other
+  cases receive an explicit pull-required wakeup.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd packages/server-hono tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-no-json-deltas.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `84.29ms` | `81.31ms` |
+| `rust_incremental_pull_ms` | `76.52ms` | `75.92ms` |
+| `rust_realtime_live_ms` | `107.12ms` | `99.19ms` |
+| `rust_realtime_live_p95_ms` | `110.48ms` | `108.07ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `540300` | `540300` |
+| `browser_served_syncular_worker_js_bytes` | `n/a` | `46999` |
+| `browser_served_rust_wasm_bytes` | `n/a` | `7467818` |
+
+Decision:
+
+- Retained. The change removes obsolete protocol surface and keeps the binary
+  websocket fast path at zero HTTP realtime fallbacks.
+- The realtime p50 improved from `107.12ms` to `99.19ms` (`-7.4%`) and p95 from
+  `110.48ms` to `108.07ms` (`-2.2%`) in the local dev-WASM guard. Treat the
+  improvement as useful but still subject to the usual browser benchmark noise.
