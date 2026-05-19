@@ -9,6 +9,8 @@ delivery.
   package, including the autonomous work loop.
 - [`CLIENT_PRODUCT_CONTRACT.md`](CLIENT_PRODUCT_CONTRACT.md): product
   capabilities, invariants, and anti-drift checks.
+- [`COMPATIBILITY_REGISTER.md`](COMPATIBILITY_REGISTER.md): retained legacy
+  paths, fallbacks, aliases, and removal decisions.
 - [`QUALITY_GATES.md`](QUALITY_GATES.md): required test and benchmark commands
   by change type.
 - [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md): append-only benchmark evidence for

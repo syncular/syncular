@@ -18,22 +18,27 @@ read-only review:
 1. Record the active work package.
 2. Check the change against
    [`CLIENT_PRODUCT_CONTRACT.md`](CLIENT_PRODUCT_CONTRACT.md).
-3. Run or cite the accepted baseline.
-4. Implement one scoped change.
-5. Run the required tests.
-6. Run the relevant benchmark gate.
-7. Compare against the previous accepted result.
-8. Keep, revise, or revert.
-9. Update [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md) and the work package.
-10. Commit separately with the test and benchmark evidence.
+3. If the change adds or preserves a fallback, alias, old protocol path, or
+   legacy behavior, update
+   [`COMPATIBILITY_REGISTER.md`](COMPATIBILITY_REGISTER.md) first.
+4. Run or cite the accepted baseline.
+5. Implement one scoped change.
+6. Run the required tests.
+7. Run the relevant benchmark gate.
+8. Compare against the previous accepted result.
+9. Keep, revise, or revert.
+10. Update [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md) and the work package.
+11. Commit separately with the test and benchmark evidence.
 
 ## Session Start Checklist
 
 1. Read this roadmap.
 2. Read the active WP file.
 3. Read the product-contract sections that apply to the WP.
-4. Read the relevant gate commands in [`QUALITY_GATES.md`](QUALITY_GATES.md).
-5. If the work can affect performance, run or cite the latest accepted
+4. Check [`COMPATIBILITY_REGISTER.md`](COMPATIBILITY_REGISTER.md) if the WP
+   touches old protocol paths, fallbacks, aliases, or legacy JS behavior.
+5. Read the relevant gate commands in [`QUALITY_GATES.md`](QUALITY_GATES.md).
+6. If the work can affect performance, run or cite the latest accepted
    baseline before changing code.
 
 ## Session End Checklist
@@ -42,8 +47,10 @@ read-only review:
 2. For performance work, log previous/current/delta/decision in
    [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md).
 3. Update the active WP status, latest evidence, and next action.
-4. Update this roadmap if priority or status changed.
-5. Commit the accepted slice. Do not leave retained work uncommitted unless the
+4. Update [`COMPATIBILITY_REGISTER.md`](COMPATIBILITY_REGISTER.md) if a fallback
+   or legacy path was added, retained, removed, or reclassified.
+5. Update this roadmap if priority or status changed.
+6. Commit the accepted slice. Do not leave retained work uncommitted unless the
    user explicitly asks to pause before commit.
 
 ## Accept / Reject Rules
@@ -58,6 +65,8 @@ read-only review:
   run the external app-style benchmark listed in `QUALITY_GATES.md`.
 - Do not optimize for full-partition happy paths when the product contract
   requires scoped/subscription-shaped access.
+- Do not retain compatibility branches just because they exist. Prefer deletion
+  unless the compatibility register records a current exception.
 
 ## Now
 

@@ -133,6 +133,9 @@ Results land in `.results/<runId>/<stack>/<scenario>.json`.
 ## Commit Checklist
 
 - Change checked against `rust/docs/CLIENT_PRODUCT_CONTRACT.md`.
+- `rust/docs/COMPATIBILITY_REGISTER.md` updated when a fallback, alias, old
+  protocol path, or legacy behavior is added, retained, removed, or
+  reclassified.
 - Relevant commands selected from this file.
 - Roadmap updated if priority/status changed.
 - Work package updated.
