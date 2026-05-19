@@ -58,6 +58,7 @@ exception.
 | `actorScopeColumn` / `projectScopeColumn` codegen config fields | `Removed` | `rust/crates/codegen/src/main.rs` | Explicit named scopes are the only config model. Codegen now rejects unknown keys instead of carrying deprecated fields |
 | Server Hono legacy sync CORS shape | `Removed` | `packages/server-hono/src/routes.ts` | Hono-style `cors: origin` / `cors: { origin }` is the single sync route CORS contract |
 | Per-commit pull integrity fields | `Removed` | `SyncCommit` TS/Rust contract and `binary-sync-pack-v1` wire v13 | Pull integrity now lives on subscription-level metadata. The current path does not carry `partitionId`, `previousChainRoot`, `commitDigest`, or `commitChainRoot` on every commit |
+| Browser SQLite artifact JSON materialization path | `Removed` | `rust/crates/runtime/src/web/client.rs`, `rust/crates/runtime/src/web/sqlite_wasm_store.rs` | Browser artifacts are now requested only for direct apply modes. Pull modes needing changed rows, returned snapshot rows, field encryption, or encrypted CRDT transforms use snapshot chunks instead of a browser artifact-to-JSON branch |
 
 ## Items That Are Not Compatibility Debt
 

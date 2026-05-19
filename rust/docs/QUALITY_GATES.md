@@ -69,6 +69,22 @@ bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --fail-on-regression
 ```
 
+For scoped snapshot artifact work, run the artifact lane beside the row-chunk
+lane and compare the generated reports:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/browser-e2e-100k-rowchunks.json
+```
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts.json
+```
+
 ```bash
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \

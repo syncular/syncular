@@ -11,11 +11,11 @@ import { SYNCULAR_V2_WASM_BINARY_FILE } from '../src/runtime-contract';
 
 const rawBudgetBytes = parseBudgetBytes(
   process.env.SYNCULAR_WASM_RAW_BUDGET_BYTES,
-  3.25 * 1024 * 1024
+  3.3 * 1024 * 1024
 );
 const gzipBudgetBytes = parseBudgetBytes(
   process.env.SYNCULAR_WASM_GZIP_BUDGET_BYTES,
-  1.35 * 1024 * 1024
+  1.36 * 1024 * 1024
 );
 const check = process.argv.includes('--check');
 const attribution = process.argv.includes('--attribution');

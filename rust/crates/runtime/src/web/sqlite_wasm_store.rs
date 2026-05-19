@@ -48,7 +48,8 @@ use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
 use crate::web_client::{WebSyncPullOptions, WebSyncularClient, WebSyncularClientConfig};
 use crate::web_store::{
-    AsyncWebStore, WebStoreApplyTimings, WebSubscriptionState, WebVerifiedRoot,
+    AsyncWebStore, WebSnapshotArtifactApplyMode, WebStoreApplyTimings, WebSubscriptionState,
+    WebVerifiedRoot,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
@@ -73,6 +74,7 @@ const SQLITE_BIND_PARAMETER_LIMIT: usize = 32_000;
 const QUERY_STATEMENT_CACHE_CAPACITY: usize = 64;
 const SNAPSHOT_STATEMENT_CACHE_CAPACITY: usize = 16;
 const DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY: i64 = 1024;
+const SQLITE_SNAPSHOT_ARTIFACT_SCHEMA: &str = "__syncular_snapshot_artifact";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -353,6 +355,7 @@ pub struct SyncularRustOwnedSqlite {
     live_queries: Vec<LiveQuery>,
     live_events: Vec<LiveQueryEvent>,
     row_events: Vec<RowsChangedEvent>,
+    attached_snapshot_artifacts: Vec<AttachedSnapshotArtifact>,
 }
 
 #[derive(Debug)]
@@ -372,6 +375,12 @@ struct SnapshotStatementCacheEntry {
     mode: BinarySnapshotWriteMode,
     stmt: *mut ffi::sqlite3_stmt,
     last_used: u64,
+}
+
+#[derive(Debug)]
+struct AttachedSnapshotArtifact {
+    schema: String,
+    _buffer: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -491,6 +500,7 @@ impl SyncularRustOwnedSqlite {
             live_queries: Vec::new(),
             live_events: Vec::new(),
             row_events: Vec::new(),
+            attached_snapshot_artifacts: Vec::new(),
         };
         store.configure_sqlite_pragmas(storage)?;
         store.ensure_internal_migrations()?;
@@ -3126,6 +3136,84 @@ impl SyncularRustOwnedSqlite {
         self.preserve_encrypted_crdt_materialized_columns(metadata, row)
     }
 
+    fn write_sqlite_snapshot_artifact_rows(
+        &mut self,
+        table: &str,
+        artifact_bytes: &[u8],
+        mode: WebSnapshotArtifactApplyMode,
+    ) -> Result<usize> {
+        let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+        if metadata
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+        {
+            return Err(SyncularError::config(format!(
+                "direct sqlite snapshot artifact apply is not supported for encrypted CRDT table {table}"
+            )));
+        }
+        validate_table_name(table)?;
+        validate_table_name(metadata.primary_key_column)?;
+
+        let schema = format!(
+            "{SQLITE_SNAPSHOT_ARTIFACT_SCHEMA}_{}",
+            self.attached_snapshot_artifacts.len()
+        );
+        validate_table_name(&schema)?;
+        self.exec(&format!("ATTACH ':memory:' AS {schema}"))?;
+        let mut artifact_buffer = artifact_bytes.to_vec();
+        if let Err(err) =
+            deserialize_sqlite_snapshot_artifact_schema(self.db, &schema, &mut artifact_buffer)
+        {
+            let _ = self.exec(&format!("DETACH {schema}"));
+            return Err(err);
+        }
+        self.attached_snapshot_artifacts
+            .push(AttachedSnapshotArtifact {
+                schema: schema.clone(),
+                _buffer: artifact_buffer,
+            });
+        {
+            let columns = sqlite_table_column_names(self.db, Some(&schema), table)?;
+            if columns.is_empty() {
+                return Ok(0);
+            }
+            if !columns
+                .iter()
+                .any(|column| column == metadata.primary_key_column)
+            {
+                return Err(SyncularError::protocol_message(format!(
+                    "sqlite snapshot artifact for table {table} is missing primary key {}",
+                    metadata.primary_key_column
+                )));
+            }
+            for column in &columns {
+                validate_table_name(column)?;
+            }
+
+            let write_mode = match mode {
+                WebSnapshotArtifactApplyMode::Insert => BinarySnapshotWriteMode::Insert,
+                WebSnapshotArtifactApplyMode::Upsert => BinarySnapshotWriteMode::Upsert,
+            };
+            let on_conflict =
+                binary_snapshot_on_conflict(&columns, metadata.primary_key_column, write_mode);
+            let conflict_sql = on_conflict
+                .as_ref()
+                .map(|action| format!(" ON CONFLICT({}) {action}", metadata.primary_key_column))
+                .unwrap_or_default();
+            let columns_sql = columns.join(", ");
+            let changes = self.exec_with_changes(&format!(
+                "INSERT INTO {table} ({columns_sql}) \
+                 SELECT {columns_sql} FROM {schema}.{table} \
+                 WHERE true{conflict_sql}"
+            ))?;
+            usize::try_from(changes)
+                .map_err(|_| SyncularError::storage(anyhow::anyhow!("negative sqlite changes")))
+        }
+    }
+
     fn write_app_rows(&mut self, table: &str, rows: Vec<Value>) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
@@ -3263,27 +3351,7 @@ impl SyncularRustOwnedSqlite {
                 "binary snapshot for table {table} has a row with the wrong column count"
             )));
         }
-        let on_conflict = if mode == BinarySnapshotWriteMode::Upsert {
-            let update_columns = columns
-                .iter()
-                .map(String::as_str)
-                .filter(|column| *column != metadata.primary_key_column)
-                .collect::<Vec<_>>();
-            Some(if update_columns.is_empty() {
-                "DO NOTHING".to_string()
-            } else {
-                format!(
-                    "DO UPDATE SET {}",
-                    update_columns
-                        .iter()
-                        .map(|column| format!("{column} = excluded.{column}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })
-        } else {
-            None
-        };
+        let on_conflict = binary_snapshot_on_conflict(&columns, metadata.primary_key_column, mode);
 
         let write_result = (|| -> Result<()> {
             let batch_rows = snapshot_write_batch_rows(columns.len());
@@ -3364,27 +3432,7 @@ impl SyncularRustOwnedSqlite {
         for column in &columns {
             validate_table_name(column)?;
         }
-        let on_conflict = if mode == BinarySnapshotWriteMode::Upsert {
-            let update_columns = columns
-                .iter()
-                .map(String::as_str)
-                .filter(|column| *column != metadata.primary_key_column)
-                .collect::<Vec<_>>();
-            Some(if update_columns.is_empty() {
-                "DO NOTHING".to_string()
-            } else {
-                format!(
-                    "DO UPDATE SET {}",
-                    update_columns
-                        .iter()
-                        .map(|column| format!("{column} = excluded.{column}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })
-        } else {
-            None
-        };
+        let on_conflict = binary_snapshot_on_conflict(&columns, metadata.primary_key_column, mode);
 
         let write_result = (|| -> Result<()> {
             let mut cursor = payload.row_cursor();
@@ -4000,6 +4048,28 @@ impl SyncularRustOwnedSqlite {
         self.exec(sql)?;
         Ok(unsafe { ffi::sqlite3_changes(self.db) as i64 })
     }
+
+    fn detach_snapshot_artifacts(&mut self) -> Result<()> {
+        let mut remaining = Vec::new();
+        let mut first_error = None;
+        for artifact in std::mem::take(&mut self.attached_snapshot_artifacts) {
+            match self.exec(&format!("DETACH {}", artifact.schema)) {
+                Ok(()) => {}
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                    remaining.push(artifact);
+                }
+            }
+        }
+        self.attached_snapshot_artifacts = remaining;
+        if let Some(err) = first_error {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl AsyncWebStore for SyncularRustOwnedSqlite {
@@ -4009,17 +4079,29 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
 
     fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.detach_snapshot_artifacts()?;
             self.apply_timings = WebStoreApplyTimings::default();
             self.begin_write_transaction()
         })
     }
 
     fn commit_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move { self.exec("COMMIT") })
+        Box::pin(async move {
+            self.exec("COMMIT")?;
+            self.detach_snapshot_artifacts()
+        })
     }
 
     fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move { self.exec("ROLLBACK") })
+        Box::pin(async move {
+            let rollback = self.exec("ROLLBACK");
+            let detach = self.detach_snapshot_artifacts();
+            match (rollback, detach) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(err), _) => Err(err),
+                (Ok(()), Err(err)) => Err(err),
+            }
+        })
     }
 
     fn drain_apply_timings(&mut self) -> WebStoreApplyTimings {
@@ -4030,12 +4112,15 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         true
     }
 
-    fn decode_sqlite_snapshot_artifact_rows<'a>(
+    fn apply_sqlite_snapshot_artifact_rows<'a>(
         &'a mut self,
         table: &'a str,
         artifact_bytes: &'a [u8],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>> {
-        Box::pin(async move { decode_sqlite_snapshot_artifact_rows(table, artifact_bytes) })
+        mode: WebSnapshotArtifactApplyMode,
+    ) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>> {
+        Box::pin(
+            async move { self.write_sqlite_snapshot_artifact_rows(table, artifact_bytes, mode) },
+        )
     }
 
     fn apply_mutation<'a>(
@@ -4842,6 +4927,7 @@ impl Drop for SyncularRustOwnedSqlite {
         for query in self.live_queries.drain(..) {
             let _ = finalize_stmt(query.stmt, self.db, "finalize live query on close");
         }
+        let _ = self.detach_snapshot_artifacts();
         close_db(self.db);
         self.db = ptr::null_mut();
     }
@@ -4861,58 +4947,100 @@ fn validate_table_name(table: &str) -> Result<()> {
     }
 }
 
-fn decode_sqlite_snapshot_artifact_rows(table: &str, artifact_bytes: &[u8]) -> Result<Vec<Value>> {
-    validate_table_name(table)?;
-    let artifact_len = i64::try_from(artifact_bytes.len())
+fn binary_snapshot_on_conflict(
+    columns: &[String],
+    primary_key_column: &str,
+    mode: BinarySnapshotWriteMode,
+) -> Option<String> {
+    if mode != BinarySnapshotWriteMode::Upsert {
+        return None;
+    }
+    let update_columns = columns
+        .iter()
+        .map(String::as_str)
+        .filter(|column| *column != primary_key_column)
+        .collect::<Vec<_>>();
+    Some(if update_columns.is_empty() {
+        "DO NOTHING".to_string()
+    } else {
+        format!(
+            "DO UPDATE SET {}",
+            update_columns
+                .iter()
+                .map(|column| format!("{column} = excluded.{column}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+fn deserialize_sqlite_snapshot_artifact_schema(
+    db: *mut ffi::sqlite3,
+    schema: &str,
+    artifact_buffer: &mut [u8],
+) -> Result<()> {
+    validate_table_name(schema)?;
+    let artifact_len = i64::try_from(artifact_buffer.len())
         .map_err(|_| SyncularError::protocol_message("sqlite snapshot artifact is too large"))?;
-    let mut artifact_buffer = artifact_bytes.to_vec();
-    let mut artifact_db = ptr::null_mut();
-    let file_name = CString::new(":memory:").map_err(cstring_error("sqlite artifact file name"))?;
+    let schema = CString::new(schema).map_err(cstring_error("sqlite artifact schema"))?;
     let rc = unsafe {
-        ffi::sqlite3_open_v2(
-            file_name.as_ptr(),
-            &mut artifact_db as *mut _,
-            ffi::SQLITE_OPEN_READWRITE | ffi::SQLITE_OPEN_CREATE | ffi::SQLITE_OPEN_MEMORY,
-            ptr::null(),
+        ffi::sqlite3_deserialize(
+            db,
+            schema.as_ptr(),
+            artifact_buffer.as_mut_ptr(),
+            artifact_len,
+            artifact_len,
+            ffi::SQLITE_DESERIALIZE_READONLY,
         )
     };
-    if rc != ffi::SQLITE_OK {
-        let err = sqlite_error(artifact_db, "open sqlite snapshot artifact");
-        close_db(artifact_db);
-        return Err(err);
+    if rc == ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(sqlite_error(db, "deserialize sqlite snapshot artifact"))
     }
+}
 
+fn sqlite_table_column_names(
+    db: *mut ffi::sqlite3,
+    schema: Option<&str>,
+    table: &str,
+) -> Result<Vec<String>> {
+    validate_table_name(table)?;
+    let table_arg = sql_string(table);
+    let sql = if let Some(schema) = schema {
+        validate_table_name(schema)?;
+        format!("SELECT name FROM {schema}.pragma_table_info({table_arg}) ORDER BY cid")
+    } else {
+        format!("SELECT name FROM pragma_table_info({table_arg}) ORDER BY cid")
+    };
+    let stmt = prepare_sql_statement(db, &sql, SqlExecutionMode::Readonly)?;
+    let mut columns = Vec::new();
     let result = (|| {
-        let schema = CString::new("main").map_err(cstring_error("sqlite artifact schema"))?;
-        let rc = unsafe {
-            ffi::sqlite3_deserialize(
-                artifact_db,
-                schema.as_ptr(),
-                artifact_buffer.as_mut_ptr(),
-                artifact_len,
-                artifact_len,
-                ffi::SQLITE_DESERIALIZE_READONLY,
-            )
-        };
-        if rc != ffi::SQLITE_OK {
-            return Err(sqlite_error(
-                artifact_db,
-                "deserialize sqlite snapshot artifact",
-            ));
+        loop {
+            match unsafe { ffi::sqlite3_step(stmt) } {
+                ffi::SQLITE_ROW => {
+                    let value = sqlite_column_text_json_value(stmt, 0)?;
+                    let Some(column) = value.as_str() else {
+                        return Err(SyncularError::storage(anyhow::anyhow!(
+                            "sqlite artifact table column name is not text"
+                        )));
+                    };
+                    columns.push(column.to_string());
+                }
+                ffi::SQLITE_DONE => break,
+                _ => {
+                    return Err(sqlite_error(db, "step sqlite artifact table columns"));
+                }
+            }
         }
-
-        let sql = format!("SELECT * FROM {table}");
-        let stmt = prepare_sql_statement(artifact_db, &sql, SqlExecutionMode::Readonly)?;
-        let rows = execute_prepared_sql(artifact_db, stmt, &[], "read sqlite snapshot artifact");
-        let finalize = finalize_stmt(stmt, artifact_db, "finalize sqlite snapshot artifact query");
-        match (rows, finalize) {
-            (Ok(rows), Ok(())) => Ok(rows),
-            (Err(err), _) => Err(err),
-            (Ok(_), Err(err)) => Err(err),
-        }
+        Ok(columns)
     })();
-    close_db(artifact_db);
-    result
+    let finalize = finalize_stmt(stmt, db, "finalize sqlite artifact table columns");
+    match (result, finalize) {
+        (Ok(columns), Ok(())) => Ok(columns),
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(err)) => Err(err),
+    }
 }
 
 fn prepare_sql_statement(

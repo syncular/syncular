@@ -124,6 +124,7 @@ const rustCollectChangedRows = booleanArg('--rust-collect-changed-rows', false);
 const rustMaxSnapshotChangedRows = optionalNumberArg(
   '--rust-max-snapshot-changed-rows'
 );
+const syncSnapshotArtifacts = booleanArg('--sync-snapshot-artifacts', false);
 const wasmProfile = wasmProfileArg(
   '--wasm-profile',
   process.env.SYNCULAR_BROWSER_WASM_PROFILE ?? 'release'
@@ -158,7 +159,9 @@ const baselineComparisonMetrics = [
   'rust_pull_request_ms',
   'rust_snapshot_fetch_ms',
   'rust_pull_apply_ms',
+  'rust_snapshot_row_apply_ms',
   'rust_snapshot_chunk_apply_ms',
+  'rust_snapshot_chunk_materialize_ms',
   'rust_snapshot_chunk_bind_ms',
   'rust_snapshot_chunk_step_ms',
   'rust_server_bootstrap_row_frame_encode_ms',
@@ -216,23 +219,24 @@ try {
 
   assetPort = await pickFreePort();
   const servePath = path.resolve(import.meta.dir, '../apps/browser/serve.ts');
-  assetProc = Bun.spawn(
-    [
-      'bun',
-      servePath,
-      `--port=${assetPort}`,
-      `--wasm-profile=${wasmProfile}`,
-      `--sync-seed-rows=${rows * scopeFanoutUsers}`,
-      `--sync-seed-users=${scopeFanoutUsers}`,
-    ],
-    {
-      cwd: path.resolve(import.meta.dir, '..'),
-      env: { ...process.env, SYNCULAR_BROWSER_WASM_PROFILE: wasmProfile },
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }
-  );
+  const serveArgs = [
+    'bun',
+    servePath,
+    `--port=${assetPort}`,
+    `--wasm-profile=${wasmProfile}`,
+    `--sync-seed-rows=${rows * scopeFanoutUsers}`,
+    `--sync-seed-users=${scopeFanoutUsers}`,
+  ];
+  if (syncSnapshotArtifacts) {
+    serveArgs.push('--sync-snapshot-artifacts');
+  }
+  assetProc = Bun.spawn(serveArgs, {
+    cwd: path.resolve(import.meta.dir, '..'),
+    env: { ...process.env, SYNCULAR_BROWSER_WASM_PROFILE: wasmProfile },
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
 
   const assetUrl = `http://127.0.0.1:${assetPort}`;
   await waitForHealthy(assetUrl, wasmProfile === 'release' ? 180_000 : 60_000);
@@ -287,6 +291,11 @@ try {
   const metrics = [
     metric('benchmark_seed_rows', rows * scopeFanoutUsers, 'rows'),
     metric('benchmark_scope_fanout_users', scopeFanoutUsers, 'count'),
+    metric(
+      'benchmark_sync_snapshot_artifacts',
+      syncSnapshotArtifacts ? 1 : 0,
+      'count'
+    ),
     ...result.metrics,
     ...resourceMetrics(resourcesAfterLoad, resourcesAfterBenchmark),
     ...servedAssetMetrics,
@@ -323,6 +332,7 @@ try {
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
       rustMaxSnapshotChangedRows,
+      syncSnapshotArtifacts,
     },
     metrics,
     comparisons: buildComparisons(metrics),
@@ -369,6 +379,7 @@ try {
         `rust-max-snapshot-changed-rows=${rustMaxSnapshotChangedRows}`
       );
     }
+    console.log(`sync-snapshot-artifacts=${syncSnapshotArtifacts}`);
     console.log('');
     console.log(formatMetrics(report.metrics));
     const comparisons = report.comparisons;
@@ -708,12 +719,10 @@ function buildBaselineRegressionGate(
   comparisons: BaselineComparison[]
 ): BaselineRegressionGate {
   const failures = failOnRegression
-    ? comparisons
-        .filter(isGatedBaselineRegression)
-        .map((row) => ({
-          ...row,
-          threshold: absoluteRegressionThreshold(row.unit),
-        }))
+    ? comparisons.filter(isGatedBaselineRegression).map((row) => ({
+        ...row,
+        threshold: absoluteRegressionThreshold(row.unit),
+      }))
     : [];
   return {
     enabled: failOnRegression,
@@ -811,9 +820,7 @@ function formatBaselineComparisons(comparisons: BaselineComparison[]): string {
   ].join('\n');
 }
 
-function formatBaselineRegressionGate(
-  gate: BaselineRegressionGate
-): string {
+function formatBaselineRegressionGate(gate: BaselineRegressionGate): string {
   if (!gate.enabled) return 'Regression gate: disabled.';
   if (gate.passed) {
     return `Regression gate: passed for Rust/package metrics (>${formatNumber(gate.thresholds.ms)}ms and >${formatNumber(gate.thresholds.percent)}%, >${formatNumber(gate.thresholds.bytes)} bytes and >${formatNumber(gate.thresholds.percent)}%, or >${formatNumber(gate.thresholds.count)} count/rows and >${formatNumber(gate.thresholds.percent)}%).`;
@@ -843,9 +850,11 @@ function formatMetricValue(metric: ScoreboardMetric): string {
   return `${formatNumber(metric.value)} ${metric.unit}`;
 }
 
-function formatMetricDelta(metric: Omit<ScoreboardMetric, 'value'> & {
-  delta: number;
-}): string {
+function formatMetricDelta(
+  metric: Omit<ScoreboardMetric, 'value'> & {
+    delta: number;
+  }
+): string {
   if (metric.unit === 'ms') return `${formatNumber(metric.delta)}ms`;
   if (metric.unit === 'bytes') return `${formatNumber(metric.delta)} bytes`;
   return `${formatNumber(metric.delta)} ${metric.unit}`;
@@ -910,7 +919,10 @@ function stringArg(name: string): string | undefined {
 }
 
 function booleanArg(name: string, fallback: boolean): boolean {
-  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
+  const raw = process.argv.find(
+    (arg) => arg === name || arg.startsWith(`${name}=`)
+  );
+  if (raw === name) return true;
   const value = raw?.slice(name.length + 1);
   if (value == null) return fallback;
   if (value === 'true') return true;
