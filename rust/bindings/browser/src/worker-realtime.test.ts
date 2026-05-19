@@ -369,6 +369,71 @@ describe('Syncular v2 worker realtime', () => {
     );
   });
 
+  it('uses HTTP pull when a websocket message marks inline changes as recovery-only', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const controller = new SyncularV2WorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    sockets[0]!.message({
+      event: 'sync',
+      data: {
+        cursor: 88,
+        reason: 'resync-required',
+        requiresPull: true,
+        droppedCount: 1,
+        changes: [
+          {
+            table: 'tasks',
+            row_id: 'task-recovery',
+            op: 'upsert',
+            row_json: { id: 'task-recovery', title: 'Recovery only' },
+            row_version: 88,
+            scopes: {},
+          },
+        ],
+      },
+    });
+
+    await waitFor(() => client.syncPulls === 1);
+    expect(client.realtimeApplies).toBe(0);
+    client.resolvePull();
+    await waitFor(() => sockets[0]!.sent.length === 1);
+    expect(JSON.parse(sockets[0]!.sent[0]!)).toEqual({
+      type: 'ack',
+      cursor: 88,
+    });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'realtime.pull_required',
+        details: expect.objectContaining({
+          cursor: 88,
+          reason: 'resync-required',
+          droppedCount: 1,
+          inlineChanges: 1,
+        }),
+      })
+    );
+  });
+
   it('applies binary websocket sync packs without an HTTP pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];

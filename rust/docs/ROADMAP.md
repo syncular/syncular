@@ -114,12 +114,20 @@ read-only review:
     about `2.35x` slower than the 50k direct artifact baseline. External Docker
     app-style benchmark evidence remains open; the local Docker daemon was
     unresponsive during the latest attempt.
+- `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+  - Make websocket deltas the canonical fast path with verified replay,
+    overflow recovery, and runtime-owned reconnect/backoff. First retained
+    slice makes `requiresPull=true`/`droppedCount>0` authoritative in the
+    browser worker so recovery-marked websocket messages always use HTTP pull
+    instead of inline apply. The browser realtime gate stayed on the binary fast
+    path with `rust_realtime_http_request_count=0` and `15` binary websocket
+    events.
 
 ## Next
 
-- `[ ]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
-  - Make websocket deltas the canonical fast path with verified replay,
-    overflow recovery, and runtime-owned reconnect/backoff.
+- Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+  by unifying websocket delta verification with the same stable event/root
+  semantics used by pull recovery.
 
 ## Later
 

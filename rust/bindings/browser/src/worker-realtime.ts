@@ -396,6 +396,20 @@ export class SyncularV2WorkerRealtimeController {
     message: SyncularV2RealtimeSyncMessage | undefined
   ): Promise<SyncularV2SyncResult> {
     const client = this.controllerOptions.getClient();
+    if (message && realtimeMessageRequiresPull(message)) {
+      this.#diagnostic({
+        level: 'debug',
+        code: 'realtime.pull_required',
+        message: 'Syncular v2 realtime event requires HTTP pull recovery',
+        details: {
+          cursor: message.cursor ?? null,
+          reason: message.reason ?? null,
+          droppedCount: message.droppedCount ?? 0,
+          inlineChanges: message.changes?.length ?? 0,
+        },
+      });
+      return client.syncPull();
+    }
     if (
       message?.syncPackBytes &&
       typeof client.applyRealtimeSyncPack === 'function'
@@ -519,6 +533,12 @@ export class SyncularV2WorkerRealtimeController {
       source: 'realtime',
     });
   }
+}
+
+function realtimeMessageRequiresPull(
+  message: SyncularV2RealtimeSyncMessage
+): boolean {
+  return message.requiresPull === true || (message.droppedCount ?? 0) > 0;
 }
 
 export function resolveSyncularV2RealtimeUrl(
