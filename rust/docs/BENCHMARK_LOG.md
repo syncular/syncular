@@ -2496,3 +2496,45 @@ Decision:
   runs without weakening the verified root contract. Future candidates should
   compare against
   `.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`.
+
+## 2026-05-19 - Rejected WP-04 Commit Digest Capacity Hint
+
+Probe:
+
+- Tried reserving a heuristic `String` capacity for canonical wire commit
+  digest payloads before writing the payload.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-commit-digest-capacity-hint.json
+```
+
+Compared against
+`.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`:
+
+| Metric | Previous | Capacity hint |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `88.60ms` | `89.93ms` |
+| `rust_realtime_apply_total_ms` | `125ms` | `125ms` |
+| `rust_realtime_pull_apply_total_ms` | `95ms` | `93ms` |
+| `rust_realtime_integrity_verify_total_ms` | `66ms` | `65ms` |
+| `browser_served_rust_wasm_bytes` | `7468747` | `7469547` |
+
+Decision:
+
+- Rejected and reverted. The `1ms` integrity movement did not justify a magic
+  capacity heuristic, the end-to-end metric regressed, total apply stayed flat,
+  and WASM grew by `800` bytes.

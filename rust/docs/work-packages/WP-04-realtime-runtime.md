@@ -477,6 +477,26 @@ Retained optimization slice:
   flat/noisy, but the targeted integrity bucket improves in both runs with a
   small code change.
 
+Rejected probe:
+
+- Tried reserving a heuristic capacity for canonical wire commit digest
+  payloads before writing the payload.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract`,
+  and `bun run --cwd rust/bindings/browser build:wasm:dev`.
+- Browser dev E2E gate:
+  `.context/benchmarks/wp04-realtime-commit-digest-capacity-hint.json`.
+- Result versus the retained one-pass object rerun:
+  `rust_realtime_live_ms=88.60 -> 89.93`,
+  `rust_realtime_apply_total_ms=125 -> 125`,
+  `rust_realtime_pull_apply_total_ms=95 -> 93`,
+  `rust_realtime_integrity_verify_total_ms=66 -> 65`, and
+  `browser_served_rust_wasm_bytes=7468747 -> 7469547`.
+- Decision: rejected and reverted. The tiny integrity movement did not justify
+  a magic capacity heuristic, live latency regressed, and WASM grew.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
