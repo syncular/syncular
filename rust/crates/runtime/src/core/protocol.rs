@@ -4,15 +4,16 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 pub use syncular_protocol::{
-    BootstrapState, CombinedRequest, CombinedResponse, OperationResult, PullRequest, PullResponse,
-    PushBatchRequest, PushBatchResponse, PushCommitRequest, PushCommitResponse, ScopeValues,
-    SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef, SubscriptionIntegrity,
-    SubscriptionRequest, SubscriptionResponse, SyncChange, SyncCommit, SyncOperation, SyncSnapshot,
-    VerifiedCommitRoot, BINARY_SYNC_PACK_WIRE_VERSION, COMMIT_INTEGRITY_GENESIS_ROOT,
-    COMMIT_INTEGRITY_HEX_LENGTH, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1, SNAPSHOT_MANIFEST_VERSION, SYNC_PACK_CONTENT_TYPE,
-    SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1, WIRE_COMMIT_CHAIN_ROOT_VERSION,
-    WIRE_COMMIT_DIGEST_VERSION,
+    BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest,
+    BlobUploadInitResponse, BootstrapState, CombinedRequest, CombinedResponse, OperationResult,
+    PullRequest, PullResponse, PushBatchRequest, PushBatchResponse, PushCommitRequest,
+    PushCommitResponse, ScopeValues, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
+    SubscriptionIntegrity, SubscriptionRequest, SubscriptionResponse, SyncChange, SyncCommit,
+    SyncOperation, SyncSnapshot, VerifiedCommitRoot, BINARY_SYNC_PACK_WIRE_VERSION,
+    COMMIT_INTEGRITY_GENESIS_ROOT, COMMIT_INTEGRITY_HEX_LENGTH,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+    SNAPSHOT_MANIFEST_VERSION, SYNC_PACK_CONTENT_TYPE, SYNC_PACK_ENCODING_BINARY_V1,
+    SYNC_PACK_ENCODING_JSON_V1, WIRE_COMMIT_CHAIN_ROOT_VERSION, WIRE_COMMIT_DIGEST_VERSION,
 };
 use uuid::Uuid;
 
@@ -195,57 +196,8 @@ pub fn snapshot_manifest_digest(manifest: &SnapshotManifest) -> Result<String> {
     syncular_protocol::snapshot_manifest_digest(manifest).map_err(Into::into)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlobRef {
-    pub hash: String,
-    pub size: i64,
-    #[serde(rename = "mimeType")]
-    pub mime_type: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub encrypted: bool,
-    #[serde(rename = "keyId", skip_serializing_if = "Option::is_none")]
-    pub key_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlobUploadInitRequest {
-    pub hash: String,
-    pub size: i64,
-    #[serde(rename = "mimeType")]
-    pub mime_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlobUploadInitResponse {
-    pub exists: bool,
-    #[serde(rename = "uploadId", skip_serializing_if = "Option::is_none")]
-    pub upload_id: Option<String>,
-    #[serde(rename = "uploadUrl", skip_serializing_if = "Option::is_none")]
-    pub upload_url: Option<String>,
-    #[serde(rename = "uploadMethod", skip_serializing_if = "Option::is_none")]
-    pub upload_method: Option<String>,
-    #[serde(rename = "uploadHeaders", default)]
-    pub upload_headers: std::collections::BTreeMap<String, String>,
-    #[serde(rename = "chunkSize", skip_serializing_if = "Option::is_none")]
-    pub chunk_size: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlobUploadCompleteResponse {
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlobDownloadUrlResponse {
-    pub url: String,
-    #[serde(rename = "expiresAt")]
-    pub expires_at: String,
-}
-
 pub fn blob_hash(data: &[u8]) -> String {
-    format!("sha256:{}", hex::encode(Sha256::digest(data)))
+    syncular_protocol::blob_hash(data)
 }
 
 pub fn blob_hash_reader(mut reader: impl Read) -> Result<(String, i64)> {
@@ -268,39 +220,13 @@ pub fn blob_hash_reader(mut reader: impl Read) -> Result<(String, i64)> {
 }
 
 pub fn validate_blob_hash(hash: &str) -> Result<()> {
-    let Some(hex) = hash.strip_prefix("sha256:") else {
-        return Err(SyncularError::protocol_message(format!(
-            "invalid blob hash: {hash}"
-        )));
-    };
-    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(SyncularError::protocol_message(format!(
-            "invalid blob hash: {hash}"
-        )));
-    }
-    Ok(())
+    syncular_protocol::validate_blob_hash(hash).map_err(Into::into)
 }
 
 pub fn validate_blob_bytes(blob: &BlobRef, data: &[u8]) -> Result<()> {
-    validate_blob_hash(&blob.hash)?;
-    let actual_size = i64::try_from(data.len())
-        .map_err(|_| SyncularError::protocol_message("blob is too large"))?;
-    validate_blob_digest(blob, &blob_hash(data), actual_size)
+    syncular_protocol::validate_blob_bytes(blob, data).map_err(Into::into)
 }
 
 pub fn validate_blob_digest(blob: &BlobRef, actual_hash: &str, actual_size: i64) -> Result<()> {
-    validate_blob_hash(&blob.hash)?;
-    if blob.size != actual_size {
-        return Err(SyncularError::protocol_message(format!(
-            "blob size mismatch: expected {}, got {}",
-            blob.size, actual_size
-        )));
-    }
-    if actual_hash != blob.hash {
-        return Err(SyncularError::protocol_message(format!(
-            "blob hash mismatch: expected {}, got {}",
-            blob.hash, actual_hash
-        )));
-    }
-    Ok(())
+    syncular_protocol::validate_blob_digest(blob, actual_hash, actual_size).map_err(Into::into)
 }

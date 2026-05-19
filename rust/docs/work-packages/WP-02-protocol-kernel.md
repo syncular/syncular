@@ -102,6 +102,16 @@ Fourth retained slice:
 - No storage, browser apply, server encoder, or wire bytes changed in this
   slice; no performance benchmark was required.
 
+Fifth retained slice:
+
+- `syncular-protocol` now owns blob wire structs and pure blob hash/validation
+  helpers.
+- Runtime keeps file/reader hashing, upload/download transport, queued blob
+  work, local cache pruning, and store behavior.
+- Runtime wrappers preserve `SyncularError` conversion for blob validation.
+- No browser/server hot path or wire bytes changed in this slice; no
+  performance benchmark was required.
+
 Gates run:
 
 - `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
@@ -112,12 +122,13 @@ Gates run:
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture --test protocol_contract --test protocol_fixtures --test store_backends`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 
 ## Next Action
 
-Move blob wire structs and pure blob hash/validation helpers into
-`syncular-protocol`, while keeping blob upload/download transport, queueing,
-cache pruning, and store behavior in runtime. After that, inventory realtime
-message structs for the same protocol/runtime split.
+Inventory realtime message structs for the same protocol/runtime split. Move
+only stable wire message shapes into `syncular-protocol`; keep websocket socket
+ownership, reconnect/backoff, runtime event fanout, and transport behavior in
+runtime.
