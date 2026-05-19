@@ -352,9 +352,37 @@ Rejected probe:
   runtime regression. Avoid more local canonicalization micro-probes unless they
   have a clear benchmark-backed reason.
 
+Retained optimization slice:
+
+- Rust canonical JSON integrity payload writing now appends JSON string escapes
+  directly into the existing buffer instead of allocating via
+  `serde_json::to_string` for every object key, row string value, and wire
+  commit metadata string.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-json-string-writer.json` and
+  `.context/benchmarks/wp04-realtime-json-string-writer-rerun.json`.
+- Confirmed rerun versus the previous accepted guard:
+  `rust_realtime_live_ms=121.39 -> 92.55`,
+  `rust_realtime_apply_total_ms=237 -> 128`,
+  `rust_realtime_pull_apply_total_ms=201 -> 103`,
+  `rust_realtime_integrity_verify_total_ms=159 -> 76`,
+  `rust_realtime_integrity_verify_p50_ms=10 -> 5`, and
+  `browser_served_rust_wasm_bytes=7463799 -> 7465224`.
+- Decision: retained. This is the first material WP-04 integrity recovery win;
+  it keeps the same canonical root contract and removes allocation from the hot
+  path.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json`, with a
-fresh pre-change rerun when machine state is noisy.
+`.context/benchmarks/wp04-realtime-json-string-writer-rerun.json`, with a fresh
+pre-change rerun when machine state is noisy.

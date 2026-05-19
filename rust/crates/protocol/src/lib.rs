@@ -339,7 +339,7 @@ pub fn append_canonical_json(out: &mut String, value: &Value) -> Result<()> {
         Value::Null => out.push_str("null"),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
         Value::Number(value) => out.push_str(&value.to_string()),
-        Value::String(value) => out.push_str(&serde_json::to_string(value)?),
+        Value::String(value) => append_json_string(out, value)?,
         Value::Array(values) => {
             out.push('[');
             for (index, item) in values.iter().enumerate() {
@@ -365,7 +365,7 @@ pub fn append_canonical_object(out: &mut String, values: &Map<String, Value>) ->
         if index > 0 {
             out.push(',');
         }
-        out.push_str(&serde_json::to_string(key)?);
+        append_json_string(out, key)?;
         out.push(':');
         append_canonical_json(
             out,
@@ -376,4 +376,80 @@ pub fn append_canonical_object(out: &mut String, values: &Map<String, Value>) ->
     }
     out.push('}');
     Ok(())
+}
+
+pub(crate) fn append_json_string(out: &mut String, value: &str) -> Result<()> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    out.push('"');
+    let mut chunk_start = 0;
+    for (index, byte) in value.bytes().enumerate() {
+        let escaped = match byte {
+            b'"' => Some("\\\""),
+            b'\\' => Some("\\\\"),
+            b'\n' => Some("\\n"),
+            b'\r' => Some("\\r"),
+            b'\t' => Some("\\t"),
+            0x08 => Some("\\b"),
+            0x0c => Some("\\f"),
+            0x00..=0x1f => {
+                out.push_str(&value[chunk_start..index]);
+                out.push_str("\\u00");
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+                chunk_start = index + 1;
+                continue;
+            }
+            _ => None,
+        };
+        if let Some(escaped) = escaped {
+            out.push_str(&value[chunk_start..index]);
+            out.push_str(escaped);
+            chunk_start = index + 1;
+        }
+    }
+    out.push_str(&value[chunk_start..]);
+    out.push('"');
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn append_json_string_matches_serde_json_string_escaping() {
+        let samples = [
+            "",
+            "plain",
+            "quote\"slash\\",
+            "line\nreturn\rtab\tbackspace\u{0008}form\u{000c}",
+            "\u{0000}\u{0001}\u{001f}",
+            "München 日本語",
+        ];
+
+        for sample in samples {
+            let mut actual = String::new();
+            append_json_string(&mut actual, sample).expect("append string");
+            assert_eq!(actual, serde_json::to_string(sample).expect("serde string"));
+        }
+    }
+
+    #[test]
+    fn canonical_json_string_escapes_object_keys_and_string_values() {
+        let value = json!({
+            "line\nkey": "quote\"slash\\",
+            "nested": {
+                "control": "\u{0001}",
+                "unicode": "München 日本語"
+            }
+        });
+
+        let canonical = canonical_json_string(&value).expect("canonical json");
+        assert_eq!(
+            canonical,
+            "{\"line\\nkey\":\"quote\\\"slash\\\\\",\"nested\":{\"control\":\"\\u0001\",\"unicode\":\"München 日本語\"}}"
+        );
+    }
 }

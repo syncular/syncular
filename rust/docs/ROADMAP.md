@@ -142,16 +142,20 @@ read-only review:
     state persistence, and notify timing; current evidence says canonical
     integrity verification is the real Rust-side realtime hotspot, not
     subscription-state SQLite writes. A sorted-map canonicalization probe was
-    rejected and reverted after benchmark regression.
+    rejected and reverted after benchmark regression. The first retained
+    integrity recovery replaced per-string canonical JSON allocations with an
+    in-place string writer, cutting realtime integrity verification
+    `159ms -> 76ms` and total realtime apply `237ms -> 128ms` on the local
+    browser guard.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json` as the
-  current local comparison point, and rerun the guard before each candidate
-  when machine state is noisy.
+  `.context/benchmarks/wp04-realtime-json-string-writer-rerun.json` as the
+  current local comparison point, and rerun the guard before each candidate when
+  machine state is noisy.
 
 ## Later
 
