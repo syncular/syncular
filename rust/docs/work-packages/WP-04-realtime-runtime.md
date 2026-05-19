@@ -234,6 +234,20 @@ Rejected probe:
   binary realtime path must avoid the JSON/map materialization itself, not only
   reuse the binary payload after decoding it for integrity.
 
+Rejected probe:
+
+- Tried preallocating `serde_json::Map` rows while decoding binary snapshot
+  row groups instead of using iterator `collect()`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-binary-row-map-prealloc.json` and
+  `.context/benchmarks/wp04-binary-row-map-prealloc-rerun.json`.
+- Result versus the retained eighth slice was not a performance win:
+  realtime p50 rerun `82.27 -> 84.64`, p95 `83.61 -> 87.96`,
+  incremental sync-pack decode `9ms -> 10ms`, and realtime apply total
+  `155ms -> 157ms`. WASM bytes improved `7463118 -> 7416004`, but not enough
+  to justify the runtime regression and noisier code.
+- Decision: rejected and reverted.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified

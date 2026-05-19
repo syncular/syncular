@@ -1859,3 +1859,39 @@ Decision:
   decoding them into row maps for commit integrity adds size and does not help
   the realtime lane. The direct binary path only makes sense if the protocol can
   avoid JSON/map materialization on the hot path.
+
+## 2026-05-19 - WP-04 Rejected Binary Row Map Preallocation
+
+Change tested:
+
+- Replaced iterator `collect()` map construction in binary snapshot row decoding
+  with explicit `serde_json::Map::with_capacity` insertion.
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-binary-row-map-prealloc.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-binary-row-map-prealloc-rerun.json
+```
+
+Confirmed rerun versus previous guard:
+
+| Metric | Previous WP-04 guard | Candidate rerun |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.27ms` | `84.64ms` |
+| `rust_realtime_live_p95_ms` | `83.61ms` | `87.96ms` |
+| `rust_incremental_sync_pack_decode_ms` | `9ms` | `10ms` |
+| `rust_realtime_apply_total_ms` | `155ms` | `157ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7416004` |
+
+Decision:
+
+- Rejected and reverted. The size reduction is real, but the runtime lane did
+  not improve and the code is more verbose.
