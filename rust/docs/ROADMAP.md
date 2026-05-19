@@ -123,13 +123,16 @@ read-only review:
     path with `rust_realtime_http_request_count=0` and `15` binary websocket
     events. Cursor-only recovery pulls now ACK the triggering websocket cursor
     after successful recovery so the server can clear in-flight state even when
-    the pull result has no larger subscription cursor.
+    the pull result has no larger subscription cursor. Websocket binary deltas
+    now carry real subscription IDs plus pull-compatible integrity roots, and
+    browser Rust realtime apply verifies/persists those roots before local row
+    changes are reported.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
-  by unifying websocket delta verification with the same stable event/root
-  semantics used by pull recovery.
+  by recovering the added realtime integrity overhead without weakening the
+  verified per-subscription root contract.
 
 ## Later
 

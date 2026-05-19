@@ -11,14 +11,12 @@
 import {
   captureSyncException,
   countSyncMetric,
-  createRealtimeChangeScopeIndex,
   createSyncTimer,
   distributionSyncMetric,
   ErrorResponseSchema,
   encodeBinarySyncPack,
   logSyncEvent,
   prefersBinarySyncPack,
-  type RealtimeChangeScopeIndex,
   ScopeValuesSchema,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
@@ -29,6 +27,8 @@ import {
   type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
   type SyncPushResponse,
+  type SyncCommit,
+  type SyncPullSubscriptionResponse,
 } from '@syncular/core';
 import type {
   ScopeCacheBackend,
@@ -46,6 +46,7 @@ import type {
 } from '@syncular/server';
 import {
   type CompactOptions,
+  createWireSubscriptionIntegrity,
   createServerHandlerCollection,
   createSyncRealtimeShardKey,
   InvalidSubscriptionScopeError,
@@ -86,6 +87,7 @@ import {
   createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
   WebSocketConnectionManager,
+  type WebSocketRealtimeSubscription,
 } from './ws';
 
 /**
@@ -1265,19 +1267,17 @@ export function createSyncRoutes<
     payloadSnapshot: RequestPayloadSnapshot | null;
   };
 
-  function notifyRealtimeForAppliedPushes(
+  async function notifyRealtimeForAppliedPushes(
     ctx: PushExecutionContext,
     pushedCommits: ExecutedPushCommit[]
-  ): void {
+  ): Promise<void> {
     if (!wsConnectionManager && !realtimeBroadcaster) {
       return;
     }
 
     let latestCommitSeq = 0;
-    let latestActorId = ctx.auth.actorId;
-    let latestCreatedAt: string | undefined;
     const scopeKeys = new Set<string>();
-    const emittedChanges: ExecutedPushCommit['emittedChanges'] = [];
+    const emittedCommits: SyncCommit[] = [];
 
     for (const pushed of pushedCommits) {
       if (
@@ -1289,15 +1289,20 @@ export function createSyncRoutes<
       }
 
       latestCommitSeq = Math.max(latestCommitSeq, pushed.response.commitSeq);
-      latestActorId = pushed.commitActorId ?? latestActorId;
-      latestCreatedAt = pushed.commitCreatedAt ?? latestCreatedAt;
       for (const scopeKey of applyPartitionToScopeKeys(
         ctx.partitionId,
         pushed.scopeKeys
       )) {
         scopeKeys.add(scopeKey);
       }
-      emittedChanges.push(...pushed.emittedChanges);
+      if (pushed.emittedChanges.length > 0) {
+        emittedCommits.push({
+          commitSeq: pushed.response.commitSeq,
+          createdAt: pushed.commitCreatedAt ?? new Date().toISOString(),
+          actorId: pushed.commitActorId ?? ctx.auth.actorId,
+          changes: [...pushed.emittedChanges],
+        });
+      }
     }
 
     if (latestCommitSeq <= 0 || scopeKeys.size === 0) {
@@ -1305,121 +1310,21 @@ export function createSyncRoutes<
     }
 
     const combinedScopeKeys = Array.from(scopeKeys);
-    const canUseSharedInlinePayload = combinedScopeKeys.length === 1;
-    let changeScopeIndex: RealtimeChangeScopeIndex<SyncChange> | undefined;
-    const getChangeScopeIndex = () => {
-      changeScopeIndex ??= createRealtimeChangeScopeIndex(
-        emittedChanges.map((change) => ({
-          item: change,
-          scopeKeys: applyPartitionToScopeKeys(
-            ctx.partitionId,
-            scopeValuesToScopeKeys(change.scopes)
-          ),
-        }))
-      );
-      return changeScopeIndex;
-    };
-    const changedScopeKeySet = new Set(combinedScopeKeys);
-    const connectionScopeKeysCache = new Map<string, string[]>();
-    const changedScopeKeysForConnection = (
-      connection: WebSocketConnection
-    ): string[] => {
-      const cached = connectionScopeKeysCache.get(connection.ownerKey);
-      if (cached) return cached;
-      const scopeKeys = wsConnectionManager
-        ? wsConnectionManager
-            .getConnectionScopeKeys(connection.ownerKey)
-            .filter((scopeKey) => changedScopeKeySet.has(scopeKey))
-        : [];
-      connectionScopeKeysCache.set(connection.ownerKey, scopeKeys);
-      return scopeKeys;
-    };
-    const filterChangesForConnection = (
-      connection: WebSocketConnection
-    ): SyncChange[] =>
-      getChangeScopeIndex().selectForScopeKeys(
-        changedScopeKeysForConnection(connection)
-      );
-    const encodeRealtimeSyncPack = (
-      changes: readonly SyncChange[]
-    ): Uint8Array | undefined => {
-      if (changes.length === 0) return undefined;
-      try {
-        return encodeBinarySyncPack(
-          {
-            ok: true as const,
-            pull: {
-              ok: true as const,
-              subscriptions: [
-                {
-                  id: '__syncular_realtime__',
-                  status: 'active',
-                  scopes: {},
-                  bootstrap: false,
-                  bootstrapState: null,
-                  nextCursor: latestCommitSeq,
-                  commits: [
-                    {
-                      commitSeq: latestCommitSeq,
-                      createdAt: latestCreatedAt ?? new Date().toISOString(),
-                      actorId: latestActorId,
-                      changes: [...changes],
-                    },
-                  ],
-                },
-              ],
-            },
-          },
-          {
-            changeRowEncoders: binarySyncPackChangeRowEncoders,
-          }
-        );
-      } catch (error) {
-        logAsyncFailureOnce('sync.realtime.binary_pack_encode_failed', {
-          event: 'sync.realtime.binary_pack_encode_failed',
-          userId: ctx.auth.actorId,
-          clientId: ctx.clientId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return undefined;
-    };
-
-    const syncPack = canUseSharedInlinePayload
-      ? encodeRealtimeSyncPack(emittedChanges)
-      : undefined;
-    const scopedSyncPackCache = new Map<string, Uint8Array | undefined>();
-    const scopedChangesCache = new Map<string, SyncChange[]>();
-
-    const changesForConnection = (connection: WebSocketConnection) => {
-      const cached = scopedChangesCache.get(connection.ownerKey);
-      if (cached) return cached;
-      const filtered = filterChangesForConnection(connection);
-      scopedChangesCache.set(connection.ownerKey, filtered);
-      return filtered;
-    };
-
-    const syncPackForConnection = (connection: WebSocketConnection) => {
-      const cached = scopedSyncPackCache.get(connection.ownerKey);
-      if (scopedSyncPackCache.has(connection.ownerKey)) return cached;
-      const encoded = encodeRealtimeSyncPack(changesForConnection(connection));
-      scopedSyncPackCache.set(connection.ownerKey, encoded);
-      return encoded;
-    };
+    const syncPacksByOwnerKey = wsConnectionManager
+      ? await buildRealtimeSyncPacksForConnections({
+          ctx,
+          manager: wsConnectionManager,
+          scopeKeys: combinedScopeKeys,
+          latestCommitSeq,
+          emittedCommits,
+        })
+      : new Map<string, Uint8Array | undefined>();
 
     if (wsConnectionManager) {
       wsConnectionManager.notifyScopeKeys(combinedScopeKeys, latestCommitSeq, {
         excludeClientIds: [ctx.clientId],
-        changes: canUseSharedInlinePayload ? emittedChanges : undefined,
-        syncPack,
-        changesForConnection: canUseSharedInlinePayload
-          ? undefined
-          : changesForConnection,
-        syncPackForConnection: canUseSharedInlinePayload
-          ? undefined
-          : syncPackForConnection,
-        actorId: latestActorId,
-        createdAt: latestCreatedAt,
+        syncPackForConnection: (connection) =>
+          syncPacksByOwnerKey.get(connection.ownerKey),
       });
     }
 
@@ -1444,6 +1349,194 @@ export function createSyncRoutes<
           });
         });
     }
+  }
+
+  async function buildRealtimeSyncPacksForConnections(args: {
+    ctx: PushExecutionContext;
+    manager: WebSocketConnectionManager;
+    scopeKeys: string[];
+    latestCommitSeq: number;
+    emittedCommits: SyncCommit[];
+  }): Promise<Map<string, Uint8Array | undefined>> {
+    const syncPacksByOwnerKey = new Map<string, Uint8Array | undefined>();
+    const ownerKeys = new Set<string>();
+    for (const connection of args.manager.getConnectionsForScopeKeys(
+      args.scopeKeys,
+      { excludeClientIds: [args.ctx.clientId] }
+    )) {
+      ownerKeys.add(connection.ownerKey);
+    }
+
+    await Promise.all(
+      Array.from(ownerKeys).map(async (ownerKey) => {
+        syncPacksByOwnerKey.set(
+          ownerKey,
+          await buildRealtimeSyncPackForOwner({ ...args, ownerKey })
+        );
+      })
+    );
+
+    return syncPacksByOwnerKey;
+  }
+
+  async function buildRealtimeSyncPackForOwner(args: {
+    ctx: PushExecutionContext;
+    manager: WebSocketConnectionManager;
+    ownerKey: string;
+    latestCommitSeq: number;
+    emittedCommits: SyncCommit[];
+  }): Promise<Uint8Array | undefined> {
+    const subscriptions = args.manager.getConnectionSubscriptions(
+      args.ownerKey
+    );
+    if (subscriptions.length === 0 || args.emittedCommits.length === 0) {
+      return undefined;
+    }
+
+    const responses: SyncPullSubscriptionResponse[] = [];
+    const rootUpdates: Array<{
+      subscriptionId: string;
+      cursor: number;
+      verifiedRoot: string;
+    }> = [];
+    for (const subscription of subscriptions) {
+      const commits = selectRealtimeCommitsForSubscription(
+        args.ctx.partitionId,
+        args.emittedCommits,
+        subscription
+      );
+      if (commits.length === 0) continue;
+
+      const integrity = await createWireSubscriptionIntegrity({
+        partitionId: args.ctx.partitionId,
+        subscriptionId: subscription.id,
+        previousRoot: subscription.verifiedRoot,
+        commits,
+      });
+      const nextCursor = Math.max(args.latestCommitSeq, subscription.cursor);
+      if (integrity) {
+        rootUpdates.push({
+          subscriptionId: subscription.id,
+          cursor: nextCursor,
+          verifiedRoot: integrity.commitChainRoot,
+        });
+      }
+
+      responses.push({
+        id: subscription.id,
+        status: 'active',
+        scopes: subscription.scopes,
+        bootstrap: false,
+        bootstrapState: null,
+        nextCursor,
+        ...(integrity ? { integrity } : {}),
+        commits,
+      });
+    }
+
+    if (responses.length === 0) {
+      return undefined;
+    }
+
+    try {
+      const bytes = encodeBinarySyncPack(
+        {
+          ok: true as const,
+          pull: {
+            ok: true as const,
+            subscriptions: responses,
+          },
+        },
+        {
+          changeRowEncoders: binarySyncPackChangeRowEncoders,
+        }
+      );
+      args.manager.updateConnectionSubscriptionRoots(args.ownerKey, rootUpdates);
+      return bytes;
+    } catch (error) {
+      logAsyncFailureOnce('sync.realtime.binary_pack_encode_failed', {
+        event: 'sync.realtime.binary_pack_encode_failed',
+        userId: args.ctx.auth.actorId,
+        clientId: args.ctx.clientId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  function selectRealtimeCommitsForSubscription(
+    partitionId: string,
+    commits: readonly SyncCommit[],
+    subscription: WebSocketRealtimeSubscription
+  ): SyncCommit[] {
+    const scopeKeys = new Set(subscription.scopeKeys);
+    if (scopeKeys.size === 0) return [];
+
+    const selected: SyncCommit[] = [];
+    for (const commit of commits) {
+      const changes = commit.changes.filter((change) =>
+        changeMatchesRealtimeSubscription(partitionId, change, scopeKeys)
+      );
+      if (changes.length === 0) continue;
+      selected.push({ ...commit, changes });
+    }
+    return selected;
+  }
+
+  function changeMatchesRealtimeSubscription(
+    partitionId: string,
+    change: SyncChange,
+    scopeKeys: Set<string>
+  ): boolean {
+    for (const scopeKey of applyPartitionToScopeKeys(
+      partitionId,
+      scopeValuesToScopeKeys(change.scopes)
+    )) {
+      if (scopeKeys.has(scopeKey)) return true;
+    }
+    return false;
+  }
+
+  function buildRealtimeSubscriptionsForPull(args: {
+    partitionId: string;
+    requestSubscriptions: Array<{
+      id: string;
+      table: string;
+      scopes: Record<string, string | string[]>;
+      cursor: number;
+      verifiedRoot?: string;
+    }>;
+    responseSubscriptions: SyncPullSubscriptionResponse[];
+  }): WebSocketRealtimeSubscription[] {
+    const requestById = new Map(
+      args.requestSubscriptions.map((subscription) => [
+        subscription.id,
+        subscription,
+      ])
+    );
+    const subscriptions: WebSocketRealtimeSubscription[] = [];
+
+    for (const response of args.responseSubscriptions) {
+      if (response.status !== 'active') continue;
+      const request = requestById.get(response.id);
+      const scopeKeys = applyPartitionToScopeKeys(
+        args.partitionId,
+        scopeValuesToScopeKeys(response.scopes)
+      );
+      if (scopeKeys.length === 0) continue;
+
+      subscriptions.push({
+        id: response.id,
+        table: request?.table ?? response.id,
+        scopes: response.scopes,
+        scopeKeys,
+        cursor: response.nextCursor,
+        verifiedRoot:
+          response.integrity?.commitChainRoot ?? request?.verifiedRoot ?? null,
+      });
+    }
+
+    return subscriptions;
   }
 
   function recordPushExecutionSideEffects(
@@ -1635,7 +1728,7 @@ export function createSyncRoutes<
       execOptions.countConflictsMetric
     );
 
-    notifyRealtimeForAppliedPushes(ctx, executedPushes);
+    await notifyRealtimeForAppliedPushes(ctx, executedPushes);
     emitCommitLiveEvents(ctx, executedPushes);
 
     return executedPushes;
@@ -1704,7 +1797,7 @@ export function createSyncRoutes<
     );
 
     if (execOptions.deferRealtimeNotifications !== true) {
-      notifyRealtimeForAppliedPushes(ctx, [pushed]);
+      await notifyRealtimeForAppliedPushes(ctx, [pushed]);
     }
     emitCommitLiveEvents(ctx, [pushed]);
 
@@ -2325,12 +2418,13 @@ export function createSyncRoutes<
           });
         }
 
-        wsConnectionManager?.updateConnectionScopeKeys(
+        wsConnectionManager?.updateConnectionSubscriptions(
           connectionOwnerKey,
-          applyPartitionToScopeKeys(
+          buildRealtimeSubscriptionsForPull({
             partitionId,
-            scopeValuesToScopeKeys(pullResult.effectiveScopes)
-          )
+            requestSubscriptions: request.subscriptions,
+            responseSubscriptions: pullResult.response.subscriptions,
+          })
         );
 
         const pullDurationMs = timer();

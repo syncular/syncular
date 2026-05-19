@@ -49,6 +49,7 @@ exception.
 | External chunk storage inline/database fallback | `Decision needed` | Snapshot chunk storage tests and server storage paths | Allows reading chunk bytes from DB/metadata path when external storage path is unavailable | May blur current snapshot storage contract | Keep only if it is explicit storage-adapter behavior, not protocol fallback |
 | Offline-auth `lastActor` fallback | `Decision needed` | `plugins/offline-auth/client` | Offline UX continuity | Could imply auth after revocation if not lease-bound | Resolve under WP-11 offline auth lease model |
 | Realtime wake-up-only docs | `Remove/update` | Pre-Rust docs under `apps/docs/content/docs/build/realtime.mdx`, concepts docs | Describes old JS runtime behavior | Conflicts with Rust-first websocket delta direction | Update Rust docs to state delta fast path; old docs should be archived or labeled legacy |
+| Synthetic `__syncular_realtime__` delta apply | `Remove` | `rust/crates/runtime/src/web/client.rs`, browser worker inline realtime tests | Early websocket inline-change path predated verified per-subscription realtime packs | Rootless deltas can bypass the pull-compatible integrity contract if treated as product protocol | WP-04 current server path no longer emits it. Remove the public/browser inline apply path and tests after generated/browser callers only use binary packs or explicit pull recovery |
 
 ## Recently Removed
 

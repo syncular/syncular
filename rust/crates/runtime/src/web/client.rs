@@ -776,23 +776,13 @@ where
         let mut result = WebSyncResult::default();
         let transform_started_at = timing_now_ms();
         let pull = self.transform_pull_response(pull)?;
+        validate_pull_commit_integrity_metadata(&pull)?;
         result.timings.pull_transform_ms = elapsed_ms_since(transform_started_at);
-        let mut cursor = 0;
-        let mut commits = Vec::new();
-        for subscription in pull.subscriptions {
-            cursor = cursor.max(subscription.next_cursor);
-            commits.extend(subscription.commits);
-            result.subscriptions.push(WebSubscriptionResult {
-                id: subscription.id,
-                table: "__syncular_realtime__".to_string(),
-                status: subscription.status,
-                scopes: subscription.scopes,
-                next_cursor: subscription.next_cursor,
-                snapshot_rows: Vec::new(),
-                commits: Vec::new(),
-            });
-        }
-        if commits.is_empty() {
+        if !pull
+            .subscriptions
+            .iter()
+            .any(|subscription| !subscription.commits.is_empty())
+        {
             result.timings.total_ms = elapsed_ms_since(total_started_at);
             result.timings.pull_ms = result.timings.total_ms;
             return Ok(result);
@@ -801,8 +791,11 @@ where
         self.store.begin_apply_batch().await?;
         let apply_started_at = timing_now_ms();
         let apply_result = async {
-            self.apply_realtime_commits(&mut result, commits).await?;
-            self.advance_realtime_subscription_cursors(cursor).await
+            for subscription in pull.subscriptions {
+                self.apply_realtime_subscription_response(&mut result, subscription)
+                    .await?;
+            }
+            Ok(())
         }
         .await;
         result.timings.pull_apply_ms = elapsed_ms_since(apply_started_at);
@@ -822,6 +815,99 @@ where
         result.timings.total_ms = elapsed_ms_since(total_started_at);
         result.timings.pull_ms = result.timings.total_ms;
         Ok(result)
+    }
+
+    async fn apply_realtime_subscription_response(
+        &mut self,
+        result: &mut WebSyncResult,
+        subscription: crate::protocol::SubscriptionResponse,
+    ) -> Result<()> {
+        if subscription.id == "__syncular_realtime__" {
+            result.subscriptions.push(WebSubscriptionResult {
+                id: subscription.id.clone(),
+                table: "__syncular_realtime__".to_string(),
+                status: subscription.status.clone(),
+                scopes: subscription.scopes.clone(),
+                next_cursor: subscription.next_cursor,
+                snapshot_rows: Vec::new(),
+                commits: subscription.commits.clone(),
+            });
+            self.apply_realtime_commits(result, "__syncular_realtime__", subscription.commits)
+                .await?;
+            return self
+                .advance_realtime_subscription_cursors(subscription.next_cursor)
+                .await;
+        }
+
+        if subscription.status != "active" {
+            return Err(SyncularError::protocol_message(
+                "realtime sync-pack cannot revoke subscriptions",
+            ));
+        }
+
+        let Some(mut state) = self.store.subscription_state(&subscription.id).await? else {
+            return Err(SyncularError::protocol_message(format!(
+                "realtime sync-pack subscription {} has no active local state",
+                subscription.id
+            )));
+        };
+        if state.status == "revoked" {
+            return Err(SyncularError::protocol_message(format!(
+                "realtime sync-pack subscription {} is locally revoked",
+                subscription.id
+            )));
+        }
+        if state.scopes != subscription.scopes {
+            return Err(SyncularError::protocol_message(format!(
+                "realtime sync-pack subscription {} scopes do not match local state",
+                subscription.id
+            )));
+        }
+        if !subscription.commits.is_empty() && subscription.integrity.is_none() {
+            return Err(SyncularError::protocol_message(format!(
+                "realtime sync-pack subscription {} is missing integrity metadata",
+                subscription.id
+            )));
+        }
+
+        let stored_root = self.store.verified_root(&subscription.id).await?;
+        let verified_root = verify_subscription_commit_integrity(
+            &subscription.id,
+            stored_root.as_ref().map(|root| root.root.as_str()),
+            subscription.integrity.as_ref(),
+            &subscription.commits,
+        )?;
+
+        result.subscriptions.push(WebSubscriptionResult {
+            id: subscription.id.clone(),
+            table: state.table.clone(),
+            status: subscription.status.clone(),
+            scopes: subscription.scopes.clone(),
+            next_cursor: subscription.next_cursor,
+            snapshot_rows: Vec::new(),
+            commits: subscription.commits.clone(),
+        });
+
+        self.apply_realtime_commits(result, &subscription.id, subscription.commits)
+            .await?;
+
+        if state.cursor < subscription.next_cursor {
+            state.cursor = subscription.next_cursor;
+        }
+        state.status = subscription.status;
+        self.store.upsert_subscription_state(state).await?;
+        if let Some(root) = verified_root {
+            self.store
+                .upsert_verified_root(WebVerifiedRoot {
+                    subscription_id: subscription.id,
+                    partition_id: root.partition_id,
+                    commit_seq: root.commit_seq,
+                    root: root.root,
+                })
+                .await?;
+        }
+
+        Ok(())
     }
 
     pub async fn apply_realtime_changes_json(&mut self, request_json: &str) -> Result<String> {
@@ -960,6 +1046,7 @@ where
     async fn apply_realtime_commits(
         &mut self,
         result: &mut WebSyncResult,
+        subscription_id: &str,
         commits: Vec<SyncCommit>,
     ) -> Result<()> {
         let app_schema = self.store.app_schema();
@@ -977,9 +1064,11 @@ where
                         &change,
                         previous_row.as_ref(),
                         commit.commit_seq,
-                        "__syncular_realtime__",
+                        subscription_id,
                     ) {
-                        changed_row.subscription_id = None;
+                        if subscription_id == "__syncular_realtime__" {
+                            changed_row.subscription_id = None;
+                        }
                         result.changed_rows.push(changed_row);
                     }
                 }
@@ -1513,9 +1602,10 @@ fn is_auth_transport_error(error: &SyncularError) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::{
-        snapshot_manifest_digest, CombinedResponse, PullResponse, ScopedSnapshotArtifactManifest,
-        ScopedSnapshotArtifactRef, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
-        SubscriptionResponse, SyncSnapshot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+        snapshot_manifest_digest, wire_commit_chain_root, wire_commit_digest, CombinedResponse,
+        PullResponse, ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef, SnapshotChunkRef,
+        SnapshotManifest, SnapshotManifestChunkRef, SubscriptionIntegrity, SubscriptionResponse,
+        SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
         SNAPSHOT_CHUNK_COMPRESSION_GZIP,
     };
     use crate::transport::web::WebRealtimeSocket;
@@ -1575,6 +1665,207 @@ mod tests {
         assert_eq!(rows[0]["id"], "existing-task");
 
         Ok(())
+    }
+
+    #[test]
+    fn realtime_sync_pack_verifies_and_persists_subscription_root() -> Result<()> {
+        let mut store = WebMemoryStore::new();
+        block_on(store.upsert_subscription_state(WebSubscriptionState {
+            subscription_id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes: scopes(),
+            cursor: 0,
+            bootstrap_state: None,
+            status: "active".to_string(),
+        }))?;
+        let config = WebSyncularClientConfig {
+            base_url: "http://syncular.test/sync".to_string(),
+            client_id: "web-client-realtime-integrity".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("p0".to_string()),
+        };
+        let mut client = WebSyncularClient::with_parts(config, NoopTransport, store);
+        client.set_subscriptions(vec![SubscriptionSpec {
+            id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes: scopes(),
+            params: Map::new(),
+        }]);
+
+        let commit = SyncCommit {
+            commit_seq: 1,
+            created_at: "2026-05-19T00:00:00.000Z".to_string(),
+            actor_id: "server".to_string(),
+            changes: vec![SyncChange {
+                table: "tasks".to_string(),
+                row_id: "task-1".to_string(),
+                op: "upsert".to_string(),
+                row_json: Some(task_row("task-1", "p0")),
+                row_version: Some(1),
+                scopes: scopes(),
+            }],
+        };
+        let digest = wire_commit_digest("default", "sub-tasks", &commit)?;
+        let root = wire_commit_chain_root(
+            "default",
+            "sub-tasks",
+            COMMIT_INTEGRITY_GENESIS_ROOT,
+            commit.commit_seq,
+            &digest,
+        )?;
+
+        let result = block_on(client.apply_realtime_combined_response(
+            CombinedResponse {
+                ok: true,
+                required_schema_version: None,
+                latest_schema_version: None,
+                push: None,
+                pull: Some(PullResponse {
+                    ok: true,
+                    subscriptions: vec![SubscriptionResponse {
+                        id: "sub-tasks".to_string(),
+                        status: "active".to_string(),
+                        scopes: scopes(),
+                        bootstrap: false,
+                        bootstrap_state: None,
+                        next_cursor: 1,
+                        integrity: Some(SubscriptionIntegrity {
+                            partition_id: "default".to_string(),
+                            previous_chain_root: COMMIT_INTEGRITY_GENESIS_ROOT.to_string(),
+                            commit_chain_root: root.clone(),
+                            commit_seq: 1,
+                        }),
+                        commits: vec![commit],
+                        snapshots: None,
+                    }],
+                }),
+            },
+            0,
+        ))?;
+
+        assert_eq!(result.changed_tables, vec!["tasks".to_string()]);
+        assert_eq!(
+            result
+                .changed_rows
+                .first()
+                .and_then(|row| row.subscription_id.as_deref()),
+            Some("sub-tasks")
+        );
+        let verified =
+            block_on(client.store_mut().verified_root("sub-tasks"))?.expect("verified root");
+        assert_eq!(verified.root, root);
+        assert_eq!(verified.commit_seq, 1);
+
+        let rows: Value =
+            serde_json::from_str(&block_on(client.store_mut().list_table_json("tasks"))?)?;
+        assert_eq!(rows.as_array().expect("task rows").len(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn realtime_sync_pack_rejects_root_mismatch_before_mutating_store() -> Result<()> {
+        let mut store = WebMemoryStore::new();
+        block_on(store.upsert_subscription_state(WebSubscriptionState {
+            subscription_id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes: scopes(),
+            cursor: 0,
+            bootstrap_state: None,
+            status: "active".to_string(),
+        }))?;
+        let config = WebSyncularClientConfig {
+            base_url: "http://syncular.test/sync".to_string(),
+            client_id: "web-client-realtime-root-mismatch".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("p0".to_string()),
+        };
+        let mut client = WebSyncularClient::with_parts(config, NoopTransport, store);
+
+        let error = block_on(client.apply_realtime_combined_response(
+            CombinedResponse {
+                ok: true,
+                required_schema_version: None,
+                latest_schema_version: None,
+                push: None,
+                pull: Some(PullResponse {
+                    ok: true,
+                    subscriptions: vec![SubscriptionResponse {
+                        id: "sub-tasks".to_string(),
+                        status: "active".to_string(),
+                        scopes: scopes(),
+                        bootstrap: false,
+                        bootstrap_state: None,
+                        next_cursor: 1,
+                        integrity: Some(SubscriptionIntegrity {
+                            partition_id: "default".to_string(),
+                            previous_chain_root: "1".repeat(64),
+                            commit_chain_root: "2".repeat(64),
+                            commit_seq: 1,
+                        }),
+                        commits: vec![SyncCommit {
+                            commit_seq: 1,
+                            created_at: "2026-05-19T00:00:00.000Z".to_string(),
+                            actor_id: "server".to_string(),
+                            changes: vec![SyncChange {
+                                table: "tasks".to_string(),
+                                row_id: "task-1".to_string(),
+                                op: "upsert".to_string(),
+                                row_json: Some(task_row("task-1", "p0")),
+                                row_version: Some(1),
+                                scopes: scopes(),
+                            }],
+                        }],
+                        snapshots: None,
+                    }],
+                }),
+            },
+            0,
+        ))
+        .expect_err("root mismatch");
+
+        assert_eq!(error.kind(), ErrorKind::Protocol);
+        assert!(error.message_text().contains("previousChainRoot mismatch"));
+        let rows: Value =
+            serde_json::from_str(&block_on(client.store_mut().list_table_json("tasks"))?)?;
+        assert_eq!(rows.as_array().expect("task rows").len(), 0);
+
+        Ok(())
+    }
+
+    struct NoopTransport;
+
+    impl AsyncSyncTransport for NoopTransport {
+        type Realtime = WebRealtimeSocket;
+
+        fn post_sync<'a>(
+            &'a self,
+            _request: &'a CombinedRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<CombinedResponse>> + 'a>> {
+            Box::pin(async move {
+                Err(SyncularError::message(
+                    ErrorKind::Transport,
+                    "noop transport does not post sync",
+                ))
+            })
+        }
+
+        fn fetch_snapshot_chunk_rows<'a>(
+            &'a self,
+            _chunk: &'a SnapshotChunkRef,
+            _scopes: &'a ScopeValues,
+        ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
+            Box::pin(async move {
+                Err(SyncularError::message(
+                    ErrorKind::Transport,
+                    "noop transport does not fetch chunks",
+                ))
+            })
+        }
+
+        fn connect_realtime(&self) -> Result<Self::Realtime> {
+            panic!("realtime socket not used in this test")
+        }
     }
 
     struct ArtifactTransport;

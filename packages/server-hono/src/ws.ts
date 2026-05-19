@@ -82,6 +82,15 @@ interface WebSocketReplayRecord {
   createdAt?: string;
 }
 
+export interface WebSocketRealtimeSubscription {
+  id: string;
+  table: string;
+  scopes: Record<string, string | string[]>;
+  scopeKeys: string[];
+  cursor: number;
+  verifiedRoot?: string | null;
+}
+
 /**
  * WebSocket event data for sync notifications
  */
@@ -355,6 +364,10 @@ export class WebSocketConnectionManager {
   private readonly registry: RealtimeConnectionRegistry<WebSocketConnection>;
   private readonly replayWindowSize: number;
   private readonly replayRecords: WebSocketReplayRecord[] = [];
+  private readonly subscriptionsByOwnerKey = new Map<
+    string,
+    WebSocketRealtimeSubscription[]
+  >();
   private replayDroppedThroughCursor = -1;
   private readonly flowStateByConnection = new WeakMap<
     WebSocketConnection,
@@ -438,6 +451,82 @@ export class WebSocketConnectionManager {
    */
   updateConnectionScopeKeys(ownerKey: string, scopeKeys: string[]): void {
     this.registry.updateOwnerScopeKeys(ownerKey, scopeKeys);
+  }
+
+  /**
+   * Update the active pull subscriptions for an owner. Realtime binary deltas
+   * use these records to emit the same per-subscription integrity contract as
+   * HTTP pull responses.
+   */
+  updateConnectionSubscriptions(
+    ownerKey: string,
+    subscriptions: WebSocketRealtimeSubscription[]
+  ): void {
+    if (subscriptions.length === 0) {
+      this.subscriptionsByOwnerKey.delete(ownerKey);
+      this.registry.updateOwnerScopeKeys(ownerKey, []);
+      return;
+    }
+
+    this.subscriptionsByOwnerKey.set(
+      ownerKey,
+      subscriptions.map((subscription) => ({
+        ...subscription,
+        scopeKeys: [...subscription.scopeKeys],
+      }))
+    );
+    this.registry.updateOwnerScopeKeys(
+      ownerKey,
+      uniqueScopeKeys(
+        subscriptions.flatMap((subscription) => subscription.scopeKeys)
+      )
+    );
+  }
+
+  updateConnectionSubscriptionRoots(
+    ownerKey: string,
+    updates: Array<{ subscriptionId: string; cursor: number; verifiedRoot: string }>
+  ): void {
+    if (updates.length === 0) return;
+    const subscriptions = this.subscriptionsByOwnerKey.get(ownerKey);
+    if (!subscriptions || subscriptions.length === 0) return;
+
+    const updatesBySubscription = new Map(
+      updates.map((update) => [update.subscriptionId, update])
+    );
+    let changed = false;
+    const next = subscriptions.map((subscription) => {
+      const update = updatesBySubscription.get(subscription.id);
+      if (!update) return subscription;
+      changed = true;
+      return {
+        ...subscription,
+        cursor: Math.max(subscription.cursor, update.cursor),
+        verifiedRoot: update.verifiedRoot,
+      };
+    });
+    if (changed) {
+      this.subscriptionsByOwnerKey.set(ownerKey, next);
+    }
+  }
+
+  getConnectionSubscriptions(
+    ownerKey: string
+  ): readonly WebSocketRealtimeSubscription[] {
+    return this.subscriptionsByOwnerKey.get(ownerKey) ?? [];
+  }
+
+  getConnectionsForScopeKeys(
+    scopeKeys: Iterable<string>,
+    options?: { excludeClientIds?: readonly string[] }
+  ): WebSocketConnection[] {
+    const connections: WebSocketConnection[] = [];
+    this.registry.forEachConnectionInScopeKeys(
+      scopeKeys,
+      (connection) => connections.push(connection),
+      options
+    );
+    return connections;
   }
 
   /**
@@ -845,7 +934,10 @@ export class WebSocketConnectionManager {
       syncPack: inlineSyncPack,
       changesForConnection: opts?.changesForConnection,
       syncPackForConnection: opts?.syncPackForConnection,
-      hasSharedPayload: hasSharedChanges || opts?.syncPack !== undefined,
+      hasSharedPayload:
+        hasSharedChanges ||
+        opts?.syncPack !== undefined ||
+        opts?.syncPackForConnection !== undefined,
       actorId: opts?.actorId,
       createdAt: opts?.createdAt,
     };
@@ -1080,4 +1172,12 @@ function normalizeReplayWindowSize(value: number | undefined): number {
   if (value === undefined) return 64;
   if (!Number.isFinite(value)) return 64;
   return Math.max(0, Math.floor(value));
+}
+
+function uniqueScopeKeys(scopeKeys: Iterable<string>): string[] {
+  const unique = new Set<string>();
+  for (const scopeKey of scopeKeys) {
+    if (scopeKey) unique.add(scopeKey);
+  }
+  return Array.from(unique);
 }

@@ -1529,3 +1529,59 @@ Decision:
 - Retained. This is a recovery-only ACK correctness fix; the normal binary
   websocket fast path still used zero HTTP realtime fallbacks and identical
   binary event count/bytes. The small live-time movement is benchmark noise.
+
+## 2026-05-19 - WP-04 Verified Realtime Subscription Packs
+
+Change:
+
+- Replaced websocket binary deltas' synthetic `__syncular_realtime__`
+  subscription with real per-subscription sync-pack responses carrying commit
+  integrity metadata.
+- Browser Rust realtime apply now verifies/persists the same subscription root
+  shape used by HTTP pull and rejects missing/mismatched roots for real
+  subscriptions.
+- Server Hono realtime state now records active subscription metadata from pull
+  responses and advances in-memory verified roots while consecutive binary
+  websocket packs are emitted.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd packages/server-hono tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-integrity-packs.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `34.12ms` | `84.29ms` |
+| `rust_incremental_pull_ms` | `18.37ms` | `76.52ms` |
+| `rust_realtime_live_ms` | `71.99ms` | `107.12ms` |
+| `rust_realtime_live_p95_ms` | `73.25ms` | `110.48ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `537675` | `540300` |
+
+Decision:
+
+- Retained as a correctness/security slice: websocket deltas now use the same
+  verified per-subscription root contract as pull, and the binary fast path
+  still has zero HTTP realtime fallbacks.
+- The benchmark was run with dev WASM, so bootstrap/incremental numbers are not
+  directly comparable with older release-lane guards. The realtime lane still
+  shows added overhead; the next WP-04 slice should recover that overhead without
+  weakening integrity verification.
