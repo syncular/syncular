@@ -3101,8 +3101,11 @@ Change:
 - Generated TypeScript schema installers create table/triggers and rebuild only
   when the output table is first installed or the generated schema version
   changes.
+- Generated TypeScript and Rust query surfaces include the read-model output
+  table so apps can query declared read models through Kysely/Diesel rather
+  than raw SQL.
 - The todo fixture declares `taskCountsByUserCompletion` and proves rebuild,
-  update, and delete invalidation.
+  update, delete invalidation, and typed Diesel reads.
 
 Correctness gates:
 

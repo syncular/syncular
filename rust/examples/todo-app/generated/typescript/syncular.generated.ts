@@ -31,6 +31,7 @@ export interface SyncularAppDb {
   comments: CommentRow;
   projects: ProjectRow;
   tasks: TaskRow;
+  syncular_task_counts: SyncularTaskCountRow;
 }
 
 export interface SyncularGeneratedTableConfig {
@@ -96,7 +97,7 @@ export const syncularGeneratedTableConfig = {
     crdtYjsFields: [{ field: 'title', stateColumn: 'title_yjs_state', containerKey: 'title', rowIdField: 'id', kind: 'text', syncMode: 'server-merge' }],
     encryptedFields: [],
   },
-} satisfies Record<keyof SyncularAppDb, SyncularGeneratedTableConfig>;
+} satisfies Record<'comments' | 'projects' | 'tasks', SyncularGeneratedTableConfig>;
 
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,
@@ -305,7 +306,7 @@ export const syncularChangedRows = {
 } as const;
 
 export const syncularGeneratedCodecs: ColumnCodecSource = (column) => {
-  const table = syncularGeneratedTableConfig[column.table as keyof SyncularAppDb];
+  const table = syncularGeneratedTableConfig[column.table as keyof typeof syncularGeneratedTableConfig];
   const blobColumns: readonly string[] = table?.blobColumns ?? [];
   if (blobColumns.includes(column.column)) {
     return codecs.stringJson<BlobRef>({ ts: { type: 'BlobRef', import: { name: 'BlobRef', from: '@syncular/core' } } });
@@ -631,6 +632,12 @@ export function defaultSyncularSubscriptions(args: SyncularSubscriptionArgs): Sy
     projectSubscription(args),
     taskSubscription(args),
   ];
+}
+
+export interface SyncularTaskCountRow {
+  user_id: string;
+  completed: number;
+  task_count: number;
 }
 
 export interface CommentRow {

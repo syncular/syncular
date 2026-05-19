@@ -138,8 +138,10 @@ read-only review:
     `syncular.codegen.json`. The generator now emits the read-model contract in
     `syncular.schema.json`, Rust SQL constants, and TypeScript schema
     installers that create table/triggers and rebuild only on first install or
-    schema-version change. The todo fixture proves rebuild, update, and delete
-    invalidation. This is opt-in app intent, not a hidden runtime cache.
+    schema-version change. Generated read-model tables are now typed in Kysely
+    and Diesel query surfaces while staying out of app-table sync/mutation
+    metadata. The todo fixture proves rebuild, update, delete invalidation, and
+    typed Diesel reads. This is opt-in app intent, not a hidden runtime cache.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained
