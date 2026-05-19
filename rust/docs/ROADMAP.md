@@ -81,7 +81,8 @@ read-only review:
   - New continuation of the WP-03 performance findings. Design and benchmark a
     scoped, content-addressed artifact path without whole-partition assumptions
     or Worker-hot-path SQLite file generation. The shared TS/Rust manifest
-    contract is in place; next is storage lifecycle and route contract.
+    contract and server metadata table/helpers are in place; next is the route
+    and storage-body adapter contract.
 
 ## Next
 

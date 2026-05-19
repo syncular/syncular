@@ -98,13 +98,29 @@ Retained first slice:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`, and
   `bun run --cwd packages/core tsgo`.
 
+Retained second slice:
+
+- Added a dedicated `sync_snapshot_artifacts` metadata table to SQLite and
+  Postgres server dialect schema creation.
+- Added server helpers for scoped artifact cache keys, manifest creation,
+  page-key lookup, insert/upsert, read-by-id, and expiry cleanup.
+- Artifact metadata is separate from row chunks and keyed by partition,
+  scope-key, subscription id, table, as-of commit, row cursor/limit, artifact
+  kind, schema version, and compression.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/snapshot-chunks.test.ts`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd packages/server-dialect-sqlite tsgo`, and
+  `bun run --cwd packages/server-dialect-postgres tsgo`.
+
 ## Next Action
 
-Design the storage lifecycle and route contract around the manifest:
+Design the route contract and storage-body adapter around the manifest:
 
-- where artifacts are generated outside the Worker/D1 hot path;
-- how SQL metadata points to object storage bodies;
 - how pull responses advertise artifact eligibility;
+- how `/snapshot-artifacts/:artifactId` authorizes and serves body bytes;
+- how object storage writes are represented without generating SQLite files in
+  the Worker/D1 hot path;
 - how clients fall back to row chunks when artifacts are missing or stale;
 - how revocation and interrupted artifact apply recover.
 
