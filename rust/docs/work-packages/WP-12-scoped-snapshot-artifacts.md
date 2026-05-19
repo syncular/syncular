@@ -357,6 +357,17 @@ Retained twelfth slice:
 - Decision: retained. Wall time stayed flat, cached bootstrap stayed within
   local noise, and artifact response bytes dropped by about `67%`.
 
+Retained thirteenth slice:
+
+- Added browser/Hono recovery coverage for direct SQLite artifacts. A corrupted
+  `/snapshot-artifacts/:artifactId` response now proves the Rust browser client
+  rejects the pull before clearing or applying rows, then succeeds on the next
+  pull without app-side recovery logic.
+- Correctness gates passed:
+  `bun test src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "corrupted SQLite snapshot artifact"`
+  and `bun test src/__tests__/sync-hono.wasm.test.ts` from
+  `rust/bindings/browser`.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
@@ -364,5 +375,5 @@ Turn the artifact prototype into the full bootstrap path:
 - Add native Diesel direct artifact import or another non-JSON path.
 - Extend artifact precompute to multiple pages and the external app-style
   benchmark stack, then measure 500k bootstrap against TS/Rust row chunks.
-- Add interrupted artifact apply and revocation recovery tests for the direct
-  import path.
+- Add revocation recovery coverage for the direct import path and decide
+  whether native direct import needs a new store-level artifact apply trait.

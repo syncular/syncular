@@ -809,6 +809,70 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     );
   });
 
+  it('recovers on a later pull after a corrupted SQLite snapshot artifact fetch', async () => {
+    let failNextArtifact = true;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      precomputedTaskSnapshotArtifact: {
+        actorId: ACTOR_A,
+        artifactId: 'browser-sqlite-artifact-corrupt-once',
+        rowLimit: 50_000,
+      },
+      seedTasks: [
+        {
+          id: 'artifact-corrupt-retry-task',
+          title: 'Artifact Corrupt Retry Task',
+          actorId: ACTOR_A,
+        },
+      ],
+      edgeGate: (request) => {
+        const url = new URL(request.url);
+        if (
+          failNextArtifact &&
+          url.pathname.includes('/snapshot-artifacts/')
+        ) {
+          failNextArtifact = false;
+          return new Response(new Uint8Array([1, 2, 3, 4]), {
+            status: 200,
+            headers: {
+              'content-type': 'application/octet-stream',
+            },
+          });
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'sqlite-artifact-corrupt-retry-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      pull: {
+        includeSnapshotRows: false,
+        collectChangedRows: false,
+        limitSnapshotRows: 50_000,
+        maxSnapshotPages: 1,
+      },
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    await expect(client.syncPull()).rejects.toThrow(/snapshot artifact/i);
+    await expect(client.listTable('tasks')).resolves.toEqual([]);
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      subscriptions: [
+        { id: syncConformance.subscription.id, snapshotRows: [] },
+      ],
+    });
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'artifact-corrupt-retry-task',
+        title: 'Artifact Corrupt Retry Task',
+      }),
+    ]);
+  });
+
   it('hydrates snapshot rows into SQLite without returning them by default', async () => {
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
