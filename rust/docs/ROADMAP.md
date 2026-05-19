@@ -129,14 +129,15 @@ read-only review:
     changes are reported. The obsolete inline JSON websocket delta path has
     been removed from the browser worker, Rust wasm API, and server manager;
     current realtime delivery is binary sync-pack or explicit pull-required
-    wakeup.
+    wakeup. Realtime apply results no longer echo applied commit rows back over
+    the wasm boundary.
 
 ## Next
 
 - Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   by recovering the remaining realtime integrity overhead without weakening the
   verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-no-json-deltas.json` as the current local
+  `.context/benchmarks/wp04-realtime-slim-result.json` as the current local
   comparison point.
 
 ## Later
