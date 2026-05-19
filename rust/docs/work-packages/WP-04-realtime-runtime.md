@@ -285,8 +285,32 @@ Retained measurement slice:
   `rust_realtime_http_request_count=0`, and
   `browser_served_rust_wasm_bytes=7463118`.
 
+Retained measurement slice:
+
+- Browser Rust sync results now include `syncPackDecodeMs` for realtime
+  binary sync-pack frames, and the browser realtime benchmark reports
+  `rust_realtime_sync_pack_decode_*` plus
+  `rust_realtime_pull_transform_*` metrics.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts`,
+  `bun test rust/bindings/browser/src/client.test.ts`,
+  `bun test rust/bindings/browser/src/react.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-decode-transform-metrics.json` and
+  `.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json`.
+- Current measured split: realtime apply total `158ms`, pull apply `129ms`,
+  sync-pack decode `23ms` total / `2ms` p50, and pull transform `0ms`.
+  End-to-end realtime p50 on the rerun was `95.34ms`; keep comparing the
+  lower-level split metrics as well as live latency because browser/server
+  scheduling noise is visible in this lane.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-overhead-metric.json`.
+`.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json`.

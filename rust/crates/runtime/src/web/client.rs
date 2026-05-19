@@ -126,6 +126,7 @@ pub struct WebSyncTimings {
     pub push_ms: f64,
     pub pull_ms: f64,
     pub pull_request_ms: f64,
+    pub sync_pack_decode_ms: f64,
     pub pull_transform_ms: f64,
     pub snapshot_fetch_ms: f64,
     pub pull_apply_ms: f64,
@@ -686,8 +687,12 @@ where
     pub async fn apply_realtime_sync_pack_bytes(&mut self, bytes: &[u8]) -> Result<WebSyncResult> {
         let total_started_at = timing_now_ms();
         let response = decode_binary_sync_pack(bytes)?;
-        self.apply_realtime_combined_response(response, total_started_at)
-            .await
+        let sync_pack_decode_ms = elapsed_ms_since(total_started_at);
+        let mut result = self
+            .apply_realtime_combined_response(response, total_started_at)
+            .await?;
+        result.timings.sync_pack_decode_ms = sync_pack_decode_ms;
+        Ok(result)
     }
 
     async fn apply_realtime_combined_response(

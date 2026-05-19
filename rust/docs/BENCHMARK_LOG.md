@@ -1988,3 +1988,63 @@ Decision:
 - Rejected and reverted. The candidate slightly reduced WASM bytes but regressed
   the runtime lane on two runs, including the explicit Rust/browser overhead
   metric.
+
+## 2026-05-19 - WP-04 Realtime Decode/Transform Metrics
+
+Change:
+
+- Added `syncPackDecodeMs` to browser Rust sync results for realtime
+  `binary-sync-pack-v1` frames.
+- Browser realtime diagnostics and the E2E scoreboard now report
+  `rust_realtime_sync_pack_decode_*` and
+  `rust_realtime_pull_transform_*` metrics alongside apply/notify timings.
+- Made the React browser binding test setup idempotent around Happy DOM global
+  registration while updating timing fixtures.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/client.test.ts
+bun test rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-decode-transform-metrics.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json
+```
+
+Confirmed rerun versus previous guard:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.05ms` | `95.34ms` |
+| `rust_realtime_overhead_p50_ms` | `22.63ms` | `24.08ms` |
+| `rust_realtime_apply_total_ms` | `160ms` | `158ms` |
+| `rust_realtime_pull_apply_total_ms` | `133ms` | `129ms` |
+| `rust_realtime_sync_pack_decode_total_ms` | n/a | `23ms` |
+| `rust_realtime_sync_pack_decode_p50_ms` | n/a | `2ms` |
+| `rust_realtime_pull_transform_total_ms` | n/a | `0ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7463464` |
+
+Decision:
+
+- Retained as measurement infrastructure. The new split shows the remaining
+  realtime frame cost is mostly SQLite row apply plus about `23ms` of binary
+  sync-pack decoding across 15 frames; transform/integrity rounds to `0ms` in
+  this scenario. Future realtime performance work should compare against
+  `.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json`.
