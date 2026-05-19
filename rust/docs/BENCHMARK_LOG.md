@@ -901,3 +901,73 @@ Decision:
 
 - Retained. This gives apps/jobs a real way to produce scoped SQLite artifact
   bodies without changing Cloudflare Worker pull behavior.
+
+## 2026-05-19 - Browser Scoped SQLite Artifact Apply
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Added explicit `snapshotArtifacts.schemaVersion` to artifact-capability pull
+  requests.
+- Browser owned SQLite now advertises artifact support, downloads verified
+  SQLite artifact bodies, deserializes them with `sqlite3_deserialize`, and
+  applies projected rows through the existing snapshot-row path.
+- Added a Hono/WASM browser test proving the artifact route is used and snapshot
+  chunks are not fetched for a precomputed scoped SQLite artifact.
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous same-session targeted run:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `26.9ms`
+- `sync_pack_binary_encode_50000`: `19.1ms`
+- `sync_pack_binary_decode_50000`: `24.9ms`
+- `sync_pack_binary_generated_encode_50000`: `17.3ms`
+- `sync_pack_binary_generated_decode_50000`: `25.7ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.9ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.1ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `45.1ms`
+
+Candidate:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `27.0ms`
+- `sync_pack_binary_encode_50000`: `18.8ms`
+- `sync_pack_binary_decode_50000`: `25.2ms`
+- `sync_pack_binary_generated_encode_50000`: `17.9ms`
+- `sync_pack_binary_generated_decode_50000`: `25.6ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.7ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.4ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `43.4ms`
+
+Delta:
+
+- Server metrics stayed within expected local noise. The normal pull benchmark
+  does not hit a precomputed artifact body, but it does cover the schema-bound
+  artifact capability shape and empty artifact lookup path.
+- Browser artifact apply was covered by the Hono/WASM correctness test, not by
+  the large offline bootstrap benchmark. The current apply path still
+  materializes artifact rows as JSON, so the next perf-significant benchmark
+  should be attached/direct artifact import.
+
+Decision:
+
+- Retained. This closes browser correctness for scoped SQLite artifact apply and
+  keeps the known remaining performance target focused on avoiding JSON
+  materialization.

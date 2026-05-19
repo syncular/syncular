@@ -5,8 +5,8 @@ import {
   bytesToReadableStream,
   captureSyncException,
   concatByteChunks,
-  createSnapshotManifest,
   countSyncMetric,
+  createSnapshotManifest,
   distributionSyncMetric,
   encodeBinarySnapshotTable,
   encodeSnapshotRowFrames,
@@ -37,6 +37,10 @@ import {
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
+import {
+  createWireSubscriptionIntegrity,
+  SYNCULAR_COMMIT_GENESIS_ROOT,
+} from './commit-integrity';
 import type {
   DbExecutor,
   IncrementalPullRow,
@@ -50,9 +54,9 @@ import type { SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
 import type { SyncCoreDb } from './schema';
 import {
-  createWireSubscriptionIntegrity,
-  SYNCULAR_COMMIT_GENESIS_ROOT,
-} from './commit-integrity';
+  createScopedSnapshotArtifactScopeCacheKey,
+  readScopedSnapshotArtifactRefByPageKey,
+} from './snapshot-artifacts';
 import {
   createSnapshotChunkScopeCacheKey,
   insertSnapshotChunk,
@@ -60,10 +64,6 @@ import {
   type SnapshotChunkRefWithContinuation,
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
-import {
-  createScopedSnapshotArtifactScopeCacheKey,
-  readScopedSnapshotArtifactRefByPageKey,
-} from './snapshot-artifacts';
 import {
   createMemoryScopeCache,
   type ScopeCacheBackend,
@@ -151,10 +151,13 @@ function resolveSnapshotChunkEncoding(
 interface SnapshotArtifactSelection {
   artifactKind: SyncScopedSnapshotArtifactKind;
   compression: SyncSnapshotArtifactCompression;
+  schemaVersion: string;
   featureSet: readonly string[];
 }
 
-function normalizeFeatureSet(features: readonly string[] | undefined): string[] {
+function normalizeFeatureSet(
+  features: readonly string[] | undefined
+): string[] {
   return Array.from(new Set(features ?? [])).sort();
 }
 
@@ -178,6 +181,7 @@ function resolveSnapshotArtifactSelection(
   return {
     artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
     compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    schemaVersion: request.schemaVersion,
     featureSet: normalizeFeatureSet(request.featureSet),
   };
 }
@@ -709,14 +713,7 @@ export async function pull<
           request.snapshotArtifacts
         );
         const snapshotArtifactSchemaVersion =
-          args.snapshotChunkCacheSchemaVersion == null
-            ? null
-            : String(args.snapshotChunkCacheSchemaVersion);
-        if (snapshotArtifactSelection && snapshotArtifactSchemaVersion == null) {
-          throw new Error(
-            'Snapshot artifacts require snapshotChunkCacheSchemaVersion'
-          );
-        }
+          snapshotArtifactSelection?.schemaVersion ?? null;
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
           db,
@@ -883,8 +880,7 @@ export async function pull<
                             schemaVersion: snapshotArtifactSchemaVersion,
                             artifactKind:
                               snapshotArtifactSelection.artifactKind,
-                            compression:
-                              snapshotArtifactSelection.compression,
+                            compression: snapshotArtifactSelection.compression,
                             features: snapshotArtifactSelection.featureSet,
                           })
                         : null;
@@ -1191,8 +1187,7 @@ export async function pull<
                             artifactKind:
                               snapshotArtifactSelection!.artifactKind,
                             schemaVersion: snapshotArtifactSchemaVersion!,
-                            compression:
-                              snapshotArtifactSelection!.compression,
+                            compression: snapshotArtifactSelection!.compression,
                           });
                         bootstrapTimings.artifactCacheLookupMs += Math.max(
                           0,
@@ -1776,17 +1771,18 @@ export async function pull<
 
                   const chunk = toResponseChunkRef(chunkRef);
                   pending.snapshot.chunks = [chunk];
-                  pending.snapshot.manifest = await createChunkedSnapshotManifest({
-                    table: pending.snapshot.table,
-                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                    scopeKey: pending.cacheLookup.scopeKey,
-                    rowCursor: pending.cacheLookup.rowCursor,
-                    rowLimit: pending.cacheLookup.rowLimit,
-                    nextRowCursor: pending.cacheLookup.nextRowCursor,
-                    isFirstPage: pending.snapshot.isFirstPage,
-                    isLastPage: pending.cacheLookup.isLastPage,
-                    chunks: [chunk],
-                  });
+                  pending.snapshot.manifest =
+                    await createChunkedSnapshotManifest({
+                      table: pending.snapshot.table,
+                      asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                      scopeKey: pending.cacheLookup.scopeKey,
+                      rowCursor: pending.cacheLookup.rowCursor,
+                      rowLimit: pending.cacheLookup.rowLimit,
+                      nextRowCursor: pending.cacheLookup.nextRowCursor,
+                      isFirstPage: pending.snapshot.isFirstPage,
+                      isLastPage: pending.cacheLookup.isLastPage,
+                      chunks: [chunk],
+                    });
                 }
               );
             }

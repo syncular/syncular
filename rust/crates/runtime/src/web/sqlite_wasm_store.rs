@@ -4026,6 +4026,18 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         std::mem::take(&mut self.apply_timings)
     }
 
+    fn supports_sqlite_snapshot_artifacts(&self) -> bool {
+        true
+    }
+
+    fn decode_sqlite_snapshot_artifact_rows<'a>(
+        &'a mut self,
+        table: &'a str,
+        artifact_bytes: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + 'a>> {
+        Box::pin(async move { decode_sqlite_snapshot_artifact_rows(table, artifact_bytes) })
+    }
+
     fn apply_mutation<'a>(
         &'a mut self,
         operation: SyncOperation,
@@ -4836,9 +4848,10 @@ impl Drop for SyncularRustOwnedSqlite {
 }
 
 fn validate_table_name(table: &str) -> Result<()> {
-    if table
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    if !table.is_empty()
+        && table
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
         Ok(())
     } else {
@@ -4846,6 +4859,60 @@ fn validate_table_name(table: &str) -> Result<()> {
             "invalid sqlite table identifier: {table}"
         )))
     }
+}
+
+fn decode_sqlite_snapshot_artifact_rows(table: &str, artifact_bytes: &[u8]) -> Result<Vec<Value>> {
+    validate_table_name(table)?;
+    let artifact_len = i64::try_from(artifact_bytes.len())
+        .map_err(|_| SyncularError::protocol_message("sqlite snapshot artifact is too large"))?;
+    let mut artifact_buffer = artifact_bytes.to_vec();
+    let mut artifact_db = ptr::null_mut();
+    let file_name = CString::new(":memory:").map_err(cstring_error("sqlite artifact file name"))?;
+    let rc = unsafe {
+        ffi::sqlite3_open_v2(
+            file_name.as_ptr(),
+            &mut artifact_db as *mut _,
+            ffi::SQLITE_OPEN_READWRITE | ffi::SQLITE_OPEN_CREATE | ffi::SQLITE_OPEN_MEMORY,
+            ptr::null(),
+        )
+    };
+    if rc != ffi::SQLITE_OK {
+        let err = sqlite_error(artifact_db, "open sqlite snapshot artifact");
+        close_db(artifact_db);
+        return Err(err);
+    }
+
+    let result = (|| {
+        let schema = CString::new("main").map_err(cstring_error("sqlite artifact schema"))?;
+        let rc = unsafe {
+            ffi::sqlite3_deserialize(
+                artifact_db,
+                schema.as_ptr(),
+                artifact_buffer.as_mut_ptr(),
+                artifact_len,
+                artifact_len,
+                ffi::SQLITE_DESERIALIZE_READONLY,
+            )
+        };
+        if rc != ffi::SQLITE_OK {
+            return Err(sqlite_error(
+                artifact_db,
+                "deserialize sqlite snapshot artifact",
+            ));
+        }
+
+        let sql = format!("SELECT * FROM {table}");
+        let stmt = prepare_sql_statement(artifact_db, &sql, SqlExecutionMode::Readonly)?;
+        let rows = execute_prepared_sql(artifact_db, stmt, &[], "read sqlite snapshot artifact");
+        let finalize = finalize_stmt(stmt, artifact_db, "finalize sqlite snapshot artifact query");
+        match (rows, finalize) {
+            (Ok(rows), Ok(())) => Ok(rows),
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(err)) => Err(err),
+        }
+    })();
+    close_db(artifact_db);
+    result
 }
 
 fn prepare_sql_statement(

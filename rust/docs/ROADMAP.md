@@ -87,8 +87,11 @@ read-only review:
     download and verify artifact bytes, and native Diesel can apply verified
     SQLite artifacts through the generated schema projection path. Server-side
     background/precompute can now create scoped Bun SQLite artifact bodies
-    explicitly, outside the pull hot path. Browser apply and native direct
-    artifact import remain open.
+    explicitly, outside the pull hot path. Browser owned SQLite can now
+    advertise schema-bound artifact support, download verified artifact bodies,
+    deserialize them through `sqlite3_deserialize`, and apply rows through the
+    existing snapshot apply path. Native/browser direct artifact import without
+    JSON row materialization remains open.
 
 ## Next
 
