@@ -2221,3 +2221,46 @@ Decision:
   realtime Rust apply dropped by about `46%`. The small WASM size increase is
   acceptable for this runtime gain. Future WP-04 candidates should compare
   against `.context/benchmarks/wp04-realtime-json-string-writer-rerun.json`.
+
+## 2026-05-19 - WP-04 Rejected Streaming Integrity Hash
+
+Change:
+
+- Tried writing canonical integrity payloads directly into a SHA-256 sink
+  instead of first building the canonical payload `String` and hashing it.
+
+Correctness gates passed before rejection:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-streaming-integrity-hash.json
+```
+
+Result versus the retained string-writer guard:
+
+| Metric | String-writer guard | Streaming-hash candidate |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `92.55ms` | `93.63ms` |
+| `rust_realtime_overhead_p50_ms` | `22.19ms` | `24.15ms` |
+| `rust_realtime_apply_total_ms` | `128ms` | `154ms` |
+| `rust_realtime_pull_apply_total_ms` | `103ms` | `130ms` |
+| `rust_realtime_integrity_verify_total_ms` | `76ms` | `98ms` |
+| `rust_realtime_integrity_verify_p50_ms` | `5ms` | `7ms` |
+| `browser_served_rust_wasm_bytes` | `7465224` | `7466004` |
+
+Decision:
+
+- Rejected and reverted. Avoid the generic streaming sink abstraction for this
+  path unless a future design can prove a win; the current version made the hot
+  bucket slower and increased WASM size.

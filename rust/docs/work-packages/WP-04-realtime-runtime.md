@@ -380,6 +380,27 @@ Retained optimization slice:
   it keeps the same canonical root contract and removes allocation from the hot
   path.
 
+Rejected probe:
+
+- Tried streaming canonical wire commit payloads directly into SHA-256 instead
+  of materializing the canonical payload `String` first.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract`, and
+  `bun run --cwd rust/bindings/browser build:wasm:dev`.
+- Browser dev E2E gate:
+  `.context/benchmarks/wp04-realtime-streaming-integrity-hash.json`.
+- Result versus the retained string-writer guard:
+  `rust_realtime_live_ms=92.55 -> 93.63`,
+  `rust_realtime_apply_total_ms=128 -> 154`,
+  `rust_realtime_pull_apply_total_ms=103 -> 130`,
+  `rust_realtime_integrity_verify_total_ms=76 -> 98`,
+  `rust_realtime_integrity_verify_p50_ms=5 -> 7`, and
+  `browser_served_rust_wasm_bytes=7465224 -> 7466004`.
+- Decision: rejected and reverted. The abstraction is not worth carrying
+  without a measurable win.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
