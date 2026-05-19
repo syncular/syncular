@@ -14,6 +14,8 @@ import {
   gzipBytes,
   randomId,
   type ScopeValues,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
@@ -24,7 +26,10 @@ import {
   type SyncPullRequest,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
+  type SyncScopedSnapshotArtifactKind,
   type SyncSnapshot,
+  type SyncSnapshotArtifactCompression,
+  type SyncSnapshotArtifactsRequest,
   type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
   sha256Hex,
@@ -56,6 +61,10 @@ import {
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
 import {
+  createScopedSnapshotArtifactScopeCacheKey,
+  readScopedSnapshotArtifactRefByPageKey,
+} from './snapshot-artifacts';
+import {
   createMemoryScopeCache,
   type ScopeCacheBackend,
 } from './subscriptions/cache';
@@ -76,6 +85,7 @@ interface PullBootstrapTimings {
   rowFrameEncodeMs: number;
   binaryEncodeMs: number;
   chunkCacheLookupMs: number;
+  artifactCacheLookupMs: number;
   chunkGzipMs: number;
   chunkHashMs: number;
   chunkPersistMs: number;
@@ -138,12 +148,47 @@ function resolveSnapshotChunkEncoding(
   );
 }
 
+interface SnapshotArtifactSelection {
+  artifactKind: SyncScopedSnapshotArtifactKind;
+  compression: SyncSnapshotArtifactCompression;
+  featureSet: readonly string[];
+}
+
+function normalizeFeatureSet(features: readonly string[] | undefined): string[] {
+  return Array.from(new Set(features ?? [])).sort();
+}
+
+function resolveSnapshotArtifactSelection(
+  request: SyncSnapshotArtifactsRequest | undefined
+): SnapshotArtifactSelection | null {
+  if (!request) return null;
+  if (
+    !request.artifactKinds.includes(
+      SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1
+    )
+  ) {
+    return null;
+  }
+  if (
+    request.compressions &&
+    !request.compressions.includes(SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE)
+  ) {
+    return null;
+  }
+  return {
+    artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+    compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    featureSet: normalizeFeatureSet(request.featureSet),
+  };
+}
+
 function createPullBootstrapTimings(): PullBootstrapTimings {
   return {
     snapshotQueryMs: 0,
     rowFrameEncodeMs: 0,
     binaryEncodeMs: 0,
     chunkCacheLookupMs: 0,
+    artifactCacheLookupMs: 0,
     chunkGzipMs: 0,
     chunkHashMs: 0,
     chunkPersistMs: 0,
@@ -660,6 +705,18 @@ export async function pull<
         const snapshotChunkEncoding = resolveSnapshotChunkEncoding(
           request.snapshotEncodings
         );
+        const snapshotArtifactSelection = resolveSnapshotArtifactSelection(
+          request.snapshotArtifacts
+        );
+        const snapshotArtifactSchemaVersion =
+          args.snapshotChunkCacheSchemaVersion == null
+            ? null
+            : String(args.snapshotChunkCacheSchemaVersion);
+        if (snapshotArtifactSelection && snapshotArtifactSchemaVersion == null) {
+          throw new Error(
+            'Snapshot artifacts require snapshotChunkCacheSchemaVersion'
+          );
+        }
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
           db,
@@ -817,6 +874,20 @@ export async function pull<
                       compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                       gzipLevel: snapshotChunkGzipLevel,
                     });
+                    const artifactScopeKey =
+                      snapshotArtifactSelection && snapshotArtifactSchemaVersion
+                        ? await createScopedSnapshotArtifactScopeCacheKey({
+                            partitionId,
+                            subscriptionId: sub.id,
+                            scopes: effectiveScopes,
+                            schemaVersion: snapshotArtifactSchemaVersion,
+                            artifactKind:
+                              snapshotArtifactSelection.artifactKind,
+                            compression:
+                              snapshotArtifactSelection.compression,
+                            features: snapshotArtifactSelection.featureSet,
+                          })
+                        : null;
 
                     interface SnapshotBundle {
                       table: string;
@@ -1095,6 +1166,70 @@ export async function pull<
                           tableHandler.snapshotBinaryColumns,
                           tableHandler.snapshotBinaryEncoder
                         );
+                      }
+
+                      if (artifactScopeKey && activeBundle.pageCount === 0) {
+                        const pagesRemaining = Math.max(
+                          1,
+                          maxSnapshotPages - pageIndex
+                        );
+                        const artifactRowLimit =
+                          resolveBinarySnapshotBundleRowLimit({
+                            limitSnapshotRows,
+                            pagesRemaining,
+                          });
+                        const artifactLookupStartedAt = Date.now();
+                        const artifact =
+                          await readScopedSnapshotArtifactRefByPageKey(trx, {
+                            partitionId,
+                            scopeKey: artifactScopeKey,
+                            subscriptionId: sub.id,
+                            table: nextTableName,
+                            asOfCommitSeq: effectiveState.asOfCommitSeq,
+                            rowCursor: nextState.rowCursor,
+                            rowLimit: artifactRowLimit,
+                            artifactKind:
+                              snapshotArtifactSelection!.artifactKind,
+                            schemaVersion: snapshotArtifactSchemaVersion!,
+                            compression:
+                              snapshotArtifactSelection!.compression,
+                          });
+                        bootstrapTimings.artifactCacheLookupMs += Math.max(
+                          0,
+                          Date.now() - artifactLookupStartedAt
+                        );
+
+                        if (
+                          artifact &&
+                          (artifact.isLastPage ||
+                            artifact.nextRowCursor !== null)
+                        ) {
+                          snapshots.push({
+                            table: nextTableName,
+                            rows: [],
+                            artifacts: [artifact],
+                            isFirstPage: artifact.isFirstPage,
+                            isLastPage: artifact.isLastPage,
+                            bootstrapStateAfter: snapshotBootstrapStateAfter({
+                              tableIndex: nextState.tableIndex,
+                              nextRowCursor: artifact.nextRowCursor,
+                              isLastPage: artifact.isLastPage,
+                            }),
+                          });
+                          activeBundle = null;
+                          pageIndex +=
+                            Math.max(
+                              1,
+                              Math.ceil(artifactRowLimit / limitSnapshotRows)
+                            ) - 1;
+
+                          nextState = snapshotBootstrapStateAfter({
+                            tableIndex: nextState.tableIndex,
+                            nextRowCursor: artifact.nextRowCursor,
+                            isLastPage: artifact.isLastPage,
+                          });
+                          continue;
+                        }
                       }
 
                       if (
@@ -1672,6 +1807,8 @@ export async function pull<
                 bootstrapTimings.binaryEncodeMs,
               bootstrap_chunk_cache_lookup_ms:
                 bootstrapTimings.chunkCacheLookupMs,
+              bootstrap_artifact_cache_lookup_ms:
+                bootstrapTimings.artifactCacheLookupMs,
               bootstrap_chunk_gzip_ms: bootstrapTimings.chunkGzipMs,
               bootstrap_chunk_hash_ms: bootstrapTimings.chunkHashMs,
               bootstrap_chunk_persist_ms: bootstrapTimings.chunkPersistMs,

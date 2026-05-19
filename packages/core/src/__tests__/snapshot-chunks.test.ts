@@ -37,6 +37,25 @@ describe('snapshot chunk protocol', () => {
     ]);
   });
 
+  it('accepts scoped snapshot artifact capabilities on pull requests', () => {
+    const parsed = SyncPullRequestSchema.parse({
+      clientId: 'client-1',
+      limitCommits: 50,
+      snapshotArtifacts: {
+        artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
+        compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
+        featureSet: ['blobs', 'crdt-yjs'],
+      },
+      subscriptions: [],
+    });
+
+    expect(parsed.snapshotArtifacts).toEqual({
+      artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
+      compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
+      featureSet: ['blobs', 'crdt-yjs'],
+    });
+  });
+
   it('accepts binary snapshot chunk refs for forward-compatible transport metadata', () => {
     const parsed = SyncSnapshotChunkRefSchema.parse({
       id: 'chunk-1',

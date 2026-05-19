@@ -141,15 +141,39 @@ Retained fourth slice:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
   and `bun run --cwd packages/core tsgo`.
 
+Retained fifth slice:
+
+- Added an explicit `snapshotArtifacts` pull request capability for scoped
+  artifact body kinds, compression, and feature-set requirements.
+- Wired Hono pull requests through to the server pull engine.
+- Server pull now looks up an exact scoped artifact key during bootstrap before
+  querying snapshot rows and advertises the artifact ref when partition,
+  subscription id, effective scopes, schema version, as-of commit, table,
+  cursor, row limit, artifact kind, compression, and feature set all match.
+- A scope mismatch or missing/stale artifact stays on the current row-chunk
+  pull path; this is recovery behavior, not an old-protocol compatibility
+  branch.
+- Rust protocol request structs can carry the artifact capability, but runtime
+  clients still leave it unset until artifact body download/apply is implemented.
+- Correctness gates passed:
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/core tsgo`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd packages/server-hono tsgo`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
+  and `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`.
+
 ## Next Action
 
-Wire server-side artifact eligibility into pull responses:
+Build the artifact body path:
 
 - how object storage writes are represented without generating SQLite files in
   the Worker/D1 hot path;
-- how clients recover through the current row-chunk pull path when artifacts
-  are missing or stale, without adding a negotiated legacy protocol branch;
-- how revocation and interrupted artifact apply recover.
+- how background/precompute jobs create scoped SQLite artifact bodies and insert
+  matching metadata rows;
+- how browser/native clients download, verify, and apply artifact bodies;
+- how revocation and interrupted artifact apply recover without app-side
+  special handling.
 
 The first runtime implementation should be a gated prototype for one generated
 app schema and one scoped subscription, with benchmark evidence against the
