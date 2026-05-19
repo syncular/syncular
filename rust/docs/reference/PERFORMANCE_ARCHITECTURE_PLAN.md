@@ -2566,6 +2566,11 @@ client. Overflow should close or resync the session deliberately.
   `155ms -> 162ms`, and WASM size `7463118 -> 7470682`. A worthwhile direct
   binary realtime path must avoid JSON/map materialization before integrity/apply,
   not keep two row representations.
+- Rejected: preallocating JSON maps during binary row-group decode. The rerun
+  regressed realtime p50 `82.27ms -> 84.64ms`, p95 `83.61ms -> 87.96ms`, and
+  incremental sync-pack decode `9ms -> 10ms`. WASM size improved
+  `7463118 -> 7416004`, but the runtime tradeoff and extra verbosity were not
+  worth retaining.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
 - Next: design the heavier websocket-first session protocol with server
