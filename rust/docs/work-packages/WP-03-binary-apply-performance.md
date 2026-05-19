@@ -48,11 +48,28 @@ benchmark log show that adapter bypasses, smaller batches, null-mask
 precomputation, and nullable-column elision do not beat the current accepted
 baseline.
 
-Next retained attempt should be a larger architecture experiment:
+Next retained attempt should be a larger architecture experiment, but it must
+fit scoped/CF-worker-compatible sync:
 
-- server-generated SQLite snapshot artifact or attach/import path, or
+- server-generated SQLite snapshot artifacts are only valid as a gated
+  experiment for explicitly precomputed scoped artifacts. Do not make them the
+  default bootstrap plan unless they can respect arbitrary per-user scope mixes
+  without exploding artifact count or requiring a SQLite engine in the CF worker
+  hot path.
 - a true generated SQLite import path that reduces the number of SQLite bind
   calls rather than just changing how the current bind loop is reached.
 
 Start with the external app-style benchmark before and after the change, then
 run the local 100k/500k browser gates if the external result is promising.
+
+Feasibility notes:
+
+- `sqlite-wasm-rs` exposes `sqlite3_serialize`, `sqlite3_deserialize`, and the
+  SQLite backup APIs, so browser-side artifact import is technically possible.
+- `sqlite-wasm-rs` also exposes `sqlite3_carray_bind`, but `CARRAY_TEXT` is
+  `char*` based and does not carry byte lengths. That makes it a poor default
+  for arbitrary SQLite text values unless we add strict text constraints or a
+  custom length-aware import path.
+- The external Docker-based app benchmark stack hung while checking this batch,
+  so the next implementation attempt should first restore a working external
+  benchmark run before accepting any architecture result.
