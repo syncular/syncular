@@ -744,32 +744,12 @@ async fn decode_snapshot_chunk_bytes(
     compressed: &[u8],
     stats: &Rc<RefCell<WebTransportStats>>,
 ) -> Result<Vec<u8>> {
-    if chunk.compression != "gzip"
-        || (chunk.encoding != SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-            && chunk.encoding != SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1)
-    {
-        return Err(SyncularError::protocol_message(format!(
-            "unsupported snapshot chunk format: encoding={} compression={}",
-            chunk.encoding, chunk.compression
-        )));
-    }
+    syncular_protocol::validate_snapshot_chunk_format(chunk)?;
 
     let hash_started_at = timing_now_ms();
     let actual_hash = sha256_digest(compressed).await?;
     record_snapshot_chunk_hash(stats, elapsed_ms_since(hash_started_at));
-    let expected_hash = hex::decode(&chunk.sha256).map_err(|err| {
-        SyncularError::protocol(err).context("decode snapshot chunk expected hash")
-    })?;
-    if actual_hash.as_slice() != expected_hash.as_slice() {
-        return Err(SyncularError::message(
-            ErrorKind::Protocol,
-            format!(
-                "snapshot chunk hash mismatch: expected {}, got {}",
-                chunk.sha256,
-                hex::encode(actual_hash)
-            ),
-        ));
-    }
+    syncular_protocol::validate_snapshot_chunk_hash_bytes(chunk, &actual_hash)?;
 
     let decompress_started_at = timing_now_ms();
     let decoded = match decompress_gzip_with_browser(compressed).await {
