@@ -612,6 +612,16 @@ Rejected attached-schema PRAGMA probe:
   external bootstrap `4845.39ms -> 6118.45ms`, external local apply
   `1392ms -> 1705ms`, and peak memory `746.92MB -> 755.36MB`.
 
+Rejected 100k artifact bundle-cap probe:
+
+- Raised the server bundle cap to `100k` rows while keeping browser logical
+  snapshot pages at `50k`, so larger precomputed artifacts selected correctly.
+- Rejected because request count and bytes improved only slightly, while
+  external bootstrap regressed `4845.39ms -> 5670.76ms`, local apply regressed
+  `1392ms -> 1620ms`, and peak memory worsened `746.92MB -> 776.06MB`.
+- Keep the current `50k` bundle cap until the import path can release attached
+  SQLite artifact buffers before the end of the apply transaction.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:

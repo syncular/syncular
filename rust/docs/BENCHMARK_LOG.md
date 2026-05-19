@@ -2926,3 +2926,55 @@ Decision:
 - Rejected and reverted. It is a correctness support path for future variable
   artifact schemas, but it regresses the current hot path and nullable column
   elision was also rejected.
+
+## 2026-05-19 - Rejected WP-12 100k SQLite Artifact Bundle Cap
+
+Probe:
+
+- Raised the server binary snapshot bundle cap from `50k` to `100k` rows, while
+  keeping the browser client's logical snapshot page at `50k`.
+- This is different from the older rejected 100k client-page probe: the client
+  still requested `limitSnapshotRows=50000`, while artifact precompute used
+  `100000` rows so server lookup selected larger two-page artifact bundles.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=100000 \
+  --rust-snapshot-rows-per-page=50000 \
+  --output=.context/benchmarks/wp12-artifact-bundle-100k-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=100000
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained 50k stream-apply baseline:
+
+| Metric | 50k bundle baseline | 100k bundle cap |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `296.93ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `277ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4208349` |
+| Local 500k request count | `11` | `6` |
+| External 500k bootstrap | `4845.39ms` | `5670.76ms` |
+| External 500k local apply | `1392ms` | `1620ms` |
+| External 500k response bytes | `3527317` | `3517139` |
+| External 500k request count | `10` | `6` |
+| External 500k peak memory | `746.92MB` | `776.06MB` |
+
+Decision:
+
+- Rejected and reverted. Larger artifacts reduced request count and bytes
+  slightly, but made both apply time and peak memory worse. Keep the `50k`
+  bundle cap until a different transaction/import shape can release artifact
+  buffers earlier.
