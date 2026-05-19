@@ -1308,6 +1308,25 @@ impl SyncStore for DieselSqliteStore {
             f(&mut tx)
         })
     }
+
+    fn supports_sqlite_snapshot_artifacts(&self) -> bool {
+        true
+    }
+
+    fn decode_sqlite_snapshot_artifact_rows(
+        &self,
+        table: &str,
+        artifact_bytes: &[u8],
+    ) -> Result<Vec<Value>> {
+        let mut artifact_conn = SqliteConnection::establish(":memory:")
+            .map_err(|err| SyncularError::storage(err).context("open sqlite snapshot artifact"))?;
+        artifact_conn
+            .deserialize_readonly_database_from_buffer(artifact_bytes)
+            .map_err(|err| {
+                SyncularError::storage(err).context("deserialize sqlite snapshot artifact")
+            })?;
+        list_app_rows_json(&mut artifact_conn, self.app_schema, table)
+    }
 }
 
 #[cfg(feature = "demo-todo-native-fixture")]

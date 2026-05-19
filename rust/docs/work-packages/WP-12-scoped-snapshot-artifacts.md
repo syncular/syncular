@@ -153,8 +153,9 @@ Retained fifth slice:
 - A scope mismatch or missing/stale artifact stays on the current row-chunk
   pull path; this is recovery behavior, not an old-protocol compatibility
   branch.
-- Rust protocol request structs can carry the artifact capability, but runtime
-  clients still leave it unset until artifact body download/apply is implemented.
+- Rust protocol request structs can carry the artifact capability. Native Diesel
+  clients now advertise the current SQLite artifact kind once their apply path
+  is available; stores without artifact support do not request artifacts.
 - Correctness gates passed:
   `bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/snapshot-artifacts.test.ts`,
   `bun run --cwd packages/core tsgo`,
@@ -171,7 +172,8 @@ Retained sixth slice:
   bytes, writes them through the storage adapter, and inserts the matching
   scoped metadata row.
 - Added native and browser-runtime fail-closed guards so artifact snapshots are
-  rejected before clearing local rows until download/apply support lands.
+  rejected before clearing local rows until each runtime has explicit apply
+  support.
 - Re-exported artifact protocol structs/constants through the runtime protocol
   module.
 - Correctness gates passed:
@@ -196,13 +198,46 @@ Retained seventh slice:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
   and `bun run build:wasm:dev` from `rust/bindings/browser`.
 
+Retained eighth slice:
+
+- Added an explicit store capability for SQLite snapshot artifact decoding.
+- Native Diesel stores can deserialize a verified SQLite artifact into an
+  in-memory readonly SQLite connection, project rows through the generated app
+  schema adapter, run the same snapshot-row transform path, and apply rows
+  through the existing batched upsert logic.
+- Native Diesel pull requests now advertise `snapshotArtifacts` for
+  `sqlite-snapshot-v1` with `none` compression. Non-Diesel stores and browser
+  owned SQLite still fail closed before mutation.
+- Testkit can now queue and assert snapshot artifact byte fetches.
+- Correctness gates passed:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_rejects_snapshot_artifacts_before_mutating_store --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`, and
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`.
+- Compile gates passed:
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+  and `bun run build:wasm:dev` from `rust/bindings/browser`.
+- Targeted server perf gate passed:
+  `PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"`.
+  No stored baseline was available for that gate. External app-style bootstrap
+  was not run because server/background artifact body production is not wired
+  yet, so the benchmark would not exercise artifact apply.
+
+Important limitation: this first native apply path still materializes artifact
+rows as JSON values before applying them. It proves the verified protocol and
+recovery shape, but it is not yet the final performance path.
+
 ## Next Action
 
-Build the artifact body path:
+Build the artifact production and fast-apply path:
 
 - how background/precompute jobs create scoped SQLite artifact bodies and insert
   matching metadata rows;
-- how browser/native clients apply verified artifact bodies;
+- how browser clients apply verified artifact bodies;
+- how native clients avoid JSON materialization by attaching/importing artifact
+  rows directly or otherwise using generated fixed-column apply;
 - how revocation and interrupted artifact apply recover without app-side
   special handling.
 

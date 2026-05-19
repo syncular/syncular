@@ -8,7 +8,8 @@ use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
 use syncular_runtime::protocol::{
     BlobRef, CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushBatchResponse,
-    PushCommitRequest, PushCommitResponse, ScopeValues, SnapshotChunkRef, SubscriptionResponse,
+    PushCommitRequest, PushCommitResponse, ScopeValues, ScopedSnapshotArtifactRef,
+    SnapshotChunkRef, SubscriptionResponse,
 };
 use syncular_runtime::transport::{
     BlobTransport, RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders,
@@ -18,6 +19,12 @@ use syncular_runtime::transport::{
 #[derive(Debug, Clone)]
 pub struct SnapshotChunkFetch {
     pub chunk: SnapshotChunkRef,
+    pub scopes: ScopeValues,
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotArtifactFetch {
+    pub artifact: ScopedSnapshotArtifactRef,
     pub scopes: ScopeValues,
 }
 
@@ -39,11 +46,13 @@ struct TestTransportState {
     requests: Vec<CombinedRequest>,
     ws_pushes: Vec<PushCommitRequest>,
     chunk_fetches: Vec<SnapshotChunkFetch>,
+    artifact_fetches: Vec<SnapshotArtifactFetch>,
     auth_headers: Vec<SyncAuthHeaders>,
     realtime_events: VecDeque<RealtimeEvent>,
     http_responses: VecDeque<QueuedHttpResponse>,
     ws_push_responses: VecDeque<PushCommitResponse>,
     chunk_rows: VecDeque<SnapshotChunkRows>,
+    artifact_bytes: VecDeque<Vec<u8>>,
     blob_uploads: Vec<BlobUploadRecord>,
     blobs: BTreeMap<String, Vec<u8>>,
     closed_realtime_count: usize,
@@ -118,6 +127,14 @@ impl TestTransport {
             .push_back(SnapshotChunkRows::Json(rows));
     }
 
+    pub fn push_snapshot_artifact_bytes(&self, bytes: Vec<u8>) {
+        self.state
+            .lock()
+            .expect("test transport state")
+            .artifact_bytes
+            .push_back(bytes);
+    }
+
     pub fn seed_blob(&self, blob: &BlobRef, bytes: Vec<u8>) {
         self.state
             .lock()
@@ -166,6 +183,14 @@ impl TestTransportHandle {
             .lock()
             .expect("test transport state")
             .chunk_fetches
+            .clone()
+    }
+
+    pub fn artifact_fetches(&self) -> Vec<SnapshotArtifactFetch> {
+        self.state
+            .lock()
+            .expect("test transport state")
+            .artifact_fetches
             .clone()
     }
 
@@ -235,6 +260,21 @@ impl SyncTransport for TestTransport {
             .chunk_rows
             .pop_front()
             .unwrap_or_else(|| SnapshotChunkRows::Json(Vec::new())))
+    }
+
+    fn fetch_snapshot_artifact_bytes(
+        &self,
+        artifact: &ScopedSnapshotArtifactRef,
+        scopes: &Map<String, Value>,
+    ) -> Result<Vec<u8>> {
+        let mut state = self.state.lock().expect("test transport state");
+        state.artifact_fetches.push(SnapshotArtifactFetch {
+            artifact: artifact.clone(),
+            scopes: scopes.clone(),
+        });
+        state.artifact_bytes.pop_front().ok_or_else(|| {
+            SyncularError::protocol_message("no snapshot artifact bytes queued in TestTransport")
+        })
     }
 
     fn connect_realtime(&self) -> Result<Self::Realtime> {

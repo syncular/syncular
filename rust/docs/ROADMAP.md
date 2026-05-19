@@ -83,10 +83,11 @@ read-only review:
     or Worker-hot-path SQLite file generation. The shared TS/Rust manifest
     contract, server metadata table/helpers, authenticated artifact route, and
     pull-response artifact reference/eligibility contract are in place. Artifact
-    body storage writes have a canonical helper and runtimes fail closed before
-    apply support. Native/browser transports can download and verify artifact
-    bytes; next is scoped SQLite artifact materialization plus verified client
-    apply.
+    body storage writes have a canonical helper, native/browser transports can
+    download and verify artifact bytes, and native Diesel can apply verified
+    SQLite artifacts through the generated schema projection path. Browser
+    apply and native direct artifact import remain open; benchmark gates start
+    once artifact bodies are produced by server/background jobs.
 
 ## Next
 

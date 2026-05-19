@@ -782,3 +782,56 @@ Decision:
 
 - Retained. The remaining duplicated protocol validation moved into the
   protocol crate and browser performance/size stayed inside the accepted gate.
+
+## 2026-05-19 - Native SQLite Snapshot Artifact Apply
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Native Diesel stores can decode verified `sqlite-snapshot-v1` artifact bytes
+  into an in-memory readonly SQLite connection, project rows through generated
+  schema adapters, and apply them through the existing snapshot upsert path.
+- Native Diesel pull requests now advertise the current SQLite artifact kind.
+- Testkit can queue and assert snapshot artifact byte fetches.
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Candidate:
+
+- `sync_pack_json_encode_50000`: `11.0ms`
+- `sync_pack_json_decode_50000`: `28.8ms`
+- `sync_pack_binary_encode_50000`: `19.8ms`
+- `sync_pack_binary_decode_50000`: `26.0ms`
+- `sync_pack_binary_generated_encode_50000`: `17.1ms`
+- `sync_pack_binary_generated_decode_50000`: `26.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.3ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.3ms`
+
+Delta:
+
+- No stored baseline was available for this targeted gate, so this run is the
+  evidence point for the retained slice rather than a regression comparison.
+- External app-style bootstrap was not run because server/background artifact
+  body production is not wired yet, so the large-bootstrap benchmark would not
+  exercise the new artifact apply path.
+
+Decision:
+
+- Retained as a correctness slice. It proves verified native artifact apply and
+  request capability wiring, while explicitly leaving direct fast import and
+  browser apply for the next measured WP-12 slices.
