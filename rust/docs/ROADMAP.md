@@ -77,10 +77,11 @@ read-only review:
     The accepted browser path is binary-table direct payload apply. Further
     client apply micro-probes are stopped; the remaining large-bootstrap work
     needs a scoped artifact design.
-- `[ ]` [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+- `[~]` [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
   - New continuation of the WP-03 performance findings. Design and benchmark a
     scoped, content-addressed artifact path without whole-partition assumptions
-    or Worker-hot-path SQLite file generation.
+    or Worker-hot-path SQLite file generation. The shared TS/Rust manifest
+    contract is in place; next is storage lifecycle and route contract.
 
 ## Next
 
