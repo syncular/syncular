@@ -18,6 +18,91 @@ Decision:
 Notes:
 ```
 
+## 2026-05-19 - Rejected WP-03 Columnar JSON Import Probe
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+External app-style gate recovery:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+
+bun run bench:run -- --stack syncular --scenario bootstrap
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario local-query
+```
+
+Recovery note:
+
+- OrbStack/Docker was wedged from stale benchmark state. `docker info`, Docker
+  restart, and health checks hung until `orbctl stop && orbctl start` was run.
+- After recovery, the syncular stack was rebuilt cleanly and health checks
+  passed.
+
+External baseline after recovery:
+
+- TS 500k bootstrap: `3415.92ms`.
+- Rust 500k bootstrap: `2382.23ms` (`0.70x` TS).
+- TS 500k local apply: `1901.25ms`.
+- Rust 500k local apply: `422ms` (`0.22x` TS).
+- TS local list/search p50: `0.08ms` / `0.06ms`.
+- Rust local list/search p50: `0.11ms` / `0.16ms`.
+- TS aggregate p50: `5.25ms`.
+- Rust read-model aggregate p50: `0.01ms`; raw SQL aggregate p50: `7.25ms`.
+
+Immediate repo-local control after recovery:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+- Control before probe: `rust_bootstrap_ms=625.06`,
+  `rust_pull_apply_ms=356`, `rust_snapshot_chunk_apply_ms=308`,
+  `rust_snapshot_chunk_bind_ms=179`, `rust_snapshot_chunk_step_ms=118`,
+  `rust_cached_bootstrap_ms=338.5`,
+  `rust_cached_snapshot_chunk_apply_ms=294`.
+
+Rejected candidate:
+
+- For cleared binary snapshot inserts, attempted a columnar JSON import path
+  using one `json_each()` array per column instead of binding every cell.
+- Candidate 500k browser gate failed to complete normally:
+  `Syncular v2 worker request close timed out after 30000ms`.
+- Source was reverted and release WASM rebuilt.
+
+Restored repo-local result after revert:
+
+- `rust_bootstrap_ms=625.3`, `rust_pull_apply_ms=356`,
+  `rust_snapshot_chunk_apply_ms=310`, `rust_snapshot_chunk_bind_ms=174`,
+  `rust_snapshot_chunk_step_ms=126`, `rust_cached_bootstrap_ms=337.54`,
+  `rust_cached_snapshot_chunk_apply_ms=291`.
+
+Decision:
+
+- Rejected and reverted. SQLite `json_each()` import adds too much parse/query
+  work and is not a viable canonical apply path.
+- Do not revisit JSON import as the next WP-03 attempt. The next serious
+  apply-path experiment needs either a length-aware native import extension or
+  a narrowly scoped SQLite artifact prototype that respects per-user scopes.
+
 ## 2026-05-19 - Rejected WP-03 Browser Apply Probes
 
 Commit: not retained
