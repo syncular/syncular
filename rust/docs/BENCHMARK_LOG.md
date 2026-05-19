@@ -3627,3 +3627,49 @@ Decision:
   stayed in the same performance band. Bootstrap is not improved by this slice;
   the value is removing hand-written SQL ownership from the benchmark/app
   integration path.
+
+## 2026-05-19 - WP-05 Staged Bootstrap Readiness Contract
+
+Change:
+
+- Added local-only `bootstrapPhase` to generated Rust/TypeScript/Swift/Kotlin subscription specs.
+- Rust native/web pull selection now starts only the lowest pending bootstrap phase while keeping ready or already bootstrapping higher phases in the pull request.
+- Browser sync results expose per-subscription checkpoint metadata; the TypeScript binding derives aggregate `criticalReady`, `interactiveReady`, `complete`, active phase, and phase summaries. The aggregate is intentionally computed outside Rust to keep the WASM package under budget.
+- Browser worker/realtime emits `bootstrapChanged` through the normal client event bus.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime bootstrap_phase_tests::staged_pull_selection_matches_subscription_readiness
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen generated_outputs_are_current
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "surfaces server client-id ownership conflicts|SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+Release package gate:
+
+| Metric | Result | Budget |
+| --- | ---: | ---: |
+| WASM raw | `3.29MiB` | `3.30MiB` |
+| WASM gzip | `1.36MiB` | `1.36MiB` |
+
+Benchmark guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=0 --wasm-profile=release --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 --output=.context/benchmarks/wp05-bootstrap-readiness-100k-artifacts.json
+```
+
+| Metric | Previous accepted same-shape guard | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `147.84ms` | `147.15ms` |
+| Rust pull apply | n/a | `137ms` |
+| Rust snapshot row apply | n/a | `121ms` |
+| Browser served Rust WASM bytes | `3,445,771` | `3,450,376` |
+
+Decision:
+
+- Accepted. Readiness metadata and events restore staged bootstrap semantics without a measurable 100k artifact regression. The first Rust aggregate-summary implementation was not retained because it pushed release WASM over budget by about `11.6KiB` raw / `5.4KiB` gzip; the accepted design keeps the aggregate in the TypeScript binding while preserving Rust-owned phase selection.

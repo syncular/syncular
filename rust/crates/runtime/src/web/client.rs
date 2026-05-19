@@ -13,7 +13,7 @@ use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
     validate_pull_commit_integrity_metadata, validate_pull_snapshot_manifests,
     validate_sqlite_snapshot_artifact_for_apply, verify_subscription_commit_integrity,
-    CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
+    BootstrapState, CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
     SyncCommit, SyncOperation, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
     SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
@@ -52,6 +52,10 @@ pub struct WebSyncPullOptions {
     pub max_snapshot_pages: i64,
     #[serde(default)]
     pub dedupe_rows: Option<bool>,
+    #[serde(default = "default_critical_bootstrap_phase")]
+    pub critical_bootstrap_phase: i64,
+    #[serde(default = "default_interactive_bootstrap_phase")]
+    pub interactive_bootstrap_phase: i64,
     #[serde(default = "default_include_snapshot_rows")]
     pub include_snapshot_rows: bool,
     #[serde(default = "default_collect_changed_rows")]
@@ -69,6 +73,8 @@ impl Default for WebSyncPullOptions {
             limit_snapshot_rows: 50_000,
             max_snapshot_pages: 10,
             dedupe_rows: None,
+            critical_bootstrap_phase: default_critical_bootstrap_phase(),
+            interactive_bootstrap_phase: default_interactive_bootstrap_phase(),
             include_snapshot_rows: false,
             collect_changed_rows: true,
             max_snapshot_changed_rows: default_max_snapshot_changed_rows(),
@@ -87,6 +93,14 @@ fn default_limit_snapshot_rows() -> i64 {
 
 fn default_max_snapshot_pages() -> i64 {
     10
+}
+
+fn default_critical_bootstrap_phase() -> i64 {
+    0
+}
+
+fn default_interactive_bootstrap_phase() -> i64 {
+    1
 }
 
 fn default_include_snapshot_rows() -> bool {
@@ -110,7 +124,7 @@ pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
     encrypted_crdt: Option<EncryptedCrdt>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct WebSyncResult {
     pub changed_tables: Vec<String>,
     pub changed_rows: Vec<SyncChangedRow>,
@@ -120,7 +134,7 @@ pub struct WebSyncResult {
     pub timings: WebSyncTimings,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct WebSyncTimings {
     pub total_ms: f64,
     pub push_ms: f64,
@@ -143,13 +157,23 @@ pub struct WebSyncTimings {
     pub notify_ms: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize)]
 pub struct WebSubscriptionResult {
     pub id: String,
     pub table: String,
     pub status: String,
     pub scopes: ScopeValues,
     pub next_cursor: i64,
+    #[serde(default)]
+    pub bootstrap_phase: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_state: Option<BootstrapState>,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub progress_percent: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snapshot_rows: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -669,6 +693,23 @@ where
             result.timings.subscription_state_ms += elapsed_ms_since(subscription_state_started_at);
 
             result.subscriptions.push(WebSubscriptionResult {
+                bootstrap_phase: self.subscription_bootstrap_phase(&sub.id),
+                bootstrap_state: sub.bootstrap_state.clone(),
+                ready: web_subscription_ready_parts(
+                    &sub.status,
+                    sub.next_cursor,
+                    sub.bootstrap_state.as_ref(),
+                ),
+                phase: web_subscription_phase(
+                    &sub.status,
+                    sub.next_cursor,
+                    sub.bootstrap_state.as_ref(),
+                ),
+                progress_percent: web_subscription_progress_percent(
+                    &sub.status,
+                    sub.next_cursor,
+                    sub.bootstrap_state.as_ref(),
+                ),
                 id: sub.id,
                 table,
                 status: sub.status,
@@ -823,6 +864,23 @@ where
             status: subscription.status.clone(),
             scopes: subscription.scopes.clone(),
             next_cursor: subscription.next_cursor,
+            bootstrap_phase: self.subscription_bootstrap_phase(&subscription.id),
+            bootstrap_state: subscription.bootstrap_state.clone(),
+            ready: web_subscription_ready_parts(
+                &subscription.status,
+                subscription.next_cursor,
+                subscription.bootstrap_state.as_ref(),
+            ),
+            phase: web_subscription_phase(
+                &subscription.status,
+                subscription.next_cursor,
+                subscription.bootstrap_state.as_ref(),
+            ),
+            progress_percent: web_subscription_progress_percent(
+                &subscription.status,
+                subscription.next_cursor,
+                subscription.bootstrap_state.as_ref(),
+            ),
             snapshot_rows: Vec::new(),
             commits: Vec::new(),
         });
@@ -1085,10 +1143,27 @@ where
         })
     }
 
+    fn subscription_bootstrap_phase(&self, subscription_id: &str) -> i64 {
+        self.subscriptions
+            .iter()
+            .find(|spec| spec.id == subscription_id)
+            .map(|spec| normalize_bootstrap_phase(spec.bootstrap_phase))
+            .unwrap_or(0)
+    }
+
     async fn build_pull_request(&mut self) -> Result<PullRequest> {
-        let mut subscriptions = Vec::new();
+        let mut entries = Vec::new();
         for spec in &self.subscriptions {
             let state = self.store.subscription_state(&spec.id).await?;
+            entries.push((spec.clone(), state));
+        }
+        let active_phase = resolve_active_bootstrap_phase_for_web(&entries);
+
+        let mut subscriptions = Vec::new();
+        for (spec, state) in entries {
+            if !should_include_web_pull_subscription(&spec, state.as_ref(), active_phase) {
+                continue;
+            }
             let scopes_changed = state
                 .as_ref()
                 .is_some_and(|state| state.scopes != spec.scopes);
@@ -1295,6 +1370,85 @@ where
     pub fn set_auth_headers(&mut self, headers: SyncAuthHeaders) {
         self.transport.set_auth_headers(headers);
     }
+}
+
+fn normalize_bootstrap_phase(phase: i64) -> i64 {
+    phase.max(0)
+}
+
+fn web_subscription_ready(state: Option<&WebSubscriptionState>) -> bool {
+    state.is_some_and(|state| {
+        web_subscription_ready_parts(&state.status, state.cursor, state.bootstrap_state.as_ref())
+    })
+}
+
+fn web_subscription_bootstrapping(state: Option<&WebSubscriptionState>) -> bool {
+    state.is_some_and(|state| state.status == "active" && state.bootstrap_state.is_some())
+}
+
+fn resolve_active_bootstrap_phase_for_web(
+    entries: &[(SubscriptionSpec, Option<WebSubscriptionState>)],
+) -> Option<i64> {
+    entries
+        .iter()
+        .filter(|(_, state)| !web_subscription_ready(state.as_ref()))
+        .map(|(spec, _)| normalize_bootstrap_phase(spec.bootstrap_phase))
+        .min()
+}
+
+fn should_include_web_pull_subscription(
+    spec: &SubscriptionSpec,
+    state: Option<&WebSubscriptionState>,
+    active_phase: Option<i64>,
+) -> bool {
+    let Some(active_phase) = active_phase else {
+        return true;
+    };
+    let phase = normalize_bootstrap_phase(spec.bootstrap_phase);
+    phase <= active_phase || web_subscription_ready(state) || web_subscription_bootstrapping(state)
+}
+
+fn web_subscription_ready_parts(
+    status: &str,
+    cursor: i64,
+    bootstrap_state: Option<&BootstrapState>,
+) -> bool {
+    status == "active" && bootstrap_state.is_none() && cursor >= 0
+}
+
+fn web_subscription_phase(
+    status: &str,
+    cursor: i64,
+    bootstrap_state: Option<&BootstrapState>,
+) -> String {
+    if status == "revoked" {
+        "error".to_string()
+    } else if bootstrap_state.is_some() {
+        "bootstrapping".to_string()
+    } else if status == "active" && cursor >= 0 {
+        "live".to_string()
+    } else {
+        "pending".to_string()
+    }
+}
+
+fn web_subscription_progress_percent(
+    status: &str,
+    cursor: i64,
+    bootstrap_state: Option<&BootstrapState>,
+) -> i64 {
+    if web_subscription_ready_parts(status, cursor, bootstrap_state) {
+        return 100;
+    }
+    let Some(state) = bootstrap_state else {
+        return 0;
+    };
+    let total = state.tables.len() as i64;
+    if total <= 0 {
+        return 0;
+    }
+    let processed = state.table_index.clamp(0, total);
+    ((processed * 100) / total).clamp(0, 100)
 }
 
 fn validate_server_schema_version(
@@ -1512,6 +1666,7 @@ mod tests {
     use serde_json::{json, Map, Value};
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
     #[test]
@@ -1519,12 +1674,7 @@ mod tests {
         let mut store = WebMemoryStore::new();
         block_on(store.upsert_row("tasks", task_row("existing-task", "p0")))?;
         let transport = ArtifactTransport;
-        let config = WebSyncularClientConfig {
-            base_url: "http://syncular.test/sync".to_string(),
-            client_id: "web-client-artifact-failure".to_string(),
-            actor_id: "user-rust".to_string(),
-            project_id: Some("p0".to_string()),
-        };
+        let config = test_config("web-client-artifact-failure");
         let mut client = WebSyncularClient::with_parts(config, transport, store);
 
         let error = block_on(client.sync_pull()).expect_err("artifact apply failure");
@@ -1547,12 +1697,7 @@ mod tests {
         let mut store = WebMemoryStore::new();
         block_on(store.upsert_row("tasks", task_row("existing-task", "p0")))?;
         let transport = FailingChunkTransport;
-        let config = WebSyncularClientConfig {
-            base_url: "http://syncular.test/sync".to_string(),
-            client_id: "web-client-chunk-failure".to_string(),
-            actor_id: "user-rust".to_string(),
-            project_id: Some("p0".to_string()),
-        };
+        let config = test_config("web-client-chunk-failure");
         let mut client = WebSyncularClient::with_parts(config, transport, store);
 
         let error = block_on(client.sync_pull()).expect_err("chunk fetch failure");
@@ -1568,6 +1713,65 @@ mod tests {
     }
 
     #[test]
+    fn pull_advances_bootstrap_phases_and_reports_readiness() -> Result<()> {
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let transport = PhaseCaptureTransport {
+            requested: requested.clone(),
+        };
+        let mut client = WebSyncularClient::with_parts(
+            test_config("web-client-bootstrap-phases"),
+            transport,
+            WebMemoryStore::new(),
+        );
+        client.set_subscriptions(vec![
+            SubscriptionSpec {
+                id: "sub-critical".to_string(),
+                table: "tasks".to_string(),
+                scopes: scopes(),
+                params: Map::new(),
+                bootstrap_phase: 0,
+            },
+            SubscriptionSpec {
+                id: "sub-interactive".to_string(),
+                table: "comments".to_string(),
+                scopes: scopes(),
+                params: Map::new(),
+                bootstrap_phase: 1,
+            },
+        ]);
+
+        let first = block_on(client.sync_pull())?;
+        assert_eq!(
+            requested.lock().expect("requests").first().cloned(),
+            Some(vec!["sub-critical".to_string()])
+        );
+        assert_eq!(
+            first.subscriptions.first().map(|subscription| (
+                subscription.id.as_str(),
+                subscription.ready,
+                subscription.phase.as_str(),
+                subscription.progress_percent
+            )),
+            Some(("sub-critical", true, "live", 100))
+        );
+
+        let second = block_on(client.sync_pull())?;
+        assert_eq!(
+            requested.lock().expect("requests").get(1).cloned(),
+            Some(vec![
+                "sub-critical".to_string(),
+                "sub-interactive".to_string()
+            ])
+        );
+        assert!(second
+            .subscriptions
+            .iter()
+            .all(|subscription| subscription.ready));
+
+        Ok(())
+    }
+
+    #[test]
     fn realtime_sync_pack_verifies_and_persists_subscription_root() -> Result<()> {
         let mut store = WebMemoryStore::new();
         block_on(store.upsert_subscription_state(WebSubscriptionState {
@@ -1578,18 +1782,14 @@ mod tests {
             bootstrap_state: None,
             status: "active".to_string(),
         }))?;
-        let config = WebSyncularClientConfig {
-            base_url: "http://syncular.test/sync".to_string(),
-            client_id: "web-client-realtime-integrity".to_string(),
-            actor_id: "user-rust".to_string(),
-            project_id: Some("p0".to_string()),
-        };
+        let config = test_config("web-client-realtime-integrity");
         let mut client = WebSyncularClient::with_parts(config, NoopTransport, store);
         client.set_subscriptions(vec![SubscriptionSpec {
             id: "sub-tasks".to_string(),
             table: "tasks".to_string(),
             scopes: scopes(),
             params: Map::new(),
+            bootstrap_phase: 0,
         }]);
 
         let commit = SyncCommit {
@@ -1678,12 +1878,7 @@ mod tests {
             bootstrap_state: None,
             status: "active".to_string(),
         }))?;
-        let config = WebSyncularClientConfig {
-            base_url: "http://syncular.test/sync".to_string(),
-            client_id: "web-client-realtime-root-mismatch".to_string(),
-            actor_id: "user-rust".to_string(),
-            project_id: Some("p0".to_string()),
-        };
+        let config = test_config("web-client-realtime-root-mismatch");
         let mut client = WebSyncularClient::with_parts(config, NoopTransport, store);
 
         let error = block_on(client.apply_realtime_combined_response(
@@ -1897,6 +2092,86 @@ mod tests {
 
         fn connect_realtime(&self) -> Result<Self::Realtime> {
             panic!("realtime not used in this test")
+        }
+    }
+
+    struct PhaseCaptureTransport {
+        requested: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl AsyncSyncTransport for PhaseCaptureTransport {
+        type Realtime = WebRealtimeSocket;
+
+        fn post_sync<'a>(
+            &'a self,
+            request: &'a CombinedRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<CombinedResponse>> + 'a>> {
+            Box::pin(async move {
+                let requested = request
+                    .pull
+                    .as_ref()
+                    .map(|pull| {
+                        pull.subscriptions
+                            .iter()
+                            .map(|subscription| subscription.id.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                self.requested
+                    .lock()
+                    .expect("requested subscription capture")
+                    .push(requested.clone());
+                Ok(CombinedResponse {
+                    ok: true,
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    push: None,
+                    pull: Some(PullResponse {
+                        ok: true,
+                        subscriptions: requested
+                            .into_iter()
+                            .map(|id| SubscriptionResponse {
+                                id,
+                                status: "active".to_string(),
+                                scopes: scopes(),
+                                bootstrap: false,
+                                bootstrap_state: None,
+                                next_cursor: 1,
+                                integrity: None,
+                                commits: Vec::new(),
+                                snapshots: None,
+                            })
+                            .collect(),
+                    }),
+                })
+            })
+        }
+
+        fn fetch_snapshot_chunk_rows<'a>(
+            &'a self,
+            _chunk: &'a SnapshotChunkRef,
+            _scopes: &'a ScopeValues,
+        ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
+            Box::pin(async move {
+                Err(SyncularError::message(
+                    ErrorKind::Transport,
+                    "phase transport does not fetch chunks",
+                ))
+            })
+        }
+
+        fn connect_realtime(&self) -> Result<Self::Realtime> {
+            panic!("realtime not used in this test")
+        }
+    }
+
+    fn test_config(client_id: &str) -> WebSyncularClientConfig {
+        WebSyncularClientConfig {
+            base_url: "http://syncular.test/sync".to_string(),
+            client_id: client_id.to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("p0".to_string()),
+            pull: WebSyncPullOptions::default(),
         }
     }
 

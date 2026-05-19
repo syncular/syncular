@@ -5,6 +5,7 @@ import { createElement, type ReactNode } from 'react';
 import { createSyncularV2React } from './react';
 import type {
   SyncularV2BlobUploadQueueStats,
+  SyncularV2BootstrapStatus,
   SyncularV2ClientEventMap,
   SyncularV2ClientEventSink,
   SyncularV2ClientEventType,
@@ -280,6 +281,7 @@ class FakeManagedClient {
       changedRows: [],
       changedRowsTruncated: false,
       subscriptions: [],
+      bootstrap: zeroBootstrapStatus(),
       pushedCommits: 0,
       timings: {
         totalMs: 0,
@@ -395,4 +397,21 @@ class FakeManagedClient {
       failed: 0,
     };
   }
+}
+
+function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
+  return {
+    channelPhase: 'idle',
+    progressPercent: 100,
+    isBootstrapping: false,
+    criticalReady: true,
+    interactiveReady: true,
+    complete: true,
+    activePhase: null,
+    expectedSubscriptionIds: [],
+    readySubscriptionIds: [],
+    pendingSubscriptionIds: [],
+    subscriptions: [],
+    phases: [],
+  };
 }

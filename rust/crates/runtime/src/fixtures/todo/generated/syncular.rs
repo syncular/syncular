@@ -532,6 +532,7 @@ pub fn comments_subscription(user_id: &str, project_id: Option<&str>) -> Subscri
         table: "comments".to_string(),
         scopes,
         params,
+        bootstrap_phase: 0,
     }
 }
 
@@ -545,6 +546,7 @@ pub fn projects_subscription(user_id: &str) -> SubscriptionSpec {
         table: "projects".to_string(),
         scopes,
         params,
+        bootstrap_phase: 0,
     }
 }
 
@@ -561,6 +563,7 @@ pub fn tasks_subscription(user_id: &str, project_id: Option<&str>) -> Subscripti
         table: "tasks".to_string(),
         scopes,
         params,
+        bootstrap_phase: 0,
     }
 }
 

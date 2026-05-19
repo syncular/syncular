@@ -5,6 +5,7 @@ import type {
   SyncularBuildYjsTextUpdateArgs,
   SyncularV2AuthHeaders,
   SyncularV2BlobStoreOptions,
+  SyncularV2BootstrapStatus,
   SyncularV2ClientConfig,
   SyncularV2ConflictResolution,
   SyncularV2CrdtFieldCompactionRequest,
@@ -348,6 +349,10 @@ export type SyncularV2WorkerEvent =
       SyncularV2RowsChangedEvent & {
         type: 'rowsChanged';
       })
+  | (SyncularV2WorkerEventBase & {
+      type: 'bootstrapChanged';
+      bootstrap: SyncularV2BootstrapStatus;
+    })
   | (SyncularV2WorkerEventBase & {
       type: 'realtimeState';
       state: SyncularV2RealtimeConnectionState;

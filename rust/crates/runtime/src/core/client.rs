@@ -177,6 +177,8 @@ pub struct SubscriptionSpec {
     pub table: String,
     pub scopes: ScopeValues,
     pub params: Map<String, Value>,
+    #[serde(default, rename = "bootstrapPhase")]
+    pub bootstrap_phase: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -915,6 +917,128 @@ fn snapshot_clear_removes_all_rows(app_schema: AppSchema, table: &str) -> bool {
     })
 }
 
+fn normalize_bootstrap_phase(phase: i64) -> i64 {
+    phase.max(0)
+}
+
+fn native_subscription_ready(state: Option<&SubscriptionState>) -> bool {
+    state.is_some_and(|state| {
+        state.status == "active" && state.bootstrap_state_json.is_none() && state.cursor >= 0
+    })
+}
+
+fn native_subscription_bootstrapping(state: Option<&SubscriptionState>) -> bool {
+    state.is_some_and(|state| state.status == "active" && state.bootstrap_state_json.is_some())
+}
+
+fn resolve_active_bootstrap_phase_for_native(
+    entries: &[(SubscriptionSpec, Option<SubscriptionState>)],
+) -> Option<i64> {
+    entries
+        .iter()
+        .filter(|(_, state)| !native_subscription_ready(state.as_ref()))
+        .map(|(spec, _)| normalize_bootstrap_phase(spec.bootstrap_phase))
+        .min()
+}
+
+fn should_include_pull_subscription(
+    spec: &SubscriptionSpec,
+    state: Option<&SubscriptionState>,
+    active_phase: Option<i64>,
+) -> bool {
+    let Some(active_phase) = active_phase else {
+        return true;
+    };
+    let phase = normalize_bootstrap_phase(spec.bootstrap_phase);
+    phase <= active_phase
+        || native_subscription_ready(state)
+        || native_subscription_bootstrapping(state)
+}
+
+#[cfg(test)]
+mod bootstrap_phase_tests {
+    use super::*;
+
+    #[test]
+    fn staged_pull_selection_matches_subscription_readiness() {
+        let initial = vec![
+            (subscription("critical", 0), None),
+            (subscription("later", 1), None),
+        ];
+        let active = resolve_active_bootstrap_phase_for_native(&initial);
+        assert_eq!(active, Some(0));
+        assert!(should_include_pull_subscription(
+            &initial[0].0,
+            initial[0].1.as_ref(),
+            active
+        ));
+        assert!(!should_include_pull_subscription(
+            &initial[1].0,
+            initial[1].1.as_ref(),
+            active
+        ));
+
+        let critical_ready = vec![
+            (
+                subscription("critical", 0),
+                Some(subscription_state("critical", 1, None)),
+            ),
+            (subscription("later", 1), None),
+        ];
+        let active = resolve_active_bootstrap_phase_for_native(&critical_ready);
+        assert_eq!(active, Some(1));
+        assert!(critical_ready.iter().all(|(spec, state)| {
+            should_include_pull_subscription(spec, state.as_ref(), active)
+        }));
+
+        let later_bootstrapping = vec![
+            (
+                subscription("critical", 0),
+                Some(subscription_state("critical", 1, None)),
+            ),
+            (
+                subscription("later", 5),
+                Some(subscription_state("later", -1, Some("{}"))),
+            ),
+            (subscription("other", 2), None),
+        ];
+        let active = resolve_active_bootstrap_phase_for_native(&later_bootstrapping);
+        assert_eq!(active, Some(2));
+        assert!(should_include_pull_subscription(
+            &later_bootstrapping[1].0,
+            later_bootstrapping[1].1.as_ref(),
+            active
+        ));
+    }
+
+    fn subscription(id: &str, bootstrap_phase: i64) -> SubscriptionSpec {
+        SubscriptionSpec {
+            id: id.to_string(),
+            table: "tasks".to_string(),
+            scopes: Map::new(),
+            params: Map::new(),
+            bootstrap_phase,
+        }
+    }
+
+    fn subscription_state(
+        subscription_id: &str,
+        cursor: i64,
+        bootstrap_state_json: Option<&str>,
+    ) -> SubscriptionState {
+        SubscriptionState {
+            state_id: DEFAULT_STATE_ID.to_string(),
+            subscription_id: subscription_id.to_string(),
+            table: "tasks".to_string(),
+            scopes_json: "{}".to_string(),
+            params_json: "{}".to_string(),
+            cursor,
+            bootstrap_state_json: bootstrap_state_json.map(str::to_string),
+            status: "active".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConflictResolution {
@@ -1597,9 +1721,18 @@ where
                     feature_set: Vec::new(),
                 });
         self.store.transaction(|tx| {
-            let mut subscriptions = Vec::new();
+            let mut entries = Vec::new();
             for spec in specs {
                 let state = tx.subscription_state(DEFAULT_STATE_ID, &spec.id)?;
+                entries.push((spec, state));
+            }
+            let active_phase = resolve_active_bootstrap_phase_for_native(&entries);
+
+            let mut subscriptions = Vec::new();
+            for (spec, state) in entries {
+                if !should_include_pull_subscription(&spec, state.as_ref(), active_phase) {
+                    continue;
+                }
                 let scopes_changed = state
                     .as_ref()
                     .map(|row| {

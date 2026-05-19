@@ -96,12 +96,14 @@ data class SyncularSubscriptionSpec(
     val table: String,
     val scopes: Map<String, Any?>,
     val params: Map<String, Any?> = emptyMap(),
+    val bootstrapPhase: Long = 0,
 ) {
     fun toJsonValue(): Map<String, Any?> = linkedMapOf(
         "id" to id,
         "table" to table,
         "scopes" to scopes,
         "params" to params,
+        "bootstrapPhase" to bootstrapPhase,
     )
 
     fun toJsonString(): String = syncularJsonValue(toJsonValue())
