@@ -2936,6 +2936,31 @@ client. Overflow should close or resync the session deliberately.
   Hono coverage proves an interrupted second chunk resumes from the first
   applied checkpoint instead of restarting from the beginning. This is a
   correctness/resumability change, not a latency target.
+- Done: added explicit chunked snapshot manifests. Chunked pull snapshots now
+  carry a v1 manifest with table, `asOfCommitSeq`, scope digest, row cursor
+  bounds, page flags, ordered chunk refs, and a SHA-256 manifest digest.
+  `binary-sync-pack-v1` moved to wire version 11, and Rust native/browser
+  clients validate the manifest before fetching/applying snapshot chunks.
+  Inline row snapshots intentionally do not carry a manifest.
+  - Correctness guard: shared TypeScript/Rust protocol fixtures include the
+    v11 manifest, Rust protocol contract tests reject missing/tampered
+    manifests, the Rust testkit chunk helper emits valid manifests, and the
+    browser/Hono WASM sync suite passes after rebuilding the release WASM
+    artifact.
+  - Release-WASM 10k guardrail compared with
+    `.context/benchmarks/browser-e2e-limit-commits-1000.json`:
+    `rust_bootstrap_ms` `32.64 -> 34.33`,
+    `rust_pull_request_ms` `13 -> 15`,
+    `rust_snapshot_fetch_ms` stayed `3`,
+    `rust_pull_apply_ms` stayed `17`,
+    `rust_snapshot_chunk_apply_ms` `13 -> 14`,
+    `rust_response_bytes` `76567 -> 77071`,
+    `rust_cached_bootstrap_ms` `12.39 -> 13.38`,
+    realtime stayed websocket-only with
+    `rust_realtime_http_request_count` `0 -> 0`,
+    and served Rust WASM bytes moved `3328084 -> 3353028`.
+    Report:
+    `.context/benchmarks/browser-e2e-snapshot-manifest-v11-10k.json`.
 
 ### Phase 12: Conflict, CRDT, And Flow-Control Protocols
 

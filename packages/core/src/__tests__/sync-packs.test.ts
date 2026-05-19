@@ -8,6 +8,7 @@ import {
   SyncPullRequestSchema,
 } from '../schemas/sync';
 import {
+  createSnapshotManifest,
   encodeBinarySnapshotTable,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
 } from '../snapshot-chunks';
@@ -60,7 +61,7 @@ describe('sync pack protocol negotiation', () => {
 });
 
 describe('binary sync pack format', () => {
-  it('round-trips combined push and pull responses without JSON envelope fields', () => {
+  it('round-trips combined push and pull responses without JSON envelope fields', async () => {
     const chunk = {
       id: 'chunk-1',
       byteLength: 128,
@@ -68,6 +69,18 @@ describe('binary sync pack format', () => {
       encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
       compression: 'gzip',
     } satisfies SyncSnapshotChunkRef;
+    const manifest = await createSnapshotManifest({
+      version: 1,
+      table: 'tasks',
+      asOfCommitSeq: 42,
+      scopeDigest: 'c'.repeat(64),
+      rowCursor: null,
+      rowLimit: 1000,
+      nextRowCursor: 'task-1',
+      isFirstPage: true,
+      isLastPage: true,
+      chunks: [chunk],
+    });
     const response: SyncCombinedResponse = {
       ok: true,
       requiredSchemaVersion: 2,
@@ -144,6 +157,7 @@ describe('binary sync pack format', () => {
                 table: 'tasks',
                 rows: [],
                 chunks: [chunk],
+                manifest,
                 isFirstPage: true,
                 isLastPage: true,
                 bootstrapStateAfter: {
@@ -161,7 +175,7 @@ describe('binary sync pack format', () => {
 
     const encoded = encodeBinarySyncPack(response);
     expect(encoded[0]).toBe(0x53);
-    expect(encoded[4]).toBe(10);
+    expect(encoded[4]).toBe(11);
     expect(encoded[5]).toBe(0);
 
     const decoded = decodeBinarySyncPack(encoded);

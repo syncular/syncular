@@ -13,6 +13,7 @@
  * - v8: variant-tagged push and operation result records.
  * - v9: per-snapshot `bootstrapStateAfter` checkpoints for partial resume.
  * - v10: optional per-commit digest and chain-root verification metadata.
+ * - v11: per-snapshot manifest metadata for chunk ordering/integrity.
  */
 
 import type {
@@ -44,7 +45,7 @@ export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
 const MAGIC = new Uint8Array([0x53, 0x53, 0x50, 0x31]); // "SSP1"
-const VERSION = 10;
+const VERSION = 11;
 const FLAG_NONE = 0;
 // Row-group framing carries table/schema overhead; small commits are
 // cheaper inline.
@@ -648,6 +649,7 @@ function writeSnapshot(
   writer.bool(snapshot.isFirstPage);
   writer.bool(snapshot.isLastPage);
   writer.optionalJson(snapshot.bootstrapStateAfter ?? undefined);
+  writer.optionalJson(snapshot.manifest ?? undefined);
 }
 
 function readSnapshot(reader: BinarySyncPackReader): SyncSnapshot {
@@ -667,6 +669,10 @@ function readSnapshot(reader: BinarySyncPackReader): SyncSnapshot {
     (reader.optionalJson(
       'snapshot bootstrap state after'
     ) as SyncSnapshot['bootstrapStateAfter']) ?? null;
+  const manifest = reader.optionalJson('snapshot manifest') as
+    | SyncSnapshot['manifest']
+    | undefined;
+  if (manifest !== undefined) snapshot.manifest = manifest;
   return snapshot;
 }
 

@@ -1416,6 +1416,7 @@ mod tests {
                     table: "tasks".to_string(),
                     rows: vec![json!({ "id": "t1", "title": title, "completed": 0 })],
                     chunks: None,
+                    manifest: None,
                     is_first_page: true,
                     is_last_page: true,
                     bootstrap_state_after: None,

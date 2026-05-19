@@ -512,6 +512,7 @@ impl AppTestServer {
                     table: subscription.table.clone(),
                     rows,
                     chunks: None,
+                    manifest: None,
                     is_first_page: true,
                     is_last_page: true,
                     bootstrap_state_after: None,

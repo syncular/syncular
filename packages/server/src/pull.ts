@@ -5,6 +5,7 @@ import {
   bytesToReadableStream,
   captureSyncException,
   concatByteChunks,
+  createSnapshotManifest,
   countSyncMetric,
   distributionSyncMetric,
   encodeBinarySnapshotTable,
@@ -27,6 +28,7 @@ import {
   type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
   sha256Hex,
+  snapshotScopeDigestFromCacheKey,
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
@@ -90,6 +92,31 @@ function toResponseChunkRef(ref: SyncSnapshotChunkRef): SyncSnapshotChunkRef {
     encoding: ref.encoding,
     compression: ref.compression,
   };
+}
+
+async function createChunkedSnapshotManifest(args: {
+  table: string;
+  asOfCommitSeq: number;
+  scopeKey: string;
+  rowCursor: string | null;
+  rowLimit: number;
+  nextRowCursor: string | null;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  chunks: readonly SyncSnapshotChunkRef[];
+}): Promise<SyncSnapshot['manifest']> {
+  return createSnapshotManifest({
+    version: 1,
+    table: args.table,
+    asOfCommitSeq: args.asOfCommitSeq,
+    scopeDigest: snapshotScopeDigestFromCacheKey(args.scopeKey),
+    rowCursor: args.rowCursor,
+    rowLimit: args.rowLimit,
+    nextRowCursor: args.nextRowCursor,
+    isFirstPage: args.isFirstPage,
+    isLastPage: args.isLastPage,
+    chunks: args.chunks.map(toResponseChunkRef),
+  });
 }
 
 function resolveSnapshotChunkEncoding(
@@ -996,10 +1023,22 @@ export async function pull<
                         );
                       }
 
+                      const chunk = toResponseChunkRef(chunkRef);
                       snapshots.push({
                         table: bundle.table,
                         rows: [],
-                        chunks: [toResponseChunkRef(chunkRef)],
+                        chunks: [chunk],
+                        manifest: await createChunkedSnapshotManifest({
+                          table: bundle.table,
+                          asOfCommitSeq: effectiveState.asOfCommitSeq,
+                          scopeKey: cacheKey,
+                          rowCursor: bundle.startCursor,
+                          rowLimit: bundleRowLimit,
+                          nextRowCursor: bundle.nextRowCursor,
+                          isFirstPage: bundle.isFirstPage,
+                          isLastPage: bundle.isLastPage,
+                          chunks: [chunk],
+                        }),
                         isFirstPage: bundle.isFirstPage,
                         isLastPage: bundle.isLastPage,
                         bootstrapStateAfter: snapshotBootstrapStateAfter({
@@ -1090,10 +1129,22 @@ export async function pull<
                           cached &&
                           (cached.isLastPage || cached.nextRowCursor !== null)
                         ) {
+                          const chunk = toResponseChunkRef(cached);
                           snapshots.push({
                             table: nextTableName,
                             rows: [],
-                            chunks: [toResponseChunkRef(cached)],
+                            chunks: [chunk],
+                            manifest: await createChunkedSnapshotManifest({
+                              table: nextTableName,
+                              asOfCommitSeq: effectiveState.asOfCommitSeq,
+                              scopeKey: cacheKey,
+                              rowCursor: nextState.rowCursor,
+                              rowLimit: cachedRowLimit,
+                              nextRowCursor: cached.nextRowCursor,
+                              isFirstPage: nextState.rowCursor == null,
+                              isLastPage: cached.isLastPage,
+                              chunks: [chunk],
+                            }),
                             isFirstPage: nextState.rowCursor == null,
                             isLastPage: cached.isLastPage,
                             bootstrapStateAfter: snapshotBootstrapStateAfter({
@@ -1579,7 +1630,19 @@ export async function pull<
                     }
                   }
 
-                  pending.snapshot.chunks = [toResponseChunkRef(chunkRef)];
+                  const chunk = toResponseChunkRef(chunkRef);
+                  pending.snapshot.chunks = [chunk];
+                  pending.snapshot.manifest = await createChunkedSnapshotManifest({
+                    table: pending.snapshot.table,
+                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                    scopeKey: pending.cacheLookup.scopeKey,
+                    rowCursor: pending.cacheLookup.rowCursor,
+                    rowLimit: pending.cacheLookup.rowLimit,
+                    nextRowCursor: pending.cacheLookup.nextRowCursor,
+                    isFirstPage: pending.snapshot.isFirstPage,
+                    isLastPage: pending.cacheLookup.isLastPage,
+                    chunks: [chunk],
+                  });
                 }
               );
             }

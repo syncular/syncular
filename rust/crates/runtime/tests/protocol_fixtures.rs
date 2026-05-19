@@ -5,7 +5,9 @@ use syncular_runtime::binary_snapshot::{
 use syncular_runtime::binary_sync_pack::{
     decode_binary_sync_pack, is_binary_sync_pack_content_type, SYNC_PACK_CONTENT_TYPE,
 };
-use syncular_runtime::protocol::{CombinedRequest, CombinedResponse};
+use syncular_runtime::protocol::{
+    validate_pull_snapshot_manifests, CombinedRequest, CombinedResponse,
+};
 
 #[test]
 fn decodes_json_combined_sync_fixture() {
@@ -199,13 +201,18 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
 
     let snapshots = subscription.snapshots.as_ref().expect("snapshots");
     let chunk = &snapshots[0].chunks.as_ref().expect("chunks")[0];
+    let manifest = snapshots[0].manifest.as_ref().expect("manifest");
     assert_eq!(snapshots[0].table, "tasks");
     assert!(snapshots[0].is_first_page);
     assert!(snapshots[0].is_last_page);
+    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.table, "tasks");
+    assert_eq!(manifest.chunks[0].id, chunk.id);
     assert_eq!(chunk.id, "chunk-1");
     assert_eq!(chunk.byte_length, 128);
     assert_eq!(chunk.encoding, "binary-table-v1");
     assert_eq!(chunk.compression, "gzip");
+    validate_pull_snapshot_manifests(&pull).expect("snapshot manifest validation");
 }
 
 #[test]

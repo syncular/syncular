@@ -2,6 +2,8 @@
  * @syncular/core - Snapshot chunk encoding helpers
  */
 
+import { sha256Hex } from './utils/crypto';
+
 export const SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 =
   'json-row-frame-v1';
 export const SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 = 'binary-table-v1';
@@ -26,6 +28,33 @@ export function isSyncSnapshotChunkEncoding(
 export const SYNC_SNAPSHOT_CHUNK_COMPRESSION = 'gzip';
 export type SyncSnapshotChunkCompression =
   typeof SYNC_SNAPSHOT_CHUNK_COMPRESSION;
+
+export interface SnapshotManifestChunkDigestInput {
+  id: string;
+  byteLength: number;
+  sha256: string;
+  encoding: SyncSnapshotChunkEncoding;
+  compression: SyncSnapshotChunkCompression;
+}
+
+export interface SnapshotManifestDigestInput {
+  version: 1;
+  table: string;
+  asOfCommitSeq: number;
+  scopeDigest: string;
+  rowCursor: string | null;
+  rowLimit: number;
+  nextRowCursor: string | null;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  chunks: readonly SnapshotManifestChunkDigestInput[];
+}
+
+export interface SnapshotManifestDigestValue
+  extends Omit<SnapshotManifestDigestInput, 'chunks'> {
+  chunks: SnapshotManifestChunkDigestInput[];
+  digest: string;
+}
 
 const SNAPSHOT_ROW_FRAME_MAGIC = new Uint8Array([0x53, 0x52, 0x46, 0x31]); // "SRF1"
 const SNAPSHOT_BINARY_TABLE_MAGIC = new Uint8Array([0x53, 0x42, 0x54, 0x31]); // "SBT1"
@@ -86,6 +115,97 @@ const BINARY_COLUMN_TYPES_BY_TAG = new Map<number, BinarySnapshotColumnType>(
 function normalizeRowJson(row: unknown): string {
   const serialized = JSON.stringify(row);
   return serialized === undefined ? 'null' : serialized;
+}
+
+function utf8ByteLength(value: string): number {
+  return snapshotRowFrameEncoder.encode(value).length;
+}
+
+function appendStringField(
+  parts: string[],
+  name: string,
+  value: string
+): void {
+  parts.push(`${name}:s:${utf8ByteLength(value)}:${value}`);
+}
+
+function appendNullableStringField(
+  parts: string[],
+  name: string,
+  value: string | null
+): void {
+  if (value === null) {
+    parts.push(`${name}:n`);
+    return;
+  }
+  appendStringField(parts, name, value);
+}
+
+function appendIntField(parts: string[], name: string, value: number): void {
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`Snapshot manifest ${name} must be a safe integer`);
+  }
+  parts.push(`${name}:i:${value}`);
+}
+
+function appendBoolField(parts: string[], name: string, value: boolean): void {
+  parts.push(`${name}:b:${value ? 1 : 0}`);
+}
+
+export function snapshotScopeDigestFromCacheKey(scopeKey: string): string {
+  const marker = ':scope:';
+  const markerIndex = scopeKey.lastIndexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error(`Snapshot scope cache key is missing scope digest`);
+  }
+  const digest = scopeKey.slice(markerIndex + marker.length);
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(`Snapshot scope cache key has invalid scope digest`);
+  }
+  return digest;
+}
+
+export function snapshotManifestDigestPayload(
+  manifest: SnapshotManifestDigestInput
+): string {
+  const parts = ['syncular.snapshot-manifest.v1'];
+  appendIntField(parts, 'version', manifest.version);
+  appendStringField(parts, 'table', manifest.table);
+  appendIntField(parts, 'asOfCommitSeq', manifest.asOfCommitSeq);
+  appendStringField(parts, 'scopeDigest', manifest.scopeDigest);
+  appendNullableStringField(parts, 'rowCursor', manifest.rowCursor);
+  appendIntField(parts, 'rowLimit', manifest.rowLimit);
+  appendNullableStringField(parts, 'nextRowCursor', manifest.nextRowCursor);
+  appendBoolField(parts, 'isFirstPage', manifest.isFirstPage);
+  appendBoolField(parts, 'isLastPage', manifest.isLastPage);
+  appendIntField(parts, 'chunkCount', manifest.chunks.length);
+
+  for (const [index, chunk] of manifest.chunks.entries()) {
+    appendIntField(parts, `chunk.${index}.index`, index);
+    appendStringField(parts, `chunk.${index}.id`, chunk.id);
+    appendIntField(parts, `chunk.${index}.byteLength`, chunk.byteLength);
+    appendStringField(parts, `chunk.${index}.sha256`, chunk.sha256);
+    appendStringField(parts, `chunk.${index}.encoding`, chunk.encoding);
+    appendStringField(parts, `chunk.${index}.compression`, chunk.compression);
+  }
+
+  return `${parts.join('\n')}\n`;
+}
+
+export async function createSnapshotManifestDigest(
+  manifest: SnapshotManifestDigestInput
+): Promise<string> {
+  return sha256Hex(snapshotManifestDigestPayload(manifest));
+}
+
+export async function createSnapshotManifest(
+  manifest: SnapshotManifestDigestInput
+): Promise<SnapshotManifestDigestValue> {
+  return {
+    ...manifest,
+    chunks: [...manifest.chunks],
+    digest: await createSnapshotManifestDigest(manifest),
+  };
 }
 
 /**

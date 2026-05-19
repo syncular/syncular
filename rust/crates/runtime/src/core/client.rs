@@ -1828,6 +1828,7 @@ where
 
     fn apply_pull_response(&mut self, response: PullResponse) -> Result<SyncReport> {
         validate_pull_commit_integrity_metadata(&response)?;
+        validate_pull_snapshot_manifests(&response)?;
         let mut report = SyncReport::default();
         for sub in response.subscriptions {
             if sub.status == "revoked" {
