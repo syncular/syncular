@@ -11,17 +11,20 @@ use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
-    validate_pull_commit_integrity_metadata, validate_pull_snapshot_manifests, CombinedRequest,
-    CombinedResponse, PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
-    SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
-    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SYNC_PACK_ENCODING_BINARY_V1,
+    validate_pull_commit_integrity_metadata, validate_pull_snapshot_manifests,
+    verify_subscription_commit_integrity, CombinedRequest, CombinedResponse, PullRequest,
+    PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues, SubscriptionRequest,
+    SyncChange, SyncCommit, SyncOperation, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{
     AsyncSyncTransport, WebRealtimeSocket, WebSyncTransport, WebSyncTransportConfig,
 };
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
-use crate::web_store::{AsyncWebStore, WebMemoryStore, WebStoreApplyTimings, WebSubscriptionState};
+use crate::web_store::{
+    AsyncWebStore, WebMemoryStore, WebStoreApplyTimings, WebSubscriptionState, WebVerifiedRoot,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -318,6 +321,20 @@ where
         let mut snapshot_changed_rows = 0usize;
         for mut sub in pull.subscriptions {
             let previous_state = self.store.subscription_state(&sub.id).await?;
+            let scopes_changed = previous_state
+                .as_ref()
+                .is_some_and(|state| state.scopes != sub.scopes);
+            let stored_root = if scopes_changed {
+                self.store.delete_verified_root(&sub.id).await?;
+                None
+            } else {
+                self.store.verified_root(&sub.id).await?
+            };
+            let verified_root = verify_subscription_commit_integrity(
+                &sub.id,
+                stored_root.as_ref().map(|root| root.root.as_str()),
+                &sub.commits,
+            )?;
             let table = self
                 .subscriptions
                 .iter()
@@ -572,10 +589,11 @@ where
                     result.timings.scope_clear_ms += elapsed_ms_since(scope_clear_started_at);
                     add_changed_table(&mut result.changed_tables, &previous_state.table);
                 }
+                self.store.delete_verified_root(&sub.id).await?;
                 self.store.delete_subscription_state(&sub.id).await?;
             } else {
                 if let Some(previous_state) = &previous_state {
-                    if previous_state.scopes != sub.scopes {
+                    if scopes_changed {
                         let scope_clear_started_at = timing_now_ms();
                         self.store
                             .clear_table_for_scopes(&previous_state.table, &previous_state.scopes)
@@ -594,6 +612,16 @@ where
                         status: sub.status.clone(),
                     })
                     .await?;
+                if let Some(root) = verified_root {
+                    self.store
+                        .upsert_verified_root(WebVerifiedRoot {
+                            subscription_id: sub.id.clone(),
+                            partition_id: root.partition_id,
+                            commit_seq: root.commit_seq,
+                            root: root.root,
+                        })
+                        .await?;
+                }
             }
             result.timings.subscription_state_ms += elapsed_ms_since(subscription_state_started_at);
 
@@ -643,9 +671,11 @@ where
                         bootstrap_state: None,
                         next_cursor: commit_seq,
                         commits: vec![SyncCommit {
+                            partition_id: None,
                             commit_seq,
                             created_at: request.created_at.unwrap_or_else(|| now_ms().to_string()),
                             actor_id: request.actor_id.unwrap_or_else(|| "server".to_string()),
+                            previous_chain_root: None,
                             commit_digest: None,
                             commit_chain_root: None,
                             changes: request.changes,
@@ -1015,6 +1045,14 @@ where
             let scopes_changed = state
                 .as_ref()
                 .is_some_and(|state| state.scopes != spec.scopes);
+            let verified_root = if scopes_changed {
+                None
+            } else {
+                self.store
+                    .verified_root(&spec.id)
+                    .await?
+                    .map(|root| root.root)
+            };
             subscriptions.push(SubscriptionRequest {
                 id: spec.id.clone(),
                 table: spec.table.clone(),
@@ -1030,6 +1068,7 @@ where
                 } else {
                     state.and_then(|state| state.bootstrap_state)
                 },
+                verified_root,
             });
         }
 

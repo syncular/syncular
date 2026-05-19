@@ -127,6 +127,18 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    sync_verified_roots (state_id, subscription_id) {
+        state_id -> Text,
+        subscription_id -> Text,
+        partition_id -> Text,
+        commit_seq -> BigInt,
+        root -> Text,
+        created_at -> BigInt,
+        updated_at -> BigInt,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     sync_blob_cache,
     sync_blob_outbox,
@@ -136,4 +148,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     sync_migrations,
     sync_outbox_commits,
     sync_subscription_state,
+    sync_verified_roots,
 );

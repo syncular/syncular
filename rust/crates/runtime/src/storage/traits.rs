@@ -74,6 +74,15 @@ pub struct SubscriptionState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedRoot {
+    pub state_id: String,
+    pub subscription_id: String,
+    pub partition_id: String,
+    pub commit_seq: i64,
+    pub root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedMigration {
     pub version: String,
     pub name: String,
@@ -143,6 +152,19 @@ pub trait SyncStoreTx {
     ) -> Result<Option<SubscriptionState>>;
     fn upsert_subscription_state(&mut self, state: &SubscriptionState) -> Result<()>;
     fn delete_subscription_state(&mut self, state_id: &str, subscription_id: &str) -> Result<()>;
+    fn verified_root(
+        &mut self,
+        _state_id: &str,
+        _subscription_id: &str,
+    ) -> Result<Option<VerifiedRoot>> {
+        Ok(None)
+    }
+    fn upsert_verified_root(&mut self, _root: &VerifiedRoot) -> Result<()> {
+        Ok(())
+    }
+    fn delete_verified_root(&mut self, _state_id: &str, _subscription_id: &str) -> Result<()> {
+        Ok(())
+    }
 
     fn clear_table_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<()>;
     fn clear_table_for_scopes_preserving_local_crdt(

@@ -31,17 +31,17 @@ The sharp external claim should become:
 | Item | Recommendation | Novelty | Confidence | Main Risk |
 | --- | --- | --- | --- | --- |
 | Verifiable sync log | Pursue first, but start with integrity roots before full proofs | High | Medium | Designing proof semantics for scoped snapshots incorrectly |
-| Binary protocol v2 | Pursue after measurement prototype | Medium-high | High | Complexity without enough apply-time improvement |
+| Rust protocol kernel | Move earlier before binary v2 expands protocol surface | Medium | High | Protocol extraction grows harder as TS/Rust drift grows |
+| Binary protocol v2 | Pursue after protocol-kernel extraction and measurement prototype | Medium-high | High | Complexity without enough apply-time improvement |
 | Adaptive bootstrap and Sync QoS | Pursue incrementally | Medium | High | Product/API complexity and confusing readiness states |
 | First-class local read models | Pursue as opt-in generator feature | Medium | Medium-high | Hidden write amplification and projection drift |
 | Hybrid row sync plus CRDT field islands | Pursue as flagship positioning and targeted protocol polish | High | High | Blurring row-sync and editor-realtime expectations |
 | Offline auth leases | Design now, implement later | Medium-high | Medium | Security model can become misleading or unsafe |
-| Rust protocol kernel | Pursue as enabling infrastructure | Medium | High | Duplicate TypeScript protocol definitions for too long |
 
 The most defensible sequence is:
 
-1. Protocol fixtures and a Rust protocol kernel.
-2. Verifiable sync roots over the existing protocol.
+1. Finish verifiable subscription-stream roots over the existing protocol.
+2. Extract the Rust protocol kernel so new protocol work has one Rust home.
 3. Binary v2 proof-of-performance for one generated table.
 4. Adaptive bootstrap readiness states.
 5. Opt-in local read models.
@@ -121,6 +121,15 @@ of jumping straight into new public APIs.
   chunked snapshot manifests before fetching/applying chunk rows. The shared
   fixtures, TypeScript schemas, Rust protocol contracts, Hono chunk routes,
   testkit helper, and browser/Hono WASM sync coverage have been updated.
+- 2026-05-19: Made P0 honest for scoped sync. The pull protocol now verifies a
+  canonical subscription-stream commit shape instead of pretending Rust can
+  recompute a hidden partition-wide digest from scoped rows it never receives.
+  Pull requests carry `verifiedRoot`, response commits carry `partitionId`,
+  `previousChainRoot`, `commitDigest`, and `commitChainRoot`, and Rust
+  native/browser clients recompute the digest/root before apply and persist the
+  latest verified root. `binary-sync-pack-v1` is now wire version 12. A new
+  `rust/crates/protocol` crate owns the canonical JSON/hash constants used by
+  runtime verification.
 
 ## Priority Roadmap
 
@@ -174,9 +183,13 @@ before local apply.
 
 #### Shape
 
-- Add a canonical commit digest for every committed sync transaction.
-- Add a partition-level commit chain root:
-  `root_n = hash(root_{n-1}, commit_seq, commit_digest)`.
+- Keep persisted server-side commit digest/root columns for server audit and
+  console diagnostics.
+- For pull responses, verify the exact scoped commit fragment delivered to a
+  subscription. A client cannot honestly recompute a full partition digest if
+  auth/scope filtering hides other rows from the same server commit.
+- Add a subscription-stream chain root:
+  `root_n = hash(root_{n-1}, commit_seq, wire_commit_digest)`.
 - Add snapshot manifests that include:
   - `asOfCommitSeq`
   - table name
@@ -186,25 +199,29 @@ before local apply.
   - per-chunk hash
   - manifest root
 - Return verification metadata in pull responses and chunk refs.
-- Store the last verified root in the Rust client state.
+- Store the last verified root in the Rust client state per subscription.
 - Fail loudly on digest/root mismatch.
 
 #### Minimal Viable Version
 
 The smallest useful version is:
 
-- Commit digest:
-  `hash(canonical(partition_id, commit_seq, actor_id, created_at, changes))`.
-- Commit root:
-  `hash(previous_root, commit_digest)`.
-- Pull response includes `fromRoot`, `toRoot`, and digest metadata for returned
-  commits.
+- Wire commit digest:
+  `hash(canonical(partition_id, subscription_id, commit_seq, actor_id, created_at, delivered_changes))`.
+- Wire commit root:
+  `hash(partition_id, subscription_id, previous_root, commit_seq, commit_digest)`.
+- Pull request includes the client's last `verifiedRoot` for each subscription.
+  The response chains from that root through the returned commits.
 - Snapshot chunk refs continue to include `sha256`, but are tied to a snapshot
   manifest digest.
-- Client verifies all returned chunks and advances `verifiedCommitSeq`.
+- Client verifies all returned chunks and persists the latest verified root and
+  commit sequence.
 
 This does not yet prove that a snapshot contains every row in a scope. It does
-prove that returned commits and chunks match the server's declared digest chain.
+prove that returned commits and chunks match the server's declared wire stream
+and that the local client never advances a verified root over tampered data.
+Partition-wide consistency for scoped subscriptions needs inclusion proofs or
+per-scope roots, not a private digest the client cannot recompute.
 
 #### Strong Version
 
@@ -212,6 +229,8 @@ The stronger version adds:
 
 - Snapshot manifests with chunk ordering, row cursor bounds, scope digest, and
   `asOfCommitSeq`.
+- Merkle/inclusion proofs that tie scoped delivered changes back to the
+  persisted partition root without leaking hidden rows.
 - Signed root checkpoints using a server signing key.
 - Console/audit route for root lookup by `commit_seq`.
 - Optional root pinning in clients for high-security apps.
@@ -226,14 +245,18 @@ The stronger version adds:
 
 #### Rust Client Work
 
+- Recompute canonical commit digests and chain roots before applying
+  integrity-bearing commits.
 - Verify sync-pack, snapshot manifest, and chunk integrity before apply.
-- Persist verified roots and last verified `commit_seq`.
+- Persist verified roots and last verified `commit_seq` per subscription.
 - Emit ordered native/browser events for verification failures.
 
 #### Open Questions
 
 - Do we want per-scope proof roots, or only partition-level roots plus scoped
   snapshot manifests?
+- Should the next proof layer be per-scope chain roots, Merkle inclusion
+  proofs, or signed server root checkpoints first?
 - Should signed server roots be optional deployment hardening or always-on?
 - How much proof data should be returned during normal incremental pull?
 - How do we represent canonical JSON for row payloads across JS and Rust
@@ -255,6 +278,10 @@ The stronger version adds:
 
 Make the Rust apply path schema-aware and avoid generic JSON materialization on
 hot paths.
+
+Do not start this before the Rust protocol kernel extraction is complete. v2
+would otherwise widen the split between TypeScript protocol definitions and
+Rust protocol/runtime code.
 
 #### Why
 
@@ -350,7 +377,14 @@ Keep only if release WASM improves at least one of:
 - Incremental pull/apply time.
 - Peak memory during bootstrap or catch-up.
 
-No change should stay without before/after numbers in the performance plan.
+No binary-v2 change should stay without before/after numbers in the performance
+plan and the offline-sync-bench TS/Rust comparison. Run the normal Rust
+performance suite and the external offline-sync-bench scenarios before and
+after each retained v2 batch; revert v2 code that does not improve a tracked
+metric enough to justify its complexity.
+The first implementation should be a disposable prototype until the benchmark
+proves enough apply-time or memory gain to justify retaining the protocol
+surface.
 
 #### Acceptance Criteria
 
@@ -669,8 +703,9 @@ revocation delay the product is willing to tolerate. That must be explicit.
 
 ### P2: Rust Protocol Kernel
 
-Create a shared Rust protocol crate before considering a Rust server or edge
-proxy.
+Create a shared Rust protocol crate before binary v2 or any further protocol
+surface expansion. This is no longer merely a P2/server-enabling item; it is a
+near-term drift-control item.
 
 #### Why
 
@@ -698,7 +733,7 @@ handlers, SQL dialects, or deployment concerns.
 
 #### Shape
 
-- Add `rust/crates/protocol`.
+- Add `rust/crates/protocol` (started with canonical JSON/hash constants).
 - Move or mirror canonical Rust types for:
   - combined push/pull
   - commits and changes
@@ -720,6 +755,8 @@ handlers, SQL dialects, or deployment concerns.
 
 Start with extraction, not redesign:
 
+- Done: move canonical commit-integrity JSON/hash constants into
+  `syncular-protocol`.
 - Move binary snapshot/sync-pack decoding into the crate.
 - Add fixture roundtrips against current TypeScript encoders.
 - Re-export from `syncular-runtime` internally.
@@ -736,14 +773,20 @@ Start with extraction, not redesign:
 
 1. Add protocol fixtures and contract tests for current JSON/binary sync.
 2. Prototype commit digests and chain roots in server metadata.
-3. Add Rust client verification for commit/chunk metadata.
-4. Add snapshot manifests and bootstrap verification.
-5. Prototype binary protocol v2 for one generated fixture table.
-6. Measure v2 against current binary v1 in release WASM.
-7. Add adaptive bootstrap readiness events and phase state.
-8. Add one generated local read model to the todo fixture and benchmark it.
-9. Add CRDT state-vector pull hints and stream diagnostics.
-10. Add offline auth lease design and a narrow server/client smoke.
+3. Add Rust client canonical commit/root verification and persisted verified
+   state. Done for subscription-stream wire roots.
+4. Add snapshot manifests and bootstrap verification. Snapshot manifests are in
+   place; full scoped snapshot completeness proofs are still open.
+5. Extract `rust/crates/protocol` and re-export protocol APIs from runtime.
+   Started with canonical integrity hashing; binary codecs/types should move
+   before binary v2.
+6. Prototype binary protocol v2 for one generated fixture table.
+7. Measure v2 against current binary v1 in release WASM and delete it if it
+   does not win.
+8. Add adaptive bootstrap readiness events and phase state.
+9. Add one generated local read model to the todo fixture and benchmark it.
+10. Add CRDT state-vector pull hints and stream diagnostics.
+11. Add offline auth lease design and a narrow server/client smoke.
 
 ## Success Metrics
 
@@ -756,6 +799,22 @@ Start with extraction, not redesign:
 - CRDT field streams converge with smaller catch-up payloads.
 - Offline auth lease failures are visible, recoverable, and auditable.
 
+## Realtime Delta Architecture
+
+The retained realtime direction is not "websocket replaces pull." It is:
+
+- WebSocket stays long-lived and event-driven.
+- Small bounded row/CRDT deltas may travel over websocket when they fit the
+  current protocol/schema/auth window.
+- Deltas must carry the same row/field metadata and verification shape as HTTP
+  pull where applicable.
+- Overflow, reconnect, auth refresh, schema mismatch, large payloads, or missed
+  replay windows force an explicit resync event and HTTP pull recovery.
+- Generated clients should treat websocket deltas as a fast path and HTTP pull
+  as the authoritative recovery/checkpoint path.
+- The worker owns reconnect/backoff/auth-refresh wakeups; apps should not
+  babysit realtime loops.
+
 ## Rejected Or Deferred Ideas
 
 These are intentionally not part of the near-term plan:
@@ -766,8 +825,10 @@ These are intentionally not part of the near-term plan:
   thesis.
 - Fully automatic conflict resolution. Keep app-defined semantics; add better
   tools rather than hidden merges.
-- Realtime data over WebSocket for normal rows. Keep WebSocket as wake-up unless
-  a future CRDT/editor-specific path has a clearly separate contract.
+- Treating WebSocket as an unbounded data firehose. Normal row updates may use
+  bounded binary websocket deltas, but HTTP pull remains the recovery path for
+  reconnect, overflow, large payloads, schema/auth changes, and missed replay
+  windows.
 - Automatic query planner or arbitrary materialized-query inference. Generated
   read models should be explicit.
 
@@ -776,6 +837,8 @@ These are intentionally not part of the near-term plan:
 - Prefer one current protocol path with clear failures over compatibility
   branches.
 - Every protocol extension must have JS/Rust fixture tests.
+- Add or move Rust protocol surface into `rust/crates/protocol` before growing
+  another binary protocol version.
 - Every performance-motivated change must have before/after release-WASM
   evidence.
 - Every security claim must name the attacker it does and does not address.

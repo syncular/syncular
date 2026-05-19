@@ -47,7 +47,9 @@ use crate::transport::web::AsyncBlobTransport;
 use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
 use crate::web_client::{WebSyncPullOptions, WebSyncularClient, WebSyncularClientConfig};
-use crate::web_store::{AsyncWebStore, WebStoreApplyTimings, WebSubscriptionState};
+use crate::web_store::{
+    AsyncWebStore, WebStoreApplyTimings, WebSubscriptionState, WebVerifiedRoot,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
 use sqlite_wasm_rs as ffi;
@@ -4449,6 +4451,66 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         Box::pin(async move {
             self.exec(&format!(
                 "DELETE FROM sync_subscription_state WHERE state_id = {} AND subscription_id = {}",
+                sql_string(&self.state_id),
+                sql_string(subscription_id)
+            ))
+        })
+    }
+
+    fn verified_root<'a>(
+        &'a mut self,
+        subscription_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<WebVerifiedRoot>>> + 'a>> {
+        Box::pin(async move {
+            let rows = self.query_rows(
+                &format!(
+                    "SELECT subscription_id, partition_id, commit_seq, root \
+                     FROM sync_verified_roots WHERE state_id = {} AND subscription_id = {} LIMIT 1",
+                    sql_string(&self.state_id),
+                    sql_string(subscription_id)
+                ),
+                |row| {
+                    Ok(WebVerifiedRoot {
+                        subscription_id: row.string("subscription_id")?,
+                        partition_id: row.string("partition_id")?,
+                        commit_seq: row.i64("commit_seq")?,
+                        root: row.string("root")?,
+                    })
+                },
+            )?;
+            Ok(rows.into_iter().next())
+        })
+    }
+
+    fn upsert_verified_root<'a>(
+        &'a mut self,
+        root: WebVerifiedRoot,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            let now = now_ms();
+            self.exec(&format!(
+                "INSERT INTO sync_verified_roots \
+                 (state_id, subscription_id, partition_id, commit_seq, root, created_at, updated_at) \
+                 VALUES ({state_id}, {subscription_id}, {partition_id}, {commit_seq}, {root}, {now}, {now}) \
+                 ON CONFLICT(state_id, subscription_id) DO UPDATE SET \
+                   partition_id = excluded.partition_id, commit_seq = excluded.commit_seq, \
+                   root = excluded.root, updated_at = excluded.updated_at",
+                state_id = sql_string(&self.state_id),
+                subscription_id = sql_string(&root.subscription_id),
+                partition_id = sql_string(&root.partition_id),
+                commit_seq = root.commit_seq,
+                root = sql_string(&root.root),
+            ))
+        })
+    }
+
+    fn delete_verified_root<'a>(
+        &'a mut self,
+        subscription_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.exec(&format!(
+                "DELETE FROM sync_verified_roots WHERE state_id = {} AND subscription_id = {}",
                 sql_string(&self.state_id),
                 sql_string(subscription_id)
             ))

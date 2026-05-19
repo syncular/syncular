@@ -17,12 +17,12 @@ use syncular_runtime::fixtures::todo::{
 };
 use syncular_runtime::protocol::{
     snapshot_manifest_digest, validate_pull_commit_integrity_metadata,
-    validate_pull_snapshot_manifests, BootstrapState, CombinedRequest, CombinedResponse,
-    OperationResult, PullResponse, PushBatchResponse, PushCommitResponse, SnapshotChunkRef,
-    SnapshotManifest, SnapshotManifestChunkRef, SubscriptionResponse, SyncChange, SyncCommit,
-    SyncSnapshot,
+    validate_pull_snapshot_manifests, wire_commit_chain_root, wire_commit_digest, BootstrapState,
+    CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushBatchResponse,
+    PushCommitResponse, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
+    SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT,
 };
-use syncular_runtime::store::SyncStore;
+use syncular_runtime::store::{SyncStore, SyncStoreTx};
 use syncular_runtime::transport::{
     RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders, SyncTransport,
 };
@@ -1617,6 +1617,86 @@ fn malformed_commit_integrity_metadata_is_rejected_before_apply() -> Result<()> 
 }
 
 #[test]
+fn canonical_commit_integrity_is_recomputed_and_verified_root_is_persisted() -> Result<()> {
+    let path = temp_db_path("syncular-protocol-valid-commit-integrity");
+    let change = SyncChange {
+        table: "tasks".to_string(),
+        row_id: "task-integrity".to_string(),
+        op: "upsert".to_string(),
+        row_json: Some(task_row("task-integrity", "Verified", 10)),
+        row_version: Some(10),
+        scopes: scopes(),
+    };
+    let commit = verified_wire_commit(10, change)?;
+    let expected_root = commit
+        .commit_chain_root
+        .clone()
+        .expect("verified commit root");
+    let transport = TestTransport::new();
+    transport.push_http_response(commits_combined_response(
+        "sub-tasks",
+        scopes(),
+        10,
+        vec![commit],
+    ));
+    let store = RusqliteStore::open(&path)?;
+    let mut client = demo_client(
+        test_config(&path, "client-valid-integrity"),
+        store,
+        transport,
+    );
+
+    client.sync_http()?;
+    drop(client);
+
+    let mut store = RusqliteStore::open(&path)?;
+    let root = store
+        .transaction(|tx| tx.verified_root("default", "sub-tasks"))?
+        .expect("persisted verified root");
+    assert_eq!(root.partition_id, "default");
+    assert_eq!(root.commit_seq, 10);
+    assert_eq!(root.root, expected_root);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn canonical_commit_integrity_rejects_tampered_commit_before_apply() -> Result<()> {
+    let path = temp_db_path("syncular-protocol-tampered-commit-integrity");
+    let change = SyncChange {
+        table: "tasks".to_string(),
+        row_id: "task-integrity".to_string(),
+        op: "upsert".to_string(),
+        row_json: Some(task_row("task-integrity", "Verified", 10)),
+        row_version: Some(10),
+        scopes: scopes(),
+    };
+    let mut commit = verified_wire_commit(10, change)?;
+    commit.changes[0].row_json = Some(task_row("task-integrity", "Tampered", 10));
+    let transport = TestTransport::new();
+    transport.push_http_response(commits_combined_response(
+        "sub-tasks",
+        scopes(),
+        10,
+        vec![commit],
+    ));
+    let store = RusqliteStore::open(&path)?;
+    let mut client = demo_client(
+        test_config(&path, "client-tampered-integrity"),
+        store,
+        transport,
+    );
+
+    let error = client.sync_http().expect_err("tampered commit");
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+    assert!(client.list_tasks()?.is_empty());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn commit_integrity_metadata_validation_rejects_partial_or_reordered_roots() {
     let mut pull = integrity_pull_response(vec![
         integrity_commit(41, Some("a".repeat(64)), Some("b".repeat(64))),
@@ -2261,17 +2341,21 @@ fn duplicate_pull_commits_response() -> CombinedResponse {
         sync_conformance_i64(&["repeatedPull", "expectedCursor"]),
         vec![
             SyncCommit {
+                partition_id: None,
                 commit_seq: 90,
                 created_at: "2026-05-08T00:00:00.000Z".to_string(),
                 actor_id: "server".to_string(),
+                previous_chain_root: None,
                 commit_digest: None,
                 commit_chain_root: None,
                 changes: vec![change.clone()],
             },
             SyncCommit {
+                partition_id: None,
                 commit_seq: 90,
                 created_at: "2026-05-08T00:00:00.000Z".to_string(),
                 actor_id: "server".to_string(),
+                previous_chain_root: None,
                 commit_digest: None,
                 commit_chain_root: None,
                 changes: vec![change],
@@ -2304,14 +2388,38 @@ fn integrity_commit(
     commit_digest: Option<String>,
     commit_chain_root: Option<String>,
 ) -> SyncCommit {
+    let has_integrity = commit_digest.is_some() || commit_chain_root.is_some();
     SyncCommit {
+        partition_id: has_integrity.then(|| "default".to_string()),
         commit_seq,
         created_at: "2026-05-19T00:00:00.000Z".to_string(),
         actor_id: "server".to_string(),
+        previous_chain_root: has_integrity.then(|| "0".repeat(64)),
         commit_digest,
         commit_chain_root,
         changes: Vec::new(),
     }
+}
+
+fn verified_wire_commit(commit_seq: i64, change: SyncChange) -> Result<SyncCommit> {
+    let mut commit = SyncCommit {
+        partition_id: Some("default".to_string()),
+        commit_seq,
+        created_at: "2026-05-19T00:00:00.000Z".to_string(),
+        actor_id: "server".to_string(),
+        previous_chain_root: Some(COMMIT_INTEGRITY_GENESIS_ROOT.to_string()),
+        commit_digest: None,
+        commit_chain_root: None,
+        changes: vec![change],
+    };
+    commit.commit_digest = Some(wire_commit_digest("default", "sub-tasks", &commit)?);
+    commit.commit_chain_root = Some(wire_commit_chain_root(
+        "default",
+        "sub-tasks",
+        COMMIT_INTEGRITY_GENESIS_ROOT,
+        &commit,
+    )?);
+    Ok(commit)
 }
 
 fn snapshot_manifest_pull_response(

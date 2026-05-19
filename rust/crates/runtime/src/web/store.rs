@@ -40,6 +40,14 @@ pub struct WebSubscriptionState {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebVerifiedRoot {
+    pub subscription_id: String,
+    pub partition_id: String,
+    pub commit_seq: i64,
+    pub root: String,
+}
+
 pub trait AsyncWebStore {
     fn app_schema(&self) -> AppSchema {
         default_app_schema()
@@ -132,6 +140,27 @@ pub trait AsyncWebStore {
         &'a mut self,
         subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    fn verified_root<'a>(
+        &'a mut self,
+        _subscription_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<WebVerifiedRoot>>> + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn upsert_verified_root<'a>(
+        &'a mut self,
+        _root: WebVerifiedRoot,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete_verified_root<'a>(
+        &'a mut self,
+        _subscription_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 
     fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async { Ok(()) })
@@ -243,6 +272,7 @@ pub trait AsyncWebStore {
 #[derive(Debug, Default)]
 pub struct WebMemoryStore {
     states: HashMap<String, WebSubscriptionState>,
+    verified_roots: HashMap<String, WebVerifiedRoot>,
     rows: HashMap<String, HashMap<String, Value>>,
     outbox: Vec<OutboxCommit>,
     conflicts: Vec<WebConflictRecord>,
@@ -594,6 +624,34 @@ impl AsyncWebStore for WebMemoryStore {
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
             self.states.remove(subscription_id);
+            Ok(())
+        })
+    }
+
+    fn verified_root<'a>(
+        &'a mut self,
+        subscription_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<WebVerifiedRoot>>> + 'a>> {
+        Box::pin(async move { Ok(self.verified_roots.get(subscription_id).cloned()) })
+    }
+
+    fn upsert_verified_root<'a>(
+        &'a mut self,
+        root: WebVerifiedRoot,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.verified_roots
+                .insert(root.subscription_id.clone(), root);
+            Ok(())
+        })
+    }
+
+    fn delete_verified_root<'a>(
+        &'a mut self,
+        subscription_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.verified_roots.remove(subscription_id);
             Ok(())
         })
     }

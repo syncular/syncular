@@ -266,7 +266,53 @@ describe('commit integrity metadata', () => {
     });
     const commit = response.response.subscriptions[0]!.commits[0]!;
 
+    expect(commit.partitionId).toBe('default');
+    expect(commit.previousChainRoot).toBe(SYNCULAR_COMMIT_GENESIS_ROOT);
     expect(commit.commitDigest).toMatch(sha256HexPattern);
     expect(commit.commitChainRoot).toMatch(sha256HexPattern);
+
+    await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'writer',
+        clientCommitId: 'commit-2',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'task-2',
+            op: 'upsert',
+            payload: { title: 'Pulled again', user_id: 'u1' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    const next = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'reader',
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: commit.commitSeq,
+            verifiedRoot: commit.commitChainRoot,
+          },
+        ],
+      },
+    });
+    const nextCommit = next.response.subscriptions[0]!.commits[0]!;
+    expect(nextCommit.previousChainRoot).toBe(commit.commitChainRoot);
+    expect(nextCommit.commitChainRoot).toMatch(sha256HexPattern);
   });
 });

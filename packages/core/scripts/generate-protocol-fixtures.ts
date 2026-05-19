@@ -249,9 +249,11 @@ async function binarySyncPackFixture() {
           nextCursor: 42,
           commits: [
             {
+              partitionId: 'default',
               commitSeq: 42,
               createdAt: '2026-05-17T10:00:00.000Z',
               actorId: 'user-2',
+              previousChainRoot: '0'.repeat(64),
               commitDigest: 'a'.repeat(64),
               commitChainRoot: 'b'.repeat(64),
               changes: [

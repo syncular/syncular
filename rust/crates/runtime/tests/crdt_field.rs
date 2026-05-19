@@ -1406,9 +1406,11 @@ impl SharedCrdtServer {
             .iter()
             .filter(|commit| commit.commit_seq > cursor && commit.client_id != request_client_id)
             .map(|commit| SyncCommit {
+                partition_id: None,
                 commit_seq: commit.commit_seq,
                 created_at: "2026-05-13T00:00:00.000Z".to_string(),
                 actor_id: commit.client_id.clone(),
+                previous_chain_root: None,
                 commit_digest: None,
                 commit_chain_root: None,
                 changes: commit.changes.clone(),

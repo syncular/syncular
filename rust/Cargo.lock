@@ -1978,6 +1978,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncular-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "syncular-runtime"
 version = "0.1.0"
 dependencies = [
@@ -2003,6 +2012,7 @@ dependencies = [
  "sha2",
  "sqlite-wasm-rs",
  "sqlite-wasm-vfs",
+ "syncular-protocol",
  "syncular-testkit",
  "tungstenite",
  "uuid",

@@ -28,8 +28,8 @@ use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, OutboxCommit, OutboxSummary, SubscriptionState,
-    SyncStateStore, SyncStore, SyncStoreTx, BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES,
-    MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+    SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, BLOB_UPLOAD_STALE_TIMEOUT_MS,
+    MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
@@ -227,6 +227,32 @@ impl From<SubscriptionStateRow> for SubscriptionState {
             cursor: row.cursor,
             bootstrap_state_json: row.bootstrap_state_json,
             status: row.status,
+        }
+    }
+}
+
+#[derive(Debug, Clone, QueryableByName)]
+struct VerifiedRootRow {
+    #[diesel(sql_type = Text)]
+    state_id: String,
+    #[diesel(sql_type = Text)]
+    subscription_id: String,
+    #[diesel(sql_type = Text)]
+    partition_id: String,
+    #[diesel(sql_type = BigInt)]
+    commit_seq: i64,
+    #[diesel(sql_type = Text)]
+    root: String,
+}
+
+impl From<VerifiedRootRow> for VerifiedRoot {
+    fn from(row: VerifiedRootRow) -> Self {
+        Self {
+            state_id: row.state_id,
+            subscription_id: row.subscription_id,
+            partition_id: row.partition_id,
+            commit_seq: row.commit_seq,
+            root: row.root,
         }
     }
 }
@@ -3174,6 +3200,69 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
                 .filter(s::state_id.eq(state_id_value))
                 .filter(s::subscription_id.eq(subscription_id_value)),
         )
+        .execute(self.conn)?;
+        Ok(())
+    }
+
+    fn verified_root(
+        &mut self,
+        state_id_value: &str,
+        subscription_id_value: &str,
+    ) -> Result<Option<VerifiedRoot>> {
+        let row: Option<VerifiedRootRow> = sql_query(
+            r#"
+            select state_id, subscription_id, partition_id, commit_seq, root
+            from sync_verified_roots
+            where state_id = ?1 and subscription_id = ?2
+            limit 1
+            "#,
+        )
+        .bind::<Text, _>(state_id_value)
+        .bind::<Text, _>(subscription_id_value)
+        .get_result(self.conn)
+        .optional()?;
+        Ok(row.map(VerifiedRoot::from))
+    }
+
+    fn upsert_verified_root(&mut self, root: &VerifiedRoot) -> Result<()> {
+        let now = now_ms();
+        sql_query(
+            r#"
+            insert into sync_verified_roots (
+                state_id, subscription_id, partition_id, commit_seq, root,
+                created_at, updated_at
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            on conflict (state_id, subscription_id) do update set
+                partition_id = excluded.partition_id,
+                commit_seq = excluded.commit_seq,
+                root = excluded.root,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind::<Text, _>(&root.state_id)
+        .bind::<Text, _>(&root.subscription_id)
+        .bind::<Text, _>(&root.partition_id)
+        .bind::<BigInt, _>(root.commit_seq)
+        .bind::<Text, _>(&root.root)
+        .bind::<BigInt, _>(now)
+        .bind::<BigInt, _>(now)
+        .execute(self.conn)?;
+        Ok(())
+    }
+
+    fn delete_verified_root(
+        &mut self,
+        state_id_value: &str,
+        subscription_id_value: &str,
+    ) -> Result<()> {
+        sql_query(
+            r#"
+            delete from sync_verified_roots
+            where state_id = ?1 and subscription_id = ?2
+            "#,
+        )
+        .bind::<Text, _>(state_id_value)
+        .bind::<Text, _>(subscription_id_value)
         .execute(self.conn)?;
         Ok(())
     }

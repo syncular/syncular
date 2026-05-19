@@ -1296,9 +1296,11 @@ impl SyncTransport for EncryptedCrdtPullTransport {
                         next_cursor: 2,
                         snapshots: None,
                         commits: vec![SyncCommit {
+                            partition_id: None,
                             commit_seq: 2,
                             created_at: "2026-05-10T00:00:00.000Z".to_string(),
                             actor_id: "remote-user".to_string(),
+                            previous_chain_root: None,
                             commit_digest: None,
                             commit_chain_root: None,
                             changes: vec![SyncChange {
@@ -1387,9 +1389,11 @@ impl SyncTransport for EncryptedCrdtCheckpointPullTransport {
                         next_cursor: 7,
                         snapshots: None,
                         commits: vec![SyncCommit {
+                            partition_id: None,
                             commit_seq: 7,
                             created_at: "2026-05-10T00:00:00.000Z".to_string(),
                             actor_id: "remote-user".to_string(),
+                            previous_chain_root: None,
                             commit_digest: None,
                             commit_chain_root: None,
                             changes: vec![SyncChange {
