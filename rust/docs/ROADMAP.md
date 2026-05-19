@@ -143,8 +143,10 @@ read-only review:
     metadata, and TypeScript now exports `syncularGeneratedLocalReadModels` so
     host packages can consume the generated setup/rebuild contract. The
     generated TypeScript installer now also executes setup/rebuild through that
-    exported contract instead of duplicated SQL blocks. The todo fixture proves
-    rebuild, update, delete invalidation, and typed Diesel reads.
+    exported contract instead of duplicated SQL blocks, and
+    `syncular.schema.json` carries the generated `setupSql`/`rebuildSql` for
+    non-TS tooling. The todo fixture proves rebuild, update, delete invalidation,
+    and typed Diesel reads.
     Browser scoreboard now measures raw aggregate and read-model aggregate lanes:
     at 100k rows, Rust read-model aggregate p50 is `0.05ms` vs TS `0.53ms`
     while raw aggregate remains visible (`23.00ms` Rust vs `161.09ms` TS). This

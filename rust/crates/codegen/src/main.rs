@@ -669,6 +669,8 @@ struct SchemaJsonLocalReadModel {
     output_table: String,
     dimensions: Vec<String>,
     count_column: String,
+    setup_sql: Vec<String>,
+    rebuild_sql: Vec<String>,
 }
 
 fn migration_specs(migrations_dir: &Path) -> Result<Vec<SchemaJsonMigration>> {
@@ -812,24 +814,31 @@ fn generate_schema_json(
         });
     }
 
-    let document = SchemaJsonDocument {
-        schema_ref: "https://syncular.dev/schemas/syncular.schema.v1.json".to_string(),
-        contract_version: 1,
-        app_schema_version,
-        migrations: migration_specs(migrations_dir)?,
-        tables: schema_tables,
-        local_read_models: config
-            .local_read_models
-            .iter()
-            .map(|model| SchemaJsonLocalReadModel {
+    let local_read_models = config
+        .local_read_models
+        .iter()
+        .map(|model| {
+            let generated_sql = local_read_model_sql(tables, model)?;
+            Ok(SchemaJsonLocalReadModel {
                 name: model.name.clone(),
                 kind: model.kind.clone(),
                 source_table: model.source_table.clone(),
                 output_table: model.output_table.clone(),
                 dimensions: model.dimensions.clone(),
                 count_column: model.count_column.clone(),
+                setup_sql: generated_sql.setup_sql,
+                rebuild_sql: generated_sql.rebuild_sql,
             })
-            .collect(),
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let document = SchemaJsonDocument {
+        schema_ref: "https://syncular.dev/schemas/syncular.schema.v1.json".to_string(),
+        contract_version: 1,
+        app_schema_version,
+        migrations: migration_specs(migrations_dir)?,
+        tables: schema_tables,
+        local_read_models,
     };
 
     Ok(format!("{}\n", serde_json::to_string_pretty(&document)?))
@@ -9078,6 +9087,14 @@ mod tests {
             "syncular_task_counts_by_deleted"
         );
         assert_eq!(json["localReadModels"][0]["dimensions"][0], "deleted");
+        assert_eq!(
+            json["localReadModels"][0]["setupSql"][0],
+            "CREATE TABLE IF NOT EXISTS \"syncular_task_counts_by_deleted\" (\n  \"deleted\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"deleted\")\n)"
+        );
+        assert_eq!(
+            json["localReadModels"][0]["rebuildSql"][1],
+            "INSERT INTO \"syncular_task_counts_by_deleted\" (\"deleted\", \"task_count\")\nSELECT \"deleted\", count(*)\nFROM \"tasks\"\nGROUP BY \"deleted\""
+        );
 
         let columns = table["columns"].as_array().expect("columns array");
         let image = columns

@@ -68,6 +68,35 @@ fn assert_schema_contract(path: &Path) {
             assert!(column["blobRef"].is_boolean(), "column.blobRef");
         }
     }
+
+    let read_models = json["localReadModels"]
+        .as_array()
+        .expect("localReadModels array");
+    for read_model in read_models {
+        assert_non_empty_string(&read_model["name"], "localReadModel.name");
+        assert_non_empty_string(&read_model["kind"], "localReadModel.kind");
+        assert_non_empty_string(&read_model["sourceTable"], "localReadModel.sourceTable");
+        assert_non_empty_string(&read_model["outputTable"], "localReadModel.outputTable");
+        assert!(
+            read_model["dimensions"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty()),
+            "localReadModel.dimensions"
+        );
+        assert_non_empty_string(&read_model["countColumn"], "localReadModel.countColumn");
+        assert!(
+            read_model["setupSql"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty()),
+            "localReadModel.setupSql"
+        );
+        assert!(
+            read_model["rebuildSql"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty()),
+            "localReadModel.rebuildSql"
+        );
+    }
 }
 
 fn assert_non_empty_string(value: &Value, label: &str) {
