@@ -5496,29 +5496,6 @@ fn bind_sqlite_parameter_result(rc: i32, index: i32) -> Result<()> {
     }
 }
 
-fn execute_multirow_upsert(
-    db: *mut ffi::sqlite3,
-    table: &str,
-    primary_key_column: &str,
-    columns: &[String],
-    on_conflict: &str,
-    rows: &[Map<String, Value>],
-) -> Result<()> {
-    let stmt = prepare_multirow_upsert(
-        db,
-        table,
-        primary_key_column,
-        columns,
-        on_conflict,
-        rows.len(),
-    )?;
-    if let Err(err) = execute_prepared_multirow_upsert(db, stmt, rows, columns, "multirow upsert") {
-        let _ = finalize_stmt(stmt, db, "finalize multirow upsert after step failure");
-        return Err(err);
-    }
-    finalize_stmt(stmt, db, "finalize multirow upsert")
-}
-
 fn execute_binary_snapshot_write(
     db: *mut ffi::sqlite3,
     table: &str,

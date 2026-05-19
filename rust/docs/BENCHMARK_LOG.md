@@ -18,6 +18,116 @@ Decision:
 Notes:
 ```
 
+## 2026-05-19 - Retained WP-12 Artifact Page Cap
+
+Commit: retained slice
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser direct SQLite artifact pulls cap `maxSnapshotPages` to `2`; row-chunk
+  pulls still use the configured page count.
+- Browser E2E scoreboard gained `--rust-max-snapshot-pages` for measured page
+  cap probes.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+Local browser control and probes:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-500k-artifacts-maxpages10-control.json
+```
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-500k-artifacts-auto-maxpages2.json
+```
+
+| Metric | maxPages 10 control | retained maxPages 2 |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `623.48` | `595.93` |
+| `rust_pull_apply_ms` | `606` | `569` |
+| `rust_snapshot_row_apply_ms` | `541` | `512` |
+| `rust_pull_rounds` | `1` | `5` |
+| `rust_request_count` | `11` | `15` |
+| `browser_js_heap_used_delta_bytes` | `10398412` | `2604624` |
+
+Additional local checks:
+
+- `maxPages=1` was rejected as the default because it forced 100k into two pull
+  rounds: `.context/benchmarks/wp12-100k-artifacts-auto-maxpages1.json`.
+- Retained `maxPages=2` keeps 100k to one pull round:
+  `.context/benchmarks/wp12-100k-artifacts-auto-maxpages2.json`,
+  `rust_bootstrap_ms=147.84`, `rust_pull_rounds=1`.
+
+External app-style gate:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000
+
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+
+- `.results/2026-05-19T23-01-40-161Z/syncular-rust/bootstrap.json`
+- `snapshot_chunk_count_500000=0`
+- `bootstrap_500000_ms=1334.25`
+- `local_apply_ms_500000=198`
+- `response_bytes_500000=3537673`
+- `peak_memory_mb_500000=707.92`
+
+Comparison:
+
+- A mismatched external precompute run with the old `60000` row limit fell back
+  to row chunks: `snapshot_chunk_count_500000=13`,
+  `bootstrap_500000_ms=2686.04`, `local_apply_ms_500000=402`,
+  `peak_memory_mb_500000=723.59`.
+- The older retained scoped-artifact baseline was `peak_memory_mb_500000=746.92`
+  with `local_apply_ms_500000=1392`.
+
+Decision:
+
+- Retained. Cap `2` gives a large local heap win, improves same-session local
+  500k wall time, and improves external artifact peak memory while preserving
+  verified artifact apply and avoiding staging copies.
+
 ## 2026-05-19 - WP-04 Release Realtime Guard
 
 Commit: measurement only

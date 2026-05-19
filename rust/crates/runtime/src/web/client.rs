@@ -1119,13 +1119,20 @@ where
             });
         }
 
+        let request_sqlite_snapshot_artifacts = self.should_request_sqlite_snapshot_artifacts();
+        let max_snapshot_pages = if request_sqlite_snapshot_artifacts {
+            self.config.pull.max_snapshot_pages.max(1).min(2)
+        } else {
+            self.config.pull.max_snapshot_pages
+        };
+
         Ok(PullRequest {
             limit_commits: self.config.pull.limit_commits,
             limit_snapshot_rows: self.config.pull.limit_snapshot_rows,
-            max_snapshot_pages: self.config.pull.max_snapshot_pages,
+            max_snapshot_pages,
             dedupe_rows: self.config.pull.dedupe_rows,
             snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
-            snapshot_artifacts: self.should_request_sqlite_snapshot_artifacts().then(|| {
+            snapshot_artifacts: request_sqlite_snapshot_artifacts.then(|| {
                 SnapshotArtifactsRequest {
                     schema_version: self.schema_version().to_string(),
                     artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
