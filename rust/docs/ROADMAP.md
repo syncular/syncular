@@ -70,8 +70,9 @@ read-only review:
 
 ## Now
 
-- `[ ]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
-  - Continue generated direct-to-SQLite apply work under benchmark gates.
+- `[~]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+  - Small bind-loop/cache probes were rejected; continue only with larger
+    import/artifact architecture experiments under benchmark gates.
 
 ## Next
 
