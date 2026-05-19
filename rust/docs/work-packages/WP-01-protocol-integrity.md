@@ -57,10 +57,27 @@ Current working slice restored Hono pull forwarding for client-provided
 `verifiedRoot`, so browser workers can keep root continuity across ordered
 live-query refreshes instead of tripping a `previousChainRoot` mismatch.
 
+Current working slice also moved pull integrity to subscription-level metadata
+and advanced the binary sync-pack wire version to `13`. Per-commit
+`partitionId` / `previousChainRoot` / `commitDigest` / `commitChainRoot`
+metadata is no longer part of the current `SyncCommit` contract.
+
+Targeted server perf moved in the intended direction:
+
+- Dense binary response bytes: `2535.6KiB -> 1419.1KiB`.
+- Dense build: `41.6-43.7ms -> 39.4ms`.
+- Dense binary encode: `43.0-45.2ms -> 42.2ms`.
+
+External app-style bootstrap completed after rebuilding the branch server:
+Rust 500k bootstrap is `6354.51ms` versus TS `3730.62ms`; Rust local apply is
+`1840ms` versus TS `1978.08ms`. The current Rust gap in that run is dominated
+by `derived_schema_ms` (`3210.75ms`) and memory, not binary decode.
+
 The current overhead is documented in [`../BENCHMARK_LOG.md`](../BENCHMARK_LOG.md).
 
 ## Next Action
 
-Move from per-commit integrity metadata toward page/subscription-level roots
-plus compact binary metadata. Keep clear failure behavior and no compatibility
-fallback branch.
+Update the external offline-sync-bench Rust adapter to the current
+`applyMutationJson` API so online-propagation and reconnect can be measured
+again, then continue reducing canonical JSON allocation in the integrity hot
+path.

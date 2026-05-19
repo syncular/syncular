@@ -99,6 +99,7 @@ pub fn todo_snapshot_response(rows: Vec<Value>) -> CombinedResponse {
                 bootstrap: true,
                 bootstrap_state: None,
                 next_cursor: 1,
+                integrity: None,
                 commits: Vec::new(),
                 snapshots: Some(vec![SyncSnapshot {
                     table: "tasks".to_string(),

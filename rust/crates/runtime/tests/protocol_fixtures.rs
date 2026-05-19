@@ -177,14 +177,19 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
     let commit = &subscription.commits[0];
     assert_eq!(commit.commit_seq, 42);
     assert_eq!(commit.actor_id, "user-2");
+    let integrity = subscription
+        .integrity
+        .as_ref()
+        .expect("subscription integrity");
     assert_eq!(
-        commit.commit_digest.as_deref(),
-        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        integrity.previous_chain_root,
+        "0000000000000000000000000000000000000000000000000000000000000000"
     );
     assert_eq!(
-        commit.commit_chain_root.as_deref(),
-        Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        integrity.commit_chain_root,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     );
+    assert_eq!(integrity.commit_seq, 42);
     assert_eq!(commit.changes.len(), 1);
     assert_eq!(commit.changes[0].table, "tasks");
     assert_eq!(commit.changes[0].row_id, "task-1");

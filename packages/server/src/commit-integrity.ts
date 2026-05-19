@@ -1,4 +1,8 @@
-import { sha256Hex, type SyncCommit } from '@syncular/core';
+import {
+  sha256Hex,
+  type SyncCommit,
+  type SyncPullSubscriptionIntegrity,
+} from '@syncular/core';
 import { sql } from 'kysely';
 import {
   coerceIsoString,
@@ -111,35 +115,40 @@ export async function finalizeCommitIntegrity<DB extends SyncCoreDb>(args: {
   };
 }
 
-export async function attachWireCommitIntegrity(args: {
+export async function createWireSubscriptionIntegrity(args: {
   partitionId: string;
   subscriptionId: string;
   previousRoot?: string | null;
   commits: SyncCommit[];
-}): Promise<void> {
+}): Promise<SyncPullSubscriptionIntegrity | undefined> {
+  if (args.commits.length === 0) {
+    return undefined;
+  }
+  const firstPreviousChainRoot =
+    args.previousRoot || SYNCULAR_COMMIT_GENESIS_ROOT;
   let previousChainRoot = args.previousRoot || SYNCULAR_COMMIT_GENESIS_ROOT;
   for (const commit of args.commits) {
-    commit.partitionId = args.partitionId;
-    commit.previousChainRoot = previousChainRoot;
     const commitDigest = await wireCommitDigest({
       partitionId: args.partitionId,
       subscriptionId: args.subscriptionId,
       commit,
     });
-    commit.commitDigest = commitDigest;
-    const commitChainRoot = await sha256Hex(
-      canonicalStringify({
-        version: SYNCULAR_WIRE_COMMIT_CHAIN_ROOT_VERSION,
-        partitionId: args.partitionId,
-        subscriptionId: args.subscriptionId,
-        commitSeq: commit.commitSeq,
-        previousChainRoot,
-        commitDigest,
-      })
-    );
-    commit.commitChainRoot = commitChainRoot;
+    const commitChainRoot = await wireCommitChainRootFromDigest({
+      partitionId: args.partitionId,
+      subscriptionId: args.subscriptionId,
+      commitSeq: commit.commitSeq,
+      previousChainRoot,
+      commitDigest,
+    });
     previousChainRoot = commitChainRoot;
   }
+  const lastCommit = args.commits[args.commits.length - 1]!;
+  return {
+    partitionId: args.partitionId,
+    previousChainRoot: firstPreviousChainRoot,
+    commitChainRoot: previousChainRoot,
+    commitSeq: lastCommit.commitSeq,
+  };
 }
 
 export async function wireCommitDigest(args: {
@@ -166,6 +175,25 @@ export async function wireCommitDigest(args: {
             : coerceNumber(change.row_version),
         scopes: toCanonicalJson(parseJsonValue(change.scopes)),
       })),
+    })
+  );
+}
+
+export async function wireCommitChainRootFromDigest(args: {
+  partitionId: string;
+  subscriptionId: string;
+  commitSeq: number;
+  previousChainRoot: string;
+  commitDigest: string;
+}): Promise<string> {
+  return sha256Hex(
+    canonicalStringify({
+      version: SYNCULAR_WIRE_COMMIT_CHAIN_ROOT_VERSION,
+      partitionId: args.partitionId,
+      subscriptionId: args.subscriptionId,
+      commitSeq: args.commitSeq,
+      previousChainRoot: args.previousChainRoot,
+      commitDigest: args.commitDigest,
     })
   );
 }

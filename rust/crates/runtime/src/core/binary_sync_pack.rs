@@ -2,7 +2,8 @@ use crate::binary_snapshot::decode_binary_snapshot_table;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
     CombinedResponse, OperationResult, PullResponse, PushBatchResponse, PushCommitResponse,
-    SnapshotChunkRef, SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot,
+    SnapshotChunkRef, SubscriptionIntegrity, SubscriptionResponse, SyncChange, SyncCommit,
+    SyncSnapshot,
 };
 use serde_json::{Map, Value};
 
@@ -11,7 +12,7 @@ pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
 
 const MAGIC: &[u8; 4] = b"SSP1";
-const VERSION: u16 = 12;
+const VERSION: u16 = 13;
 const FLAG_NONE: u16 = 0;
 
 struct PendingBinaryChangeRowRef {
@@ -142,6 +143,7 @@ fn read_subscription_response(
         .map(serde_json::from_value)
         .transpose()?;
     let next_cursor = reader.read_i64("subscription next cursor")?;
+    let integrity = reader.read_optional_value(read_subscription_integrity)?;
     let commits = reader.read_array("subscription commits", read_commit)?;
     let snapshots = reader.read_optional_array("subscription snapshots", read_snapshot)?;
     Ok(SubscriptionResponse {
@@ -151,20 +153,28 @@ fn read_subscription_response(
         bootstrap,
         bootstrap_state,
         next_cursor,
+        integrity,
         commits,
         snapshots,
     })
 }
 
+fn read_subscription_integrity(
+    reader: &mut BinarySyncPackReader<'_>,
+) -> Result<SubscriptionIntegrity> {
+    Ok(SubscriptionIntegrity {
+        partition_id: reader.read_string32("subscription integrity partitionId")?,
+        previous_chain_root: reader.read_string32("subscription integrity previous root")?,
+        commit_chain_root: reader.read_string32("subscription integrity chain root")?,
+        commit_seq: reader.read_i64("subscription integrity commit seq")?,
+    })
+}
+
 fn read_commit(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncCommit> {
     Ok(SyncCommit {
-        partition_id: reader.read_optional_string32("commit partitionId")?,
         commit_seq: reader.read_i64("commit seq")?,
         created_at: reader.read_string32("commit createdAt")?,
         actor_id: reader.read_string32("commit actorId")?,
-        previous_chain_root: reader.read_optional_string32("commit previous root")?,
-        commit_digest: reader.read_optional_string32("commit digest")?,
-        commit_chain_root: reader.read_optional_string32("commit chain root")?,
         changes: read_changes_v8(reader)?,
     })
 }

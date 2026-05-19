@@ -130,6 +130,7 @@ pub fn snapshot_page_combined_response(
                 bootstrap: true,
                 bootstrap_state,
                 next_cursor,
+                integrity: None,
                 commits: Vec::new(),
                 snapshots: Some(vec![SyncSnapshot {
                     table: table.to_string(),
@@ -167,6 +168,7 @@ pub fn snapshot_chunks_combined_response(
                 bootstrap: true,
                 bootstrap_state: None,
                 next_cursor,
+                integrity: None,
                 commits: Vec::new(),
                 snapshots: Some(vec![SyncSnapshot {
                     table: table.to_string(),
@@ -227,6 +229,7 @@ pub fn snapshot_subscription_response(
         bootstrap: true,
         bootstrap_state: None,
         next_cursor,
+        integrity: None,
         commits: Vec::new(),
         snapshots: Some(vec![SyncSnapshot {
             table: table.to_string(),
@@ -259,6 +262,7 @@ pub fn revoked_subscription_response(
                 bootstrap: false,
                 bootstrap_state: None,
                 next_cursor,
+                integrity: None,
                 commits: Vec::new(),
                 snapshots: None,
             }],
@@ -278,13 +282,9 @@ pub fn commit_combined_response(
         scopes,
         next_cursor,
         vec![SyncCommit {
-            partition_id: None,
             commit_seq,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
             actor_id: "test-server".to_string(),
-            previous_chain_root: None,
-            commit_digest: None,
-            commit_chain_root: None,
             changes,
         }],
     )
@@ -310,6 +310,7 @@ pub fn commits_combined_response(
                 bootstrap: false,
                 bootstrap_state: None,
                 next_cursor,
+                integrity: None,
                 commits,
                 snapshots: None,
             }],
