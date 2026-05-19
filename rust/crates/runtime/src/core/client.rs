@@ -1626,6 +1626,7 @@ where
                 max_snapshot_pages: 10,
                 dedupe_rows: None,
                 snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
+                snapshot_artifacts: None,
                 sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
                 subscriptions,
             })

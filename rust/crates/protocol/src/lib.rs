@@ -107,6 +107,16 @@ pub struct SubscriptionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotArtifactsRequest {
+    #[serde(rename = "artifactKinds")]
+    pub artifact_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressions: Vec<String>,
+    #[serde(rename = "featureSet", default, skip_serializing_if = "Vec::is_empty")]
+    pub feature_set: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequest {
     #[serde(rename = "limitCommits")]
     pub limit_commits: i64,
@@ -122,6 +132,8 @@ pub struct PullRequest {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub snapshot_encodings: Vec<String>,
+    #[serde(rename = "snapshotArtifacts", skip_serializing_if = "Option::is_none")]
+    pub snapshot_artifacts: Option<SnapshotArtifactsRequest>,
     #[serde(
         rename = "syncPackEncodings",
         default,

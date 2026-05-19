@@ -170,6 +170,23 @@ export const SyncSnapshotChunkEncodingSchema = z.enum(
   SYNC_SNAPSHOT_CHUNK_ENCODINGS
 );
 export const SyncPackEncodingSchema = z.enum(SYNC_PACK_ENCODINGS);
+export const SyncScopedSnapshotArtifactKindSchema = z.literal(
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1
+);
+export const SyncSnapshotArtifactCompressionSchema = z.union([
+  z.literal(SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE),
+  z.literal(SYNC_SNAPSHOT_CHUNK_COMPRESSION),
+]);
+
+export const SyncSnapshotArtifactsRequestSchema = z.object({
+  artifactKinds: z.array(SyncScopedSnapshotArtifactKindSchema).min(1),
+  compressions: z.array(SyncSnapshotArtifactCompressionSchema).optional(),
+  featureSet: z.array(z.string()).optional(),
+});
+
+export type SyncSnapshotArtifactsRequest = z.infer<
+  typeof SyncSnapshotArtifactsRequestSchema
+>;
 
 export const SyncPullRequestSchema = z.object({
   clientId: z.string().min(1),
@@ -178,6 +195,7 @@ export const SyncPullRequestSchema = z.object({
   maxSnapshotPages: z.number().int().min(1).optional(),
   dedupeRows: z.boolean().optional(),
   snapshotEncodings: z.array(SyncSnapshotChunkEncodingSchema).optional(),
+  snapshotArtifacts: SyncSnapshotArtifactsRequestSchema.optional(),
   syncPackEncodings: z.array(SyncPackEncodingSchema).optional(),
   subscriptions: z.array(SyncSubscriptionRequestSchema),
 });
