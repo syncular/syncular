@@ -18,6 +18,66 @@ Decision:
 Notes:
 ```
 
+## 2026-05-19 - Rejected WP-03 Browser Apply Probes
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Command:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+Immediate pre-change control band from this session:
+
+- Run 1: `rust_bootstrap_ms=617.89`, `rust_pull_apply_ms=350`,
+  `rust_snapshot_chunk_apply_ms=309`, `rust_snapshot_chunk_bind_ms=176`,
+  `rust_snapshot_chunk_step_ms=124`, `rust_cached_bootstrap_ms=335.89`,
+  `rust_cached_snapshot_chunk_apply_ms=291`.
+- Run 2: `rust_bootstrap_ms=623.86`, `rust_pull_apply_ms=353`,
+  `rust_snapshot_chunk_apply_ms=308`, `rust_snapshot_chunk_bind_ms=178`,
+  `rust_snapshot_chunk_step_ms=122`, `rust_cached_bootstrap_ms=336.89`,
+  `rust_cached_snapshot_chunk_apply_ms=293`.
+
+Rejected candidates:
+
+- Runtime/protocol raw visitor adapter bypass:
+  `rust_bootstrap_ms=627.21`, `rust_pull_apply_ms=353`,
+  `rust_snapshot_chunk_apply_ms=309`, `rust_snapshot_chunk_bind_ms=173`,
+  `rust_cached_snapshot_chunk_apply_ms=288`.
+- Smaller browser snapshot batch size (`2048 -> 1024`):
+  `rust_bootstrap_ms=622.44`, `rust_pull_apply_ms=348`,
+  `rust_snapshot_chunk_apply_ms=306`, `rust_snapshot_chunk_bind_ms=169`,
+  `rust_cached_bootstrap_ms=345.38`,
+  `rust_cached_snapshot_chunk_apply_ms=302`.
+- Precomputed binary snapshot null masks:
+  `rust_bootstrap_ms=632.59`, `rust_pull_apply_ms=364`,
+  `rust_snapshot_chunk_apply_ms=320`, `rust_snapshot_chunk_bind_ms=186`,
+  `rust_cached_snapshot_chunk_apply_ms=300`.
+- Generated nullable-column elision for all-null snapshot columns:
+  `rust_bootstrap_ms=624.96`, `rust_pull_apply_ms=353`,
+  `rust_snapshot_chunk_apply_ms=307`, `rust_snapshot_chunk_bind_ms=173`,
+  `rust_cached_bootstrap_ms=340.77`,
+  `rust_cached_snapshot_chunk_apply_ms=295`.
+
+Decision:
+
+- All candidates were reverted. None improved the target bucket without a worse
+  cached/total result.
+- These results reinforce that the remaining browser local apply cost is not
+  meaningfully improved by small decode-loop or prepared-statement tweaks.
+  Next WP-03 work should be a larger architecture experiment, such as
+  server-generated SQLite artifacts or a true import path, and it must start
+  with the external app-style benchmark.
+
 ## 2026-05-19 - Wire Commit Root Verification
 
 Commit: `ab142e5f`

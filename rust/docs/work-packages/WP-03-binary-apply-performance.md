@@ -1,6 +1,6 @@
 # WP-03 Binary Apply Performance
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -43,5 +43,16 @@ local apply into SQLite/WASM and raw aggregate query execution.
 
 ## Next Action
 
-Continue direct generated apply where it removes row-map/value allocation or
-reduces SQLite bind/step overhead, then measure before retaining.
+Stop spending time on small bind-loop/cache tweaks. The rejected probes in the
+benchmark log show that adapter bypasses, smaller batches, null-mask
+precomputation, and nullable-column elision do not beat the current accepted
+baseline.
+
+Next retained attempt should be a larger architecture experiment:
+
+- server-generated SQLite snapshot artifact or attach/import path, or
+- a true generated SQLite import path that reduces the number of SQLite bind
+  calls rather than just changing how the current bind loop is reached.
+
+Start with the external app-style benchmark before and after the change, then
+run the local 100k/500k browser gates if the external result is promising.
