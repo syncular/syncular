@@ -75,7 +75,7 @@ async function dispatch(request: WorkerRequest): Promise<unknown> {
       return true;
     }
     case 'applyBatch':
-      return requireDb().applyLocalOperationsBatch(request.operations);
+      return requireDb().applyMutationsBatch(request.operations);
     case 'countRows':
       return requireDb().countRows(request.table);
     case 'close':

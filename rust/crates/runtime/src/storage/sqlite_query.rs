@@ -262,7 +262,7 @@ fn prepare_authorized_statement(
         Ok(stmt) => {
             if unsafe { sqlite::sqlite3_stmt_readonly(stmt.raw) } == 0 {
                 return Err(SyncularError::config(
-                    "queryJson only accepts read-only SQL; use applyLocalOperationJson for Syncular writes",
+                    "queryJson only accepts read-only SQL; use applyMutationJson for Syncular writes",
                 ));
             }
             if let Some(message) = authorizer.denied {

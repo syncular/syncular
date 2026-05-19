@@ -8,8 +8,7 @@ use serde_json::{json, Value};
 use syncular_runtime::fixtures::todo::migrations::current_schema_version;
 use syncular_runtime::native_ffi::{
     syncular_native_client_app_table_metadata_json, syncular_native_client_app_tables_json,
-    syncular_native_client_apply_crdt_field_text_json,
-    syncular_native_client_apply_local_operation_json, syncular_native_client_apply_mutation_json,
+    syncular_native_client_apply_crdt_field_text_json, syncular_native_client_apply_mutation_json,
     syncular_native_client_blob_cache_stats_json,
     syncular_native_client_blob_upload_queue_stats_json, syncular_native_client_clear_blob_cache,
     syncular_native_client_close, syncular_native_client_compact_storage_json,
@@ -641,7 +640,7 @@ fn native_ffi_writes_structured_errors() {
 }
 
 #[test]
-fn native_ffi_applies_generic_local_operation_json() {
+fn native_ffi_applies_generic_mutation_json() {
     let path = temp_db_path("syncular-native-ffi-generic-operation");
     let mut error = ptr::null_mut();
     let config = ffi_config(&path, "native-ffi-generic-operation");
@@ -665,7 +664,7 @@ fn native_ffi_applies_generic_local_operation_json() {
         .to_string(),
     )
     .unwrap();
-    let commit_id = syncular_native_client_apply_local_operation_json(
+    let commit_id = syncular_native_client_apply_mutation_json(
         handle,
         operation.as_ptr(),
         ptr::null(),
@@ -700,7 +699,7 @@ fn native_ffi_applies_generic_local_operation_json() {
         .to_string(),
     )
     .unwrap();
-    let commit_id = syncular_native_client_apply_local_operation_json(
+    let commit_id = syncular_native_client_apply_mutation_json(
         handle,
         update.as_ptr(),
         ptr::null(),

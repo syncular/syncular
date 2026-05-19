@@ -1272,7 +1272,7 @@ fn sync_worker_event_subscription_overflow_reports_resync_required() -> Result<(
     let slow = worker.subscribe_events(1);
     let control = worker.subscribe_events(8);
 
-    worker.enqueue_local_operation_json(
+    worker.enqueue_mutation_json(
         "overflow-write".to_string(),
         json!({
             "table": "tasks",
@@ -1339,7 +1339,7 @@ fn sync_worker_wakes_when_outbox_retry_becomes_due() -> Result<()> {
     let worker = SyncWorker::start(client);
     let events = worker.subscribe_events(16);
 
-    worker.enqueue_local_operation_json(
+    worker.enqueue_mutation_json(
         "retry-wakeup-write".to_string(),
         json!({
             "table": "tasks",

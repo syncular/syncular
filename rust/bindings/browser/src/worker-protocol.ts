@@ -151,14 +151,14 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
-      type: 'applyLocalOperation';
+      type: 'applyMutation';
       operation: SyncOperation;
       localRow?: unknown | null;
     }
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
-      type: 'applyLocalOperationsBatch' | 'applyLocalOperationsCommit';
+      type: 'applyMutationsBatch' | 'applyMutationsCommit';
       operations: Array<{
         operation: SyncOperation;
         localRow?: unknown | null;

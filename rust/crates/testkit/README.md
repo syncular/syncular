@@ -104,7 +104,7 @@ fn two_clients_sync_through_stateful_test_server() {
         },
     ).unwrap();
 
-    writer.client.apply_local_operation_json(
+    writer.client.apply_mutation_json(
         &serde_json::json!({
             "table": "notes",
             "row_id": "note-1",
@@ -135,7 +135,7 @@ use syncular_testkit::{
 fn native_local_write_emits_rows_changed() {
     let mut fixture = open_native_client_with_schema(my_app::generated::app_schema()).unwrap();
 
-    fixture.client.apply_local_operation_json(
+    fixture.client.apply_mutation_json(
         &serde_json::json!({
             "table": "notes",
             "row_id": "note-1",

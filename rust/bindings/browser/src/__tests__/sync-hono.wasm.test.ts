@@ -157,7 +157,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const events: SyncularV2RowsChangedEvent[] = [];
     const remove = client.addRowsChangedListener((event) => events.push(event));
 
-    await client.applyLocalOperation(
+    await client.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
@@ -212,8 +212,8 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       project_id: null,
     };
 
-    await client.applyLocalOperation(newTaskOperation(firstTask), firstTask);
-    await client.applyLocalOperation(newTaskOperation(secondTask), secondTask);
+    await client.applyMutation(newTaskOperation(firstTask), firstTask);
+    await client.applyMutation(newTaskOperation(secondTask), secondTask);
 
     const sql = 'select id, title from tasks where id = ?';
     await expect(client.executeSql(sql, [firstTask.id])).resolves.toMatchObject(
@@ -355,7 +355,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: localRow.id,
@@ -407,7 +407,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       ...scenario.localRow,
       user_id: ACTOR_A,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: localRow.id,
@@ -461,7 +461,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       ...scenario.localRow,
       user_id: ACTOR_A,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: localRow.id,
@@ -894,7 +894,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       ...scenario.task,
       user_id: ACTOR_A,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
@@ -971,7 +971,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: scenario.rowId,
@@ -1029,7 +1029,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: scenario.rowId,
@@ -1085,7 +1085,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       ...scenario.localRow,
       user_id: ACTOR_A,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: localRow.id,
@@ -1139,7 +1139,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: scenario.rowId,
@@ -1222,7 +1222,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
@@ -1299,7 +1299,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await seeder.applyLocalOperation(
+    await seeder.applyMutation(
       newTaskOperation({
         id: scenario.conflict.rowId,
         title: scenario.conflict.serverTitle,
@@ -1338,7 +1338,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       title: scenario.conflict.localTitle,
       server_version: scenario.conflict.staleBaseVersion,
     };
-    await client.applyLocalOperation(
+    await client.applyMutation(
       {
         table: 'tasks',
         row_id: scenario.conflict.rowId,
@@ -1404,7 +1404,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       image: null,
       title_yjs_state: null,
     };
-    await seeder.applyLocalOperation(
+    await seeder.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
@@ -1700,7 +1700,7 @@ async function pushTaskAndPull(
     image: null,
     title_yjs_state: null,
   };
-  await source.applyLocalOperation(
+  await source.applyMutation(
     newTaskOperation({
       id: task.id,
       title: task.title,
@@ -1732,7 +1732,7 @@ async function insertBlankTask(
     image: null,
     title_yjs_state: null,
   };
-  await client.applyLocalOperation(
+  await client.applyMutation(
     {
       table: 'tasks',
       row_id: id,

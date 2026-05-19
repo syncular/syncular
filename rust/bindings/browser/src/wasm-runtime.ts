@@ -39,12 +39,12 @@ export interface RawSyncularV2RustClient {
   setFieldEncryptionJson(configJson: string): void;
   setEncryptedCrdtJson(configJson: string): void;
   setAbortSignal(signal?: AbortSignal | null): void;
-  applyLocalOperationJson(
+  applyMutationJson(
     operationJson: string,
     localRowJson?: string | null
   ): Promise<string>;
-  applyLocalOperationsBatchJson(operationsJson: string): Promise<string>;
-  applyLocalOperationsCommitJson(operationsJson: string): Promise<string>;
+  applyMutationsBatchJson(operationsJson: string): Promise<string>;
+  applyMutationsCommitJson(operationsJson: string): Promise<string>;
   syncPullJson(): Promise<string>;
   applyRealtimeChangesJson(requestJson: string): Promise<string>;
   applyRealtimeSyncPackBytes(bytes: Uint8Array): Promise<string>;

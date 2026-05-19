@@ -726,14 +726,14 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   setSubscriptions(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
-  applyLocalOperation(
+  applyMutation(
     operation: SyncOperation,
     localRow?: unknown
   ): Promise<string>;
-  applyLocalOperationsBatch(
+  applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]>;
-  applyLocalOperationsCommit(
+  applyMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string>;
   syncPull(): Promise<SyncularV2SyncResult>;

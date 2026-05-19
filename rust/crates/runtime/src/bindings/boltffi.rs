@@ -282,26 +282,6 @@ impl SyncularBoltClient {
         Ok(true)
     }
 
-    pub fn apply_local_operation_json(
-        &self,
-        operation_json: &str,
-        local_row_json: Option<String>,
-    ) -> Result<String, String> {
-        self.with_client_mut(|client| {
-            client.apply_local_operation_json(operation_json, local_row_json.as_deref())
-        })
-    }
-
-    pub fn enqueue_local_operation_json(
-        &self,
-        operation_json: &str,
-        local_row_json: Option<String>,
-    ) -> Result<String, String> {
-        self.with_client(|client| {
-            client.enqueue_local_operation_json(operation_json, local_row_json.as_deref())
-        })
-    }
-
     pub fn apply_mutation_json(
         &self,
         mutation_json: &str,

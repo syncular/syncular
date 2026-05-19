@@ -204,7 +204,7 @@ mod tests {
         let operation_json = serde_json::to_string(&task.sync_operation()).expect("operation JSON");
 
         let commit_id = client
-            .apply_local_operation_json(&operation_json, None)
+            .apply_mutation_json(&operation_json, None)
             .expect("apply generated operation");
         assert!(!commit_id.is_empty());
 

@@ -29,13 +29,13 @@ describe('Syncular v2 mutations', () => {
     > = [];
     const commit = createSyncularV2Commit<SyncularAppDb>({
       client: {
-        async applyLocalOperation() {
+        async applyMutation() {
           throw new Error('not used');
         },
-        async applyLocalOperationsBatch() {
+        async applyMutationsBatch() {
           throw new Error('not used');
         },
-        async applyLocalOperationsCommit(batch) {
+        async applyMutationsCommit(batch) {
           batches.push(batch);
           return 'commit-blob-ref';
         },
@@ -79,13 +79,13 @@ describe('Syncular v2 mutations', () => {
     }> = [];
     const commit = createSyncularV2Commit<SyncularAppDb>({
       client: {
-        async applyLocalOperation() {
+        async applyMutation() {
           throw new Error('not used');
         },
-        async applyLocalOperationsBatch() {
+        async applyMutationsBatch() {
           throw new Error('not used');
         },
-        async applyLocalOperationsCommit(batch) {
+        async applyMutationsCommit(batch) {
           batches.push(batch);
           return 'commit-soft-delete';
         },

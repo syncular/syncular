@@ -53,6 +53,10 @@ Latest retained correctness commit: `ec5adcfa`.
 
 Latest perf note commit: `ab142e5f`.
 
+Current working slice restored Hono pull forwarding for client-provided
+`verifiedRoot`, so browser workers can keep root continuity across ordered
+live-query refreshes instead of tripping a `previousChainRoot` mismatch.
+
 The current overhead is documented in [`../BENCHMARK_LOG.md`](../BENCHMARK_LOG.md).
 
 ## Next Action

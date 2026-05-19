@@ -180,15 +180,15 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return true;
     case 'drainLiveQueryEvents':
       return requireClient().drainLiveQueryEvents();
-    case 'applyLocalOperation':
-      return requireClient().applyLocalOperation(
+    case 'applyMutation':
+      return requireClient().applyMutation(
         request.operation,
         request.localRow
       );
-    case 'applyLocalOperationsBatch':
-      return requireClient().applyLocalOperationsBatch(request.operations);
-    case 'applyLocalOperationsCommit':
-      return requireClient().applyLocalOperationsCommit(request.operations);
+    case 'applyMutationsBatch':
+      return requireClient().applyMutationsBatch(request.operations);
+    case 'applyMutationsCommit':
+      return requireClient().applyMutationsCommit(request.operations);
     case 'syncPull':
       return requireClient().syncPull();
     case 'syncPush':

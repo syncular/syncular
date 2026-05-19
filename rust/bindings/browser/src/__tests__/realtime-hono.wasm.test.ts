@@ -80,7 +80,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       baseUrl,
       clientId: scenario.clientBId,
     });
-    await clientB.applyLocalOperation(
+    await clientB.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
@@ -174,7 +174,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       actorId: actorA.actorId,
       authorization: actorA.token,
     });
-    await writer.applyLocalOperationsCommit([
+    await writer.applyMutationsCommit([
       {
         operation: newTaskOperation({
           id: 'mixed-scope-a',
@@ -256,7 +256,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       baseUrl,
       clientId: 'large-delta-client-b',
     });
-    await clientB.applyLocalOperation(
+    await clientB.applyMutation(
       newTaskOperation({
         id: 'large-delta-task',
         title: largeTitle,

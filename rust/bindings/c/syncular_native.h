@@ -218,20 +218,6 @@ char *syncular_native_encryption_helper_json(
     char **error_out
 );
 
-char *syncular_native_client_apply_local_operation_json(
-    SyncularNativeHandle *handle,
-    const char *operation_json,
-    const char *local_row_json,
-    char **error_out
-);
-
-char *syncular_native_client_enqueue_local_operation_json(
-    SyncularNativeHandle *handle,
-    const char *operation_json,
-    const char *local_row_json,
-    char **error_out
-);
-
 char *syncular_native_client_apply_mutation_json(
     SyncularNativeHandle *handle,
     const char *mutation_json,

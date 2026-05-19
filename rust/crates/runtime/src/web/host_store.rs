@@ -82,38 +82,36 @@ impl WebHostStore {
             .map_err(|err| js_error(ErrorKind::Storage, method, err))
     }
 
-    pub async fn apply_local_operations_batch(
+    pub async fn apply_mutations_batch(
         &self,
         operations: &[WebHostLocalOperation],
     ) -> Result<Vec<String>> {
-        let operations = to_js_value(operations, "encode applyLocalOperationsBatch operations")?;
-        self.call_json("applyLocalOperationsBatch", &[operations])
-            .await
+        let operations = to_js_value(operations, "encode applyMutationsBatch operations")?;
+        self.call_json("applyMutationsBatch", &[operations]).await
     }
 
-    pub async fn apply_local_operations_commit(
+    pub async fn apply_mutations_commit(
         &self,
         operations: &[WebHostLocalOperation],
     ) -> Result<String> {
-        let operations = to_js_value(operations, "encode applyLocalOperationsCommit operations")?;
-        self.call_json("applyLocalOperationsCommit", &[operations])
-            .await
+        let operations = to_js_value(operations, "encode applyMutationsCommit operations")?;
+        self.call_json("applyMutationsCommit", &[operations]).await
     }
 }
 
 impl AsyncWebStore for WebHostStore {
-    fn apply_local_operation<'a>(
+    fn apply_mutation<'a>(
         &'a mut self,
         operation: SyncOperation,
         local_row: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
         Box::pin(async move {
-            let operation = to_js_value(&operation, "encode applyLocalOperation operation")?;
+            let operation = to_js_value(&operation, "encode applyMutation operation")?;
             let local_row = match local_row {
-                Some(row) => to_js_value(&row, "encode applyLocalOperation local row")?,
+                Some(row) => to_js_value(&row, "encode applyMutation local row")?,
                 None => JsValue::NULL,
             };
-            self.call_json("applyLocalOperation", &[operation, local_row])
+            self.call_json("applyMutation", &[operation, local_row])
                 .await
         })
     }

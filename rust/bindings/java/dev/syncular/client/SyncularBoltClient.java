@@ -6,16 +6,6 @@ public final class SyncularBoltClient implements AutoCloseable {
     private final long handle;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    @FunctionalInterface
-    public interface SyncularEventJsonListener {
-        void onEventJson(String eventJson);
-    }
-
-    @FunctionalInterface
-    public interface SyncularNativeEventListener {
-        void onNativeEvent(SyncularNativeEvent event);
-    }
-
     private SyncularBoltClient(long handle) {
         this.handle = handle;
     }
@@ -217,7 +207,13 @@ public final class SyncularBoltClient implements AutoCloseable {
     }
 
     public boolean start() {
-        return startRealtimeWorker();
+        byte[] _buf = Native.boltffi_syncular_bolt_client_start(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
     }
 
     public boolean stopRealtimeWorker() {
@@ -231,7 +227,58 @@ public final class SyncularBoltClient implements AutoCloseable {
     }
 
     public boolean stop() {
-        return stopRealtimeWorker();
+        byte[] _buf = Native.boltffi_syncular_bolt_client_stop(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
+    public boolean joinPresence(String scopeKey, java.util.Optional<String> metadataJson) {
+        try (
+            WireWriter _wire_metadata_json = new WireWriter((1 + ((metadataJson).isPresent() ? ((4 + (4 + ((metadataJson).get()).length() * 3))) : 0)))
+        ) {
+            if ((metadataJson).isPresent()) { _wire_metadata_json.writeI8((byte)1); _wire_metadata_json.writeString((metadataJson).get()); } else { _wire_metadata_json.writeI8((byte)0); };
+            byte[] _buf = Native.boltffi_syncular_bolt_client_join_presence(handle, scopeKey.getBytes(java.nio.charset.StandardCharsets.UTF_8), _wire_metadata_json.toBuffer());
+            if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+            WireReader reader = new WireReader(_buf);
+            if (reader.readI8() != 0) {
+                throw new RuntimeException(reader.readString());
+            }
+            return reader.readBool();
+        }
+    }
+
+    public boolean leavePresence(String scopeKey) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_leave_presence(handle, scopeKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
+    public boolean updatePresenceMetadata(String scopeKey, String metadataJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_update_presence_metadata(handle, scopeKey.getBytes(java.nio.charset.StandardCharsets.UTF_8), metadataJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readBool();
+    }
+
+    public String presenceJson(String scopeKey) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_presence_json(handle, scopeKey.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
     }
 
     public boolean startEventStream(long capacity) {
@@ -262,70 +309,6 @@ public final class SyncularBoltClient implements AutoCloseable {
             throw new RuntimeException(reader.readString());
         }
         return reader.readBool();
-    }
-
-    public void forEachEventJson(long capacity, java.util.function.Predicate<String> handler) {
-        startEventStream(capacity);
-        try {
-            while (true) {
-                java.util.Optional<String> eventJson = nextEventJson();
-                if (eventJson.isEmpty()) break;
-                if (!handler.test(eventJson.get())) break;
-            }
-        } finally {
-            closeEventStream();
-        }
-    }
-
-    public void forEachEventJson(long capacity, SyncularEventJsonListener listener) {
-        forEachEventJson(capacity, eventJson -> {
-            listener.onEventJson(eventJson);
-            return true;
-        });
-    }
-
-    public void forEachNativeEvent(long capacity, java.util.function.Predicate<SyncularNativeEvent> handler) {
-        forEachEventJson(
-            capacity,
-            (java.util.function.Predicate<String>) eventJson -> handler.test(SyncularNativeEvent.fromJson(eventJson))
-        );
-    }
-
-    public void forEachNativeEvent(long capacity, SyncularNativeEventListener listener) {
-        forEachNativeEvent(capacity, event -> {
-            listener.onNativeEvent(event);
-            return true;
-        });
-    }
-
-    public String applyLocalOperationJson(String operationJson, java.util.Optional<String> localRowJson) {
-        try (
-            WireWriter _wire_local_row_json = new WireWriter((1 + ((localRowJson).isPresent() ? ((4 + (4 + ((localRowJson).get()).length() * 3))) : 0)))
-        ) {
-            if ((localRowJson).isPresent()) { _wire_local_row_json.writeI8((byte)1); _wire_local_row_json.writeString((localRowJson).get()); } else { _wire_local_row_json.writeI8((byte)0); };
-            byte[] _buf = Native.boltffi_syncular_bolt_client_apply_local_operation_json(handle, operationJson.getBytes(java.nio.charset.StandardCharsets.UTF_8), _wire_local_row_json.toBuffer());
-            if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
-            WireReader reader = new WireReader(_buf);
-            if (reader.readI8() != 0) {
-                throw new RuntimeException(reader.readString());
-            }
-            return reader.readString();
-        }
-    }
-
-    public String enqueueLocalOperationJson(String operationJson, java.util.Optional<String> localRowJson) {
-        try (
-            WireWriter _wire_local_row_json = new WireWriter((1 + ((localRowJson).isPresent() ? ((4 + (4 + ((localRowJson).get()).length() * 3))) : 0)))
-        ) {
-            if ((localRowJson).isPresent()) { _wire_local_row_json.writeI8((byte)1); _wire_local_row_json.writeString((localRowJson).get()); } else { _wire_local_row_json.writeI8((byte)0); };
-            byte[] _buf = Native.boltffi_syncular_bolt_client_enqueue_local_operation_json(handle, operationJson.getBytes(java.nio.charset.StandardCharsets.UTF_8), _wire_local_row_json.toBuffer());
-            if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
-            WireReader reader = new WireReader(_buf);
-            if (reader.readI8() != 0) {
-                throw new RuntimeException(reader.readString());
-            }
-            return reader.readString();
-        }
     }
 
     public String applyMutationJson(String mutationJson, java.util.Optional<String> localRowJson) {

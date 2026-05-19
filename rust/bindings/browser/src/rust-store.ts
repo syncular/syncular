@@ -98,8 +98,8 @@ export interface RawSyncularRustOwnedSqlite {
   unsubscribeQuery(id: string): void;
   drainLiveQueryEventsJson(): string;
   drainRowsChangedEventsJson(): string;
-  applyLocalOperationsBatchJson(operationsJson: string): string;
-  applyLocalOperationsCommitJson(operationsJson: string): string;
+  applyMutationsBatchJson(operationsJson: string): string;
+  applyMutationsCommitJson(operationsJson: string): string;
   pendingOutboxJson(limit: number): Promise<string>;
   insertConflictJson(outboxJson: string, resultJson: string): Promise<void>;
   conflictSummariesJson(): Promise<string>;
@@ -225,19 +225,19 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
     return parseJson(this.raw.generatedSchemaStateJson());
   }
 
-  applyLocalOperationsBatch(
+  applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): string[] {
     return parseJson(
-      this.raw.applyLocalOperationsBatchJson(JSON.stringify(operations))
+      this.raw.applyMutationsBatchJson(JSON.stringify(operations))
     );
   }
 
-  applyLocalOperationsCommit(
+  applyMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): string {
     return parseJson(
-      this.raw.applyLocalOperationsCommitJson(JSON.stringify(operations))
+      this.raw.applyMutationsCommitJson(JSON.stringify(operations))
     );
   }
 

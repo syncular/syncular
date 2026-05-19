@@ -185,30 +185,13 @@ export interface SyncCorsOptions {
   exposeHeaders?: string[];
 }
 
-/**
- * Legacy sync CORS config.
- * @deprecated Prefer `cors: 'https://app.example.com'` or
- * `cors: { origin: ['https://app.example.com'] }`.
- */
-export interface LegacySyncCorsOptions {
-  allowedOrigins?: string[] | '*';
-  resolveOrigin?: (
-    origin: string | undefined,
-    context: Context
-  ) => string | null | Promise<string | null>;
-  allowCredentials?: boolean;
-  allowHeaders?: string[];
-  allowMethods?: string[];
-  maxAgeSeconds?: number;
-}
-
 export interface SyncRoutesConfigWithRateLimit {
   /**
    * Optional browser CORS handling for sync routes.
    * When configured, sync route responses and preflights include matching
    * CORS headers directly from the generated sync app.
    */
-  cors?: SyncCorsOrigin | SyncCorsOptions | LegacySyncCorsOptions;
+  cors?: SyncCorsOrigin | SyncCorsOptions;
   /**
    * Max commits per pull request.
    * Default: 100
@@ -546,21 +529,6 @@ function toStaticAllowedOrigins(
   return origin === '*' ? '*' : typeof origin === 'string' ? [origin] : origin;
 }
 
-function isLegacySyncCorsOptions(
-  value: SyncRoutesConfigWithRateLimit['cors']
-): value is LegacySyncCorsOptions {
-  return (
-    !!value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    ('allowedOrigins' in value ||
-      'resolveOrigin' in value ||
-      'allowCredentials' in value ||
-      'allowMethods' in value ||
-      'maxAgeSeconds' in value)
-  );
-}
-
 export function normalizeSyncCorsConfig(
   config: SyncRoutesConfigWithRateLimit['cors']
 ): NormalizedSyncCorsConfig | null {
@@ -587,29 +555,6 @@ export function normalizeSyncCorsConfig(
       allowMethods: [...DEFAULT_SYNC_CORS_ALLOW_METHODS],
       allowCredentials: true,
       maxAgeSeconds: 86_400,
-    };
-  }
-
-  if (isLegacySyncCorsOptions(config)) {
-    const staticAllowedOrigins = config.allowedOrigins;
-    const resolveOrigin =
-      typeof config.resolveOrigin === 'function'
-        ? async (origin: string | undefined, context: Context) =>
-            (await config.resolveOrigin?.(origin, context)) ?? null
-        : config.allowedOrigins
-          ? createStaticOriginResolver(config.allowedOrigins)
-          : async () => null;
-    return {
-      resolveOrigin,
-      staticAllowedOrigins,
-      allowHeaders: mergeUniqueHeaders(
-        DEFAULT_SYNC_CORS_ALLOW_HEADERS,
-        config.allowHeaders
-      ),
-      exposeHeaders: [...DEFAULT_SYNC_CORS_EXPOSE_HEADERS],
-      allowMethods: config.allowMethods ?? [...DEFAULT_SYNC_CORS_ALLOW_METHODS],
-      allowCredentials: config.allowCredentials ?? true,
-      maxAgeSeconds: config.maxAgeSeconds ?? 86_400,
     };
   }
 
@@ -2314,6 +2259,7 @@ export function createSyncRoutes<
             params: sub.params as Record<string, unknown>,
             cursor: Math.max(-1, sub.cursor),
             bootstrapState: sub.bootstrapState ?? null,
+            verifiedRoot: sub.verifiedRoot,
           })),
         };
 

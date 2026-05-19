@@ -176,11 +176,11 @@ export class SyncularV2RustClient {
     this.raw.setAbortSignal(signal ?? null);
   }
 
-  async applyLocalOperation(
+  async applyMutation(
     operation: SyncOperation,
     localRow?: unknown
   ): Promise<string> {
-    const commitId = await this.raw.applyLocalOperationJson(
+    const commitId = await this.raw.applyMutationJson(
       JSON.stringify(operation),
       localRow == null ? null : JSON.stringify(localRow)
     );
@@ -188,21 +188,21 @@ export class SyncularV2RustClient {
     return commitId;
   }
 
-  async applyLocalOperationsBatch(
+  async applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]> {
     const commitIds = parseJson<string[]>(
-      await this.raw.applyLocalOperationsBatchJson(JSON.stringify(operations))
+      await this.raw.applyMutationsBatchJson(JSON.stringify(operations))
     );
     this.#drainAndEmitRowsChanged();
     return commitIds;
   }
 
-  async applyLocalOperationsCommit(
+  async applyMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string> {
     const commitId = parseJson<string>(
-      await this.raw.applyLocalOperationsCommitJson(JSON.stringify(operations))
+      await this.raw.applyMutationsCommitJson(JSON.stringify(operations))
     );
     this.#drainAndEmitRowsChanged();
     return commitId;
