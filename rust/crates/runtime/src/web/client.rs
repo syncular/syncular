@@ -350,7 +350,7 @@ where
                 for snapshot in snapshots {
                     let snapshot_table = snapshot.table.clone();
                     let direct_artifact_apply = self.should_request_sqlite_snapshot_artifacts();
-                    let mut artifact_bodies = Vec::new();
+                    let mut artifact_refs = Vec::new();
                     if let Some(artifacts) = &snapshot.artifacts {
                         if !artifacts.is_empty() && !self.store.supports_sqlite_snapshot_artifacts()
                         {
@@ -364,15 +364,8 @@ where
                                 &sub.id,
                                 &snapshot_table,
                             )?;
-                            let snapshot_fetch_started_at = timing_now_ms();
-                            let bytes = self
-                                .transport
-                                .fetch_snapshot_artifact_bytes(artifact, &sub.scopes)
-                                .await?;
-                            result.timings.snapshot_fetch_ms +=
-                                elapsed_ms_since(snapshot_fetch_started_at);
                             if direct_artifact_apply {
-                                artifact_bodies.push(bytes);
+                                artifact_refs.push(artifact.clone());
                             } else {
                                 return Err(SyncularError::protocol_message(
                                     "sqlite snapshot artifacts require direct browser apply",
@@ -408,7 +401,7 @@ where
                         .sum::<usize>();
                     if snapshot.is_first_page
                         || !snapshot.rows.is_empty()
-                        || !artifact_bodies.is_empty()
+                        || !artifact_refs.is_empty()
                         || chunk_row_count > 0
                     {
                         add_changed_table(&mut result.changed_tables, &snapshot_table);
@@ -434,7 +427,14 @@ where
                         self.store.upsert_rows(&snapshot_table, inline_rows).await?;
                         result.timings.snapshot_row_apply_ms +=
                             elapsed_ms_since(row_apply_started_at);
-                        for bytes in artifact_bodies {
+                        for artifact in artifact_refs {
+                            let snapshot_fetch_started_at = timing_now_ms();
+                            let bytes = self
+                                .transport
+                                .fetch_snapshot_artifact_bytes(&artifact, &sub.scopes)
+                                .await?;
+                            result.timings.snapshot_fetch_ms +=
+                                elapsed_ms_since(snapshot_fetch_started_at);
                             let artifact_apply_started_at = timing_now_ms();
                             let mode = if scope_cleared_for_snapshot {
                                 WebSnapshotArtifactApplyMode::Insert

@@ -2760,3 +2760,74 @@ Decision:
 - Retained as a byte-reduction slice. It does not solve peak memory, and memory
   remains the next WP-12 target, but it cuts external artifact bytes by about
   `10%` while keeping direct artifact import and `snapshotChunkCount=0`.
+
+## 2026-05-19 - WP-12 Stream Browser Artifact Fetch/Apply
+
+Change:
+
+- The browser pull path no longer downloads and decompresses every SQLite
+  snapshot artifact body for a snapshot before applying any of them. It now
+  validates artifact refs first, then fetches and applies each artifact body
+  inside the existing apply transaction.
+- Rollback semantics stay intact: any later fetch/hash/apply error still
+  returns through `rollback_apply_batch`, while the happy path retains fewer
+  decompressed SQLite images at once.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Local browser artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-stream-artifact-apply-500k.json
+```
+
+External app-style scoped artifact gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained gzip9 artifact run:
+
+| Metric | Gzip9 batch bodies | Stream artifact apply |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `278.95ms` | `277.4ms` |
+| Local 500k `rust_pull_apply_ms` | `260ms` | `258ms` |
+| Local 500k `rust_snapshot_row_apply_ms` | `197ms` | `197ms` |
+| Local 500k JS heap after | `16853576` | `16451448` |
+| External 500k bootstrap | `4830.08ms` | `4845.39ms` |
+| External 500k local apply | `1392ms` | `1392ms` |
+| External 500k response bytes | `3527331` | `3527317` |
+| External 500k peak memory | `758.2MB` | `746.92MB` |
+
+Retained result files:
+
+- `.context/benchmarks/wp12-stream-artifact-apply-500k.json`
+- `.results/2026-05-19T20-53-48-877Z/syncular-rust/bootstrap.json`
+
+Decision:
+
+- Retained as a memory-retention cleanup. The external peak-memory movement is
+  meaningful enough for the tiny complexity reduction, but it is not a full
+  solution: scoped artifacts remain above the row-chunk memory baseline
+  (`746.92MB` versus `694.38MB`).
