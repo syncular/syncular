@@ -616,8 +616,7 @@ where
                     }
                 }
             } else {
-                apply_commits_without_changed_rows(&mut self.store, app_schema, result, commits)
-                    .await?;
+                apply_commits_without_changed_rows(&mut self.store, result, commits).await?;
             }
             result.timings.commit_apply_ms += elapsed_ms_since(commit_apply_started_at);
 
@@ -994,7 +993,7 @@ where
             }
             Ok(())
         } else {
-            apply_commits_without_changed_rows(&mut self.store, app_schema, result, commits).await
+            apply_commits_without_changed_rows(&mut self.store, result, commits).await
         }
     }
 
@@ -1313,7 +1312,6 @@ fn add_changed_table(tables: &mut Vec<String>, table: &str) {
 
 async fn apply_commits_without_changed_rows<S>(
     store: &mut S,
-    app_schema: AppSchema,
     result: &mut WebSyncResult,
     commits: Vec<SyncCommit>,
 ) -> Result<()>
@@ -1326,7 +1324,7 @@ where
     for commit in commits {
         for mut change in commit.changes {
             add_changed_table(&mut result.changed_tables, &change.table);
-            if let Some((table, row)) = take_batchable_change_row(app_schema, &mut change) {
+            if let Some((table, row)) = take_batchable_change_row(&mut change) {
                 if batch_table.as_deref() != Some(table.as_str()) {
                     flush_change_row_batch(store, &mut batch_table, &mut batch_rows).await?;
                     batch_table = Some(table);
@@ -1361,15 +1359,11 @@ where
     store.upsert_rows(&table_name, batch).await
 }
 
-fn take_batchable_change_row(
-    app_schema: AppSchema,
-    change: &mut SyncChange,
-) -> Option<(String, Value)> {
+fn take_batchable_change_row(change: &mut SyncChange) -> Option<(String, Value)> {
     if change.op != "upsert" || is_encrypted_crdt_system_table(&change.table) {
         return None;
     }
 
-    let metadata = app_schema.table_metadata(&change.table)?;
     let row_json = change.row_json.as_ref()?;
     if row_json
         .as_object()
@@ -1379,24 +1373,13 @@ fn take_batchable_change_row(
     }
 
     let row_json = change.row_json.take()?;
-    let mut row = match row_json {
-        Value::Object(row) => row,
+    match row_json {
+        Value::Object(row) => Some((change.table.clone(), Value::Object(row))),
         other => {
             change.row_json = Some(other);
-            return None;
+            None
         }
-    };
-    row.insert(
-        metadata.primary_key_column.to_string(),
-        Value::String(change.row_id.clone()),
-    );
-    if let Some(version) = change.row_version {
-        row.insert(
-            metadata.server_version_column.to_string(),
-            Value::Number(version.into()),
-        );
     }
-    Some((change.table.clone(), Value::Object(row)))
 }
 
 fn push_snapshot_changed_row(

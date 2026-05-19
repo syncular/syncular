@@ -2556,6 +2556,10 @@ client. Overflow should close or resync the session deliberately.
   cache instead of preparing/finalizing per realtime batch. The measured win is
   modest (`85.32ms -> 84.31ms` realtime p50), but the implementation removes a
   one-off statement lifecycle path.
+- Done: no-changed-rows realtime commit apply now treats emitted upsert payloads
+  as canonical server rows and no longer rewrites primary-key/server-version
+  fields before batching. Dev-WASM realtime p50 moved `84.31ms -> 82.27ms`, p95
+  `85.16ms -> 83.61ms`, and Rust apply total `160ms -> 155ms`.
 - Keep HTTP pull as recovery for overflow, reconnect, missed seq, auth refresh,
   large snapshots, and blob transfer.
 - Next: design the heavier websocket-first session protocol with server
