@@ -1,6 +1,6 @@
 # WP-02 Protocol Kernel
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -43,5 +43,6 @@ the protocol surface again.
 
 ## Next Action
 
-Move the smallest complete protocol slice after WP-01: combined pull/push
+Inventory protocol-owned structs/codecs still living in runtime/server
+packages, then move the smallest complete slice: combined pull/push
 request/response structs plus binary sync-pack metadata.

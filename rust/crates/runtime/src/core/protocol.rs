@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::io::Read;
-use syncular_protocol::{canonical_json_string, sha256_hex};
+use syncular_protocol::{append_canonical_json, append_canonical_object, sha256_hex};
 pub use syncular_protocol::{
     COMMIT_INTEGRITY_GENESIS_ROOT, COMMIT_INTEGRITY_HEX_LENGTH, WIRE_COMMIT_CHAIN_ROOT_VERSION,
     WIRE_COMMIT_DIGEST_VERSION,
@@ -497,48 +497,9 @@ pub fn wire_commit_digest(
     subscription_id: &str,
     commit: &SyncCommit,
 ) -> Result<String> {
-    let changes = commit
-        .changes
-        .iter()
-        .map(|change| {
-            let row_version = change.row_version.map(Value::from).unwrap_or(Value::Null);
-            let mut value = Map::new();
-            value.insert("table".to_string(), Value::String(change.table.clone()));
-            value.insert("rowId".to_string(), Value::String(change.row_id.clone()));
-            value.insert("op".to_string(), Value::String(change.op.clone()));
-            value.insert(
-                "row".to_string(),
-                change.row_json.clone().unwrap_or(Value::Null),
-            );
-            value.insert("rowVersion".to_string(), row_version);
-            value.insert("scopes".to_string(), Value::Object(change.scopes.clone()));
-            Value::Object(value)
-        })
-        .collect::<Vec<_>>();
-    let mut value = Map::new();
-    value.insert(
-        "version".to_string(),
-        Value::String(WIRE_COMMIT_DIGEST_VERSION.to_string()),
-    );
-    value.insert(
-        "partitionId".to_string(),
-        Value::String(partition_id.to_string()),
-    );
-    value.insert(
-        "subscriptionId".to_string(),
-        Value::String(subscription_id.to_string()),
-    );
-    value.insert("commitSeq".to_string(), Value::from(commit.commit_seq));
-    value.insert(
-        "createdAt".to_string(),
-        Value::String(commit.created_at.clone()),
-    );
-    value.insert(
-        "actorId".to_string(),
-        Value::String(commit.actor_id.clone()),
-    );
-    value.insert("changes".to_string(), Value::Array(changes));
-    Ok(sha256_hex(&canonical_json_string(&Value::Object(value))?))
+    let mut payload = String::new();
+    append_wire_commit_digest_payload(&mut payload, partition_id, subscription_id, commit)?;
+    Ok(sha256_hex(&payload))
 }
 
 pub fn wire_commit_chain_root(
@@ -564,29 +525,92 @@ pub fn wire_commit_chain_root_from_digest(
     commit_seq: i64,
     commit_digest: &str,
 ) -> Result<String> {
-    let mut value = Map::new();
-    value.insert(
-        "version".to_string(),
-        Value::String(WIRE_COMMIT_CHAIN_ROOT_VERSION.to_string()),
-    );
-    value.insert(
-        "partitionId".to_string(),
-        Value::String(partition_id.to_string()),
-    );
-    value.insert(
-        "subscriptionId".to_string(),
-        Value::String(subscription_id.to_string()),
-    );
-    value.insert("commitSeq".to_string(), Value::from(commit_seq));
-    value.insert(
-        "previousChainRoot".to_string(),
-        Value::String(previous_chain_root.to_string()),
-    );
-    value.insert(
-        "commitDigest".to_string(),
-        Value::String(commit_digest.to_string()),
-    );
-    Ok(sha256_hex(&canonical_json_string(&Value::Object(value))?))
+    let mut payload = String::new();
+    append_wire_commit_chain_root_payload(
+        &mut payload,
+        partition_id,
+        subscription_id,
+        previous_chain_root,
+        commit_seq,
+        commit_digest,
+    )?;
+    Ok(sha256_hex(&payload))
+}
+
+fn append_wire_commit_digest_payload(
+    out: &mut String,
+    partition_id: &str,
+    subscription_id: &str,
+    commit: &SyncCommit,
+) -> Result<()> {
+    out.push_str("{\"actorId\":");
+    append_json_string(out, &commit.actor_id)?;
+    out.push_str(",\"changes\":[");
+    for (index, change) in commit.changes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"op\":");
+        append_json_string(out, &change.op)?;
+        out.push_str(",\"row\":");
+        match &change.row_json {
+            Some(row) => append_canonical_json(out, row)?,
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"rowId\":");
+        append_json_string(out, &change.row_id)?;
+        out.push_str(",\"rowVersion\":");
+        match change.row_version {
+            Some(row_version) => out.push_str(&row_version.to_string()),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"scopes\":");
+        append_canonical_object(out, &change.scopes)?;
+        out.push_str(",\"table\":");
+        append_json_string(out, &change.table)?;
+        out.push('}');
+    }
+    out.push_str("],\"commitSeq\":");
+    out.push_str(&commit.commit_seq.to_string());
+    out.push_str(",\"createdAt\":");
+    append_json_string(out, &commit.created_at)?;
+    out.push_str(",\"partitionId\":");
+    append_json_string(out, partition_id)?;
+    out.push_str(",\"subscriptionId\":");
+    append_json_string(out, subscription_id)?;
+    out.push_str(",\"version\":");
+    append_json_string(out, WIRE_COMMIT_DIGEST_VERSION)?;
+    out.push('}');
+    Ok(())
+}
+
+fn append_wire_commit_chain_root_payload(
+    out: &mut String,
+    partition_id: &str,
+    subscription_id: &str,
+    previous_chain_root: &str,
+    commit_seq: i64,
+    commit_digest: &str,
+) -> Result<()> {
+    out.push_str("{\"commitDigest\":");
+    append_json_string(out, commit_digest)?;
+    out.push_str(",\"commitSeq\":");
+    out.push_str(&commit_seq.to_string());
+    out.push_str(",\"partitionId\":");
+    append_json_string(out, partition_id)?;
+    out.push_str(",\"previousChainRoot\":");
+    append_json_string(out, previous_chain_root)?;
+    out.push_str(",\"subscriptionId\":");
+    append_json_string(out, subscription_id)?;
+    out.push_str(",\"version\":");
+    append_json_string(out, WIRE_COMMIT_CHAIN_ROOT_VERSION)?;
+    out.push('}');
+    Ok(())
+}
+
+fn append_json_string(out: &mut String, value: &str) -> Result<()> {
+    out.push_str(&serde_json::to_string(value)?);
+    Ok(())
 }
 
 fn validate_commit_integrity_hex(
