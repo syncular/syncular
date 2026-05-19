@@ -104,9 +104,12 @@ read-only review:
     now covers corrupted downloads and subscription revocation clearing. The
     high-level Hono server factory can now serve scoped artifacts, and the Bun
     SQLite artifact encoder handles Postgres-style snapshot values. Native
-    direct artifact import and external Docker app-style benchmark evidence
-    remain open; the local Docker daemon was unresponsive during the latest
-    attempt.
+    direct artifact import via temp-file attach was rejected because Diesel
+    cannot detach the artifact database cleanly inside the active transaction;
+    native stays on verified artifact row projection until a raw SQLite
+    deserialize hook or no-row-delta pull mode exists. External Docker
+    app-style benchmark evidence remains open; the local Docker daemon was
+    unresponsive during the latest attempt.
 
 ## Next
 

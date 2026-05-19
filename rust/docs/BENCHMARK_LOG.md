@@ -1337,3 +1337,40 @@ Decision:
   because Docker commands hung before returning daemon status. The external
   harness path is documented in `QUALITY_GATES.md`; rerun it once Docker is
   responsive.
+
+## 2026-05-19 - Rejected Native Temp-File Artifact Attach
+
+Commit: documentation only
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change tried and rejected:
+
+- Prototyped a native Diesel direct-import path that wrote verified SQLite
+  artifact bytes to a temp file, attached that file to the active Diesel
+  transaction, imported with `INSERT INTO main.table SELECT ... FROM
+  artifact.table`, and generated row-level event metadata from the attached
+  artifact table.
+
+Gate:
+
+```bash
+SYNCULAR_NATIVE_ARTIFACT_BENCH_ROWS=50000 cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_artifact_import_perf --features native,crdt-yjs,demo-todo-native-fixture -- --ignored --nocapture
+```
+
+Result:
+
+- Rejected before timing. SQLite returned `database
+  __syncular_snapshot_artifact_... is locked` on `DETACH` because the attach
+  was owned by the active Diesel transaction. Keeping the schema attached until
+  after commit would leak random attached schemas through the pooled connection
+  and make rollback/error handling fragile.
+
+Decision:
+
+- Reverted the code. Native keeps the current verified artifact row-projection
+  path for now.
+- Do not reintroduce a temp-file attach path for Diesel. Native direct import
+  needs either a clean raw-SQLite schema-deserialize hook on the active
+  connection or a native pull mode that deliberately does not require row-level
+  changed-row events.
