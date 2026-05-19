@@ -154,6 +154,10 @@ SYNCULAR_BROWSER_PERF_ROWS=500000 \
   `Failed to resolve module specifier "env". Relative references must start with either "/", "./", or "../".`
 - The failure appears when `sqlite3_carray_bind` is referenced from the WASM
   runtime, so this is not a retainable path in the current browser package.
+- Root cause: `sqlite-wasm-rs` bindgen exposes the `sqlite3_carray_bind`
+  declaration from SQLite headers, but its compiled SQLite feature flags do not
+  include `SQLITE_ENABLE_CARRAY`, so the implementation is omitted and the
+  symbol becomes an unresolved WASM import.
 
 Decision:
 

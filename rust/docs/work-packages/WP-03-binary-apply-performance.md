@@ -80,7 +80,10 @@ Rejected larger import-path probe:
   failed to complete normally, so JSON import should not be the next direction.
 - Direct `sqlite3_carray_bind` import was tested and reverted. It compiled and
   built, but the browser runtime failed to load the WASM with an unresolved
-  `env` module import once `sqlite3_carray_bind` was referenced.
+  `env` module import once `sqlite3_carray_bind` was referenced. The underlying
+  issue is that `sqlite-wasm-rs` exposes the header declaration but does not
+  compile SQLite with `SQLITE_ENABLE_CARRAY`, so there is no linked
+  implementation in the browser artifact.
 
 Feasibility notes:
 
