@@ -176,8 +176,23 @@ Retained sixth slice:
 - Decision: retained as benchmark instrumentation. The next optimization should
   target realtime pull/apply, not notification.
 
+Retained seventh slice:
+
+- Browser SQLite app-row upserts now reuse the existing prepared-statement cache
+  instead of preparing/finalizing a multi-row upsert statement per realtime
+  batch.
+- Browser dev E2E gate:
+  `bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --wasm-profile=dev --json --output=.context/benchmarks/wp04-realtime-cached-app-upsert.json`.
+- Result: previous WP-04 guard `rust_realtime_live_ms=85.32`,
+  `rust_realtime_live_p95_ms=86.52`,
+  `rust_realtime_pull_apply_total_ms=138`; current
+  `rust_realtime_live_ms=84.31`, `rust_realtime_live_p95_ms=85.16`,
+  `rust_realtime_pull_apply_total_ms=134`.
+- Decision: retained. The gain is modest, but the code uses the existing
+  statement cache and removes one-off prepare/finalize handling.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-apply-timings.json`.
+`.context/benchmarks/wp04-realtime-cached-app-upsert.json`.
