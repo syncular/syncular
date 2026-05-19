@@ -53,6 +53,13 @@
         "types": "./dist/snapshot-chunks/index.d.ts",
         "default": "./dist/snapshot-chunks/index.js"
       }
+    },
+    "./snapshot-artifacts/sqlite-bun": {
+      "bun": "./src/snapshot-artifacts/sqlite-bun.ts",
+      "import": {
+        "types": "./dist/snapshot-artifacts/sqlite-bun.d.ts",
+        "default": "./dist/snapshot-artifacts/sqlite-bun.js"
+      }
     }
   },
   "scripts": {

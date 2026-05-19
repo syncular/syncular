@@ -835,3 +835,69 @@ Decision:
 - Retained as a correctness slice. It proves verified native artifact apply and
   request capability wiring, while explicitly leaving direct fast import and
   browser apply for the next measured WP-12 slices.
+
+## 2026-05-19 - Scoped SQLite Artifact Precompute API
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Added `precomputeScopedSnapshotArtifact(...)` as an explicit server
+  background/precompute API.
+- Added a Bun-only SQLite artifact encoder at
+  `@syncular/server/snapshot-artifacts/sqlite-bun`.
+- The pull hot path still only advertises exact preexisting artifacts; it does
+  not generate SQLite files during pull.
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous same-session targeted run:
+
+- `sync_pack_json_encode_50000`: `11.0ms`
+- `sync_pack_json_decode_50000`: `28.8ms`
+- `sync_pack_binary_encode_50000`: `19.8ms`
+- `sync_pack_binary_decode_50000`: `26.0ms`
+- `sync_pack_binary_generated_encode_50000`: `17.1ms`
+- `sync_pack_binary_generated_decode_50000`: `26.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.3ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.3ms`
+
+Candidate:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `26.9ms`
+- `sync_pack_binary_encode_50000`: `19.1ms`
+- `sync_pack_binary_decode_50000`: `24.9ms`
+- `sync_pack_binary_generated_encode_50000`: `17.3ms`
+- `sync_pack_binary_generated_decode_50000`: `25.7ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.9ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.1ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `45.1ms`
+
+Delta:
+
+- Pull-path metrics stayed within expected local noise. The new precompute
+  helper is not called by pull.
+- External app-style bootstrap was not run because browser/native artifact
+  direct fast apply is still open; the current browser benchmark would not
+  exercise this precompute API.
+
+Decision:
+
+- Retained. This gives apps/jobs a real way to produce scoped SQLite artifact
+  bodies without changing Cloudflare Worker pull behavior.

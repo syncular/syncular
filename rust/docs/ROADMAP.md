@@ -85,9 +85,10 @@ read-only review:
     pull-response artifact reference/eligibility contract are in place. Artifact
     body storage writes have a canonical helper, native/browser transports can
     download and verify artifact bytes, and native Diesel can apply verified
-    SQLite artifacts through the generated schema projection path. Browser
-    apply and native direct artifact import remain open; benchmark gates start
-    once artifact bodies are produced by server/background jobs.
+    SQLite artifacts through the generated schema projection path. Server-side
+    background/precompute can now create scoped Bun SQLite artifact bodies
+    explicitly, outside the pull hot path. Browser apply and native direct
+    artifact import remain open.
 
 ## Next
 

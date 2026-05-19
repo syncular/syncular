@@ -8,19 +8,22 @@
  */
 
 import {
+  type BinarySnapshotColumn,
   createScopedSnapshotArtifactManifest,
   randomId,
-  type ScopeValues,
   type ScopedSnapshotArtifactManifest,
-  sha256Hex,
-  snapshotScopeDigestFromCacheKey,
+  type ScopeValues,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   type SyncScopedSnapshotArtifactKind,
   type SyncSnapshotArtifactCompression,
+  sha256Hex,
+  snapshotScopeDigestFromCacheKey,
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
+import type { ServerHandlerCollection } from './handlers/collection';
+import type { SyncServerAuth } from './handlers/types';
 import type { SyncCoreDb } from './schema';
 import { scopesToSnapshotChunkScopeKey } from './snapshot-chunks';
 
@@ -107,12 +110,43 @@ export interface SnapshotArtifactStorage {
   storeArtifact?(
     artifact: ScopedSnapshotArtifactBodyMetadata & { body: Uint8Array }
   ): Promise<StoredScopedSnapshotArtifactBody>;
-  readArtifact(
-    artifact: ScopedSnapshotArtifactRow
-  ): Promise<Uint8Array | null>;
+  readArtifact(artifact: ScopedSnapshotArtifactRow): Promise<Uint8Array | null>;
   readArtifactStream?(
     artifact: ScopedSnapshotArtifactRow
   ): Promise<ReadableStream<Uint8Array> | null>;
+}
+
+export interface ScopedSnapshotSqliteArtifactEncoder {
+  readonly artifactKind: SyncScopedSnapshotArtifactKind;
+  readonly compression: SyncSnapshotArtifactCompression;
+  readonly featureSet?: readonly string[];
+  encode(args: {
+    table: string;
+    columns: readonly BinarySnapshotColumn[];
+    rows: readonly Record<string, unknown>[];
+  }): Uint8Array | Promise<Uint8Array>;
+}
+
+export interface PrecomputeScopedSnapshotArtifactArgs<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+> {
+  db: Kysely<DB>;
+  storage: SnapshotArtifactStorage;
+  handlers: ServerHandlerCollection<DB, Auth>;
+  auth: Auth;
+  partitionId: string;
+  subscriptionId: string;
+  table: string;
+  scopes: ScopeValues;
+  params?: Record<string, unknown>;
+  schemaVersion: number | string;
+  asOfCommitSeq: number;
+  rowCursor?: string | null;
+  rowLimit: number;
+  expiresAt: string;
+  artifactId?: string;
+  encoder: ScopedSnapshotSqliteArtifactEncoder;
 }
 
 type ScopedSnapshotArtifactDbRow = {
@@ -159,7 +193,10 @@ function normalizeFeatures(features: readonly string[] | undefined): string[] {
   return Array.from(new Set(features ?? [])).sort();
 }
 
-function parseJsonRecord(value: unknown, context: string): Record<string, unknown> {
+function parseJsonRecord(
+  value: unknown,
+  context: string
+): Record<string, unknown> {
   if (typeof value === 'string') {
     const parsed = JSON.parse(value);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -174,13 +211,18 @@ function parseJsonRecord(value: unknown, context: string): Record<string, unknow
 
 function parseStringArray(value: unknown, context: string): string[] {
   const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-  if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.every((item) => typeof item === 'string')
+  ) {
     throw new Error(`${context} must be a JSON string array`);
   }
   return normalizeFeatures(parsed);
 }
 
-function isArtifactKind(value: string): value is SyncScopedSnapshotArtifactKind {
+function isArtifactKind(
+  value: string
+): value is SyncScopedSnapshotArtifactKind {
   return value === SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
 }
 
@@ -212,7 +254,9 @@ function artifactRefFromRow(
   manifest: ScopedSnapshotArtifactManifest
 ): ScopedSnapshotArtifactRef {
   if (!isArtifactKind(row.artifact_kind)) {
-    throw new Error(`Unexpected scoped snapshot artifact kind: ${row.artifact_kind}`);
+    throw new Error(
+      `Unexpected scoped snapshot artifact kind: ${row.artifact_kind}`
+    );
   }
   if (!isArtifactCompression(row.compression)) {
     throw new Error(
@@ -305,7 +349,9 @@ export async function createScopedSnapshotArtifactManifestForPage(args: {
   });
 }
 
-export async function readScopedSnapshotArtifactRefByPageKey<DB extends SyncCoreDb>(
+export async function readScopedSnapshotArtifactRefByPageKey<
+  DB extends SyncCoreDb,
+>(
   db: Kysely<DB>,
   args: ScopedSnapshotArtifactPageKey & { nowIso?: string }
 ): Promise<ScopedSnapshotArtifactRef | null> {
@@ -383,7 +429,8 @@ export async function insertScopedSnapshotArtifact<DB extends SyncCoreDb>(
 ): Promise<ScopedSnapshotArtifactRef> {
   const artifactKind =
     args.artifactKind ?? SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
-  const compression = args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
+  const compression =
+    args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
   const schemaVersion = String(args.schemaVersion);
   const rowCursorKey = args.rowCursor ?? '';
   const featureSet = normalizeFeatures(args.featureSet);
@@ -519,12 +566,15 @@ export async function storeScopedSnapshotArtifact<DB extends SyncCoreDb>(
   }
 ): Promise<ScopedSnapshotArtifactRef> {
   if (!storage.storeArtifact) {
-    throw new Error(`Snapshot artifact storage ${storage.name} cannot store artifacts`);
+    throw new Error(
+      `Snapshot artifact storage ${storage.name} cannot store artifacts`
+    );
   }
 
   const artifactKind =
     args.artifactKind ?? SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
-  const compression = args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
+  const compression =
+    args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
   const artifactId = args.artifactId ?? randomId();
   const schemaVersion = String(args.schemaVersion);
   const featureSet = normalizeFeatures(args.featureSet);
@@ -577,6 +627,88 @@ export async function storeScopedSnapshotArtifact<DB extends SyncCoreDb>(
   });
 }
 
+function snapshotRowsAsObjects(
+  rows: readonly unknown[]
+): Record<string, unknown>[] {
+  return rows.map((row, index) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      throw new Error(
+        `Snapshot artifact row ${index} must be an object before SQLite encoding`
+      );
+    }
+    return row as Record<string, unknown>;
+  });
+}
+
+export async function precomputeScopedSnapshotArtifact<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+>(
+  args: PrecomputeScopedSnapshotArtifactArgs<DB, Auth>
+): Promise<ScopedSnapshotArtifactRef> {
+  const handler = args.handlers.byTable.get(args.table);
+  if (!handler) {
+    throw new Error(
+      `Unknown table for scoped snapshot artifact: ${args.table}`
+    );
+  }
+  if (!handler.snapshotBinaryColumns) {
+    throw new Error(
+      `Table ${args.table} cannot build SQLite snapshot artifacts without generated snapshotBinaryColumns`
+    );
+  }
+
+  const rowCursor = args.rowCursor ?? null;
+  const page = await handler.snapshot(
+    {
+      db: args.db,
+      actorId: args.auth.actorId,
+      auth: args.auth,
+      scopeValues: args.scopes,
+      cursor: rowCursor,
+      limit: args.rowLimit,
+    },
+    args.params
+  );
+  const rows = snapshotRowsAsObjects(page.rows ?? []);
+  const featureSet = normalizeFeatures(args.encoder.featureSet);
+  const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+    partitionId: args.partitionId,
+    subscriptionId: args.subscriptionId,
+    scopes: args.scopes,
+    schemaVersion: args.schemaVersion,
+    artifactKind: args.encoder.artifactKind,
+    compression: args.encoder.compression,
+    features: featureSet,
+  });
+  const body = await args.encoder.encode({
+    table: args.table,
+    columns: handler.snapshotBinaryColumns,
+    rows,
+  });
+
+  return storeScopedSnapshotArtifact(args.db, args.storage, {
+    artifactId: args.artifactId,
+    partitionId: args.partitionId,
+    scopeKey,
+    subscriptionId: args.subscriptionId,
+    table: args.table,
+    schemaVersion: args.schemaVersion,
+    asOfCommitSeq: args.asOfCommitSeq,
+    rowCursor,
+    rowLimit: args.rowLimit,
+    rowCount: rows.length,
+    nextRowCursor: page.nextCursor ?? null,
+    isFirstPage: rowCursor == null,
+    isLastPage: page.nextCursor == null,
+    compression: args.encoder.compression,
+    body,
+    featureSet,
+    expiresAt: args.expiresAt,
+    artifactKind: args.encoder.artifactKind,
+  });
+}
+
 export async function readScopedSnapshotArtifact<DB extends SyncCoreDb>(
   db: Kysely<DB>,
   artifactId: string
@@ -626,14 +758,16 @@ export async function readScopedSnapshotArtifact<DB extends SyncCoreDb>(
     rowLimit: Number(row.row_limit ?? 0),
     blobHash: row.blob_hash,
     expiresAt: coerceIsoString(row.expires_at),
-    featureSet: parseStringArray(row.feature_set_json, 'Scoped snapshot artifact feature set'),
+    featureSet: parseStringArray(
+      row.feature_set_json,
+      'Scoped snapshot artifact feature set'
+    ),
   };
 }
 
-export async function deleteExpiredScopedSnapshotArtifacts<DB extends SyncCoreDb>(
-  db: Kysely<DB>,
-  nowIso = new Date().toISOString()
-): Promise<number> {
+export async function deleteExpiredScopedSnapshotArtifacts<
+  DB extends SyncCoreDb,
+>(db: Kysely<DB>, nowIso = new Date().toISOString()): Promise<number> {
   const res = await sql`
     delete from ${sql.table('sync_snapshot_artifacts')}
     where expires_at <= ${nowIso}

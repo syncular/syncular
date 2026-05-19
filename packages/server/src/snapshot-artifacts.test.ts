@@ -1,21 +1,38 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
+import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
 import type { SyncCoreDb } from './schema';
 import {
   createScopedSnapshotArtifactManifestForPage,
   createScopedSnapshotArtifactScopeCacheKey,
   insertScopedSnapshotArtifact,
+  precomputeScopedSnapshotArtifact,
   readScopedSnapshotArtifact,
   readScopedSnapshotArtifactRefByPageKey,
-  storeScopedSnapshotArtifact,
   type SnapshotArtifactStorage,
+  storeScopedSnapshotArtifact,
 } from './snapshot-artifacts';
+import { createBunSqliteSnapshotArtifactEncoder } from './snapshot-artifacts/sqlite-bun';
 
-interface TestDb extends SyncCoreDb {}
+interface TasksTable {
+  id: string;
+  user_id: string;
+  title: string;
+  server_version: number;
+}
+
+interface TestDb extends SyncCoreDb {
+  tasks: TasksTable;
+}
+
+interface ClientDb {
+  tasks: TasksTable;
+}
 
 describe('scoped snapshot artifacts', () => {
   let db: Kysely<TestDb>;
@@ -47,11 +64,12 @@ describe('scoped snapshot artifacts', () => {
       scopes: { project_id: 'p1', user_id: ['u1', 'u2'] },
       features: ['blobs', 'crdt-yjs', 'blobs'],
     });
-    const subscriptionChanged =
-      await createScopedSnapshotArtifactScopeCacheKey({
+    const subscriptionChanged = await createScopedSnapshotArtifactScopeCacheKey(
+      {
         ...base,
         subscriptionId: 'sub-comments',
-      });
+      }
+    );
     const schemaChanged = await createScopedSnapshotArtifactScopeCacheKey({
       ...base,
       schemaVersion: 8,
@@ -237,5 +255,112 @@ describe('scoped snapshot artifacts', () => {
     expect(row?.sha256).toBe(ref.sha256);
     const storedBody = await storage.readArtifact(row!);
     expect(Array.from(storedBody!)).toEqual(Array.from(body));
+  });
+
+  it('precomputes a scoped Bun SQLite artifact from a generated snapshot shape', async () => {
+    const bodies = new Map<string, Uint8Array>();
+    const storage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async storeArtifact(artifact) {
+        bodies.set(artifact.artifactId, artifact.body);
+        return { blobHash: `memory:${artifact.artifactId}` };
+      },
+      async readArtifact(artifact) {
+        return bodies.get(artifact.artifactId) ?? null;
+      },
+    };
+    await db.schema
+      .createTable('tasks')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        snapshotBinaryColumns: [
+          { name: 'id', type: 'string' },
+          { name: 'user_id', type: 'string' },
+          { name: 'title', type: 'string' },
+          { name: 'server_version', type: 'integer' },
+        ],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        snapshot: async (ctx) => {
+          expect(ctx.scopeValues).toEqual({ user_id: 'user-1' });
+          expect(ctx.cursor).toBeNull();
+          expect(ctx.limit).toBe(50_000);
+          return {
+            rows: [
+              {
+                id: 'task-1',
+                user_id: 'user-1',
+                title: 'Artifact task',
+                server_version: 42,
+              },
+            ],
+            nextCursor: null,
+          };
+        },
+      }),
+    ]);
+
+    const ref = await precomputeScopedSnapshotArtifact({
+      db,
+      storage,
+      handlers,
+      auth: { actorId: 'user-1' },
+      partitionId: 'default',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      scopes: { user_id: 'user-1' },
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      artifactId: 'artifact-sqlite-1',
+      encoder: createBunSqliteSnapshotArtifactEncoder(),
+    });
+
+    expect(ref.id).toBe('artifact-sqlite-1');
+    expect(ref.rowCount).toBe(1);
+    expect(ref.manifest.scopeDigest).toBe(
+      (
+        await createScopedSnapshotArtifactScopeCacheKey({
+          partitionId: 'default',
+          subscriptionId: 'sub-tasks',
+          scopes: { user_id: 'user-1' },
+          schemaVersion: 7,
+        })
+      ).split(':scope:')[1]
+    );
+
+    const row = await readScopedSnapshotArtifact(db, ref.id);
+    const storedBody = await storage.readArtifact(row!);
+    expect(storedBody).toBeTruthy();
+    const artifactDb = Database.deserialize(storedBody!);
+    try {
+      expect(
+        artifactDb
+          .query(
+            'select id, user_id, title, server_version from tasks order by id'
+          )
+          .all()
+      ).toEqual([
+        {
+          id: 'task-1',
+          user_id: 'user-1',
+          title: 'Artifact task',
+          server_version: 42,
+        },
+      ]);
+    } finally {
+      artifactDb.close();
+    }
   });
 });
