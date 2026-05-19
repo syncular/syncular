@@ -118,8 +118,15 @@ read-only review:
     capability bit, plus server artifact-cache lookup timing. A 100k artifact
     page-size probe was rejected because it fell back to binary chunks and was
     about `2.35x` slower than the 50k direct artifact baseline. The normal
-    row-chunk path is now measured externally again; scoped artifact app-style
-    evidence remains a separate open gate.
+    row-chunk path is now measured externally again. Scoped artifacts now select
+    correctly in the external app-style benchmark when precomputed with the
+    server's `60k` bundled artifact key: Rust 500k bootstrap improves
+    `6099.68ms -> 4844.13ms` and local apply improves `1692ms -> 1379ms`, but
+    bytes and peak memory are still worse (`3.29MB -> 3.94MB`,
+    `694.38MB -> 750.48MB`). Browser artifact apply now moves fetched artifact
+    bytes into SQLite deserialize instead of cloning them. Immediate artifact
+    `DETACH` before commit was rejected because SQLite reports the attached DB
+    as locked.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained
@@ -161,12 +168,12 @@ read-only review:
 
 ## Next
 
-- Continue [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
-  by recovering the remaining realtime integrity overhead without weakening the
-  verified per-subscription root contract. Use
-  `.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json` as
-  the current local comparison point, and rerun the guard before each candidate
-  when machine state is noisy.
+- Continue [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+  by reducing scoped artifact bytes and peak memory while preserving direct
+  SQLite import and `snapshotChunkCount=0` in the external app-style benchmark.
+  The next retained change must compare against
+  `.results/2026-05-19T20-35-44-641Z/syncular-rust/bootstrap.json` externally
+  and `.context/benchmarks/wp12-owned-artifact-bytes-500k-rerun.json` locally.
 
 ## Later
 

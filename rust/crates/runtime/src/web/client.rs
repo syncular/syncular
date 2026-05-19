@@ -442,7 +442,7 @@ where
                                 WebSnapshotArtifactApplyMode::Upsert
                             };
                             self.store
-                                .apply_sqlite_snapshot_artifact_rows(&snapshot_table, &bytes, mode)
+                                .apply_sqlite_snapshot_artifact_rows(&snapshot_table, bytes, mode)
                                 .await?;
                             result.timings.snapshot_row_apply_ms +=
                                 elapsed_ms_since(artifact_apply_started_at);

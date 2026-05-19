@@ -3128,7 +3128,7 @@ impl SyncularRustOwnedSqlite {
     fn write_sqlite_snapshot_artifact_rows(
         &mut self,
         table: &str,
-        artifact_bytes: &[u8],
+        mut artifact_buffer: Vec<u8>,
         mode: WebSnapshotArtifactApplyMode,
     ) -> Result<usize> {
         let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
@@ -3152,7 +3152,6 @@ impl SyncularRustOwnedSqlite {
         );
         validate_table_name(&schema)?;
         self.exec(&format!("ATTACH ':memory:' AS {schema}"))?;
-        let mut artifact_buffer = artifact_bytes.to_vec();
         if let Err(err) =
             deserialize_sqlite_snapshot_artifact_schema(self.db, &schema, &mut artifact_buffer)
         {
@@ -4096,7 +4095,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
     fn apply_sqlite_snapshot_artifact_rows<'a>(
         &'a mut self,
         table: &'a str,
-        artifact_bytes: &'a [u8],
+        artifact_bytes: Vec<u8>,
         mode: WebSnapshotArtifactApplyMode,
     ) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>> {
         Box::pin(

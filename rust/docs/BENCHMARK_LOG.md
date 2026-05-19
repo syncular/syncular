@@ -2538,3 +2538,111 @@ Decision:
 - Rejected and reverted. The `1ms` integrity movement did not justify a magic
   capacity heuristic, the end-to-end metric regressed, total apply stayed flat,
   and WASM grew by `800` bytes.
+
+## 2026-05-19 - WP-12 External Scoped Artifact Gate And Owned Bytes
+
+Change:
+
+- External scoped artifact benchmarking now uses
+  `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000`. The external Rust
+  harness pulls `20k` snapshot pages, while the server artifact lookup bundles
+  up to the current `50k` target as whole pull pages, producing a `60k` page
+  key. Precomputing `20k` artifacts made lookup miss and silently use row
+  chunks.
+- Browser SQLite artifact apply now consumes the fetched artifact byte vector
+  instead of borrowing it and cloning into the retained SQLite deserialize
+  buffer. This removes a duplicate artifact-body allocation without changing
+  the transaction boundary.
+
+Rejected probe:
+
+- Tried detaching each deserialized SQLite artifact immediately after
+  `INSERT ... SELECT`. Rebuilt WASM failed the artifact Hono test with
+  `database __syncular_snapshot_artifact_0 is locked`, so the code was reverted.
+  Artifacts still detach after the apply transaction commits.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser tsgo
+```
+
+External app-style scoped artifact gate:
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
+
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario local-query
+```
+
+Local browser artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-owned-artifact-bytes-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-owned-artifact-bytes-500k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-owned-artifact-bytes-500k-rerun.json
+```
+
+External results:
+
+| Metric | Normal row chunks | Scoped artifacts | Owned bytes |
+| --- | ---: | ---: | ---: |
+| Rust 500k bootstrap | `6099.68ms` | `4866.87ms` | `4844.13ms` |
+| Rust 500k pull request | `1031ms` | `23ms` | `22ms` |
+| Rust 500k local apply | `1692ms` | `1394ms` | `1379ms` |
+| Rust 500k response bytes | `3287104` | `3938823` | `3938884` |
+| Rust 500k peak memory | `694.38MB` | `751.45MB` | `750.48MB` |
+| Rust 500k snapshot chunks | `9` | `0` | `0` |
+| TS 500k bootstrap, same server mode | n/a | `3882.82ms` | n/a |
+
+Local browser artifact A/B:
+
+| Metric | Borrowed bytes | Owned bytes rerun |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `279.54ms` | `280.87ms` |
+| `rust_pull_apply_ms` | `262ms` | `263ms` |
+| `rust_snapshot_row_apply_ms` | `198ms` | `196ms` |
+| `rust_cached_bootstrap_ms` | `249.11ms` | `252.37ms` |
+| `browser_js_heap_used_after_bytes` | `8641164` | `6692124` |
+| `browser_served_rust_wasm_bytes` | `3443298` | `3443219` |
+
+Decision:
+
+- Retain owned artifact bytes as a small allocation/memory cleanup, not a
+  throughput win.
+- Scoped artifacts are now proven externally and materially faster than the
+  external Rust row-chunk path, but they are not fully accepted as "done"
+  because peak memory and transferred bytes are still higher. The next WP-12
+  work should reduce artifact memory/bytes without violating scoped manifests.
