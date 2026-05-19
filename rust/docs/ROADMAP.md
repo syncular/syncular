@@ -155,8 +155,10 @@ read-only review:
     `syncular.schema.json` SQL instead of hand-written read-model fixtures; the
     dev-WASM external local-query gate stayed in band (`0.67ms -> 0.66ms` list
     p50, `0.97ms -> 0.88ms` search p50, `0.08ms -> 0.08ms` read-model
-    aggregate p50). Initial `countBy` read models are accepted; new read-model
-    kinds should be tracked as separate work.
+    aggregate p50), and the external bootstrap gate stayed in the old row-chunk
+    band (`6099.68ms -> 6240.52ms` Rust 500k bootstrap). Initial `countBy` read
+    models are accepted; new read-model kinds should be tracked as separate
+    work.
 - `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained

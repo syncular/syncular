@@ -134,6 +134,8 @@ bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/b
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis docker compose -f stacks/syncular/docker-compose.yml up --build -d
 SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario local-query
 SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario local-query
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario bootstrap
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario bootstrap
 ```
 
 Results:
@@ -152,6 +154,22 @@ aggregate stayed flat (`0.08ms -> 0.08ms`), and raw aggregate was in the same
 band (`60.15ms -> 60.88ms`). This is not comparable to the much faster release
 WASM external sample; this run intentionally followed the dev-WASM external
 gate command.
+
+External bootstrap gate, 500k rows:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Bootstrap | `4070.84ms` | `6240.52ms` |
+| Rust derived schema | n/a | `3269.49ms` |
+| Rust local apply | n/a | `1772ms` |
+| Rust peak memory | n/a | `700.83MB` |
+
+Compared with the previous dev-WASM row-chunk Rust baseline, bootstrap stayed
+in band (`6099.68ms -> 6240.52ms`), derived schema stayed in band
+(`3213.03ms -> 3269.49ms`), and local apply stayed in band
+(`1692ms -> 1772ms`). This confirms the generated schema-contract wiring did
+not materially change the expensive bootstrap shape; it removes hand-written
+SQL ownership rather than claiming a bootstrap win.
 
 Root `bun run tsgo` was not used as a gate because it currently fails in
 unrelated `@syncular/tests-unit` server-pull stream/hash type errors. The

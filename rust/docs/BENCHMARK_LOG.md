@@ -3300,6 +3300,8 @@ bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/b
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis docker compose -f stacks/syncular/docker-compose.yml up --build -d
 SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario local-query
 SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario local-query
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario bootstrap
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario bootstrap
 ```
 
 Results:
@@ -3321,8 +3323,28 @@ Compared with the previous dev-WASM external Rust sample:
 | Read-model aggregate p50 | `0.08ms` | `0.08ms` |
 | Raw aggregate p50 | `60.15ms` | `60.88ms` |
 
+External bootstrap, 500k rows:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Bootstrap | `4070.84ms` | `6240.52ms` |
+| Rust derived schema | n/a | `3269.49ms` |
+| Rust local apply | n/a | `1772ms` |
+| Rust peak memory | n/a | `700.83MB` |
+
+Compared with the previous dev-WASM row-chunk Rust baseline:
+
+| Metric | Previous Rust | Generated schema contract |
+| --- | ---: | ---: |
+| Bootstrap | `6099.68ms` | `6240.52ms` |
+| Derived schema | `3213.03ms` | `3269.49ms` |
+| Local apply | `1692ms` | `1772ms` |
+| Peak memory | `694.38MB` | `700.83MB` |
+
 Decision:
 
 - Accepted. The benchmark now uses generated read-model SQL without adding
   hidden caching or changing the query contract, and the dev-WASM external gate
-  stayed in the same performance band.
+  stayed in the same performance band. Bootstrap is not improved by this slice;
+  the value is removing hand-written SQL ownership from the benchmark/app
+  integration path.
