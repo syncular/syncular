@@ -112,6 +112,18 @@ Fifth retained slice:
 - No browser/server hot path or wire bytes changed in this slice; no
   performance benchmark was required.
 
+Sixth retained slice:
+
+- `syncular-protocol` now owns realtime presence payload structs and websocket
+  push/presence message shapes.
+- Native websocket push/presence and browser websocket push now serialize via
+  shared protocol structs.
+- Runtime keeps websocket socket ownership, reconnect/backoff, runtime
+  `RealtimeEvent`, event fanout, and transport behavior.
+- Browser package size stayed under budget after touching browser transport:
+  release full WASM raw `3,365,458` bytes, `41.4KiB` under budget; gzip
+  `1.33MiB`, `24.1KiB` under budget.
+
 Gates run:
 
 - `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
@@ -121,6 +133,7 @@ Gates run:
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `bun run --cwd rust/bindings/browser build:wasm`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,e2ee,demo-todo-native-fixture --test protocol_contract --test protocol_fixtures --test store_backends`
@@ -128,7 +141,6 @@ Gates run:
 
 ## Next Action
 
-Inventory realtime message structs for the same protocol/runtime split. Move
-only stable wire message shapes into `syncular-protocol`; keep websocket socket
-ownership, reconnect/backoff, runtime event fanout, and transport behavior in
-runtime.
+Run a final WP-02 audit for protocol-shaped structs/functions still owned by
+runtime, then run the full protocol/runtime/browser gate needed to close this
+work package or record the exact remaining protocol-kernel gap.

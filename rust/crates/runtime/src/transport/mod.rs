@@ -15,8 +15,7 @@ use reqwest::blocking::Body as BlockingBody;
 use reqwest::blocking::Client as HttpClient;
 #[cfg(feature = "native")]
 use reqwest::Method;
-use serde::{Deserialize, Serialize};
-#[cfg(feature = "native")]
+#[cfg(test)]
 use serde_json::json;
 use serde_json::Value;
 #[cfg(feature = "native")]
@@ -139,36 +138,13 @@ pub struct RealtimeSocket {
     shutdown_timeout: Duration,
 }
 
+pub use crate::protocol::{RealtimePresenceEntry, RealtimePresenceEvent};
+
 #[derive(Debug, Clone)]
 pub enum RealtimeEvent {
     Sync,
     Presence(RealtimePresenceEvent),
     Other(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RealtimePresenceEntry {
-    pub client_id: String,
-    pub actor_id: String,
-    pub joined_at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RealtimePresenceEvent {
-    pub action: String,
-    pub scope_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub actor_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub entries: Vec<RealtimePresenceEntry>,
 }
 
 pub trait SyncTransport {
@@ -618,16 +594,11 @@ impl RealtimeSocket {
 impl RealtimeTransport for RealtimeSocket {
     fn push_commit(&mut self, commit: PushCommitRequest) -> Result<PushCommitResponse> {
         let request_id = Uuid::new_v4().to_string();
-        let message = json!({
-            "type": "push",
-            "requestId": request_id,
-            "clientCommitId": commit.client_commit_id,
-            "operations": commit.operations,
-            "schemaVersion": commit.schema_version,
-        });
+        let client_commit_id = commit.client_commit_id.clone();
+        let message = RealtimePushRequest::from_commit(request_id.clone(), commit);
 
         self.socket
-            .send(Message::Text(message.to_string().into()))?;
+            .send(Message::Text(serde_json::to_string(&message)?.into()))?;
 
         let deadline = SystemTime::now()
             .checked_add(self.push_response_timeout)
@@ -640,39 +611,13 @@ impl RealtimeTransport for RealtimeSocket {
                         Ok(value) => value,
                         Err(_) => continue,
                     };
-                    let event = value.get("event").and_then(Value::as_str).unwrap_or("");
-                    if event != "push-response" {
-                        continue;
+                    if let Some(response) = syncular_protocol::realtime_push_response_from_value(
+                        &value,
+                        &request_id,
+                        &client_commit_id,
+                    )? {
+                        return Ok(response);
                     }
-                    let data = value
-                        .get("data")
-                        .and_then(Value::as_object)
-                        .ok_or_else(|| {
-                            SyncularError::protocol_message("push-response missing data")
-                        })?;
-                    let response_request_id =
-                        data.get("requestId").and_then(Value::as_str).unwrap_or("");
-                    if response_request_id != request_id {
-                        continue;
-                    }
-
-                    let results = data
-                        .get("results")
-                        .cloned()
-                        .map(serde_json::from_value)
-                        .transpose()?
-                        .unwrap_or_default();
-
-                    return Ok(PushCommitResponse {
-                        client_commit_id: commit.client_commit_id,
-                        status: data
-                            .get("status")
-                            .and_then(Value::as_str)
-                            .unwrap_or("rejected")
-                            .to_string(),
-                        commit_seq: data.get("commitSeq").and_then(Value::as_i64),
-                        results,
-                    });
                 }
                 Ok(Message::Ping(bytes)) => {
                     self.socket.send(Message::Pong(bytes))?;
@@ -707,14 +652,9 @@ impl RealtimeTransport for RealtimeSocket {
         scope_key: &str,
         metadata: Option<&Value>,
     ) -> Result<()> {
-        let message = json!({
-            "type": "presence",
-            "action": action,
-            "scopeKey": scope_key,
-            "metadata": metadata,
-        });
+        let message = RealtimePresenceRequest::new(action, scope_key, metadata.cloned());
         self.socket
-            .send(Message::Text(message.to_string().into()))?;
+            .send(Message::Text(serde_json::to_string(&message)?.into()))?;
         Ok(())
     }
 
@@ -726,10 +666,13 @@ impl RealtimeTransport for RealtimeSocket {
                     Err(_) => return Ok(None),
                 };
                 let event = value.get("event").and_then(Value::as_str).unwrap_or("");
-                if event == "sync" {
+                if event == REALTIME_SERVER_EVENT_SYNC {
                     Ok(Some(RealtimeEvent::Sync))
-                } else if event == "presence" {
-                    Ok(read_realtime_presence_event(&value).map(RealtimeEvent::Presence))
+                } else if event == REALTIME_SERVER_EVENT_PRESENCE {
+                    Ok(
+                        syncular_protocol::realtime_presence_event_from_value(&value)
+                            .map(RealtimeEvent::Presence),
+                    )
                 } else {
                     Ok(Some(RealtimeEvent::Other(event.to_string())))
                 }
@@ -761,16 +704,6 @@ impl RealtimeTransport for RealtimeSocket {
         );
         self.socket.close(None).ok();
     }
-}
-
-#[cfg(feature = "native")]
-fn read_realtime_presence_event(value: &Value) -> Option<RealtimePresenceEvent> {
-    let presence = value
-        .get("data")
-        .and_then(|data| data.get("presence"))
-        .or_else(|| value.get("presence"))
-        .or_else(|| value.get("data"))?;
-    serde_json::from_value(presence.clone()).ok()
 }
 
 #[cfg(feature = "native")]

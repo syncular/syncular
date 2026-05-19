@@ -418,3 +418,41 @@ Decision:
 
 - Retained. Blob protocol ownership moved without changing runtime transport or
   storage behavior.
+
+## 2026-05-19 - Protocol Crate Realtime Wire Shapes
+
+Commit: uncommitted working tree before this slice was committed
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved realtime presence payload structs and websocket push/presence message
+  shapes into `syncular-protocol`.
+- Native websocket push/presence and browser websocket push now serialize via
+  shared protocol structs.
+- Runtime still owns websocket sockets, reconnect/backoff, event fanout,
+  runtime `RealtimeEvent`, and transport behavior.
+
+Performance/size gate:
+
+- No runtime performance benchmark was run because this is protocol ownership
+  work without a hot-path algorithm change.
+- Browser WASM build was run because browser transport code changed.
+
+Previous accepted package size:
+
+- Release full WASM raw: `3,375,951` bytes.
+
+Candidate:
+
+- Release full WASM raw: `3,365,458` bytes.
+- Size report: raw `3.21MiB`, `41.4KiB` under budget; gzip `1.33MiB`,
+  `24.1KiB` under budget.
+
+Decision:
+
+- Retained. The protocol split removed duplicated JSON assembly and stayed
+  under browser package budgets.
