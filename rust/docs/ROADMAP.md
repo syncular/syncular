@@ -98,8 +98,9 @@ read-only review:
     recovers on the next pull. Browser artifact precompute now follows all
     scoped pages, eliminating the remaining row-chunk apply from the 100k
     artifact benchmark and moving Rust bootstrap to `68.6ms`. At 500k rows,
-    browser artifacts are `268.44ms` versus `618.95ms` for row chunks, with a
-    larger payload. Native direct artifact import, artifact body-size work,
+    compact browser artifacts are `260.82ms` versus `618.95ms` for row chunks;
+    artifact bytes are now `4.74MB` after `WITHOUT ROWID` plus gzip level 6,
+    down from `6.50MB` before compaction. Native direct artifact import,
     revocation recovery coverage, and external app-style benchmark coverage
     remain open.
 

@@ -1230,3 +1230,58 @@ Decision:
   and cached bootstrap by about `26%` against row chunks.
 - The artifact payload is about `72%` larger than binary row chunks at 500k.
   Next body-shape work must reduce bytes while preserving direct SQLite import.
+
+## 2026-05-19 - Compact Scoped SQLite Artifact Bodies
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Server table handlers now expose `primaryKeyColumn` metadata to artifact
+  encoders.
+- The Bun SQLite artifact encoder creates primary-key `WITHOUT ROWID` tables
+  when the generated snapshot columns include the handler primary key.
+- The default artifact gzip level changed from `1` to `6`. Artifact generation
+  is a background/precompute path; pulls still serve stored bytes.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test src/__tests__/sync-hono.wasm.test.ts
+```
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | Multi-page artifacts | Compact artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `68.6ms` | `66.47ms` |
+| `rust_pull_request_ms` | `7ms` | `7ms` |
+| `rust_snapshot_fetch_ms` | `14ms` | `11ms` |
+| `rust_pull_apply_ms` | `58ms` | `56ms` |
+| `rust_snapshot_row_apply_ms` | `43ms` | `42ms` |
+| `rust_response_bytes` | `1300566` | `976972` |
+| `rust_cached_bootstrap_ms` | `48.36ms` | `45.39ms` |
+
+Browser release E2E, 500k rows, query iterations disabled:
+
+| Metric | Multi-page artifacts | Compact artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `268.44ms` | `260.82ms` |
+| `rust_pull_request_ms` | `8ms` | `7ms` |
+| `rust_snapshot_fetch_ms` | `60ms` | `54ms` |
+| `rust_pull_apply_ms` | `252ms` | `245ms` |
+| `rust_snapshot_row_apply_ms` | `191ms` | `189ms` |
+| `rust_response_bytes` | `6500487` | `4738745` |
+| `rust_cached_bootstrap_ms` | `248.64ms` | `235.69ms` |
+
+Decision:
+
+- Retained. Response bytes dropped about `25%` at 100k and `27%` at 500k, and
+  both first and cached bootstrap stayed slightly faster.
+- The compact artifact path is now the baseline for future artifact body-shape
+  experiments.

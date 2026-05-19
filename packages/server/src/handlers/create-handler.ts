@@ -912,6 +912,7 @@ export function createServerHandler<
 
   return {
     table,
+    primaryKeyColumn,
     scopePatterns,
     dependsOn,
     snapshotChunkTtlMs,

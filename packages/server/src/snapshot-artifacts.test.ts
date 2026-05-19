@@ -368,6 +368,17 @@ describe('scoped snapshot artifacts', () => {
       expect(
         artifactDb
           .query(
+            "select sql from sqlite_master where type = 'table' and name = 'tasks'"
+          )
+          .get()
+      ).toEqual({
+        sql:
+          'CREATE TABLE "tasks" ("id" text primary key, "user_id" text, ' +
+          '"title" text, "server_version" integer) without rowid',
+      });
+      expect(
+        artifactDb
+          .query(
             'select id, user_id, title, server_version from tasks order by id'
           )
           .all()

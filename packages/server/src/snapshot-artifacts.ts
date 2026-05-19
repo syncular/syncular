@@ -123,6 +123,7 @@ export interface ScopedSnapshotSqliteArtifactEncoder {
   readonly featureSet?: readonly string[];
   encode(args: {
     table: string;
+    primaryKeyColumn?: string;
     columns: readonly BinarySnapshotColumn[];
     rows: readonly Record<string, unknown>[];
   }): Uint8Array | Promise<Uint8Array>;
@@ -694,6 +695,7 @@ export async function precomputeScopedSnapshotArtifact<
   });
   const body = await args.encoder.encode({
     table: args.table,
+    primaryKeyColumn: handler.primaryKeyColumn,
     columns: handler.snapshotBinaryColumns,
     rows,
   });
