@@ -32,8 +32,9 @@ pub use realtime::{
 };
 pub use snapshot_artifact::{
     scoped_snapshot_artifact_manifest_digest, validate_scoped_snapshot_artifact_manifest,
-    ScopedSnapshotArtifactManifest, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-    SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION, SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+    ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef,
+    SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+    SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
 };
 pub use snapshot_chunk::{
     decode_snapshot_chunk_sha256, validate_snapshot_chunk_format,
@@ -52,7 +53,7 @@ pub const SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1: &str = "binary-table-v1";
 pub const SYNC_PACK_ENCODING_JSON_V1: &str = "json-v1";
 pub const SYNC_PACK_ENCODING_BINARY_V1: &str = "binary-sync-pack-v1";
 pub const SYNC_PACK_CONTENT_TYPE: &str = "application/vnd.syncular.sync-pack.v1";
-pub const BINARY_SYNC_PACK_WIRE_VERSION: u16 = 13;
+pub const BINARY_SYNC_PACK_WIRE_VERSION: u16 = 14;
 pub const SNAPSHOT_MANIFEST_VERSION: i32 = 1;
 
 pub type ScopeValues = Map<String, Value>;
@@ -255,6 +256,8 @@ pub struct SyncSnapshot {
     pub table: String,
     pub rows: Vec<Value>,
     pub chunks: Option<Vec<SnapshotChunkRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<Vec<ScopedSnapshotArtifactRef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<SnapshotManifest>,
     #[serde(rename = "isFirstPage")]

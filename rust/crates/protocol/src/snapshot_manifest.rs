@@ -238,6 +238,7 @@ mod tests {
                     table: "tasks".to_string(),
                     rows: Vec::new(),
                     chunks: Some(vec![chunk]),
+                    artifacts: None,
                     manifest: Some(manifest),
                     is_first_page: true,
                     is_last_page: true,

@@ -320,6 +320,7 @@ fn read_snapshot(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncSnapshot> 
         table: reader.read_string16("snapshot table")?,
         rows: reader.read_array("snapshot rows", |reader| reader.read_json("snapshot row"))?,
         chunks: reader.read_optional_array("snapshot chunks", read_snapshot_chunk_ref)?,
+        artifacts: None,
         manifest: None,
         is_first_page: reader.read_bool("snapshot first page")?,
         is_last_page: reader.read_bool("snapshot last page")?,
@@ -330,6 +331,10 @@ fn read_snapshot(reader: &mut BinarySyncPackReader<'_>) -> Result<SyncSnapshot> 
     };
     snapshot.manifest = reader
         .read_optional_json("snapshot manifest")?
+        .map(serde_json::from_value)
+        .transpose()?;
+    snapshot.artifacts = reader
+        .read_optional_json("snapshot artifacts")?
         .map(serde_json::from_value)
         .transpose()?;
     Ok(snapshot)

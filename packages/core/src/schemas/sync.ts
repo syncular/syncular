@@ -9,6 +9,9 @@
 
 import { z } from 'zod';
 import {
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODINGS,
 } from '../snapshot-chunks';
@@ -248,11 +251,62 @@ export type SyncSnapshotManifest = z.infer<
   typeof SyncSnapshotManifestSchema
 >;
 
+export const SyncScopedSnapshotArtifactManifestSchema = z.object({
+  version: z.literal(SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION),
+  artifactKind: z.literal(SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1),
+  digest: z.string(),
+  partitionId: z.string(),
+  subscriptionId: z.string(),
+  table: z.string(),
+  schemaVersion: z.string(),
+  asOfCommitSeq: z.number().int(),
+  scopeDigest: z.string(),
+  rowCursor: z.string().nullable(),
+  rowLimit: z.number().int().min(1),
+  rowCount: z.number().int().min(0),
+  nextRowCursor: z.string().nullable(),
+  isFirstPage: z.boolean(),
+  isLastPage: z.boolean(),
+  compression: z.union([
+    z.literal(SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE),
+    z.literal(SYNC_SNAPSHOT_CHUNK_COMPRESSION),
+  ]),
+  byteLength: z.number().int().min(0),
+  sha256: z.string(),
+  featureSet: z.array(z.string()),
+});
+
+export type SyncScopedSnapshotArtifactManifest = z.infer<
+  typeof SyncScopedSnapshotArtifactManifestSchema
+>;
+
+export const SyncSnapshotArtifactRefSchema = z.object({
+  id: z.string(),
+  byteLength: z.number().int().min(0),
+  sha256: z.string(),
+  manifestDigest: z.string(),
+  artifactKind: z.literal(SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1),
+  compression: z.union([
+    z.literal(SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE),
+    z.literal(SYNC_SNAPSHOT_CHUNK_COMPRESSION),
+  ]),
+  rowCount: z.number().int().min(0),
+  nextRowCursor: z.string().nullable(),
+  isFirstPage: z.boolean(),
+  isLastPage: z.boolean(),
+  manifest: SyncScopedSnapshotArtifactManifestSchema,
+});
+
+export type SyncSnapshotArtifactRef = z.infer<
+  typeof SyncSnapshotArtifactRefSchema
+>;
+
 export const SyncSnapshotSchema = z.object({
   table: z.string(),
   rows: z.array(z.unknown()),
   chunks: z.array(SyncSnapshotChunkRefSchema).optional(),
   manifest: SyncSnapshotManifestSchema.optional(),
+  artifacts: z.array(SyncSnapshotArtifactRefSchema).optional(),
   isFirstPage: z.boolean(),
   isLastPage: z.boolean(),
   bootstrapStateAfter: SyncBootstrapStateSchema.nullable().optional(),

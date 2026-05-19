@@ -1518,6 +1518,7 @@ mod tests {
                                 table: "tasks".to_string(),
                                 rows: vec![task_row("incoming-inline-task", "p0")],
                                 chunks: Some(vec![chunk]),
+                                artifacts: None,
                                 manifest: Some(manifest),
                                 is_first_page: true,
                                 is_last_page: true,
