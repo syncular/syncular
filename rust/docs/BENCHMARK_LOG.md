@@ -2646,3 +2646,117 @@ Decision:
   external Rust row-chunk path, but they are not fully accepted as "done"
   because peak memory and transferred bytes are still higher. The next WP-12
   work should reduce artifact memory/bytes without violating scoped manifests.
+
+## 2026-05-19 - Rejected WP-12 SQLite Artifact Page Size 16k
+
+Probe:
+
+- Tried setting the Bun SQLite snapshot artifact encoder page size to `16384`
+  before creating the artifact table.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts
+bun test packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-artifact-page-size-16k-500k.json
+```
+
+Compared against
+`.context/benchmarks/wp12-owned-artifact-bytes-500k-rerun.json`:
+
+| Metric | Owned bytes | 16k page size |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `280.87ms` | `279.21ms` |
+| `rust_pull_apply_ms` | `263ms` | `263ms` |
+| `rust_snapshot_row_apply_ms` | `196ms` | `193ms` |
+| `rust_response_bytes` | `4738745` | `5455815` |
+| `browser_js_heap_used_after_bytes` | `6692124` | `11229316` |
+
+Decision:
+
+- Rejected and reverted. The tiny apply movement does not matter because bytes
+  regressed by about `15%`, and heap was worse in the local gate.
+
+## 2026-05-19 - WP-12 SQLite Artifact Gzip Level 9
+
+Change:
+
+- Bun SQLite snapshot artifacts now default to gzip level `9` instead of `6`.
+  Artifact generation is a background/precompute path, not the Worker pull hot
+  path, so the retained criterion is lower transfer bytes without losing direct
+  SQLite import.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Local browser artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-artifact-gzip9-500k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-artifact-gzip9-500k-rerun.json
+```
+
+External app-style gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against owned bytes / gzip level 6:
+
+| Metric | Gzip 6 | Gzip 9 |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `280.87ms` | `278.95ms` |
+| Local 500k `rust_pull_apply_ms` | `263ms` | `260ms` |
+| Local 500k `rust_response_bytes` | `4738745` | `4214831` |
+| External 500k bootstrap | `4844.13ms` | `4830.08ms` |
+| External 500k local apply | `1379ms` | `1392ms` |
+| External 500k response bytes | `3938884` | `3527331` |
+| External 500k peak memory | `750.48MB` | `758.2MB` |
+
+Retained result files:
+
+- `.context/benchmarks/wp12-sqlite-artifact-gzip9-500k-rerun.json`
+- `.results/2026-05-19T20-46-54-374Z/syncular-rust/bootstrap.json`
+
+External row-chunk comparison remains important: row chunks were slower
+(`6099.68ms`) and had slower local apply (`1692ms`), but still used fewer
+response bytes (`3287104`) and lower peak memory (`694.38MB`).
+
+Decision:
+
+- Retained as a byte-reduction slice. It does not solve peak memory, and memory
+  remains the next WP-12 target, but it cuts external artifact bytes by about
+  `10%` while keeping direct artifact import and `snapshotChunkCount=0`.

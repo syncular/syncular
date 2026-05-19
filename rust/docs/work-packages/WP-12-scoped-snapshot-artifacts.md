@@ -563,13 +563,33 @@ Rejected browser immediate-detach probe:
   import therefore still needs a transaction shape that keeps attached artifact
   buffers alive until commit, or a larger apply-loop architecture change.
 
+Rejected artifact body-shape probe:
+
+- Tried changing the Bun SQLite artifact encoder page size to `16k`.
+- Rejected because the 500k local artifact gate increased response bytes
+  `4738745 -> 5455815` and heap usage worsened, while wall time stayed flat.
+
+Retained twentieth slice:
+
+- Raised the Bun SQLite artifact encoder default gzip level from `6` to `9`.
+  Artifact generation is a background/precompute path, not the Worker pull hot
+  path, so this is judged primarily on transferred bytes while preserving
+  direct SQLite import.
+- Local 500k artifact bytes improved `4738745 -> 4214831`, with wall time flat
+  (`280.87ms -> 278.95ms`). External app-style scoped artifact bytes improved
+  `3938884 -> 3527331`, with bootstrap roughly flat/slightly better
+  (`4844.13ms -> 4830.08ms`).
+- This does not solve memory. External peak memory moved
+  `750.48MB -> 758.2MB`, so the next accepted slice must target artifact
+  memory/retention or transaction shape, not only compressed body size.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
-- Reduce scoped artifact memory and bytes. The external gate now proves
-  artifact selection and faster Rust bootstrap, but peak memory and transferred
-  bytes are worse than row chunks.
+- Reduce scoped artifact memory first, then bytes if available. The external
+  gate now proves artifact selection and faster Rust bootstrap, and gzip9
+  reduced transferred bytes, but peak memory is still worse than row chunks.
 - Continue body-shape work only if it preserves direct SQLite import, keeps
   `snapshotChunkCount=0`, and improves either external peak memory or response
   bytes without regressing the compact artifact local baseline.
