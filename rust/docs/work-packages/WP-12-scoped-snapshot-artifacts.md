@@ -163,12 +163,30 @@ Retained fifth slice:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
   and `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`.
 
+Retained sixth slice:
+
+- Added the write-side artifact body storage contract:
+  `SnapshotArtifactStorage.storeArtifact(...)`.
+- Added `storeScopedSnapshotArtifact(...)`, which hashes immutable artifact
+  bytes, writes them through the storage adapter, and inserts the matching
+  scoped metadata row.
+- Added native and browser-runtime fail-closed guards so artifact snapshots are
+  rejected before clearing local rows until download/apply support lands.
+- Re-exported artifact protocol structs/constants through the runtime protocol
+  module.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`,
+  `bun run --cwd packages/server tsgo`,
+  `bun run --cwd packages/server-hono tsgo`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_rejects_snapshot_artifacts_before_mutating_store --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`,
+  and `bun run build:wasm:dev` from `rust/bindings/browser`.
+
 ## Next Action
 
 Build the artifact body path:
 
-- how object storage writes are represented without generating SQLite files in
-  the Worker/D1 hot path;
 - how background/precompute jobs create scoped SQLite artifact bodies and insert
   matching metadata rows;
 - how browser/native clients download, verify, and apply artifact bodies;

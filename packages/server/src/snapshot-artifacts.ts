@@ -9,6 +9,7 @@
 
 import {
   createScopedSnapshotArtifactManifest,
+  randomId,
   type ScopeValues,
   type ScopedSnapshotArtifactManifest,
   sha256Hex,
@@ -75,8 +76,37 @@ export interface ScopedSnapshotArtifactRow extends ScopedSnapshotArtifactRef {
   featureSet: string[];
 }
 
+export interface ScopedSnapshotArtifactBodyMetadata {
+  artifactId: string;
+  partitionId: string;
+  scopeKey: string;
+  subscriptionId: string;
+  table: string;
+  schemaVersion: string;
+  asOfCommitSeq: number;
+  rowCursor: string | null;
+  rowLimit: number;
+  rowCount: number;
+  nextRowCursor: string | null;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  artifactKind: SyncScopedSnapshotArtifactKind;
+  compression: SyncSnapshotArtifactCompression;
+  sha256: string;
+  byteLength: number;
+  featureSet: string[];
+  expiresAt: string;
+}
+
+export interface StoredScopedSnapshotArtifactBody {
+  blobHash: string;
+}
+
 export interface SnapshotArtifactStorage {
   readonly name: string;
+  storeArtifact?(
+    artifact: ScopedSnapshotArtifactBodyMetadata & { body: Uint8Array }
+  ): Promise<StoredScopedSnapshotArtifactBody>;
   readArtifact(
     artifact: ScopedSnapshotArtifactRow
   ): Promise<Uint8Array | null>;
@@ -462,6 +492,89 @@ export async function insertScopedSnapshotArtifact<DB extends SyncCoreDb>(
     throw new Error('Failed to read inserted scoped snapshot artifact');
   }
   return ref;
+}
+
+export async function storeScopedSnapshotArtifact<DB extends SyncCoreDb>(
+  db: Kysely<DB>,
+  storage: SnapshotArtifactStorage,
+  args: {
+    artifactId?: string;
+    partitionId: string;
+    scopeKey: string;
+    subscriptionId: string;
+    table: string;
+    schemaVersion: number | string;
+    asOfCommitSeq: number;
+    rowCursor: string | null;
+    rowLimit: number;
+    rowCount: number;
+    nextRowCursor?: string | null;
+    isFirstPage: boolean;
+    isLastPage: boolean;
+    compression?: SyncSnapshotArtifactCompression;
+    body: Uint8Array;
+    featureSet?: readonly string[];
+    expiresAt: string;
+    artifactKind?: SyncScopedSnapshotArtifactKind;
+  }
+): Promise<ScopedSnapshotArtifactRef> {
+  if (!storage.storeArtifact) {
+    throw new Error(`Snapshot artifact storage ${storage.name} cannot store artifacts`);
+  }
+
+  const artifactKind =
+    args.artifactKind ?? SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
+  const compression = args.compression ?? SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
+  const artifactId = args.artifactId ?? randomId();
+  const schemaVersion = String(args.schemaVersion);
+  const featureSet = normalizeFeatures(args.featureSet);
+  const sha256 = await sha256Hex(args.body);
+  const byteLength = args.body.byteLength;
+  const metadata: ScopedSnapshotArtifactBodyMetadata = {
+    artifactId,
+    partitionId: args.partitionId,
+    scopeKey: args.scopeKey,
+    subscriptionId: args.subscriptionId,
+    table: args.table,
+    schemaVersion,
+    asOfCommitSeq: args.asOfCommitSeq,
+    rowCursor: args.rowCursor,
+    rowLimit: args.rowLimit,
+    rowCount: args.rowCount,
+    nextRowCursor: args.nextRowCursor ?? null,
+    isFirstPage: args.isFirstPage,
+    isLastPage: args.isLastPage,
+    artifactKind,
+    compression,
+    sha256,
+    byteLength,
+    featureSet,
+    expiresAt: args.expiresAt,
+  };
+  const stored = await storage.storeArtifact({ ...metadata, body: args.body });
+
+  return insertScopedSnapshotArtifact(db, {
+    artifactId,
+    partitionId: metadata.partitionId,
+    scopeKey: metadata.scopeKey,
+    subscriptionId: metadata.subscriptionId,
+    table: metadata.table,
+    schemaVersion: metadata.schemaVersion,
+    asOfCommitSeq: metadata.asOfCommitSeq,
+    rowCursor: metadata.rowCursor,
+    rowLimit: metadata.rowLimit,
+    rowCount: metadata.rowCount,
+    nextRowCursor: metadata.nextRowCursor,
+    isFirstPage: metadata.isFirstPage,
+    isLastPage: metadata.isLastPage,
+    compression: metadata.compression,
+    sha256: metadata.sha256,
+    byteLength: metadata.byteLength,
+    featureSet: metadata.featureSet,
+    blobHash: stored.blobHash,
+    expiresAt: metadata.expiresAt,
+    artifactKind: metadata.artifactKind,
+  });
 }
 
 export async function readScopedSnapshotArtifact<DB extends SyncCoreDb>(

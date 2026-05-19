@@ -354,6 +354,15 @@ where
                 let mut scope_cleared_for_snapshot = continuing_cleared_snapshot;
                 for snapshot in snapshots {
                     let snapshot_table = snapshot.table.clone();
+                    if snapshot
+                        .artifacts
+                        .as_ref()
+                        .is_some_and(|artifacts| !artifacts.is_empty())
+                    {
+                        return Err(SyncularError::protocol_message(
+                            "snapshot artifacts are not supported by this runtime yet",
+                        ));
+                    }
                     let mut chunk_batches = Vec::new();
                     if let Some(chunks) = &snapshot.chunks {
                         for chunk in chunks {
@@ -1447,14 +1456,44 @@ fn is_auth_transport_error(error: &SyncularError) -> bool {
 mod tests {
     use super::*;
     use crate::protocol::{
-        snapshot_manifest_digest, CombinedResponse, PullResponse, SnapshotChunkRef,
-        SnapshotManifest, SnapshotManifestChunkRef, SubscriptionResponse, SyncSnapshot,
+        snapshot_manifest_digest, CombinedResponse, PullResponse, ScopedSnapshotArtifactManifest,
+        ScopedSnapshotArtifactRef, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
+        SubscriptionResponse, SyncSnapshot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+        SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
     };
     use crate::transport::web::WebRealtimeSocket;
     use serde_json::{json, Map, Value};
     use std::future::Future;
     use std::pin::Pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    #[test]
+    fn pull_rejects_snapshot_artifacts_before_mutating_store() -> Result<()> {
+        let mut store = WebMemoryStore::new();
+        block_on(store.upsert_row("tasks", task_row("existing-task", "p0")))?;
+        let transport = ArtifactTransport;
+        let config = WebSyncularClientConfig {
+            base_url: "http://syncular.test/sync".to_string(),
+            client_id: "web-client-artifact-failure".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("p0".to_string()),
+        };
+        let mut client = WebSyncularClient::with_parts(config, transport, store);
+
+        let error = block_on(client.sync_pull()).expect_err("artifact apply failure");
+        assert_eq!(error.kind(), ErrorKind::Protocol);
+        assert!(error
+            .message_text()
+            .contains("snapshot artifacts are not supported"));
+
+        let rows: Value =
+            serde_json::from_str(&block_on(client.store_mut().list_table_json("tasks"))?)?;
+        let rows = rows.as_array().expect("task rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "existing-task");
+
+        Ok(())
+    }
 
     #[test]
     fn pull_fetches_snapshot_chunks_before_mutating_store() -> Result<()> {
@@ -1479,6 +1518,66 @@ mod tests {
         assert_eq!(rows[0]["id"], "existing-task");
 
         Ok(())
+    }
+
+    struct ArtifactTransport;
+
+    impl AsyncSyncTransport for ArtifactTransport {
+        type Realtime = WebRealtimeSocket;
+
+        fn post_sync<'a>(
+            &'a self,
+            _request: &'a CombinedRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<CombinedResponse>> + 'a>> {
+            Box::pin(async move {
+                Ok(CombinedResponse {
+                    ok: true,
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    push: None,
+                    pull: Some(PullResponse {
+                        ok: true,
+                        subscriptions: vec![SubscriptionResponse {
+                            id: "sub-tasks".to_string(),
+                            status: "active".to_string(),
+                            scopes: scopes(),
+                            bootstrap: true,
+                            bootstrap_state: None,
+                            next_cursor: 1,
+                            integrity: None,
+                            commits: Vec::new(),
+                            snapshots: Some(vec![SyncSnapshot {
+                                table: "tasks".to_string(),
+                                rows: Vec::new(),
+                                chunks: None,
+                                artifacts: Some(vec![snapshot_artifact_for_test()]),
+                                manifest: None,
+                                is_first_page: true,
+                                is_last_page: true,
+                                bootstrap_state_after: None,
+                            }]),
+                        }],
+                    }),
+                })
+            })
+        }
+
+        fn fetch_snapshot_chunk_rows<'a>(
+            &'a self,
+            _chunk: &'a SnapshotChunkRef,
+            _scopes: &'a ScopeValues,
+        ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
+            Box::pin(async move {
+                Err(SyncularError::message(
+                    ErrorKind::Transport,
+                    "chunk fetch should not run",
+                ))
+            })
+        }
+
+        fn connect_realtime(&self) -> Result<Self::Realtime> {
+            panic!("realtime not used in this test")
+        }
     }
 
     struct FailingChunkTransport;
@@ -1560,6 +1659,43 @@ mod tests {
             "image": null,
             "title_yjs_state": null
         })
+    }
+
+    fn snapshot_artifact_for_test() -> ScopedSnapshotArtifactRef {
+        let manifest = ScopedSnapshotArtifactManifest {
+            version: 1,
+            artifact_kind: SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string(),
+            digest: "artifact-digest".to_string(),
+            partition_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            schema_version: "7".to_string(),
+            as_of_commit_seq: 1,
+            scope_digest: "0".repeat(64),
+            row_cursor: None,
+            row_limit: 50_000,
+            row_count: 1,
+            next_row_cursor: None,
+            is_first_page: true,
+            is_last_page: true,
+            compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+            byte_length: 64,
+            sha256: "a".repeat(64),
+            feature_set: Vec::new(),
+        };
+        ScopedSnapshotArtifactRef {
+            id: "artifact-1".to_string(),
+            byte_length: manifest.byte_length,
+            sha256: manifest.sha256.clone(),
+            manifest_digest: manifest.digest.clone(),
+            artifact_kind: manifest.artifact_kind.clone(),
+            compression: manifest.compression.clone(),
+            row_count: manifest.row_count,
+            next_row_cursor: manifest.next_row_cursor.clone(),
+            is_first_page: manifest.is_first_page,
+            is_last_page: manifest.is_last_page,
+            manifest,
+        }
     }
 
     fn snapshot_manifest_for_test(chunk: &SnapshotChunkRef) -> Result<SnapshotManifest> {

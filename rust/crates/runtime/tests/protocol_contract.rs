@@ -19,9 +19,10 @@ use syncular_runtime::protocol::{
     snapshot_manifest_digest, validate_pull_commit_integrity_metadata,
     validate_pull_snapshot_manifests, wire_commit_chain_root, wire_commit_digest, BootstrapState,
     CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushBatchResponse,
-    PushCommitResponse, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
-    SubscriptionIntegrity, SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot,
-    COMMIT_INTEGRITY_GENESIS_ROOT,
+    PushCommitResponse, ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef,
+    SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef, SubscriptionIntegrity,
+    SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT,
+    SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
 };
 use syncular_runtime::store::{SyncStore, SyncStoreTx};
 use syncular_runtime::transport::{
@@ -285,6 +286,39 @@ fn http_sync_decrypts_encrypted_snapshot_chunk_rows() -> Result<()> {
         tasks[0].title,
         scenario["task"]["title"].as_str().expect("e2ee task title")
     );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn http_sync_rejects_snapshot_artifacts_before_mutating_store() -> Result<()> {
+    let path = temp_db_path("syncular-protocol-artifact-rejected");
+    let store = RusqliteStore::open(&path)?;
+    let transport = TestTransport::new();
+    transport.push_http_response_fn(|request| {
+        let mut response = snapshot_artifact_combined_response();
+        response.push = default_combined_response(request).push;
+        Ok(response)
+    });
+    let config = test_config(&path, "client-artifact-rejected");
+    let mut client = demo_client(config, store, transport);
+
+    client.add_task(
+        "Local before artifact".to_string(),
+        Some("local-before-artifact".to_string()),
+    )?;
+    let error = client
+        .sync_http()
+        .expect_err("snapshot artifact apply should fail closed");
+    assert_eq!(error.kind(), ErrorKind::Protocol);
+    assert!(error
+        .message_text()
+        .contains("snapshot artifacts are not supported"));
+
+    let tasks = client.list_tasks()?;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "local-before-artifact");
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -2452,12 +2486,82 @@ fn snapshot_manifest_pull_response(
                 table: "tasks".to_string(),
                 rows: Vec::new(),
                 chunks: Some(vec![chunk]),
+                artifacts: None,
                 manifest,
                 is_first_page: true,
                 is_last_page: true,
                 bootstrap_state_after: None,
             }]),
         }],
+    }
+}
+
+fn snapshot_artifact_combined_response() -> CombinedResponse {
+    CombinedResponse {
+        ok: true,
+        required_schema_version: None,
+        latest_schema_version: None,
+        push: None,
+        pull: Some(PullResponse {
+            ok: true,
+            subscriptions: vec![SubscriptionResponse {
+                id: "sub-tasks".to_string(),
+                status: "active".to_string(),
+                scopes: scopes(),
+                bootstrap: true,
+                bootstrap_state: None,
+                next_cursor: 42,
+                integrity: None,
+                commits: Vec::new(),
+                snapshots: Some(vec![SyncSnapshot {
+                    table: "tasks".to_string(),
+                    rows: Vec::new(),
+                    chunks: None,
+                    artifacts: Some(vec![snapshot_artifact_ref_for_test()]),
+                    manifest: None,
+                    is_first_page: true,
+                    is_last_page: true,
+                    bootstrap_state_after: None,
+                }]),
+            }],
+        }),
+    }
+}
+
+fn snapshot_artifact_ref_for_test() -> ScopedSnapshotArtifactRef {
+    let manifest = ScopedSnapshotArtifactManifest {
+        version: 1,
+        artifact_kind: SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string(),
+        digest: "artifact-digest".to_string(),
+        partition_id: "default".to_string(),
+        subscription_id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        schema_version: current_schema_version().to_string(),
+        as_of_commit_seq: 42,
+        scope_digest: "0".repeat(64),
+        row_cursor: None,
+        row_limit: 50_000,
+        row_count: 1,
+        next_row_cursor: None,
+        is_first_page: true,
+        is_last_page: true,
+        compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+        byte_length: 64,
+        sha256: "a".repeat(64),
+        feature_set: Vec::new(),
+    };
+    ScopedSnapshotArtifactRef {
+        id: "artifact-1".to_string(),
+        byte_length: manifest.byte_length,
+        sha256: manifest.sha256.clone(),
+        manifest_digest: manifest.digest.clone(),
+        artifact_kind: manifest.artifact_kind.clone(),
+        compression: manifest.compression.clone(),
+        row_count: manifest.row_count,
+        next_row_cursor: manifest.next_row_cursor.clone(),
+        is_first_page: manifest.is_first_page,
+        is_last_page: manifest.is_last_page,
+        manifest,
     }
 }
 

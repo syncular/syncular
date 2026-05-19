@@ -82,8 +82,10 @@ read-only review:
     scoped, content-addressed artifact path without whole-partition assumptions
     or Worker-hot-path SQLite file generation. The shared TS/Rust manifest
     contract, server metadata table/helpers, authenticated artifact route, and
-    pull-response artifact reference/eligibility contract are in place; next is
-    scoped artifact body generation/storage and client download/apply.
+    pull-response artifact reference/eligibility contract are in place. Artifact
+    body storage writes have a canonical helper and runtimes fail closed before
+    apply support; next is scoped SQLite artifact materialization plus verified
+    client download/apply.
 
 ## Next
 
