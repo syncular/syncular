@@ -63,6 +63,9 @@ Retained first slice:
   queries.
 - Browser local-query scoreboard now emits raw aggregate and generated
   read-model aggregate lanes for both TS and Rust.
+- The generated TypeScript installer now executes read-model setup/rebuild from
+  `syncularGeneratedLocalReadModels`, so the exported contract is the installer
+  source of truth instead of duplicated generated SQL.
 - No hidden runtime cache, default index, or compatibility branch was added.
 
 Correctness gates passed:
@@ -81,6 +84,7 @@ Benchmark gate:
 ```bash
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=1000 --query-iterations=5 --wasm-profile=release --json --output=.context/benchmarks/wp06-read-model-scoreboard-1k.json
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-scoreboard-100k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-installer-contract-100k.json
 ```
 
 100k local-query results:
@@ -92,6 +96,16 @@ bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterat
 | Local search p50 | `3.98ms` | `1.51ms` | `0.38x` |
 | Raw aggregate p50 | `161.09ms` | `23.00ms` | `0.14x` |
 | Read-model aggregate p50 | `0.53ms` | `0.05ms` | `0.09x` |
+
+After switching the installer to consume `syncularGeneratedLocalReadModels`, the
+100k browser gate stayed neutral-to-better versus the previous WP-06 browser
+run:
+
+| Metric | Previous Rust | Contract-backed installer |
+| --- | ---: | ---: |
+| Bootstrap | `221.41ms` | `209.01ms` |
+| Raw aggregate p50 | `23.00ms` | `22.91ms` |
+| Read-model aggregate p50 | `0.05ms` | `0.05ms` |
 
 The browser benchmark proves the declared read model is visible to typed Kysely
 and avoids the expensive aggregate scan. It does not yet prove external app
