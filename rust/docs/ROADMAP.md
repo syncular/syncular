@@ -72,8 +72,8 @@ read-only review:
 
 - `[~]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
   - Extract the real Rust protocol crate before expanding binary v2.
-  - Next action: move remaining pure canonical payload/digest and snapshot
-    manifest validation helpers from runtime into protocol-crate APIs.
+  - Next action: move blob wire structs/hash validation into protocol APIs,
+    then inventory realtime message structs for the same split.
 
 ## Next
 

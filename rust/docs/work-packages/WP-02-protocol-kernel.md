@@ -89,6 +89,19 @@ Third retained slice:
   `rust_snapshot_chunk_apply_ms` `62 -> 65`, and served WASM bytes
   `3,326,638 -> 3,375,951` (`+1.48%`, under budget).
 
+Fourth retained slice:
+
+- `syncular-protocol` now owns wire commit digest/root calculation, commit
+  integrity metadata validation, subscription verified-root recomputation,
+  snapshot manifest digesting, and snapshot manifest validation.
+- Runtime `core/protocol.rs` keeps thin wrapper functions that convert protocol
+  errors into `SyncularError`, preserving runtime error kinds without owning
+  the protocol rules.
+- The protocol crate now has direct unit tests for verified roots and snapshot
+  manifests.
+- No storage, browser apply, server encoder, or wire bytes changed in this
+  slice; no performance benchmark was required.
+
 Gates run:
 
 - `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
@@ -104,7 +117,7 @@ Gates run:
 
 ## Next Action
 
-Move the remaining pure protocol helpers that are still runtime-owned
-(`core/protocol.rs` canonical payload/digest helpers and snapshot manifest
-validation) behind protocol-crate APIs, while keeping runtime application and
-store behavior out of the protocol crate.
+Move blob wire structs and pure blob hash/validation helpers into
+`syncular-protocol`, while keeping blob upload/download transport, queueing,
+cache pruning, and store behavior in runtime. After that, inventory realtime
+message structs for the same protocol/runtime split.
