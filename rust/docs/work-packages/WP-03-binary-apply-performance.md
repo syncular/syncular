@@ -78,6 +78,9 @@ Rejected larger import-path probe:
 - Columnar JSON import through SQLite `json_each()` was tested and reverted.
   The 500k browser gate timed out during worker close after the apply path
   failed to complete normally, so JSON import should not be the next direction.
+- Direct `sqlite3_carray_bind` import was tested and reverted. It compiled and
+  built, but the browser runtime failed to load the WASM with an unresolved
+  `env` module import once `sqlite3_carray_bind` was referenced.
 
 Feasibility notes:
 
@@ -92,8 +95,10 @@ Feasibility notes:
 
 Next implementation direction:
 
-- Do not spend more time on JSON import or small bind-loop changes.
-- Prototype a real length-aware import path if we want to reduce per-cell bind
-  calls without losing arbitrary text/blob correctness.
+- Do not spend more time on JSON import, direct `sqlite3_carray_bind`, or small
+  bind-loop changes.
+- Prototype a purpose-built length-aware import path if we want to reduce
+  per-cell bind calls without losing arbitrary text/blob correctness. It should
+  not introduce unresolved browser WASM imports.
 - Treat SQLite snapshot artifacts as a separate gated experiment only for
   explicitly scoped artifacts; do not optimize for full-partition bootstrap.
