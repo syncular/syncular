@@ -132,10 +132,13 @@ read-only review:
     nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
     temp-table staging probes were all rejected. Separate-SQLite row streaming
     and segmented artifact apply were also rejected because they reduced memory
-    pressure only by regressing wall time heavily. Small artifact shape/memory
-    probes are paused until a larger bootstrap transaction/state design can
-    release artifact databases earlier without row-copy staging or repeated
-    commit/rebegin overhead.
+    pressure only by regressing wall time heavily. Browser direct artifact pulls
+    now cap `maxSnapshotPages` to `2`, bounding attached artifact retention per
+    apply transaction without row-copy staging. Same-session local 500k browser
+    artifact bootstrap improved `623.48ms -> 595.93ms` and JS heap delta dropped
+    `10.40MB -> 2.60MB`; external app-style artifacts now use a `40k`
+    precompute row limit and report 500k bootstrap `1334.25ms`, local apply
+    `198ms`, and peak memory `707.92MB` with `snapshotChunkCount=0`.
 - `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
     `syncular.codegen.json`. The generator now emits the read-model contract in
@@ -210,13 +213,12 @@ read-only review:
 
 ## Next
 
-- Move from WP-04 micro-optimization back to the larger bootstrap/performance
-  architecture. The next useful client-side performance work is
+- Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
   / [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md):
-  design a state/phase model that can release direct artifact resources without
-  row-copy staging or repeated transaction boundaries, and measure it against
-  the current external 500k artifact baseline.
+  make artifact phase/checkpoint semantics explicit enough for readiness events
+  and partial progress, then benchmark against the current external 500k
+  artifact baseline (`1334.25ms`, `707.92MB` peak).
 
 ## Later
 

@@ -180,6 +180,7 @@ interface E2eScoreboardOptions {
   rustCollectChangedRows?: boolean;
   rustMaxSnapshotChangedRows?: number | null;
   rustSnapshotRowsPerPage?: number | null;
+  rustMaxSnapshotPages?: number | null;
 }
 
 interface E2eScoreboardMetric {
@@ -1141,7 +1142,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       collectServerTimings: true,
       limitSnapshotRows:
         options.rustSnapshotRowsPerPage ?? E2E_SNAPSHOT_ROWS_PER_PAGE,
-      maxSnapshotPages: E2E_MAX_SNAPSHOT_PAGES,
+      maxSnapshotPages: options.rustMaxSnapshotPages ?? E2E_MAX_SNAPSHOT_PAGES,
     };
     if (options.rustMaxSnapshotChangedRows !== undefined) {
       rustPullOptions.maxSnapshotChangedRows =

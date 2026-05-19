@@ -37,6 +37,7 @@ interface ScoreboardWindow {
       rustCollectChangedRows: boolean;
       rustMaxSnapshotChangedRows?: number | null;
       rustSnapshotRowsPerPage?: number | null;
+      rustMaxSnapshotPages?: number | null;
     }): Promise<ScoreboardResult>;
   };
 }
@@ -124,6 +125,9 @@ const rustIncludeSnapshotRows = booleanArg(
 const rustCollectChangedRows = booleanArg('--rust-collect-changed-rows', false);
 const rustMaxSnapshotChangedRows = optionalNumberArg(
   '--rust-max-snapshot-changed-rows'
+);
+const rustMaxSnapshotPages = optionalPositiveNumberArg(
+  '--rust-max-snapshot-pages'
 );
 const syncSnapshotArtifacts = booleanArg('--sync-snapshot-artifacts', false);
 const syncSnapshotArtifactRowLimit = optionalPositiveNumberArg(
@@ -328,6 +332,7 @@ try {
       rustCollectChangedRows,
       rustMaxSnapshotChangedRows,
       rustSnapshotRowsPerPage: effectiveRustSnapshotRowsPerPage,
+      rustMaxSnapshotPages,
     }
   );
 
@@ -458,6 +463,9 @@ try {
       console.log(
         `rust-snapshot-rows-per-page=${effectiveRustSnapshotRowsPerPage}`
       );
+    }
+    if (rustMaxSnapshotPages != null) {
+      console.log(`rust-max-snapshot-pages=${rustMaxSnapshotPages}`);
     }
     console.log(`sync-snapshot-artifacts=${syncSnapshotArtifacts}`);
     if (syncSnapshotArtifacts) {

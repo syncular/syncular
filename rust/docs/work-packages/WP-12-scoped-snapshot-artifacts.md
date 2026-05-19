@@ -675,23 +675,56 @@ Rejected segmented artifact apply transaction:
   more than doubling the 500k artifact wall time. The next memory design must
   avoid both row-copy staging and repeated apply transaction boundaries.
 
+Retained twenty-second slice:
+
+- Browser direct SQLite artifact pulls now cap `maxSnapshotPages` to `2` while
+  leaving row-chunk pulls on the configured page count. This bounds attached
+  artifact schemas/buffers retained by a single apply transaction without
+  copying rows into staging tables or committing after every artifact page.
+- The browser E2E scoreboard now accepts `--rust-max-snapshot-pages` so page
+  cap probes can be measured directly.
+- Same-session local 500k browser artifact control with the old effective cap
+  of `10`: `rust_bootstrap_ms=623.48`, `rust_pull_apply_ms=606`,
+  `rust_snapshot_row_apply_ms=541`, `rust_pull_rounds=1`,
+  `rust_request_count=11`, and JS heap delta `10.40MB`.
+- Local cap `1` probe: `rust_bootstrap_ms=619.6`,
+  `rust_snapshot_row_apply_ms=519`, `rust_pull_rounds=10`,
+  `rust_request_count=20`, and JS heap delta `6.51MB`. This was not retained
+  because it penalized the 100k lane by forcing two pull rounds.
+- Retained cap `2`: local 500k `rust_bootstrap_ms=595.93`,
+  `rust_pull_apply_ms=569`, `rust_snapshot_row_apply_ms=512`,
+  `rust_pull_rounds=5`, `rust_request_count=15`, and JS heap delta `2.60MB`.
+  Local 100k stays at one pull round with `rust_bootstrap_ms=147.84`.
+- External app-style scoped artifact gate now uses
+  `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000` to match the external
+  Rust harness's `20k` row page and the new `2` page cap. With matching
+  precompute, artifacts selected correctly:
+  `snapshot_chunk_count_500000=0`, `bootstrap_500000_ms=1334.25`,
+  `local_apply_ms_500000=198`, `response_bytes_500000=3537673`, and
+  `peak_memory_mb_500000=707.92`.
+- A mismatched external run with the old `60000` precompute key fell back to
+  row chunks: `snapshot_chunk_count_500000=13`,
+  `bootstrap_500000_ms=2686.04`, `local_apply_ms_500000=402`, and
+  `peak_memory_mb_500000=723.59`.
+- Decision: retained. This is the first artifact resource-shape change that
+  improves large local browser memory and external app-style peak memory
+  without weakening artifact verification or copying rows.
+
 ## Next Action
 
-Pause small artifact body/page/buffer probes.
+Continue artifact resource-state work, but keep it benchmark-gated.
 
-- The accepted scoped artifact baseline remains external Rust 500k bootstrap
-  `4845.39ms`, local apply `1392ms`, response bytes `3527317`, peak memory
-  `746.92MB`, and `snapshotChunkCount=0`.
+- The accepted scoped artifact baseline is now external Rust 500k bootstrap
+  `1334.25ms`, local apply `198ms`, response bytes `3537673`, peak memory
+  `707.92MB`, and `snapshotChunkCount=0`, with external artifact precompute
+  row limit `40000`.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. These either regressed wall time
   or failed to improve external peak memory enough to justify their complexity.
-- The next useful artifact-memory step needs a larger bootstrap state design:
+- The next useful artifact-memory step is still a larger bootstrap state design:
   release/detach artifact databases before full commit without copying rows
-  into staging tables, or split bootstrap state so direct artifact import does
-  not retain every attached SQLite image until the transaction ends.
+  into staging tables, or make artifact phase/checkpoint semantics explicit
+  enough that partial artifact progress is safe and observable.
 - Keep native Diesel on verified artifact row projection until the raw SQLite
   attach/deserialization constraint has a clean solution.
-- Active near-term work moves to WP-06 because the external benchmark's
-  `derived_schema_ms` is app-local index/read-model construction, not snapshot
-  transfer/apply.
