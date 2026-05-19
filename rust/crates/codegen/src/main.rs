@@ -5006,39 +5006,19 @@ fn generate_typescript_module(
             out.push_str("  `.execute(db);\n\n");
         }
     }
-    for read_model in &local_read_models {
-        let read_model_name = read_model.name.replace('\n', " ").replace('\r', " ");
-        let was_installed_var = lower_camel_case(&format!("{}_read_model", read_model.name));
-        out.push_str(&format!(
-            "  // Syncular local read model: {read_model_name}\n"
-        ));
-        out.push_str(&format!(
-            "  const {was_installed_var}WasInstalled = await syncularGeneratedTableExists(db, {});\n",
-            ts_string(&read_model.output_table)
-        ));
-        for sql_statement in &read_model.setup_sql {
-            let sql = ts_template_literal_content(sql_statement);
-            out.push_str("  await sql`\n");
-            for line in sql.lines() {
-                out.push_str("    ");
-                out.push_str(line);
-                out.push('\n');
-            }
-            out.push_str("  `.execute(db);\n\n");
-        }
-        out.push_str(&format!(
-            "  if (!{was_installed_var}WasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {{\n"
-        ));
-        for sql_statement in &read_model.rebuild_sql {
-            let sql = ts_template_literal_content(sql_statement);
-            out.push_str("    await sql`\n");
-            for line in sql.lines() {
-                out.push_str("      ");
-                out.push_str(line);
-                out.push('\n');
-            }
-            out.push_str("    `.execute(db);\n\n");
-        }
+    if !local_read_models.is_empty() {
+        out.push_str("  for (const readModel of syncularGeneratedLocalReadModels) {\n");
+        out.push_str(
+            "    const readModelWasInstalled = await syncularGeneratedTableExists(db, readModel.outputTable);\n",
+        );
+        out.push_str("    for (const statement of readModel.setupSql) {\n");
+        out.push_str("      await sql.raw(statement).execute(db);\n");
+        out.push_str("    }\n");
+        out.push_str("    if (!readModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {\n");
+        out.push_str("      for (const statement of readModel.rebuildSql) {\n");
+        out.push_str("        await sql.raw(statement).execute(db);\n");
+        out.push_str("      }\n");
+        out.push_str("    }\n");
         out.push_str("  }\n\n");
     }
     out.push_str("  await validateSyncularAppSchema(db);\n");
@@ -9590,7 +9570,6 @@ mod tests {
 
         let output = generate_typescript_module(&[tasks], &config, 3)?;
 
-        assert!(output.contains("// Syncular local read model: taskCountsByUserCompletion"));
         assert!(output.contains("syncular_task_counts: SyncularTaskCountRow;"));
         assert!(output.contains("export interface SyncularTaskCountRow"));
         assert!(output.contains("task_count: number;"));
@@ -9598,12 +9577,17 @@ mod tests {
         assert!(output.contains("outputTable: 'syncular_task_counts'"));
         assert!(output.contains("setupSql: ["));
         assert!(output.contains("rebuildSql: ["));
+        assert!(output.contains("for (const readModel of syncularGeneratedLocalReadModels)"));
+        assert!(output.contains("await sql.raw(statement).execute(db);"));
         assert!(output.contains("CREATE TABLE IF NOT EXISTS \"syncular_task_counts\""));
         assert!(output.contains(
             "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_insert\""
         ));
         assert!(output.contains(
-            "if (!taskCountsByUserCompletionReadModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion)"
+            "const readModelWasInstalled = await syncularGeneratedTableExists(db, readModel.outputTable)"
+        ));
+        assert!(output.contains(
+            "if (!readModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion)"
         ));
         assert!(output.contains("async function syncularGeneratedTableExists"));
         Ok(())

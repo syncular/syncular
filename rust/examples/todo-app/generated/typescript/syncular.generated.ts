@@ -420,70 +420,16 @@ export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void
 
 export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {
   const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);
-  // Syncular local read model: taskCountsByUserCompletion
-  const taskCountsByUserCompletionReadModelWasInstalled = await syncularGeneratedTableExists(db, 'syncular_task_counts');
-  await sql`
-    CREATE TABLE IF NOT EXISTS "syncular_task_counts" (
-      "user_id" TEXT NOT NULL,
-      "completed" INTEGER NOT NULL,
-      "task_count" INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY ("user_id", "completed")
-    )
-  `.execute(db);
-
-  await sql`
-    CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_insert"
-    AFTER INSERT ON "tasks"
-    BEGIN
-      INSERT INTO "syncular_task_counts" ("user_id", "completed", "task_count")
-      VALUES (new."user_id", new."completed", 1)
-      ON CONFLICT("user_id", "completed") DO UPDATE SET
-        "task_count" = "task_count" + 1;
-    END
-  `.execute(db);
-
-  await sql`
-    CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_delete"
-    AFTER DELETE ON "tasks"
-    BEGIN
-      UPDATE "syncular_task_counts"
-      SET "task_count" = "task_count" - 1
-      WHERE "user_id" = old."user_id"
-              AND "completed" = old."completed";
-      DELETE FROM "syncular_task_counts" WHERE "task_count" <= 0;
-    END
-  `.execute(db);
-
-  await sql`
-    CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_update_group"
-    AFTER UPDATE OF "user_id", "completed" ON "tasks"
-    WHEN old."user_id" IS NOT new."user_id"
-            OR old."completed" IS NOT new."completed"
-    BEGIN
-      UPDATE "syncular_task_counts"
-      SET "task_count" = "task_count" - 1
-      WHERE "user_id" = old."user_id"
-              AND "completed" = old."completed";
-      DELETE FROM "syncular_task_counts" WHERE "task_count" <= 0;
-      INSERT INTO "syncular_task_counts" ("user_id", "completed", "task_count")
-      VALUES (new."user_id", new."completed", 1)
-      ON CONFLICT("user_id", "completed") DO UPDATE SET
-        "task_count" = "task_count" + 1;
-    END
-  `.execute(db);
-
-  if (!taskCountsByUserCompletionReadModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {
-    await sql`
-      DELETE FROM "syncular_task_counts"
-    `.execute(db);
-
-    await sql`
-      INSERT INTO "syncular_task_counts" ("user_id", "completed", "task_count")
-      SELECT "user_id", "completed", count(*)
-      FROM "tasks"
-      GROUP BY "user_id", "completed"
-    `.execute(db);
-
+  for (const readModel of syncularGeneratedLocalReadModels) {
+    const readModelWasInstalled = await syncularGeneratedTableExists(db, readModel.outputTable);
+    for (const statement of readModel.setupSql) {
+      await sql.raw(statement).execute(db);
+    }
+    if (!readModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {
+      for (const statement of readModel.rebuildSql) {
+        await sql.raw(statement).execute(db);
+      }
+    }
   }
 
   await validateSyncularAppSchema(db);

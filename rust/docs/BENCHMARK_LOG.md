@@ -3182,3 +3182,44 @@ Decision:
 - Root `bun run tsgo` was not used as a gate because it currently fails in
   unrelated `@syncular/tests-unit` server-pull stream/hash type errors. The
   targeted package checks above passed.
+
+## 2026-05-19 - Accepted WP-06 Contract-Backed TypeScript Installer
+
+Change:
+
+- The generated TypeScript schema installer now executes read-model setup and
+  rebuild SQL from `syncularGeneratedLocalReadModels`.
+- This removes duplicated generated SQL blocks from the installer and makes the
+  exported read-model metadata the installer source of truth.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-installer-contract-100k.json
+```
+
+Compared with the previous retained WP-06 browser run:
+
+| Metric | Previous Rust | Contract-backed installer |
+| --- | ---: | ---: |
+| Bootstrap | `221.41ms` | `209.01ms` |
+| Pull apply | not recorded in previous summary | `139ms` |
+| Raw aggregate p50 | `23.00ms` | `22.91ms` |
+| Read-model aggregate p50 | `0.05ms` | `0.05ms` |
+| Read-model aggregate p95 | `0.10ms` | `0.12ms` |
+
+Decision:
+
+- Accepted. The change reduces generated complexity and did not introduce a
+  measurable performance regression in the browser gate.
