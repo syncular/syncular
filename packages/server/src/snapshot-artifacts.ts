@@ -75,6 +75,16 @@ export interface ScopedSnapshotArtifactRow extends ScopedSnapshotArtifactRef {
   featureSet: string[];
 }
 
+export interface SnapshotArtifactStorage {
+  readonly name: string;
+  readArtifact(
+    artifact: ScopedSnapshotArtifactRow
+  ): Promise<Uint8Array | null>;
+  readArtifactStream?(
+    artifact: ScopedSnapshotArtifactRow
+  ): Promise<ReadableStream<Uint8Array> | null>;
+}
+
 type ScopedSnapshotArtifactDbRow = {
   artifact_id: string;
   partition_id: string;
