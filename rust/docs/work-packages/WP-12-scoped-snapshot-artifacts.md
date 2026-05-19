@@ -529,14 +529,50 @@ External normal row-chunk benchmark restored:
 - This is not scoped artifact evidence. It is the row-chunk/app-style baseline
   to compare against before proving artifact precompute in the external stack.
 
+External scoped artifact gate:
+
+- Scoped artifacts now select correctly in the external app-style stack when
+  precompute uses `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000`.
+  The external Rust harness requests `20k` rows per pull page, and the server
+  artifact lookup groups those into a `60k` bundle key for the current `50k`
+  binary bundle target. Precomputing `20k` artifact pages made lookup miss and
+  fall back to row chunks.
+- External Rust 500k bootstrap improved from row chunks `6099.68ms` to scoped
+  artifacts `4866.87ms`, then `4844.13ms` after moving artifact body bytes
+  into the browser SQLite store instead of cloning them.
+- External Rust 500k pull request dropped `1031ms -> 22ms`, local apply
+  improved `1692ms -> 1379ms`, and `snapshotChunkCount` is now `0`.
+- Remaining blockers: response bytes increased `3287104 -> 3938884`, and peak
+  memory increased `694.38MB -> 750.48MB`.
+
+Retained nineteenth slice:
+
+- Browser SQLite artifact apply now consumes the fetched artifact byte vector
+  instead of borrowing it and cloning into the retained
+  `sqlite3_deserialize` backing buffer.
+- This is retained as a small allocation/memory cleanup, not as a throughput
+  win. External 500k memory moved `751.45MB -> 750.48MB`; local 500k browser
+  A/B showed similar wall time and lower heap for the owned-byte run.
+
+Rejected browser immediate-detach probe:
+
+- Tried detaching each in-memory SQLite artifact schema immediately after the
+  `INSERT ... SELECT` import.
+- Rejected because rebuilt WASM failed the artifact Hono test with
+  `database __syncular_snapshot_artifact_0 is locked`. Browser direct artifact
+  import therefore still needs a transaction shape that keeps attached artifact
+  buffers alive until commit, or a larger apply-loop architecture change.
+
 ## Next Action
 
 Turn the artifact prototype into the full bootstrap path:
 
-- Run the external app-style benchmark stack with scoped artifact precompute
-  and compare it against the restored normal TS/Rust app-style baseline above.
-- Continue body-shape work only if it preserves direct SQLite import and beats
-  the compact artifact baseline above.
+- Reduce scoped artifact memory and bytes. The external gate now proves
+  artifact selection and faster Rust bootstrap, but peak memory and transferred
+  bytes are worse than row chunks.
+- Continue body-shape work only if it preserves direct SQLite import, keeps
+  `snapshotChunkCount=0`, and improves either external peak memory or response
+  bytes without regressing the compact artifact local baseline.
 - Do not change the browser artifact page size above `50k` unless direct
   artifact selection is proven by `rust_snapshot_chunk_binary_count=0` and the
   benchmark beats the current compact artifact baseline.

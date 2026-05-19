@@ -191,7 +191,7 @@ pub trait AsyncWebStore {
     fn apply_sqlite_snapshot_artifact_rows<'a>(
         &'a mut self,
         _table: &'a str,
-        _artifact_bytes: &'a [u8],
+        _artifact_bytes: Vec<u8>,
         _mode: WebSnapshotArtifactApplyMode,
     ) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>> {
         Box::pin(async {

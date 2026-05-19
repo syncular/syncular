@@ -135,9 +135,13 @@ bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
 Use for changes expected to affect real bootstrap, local query,
 online-propagation, or reconnect behavior.
 
-For the normal row-chunk baseline, do not set
-`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS`. For scoped artifact work, set it to
-`1` for both server startup and benchmark runs.
+For the normal row-chunk baseline, set
+`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0`; the external compose file may
+default it on. For scoped artifact work, set it to `1` for both server startup
+and benchmark runs. With the current external Rust harness
+`limitSnapshotRows=20000`, set
+`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000` so precomputed artifact
+page keys match the server's bundled artifact lookup keys.
 
 ```bash
 cd /Users/bkniffler/GitHub/sync/offline-sync-bench
@@ -145,11 +149,13 @@ cd /Users/bkniffler/GitHub/sync/offline-sync-bench
 bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
 
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0 \
   docker compose -f stacks/syncular/docker-compose.yml up --build -d
 
 export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
 export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
 export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0
 
 bun run bench:run -- --stack syncular --scenario bootstrap
 bun run bench:run -- --stack syncular-rust --scenario bootstrap
@@ -162,6 +168,14 @@ bun run bench:run -- --stack syncular-rust --scenario online-propagation
 
 bun run bench:run -- --stack syncular --scenario reconnect-storm
 bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+For the current scoped artifact lane, use the same commands but set both env
+vars before server startup and benchmark execution:
+
+```bash
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
 ```
 
 Results land in `.results/<runId>/<stack>/<scenario>.json`.
