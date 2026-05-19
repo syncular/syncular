@@ -1,6 +1,6 @@
 # WP-12 Scoped Snapshot Artifacts
 
-Status: `[ ]` planned
+Status: `[~]` started
 
 ## Goal
 
@@ -84,9 +84,30 @@ apply is slow". The next structural win needs to reduce server snapshot
 query/encoding, client bind/step count, or transient memory by changing the
 artifact shape.
 
+Retained first slice:
+
+- Added a shared scoped snapshot artifact manifest contract in `@syncular/core`
+  and `syncular-protocol`.
+- The digest payload includes partition, subscription, table, schema version,
+  as-of commit seq, scope digest, row cursor/range data, page flags,
+  compression, body hash/length, and normalized feature set.
+- Rust validation rejects digest/scope/hash mismatches before any runtime apply
+  path can trust an artifact.
+- Correctness gates passed:
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`, and
+  `bun run --cwd packages/core tsgo`.
+
 ## Next Action
 
-Design the scoped artifact manifest and storage lifecycle before writing code.
-The first implementation should be a gated prototype for one generated app
-schema and one scoped subscription, with benchmark evidence against the current
-row-chunk baseline.
+Design the storage lifecycle and route contract around the manifest:
+
+- where artifacts are generated outside the Worker/D1 hot path;
+- how SQL metadata points to object storage bodies;
+- how pull responses advertise artifact eligibility;
+- how clients fall back to row chunks when artifacts are missing or stale;
+- how revocation and interrupted artifact apply recover.
+
+The first runtime implementation should be a gated prototype for one generated
+app schema and one scoped subscription, with benchmark evidence against the
+current row-chunk baseline.

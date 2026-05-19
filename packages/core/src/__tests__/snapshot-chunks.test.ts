@@ -5,9 +5,14 @@ import {
 } from '../schemas/sync';
 import {
   BinarySnapshotTableWriter,
+  createScopedSnapshotArtifactManifest,
   decodeBinarySnapshotTable,
   encodeBinarySnapshotTable,
   isSyncSnapshotChunkEncoding,
+  scopedSnapshotArtifactDigestPayload,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+  SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 } from '../snapshot-chunks';
@@ -78,6 +83,70 @@ describe('snapshot chunk protocol', () => {
       { id: 'task-1', completed: 0, metadata: { priority: 'high' } },
       { id: 'task-2', completed: 1, metadata: null },
     ]);
+  });
+});
+
+describe('scoped snapshot artifact manifest', () => {
+  it('canonicalizes feature order before digesting', async () => {
+    const base = {
+      version: SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+      artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+      partitionId: 'partition-1',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: '7',
+      asOfCommitSeq: 42,
+      scopeDigest: 'a'.repeat(64),
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 12_345,
+      nextRowCursor: 'task-12345',
+      isFirstPage: true,
+      isLastPage: false,
+      compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      byteLength: 4096,
+      sha256: 'b'.repeat(64),
+    } as const;
+
+    const first = await createScopedSnapshotArtifactManifest({
+      ...base,
+      featureSet: ['crdt-yjs', 'blobs', 'crdt-yjs'],
+    });
+    const second = await createScopedSnapshotArtifactManifest({
+      ...base,
+      featureSet: ['blobs', 'crdt-yjs'],
+    });
+
+    expect(first.featureSet).toEqual(['blobs', 'crdt-yjs']);
+    expect(first.digest).toBe(second.digest);
+    expect(first.digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('includes scope and subscription identity in the canonical payload', () => {
+    const payload = scopedSnapshotArtifactDigestPayload({
+      version: SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+      artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+      partitionId: 'partition-1',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: '7',
+      asOfCommitSeq: 42,
+      scopeDigest: 'a'.repeat(64),
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 100,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      byteLength: 4096,
+      sha256: 'b'.repeat(64),
+      featureSet: ['blobs'],
+    });
+
+    expect(payload).toContain('subscriptionId:s:9:sub-tasks');
+    expect(payload).toContain(`scopeDigest:s:64:${'a'.repeat(64)}`);
+    expect(payload).toContain('feature.0.name:s:5:blobs');
   });
 });
 

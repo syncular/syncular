@@ -28,6 +28,15 @@ export function isSyncSnapshotChunkEncoding(
 export const SYNC_SNAPSHOT_CHUNK_COMPRESSION = 'gzip';
 export type SyncSnapshotChunkCompression =
   typeof SYNC_SNAPSHOT_CHUNK_COMPRESSION;
+export const SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE = 'none';
+export const SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION = 1;
+export const SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1 =
+  'sqlite-snapshot-v1';
+export type SyncSnapshotArtifactCompression =
+  | SyncSnapshotChunkCompression
+  | typeof SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE;
+export type SyncScopedSnapshotArtifactKind =
+  typeof SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1;
 
 export interface SnapshotManifestChunkDigestInput {
   id: string;
@@ -53,6 +62,33 @@ export interface SnapshotManifestDigestInput {
 export interface SnapshotManifestDigestValue
   extends Omit<SnapshotManifestDigestInput, 'chunks'> {
   chunks: SnapshotManifestChunkDigestInput[];
+  digest: string;
+}
+
+export interface ScopedSnapshotArtifactDigestInput {
+  version: typeof SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION;
+  artifactKind: SyncScopedSnapshotArtifactKind;
+  partitionId: string;
+  subscriptionId: string;
+  table: string;
+  schemaVersion: string;
+  asOfCommitSeq: number;
+  scopeDigest: string;
+  rowCursor: string | null;
+  rowLimit: number;
+  rowCount: number;
+  nextRowCursor: string | null;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  compression: SyncSnapshotArtifactCompression;
+  byteLength: number;
+  sha256: string;
+  featureSet: readonly string[];
+}
+
+export interface ScopedSnapshotArtifactManifest
+  extends ScopedSnapshotArtifactDigestInput {
+  featureSet: string[];
   digest: string;
 }
 
@@ -205,6 +241,68 @@ export async function createSnapshotManifest(
     ...manifest,
     chunks: [...manifest.chunks],
     digest: await createSnapshotManifestDigest(manifest),
+  };
+}
+
+function normalizedFeatureSet(featureSet: readonly string[]): string[] {
+  return Array.from(new Set(featureSet)).sort();
+}
+
+function scopedSnapshotArtifactDigestInput(
+  manifest: ScopedSnapshotArtifactDigestInput
+): ScopedSnapshotArtifactDigestInput {
+  return {
+    ...manifest,
+    featureSet: normalizedFeatureSet(manifest.featureSet),
+  };
+}
+
+export function scopedSnapshotArtifactDigestPayload(
+  manifest: ScopedSnapshotArtifactDigestInput
+): string {
+  const input = scopedSnapshotArtifactDigestInput(manifest);
+  const parts = ['syncular.scoped-snapshot-artifact.v1'];
+  appendIntField(parts, 'version', input.version);
+  appendStringField(parts, 'artifactKind', input.artifactKind);
+  appendStringField(parts, 'partitionId', input.partitionId);
+  appendStringField(parts, 'subscriptionId', input.subscriptionId);
+  appendStringField(parts, 'table', input.table);
+  appendStringField(parts, 'schemaVersion', input.schemaVersion);
+  appendIntField(parts, 'asOfCommitSeq', input.asOfCommitSeq);
+  appendStringField(parts, 'scopeDigest', input.scopeDigest);
+  appendNullableStringField(parts, 'rowCursor', input.rowCursor);
+  appendIntField(parts, 'rowLimit', input.rowLimit);
+  appendIntField(parts, 'rowCount', input.rowCount);
+  appendNullableStringField(parts, 'nextRowCursor', input.nextRowCursor);
+  appendBoolField(parts, 'isFirstPage', input.isFirstPage);
+  appendBoolField(parts, 'isLastPage', input.isLastPage);
+  appendStringField(parts, 'compression', input.compression);
+  appendIntField(parts, 'byteLength', input.byteLength);
+  appendStringField(parts, 'sha256', input.sha256);
+  appendIntField(parts, 'featureCount', input.featureSet.length);
+
+  for (const [index, feature] of input.featureSet.entries()) {
+    appendIntField(parts, `feature.${index}.index`, index);
+    appendStringField(parts, `feature.${index}.name`, feature);
+  }
+
+  return `${parts.join('\n')}\n`;
+}
+
+export async function createScopedSnapshotArtifactDigest(
+  manifest: ScopedSnapshotArtifactDigestInput
+): Promise<string> {
+  return sha256Hex(scopedSnapshotArtifactDigestPayload(manifest));
+}
+
+export async function createScopedSnapshotArtifactManifest(
+  manifest: ScopedSnapshotArtifactDigestInput
+): Promise<ScopedSnapshotArtifactManifest> {
+  const normalized = scopedSnapshotArtifactDigestInput(manifest);
+  return {
+    ...normalized,
+    featureSet: [...normalized.featureSet],
+    digest: await createScopedSnapshotArtifactDigest(normalized),
   };
 }
 
