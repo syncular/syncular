@@ -451,9 +451,35 @@ Retained optimization slice:
 - Decision: retained. This does not materially reduce integrity verification,
   but it reduces total apply/commit overhead with minimal complexity.
 
+Retained optimization slice:
+
+- Canonical object writing now avoids the separate sorted-key pre-scan. It
+  writes in map iteration order and only truncates/sorts if it detects
+  out-of-order keys, preserving canonical correctness while making the normal
+  sorted-map path one pass.
+- Correctness gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts`, and
+  `bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts`.
+- Browser dev E2E gates:
+  `.context/benchmarks/wp04-realtime-one-pass-canonical-object.json` and
+  `.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`.
+- Result versus the retained direct-number guard:
+  `rust_realtime_integrity_verify_total_ms=69 -> 65/66`,
+  `rust_realtime_apply_total_ms=122 -> 121/125`,
+  `rust_realtime_live_ms=91.03 -> 92.06/88.60`, and
+  `browser_served_rust_wasm_bytes=7468173 -> 7468747`.
+- Decision: retained as a modest integrity-hot-path improvement. Total apply is
+  flat/noisy, but the targeted integrity bucket improves in both runs with a
+  small code change.
+
 ## Next Action
 
 Continue recovering realtime integrity overhead without weakening the verified
 per-subscription root contract. Next candidates should be measured against
-`.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`, with a
-fresh pre-change rerun when machine state is noisy.
+`.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`, with
+a fresh pre-change rerun when machine state is noisy.
