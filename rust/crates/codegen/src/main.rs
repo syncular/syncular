@@ -58,6 +58,7 @@ struct TableInfo {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct CodegenConfig {
     tables: BTreeMap<String, TableCodegenConfig>,
+    local_read_models: Vec<LocalReadModelConfig>,
     schema_output_path: Option<PathBuf>,
     typescript_output_path: Option<PathBuf>,
     typescript_server_output_path: Option<PathBuf>,
@@ -122,6 +123,38 @@ struct ScopeCodegenConfig {
     column: String,
     source: Option<String>,
     required: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct LocalReadModelConfig {
+    name: String,
+    kind: String,
+    source_table: String,
+    output_table: String,
+    dimensions: Vec<String>,
+    count_column: String,
+}
+
+impl Default for LocalReadModelConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            kind: "countBy".to_string(),
+            source_table: String::new(),
+            output_table: String::new(),
+            dimensions: Vec::new(),
+            count_column: "row_count".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LocalReadModelSql {
+    name: String,
+    output_table: String,
+    setup_sql: Vec<String>,
+    rebuild_sql: Vec<String>,
 }
 
 impl Default for ScopeCodegenConfig {
@@ -366,6 +399,19 @@ fn sqlite_index_create_if_not_exists(sql: &str) -> String {
     trimmed.to_string()
 }
 
+fn sqlite_column_decl_type(column: &ColumnRow) -> String {
+    let trimmed = column.sql_type.trim();
+    if trimmed.is_empty() {
+        "TEXT".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn read_model_trigger_name(model_name: &str, suffix: &str) -> String {
+    format!("syncular_rm_{model_name}_{suffix}")
+}
+
 fn split_sql_statements(sql: &str) -> impl Iterator<Item = String> + '_ {
     sql.split(';')
         .map(str::trim)
@@ -432,6 +478,7 @@ fn include_str_expr(manifest_dir: &Path, path: &Path) -> Result<String> {
 fn generate_migrations_module(
     manifest_dir: &Path,
     migrations_dir: &Path,
+    tables: &[TableInfo],
     config: &CodegenConfig,
 ) -> Result<String> {
     let runtime_crate = config.rust_runtime_crate_path()?;
@@ -465,6 +512,47 @@ fn generate_migrations_module(
         ));
     }
     out.push_str("];\n\n");
+    let read_models = local_read_model_sqls(tables, config)?;
+    out.push_str(
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+         pub struct LocalReadModelSql {\n\
+             pub name: &'static str,\n\
+             pub output_table: &'static str,\n\
+             pub setup_sql: &'static [&'static str],\n\
+             pub rebuild_sql: &'static [&'static str],\n\
+         }\n\n",
+    );
+    if read_models.is_empty() {
+        out.push_str("pub const LOCAL_READ_MODELS: &[LocalReadModelSql] = &[];\n\n");
+    } else {
+        for read_model in &read_models {
+            let const_prefix = const_case(&read_model.name);
+            out.push_str(&format!(
+                "pub const {const_prefix}_SETUP_SQL: &[&str] = &[\n"
+            ));
+            for sql in &read_model.setup_sql {
+                out.push_str(&format!("    {},\n", rust_string_literal(sql)));
+            }
+            out.push_str("];\n\n");
+            out.push_str(&format!(
+                "pub const {const_prefix}_REBUILD_SQL: &[&str] = &[\n"
+            ));
+            for sql in &read_model.rebuild_sql {
+                out.push_str(&format!("    {},\n", rust_string_literal(sql)));
+            }
+            out.push_str("];\n\n");
+        }
+        out.push_str("pub const LOCAL_READ_MODELS: &[LocalReadModelSql] = &[\n");
+        for read_model in &read_models {
+            let const_prefix = const_case(&read_model.name);
+            out.push_str(&format!(
+                "    LocalReadModelSql {{\n        name: {},\n        output_table: {},\n        setup_sql: {const_prefix}_SETUP_SQL,\n        rebuild_sql: {const_prefix}_REBUILD_SQL,\n    }},\n",
+                rust_string_literal(&read_model.name),
+                rust_string_literal(&read_model.output_table)
+            ));
+        }
+        out.push_str("];\n\n");
+    }
     out.push_str(
         "pub fn current_schema_version() -> i32 {\n    latest_schema_version(MIGRATIONS)\n}\n",
     );
@@ -480,6 +568,8 @@ struct SchemaJsonDocument {
     app_schema_version: i32,
     migrations: Vec<SchemaJsonMigration>,
     tables: Vec<SchemaJsonTable>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    local_read_models: Vec<SchemaJsonLocalReadModel>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -568,6 +658,17 @@ struct SchemaJsonScope {
 struct SchemaJsonSubscription {
     id: String,
     params: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonLocalReadModel {
+    name: String,
+    kind: String,
+    source_table: String,
+    output_table: String,
+    dimensions: Vec<String>,
+    count_column: String,
 }
 
 fn migration_specs(migrations_dir: &Path) -> Result<Vec<SchemaJsonMigration>> {
@@ -717,6 +818,18 @@ fn generate_schema_json(
         app_schema_version,
         migrations: migration_specs(migrations_dir)?,
         tables: schema_tables,
+        local_read_models: config
+            .local_read_models
+            .iter()
+            .map(|model| SchemaJsonLocalReadModel {
+                name: model.name.clone(),
+                kind: model.kind.clone(),
+                source_table: model.source_table.clone(),
+                output_table: model.output_table.clone(),
+                dimensions: model.dimensions.clone(),
+                count_column: model.count_column.clone(),
+            })
+            .collect(),
     };
 
     Ok(format!("{}\n", serde_json::to_string_pretty(&document)?))
@@ -933,6 +1046,18 @@ fn schema_backed_codegen_inputs(
 
     let mut schema_config = base_config.clone();
     schema_config.tables = table_configs;
+    schema_config.local_read_models = document
+        .local_read_models
+        .into_iter()
+        .map(|model| LocalReadModelConfig {
+            name: model.name,
+            kind: model.kind,
+            source_table: model.source_table,
+            output_table: model.output_table,
+            dimensions: model.dimensions,
+            count_column: model.count_column,
+        })
+        .collect();
     Ok((tables, schema_config, document.app_schema_version))
 }
 
@@ -2195,7 +2320,269 @@ fn validate_codegen_config(tables: &[TableInfo], config: &CodegenConfig) -> Resu
         }
     }
 
+    validate_local_read_models(tables, config)?;
+
     Ok(())
+}
+
+fn validate_local_read_models(tables: &[TableInfo], config: &CodegenConfig) -> Result<()> {
+    let app_table_names = tables
+        .iter()
+        .filter(|table| !table.name.starts_with("sync_"))
+        .map(|table| table.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut read_model_names = BTreeSet::new();
+    let mut output_tables = BTreeSet::new();
+
+    for model in &config.local_read_models {
+        if model.name.trim().is_empty() {
+            bail!("syncular.codegen.json localReadModels contains an empty name");
+        }
+        if !read_model_names.insert(model.name.as_str()) {
+            bail!(
+                "syncular.codegen.json localReadModels contains duplicate name {}",
+                model.name
+            );
+        }
+        if model.kind != "countBy" {
+            bail!(
+                "syncular.codegen.json localReadModels.{} has unsupported kind {}; supported kinds: countBy",
+                model.name,
+                model.kind
+            );
+        }
+        if model.source_table.trim().is_empty() {
+            bail!(
+                "syncular.codegen.json localReadModels.{} must define sourceTable",
+                model.name
+            );
+        }
+        let Some(source_table) = tables.iter().find(|table| table.name == model.source_table)
+        else {
+            bail!(
+                "syncular.codegen.json localReadModels.{} references unknown sourceTable {}",
+                model.name,
+                model.source_table
+            );
+        };
+        if source_table.name.starts_with("sync_") {
+            bail!(
+                "syncular.codegen.json localReadModels.{} sourceTable {} cannot be a Syncular system table",
+                model.name,
+                source_table.name
+            );
+        }
+        if model.output_table.trim().is_empty() {
+            bail!(
+                "syncular.codegen.json localReadModels.{} must define outputTable",
+                model.name
+            );
+        }
+        if app_table_names.contains(model.output_table.as_str()) {
+            bail!(
+                "syncular.codegen.json localReadModels.{} outputTable {} conflicts with an app table",
+                model.name,
+                model.output_table
+            );
+        }
+        if !output_tables.insert(model.output_table.as_str()) {
+            bail!(
+                "syncular.codegen.json localReadModels contains duplicate outputTable {}",
+                model.output_table
+            );
+        }
+        if model.count_column.trim().is_empty() {
+            bail!(
+                "syncular.codegen.json localReadModels.{} must define countColumn",
+                model.name
+            );
+        }
+        if model.dimensions.is_empty() {
+            bail!(
+                "syncular.codegen.json localReadModels.{} must define at least one dimension",
+                model.name
+            );
+        }
+        let mut dimensions = BTreeSet::new();
+        for dimension in &model.dimensions {
+            if dimension.trim().is_empty() {
+                bail!(
+                    "syncular.codegen.json localReadModels.{} has an empty dimension",
+                    model.name
+                );
+            }
+            if !dimensions.insert(dimension.as_str()) {
+                bail!(
+                    "syncular.codegen.json localReadModels.{} has duplicate dimension {}",
+                    model.name,
+                    dimension
+                );
+            }
+            let Some(column) = source_table
+                .columns
+                .iter()
+                .find(|column| column.name == *dimension)
+            else {
+                bail!(
+                    "syncular.codegen.json localReadModels.{} references unknown dimension {}.{}",
+                    model.name,
+                    source_table.name,
+                    dimension
+                );
+            };
+            if is_nullable(column) {
+                bail!(
+                    "syncular.codegen.json localReadModels.{} dimension {}.{} must be non-null for deterministic countBy primary keys",
+                    model.name,
+                    source_table.name,
+                    dimension
+                );
+            }
+        }
+        if dimensions.contains(model.count_column.as_str()) {
+            bail!(
+                "syncular.codegen.json localReadModels.{} countColumn {} conflicts with a dimension",
+                model.name,
+                model.count_column
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn local_read_model_sqls(
+    tables: &[TableInfo],
+    config: &CodegenConfig,
+) -> Result<Vec<LocalReadModelSql>> {
+    config
+        .local_read_models
+        .iter()
+        .map(|model| local_read_model_sql(tables, model))
+        .collect()
+}
+
+fn local_read_model_sql(
+    tables: &[TableInfo],
+    model: &LocalReadModelConfig,
+) -> Result<LocalReadModelSql> {
+    if model.kind != "countBy" {
+        bail!(
+            "syncular.codegen.json localReadModels.{} has unsupported kind {}; supported kinds: countBy",
+            model.name,
+            model.kind
+        );
+    }
+    let source_table = tables
+        .iter()
+        .find(|table| table.name == model.source_table)
+        .with_context(|| {
+            format!(
+                "syncular.codegen.json localReadModels.{} references unknown sourceTable {}",
+                model.name, model.source_table
+            )
+        })?;
+    let dimensions = model
+        .dimensions
+        .iter()
+        .map(|dimension| {
+            source_table
+                .columns
+                .iter()
+                .find(|column| column.name == *dimension)
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "syncular.codegen.json localReadModels.{} references unknown dimension {}.{}",
+                        model.name, source_table.name, dimension
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(count_by_read_model_sql(source_table, &dimensions, model))
+}
+
+fn count_by_read_model_sql(
+    source_table: &TableInfo,
+    dimensions: &[ColumnRow],
+    model: &LocalReadModelConfig,
+) -> LocalReadModelSql {
+    let output = quote_sqlite_ident(&model.output_table);
+    let source = quote_sqlite_ident(&source_table.name);
+    let count_column = quote_sqlite_ident(&model.count_column);
+    let dimension_defs = dimensions
+        .iter()
+        .map(|column| {
+            format!(
+                "  {} {} NOT NULL",
+                quote_sqlite_ident(&column.name),
+                sqlite_column_decl_type(column)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let dimension_names = dimensions
+        .iter()
+        .map(|column| quote_sqlite_ident(&column.name))
+        .collect::<Vec<_>>();
+    let dimension_csv = dimension_names.join(", ");
+    let new_values = dimensions
+        .iter()
+        .map(|column| format!("new.{}", quote_sqlite_ident(&column.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let old_match = dimensions
+        .iter()
+        .map(|column| {
+            let name = quote_sqlite_ident(&column.name);
+            format!("{name} = old.{name}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n          AND ");
+    let update_columns = dimensions
+        .iter()
+        .map(|column| quote_sqlite_ident(&column.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let update_when = dimensions
+        .iter()
+        .map(|column| {
+            let name = quote_sqlite_ident(&column.name);
+            format!("old.{name} IS NOT new.{name}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n        OR ");
+
+    let setup_sql = vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS {output} (\n{dimension_defs},\n  {count_column} INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY ({dimension_csv})\n)"
+        ),
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS {}\nAFTER INSERT ON {source}\nBEGIN\n  INSERT INTO {output} ({dimension_csv}, {count_column})\n  VALUES ({new_values}, 1)\n  ON CONFLICT({dimension_csv}) DO UPDATE SET\n    {count_column} = {count_column} + 1;\nEND",
+            quote_sqlite_ident(&read_model_trigger_name(&model.name, "insert"))
+        ),
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS {}\nAFTER DELETE ON {source}\nBEGIN\n  UPDATE {output}\n  SET {count_column} = {count_column} - 1\n  WHERE {old_match};\n  DELETE FROM {output} WHERE {count_column} <= 0;\nEND",
+            quote_sqlite_ident(&read_model_trigger_name(&model.name, "delete"))
+        ),
+        format!(
+            "CREATE TRIGGER IF NOT EXISTS {}\nAFTER UPDATE OF {update_columns} ON {source}\nWHEN {update_when}\nBEGIN\n  UPDATE {output}\n  SET {count_column} = {count_column} - 1\n  WHERE {old_match};\n  DELETE FROM {output} WHERE {count_column} <= 0;\n  INSERT INTO {output} ({dimension_csv}, {count_column})\n  VALUES ({new_values}, 1)\n  ON CONFLICT({dimension_csv}) DO UPDATE SET\n    {count_column} = {count_column} + 1;\nEND",
+            quote_sqlite_ident(&read_model_trigger_name(&model.name, "update_group"))
+        ),
+    ];
+    let rebuild_sql = vec![
+        format!("DELETE FROM {output}"),
+        format!(
+            "INSERT INTO {output} ({dimension_csv}, {count_column})\nSELECT {dimension_csv}, count(*)\nFROM {source}\nGROUP BY {dimension_csv}"
+        ),
+    ];
+
+    LocalReadModelSql {
+        name: model.name.clone(),
+        output_table: model.output_table.clone(),
+        setup_sql,
+        rebuild_sql,
+    }
 }
 
 fn generate_schema(tables: &[TableInfo]) -> Result<String> {
@@ -4126,6 +4513,7 @@ fn generate_typescript_module(
         .filter(|table| !table.name.starts_with("sync_"))
         .cloned()
         .collect::<Vec<_>>();
+    let local_read_models = local_read_model_sqls(&user_tables, config)?;
     let mut out = String::from(
         "// @generated by `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen --`\n",
     );
@@ -4487,7 +4875,13 @@ fn generate_typescript_module(
     out.push_str(
         "export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {\n",
     );
-    out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
+    if local_read_models.is_empty() {
+        out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
+    } else {
+        out.push_str(
+            "  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);\n",
+        );
+    }
     for table in &user_tables {
         for index in &table.indexes {
             let sql = ts_template_literal_content(&sqlite_index_create_if_not_exists(&index.sql));
@@ -4501,6 +4895,41 @@ fn generate_typescript_module(
             }
             out.push_str("  `.execute(db);\n\n");
         }
+    }
+    for read_model in &local_read_models {
+        let read_model_name = read_model.name.replace('\n', " ").replace('\r', " ");
+        let was_installed_var = lower_camel_case(&format!("{}_read_model", read_model.name));
+        out.push_str(&format!(
+            "  // Syncular local read model: {read_model_name}\n"
+        ));
+        out.push_str(&format!(
+            "  const {was_installed_var}WasInstalled = await syncularGeneratedTableExists(db, {});\n",
+            ts_string(&read_model.output_table)
+        ));
+        for sql_statement in &read_model.setup_sql {
+            let sql = ts_template_literal_content(sql_statement);
+            out.push_str("  await sql`\n");
+            for line in sql.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str("  `.execute(db);\n\n");
+        }
+        out.push_str(&format!(
+            "  if (!{was_installed_var}WasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {{\n"
+        ));
+        for sql_statement in &read_model.rebuild_sql {
+            let sql = ts_template_literal_content(sql_statement);
+            out.push_str("    await sql`\n");
+            for line in sql.lines() {
+                out.push_str("      ");
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str("    `.execute(db);\n\n");
+        }
+        out.push_str("  }\n\n");
     }
     out.push_str("  await validateSyncularAppSchema(db);\n");
     out.push_str("  await sql`\n");
@@ -4547,6 +4976,17 @@ fn generate_typescript_module(
     out.push_str("  }\n");
     out.push_str("  return localVersion;\n");
     out.push_str("}\n\n");
+    if !local_read_models.is_empty() {
+        out.push_str("async function syncularGeneratedTableExists(db: Kysely<any>, table: string): Promise<boolean> {\n");
+        out.push_str("  const rows = await sql<{ name: string }>`\n");
+        out.push_str("    select name\n");
+        out.push_str("    from sqlite_master\n");
+        out.push_str("    where type = 'table' and name = ${sql.val(table)}\n");
+        out.push_str("    limit 1\n");
+        out.push_str("  `.execute(db);\n");
+        out.push_str("  return rows.rows.length > 0;\n");
+        out.push_str("}\n\n");
+    }
     out.push_str("async function validateSyncularAppSchema(db: Kysely<any>): Promise<void> {\n");
     for table in &user_tables {
         out.push_str(&format!(
@@ -8065,6 +8505,7 @@ fn main() -> Result<()> {
     let migrations = format_rust(generate_migrations_module(
         &manifest_dir,
         &migrations_dir,
+        &schema_tables,
         &schema_codegen_config,
     )?)?;
     let generated = format_rust(generate_generated_module(
@@ -8490,6 +8931,14 @@ mod tests {
             .insert("includeArchived".to_string(), serde_json::json!(true));
         let config = CodegenConfig {
             tables: BTreeMap::from([("tasks".to_string(), tasks_config)]),
+            local_read_models: vec![LocalReadModelConfig {
+                name: "taskCountsByDeleted".to_string(),
+                kind: "countBy".to_string(),
+                source_table: "tasks".to_string(),
+                output_table: "syncular_task_counts_by_deleted".to_string(),
+                dimensions: vec!["deleted".to_string()],
+                count_column: "task_count".to_string(),
+            }],
             ..CodegenConfig::default()
         };
 
@@ -8518,6 +8967,13 @@ mod tests {
             table["indexes"][0]["sql"],
             "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id, id)"
         );
+        assert_eq!(json["localReadModels"][0]["name"], "taskCountsByDeleted");
+        assert_eq!(json["localReadModels"][0]["kind"], "countBy");
+        assert_eq!(
+            json["localReadModels"][0]["outputTable"],
+            "syncular_task_counts_by_deleted"
+        );
+        assert_eq!(json["localReadModels"][0]["dimensions"][0], "deleted");
 
         let columns = table["columns"].as_array().expect("columns array");
         let image = columns
@@ -8969,6 +9425,56 @@ mod tests {
         assert!(output.contains(
             "CREATE INDEX IF NOT EXISTS idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
         ));
+        assert!(!output.contains("async function syncularGeneratedTableExists"));
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_schema_installer_generates_declared_count_read_model() -> Result<()> {
+        let tasks = table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("user_id", "TEXT", true, false, None),
+                column("completed", "INTEGER", true, false, Some("0")),
+                column("server_version", "BIGINT", true, false, Some("0")),
+            ],
+        );
+        let mut table_configs = BTreeMap::new();
+        table_configs.insert(
+            "tasks".to_string(),
+            table_config(
+                "sub-tasks",
+                "server_version",
+                vec![scope("user_id", "user_id", "actorId", true)],
+            ),
+        );
+        let config = CodegenConfig {
+            tables: table_configs,
+            local_read_models: vec![LocalReadModelConfig {
+                name: "taskCountsByUserCompletion".to_string(),
+                kind: "countBy".to_string(),
+                source_table: "tasks".to_string(),
+                output_table: "syncular_task_counts".to_string(),
+                dimensions: vec!["user_id".to_string(), "completed".to_string()],
+                count_column: "task_count".to_string(),
+            }],
+            typescript_runtime_import_path: Some("@app/sync-runtime".to_string()),
+            ..CodegenConfig::default()
+        };
+
+        let output = generate_typescript_module(&[tasks], &config, 3)?;
+
+        assert!(output.contains("// Syncular local read model: taskCountsByUserCompletion"));
+        assert!(output.contains("CREATE TABLE IF NOT EXISTS \"syncular_task_counts\""));
+        assert!(output.contains(
+            "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_insert\""
+        ));
+        assert!(output.contains(
+            "if (!taskCountsByUserCompletionReadModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion)"
+        ));
+        assert!(output.contains("async function syncularGeneratedTableExists"));
         Ok(())
     }
 

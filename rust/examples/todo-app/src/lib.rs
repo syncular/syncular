@@ -33,6 +33,7 @@ mod tests {
     use super::generated::{diesel_tables, migrations, schema, syncular};
     use diesel::connection::SimpleConnection;
     use diesel::prelude::*;
+    use diesel::sql_types::{Integer, Text};
     use diesel::sqlite::SqliteConnection;
     use serde_json::{json, Value};
     use std::io::{Read, Write};
@@ -77,6 +78,104 @@ mod tests {
             .expect("list generated rows");
         assert_eq!(rows[0]["id"], "task-rust-1");
         assert_eq!(rows[0]["server_version"], 7);
+    }
+
+    #[test]
+    fn generated_local_read_model_sql_rebuilds_and_tracks_changes() {
+        #[derive(QueryableByName)]
+        struct TaskCountRow {
+            #[diesel(sql_type = Text)]
+            user_id: String,
+            #[diesel(sql_type = Integer)]
+            completed: i32,
+            #[diesel(sql_type = Integer)]
+            task_count: i32,
+        }
+
+        let mut conn = migrated_connection();
+        let adapter = diesel_tables::adapter_for("tasks").expect("tasks adapter");
+        for (id, completed) in [
+            ("task-rust-count-1", 0),
+            ("task-rust-count-2", 0),
+            ("task-rust-count-3", 1),
+        ] {
+            adapter
+                .upsert_row(
+                    &mut conn,
+                    &json!({
+                        "id": id,
+                        "title": id,
+                        "completed": completed,
+                        "user_id": "user-rust",
+                        "project_id": "project-rust",
+                        "server_version": 0,
+                        "image": null,
+                        "title_yjs_state": null
+                    }),
+                    Some(1),
+                )
+                .expect("seed task row");
+        }
+
+        let read_model = migrations::LOCAL_READ_MODELS
+            .iter()
+            .find(|model| model.name == "taskCountsByUserCompletion")
+            .expect("generated task-count read model");
+        for statement in read_model.setup_sql {
+            conn.batch_execute(statement)
+                .expect("install read-model setup SQL");
+        }
+        for statement in read_model.rebuild_sql {
+            conn.batch_execute(statement)
+                .expect("rebuild read-model SQL");
+        }
+
+        let counts = task_counts(&mut conn);
+        assert_eq!(counts, vec![(0, 2), (1, 1)]);
+
+        adapter
+            .upsert_row(
+                &mut conn,
+                &json!({
+                    "id": "task-rust-count-2",
+                    "title": "task-rust-count-2",
+                    "completed": 1,
+                    "user_id": "user-rust",
+                    "project_id": "project-rust",
+                    "server_version": 0,
+                    "image": null,
+                    "title_yjs_state": null
+                }),
+                Some(2),
+            )
+            .expect("update task row");
+        diesel::delete(
+            schema::tasks::dsl::tasks.filter(schema::tasks::dsl::id.eq("task-rust-count-3")),
+        )
+        .execute(&mut conn)
+        .expect("delete task row");
+
+        let counts = task_counts(&mut conn);
+        assert_eq!(counts, vec![(0, 1), (1, 1)]);
+
+        fn task_counts(conn: &mut SqliteConnection) -> Vec<(i32, i32)> {
+            diesel::sql_query(
+                r#"
+                SELECT user_id, completed, task_count
+                FROM syncular_task_counts
+                WHERE user_id = 'user-rust'
+                ORDER BY completed ASC
+                "#,
+            )
+            .load::<TaskCountRow>(conn)
+            .expect("load read-model counts")
+            .into_iter()
+            .map(|row| {
+                assert_eq!(row.user_id, "user-rust");
+                (row.completed, row.task_count)
+            })
+            .collect()
+        }
     }
 
     #[test]

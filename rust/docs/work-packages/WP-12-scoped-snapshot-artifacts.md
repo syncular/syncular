@@ -648,17 +648,20 @@ Rejected staged temp-table artifact import:
 
 ## Next Action
 
-Turn the artifact prototype into the full bootstrap path:
+Pause small artifact body/page/buffer probes.
 
-- Reduce scoped artifact memory first, then bytes if available. The external
-  gate now proves artifact selection and faster Rust bootstrap, and gzip9
-  reduced transferred bytes, but peak memory is still worse than row chunks
-  (`746.92MB` versus `694.38MB`).
-- Continue body-shape work only if it preserves direct SQLite import, keeps
-  `snapshotChunkCount=0`, and improves either external peak memory or response
-  bytes without regressing the compact artifact local baseline.
-- Do not change the browser artifact page size above `50k` unless direct
-  artifact selection is proven by `rust_snapshot_chunk_binary_count=0` and the
-  benchmark beats the current compact artifact baseline.
+- The accepted scoped artifact baseline remains external Rust 500k bootstrap
+  `4845.39ms`, local apply `1392ms`, response bytes `3527317`, peak memory
+  `746.92MB`, and `snapshotChunkCount=0`.
+- The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
+  temp-table staging probes were all rejected. They either regressed wall time
+  or failed to improve external peak memory.
+- The next useful artifact-memory step needs a larger bootstrap state design:
+  release/detach artifact databases before full commit without copying rows
+  into staging tables, or split bootstrap state so direct artifact import does
+  not retain every attached SQLite image until the transaction ends.
 - Keep native Diesel on verified artifact row projection until the raw SQLite
   attach/deserialization constraint has a clean solution.
+- Active near-term work moves to WP-06 because the external benchmark's
+  `derived_schema_ms` is app-local index/read-model construction, not snapshot
+  transfer/apply.
