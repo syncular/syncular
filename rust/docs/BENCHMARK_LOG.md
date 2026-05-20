@@ -128,6 +128,61 @@ Decision:
   500k wall time, and improves external artifact peak memory while preserving
   verified artifact apply and avoiding staging copies.
 
+## 2026-05-20 - Retained Generated Schema Phase Helpers
+
+Commit: retained slice
+
+Work package: [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Generated TypeScript clients now export `syncularGeneratedLocalIndexes`,
+  `ensureSyncularAppIndexes(...)`, `ensureSyncularAppReadModelSetup(...)`, and
+  `rebuildSyncularAppReadModels(...)`.
+- The default `ensureSyncularAppDerivedSchema(...)` path keeps the existing
+  behavior, but the generated contract now exposes the local derived-schema
+  phases that app adapters and benchmarks need instead of forcing hand-written
+  index/read-model fixtures.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/generated-app-conformance.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp06-generated-schema-phase-helpers-100k.json
+```
+
+Comparison:
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `147.84ms` | `146.94ms` |
+| Rust local list p50 | `0.23ms` | `0.21ms` |
+| Rust local search p50 | `1.51ms` | `1.40ms` |
+| Rust raw aggregate p50 | `21.98ms` | `24.42ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.05ms` |
+
+Decision:
+
+- Retained. The default installer stays in the accepted performance band, and
+  generated adapters now have a clean derived-schema phase contract for
+  external app-style bootstrap experiments.
+
 ## 2026-05-19 - WP-04 Release Realtime Guard
 
 Commit: measurement only

@@ -725,6 +725,19 @@ Rejected SQLite memory-release probe:
   Keep looking for an artifact state design that releases attached databases
   earlier without row-copy staging or repeated commit boundaries.
 
+Generated derived-schema contract follow-up:
+
+- The external app-style scoped artifact gate now shows that artifact
+  sync/apply is no longer the dominant cost in that harness. A rejected
+  memory-release probe reported 500k bootstrap `1418.34ms`, with
+  `sync_total_ms_500000=448`, `pull_apply_ms_500000=340`,
+  `local_apply_ms_500000=212`, and `derived_schema_ms_500000=954.17`.
+- WP-06 now exports generated TypeScript helpers for local indexes and
+  read-model setup/rebuild phases so external adapters can consume the app
+  schema contract directly instead of rebuilding derived SQL fixtures by hand.
+  The default generated installer stayed in band on the 100k release artifact
+  gate (`147.84ms -> 146.94ms`).
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
@@ -737,7 +750,13 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. These either regressed wall time
   or failed to improve external peak memory enough to justify their complexity.
-- The next useful artifact-memory step is still a larger bootstrap state design:
+- Do not keep spending time on artifact memory micro-probes unless they change
+  the bootstrap state model. The next useful app-style benchmark slice should
+  consume the generated derived-schema phase contract and compare install
+  strategies: generated full schema before bootstrap versus bulk load followed
+  by explicit index/read-model setup and rebuild.
+- The next useful artifact-memory step is still a larger bootstrap state design
+  if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows
   into staging tables, or make artifact phase/checkpoint semantics explicit
   enough that partial artifact progress is safe and observable.

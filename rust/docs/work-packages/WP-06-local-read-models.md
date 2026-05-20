@@ -55,6 +55,12 @@ Retained first slice:
   `syncularGeneratedLocalReadModels`, including setup and rebuild SQL, so host
   packages can consume the generated contract instead of carrying hand-written
   derived-schema fixtures.
+- Generated TypeScript modules now also export local index metadata and
+  explicit derived-schema phase helpers:
+  `ensureSyncularAppIndexes(...)`, `ensureSyncularAppReadModelSetup(...)`, and
+  `rebuildSyncularAppReadModels(...)`. The default installer behavior is
+  unchanged, but app/benchmark adapters no longer need to reassemble index and
+  read-model SQL by hand.
 - Generated read-model output tables are included in the TypeScript Kysely DB
   interface and Rust Diesel schema, but they are not included in app-table
   sync/mutation metadata.
@@ -125,6 +131,17 @@ again neutral-to-better versus the contract-backed installer run:
 The browser benchmark proves the declared read model is visible to typed Kysely
 and avoids the expensive aggregate scan.
 
+After exporting the derived-schema phase helpers, the 100k release browser
+artifact gate stayed in the accepted band:
+
+| Metric | Previous accepted | Phase helpers |
+| --- | ---: | ---: |
+| Rust bootstrap | `147.84ms` | `146.94ms` |
+| Rust local list p50 | `0.23ms` | `0.21ms` |
+| Rust local search p50 | `1.51ms` | `1.40ms` |
+| Rust raw aggregate p50 | `21.98ms` | `24.42ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.05ms` |
+
 External app-style local-query gate after wiring the local
 `offline-sync-bench` checkout to generated schema-contract SQL:
 
@@ -180,6 +197,8 @@ passes.
 
 ## Next Action
 
-Initial `countBy` read models are accepted. Future read-model work should be a
-new scoped WP for additional read-model kinds or for moving more app schema
-installation out of host hand-written code.
+Initial `countBy` read models and generated derived-schema phase helpers are
+accepted. Future read-model work should be a new scoped WP for additional
+read-model kinds or for changing bootstrap/install strategy. External app-style
+adapters should consume the generated index/read-model contract rather than
+carrying local SQL fixtures.
