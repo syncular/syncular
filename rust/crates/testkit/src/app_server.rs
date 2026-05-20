@@ -25,6 +25,8 @@ pub struct AppTestServerOptions {
     pub emit_realtime_sync: bool,
     pub delivery_mode: AppTestServerDeliveryMode,
     pub required_authorization: Option<String>,
+    pub required_schema_version: Option<i32>,
+    pub latest_schema_version: Option<i32>,
 }
 
 impl Default for AppTestServerOptions {
@@ -35,6 +37,8 @@ impl Default for AppTestServerOptions {
             emit_realtime_sync: true,
             delivery_mode: AppTestServerDeliveryMode::Normal,
             required_authorization: None,
+            required_schema_version: None,
+            latest_schema_version: None,
         }
     }
 }
@@ -42,6 +46,20 @@ impl Default for AppTestServerOptions {
 impl AppTestServerOptions {
     pub fn require_authorization(mut self, authorization: impl Into<String>) -> Self {
         self.required_authorization = Some(authorization.into());
+        self
+    }
+
+    pub fn require_schema_version(mut self, schema_version: i32) -> Self {
+        self.required_schema_version = Some(schema_version);
+        self.latest_schema_version = Some(
+            self.latest_schema_version
+                .map_or(schema_version, |latest| latest.max(schema_version)),
+        );
+        self
+    }
+
+    pub fn latest_schema_version(mut self, schema_version: i32) -> Self {
+        self.latest_schema_version = Some(schema_version);
         self
     }
 }
@@ -68,6 +86,8 @@ struct AppTestServerState {
     auth_headers: Vec<SyncAuthHeaders>,
     realtime_events: VecDeque<RealtimeEvent>,
     blobs: BTreeMap<String, Vec<u8>>,
+    required_schema_version: Option<i32>,
+    latest_schema_version: Option<i32>,
     next_server_version: i64,
     next_commit_seq: i64,
     closed_realtime_count: usize,
@@ -93,10 +113,14 @@ impl AppTestServer {
     }
 
     pub fn with_options(app_schema: AppSchema, options: AppTestServerOptions) -> Self {
+        let required_schema_version = options.required_schema_version;
+        let latest_schema_version = options.latest_schema_version;
         Self {
             app_schema,
             options,
             state: Arc::new(Mutex::new(AppTestServerState {
+                required_schema_version,
+                latest_schema_version,
                 next_server_version: 1,
                 next_commit_seq: 1,
                 ..AppTestServerState::default()
@@ -117,6 +141,26 @@ impl AppTestServer {
             .or_default()
             .insert(row_id, row.clone());
         Ok(row)
+    }
+
+    pub fn set_schema_versions(
+        &self,
+        required_schema_version: Option<i32>,
+        latest_schema_version: Option<i32>,
+    ) {
+        let mut state = self.state.lock().expect("app test server state");
+        state.required_schema_version = required_schema_version;
+        state.latest_schema_version = latest_schema_version;
+    }
+
+    pub fn require_schema_version(&self, schema_version: i32) {
+        let mut state = self.state.lock().expect("app test server state");
+        state.required_schema_version = Some(schema_version);
+        state.latest_schema_version = Some(
+            state
+                .latest_schema_version
+                .map_or(schema_version, |latest| latest.max(schema_version)),
+        );
     }
 
     pub fn commit_row(&self, table: &str, row: Value) -> Result<i64> {
@@ -339,10 +383,15 @@ impl AppTestServer {
                 })
                 .collect(),
         });
+        let required_schema_version = state.required_schema_version;
+        let latest_schema_version = state
+            .latest_schema_version
+            .or(required_schema_version)
+            .or(Some(self.app_schema.current_schema_version()));
         Ok(CombinedResponse {
             ok: true,
-            required_schema_version: None,
-            latest_schema_version: Some(self.app_schema.current_schema_version()),
+            required_schema_version,
+            latest_schema_version,
             push,
             pull,
         })

@@ -199,6 +199,23 @@ let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
 assert_app_server_auth_header(server.app_server(), "authorization", "Bearer test-token");
 ```
 
+For rolling-deploy tests, the same stateful server can advertise future schema
+versions and let the real client fail closed:
+
+```rust
+use syncular_testkit::{AppTestHttpServer, AppTestServer, AppTestServerOptions};
+
+let app_schema = my_app::generated::app_schema();
+let required_schema_version = app_schema.current_schema_version() + 1;
+let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
+    app_schema,
+    AppTestServerOptions::default().require_schema_version(required_schema_version),
+)).unwrap();
+
+// A client with the current generated schema receives `sync.schema_mismatch`
+// and must not apply rows from this response.
+```
+
 For native-style tests, open a real native client with the same generated schema
 or with generated schema JSON:
 

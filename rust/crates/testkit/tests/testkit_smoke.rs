@@ -591,6 +591,69 @@ fn app_test_http_server_reports_stateful_version_conflicts() {
     assert_eq!(row["title"], "Server edit");
 }
 
+#[test]
+fn app_test_http_server_schema_mismatch_fails_closed() {
+    let app_schema = todo::app_schema();
+    let schema_version = app_schema.current_schema_version();
+    let server = AppTestHttpServer::start(app_schema).expect("stateful HTTP server");
+    server
+        .app_server()
+        .seed_row(
+            "tasks",
+            json!({
+                "id": "schema-rollout-stable",
+                "title": "Stable schema row",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "server_version": 1
+            }),
+        )
+        .expect("seed stable row");
+
+    let mut options = app_server_options("app-server-schema-rollout");
+    options.base_url = server.url();
+    let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        options.client_id.clone(),
+        options.actor_id.clone(),
+    ));
+    let mut fixture = open_app_client_with_transport(todo::app_schema(), transport, options)
+        .expect("client fixture");
+
+    fixture.client.sync_http().expect("initial bootstrap");
+    assert_table_has_row(&mut fixture.client, "tasks", "id", "schema-rollout-stable");
+
+    server
+        .app_server()
+        .require_schema_version(schema_version + 1);
+    server
+        .app_server()
+        .commit_row(
+            "tasks",
+            json!({
+                "id": "schema-rollout-future",
+                "title": "Future schema row",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            }),
+        )
+        .expect("future server row");
+
+    let error = fixture
+        .client
+        .sync_http()
+        .expect_err("future required schema should fail closed");
+    assert_eq!(error.kind(), ErrorKind::Schema);
+    assert_eq!(error.classification().code, "sync.schema_mismatch");
+    assert!(error.to_string().contains("server requires schema version"));
+
+    assert_table_has_row(&mut fixture.client, "tasks", "id", "schema-rollout-stable");
+    assert_table_row_count(&mut fixture.client, "tasks", 1);
+    assert_app_server_has_row(server.app_server(), "tasks", "schema-rollout-future");
+}
+
 fn next_realtime_event(
     socket: &mut syncular_runtime::transport::RealtimeSocket,
     timeout: Duration,

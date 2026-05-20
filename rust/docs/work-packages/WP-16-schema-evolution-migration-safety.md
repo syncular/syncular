@@ -1,6 +1,6 @@
 # WP-16 Schema Evolution And Migration Safety
 
-Status: `[ ]` planned
+Status: `[~]` started
 
 ## Goal
 
@@ -63,5 +63,24 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Add one testkit rolling-deploy scenario that proves a schema mismatch produces a
-stable diagnostic/error and does not mutate local synced rows.
+Extend the rolling-deploy coverage from the Rust/testkit HTTP path into the
+browser worker or native event-stream path, proving the same
+`sync.schema_mismatch` classification is visible through app-facing events.
+
+## Progress
+
+- `syncular-testkit` stateful `AppTestServer` / `AppTestHttpServer` can now
+  simulate server `requiredSchemaVersion` and `latestSchemaVersion` values
+  through constructor options or runtime setters.
+- Added a rolling-deploy smoke where a client first bootstraps a stable row,
+  the server then requires a future schema version and exposes another row, and
+  the next sync fails closed with `sync.schema_mismatch` while local synced rows
+  remain unchanged.
+
+## Latest Evidence
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit app_test_http_server_schema_mismatch_fails_closed --test testkit_smoke`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
+- `bun run rust:conformance:fast`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
