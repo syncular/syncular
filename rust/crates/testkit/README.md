@@ -20,7 +20,8 @@ Initial scope:
   wakeups. It also implements `BlobTransport` for queued upload/download tests.
 - `AppTestHttpServer` for stateful HTTP/WebSocket app tests over the production
   native transport shape, including captured HTTP/WebSocket requests for auth
-  and schema-version assertions.
+  and schema-version assertions. The same fixture can enforce a required
+  authorization token for HTTP sync and WebSocket connection tests.
 - `TestBlobServer` for local HTTP blob upload/download integration tests.
 - `FaultTransport` for scripted transport failures and latency.
 - Protocol builders for snapshot pages/chunks, pull commits, conflict,
@@ -166,6 +167,22 @@ fn syncs_against_stateful_http_server() {
 }
 ```
 
+To test app auth behavior without a private server mock, configure the stateful
+server with a required authorization header:
+
+```rust
+use syncular_testkit::{AppTestHttpServer, AppTestServer, AppTestServerOptions};
+
+let app_schema = my_app::generated::app_schema();
+let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
+    app_schema,
+    AppTestServerOptions::default().require_authorization("Bearer test-token"),
+)).unwrap();
+
+// Requests without `authorization: Bearer test-token` receive HTTP 401, and
+// WebSocket connections with the wrong token are rejected during the handshake.
+```
+
 For native-style tests, open a real native client with the same generated schema
 or with generated schema JSON:
 
@@ -192,7 +209,7 @@ fn native_local_write_emits_rows_changed() {
     ).unwrap();
 
     let event = wait_native_event(
-        &fixture.client,
+        &fixture.events,
         NativeEventKind::RowsChanged,
         Duration::from_secs(1),
     );
@@ -227,6 +244,22 @@ fixture.transport.push_http_response_fn(|request| {
         9,
     ))
 });
+```
+
+## Conformance Gates
+
+When changing the testkit or shared fixtures, run the fast Rust-first
+conformance lane:
+
+```bash
+bun run rust:conformance:fast
+```
+
+Use the heavier lanes when changing browser/Hono behavior or native bindings:
+
+```bash
+bun run rust:conformance
+bun run rust:conformance:native
 ```
 
 Reusable runtime test patterns that should move here over time:
