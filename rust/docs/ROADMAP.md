@@ -384,7 +384,7 @@ read-only review:
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
 - `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
-- `[~]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
+- `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,
     `category`, `retryable`, and `recommendedAction` fields. The first mapped
     recovery-critical cases are auth-required, schema mismatch, and integrity
@@ -429,7 +429,13 @@ read-only review:
     brittle message sentinel. Scope revocation and offline transport failures
     now have stable taxonomy entries, and browser worker/direct sync diagnostics
     emit `sync.scope_revoked` with revoked subscription ids when a pull clears
-    local scoped data.
+    local scoped data. Console websocket auth/no-instance errors and console
+    route `onError` now emit stable `console.*` envelopes, demo app validation
+    examples use readable messages with stable Syncular codes, and blob upload
+    body validation uses stable `blob.*` tags internally. WP-15 is accepted for
+    current Rust-first public surfaces; remaining uppercase strings are
+    downstream/test fixtures or old JS-client cleanup debt already tracked in
+    the compatibility register.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

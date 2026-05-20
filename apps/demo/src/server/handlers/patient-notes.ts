@@ -136,7 +136,7 @@ export const patientNotesServerHandler = createServerHandler<
         result: {
           opIndex,
           status: 'error',
-          error: 'MISSING_PATIENT_ID',
+          error: 'Missing note patient_id.',
           code: 'sync.invalid_request',
           retriable: false,
         },
@@ -151,7 +151,7 @@ export const patientNotesServerHandler = createServerHandler<
           result: {
             opIndex,
             status: 'error',
-            error: 'CANNOT_MOVE_BETWEEN_PATIENTS',
+            error: 'Cannot move note rows between patients.',
             code: 'sync.invalid_request',
             retriable: false,
           },

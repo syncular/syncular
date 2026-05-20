@@ -249,6 +249,7 @@ fn known_error_classification(code: &str) -> Option<SyncularErrorClassification>
         "console.not_found" => ("not-found", false, "inspectServer"),
         "console.downstream_unavailable" => ("server", true, "retryLater"),
         "console.downstream_invalid_response" => ("server", false, "inspectServer"),
+        "console.internal" => ("internal", false, "inspectServer"),
         "proxy.auth_required" => ("auth-required", true, "refreshAuth"),
         "proxy.forbidden_origin" => ("forbidden", false, "checkPermissions"),
         "proxy.connection_limit" => ("rate-limited", true, "retryLater"),

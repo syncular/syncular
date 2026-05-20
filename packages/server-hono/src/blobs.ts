@@ -659,7 +659,7 @@ function isBlobNotFoundError(err: unknown): err is BlobNotFoundError {
 
 class BlobUploadBodyError extends Error {
   constructor(
-    public readonly code: 'BLOB_TOO_LARGE' | 'SIZE_MISMATCH',
+    public readonly code: 'blob.too_large' | 'blob.size_mismatch',
     message: string
   ) {
     super(message);
@@ -678,7 +678,7 @@ function isBlobUploadBodyError(err: unknown): err is BlobUploadBodyError {
 function uploadBodyErrorCode(
   code: BlobUploadBodyError['code']
 ): SyncularErrorCode {
-  return code === 'BLOB_TOO_LARGE' ? 'blob.too_large' : 'blob.size_mismatch';
+  return code;
 }
 
 async function deleteUploadedBlobBestEffort(
@@ -731,7 +731,7 @@ async function createValidatedUploadStream(
         if (done) {
           if (totalSize !== args.expectedSize) {
             const sizeError = new BlobUploadBodyError(
-              'SIZE_MISMATCH',
+              'blob.size_mismatch',
               `Expected ${args.expectedSize} bytes, got ${totalSize}`
             );
             fail(sizeError);
@@ -764,7 +764,7 @@ async function createValidatedUploadStream(
         totalSize += value.length;
         if (totalSize > args.maxSize) {
           const limitError = new BlobUploadBodyError(
-            'BLOB_TOO_LARGE',
+            'blob.too_large',
             `Maximum upload size is ${args.maxSize} bytes`
           );
           fail(limitError);
@@ -773,7 +773,7 @@ async function createValidatedUploadStream(
         }
         if (totalSize > args.expectedSize) {
           const mismatchError = new BlobUploadBodyError(
-            'SIZE_MISMATCH',
+            'blob.size_mismatch',
             `Expected ${args.expectedSize} bytes, got more than expected`
           );
           fail(mismatchError);
@@ -806,7 +806,7 @@ async function readRequestBodyWithLimit(
   if (!body) {
     if (args.expectedSize === 0) return new Uint8Array();
     throw new BlobUploadBodyError(
-      'SIZE_MISMATCH',
+      'blob.size_mismatch',
       `Expected ${args.expectedSize} bytes, got 0`
     );
   }
@@ -823,13 +823,13 @@ async function readRequestBodyWithLimit(
     totalSize += value.length;
     if (totalSize > args.maxSize) {
       throw new BlobUploadBodyError(
-        'BLOB_TOO_LARGE',
+        'blob.too_large',
         `Maximum upload size is ${args.maxSize} bytes`
       );
     }
     if (totalSize > args.expectedSize) {
       throw new BlobUploadBodyError(
-        'SIZE_MISMATCH',
+        'blob.size_mismatch',
         `Expected ${args.expectedSize} bytes, got more than expected`
       );
     }
@@ -838,7 +838,7 @@ async function readRequestBodyWithLimit(
 
   if (totalSize !== args.expectedSize) {
     throw new BlobUploadBodyError(
-      'SIZE_MISMATCH',
+      'blob.size_mismatch',
       `Expected ${args.expectedSize} bytes, got ${totalSize}`
     );
   }

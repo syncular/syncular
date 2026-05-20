@@ -251,6 +251,12 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'inspectServer',
     message: 'A console downstream instance returned an invalid response.',
   },
+  'console.internal': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    message: 'The console route failed internally.',
+  },
   'proxy.auth_required': {
     category: 'auth-required',
     retryable: true,

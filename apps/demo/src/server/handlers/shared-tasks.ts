@@ -151,7 +151,7 @@ export const sharedTasksServerHandler = createServerHandler<
         result: {
           opIndex,
           status: 'error',
-          error: 'MISSING_SHARE_ID',
+          error: 'Missing shared task share_id.',
           code: 'sync.invalid_request',
           retriable: false,
         },
@@ -180,7 +180,7 @@ export const sharedTasksServerHandler = createServerHandler<
           result: {
             opIndex,
             status: 'error',
-            error: 'CANNOT_MOVE_BETWEEN_SHARES',
+            error: 'Cannot move task rows between shares.',
             code: 'sync.invalid_request',
             retriable: false,
           },

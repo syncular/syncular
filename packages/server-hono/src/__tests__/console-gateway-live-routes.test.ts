@@ -266,7 +266,14 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
 
     const errorEvent = upstream.messages[0];
     expect(errorEvent?.type).toBe('error');
-    expect(errorEvent?.message).toBe('UNAUTHENTICATED');
+    expect(errorEvent).toMatchObject({
+      error: 'console.auth_required',
+      code: 'console.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+      message: 'Console authentication is required.',
+    });
     expect(upstream.closes).toEqual([
       { code: 4001, reason: 'Unauthenticated' },
     ]);
@@ -294,9 +301,15 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
 
     const errorEvent = upstream.messages[0];
     expect(errorEvent?.type).toBe('error');
-    expect(errorEvent?.message).toBe(
-      'No enabled instances matched the provided instance filter.'
-    );
+    expect(errorEvent).toMatchObject({
+      error: 'console.invalid_request',
+      code: 'console.invalid_request',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+      message: 'No enabled instances matched the provided instance filter.',
+      details: { consoleError: 'no_instances_selected' },
+    });
     expect(upstream.closes).toEqual([
       { code: 4004, reason: 'No instances selected' },
     ]);

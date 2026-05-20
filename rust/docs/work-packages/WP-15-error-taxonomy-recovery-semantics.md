@@ -1,6 +1,6 @@
 # WP-15 Error Taxonomy And Recovery Semantics
 
-Status: `[~]` in progress
+Status: `[x]` accepted for current Rust-first surfaces
 
 ## Goal
 
@@ -63,9 +63,10 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Audit any remaining package-specific error surfaces that still expose raw
-strings or route-local codes, then either migrate them into the stable taxonomy
-or record a deliberate exception in the compatibility register.
+Closed for current Rust-first surfaces. Remaining uppercase strings found by
+the audit are downstream/test fixture payloads or old JS-client compatibility
+debt already covered by the compatibility register; do not add new Rust-first
+public surfaces without stable taxonomy entries.
 
 ## Progress
 
@@ -159,6 +160,17 @@ or record a deliberate exception in the compatibility register.
   recognize offline transport failures, and browser worker/direct sync paths
   emit a `sync.scope_revoked` diagnostic with revoked subscription ids when a
   pull clears a revoked subscription.
+- Console websocket auth and no-instance close events now emit stable
+  `console.auth_required` / `console.invalid_request` envelopes instead of
+  message-only payloads. Console route `onError` now emits `console.internal`.
+- Demo app-specific push validation examples now keep stable Syncular `code`
+  fields while using readable `error` messages instead of uppercase pseudo
+  codes.
+- Blob upload body validation now uses stable `blob.too_large` and
+  `blob.size_mismatch` tags internally, removing the last uppercase bridge in
+  the current blob route path.
+- The final Rust-first audit leaves only downstream/test fixture uppercase
+  payloads plus old JS-client paths registered for removal.
 
 ## Latest Evidence
 
@@ -178,6 +190,13 @@ or record a deliberate exception in the compatibility register.
 - `bun run --cwd packages/server-hono tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
+- `bun run --cwd packages/core fixtures:protocol`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun run --cwd apps/demo tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts packages/server-hono/src/__tests__/blob-routes.test.ts packages/server-hono/src/__tests__/console-gateway-live-routes.test.ts packages/server-hono/src/__tests__/console-gateway-routes.test.ts --test-name-pattern "invalid upload|direct upload|auth token|no instances|filters|requires exactly one|console gateway classifications|route errors"`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
+- `rg -n "error:\\s*['\\\"][A-Z_]+['\\\"]|code:\\s*['\\\"][A-Z_]+['\\\"]|message:\\s*['\\\"][A-Z_]+['\\\"]" packages/core packages/server packages/server-hono packages/relay packages/testkit rust/bindings/browser rust/crates/runtime rust/crates/testkit apps/demo -g '!**/node_modules/**' -g '!**/target/**' -g '!**/dist/**'`
 - `bun run --cwd packages/core fixtures:protocol`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server tsgo`
