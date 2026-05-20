@@ -546,9 +546,26 @@ The browser generated TypeScript client accepts the same `__yjs` envelope in
 mutation payloads and the Rust-owned Worker materializes the local row before
 writing SQLite.
 
-Encrypted CRDT fields are now represented in the schema contract but are not
-fully materialized by the Rust client yet. Use explicit sync mode metadata when
-you want the encrypted update-log path:
+For host/runtime code that should not depend on a generated table helper, use
+the generic field identity APIs:
+
+```rust
+use syncular_client::crdt_field::CrdtFieldId;
+
+let field = client.open_crdt_field(CrdtFieldId::new(
+    "tasks",
+    &existing_task.id,
+    "title",
+))?;
+
+client.apply_crdt_field_text(&field, "Edited title")?;
+
+let materialized = client.materialize_crdt_field(&field)?;
+println!("title = {}", materialized.value);
+```
+
+Encrypted CRDT fields use the same generic field APIs, but the schema must mark
+the field with `syncMode: "encrypted-update-log"`:
 
 ```json
 {
@@ -565,10 +582,38 @@ you want the encrypted update-log path:
 
 This creates support for the shared hidden `sync_crdt_updates` and
 `sync_crdt_checkpoints` tables. Generated Rust clients expose table-field text
-helpers, for example `client.mutations().tasks().update_title_text(row_id,
-next_text)?`, after `client.set_encrypted_crdt(...)` is configured. The hidden
-outbox operation contains ciphertext only; local native/browser SQLite
-materializes decrypted updates back into the app row.
+and checkpoint helpers, for example:
+
+```rust
+client.set_encrypted_crdt(Some(encrypted_crdt_config));
+
+client
+    .mutations()
+    .tasks()
+    .update_title_text(&task_id, "Encrypted title")?;
+
+client
+    .mutations()
+    .tasks()
+    .checkpoint_title_text(&task_id, 10)?;
+```
+
+Generated default subscriptions include the app table plus the encrypted CRDT
+update/checkpoint system-table subscriptions, for example
+`tasks_title_crdt_updates_subscription(...)` and
+`tasks_title_crdt_checkpoints_subscription(...)` in Rust, or
+`taskTitleCrdtUpdatesSubscription(args)` and
+`taskTitleCrdtCheckpointsSubscription(args)` in TypeScript. If an app supplies
+custom subscriptions, it must include both system-table subscriptions for every
+encrypted-update-log field it wants to sync.
+
+The hidden outbox operation contains ciphertext only; local native/browser
+SQLite materializes decrypted updates back into the app row. Encrypted update
+payloads also carry their required Yjs base state vector inside the ciphertext.
+If local state is missing or stale, sync fails with `resyncRequired`; call
+`force_subscriptions_bootstrap(&[])` on Rust/native or
+`forceSubscriptionsBootstrap()` in the browser worker, then sync again so the
+app/update/checkpoint subscriptions recover from canonical snapshots.
 
 ## 12. Sync
 
@@ -862,6 +907,9 @@ as a long-lived runtime object, not as a per-screen helper:
 - initialize CRDT-backed text fields empty or with existing Yjs state before
   queued text replacement. The runtime rejects replacing populated legacy
   plaintext without Yjs state to prevent duplicated or blank editor content.
+- treat `resyncRequired` diagnostics as a lost local CRDT/snapshot base. Reset
+  subscription state with the generated/native force-bootstrap helper and run a
+  normal sync; do not try to manually patch the app row or CRDT system tables.
 
 ## 20. Typed Row Delta Helpers
 

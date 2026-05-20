@@ -261,7 +261,7 @@ read-only review:
 - `[x]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 - `[x]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
-- `[~]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
+- `[x]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
   - Generic CRDT compaction now returns before/after diagnostic stats through
     Rust, native JSON, browser WASM, and generated Swift/Kotlin clients. The
     receipt exposes counters and state-vector metadata without embedding the
@@ -276,7 +276,11 @@ read-only review:
     changes, and browser/generated TypeScript/Swift/Kotlin/Java surfaces expose
     the same metadata to app bridges. Native Diesel and browser owned-SQLite
     pull builders now attach scope-filtered `crdtStateVectors` hints from
-    `sync_crdt_documents`; the next step is server-side use of those hints.
+    `sync_crdt_documents`; the server Yjs plugin uses those hints for
+    incremental required-base diffs, native/browser recovery emits
+    `resyncRequired`, and encrypted update-log CRDTs now carry required-base
+    vectors inside ciphertext and recover through app/update/checkpoint
+    subscription bootstrap.
 - `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
   - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP

@@ -167,6 +167,10 @@ Implications:
 - Syncular owns Yrs/Yjs update merge, materialization, checkpoints,
   compaction, encryption, persistence, worker coalescing, and convergence
   tests.
+- Required-base CRDT diffs must fail with explicit `resyncRequired` recovery
+  diagnostics instead of applying partial state. Encrypted update-log fields
+  carry the required base inside ciphertext and recover through app/update/
+  checkpoint subscription bootstrap.
 - Apps own TipTap/ProseMirror schemas, editor bridge messages, derived title or
   preview, save policy, selection, undo, and UI state.
 
