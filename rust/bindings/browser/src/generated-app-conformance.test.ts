@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import { Kysely } from 'kysely';
 import { readFileSync } from 'node:fs';
+import { syncConformance as untypedSyncConformance } from '../../../examples/todo-app/conformance/sync-conformance';
 import {
   deleteTaskOperation,
   newTaskOperation,
@@ -42,12 +43,7 @@ const conformance = JSON.parse(
   };
 };
 
-const syncScenarios = JSON.parse(
-  readFileSync(
-    new URL('../../../examples/todo-app/conformance/sync-scenarios.json', import.meta.url),
-    'utf8'
-  )
-) as {
+const syncScenarios = untypedSyncConformance as {
   e2ee: {
     keyBase64: string;
     envelopePrefix: string;
