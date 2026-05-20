@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  SyncularV2ClientError,
-  toSyncularV2ClientError,
-} from './errors';
+import { SyncularV2ClientError, toSyncularV2ClientError } from './errors';
 
 describe('Syncular v2 browser errors', () => {
   it('classifies direct Rust schema errors', () => {
@@ -38,6 +35,26 @@ describe('Syncular v2 browser errors', () => {
       retryable: false,
       recommendedAction: 'forceResync',
       details: { syncularKind: 'Protocol' },
+    });
+  });
+
+  it('classifies server error envelopes from transport failures', () => {
+    const source = new Error(
+      'browser fetch failed with HTTP 403: {"error":"sync.forbidden","code":"sync.forbidden","category":"forbidden","retryable":false,"recommendedAction":"checkPermissions","message":"Forbidden"}'
+    );
+
+    const error = toSyncularV2ClientError(source);
+
+    expect(error).toBeInstanceOf(SyncularV2ClientError);
+    expect(error).toMatchObject({
+      code: 'sync.forbidden',
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+      details: {
+        status: 403,
+        serverErrorCode: 'sync.forbidden',
+      },
     });
   });
 });

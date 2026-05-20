@@ -72,6 +72,7 @@ import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
 import { type Kysely, sql } from 'kysely';
 import { z } from 'zod';
 import { isBenignConsoleSchemaError } from './console/schema-errors';
+import { syncError, syncErrorResponse } from './errors';
 import {
   createRateLimiter,
   DEFAULT_SYNC_RATE_LIMITS,
@@ -483,12 +484,10 @@ function applySyncCorsHeaders(args: {
 }
 
 function createSyncCorsOriginDeniedResponse(origin: string): Response {
-  return Response.json(
-    {
-      error: 'CORS_ORIGIN_NOT_ALLOWED',
-      message: `Origin ${origin} is not allowed for sync access.`,
-    },
-    { status: 403 }
+  return syncErrorResponse(
+    403,
+    'sync.forbidden',
+    `Origin ${origin} is not allowed for sync access.`
   );
 }
 
@@ -1922,7 +1921,7 @@ export function createSyncRoutes<
     zValidator('query', auditCommitListQuerySchema),
     async (c) => {
       const auth = await getAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
 
       const partitionId = auth.partitionId ?? 'default';
       const query = c.req.valid('query');
@@ -2038,7 +2037,7 @@ export function createSyncRoutes<
     zValidator('param', auditCommitParamsSchema),
     async (c) => {
       const auth = await getAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
 
       const partitionId = auth.partitionId ?? 'default';
       const { commitSeq } = c.req.valid('param');
@@ -2068,7 +2067,7 @@ export function createSyncRoutes<
 
       const commit = commitResult.rows[0];
       if (!commit) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return syncError(c, 404, 'sync.not_found');
       }
 
       const changesResult = await sql<{
@@ -2162,7 +2161,7 @@ export function createSyncRoutes<
     zValidator('json', SyncCombinedRequestSchema),
     async (c) => {
       const auth = await getAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
       const partitionId = auth.partitionId ?? 'default';
       const transportPath = readTransportPath(c);
 
@@ -2208,14 +2207,13 @@ export function createSyncRoutes<
           clientState.ownerActorId !== auth.actorId ||
           clientState.hasConflict
         ) {
-          return c.json(
-            {
-              error: 'INVALID_CLIENT_ID',
-              message: clientState.hasConflict
-                ? 'clientId has conflicting ownership history'
-                : 'clientId is already bound to a different actor',
-            },
-            400
+          return syncError(
+            c,
+            400,
+            'sync.invalid_client_id',
+            clientState.hasConflict
+              ? 'clientId has conflicting ownership history'
+              : 'clientId is already bound to a different actor'
           );
         }
       }
@@ -2246,12 +2244,11 @@ export function createSyncRoutes<
         for (const pushBody of pushBodies) {
           const pushOps = pushBody.operations ?? [];
           if (pushOps.length > maxOperationsPerPush) {
-            return c.json(
-              {
-                error: 'TOO_MANY_OPERATIONS',
-                message: `Maximum ${maxOperationsPerPush} operations per push`,
-              },
-              400
+            return syncError(
+              c,
+              400,
+              'sync.too_many_operations',
+              `Maximum ${maxOperationsPerPush} operations per push`
             );
           }
         }
@@ -2313,12 +2310,11 @@ export function createSyncRoutes<
       // --- Pull phase ---
       if (body.pull) {
         if (body.pull.subscriptions.length > maxSubscriptionsPerPull) {
-          return c.json(
-            {
-              error: 'INVALID_REQUEST',
-              message: `Too many subscriptions (max ${maxSubscriptionsPerPull})`,
-            },
-            400
+          return syncError(
+            c,
+            400,
+            'sync.invalid_request',
+            `Too many subscriptions (max ${maxSubscriptionsPerPull})`
           );
         }
 
@@ -2326,12 +2322,11 @@ export function createSyncRoutes<
         for (const sub of body.pull.subscriptions) {
           const id = sub.id;
           if (seenSubscriptionIds.has(id)) {
-            return c.json(
-              {
-                error: 'INVALID_REQUEST',
-                message: `Duplicate subscription id: ${id}`,
-              },
-              400
+            return syncError(
+              c,
+              400,
+              'sync.invalid_request',
+              `Duplicate subscription id: ${id}`
             );
           }
           seenSubscriptionIds.add(id);
@@ -2389,10 +2384,7 @@ export function createSyncRoutes<
           });
         } catch (err) {
           if (err instanceof InvalidSubscriptionScopeError) {
-            return c.json(
-              { error: 'INVALID_SUBSCRIPTION', message: err.message },
-              400
-            );
+            return syncError(c, 400, 'sync.invalid_subscription', err.message);
           }
           throw err;
         }
@@ -2595,7 +2587,7 @@ export function createSyncRoutes<
     zValidator('query', snapshotChunkQuerySchema),
     async (c) => {
       const auth = await getAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
       const partitionId = auth.partitionId ?? 'default';
       const query = c.req.valid('query');
       const requestedChunkScopes = readSnapshotScopeValues(c, query.scopes);
@@ -2605,23 +2597,22 @@ export function createSyncRoutes<
       const chunk = await readSnapshotChunk(options.db, chunkId, {
         chunkStorage: options.chunkStorage,
       });
-      if (!chunk) return c.json({ error: 'NOT_FOUND' }, 404);
+      if (!chunk) return syncError(c, 404, 'sync.not_found');
       if (chunk.partitionId !== partitionId) {
-        return c.json({ error: 'FORBIDDEN' }, 403);
+        return syncError(c, 403, 'sync.forbidden');
       }
 
       const nowIso = new Date().toISOString();
       if (chunk.expiresAt <= nowIso) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return syncError(c, 404, 'sync.not_found');
       }
 
       if (!requestedChunkScopes) {
-        return c.json(
-          {
-            error: 'INVALID_REQUEST',
-            message: 'Snapshot chunk scope values are required',
-          },
-          400
+        return syncError(
+          c,
+          400,
+          'sync.invalid_request',
+          'Snapshot chunk scope values are required'
         );
       }
 
@@ -2643,7 +2634,7 @@ export function createSyncRoutes<
         });
         const scopeAuth = resolved[0];
         if (!scopeAuth || scopeAuth.status !== 'active') {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+          return syncError(c, 403, 'sync.forbidden');
         }
 
         const scopeHash = await scopesToSnapshotChunkScopeKey(scopeAuth.scopes);
@@ -2651,11 +2642,11 @@ export function createSyncRoutes<
           chunk.scopeKey.startsWith('snapshot-v2:') &&
           chunk.scopeKey.endsWith(`:scope:${scopeHash}`);
         if (!scopedChunkKeyMatches) {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+          return syncError(c, 403, 'sync.forbidden');
         }
       } catch (error) {
         if (error instanceof InvalidSubscriptionScopeError) {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+          return syncError(c, 403, 'sync.forbidden');
         }
         throw error;
       }
@@ -2736,9 +2727,9 @@ export function createSyncRoutes<
     zValidator('query', snapshotChunkQuerySchema),
     async (c) => {
       const auth = await getAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
       const artifactStorage = options.snapshotArtifactStorage;
-      if (!artifactStorage) return c.json({ error: 'NOT_FOUND' }, 404);
+      if (!artifactStorage) return syncError(c, 404, 'sync.not_found');
 
       const partitionId = auth.partitionId ?? 'default';
       const query = c.req.valid('query');
@@ -2746,23 +2737,22 @@ export function createSyncRoutes<
       const { artifactId } = c.req.valid('param');
 
       const artifact = await readScopedSnapshotArtifact(options.db, artifactId);
-      if (!artifact) return c.json({ error: 'NOT_FOUND' }, 404);
+      if (!artifact) return syncError(c, 404, 'sync.not_found');
       if (artifact.partitionId !== partitionId) {
-        return c.json({ error: 'FORBIDDEN' }, 403);
+        return syncError(c, 403, 'sync.forbidden');
       }
 
       const nowIso = new Date().toISOString();
       if (artifact.expiresAt <= nowIso) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return syncError(c, 404, 'sync.not_found');
       }
 
       if (!requestedArtifactScopes) {
-        return c.json(
-          {
-            error: 'INVALID_REQUEST',
-            message: 'Snapshot artifact scope values are required',
-          },
-          400
+        return syncError(
+          c,
+          400,
+          'sync.invalid_request',
+          'Snapshot artifact scope values are required'
         );
       }
 
@@ -2784,7 +2774,7 @@ export function createSyncRoutes<
         });
         const scopeAuth = resolved[0];
         if (!scopeAuth || scopeAuth.status !== 'active') {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+          return syncError(c, 403, 'sync.forbidden');
         }
 
         const scopeHash = await scopesToSnapshotChunkScopeKey(scopeAuth.scopes);
@@ -2792,11 +2782,11 @@ export function createSyncRoutes<
           artifact.scopeKey.startsWith('snapshot-artifact-v1:') &&
           artifact.scopeKey.endsWith(`:scope:${scopeHash}`);
         if (!scopedArtifactKeyMatches) {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+          return syncError(c, 403, 'sync.forbidden');
         }
       } catch (error) {
         if (error instanceof InvalidSubscriptionScopeError) {
-          return c.json({ error: 'FORBIDDEN' }, 403);
+          return syncError(c, 403, 'sync.forbidden');
         }
         throw error;
       }
@@ -2819,7 +2809,7 @@ export function createSyncRoutes<
         body = await artifactStorage.readArtifactStream(artifact);
       }
       body ??= await artifactStorage.readArtifact(artifact);
-      if (!body) return c.json({ error: 'NOT_FOUND' }, 404);
+      if (!body) return syncError(c, 404, 'sync.not_found');
 
       return new Response(body as BodyInit, {
         status: 200,
@@ -2846,24 +2836,28 @@ export function createSyncRoutes<
   if (wsConnectionManager && websocketConfig?.enabled) {
     routes.get('/realtime', async (c) => {
       const auth = await getAuth(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
       if (!isWebSocketOriginAllowed(c, websocketConfig.allowedOrigins)) {
         const origin = readOriginHeader(c);
         if (origin && corsConfig) {
           return createSyncCorsOriginDeniedResponse(origin);
         }
-        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+        return syncError(
+          c,
+          403,
+          'sync.forbidden',
+          'Forbidden websocket origin'
+        );
       }
       const partitionId = auth.partitionId ?? 'default';
 
       const clientId = c.req.query('clientId');
       if (!clientId || typeof clientId !== 'string') {
-        return c.json(
-          {
-            error: 'INVALID_REQUEST',
-            message: 'clientId query param is required',
-          },
-          400
+        return syncError(
+          c,
+          400,
+          'sync.invalid_request',
+          'clientId query param is required'
         );
       }
       const realtimeTransportPath = readTransportPath(
@@ -2896,14 +2890,13 @@ export function createSyncRoutes<
             clientState.ownerActorId !== auth.actorId ||
             clientState.hasConflict
           ) {
-            return c.json(
-              {
-                error: 'INVALID_CLIENT_ID',
-                message: clientState.hasConflict
-                  ? 'clientId has conflicting ownership history'
-                  : 'clientId is already bound to a different actor',
-              },
-              400
+            return syncError(
+              c,
+              400,
+              'sync.invalid_client_id',
+              clientState.hasConflict
+                ? 'clientId has conflicting ownership history'
+                : 'clientId is already bound to a different actor'
             );
           }
         }
@@ -2946,7 +2939,7 @@ export function createSyncRoutes<
           userId: auth.actorId,
           reason: 'max_total',
         });
-        return c.json({ error: 'WEBSOCKET_CONNECTION_LIMIT_TOTAL' }, 429);
+        return syncError(c, 429, 'sync.websocket_connection_limit');
       }
 
       if (
@@ -2959,7 +2952,7 @@ export function createSyncRoutes<
           userId: auth.actorId,
           reason: 'max_per_client',
         });
-        return c.json({ error: 'WEBSOCKET_CONNECTION_LIMIT_CLIENT' }, 429);
+        return syncError(c, 429, 'sync.websocket_connection_limit');
       }
 
       logSyncEvent({ event: 'sync.realtime.connect', userId: auth.actorId });
@@ -3024,7 +3017,7 @@ export function createSyncRoutes<
 
       const upgradeWebSocket = websocketConfig.upgradeWebSocket;
       if (!upgradeWebSocket) {
-        return c.json({ error: 'WEBSOCKET_NOT_CONFIGURED' }, 500);
+        return syncError(c, 500, 'sync.websocket_not_configured');
       }
 
       return upgradeWebSocket(c, {

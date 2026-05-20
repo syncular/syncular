@@ -1,3 +1,4 @@
+import { SYNCULAR_ERROR_DEFINITIONS } from '@syncular/core';
 import type {
   SyncularV2ErrorCategory,
   SyncularV2ErrorCode,
@@ -58,8 +59,18 @@ export function syncularV2ErrorDetails(
 ): Record<string, unknown> | undefined {
   if (error instanceof SyncularV2ClientError) return error.details;
   if (!(error instanceof Error)) return undefined;
+  const serverError = syncularServerErrorFromMessage(error.message);
   const details: Record<string, unknown> = {
     ...(httpStatusFromMessage(error.message) ?? {}),
+    ...(serverError
+      ? {
+          serverErrorCode: serverError.code,
+          serverErrorCategory: serverError.category,
+          serverRetryable: serverError.retryable,
+          serverRecommendedAction: serverError.recommendedAction,
+        }
+      : {}),
+    ...(serverError?.details ? { serverDetails: serverError.details } : {}),
     ...(error.message.includes('full snapshot resync required')
       ? { resyncRequired: true }
       : {}),
@@ -78,18 +89,36 @@ export function classifySyncularV2Error(
   message = syncularV2ErrorMessage(error),
   details: Record<string, unknown> | undefined = syncularV2ErrorDetails(error)
 ): Omit<SyncularV2ErrorEnvelope, 'message' | 'details'> | null {
+  const serverError = syncularServerErrorFromMessage(message);
+  if (serverError) {
+    return {
+      code: serverError.code,
+      category: serverError.category,
+      retryable: serverError.retryable,
+      recommendedAction: serverError.recommendedAction,
+    };
+  }
+
   const status =
     details &&
     'status' in details &&
     (details.status === 401 || details.status === 403)
       ? details.status
       : httpStatusFromMessage(message)?.status;
-  if (status) {
+  if (status === 401) {
     return {
       code: 'sync.auth_required',
       category: 'auth-required',
       retryable: true,
       recommendedAction: 'refreshAuth',
+    };
+  }
+  if (status === 403) {
+    return {
+      code: 'sync.forbidden',
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
     };
   }
 
@@ -164,4 +193,51 @@ function syncularDebugFromError(error: unknown): string | undefined {
       'string'
     ? (error as Error & { syncularDebug: string }).syncularDebug
     : undefined;
+}
+
+function syncularServerErrorFromMessage(
+  message: string
+): Omit<SyncularV2ErrorEnvelope, 'message'> | null {
+  const match = /\bHTTP \d{3}\b: (\{.*\})\s*$/s.exec(message);
+  if (!match) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[1] ?? '');
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const record = parsed as Record<string, unknown>;
+  const rawCode =
+    typeof record.code === 'string'
+      ? record.code
+      : typeof record.error === 'string'
+        ? record.error
+        : null;
+  if (!rawCode || !(rawCode in SYNCULAR_ERROR_DEFINITIONS)) return null;
+
+  const definition =
+    SYNCULAR_ERROR_DEFINITIONS[
+      rawCode as keyof typeof SYNCULAR_ERROR_DEFINITIONS
+    ];
+  return {
+    code: rawCode as SyncularV2ErrorCode,
+    category:
+      typeof record.category === 'string'
+        ? (record.category as SyncularV2ErrorCategory)
+        : definition.category,
+    retryable:
+      typeof record.retryable === 'boolean'
+        ? record.retryable
+        : definition.retryable,
+    recommendedAction:
+      typeof record.recommendedAction === 'string'
+        ? (record.recommendedAction as SyncularV2ErrorRecommendedAction)
+        : definition.recommendedAction,
+    ...(record.details && typeof record.details === 'object'
+      ? { details: record.details as Record<string, unknown> }
+      : {}),
+  };
 }
