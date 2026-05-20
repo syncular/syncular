@@ -65,6 +65,8 @@ Retained first slice:
   prepares base tables, local indexes, and read-model triggers without running
   read-model rebuild SQL, but it fails if app tables already contain data
   without current generated schema metadata.
+- Browser E2E scoreboard now accepts `--rust-schema-install-mode`, so install
+  strategies can be measured without local harness edits.
 - Generated read-model output tables are included in the TypeScript Kysely DB
   interface and Rust Diesel schema, but they are not included in app-table
   sync/mutation metadata.
@@ -142,10 +144,10 @@ also stayed in band with the default `full` installer path:
 
 | Metric | Previous accepted | Phase helpers | `liveSetup` mode |
 | --- | ---: | ---: | ---: |
-| Rust bootstrap | `147.84ms` | `146.94ms` | `145.89ms` |
+| Rust bootstrap | `147.84ms` | `146.94ms` | `147.50ms` |
 | Rust local list p50 | `0.23ms` | `0.21ms` | `0.23ms` |
-| Rust local search p50 | `1.51ms` | `1.40ms` | `1.51ms` |
-| Rust raw aggregate p50 | `21.98ms` | `24.42ms` | `23.99ms` |
+| Rust local search p50 | `1.51ms` | `1.40ms` | `1.43ms` |
+| Rust raw aggregate p50 | `21.98ms` | `24.42ms` | `24.34ms` |
 | Rust read-model aggregate p50 | `0.05ms` | `0.05ms` | `0.05ms` |
 
 External app-style local-query gate after wiring the local

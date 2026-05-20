@@ -184,6 +184,8 @@ read-only review:
     `liveSetup` install mode prepares those live-maintained local structures
     without a read-model rebuild only when app tables are empty or already
     marked current.
+    The browser E2E scoreboard now has a `--rust-schema-install-mode` switch so
+    those strategies can be measured directly.
     Browser scoreboard now measures raw aggregate and read-model aggregate lanes:
     at 100k rows, Rust read-model aggregate p50 is `0.05ms` vs TS `0.53ms`
     while raw aggregate remains visible (`23.00ms` Rust vs `161.09ms` TS). This

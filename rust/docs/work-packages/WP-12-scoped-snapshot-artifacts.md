@@ -737,7 +737,7 @@ Generated derived-schema contract follow-up:
   schema contract directly instead of rebuilding derived SQL fixtures by hand.
   The default generated installer stayed in band on the 100k release artifact
   gate (`147.84ms -> 146.94ms`), and the generated `liveSetup` install mode
-  stayed in band at `145.89ms`.
+  stayed in band at `147.50ms` through the browser E2E schema-mode switch.
 
 ## Next Action
 
