@@ -32,7 +32,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(feature = "native")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "native")]
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "native")]
 use std::time::{Duration, SystemTime};
 #[cfg(feature = "native")]
@@ -129,6 +129,7 @@ pub struct HttpSyncTransport {
     auth_headers: SyncAuthHeaders,
     auth_signer: Option<SyncAuthSigner>,
     schema_version: i32,
+    sync_trace_context: Mutex<Option<SyncTraceContext>>,
 }
 
 #[cfg(feature = "native")]
@@ -136,6 +137,14 @@ pub struct RealtimeSocket {
     socket: WebSocket<MaybeTlsStream<TcpStream>>,
     push_response_timeout: Duration,
     shutdown_timeout: Duration,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncTraceContext {
+    sync_attempt_id: String,
+    trace_id: String,
+    span_id: String,
 }
 
 pub use crate::protocol::{RealtimePresenceEntry, RealtimePresenceEvent};
@@ -220,6 +229,7 @@ impl HttpSyncTransport {
             auth_headers: SyncAuthHeaders::new(),
             auth_signer: None,
             schema_version: default_app_schema().current_schema_version(),
+            sync_trace_context: Mutex::new(None),
         }
     }
 
@@ -249,6 +259,10 @@ impl SyncTransport for HttpSyncTransport {
 
     fn post_sync(&self, request: &CombinedRequest) -> Result<CombinedResponse> {
         let body = serde_json::to_vec(request)?;
+        let mut headers = self.signed_auth_headers("POST", &self.config.base_url, &body)?;
+        let trace_context = SyncTraceContext::from_headers_or_new(&headers);
+        trace_context.insert_missing_headers(&mut headers);
+        self.set_sync_trace_context(trace_context);
         let builder = self
             .http
             .post(&self.config.base_url)
@@ -256,7 +270,7 @@ impl SyncTransport for HttpSyncTransport {
             .header("x-syncular-schema-version", self.schema_version.to_string())
             .header("x-syncular-transport-path", "direct");
         let response = self
-            .apply_auth(builder, "POST", &self.config.base_url, &body)?
+            .apply_headers(builder, &headers)
             .body(body)
             .send()
             .map_err(|err| {
@@ -299,8 +313,11 @@ impl SyncTransport for HttpSyncTransport {
             .http
             .get(&url)
             .header("x-syncular-snapshot-scopes", serde_json::to_string(scopes)?);
+        let mut headers = self.signed_auth_headers("GET", &url, &[])?;
+        let trace_context = self.sync_trace_context(&headers);
+        trace_context.insert_missing_headers(&mut headers);
         let response = self
-            .apply_auth(request, "GET", &url, &[])?
+            .apply_headers(request, &headers)
             .send()
             .map_err(|err| SyncularError::transport(err).context(format!("GET {url}")))?;
         let status = response.status();
@@ -330,8 +347,11 @@ impl SyncTransport for HttpSyncTransport {
             .http
             .get(&url)
             .header("x-syncular-snapshot-scopes", serde_json::to_string(scopes)?);
+        let mut headers = self.signed_auth_headers("GET", &url, &[])?;
+        let trace_context = self.sync_trace_context(&headers);
+        trace_context.insert_missing_headers(&mut headers);
         let response = self
-            .apply_auth(request, "GET", &url, &[])?
+            .apply_headers(request, &headers)
             .send()
             .map_err(|err| SyncularError::transport(err).context(format!("GET {url}")))?;
         let status = response.status();
@@ -437,6 +457,10 @@ impl HttpSyncTransport {
         url: &str,
         body: &[u8],
     ) -> Result<reqwest::blocking::RequestBuilder> {
+        Ok(self.apply_headers(builder, &self.signed_auth_headers(method, url, body)?))
+    }
+
+    fn signed_auth_headers(&self, method: &str, url: &str, body: &[u8]) -> Result<SyncAuthHeaders> {
         let mut headers = self.auth_headers.clone();
         if let Some(signer) = &self.auth_signer {
             let signed = signer(SyncRequestToSign {
@@ -449,7 +473,29 @@ impl HttpSyncTransport {
             })?;
             headers.extend(signed);
         }
-        Ok(apply_auth_headers(builder, &headers))
+        Ok(headers)
+    }
+
+    fn apply_headers(
+        &self,
+        builder: reqwest::blocking::RequestBuilder,
+        headers: &SyncAuthHeaders,
+    ) -> reqwest::blocking::RequestBuilder {
+        apply_auth_headers(builder, headers)
+    }
+
+    fn set_sync_trace_context(&self, trace_context: SyncTraceContext) {
+        if let Ok(mut current) = self.sync_trace_context.lock() {
+            *current = Some(trace_context);
+        }
+    }
+
+    fn sync_trace_context(&self, headers: &SyncAuthHeaders) -> SyncTraceContext {
+        self.sync_trace_context
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| SyncTraceContext::from_headers_or_new(headers))
     }
 
     fn upload_blob_body(&self, blob: &BlobRef, body: BlockingBody) -> Result<()> {
@@ -590,7 +636,9 @@ impl RealtimeSocket {
         schema_version: i32,
     ) -> Result<Self> {
         let url = ws_url(&config.base_url, &config.client_id, schema_version)?;
-        let auth_headers = signed_realtime_auth_headers(auth_headers, auth_signer, &url)?;
+        let mut auth_headers = signed_realtime_auth_headers(auth_headers, auth_signer, &url)?;
+        let trace_context = SyncTraceContext::from_headers_or_new(&auth_headers);
+        trace_context.insert_missing_headers(&mut auth_headers);
         let mut request = url
             .into_client_request()
             .map_err(|err| SyncularError::transport(err).context("build websocket request"))?;
@@ -626,6 +674,54 @@ impl RealtimeSocket {
             push_response_timeout: config.timeouts.websocket_push_response,
             shutdown_timeout: config.timeouts.websocket_shutdown,
         })
+    }
+}
+
+#[cfg(feature = "native")]
+impl SyncTraceContext {
+    fn new() -> Self {
+        let trace_id = Uuid::new_v4().simple().to_string();
+        let span_seed = Uuid::new_v4().simple().to_string();
+        let span_id = span_seed[..16].to_string();
+        Self {
+            sync_attempt_id: trace_id.clone(),
+            trace_id,
+            span_id,
+        }
+    }
+
+    fn from_headers_or_new(headers: &SyncAuthHeaders) -> Self {
+        if let Some(traceparent) =
+            header_value(headers, "traceparent").and_then(parse_w3c_traceparent)
+        {
+            return Self {
+                sync_attempt_id: header_value(headers, "x-syncular-sync-attempt-id")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| traceparent.0.clone()),
+                trace_id: traceparent.0,
+                span_id: traceparent.1,
+            };
+        }
+
+        Self::new()
+    }
+
+    fn traceparent(&self) -> String {
+        format!("00-{}-{}-01", self.trace_id, self.span_id)
+    }
+
+    fn sentry_trace(&self) -> String {
+        format!("{}-{}-1", self.trace_id, self.span_id)
+    }
+
+    fn insert_missing_headers(&self, headers: &mut SyncAuthHeaders) {
+        insert_header_if_missing(headers, "traceparent", self.traceparent());
+        insert_header_if_missing(headers, "sentry-trace", self.sentry_trace());
+        insert_header_if_missing(
+            headers,
+            "x-syncular-sync-attempt-id",
+            self.sync_attempt_id.clone(),
+        );
     }
 }
 
@@ -762,6 +858,46 @@ fn effective_auth_headers(auth_headers: &SyncAuthHeaders) -> Vec<(String, String
         .iter()
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
+}
+
+#[cfg(feature = "native")]
+fn header_value<'a>(headers: &'a SyncAuthHeaders, name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+#[cfg(feature = "native")]
+fn insert_header_if_missing(headers: &mut SyncAuthHeaders, name: &str, value: String) {
+    if header_value(headers, name).is_none() {
+        headers.insert(name.to_string(), value);
+    }
+}
+
+#[cfg(feature = "native")]
+fn parse_w3c_traceparent(traceparent: &str) -> Option<(String, String)> {
+    let mut parts = traceparent.trim().split('-');
+    let version = parts.next()?;
+    let trace_id = parts.next()?;
+    let span_id = parts.next()?;
+    let flags = parts.next()?;
+    if parts.next().is_some()
+        || version != "00"
+        || !is_valid_trace_hex(trace_id, 32)
+        || !is_valid_trace_hex(span_id, 16)
+        || !is_valid_trace_hex(flags, 2)
+        || trace_id.chars().all(|ch| ch == '0')
+        || span_id.chars().all(|ch| ch == '0')
+    {
+        return None;
+    }
+    Some((trace_id.to_ascii_lowercase(), span_id.to_ascii_lowercase()))
+}
+
+#[cfg(feature = "native")]
+fn is_valid_trace_hex(value: &str, len: usize) -> bool {
+    value.len() == len && value.as_bytes().iter().all(u8::is_ascii_hexdigit)
 }
 
 #[cfg(feature = "native")]
@@ -1007,6 +1143,111 @@ mod tests {
     }
 
     #[test]
+    fn sync_trace_context_derives_attempt_from_existing_traceparent() {
+        let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+        let span_id = "00f067aa0ba902b7";
+        let headers = SyncAuthHeaders::from([(
+            "TraceParent".to_string(),
+            format!("00-{trace_id}-{span_id}-01"),
+        )]);
+
+        let context = SyncTraceContext::from_headers_or_new(&headers);
+
+        assert_eq!(context.sync_attempt_id, trace_id);
+        assert_eq!(context.trace_id, trace_id);
+        assert_eq!(context.span_id, span_id);
+    }
+
+    #[test]
+    fn http_sync_reuses_trace_context_for_snapshot_chunks() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind sync trace server");
+        let address = listener.local_addr().expect("sync trace server address");
+        let (headers_tx, headers_rx) = mpsc::channel::<(BTreeMap<String, String>, String)>();
+
+        let compressed_chunk = gzip_bytes(b"not-json-row-frame");
+        let chunk = SnapshotChunkRef {
+            id: "trace-chunk".to_string(),
+            byte_length: compressed_chunk.len() as i64,
+            sha256: hex::encode(Sha256::digest(&compressed_chunk)),
+            encoding: SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
+            compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
+        };
+        let server_chunk = compressed_chunk.clone();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept sync request");
+            let post = read_http_request_raw(&mut stream);
+            let post_headers = http_headers(&post);
+            let attempt_id = post_headers
+                .get("x-syncular-sync-attempt-id")
+                .expect("post sync attempt id")
+                .to_string();
+            headers_tx
+                .send((post_headers, "post".to_string()))
+                .expect("send post headers");
+            write_http_json_response(
+                &mut stream,
+                json!({
+                    "ok": true,
+                    "push": null,
+                    "pull": null
+                }),
+            );
+
+            let (mut stream, _) = listener.accept().expect("accept snapshot chunk request");
+            let get = read_http_request_raw(&mut stream);
+            let get_headers = http_headers(&get);
+            assert_eq!(
+                get_headers.get("x-syncular-sync-attempt-id"),
+                Some(&attempt_id)
+            );
+            headers_tx
+                .send((get_headers, "get".to_string()))
+                .expect("send get headers");
+            write_http_bytes_response(&mut stream, "application/octet-stream", &server_chunk);
+        });
+
+        let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+            format!("http://{address}/sync"),
+            "native-trace-client",
+            "native-trace-actor",
+        ));
+        let request = CombinedRequest {
+            client_id: "native-trace-client".to_string(),
+            sync_pack_encodings: Vec::new(),
+            push: None,
+            pull: None,
+        };
+        transport.post_sync(&request).expect("post sync");
+        let _ = transport.fetch_snapshot_chunk_rows(&chunk, &ScopeValues::new());
+
+        let (post_headers, post_kind) = headers_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("post headers");
+        let (get_headers, get_kind) = headers_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("get headers");
+        assert_eq!(post_kind, "post");
+        assert_eq!(get_kind, "get");
+        let attempt_id = post_headers
+            .get("x-syncular-sync-attempt-id")
+            .expect("post attempt id");
+        assert_eq!(
+            get_headers.get("x-syncular-sync-attempt-id"),
+            Some(attempt_id)
+        );
+        assert!(post_headers
+            .get("traceparent")
+            .is_some_and(|value| value.contains(attempt_id)));
+        assert_eq!(post_headers.get("sentry-trace").is_some(), true);
+        assert_eq!(
+            get_headers.get("traceparent"),
+            post_headers.get("traceparent")
+        );
+        server.join().expect("sync trace server finished");
+    }
+
+    #[test]
     fn realtime_auth_headers_are_signed_for_websocket_get_request() {
         let captured = Arc::new(Mutex::new(None::<SyncRequestToSign>));
         let captured_for_signer = Arc::clone(&captured);
@@ -1140,5 +1381,73 @@ mod tests {
             "websocket open ignored configured timeout: {elapsed:?}"
         );
         server.join().expect("websocket test server finished");
+    }
+
+    fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(bytes).expect("write gzip payload");
+        encoder.finish().expect("finish gzip payload")
+    }
+
+    fn read_http_request_raw(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set request read timeout");
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).expect("read http request");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if http_request_complete(&buffer) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&buffer).into_owned()
+    }
+
+    fn http_request_complete(buffer: &[u8]) -> bool {
+        let request = String::from_utf8_lossy(buffer);
+        let Some(header_end) = request.find("\r\n\r\n") else {
+            return false;
+        };
+        let content_length = request
+            .lines()
+            .find_map(|line| line.split_once(':'))
+            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        buffer.len() >= header_end + 4 + content_length
+    }
+
+    fn http_headers(request: &str) -> BTreeMap<String, String> {
+        request
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.trim().is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            .collect()
+    }
+
+    fn write_http_json_response(stream: &mut std::net::TcpStream, body: Value) {
+        write_http_bytes_response(stream, "application/json", body.to_string().as_bytes());
+    }
+
+    fn write_http_bytes_response(
+        stream: &mut std::net::TcpStream,
+        content_type: &str,
+        body: &[u8],
+    ) {
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .expect("write http response headers");
+        stream.write_all(body).expect("write http response body");
     }
 }

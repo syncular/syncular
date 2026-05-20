@@ -88,6 +88,7 @@ This must work without attaching a debugger or guessing from app tables.
 - Console UI tests or a targeted build/typecheck when console pages change:
   `bun run --cwd packages/console tsgo`
 - Runtime/native tests when Rust event structures or native bindings change:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib --features native,crdt-yjs,demo-todo-native-fixture transport::tests`
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade --features native,crdt-yjs,demo-todo-native-fixture`
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_ffi --features native,crdt-yjs,demo-todo-native-fixture`
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings`
@@ -179,9 +180,7 @@ Continue first-slice correlation work:
 
 1. Add tests that prove a successful pull and a realtime pull-required recovery
    can be correlated across client diagnostics and server request records.
-2. Decide whether native sync should use the same W3C trace header injection
-   directly in the Rust transport or via facade-level sync attempt options.
-3. Add native sync timing buckets to the diagnostic snapshot if apps need the
+2. Add native sync timing buckets to the diagnostic snapshot if apps need the
    same timing breakdown currently exposed by the browser worker snapshot.
 
 ## Progress
@@ -213,3 +212,11 @@ Continue first-slice correlation work:
   exposing raw scope values.
 - Added native facade, C FFI, and generated binding scaffold coverage for the
   diagnostic snapshot surface and redaction behavior.
+- Added native Rust transport trace propagation for HTTP sync attempts. Native
+  HTTP sync now emits `traceparent`, `sentry-trace`, and
+  `x-syncular-sync-attempt-id`, derives the attempt id from an existing
+  traceparent when supplied, and reuses the active attempt for snapshot chunk
+  and artifact fetches.
+- Added native transport unit coverage for generated trace context, existing
+  traceparent adoption, and stable attempt reuse across sync POST and snapshot
+  chunk fetch.
