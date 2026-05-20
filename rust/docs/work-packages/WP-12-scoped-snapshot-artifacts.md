@@ -821,14 +821,38 @@ Retained generated index metadata follow-up:
   `bun run --cwd rust/examples/todo-app tsgo`, and
   `bun run --cwd rust/bindings/browser tsgo`.
 
+Retained local-index normalization follow-up:
+
+- The generator now omits redundant generated local indexes when a longer
+  non-unique, non-partial, non-expression index on the same table covers the
+  shorter index's leading column sequence.
+- Unique and partial indexes are preserved. This is an app-declared index
+  normalization, not hidden caching or a runtime fallback.
+- The external benchmark app's shorter
+  `(project_id, owner_id, completed)` index is covered by
+  `(project_id, owner_id, completed, updated_at desc)` and is no longer created
+  by the generated install contract.
+- Local external-schema probe improved 500k derived setup
+  `1110.12ms -> 794.66ms`, with index creation
+  `1070.57ms -> 757.80ms`.
+- External app-style scoped artifact 500k bootstrap improved
+  `1382.56ms -> 1142.29ms`; derived schema improved
+  `930.41ms -> 672.43ms`; peak memory improved
+  `696.50MB -> 667.59MB`; `snapshotChunkCount` stayed `0`.
+- External Rust local-query stayed healthy after the omitted prefix index:
+  list p50 `0.16ms`, search p50 `0.22ms`, read-model aggregate p50 `0.02ms`,
+  raw aggregate p50 `7.64ms`.
+- Browser 100k release artifact guard stayed in band:
+  bootstrap `144.00ms -> 143.14ms`, schema install `5.34ms -> 5.20ms`.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
 
 - The accepted scoped artifact baseline is now external Rust 500k bootstrap
-  `1334.25ms`, local apply `198ms`, response bytes `3537673`, peak memory
-  `707.92MB`, and `snapshotChunkCount=0`, with external artifact precompute
-  row limit `40000`.
+  `1142.29ms`, derived schema `672.43ms`, local apply `222ms`, response bytes
+  `3537756`, peak memory `667.59MB`, and `snapshotChunkCount=0`, with external
+  artifact precompute row limit `40000`.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. These either regressed wall time
@@ -844,9 +868,10 @@ Continue artifact resource-state work, but keep it benchmark-gated.
 - Derived-schema setup is now a first-class performance input for app-style
   bootstrap comparisons. Keep optimizing only generated, app-declared local
   indexes/read models; do not introduce hidden runtime caches.
-- The immediate derived-schema bottleneck is app-declared index creation, not
-  read-model rebuild. Avoid read-model rebuild order changes unless the external
-  app-style gate proves a clear win.
+- The remaining derived-schema bottleneck is still app-declared index creation,
+  but the obvious redundant-prefix case is handled. Avoid additional
+  index-order/read-model rebuild changes unless the external app-style gate
+  proves a clear win.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows

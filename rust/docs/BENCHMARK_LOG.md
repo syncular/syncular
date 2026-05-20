@@ -18,6 +18,129 @@ Decision:
 Notes:
 ```
 
+## 2026-05-20 - Retained Redundant Local Index Prefix Omission
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- The Rust code generator now omits a generated local index when another
+  non-unique, non-partial, non-expression index on the same table has the same
+  leading column sequence.
+- Unique and partial indexes are preserved because they can affect correctness
+  or planner behavior beyond prefix coverage.
+- The external benchmark app declares both
+  `(project_id, owner_id, completed)` and
+  `(project_id, owner_id, completed, updated_at desc)`; the shorter non-unique
+  prefix index is now omitted from the generated install contract.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+Local external-schema probe:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+bun .context/derived-schema-probe.ts 500000
+```
+
+| Metric | Previous probe | Current probe |
+| --- | ---: | ---: |
+| 500k derived total | `1110.12ms` | `794.66ms` |
+| 500k index creation | `1070.57ms` | `757.80ms` |
+| 500k read-model rebuild | `38.88ms` | `35.93ms` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T06-41-15-280Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 500k bootstrap | `1382.56ms` | `1142.29ms` |
+| 500k derived schema | `930.41ms` | `672.43ms` |
+| 500k sync total | `437ms` | `456ms` |
+| 500k pull apply | `326ms` | `341ms` |
+| 500k local apply | `202ms` | `222ms` |
+| 500k response bytes | `3,537,756` | `3,537,756` |
+| 500k peak memory | `696.50MB` | `667.59MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External local-query check:
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T06-42-08-810Z/syncular-rust/local-query.json`
+
+| Metric | Current |
+| --- | ---: |
+| Bootstrap | `289.52ms` |
+| List p50 / p95 | `0.16ms` / `0.29ms` |
+| Search p50 / p95 | `0.22ms` / `0.43ms` |
+| Read-model aggregate p50 / p95 | `0.02ms` / `0.07ms` |
+| Raw aggregate p50 / p95 | `7.64ms` / `9.94ms` |
+
+Same-session TS local-query failed with `Request failed`, so it was not used as
+a comparison point for this slice.
+
+Browser release artifact guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-index-prefix-normalization-100k.json
+```
+
+| Metric | Previous schema timing run | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `144.00ms` | `143.14ms` |
+| Rust schema install | `5.34ms` | `5.20ms` |
+| Rust cached schema install | `1.91ms` | `2.04ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.06ms` |
+| Browser entry JS bytes | `1,278,907` | `1,279,706` |
+
+Decision:
+
+- Accepted. The change removes redundant generated work from app-declared
+  local indexes, materially improves external 500k bootstrap and peak memory,
+  and does not introduce hidden runtime caching or a compatibility branch.
+- The sync/apply timings moved slightly upward in the external run, but total
+  bootstrap and memory improved enough to keep the slice.
+
 ## 2026-05-20 - Retained Generated Schema Phase Timings
 
 Commit: retained slice

@@ -39,6 +39,11 @@ struct IndexRow {
     name: String,
     #[diesel(sql_type = Text)]
     sql: String,
+    #[diesel(sql_type = Integer)]
+    #[diesel(column_name = "unique_flag")]
+    unique_flag: i32,
+    #[diesel(sql_type = Integer)]
+    partial: i32,
 }
 
 #[derive(Clone)]
@@ -46,6 +51,8 @@ struct TableIndex {
     name: String,
     sql: String,
     columns: Vec<TableIndexColumn>,
+    unique: bool,
+    partial: bool,
 }
 
 #[derive(Clone)]
@@ -417,6 +424,16 @@ fn sqlite_index_create_if_not_exists(sql: &str) -> String {
     trimmed.to_string()
 }
 
+fn sqlite_index_sql_is_unique(sql: &str) -> bool {
+    let upper = sql.trim().to_ascii_uppercase();
+    upper.starts_with("CREATE UNIQUE INDEX ")
+        || upper.starts_with("CREATE UNIQUE INDEX IF NOT EXISTS ")
+}
+
+fn sqlite_index_sql_is_partial(sql: &str) -> bool {
+    sql.to_ascii_uppercase().contains(" WHERE ")
+}
+
 fn schema_json_index_columns(index: &TableIndex) -> Vec<SchemaJsonIndexColumn> {
     index
         .columns
@@ -426,6 +443,40 @@ fn schema_json_index_columns(index: &TableIndex) -> Vec<SchemaJsonIndexColumn> {
             descending: column.descending,
         })
         .collect()
+}
+
+fn effective_local_indexes(indexes: &[TableIndex]) -> Vec<&TableIndex> {
+    indexes
+        .iter()
+        .filter(|candidate| {
+            !indexes.iter().any(|covering| {
+                candidate.name != covering.name && local_index_covers_prefix(candidate, covering)
+            })
+        })
+        .collect()
+}
+
+fn local_index_covers_prefix(candidate: &TableIndex, covering: &TableIndex) -> bool {
+    if candidate.unique || candidate.partial || covering.unique || covering.partial {
+        return false;
+    }
+    if candidate.columns.is_empty() || candidate.columns.len() >= covering.columns.len() {
+        return false;
+    }
+    if candidate
+        .columns
+        .iter()
+        .chain(covering.columns.iter())
+        .any(|column| column.name.is_none())
+    {
+        return false;
+    }
+    candidate.columns.iter().zip(covering.columns.iter()).all(
+        |(candidate_column, covering_column)| {
+            candidate_column.name == covering_column.name
+                && candidate_column.descending == covering_column.descending
+        },
+    )
 }
 
 fn sqlite_column_decl_type(column: &ColumnRow) -> String {
@@ -814,9 +865,8 @@ fn generate_schema_json(
             server_version_column: server_version_column.to_string(),
             soft_delete_column: table_config.soft_delete_column.clone(),
             columns,
-            indexes: table
-                .indexes
-                .iter()
+            indexes: effective_local_indexes(&table.indexes)
+                .into_iter()
                 .map(|index| SchemaJsonIndex {
                     name: index.name.clone(),
                     sql: sqlite_index_create_if_not_exists(&index.sql),
@@ -1138,6 +1188,8 @@ fn schema_backed_codegen_inputs(
                             descending: column.descending,
                         })
                         .collect(),
+                    unique: sqlite_index_sql_is_unique(&index.sql),
+                    partial: sqlite_index_sql_is_partial(&index.sql),
                 })
                 .collect(),
         });
@@ -2036,12 +2088,11 @@ fn load_tables(conn: &mut SqliteConnection) -> Result<Vec<TableInfo>> {
 fn load_indexes(conn: &mut SqliteConnection, table_name: &str) -> Result<Vec<TableIndex>> {
     let query = format!(
         r#"
-        SELECT name, sql
-        FROM sqlite_master
-        WHERE type = 'index'
-          AND tbl_name = {}
-          AND sql IS NOT NULL
-        ORDER BY name ASC
+        SELECT il.name AS name, m.sql AS sql, il."unique" AS unique_flag, il.partial AS partial
+        FROM pragma_index_list({}) AS il
+        JOIN sqlite_master AS m ON m.type = 'index' AND m.name = il.name
+        WHERE m.sql IS NOT NULL
+        ORDER BY il.name ASC
         "#,
         quote_sqlite_string(table_name)
     );
@@ -2056,6 +2107,8 @@ fn load_indexes(conn: &mut SqliteConnection, table_name: &str) -> Result<Vec<Tab
                 name: row.name,
                 sql: sqlite_index_create_if_not_exists(&row.sql),
                 columns,
+                unique: row.unique_flag != 0,
+                partial: row.partial != 0,
             })
         })
         .collect()
@@ -4934,7 +4987,7 @@ fn generate_typescript_module(
         "export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = [\n",
     );
     for table in &user_tables {
-        for index in &table.indexes {
+        for index in effective_local_indexes(&table.indexes) {
             out.push_str("  {\n");
             out.push_str(&format!("    table: {},\n", ts_string(&table.name)));
             out.push_str(&format!("    name: {},\n", ts_string(&index.name)));
@@ -9405,6 +9458,22 @@ mod tests {
         }
     }
 
+    fn table_index(name: &str, sql: &str, columns: Vec<(&str, bool)>) -> TableIndex {
+        TableIndex {
+            name: name.to_string(),
+            sql: sql.to_string(),
+            columns: columns
+                .into_iter()
+                .map(|(name, descending)| TableIndexColumn {
+                    name: Some(name.to_string()),
+                    descending,
+                })
+                .collect(),
+            unique: sqlite_index_sql_is_unique(sql),
+            partial: sqlite_index_sql_is_partial(sql),
+        }
+    }
+
     fn scope(name: &str, column: &str, source: &str, required: bool) -> ScopeCodegenConfig {
         ScopeCodegenConfig {
             name: Some(name.to_string()),
@@ -9594,20 +9663,11 @@ mod tests {
                 column("server_version", "BIGINT", true, false, Some("0")),
             ],
         );
-        tasks.indexes.push(TableIndex {
-            name: "idx_tasks_project_id".to_string(),
-            sql: "CREATE INDEX idx_tasks_project_id ON tasks (project_id, id)".to_string(),
-            columns: vec![
-                TableIndexColumn {
-                    name: Some("project_id".to_string()),
-                    descending: false,
-                },
-                TableIndexColumn {
-                    name: Some("id".to_string()),
-                    descending: false,
-                },
-            ],
-        });
+        tasks.indexes.push(table_index(
+            "idx_tasks_project_id",
+            "CREATE INDEX idx_tasks_project_id ON tasks (project_id, id)",
+            vec![("project_id", false), ("id", false)],
+        ));
         let tables = vec![tasks];
         let mut tasks_config = table_config(
             "sub-tasks",
@@ -10138,25 +10198,11 @@ mod tests {
                 column("server_version", "BIGINT", true, false, Some("0")),
             ],
         );
-        tasks.indexes.push(TableIndex {
-            name: "idx_tasks_user_project_id".to_string(),
-            sql: "CREATE INDEX idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
-                .to_string(),
-            columns: vec![
-                TableIndexColumn {
-                    name: Some("user_id".to_string()),
-                    descending: false,
-                },
-                TableIndexColumn {
-                    name: Some("project_id".to_string()),
-                    descending: false,
-                },
-                TableIndexColumn {
-                    name: Some("id".to_string()),
-                    descending: false,
-                },
-            ],
-        });
+        tasks.indexes.push(table_index(
+            "idx_tasks_user_project_id",
+            "CREATE INDEX idx_tasks_user_project_id ON tasks (user_id, project_id, id)",
+            vec![("user_id", false), ("project_id", false), ("id", false)],
+        ));
         let mut table_configs = BTreeMap::new();
         table_configs.insert(
             "tasks".to_string(),
@@ -10186,6 +10232,62 @@ mod tests {
         ));
         assert!(output.contains("await ensureSyncularAppIndexes(db);"));
         assert!(!output.contains("async function syncularGeneratedTableExists"));
+        Ok(())
+    }
+
+    #[test]
+    fn generated_local_indexes_omit_redundant_non_unique_prefixes() -> Result<()> {
+        let mut tasks = table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("project_id", "TEXT", true, false, None),
+                column("owner_id", "TEXT", true, false, None),
+                column("completed", "INTEGER", true, false, Some("0")),
+                column("updated_at", "TEXT", true, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+            ],
+        );
+        tasks.indexes.push(table_index(
+            "idx_tasks_project_owner_completed",
+            "CREATE INDEX idx_tasks_project_owner_completed ON tasks (project_id, owner_id, completed)",
+            vec![("project_id", false), ("owner_id", false), ("completed", false)],
+        ));
+        tasks.indexes.push(table_index(
+            "idx_tasks_project_owner_completed_updated_at",
+            "CREATE INDEX idx_tasks_project_owner_completed_updated_at ON tasks (project_id, owner_id, completed, updated_at DESC)",
+            vec![
+                ("project_id", false),
+                ("owner_id", false),
+                ("completed", false),
+                ("updated_at", true),
+            ],
+        ));
+        tasks.indexes.push(table_index(
+            "idx_tasks_project_owner_unique",
+            "CREATE UNIQUE INDEX idx_tasks_project_owner_unique ON tasks (project_id, owner_id)",
+            vec![("project_id", false), ("owner_id", false)],
+        ));
+        let mut table_configs = BTreeMap::new();
+        table_configs.insert(
+            "tasks".to_string(),
+            table_config(
+                "sub-tasks",
+                "server_version",
+                vec![scope("project_id", "project_id", "projectId", false)],
+            ),
+        );
+        let config = CodegenConfig {
+            tables: table_configs,
+            typescript_runtime_import_path: Some("@app/sync-runtime".to_string()),
+            ..CodegenConfig::default()
+        };
+
+        let output = generate_typescript_module(&[tasks], &config, 3)?;
+
+        assert!(!output.contains("name: 'idx_tasks_project_owner_completed'"));
+        assert!(output.contains("name: 'idx_tasks_project_owner_completed_updated_at'"));
+        assert!(output.contains("name: 'idx_tasks_project_owner_unique'"));
         Ok(())
     }
 
@@ -10289,6 +10391,10 @@ mod tests {
         .execute(&mut conn)?;
         sql_query("CREATE INDEX idx_tasks_user_updated ON tasks (user_id, updated_at DESC)")
             .execute(&mut conn)?;
+        sql_query("CREATE UNIQUE INDEX idx_tasks_user_unique ON tasks (user_id, id)")
+            .execute(&mut conn)?;
+        sql_query("CREATE INDEX idx_tasks_user_partial ON tasks (user_id) WHERE updated_at > ''")
+            .execute(&mut conn)?;
 
         let tables = load_tables(&mut conn)?;
         let tasks = tables
@@ -10300,12 +10406,26 @@ mod tests {
             .iter()
             .find(|index| index.name == "idx_tasks_user_updated")
             .expect("generated index");
+        let unique_index = tasks
+            .indexes
+            .iter()
+            .find(|index| index.name == "idx_tasks_user_unique")
+            .expect("unique index");
+        let partial_index = tasks
+            .indexes
+            .iter()
+            .find(|index| index.name == "idx_tasks_user_partial")
+            .expect("partial index");
 
         assert_eq!(index.columns.len(), 2);
         assert_eq!(index.columns[0].name.as_deref(), Some("user_id"));
         assert!(!index.columns[0].descending);
         assert_eq!(index.columns[1].name.as_deref(), Some("updated_at"));
         assert!(index.columns[1].descending);
+        assert!(unique_index.unique);
+        assert!(!unique_index.partial);
+        assert!(!partial_index.unique);
+        assert!(partial_index.partial);
 
         let _ = fs::remove_file(&sqlite_path);
         Ok(())
