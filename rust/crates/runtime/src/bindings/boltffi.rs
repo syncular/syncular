@@ -502,6 +502,10 @@ impl SyncularBoltClient {
         self.with_client(|client| client.app_table_metadata_json())
     }
 
+    pub fn app_schema_state_json(&self) -> Result<String, String> {
+        self.with_client_mut(|client| client.app_schema_state_json())
+    }
+
     pub fn register_query_json(&self, query_json: &str) -> Result<String, String> {
         self.with_client(|client| client.register_query_json(query_json))
     }

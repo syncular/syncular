@@ -3328,6 +3328,15 @@ where
         self.store.applied_migrations()
     }
 
+    pub fn app_schema_state(&mut self) -> Result<crate::store::AppSchemaState> {
+        self.store
+            .app_schema_state(self.app_schema.current_schema_version())
+    }
+
+    pub fn app_schema_state_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.app_schema_state()?)?)
+    }
+
     pub fn outbox_summaries(&mut self) -> Result<Vec<crate::store::OutboxSummary>> {
         self.store.outbox_summaries()
     }

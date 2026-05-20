@@ -27,9 +27,10 @@ use crate::protocol::*;
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
-    now_ms, AppliedMigration, ConflictSummary, OutboxCommit, OutboxSummary, SubscriptionState,
-    SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, BLOB_UPLOAD_STALE_TIMEOUT_MS,
-    MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+    now_ms, AppSchemaState, AppliedMigration, ConflictSummary, OutboxCommit, OutboxSummary,
+    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, APP_SCHEMA_ID,
+    BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES,
+    SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
@@ -286,6 +287,14 @@ impl From<AppliedMigrationRow> for AppliedMigration {
             applied_at: row.applied_at,
         }
     }
+}
+
+#[derive(QueryableByName)]
+struct AppSchemaStateRow {
+    #[diesel(sql_type = Integer)]
+    schema_version: i32,
+    #[diesel(sql_type = BigInt)]
+    updated_at: i64,
 }
 
 #[derive(QueryableByName)]
@@ -555,6 +564,8 @@ impl DieselSqliteStore {
             "#,
         )
         .execute(&mut self.conn)?;
+        self.ensure_app_schema_state_table()?;
+        self.reject_future_app_schema_state()?;
 
         if self.app_schema.migrations.is_empty() {
             self.ensure_runtime_system_schema()?;
@@ -604,7 +615,79 @@ impl DieselSqliteStore {
             })?;
         }
 
+        self.record_app_schema_state()?;
         Ok(())
+    }
+
+    fn ensure_app_schema_state_table(&mut self) -> Result<()> {
+        sql_query(
+            r#"
+            create table if not exists syncular_app_schema (
+                schema_id text primary key,
+                schema_version integer not null,
+                updated_at bigint not null
+            )
+            "#,
+        )
+        .execute(&mut self.conn)?;
+        Ok(())
+    }
+
+    fn app_schema_state_row(&mut self) -> Result<Option<AppSchemaStateRow>> {
+        Ok(sql_query(
+            r#"
+            select schema_version, updated_at
+            from syncular_app_schema
+            where schema_id = ?1
+            limit 1
+            "#,
+        )
+        .bind::<Text, _>(APP_SCHEMA_ID)
+        .load::<AppSchemaStateRow>(&mut self.conn)?
+        .into_iter()
+        .next())
+    }
+
+    fn reject_future_app_schema_state(&mut self) -> Result<()> {
+        let current = self.app_schema.current_schema_version();
+        if let Some(row) = self.app_schema_state_row()? {
+            if row.schema_version > current {
+                return Err(SyncularError::schema(format!(
+                    "Syncular app schema version mismatch: local {}, generated {}",
+                    row.schema_version, current
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn record_app_schema_state(&mut self) -> Result<()> {
+        let current = self.app_schema.current_schema_version();
+        sql_query(
+            r#"
+            insert into syncular_app_schema (schema_id, schema_version, updated_at)
+            values (?1, ?2, ?3)
+            on conflict (schema_id) do update set
+                schema_version = excluded.schema_version,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind::<Text, _>(APP_SCHEMA_ID)
+        .bind::<Integer, _>(current)
+        .bind::<BigInt, _>(now_ms())
+        .execute(&mut self.conn)?;
+        Ok(())
+    }
+
+    pub fn app_schema_state(&mut self) -> Result<AppSchemaState> {
+        self.ensure_app_schema_state_table()?;
+        let row = self.app_schema_state_row()?;
+        Ok(AppSchemaState {
+            schema_id: APP_SCHEMA_ID.to_string(),
+            schema_version: row.as_ref().map(|row| row.schema_version),
+            current_schema_version: self.app_schema.current_schema_version(),
+            updated_at: row.as_ref().map(|row| row.updated_at),
+        })
     }
 
     pub fn runtime_pragma_report(&mut self) -> Result<SqliteRuntimePragmaReport> {
@@ -1367,6 +1450,10 @@ impl SyncStateStore for DieselSqliteStore {
         .load::<AppliedMigrationRow>(&mut self.conn)?;
 
         Ok(rows.into_iter().map(AppliedMigration::from).collect())
+    }
+
+    fn app_schema_state(&mut self, _current_schema_version: i32) -> Result<AppSchemaState> {
+        DieselSqliteStore::app_schema_state(self)
     }
 
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {

@@ -17,6 +17,7 @@ pub const SYNC_SENDING_TIMEOUT_MS: i64 = 30_000;
 pub const MAX_BLOB_UPLOAD_RETRIES: i32 = 3;
 pub const BLOB_UPLOAD_STALE_TIMEOUT_MS: i64 = 30_000;
 pub const SQLITE_BUSY_TIMEOUT_MS: i32 = 5_000;
+pub const APP_SCHEMA_ID: &str = "syncular-app";
 
 const RETRY_BASE_DELAY_MS: i64 = 1_000;
 const RETRY_MAX_DELAY_MS: i64 = 30_000;
@@ -88,6 +89,15 @@ pub struct AppliedMigration {
     pub name: String,
     pub checksum: String,
     pub applied_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSchemaState {
+    pub schema_id: String,
+    pub schema_version: Option<i32>,
+    pub current_schema_version: i32,
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +236,15 @@ pub trait SyncStoreTx {
 
 pub trait SyncStateStore {
     fn applied_migrations(&mut self) -> Result<Vec<AppliedMigration>>;
+
+    fn app_schema_state(&mut self, current_schema_version: i32) -> Result<AppSchemaState> {
+        Ok(AppSchemaState {
+            schema_id: APP_SCHEMA_ID.to_string(),
+            schema_version: None,
+            current_schema_version,
+            updated_at: None,
+        })
+    }
 
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>>;
 

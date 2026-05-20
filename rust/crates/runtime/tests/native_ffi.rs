@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use syncular_runtime::fixtures::todo::migrations::current_schema_version;
 use syncular_runtime::native_ffi::{
-    syncular_native_client_app_table_metadata_json, syncular_native_client_app_tables_json,
-    syncular_native_client_apply_crdt_field_text_json, syncular_native_client_apply_mutation_json,
-    syncular_native_client_blob_cache_stats_json,
+    syncular_native_client_app_schema_state_json, syncular_native_client_app_table_metadata_json,
+    syncular_native_client_app_tables_json, syncular_native_client_apply_crdt_field_text_json,
+    syncular_native_client_apply_mutation_json, syncular_native_client_blob_cache_stats_json,
     syncular_native_client_blob_upload_queue_stats_json, syncular_native_client_clear_blob_cache,
     syncular_native_client_close, syncular_native_client_compact_storage_json,
     syncular_native_client_diagnostic_snapshot_json, syncular_native_client_join_presence_handle,
@@ -69,6 +69,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "dynamic-subscriptions",
             "auth-expired-events",
             "generated-app-table-metadata",
+            "generated-app-schema-state",
             "generated-json-table-reads",
             "generated-json-local-operations",
             "generated-json-mutations",
@@ -333,6 +334,16 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     assert_eq!(metadata[1]["subscription_id"], "sub-projects");
     assert_eq!(metadata[2]["name"], "tasks");
     assert_eq!(metadata[2]["subscription_id"], "sub-tasks");
+
+    let schema_state_json = syncular_native_client_app_schema_state_json(handle, &mut error);
+    let schema_state: Value = serde_json::from_str(&take_string(schema_state_json)).unwrap();
+    assert_eq!(schema_state["schemaId"], "syncular-app");
+    assert_eq!(schema_state["schemaVersion"], current_schema_version());
+    assert_eq!(
+        schema_state["currentSchemaVersion"],
+        current_schema_version()
+    );
+    assert!(schema_state["updatedAt"].as_i64().is_some());
 
     let table = CString::new("tasks").unwrap();
     let table_json = syncular_native_client_list_table_json(handle, table.as_ptr(), &mut error);

@@ -992,6 +992,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_enqueue_compact_storage_json(long handle, ByteBuffer optionsJson);
     static native byte[] boltffi_syncular_bolt_client_app_tables_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_app_table_metadata_json(long handle);
+    static native byte[] boltffi_syncular_bolt_client_app_schema_state_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_register_query_json(long handle, byte[] queryJson);
     static native byte[] boltffi_syncular_bolt_client_unregister_query(long handle, byte[] id);
     static native byte[] boltffi_syncular_bolt_client_observed_queries_json(long handle);

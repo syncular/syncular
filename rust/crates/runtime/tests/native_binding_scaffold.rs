@@ -60,6 +60,7 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn enqueue_retrieve_blob_file_json"));
     assert!(source.contains("pub fn compact_storage_json"));
     assert!(source.contains("pub fn enqueue_compact_storage_json"));
+    assert!(source.contains("pub fn app_schema_state_json"));
     assert!(source.contains("pub fn register_query_json"));
     assert!(source.contains("pub fn diagnostic_snapshot_json"));
     assert!(source.contains("pub fn enqueue_resolve_conflict"));
@@ -128,6 +129,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains("func nextEventJsonTimeout(timeoutMs: UInt64) throws -> String?"));
     assert!(swift.contains("func closeEventStream() throws -> Bool"));
     assert!(swift.contains("func diagnosticSnapshotJson() throws -> String"));
+    assert!(swift.contains("func appSchemaStateJson() throws -> String"));
     assert!(swift.contains("func shutdown() throws -> Bool"));
     assert!(kotlin.contains("class SyncularBoltClient"));
     assert!(kotlin.contains("fun syncularTakeLastOpenError(): String?"));
@@ -164,6 +166,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun nextEventJsonTimeout(timeoutMs: ULong): String?"));
     assert!(kotlin.contains("fun closeEventStream(): Boolean"));
     assert!(kotlin.contains("fun diagnosticSnapshotJson(): String"));
+    assert!(kotlin.contains("fun appSchemaStateJson(): String"));
     assert!(kotlin.contains("fun shutdown(): Boolean"));
     assert!(!kotlin.contains("fun close(): Boolean"));
     assert!(!kotlin.contains("1.toInt()"));
@@ -203,6 +206,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains("public java.util.Optional<String> nextEventJsonTimeout(long timeoutMs)"));
     assert!(java.contains("public boolean closeEventStream()"));
     assert!(java.contains("public String diagnosticSnapshotJson()"));
+    assert!(java.contains("public String appSchemaStateJson()"));
     assert!(java.contains("public boolean shutdown()"));
     assert!(!java.contains("public boolean close()"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_open"));

@@ -104,6 +104,12 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
     assert_eq!(metadata_json[2]["name"], "tasks");
     assert_eq!(metadata_json[2]["subscription_id"], "sub-tasks");
 
+    let schema_state: Value = serde_json::from_str(&client.app_schema_state_json()?)?;
+    assert_eq!(schema_state["schemaId"], "syncular-app");
+    assert_eq!(schema_state["schemaVersion"], 7);
+    assert_eq!(schema_state["currentSchemaVersion"], 7);
+    assert!(schema_state["updatedAt"].as_i64().is_some());
+
     let generic_tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(generic_tasks_json.as_array().map(Vec::len), Some(1));
     assert_eq!(generic_tasks_json[0]["id"], "native-manual-task");

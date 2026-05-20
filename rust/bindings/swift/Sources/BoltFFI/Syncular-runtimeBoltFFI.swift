@@ -670,6 +670,12 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func appSchemaStateJson() throws -> String {
+        let buf = boltffi_syncular_bolt_client_app_schema_state_json(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
     public func registerQueryJson(queryJson: String) throws -> String {
         var queryJson = queryJson
         return try queryJson.withUTF8 { queryJsonBuf in
