@@ -35,6 +35,7 @@ export interface SyncularV2WasmGlue {
 
 export interface RawSyncularV2RustClient {
   setSubscriptionsJson(subscriptionsJson: string): void;
+  forceSubscriptionsBootstrapJson(subscriptionIdsJson: string): Promise<string>;
   setAuthHeadersJson(headersJson: string): void;
   setFieldEncryptionJson(configJson: string): void;
   setEncryptedCrdtJson(configJson: string): void;

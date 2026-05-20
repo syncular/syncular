@@ -100,6 +100,12 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'forceSubscriptionsBootstrap';
+      subscriptionIds?: string[];
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'startRealtime';
       options: SyncularV2WorkerRealtimeOptions;
     }

@@ -381,11 +381,13 @@ fn diesel_client_rejects_server_merge_crdt_diff_without_required_local_base() ->
         container_key: Some("title".to_string()),
         update_id: Some("missing-base-next".to_string()),
     })?;
+    let next_state_base64 = next.next_state_base64.clone();
     let mut next_update = next.update;
     next_update.requires_state_vector_base64 =
         Some(yjs_state_vector_base64(Some(&base.next_state_base64))?);
 
     let transport = TestTransport::new();
+    let handle = transport.handle();
     transport.push_http_response(CombinedResponse {
         ok: true,
         required_schema_version: None,
@@ -426,6 +428,44 @@ fn diesel_client_rejects_server_merge_crdt_diff_without_required_local_base() ->
             }],
         }),
     });
+    transport.push_http_response(CombinedResponse {
+        ok: true,
+        required_schema_version: None,
+        latest_schema_version: None,
+        push: None,
+        pull: Some(PullResponse {
+            ok: true,
+            subscriptions: vec![SubscriptionResponse {
+                id: "sub-tasks".to_string(),
+                status: "active".to_string(),
+                scopes: scopes(),
+                bootstrap: true,
+                bootstrap_state: None,
+                next_cursor: 3,
+                integrity: None,
+                commits: Vec::new(),
+                snapshots: Some(vec![SyncSnapshot {
+                    table: "tasks".to_string(),
+                    rows: vec![json!({
+                        "id": task_id,
+                        "title": "Missing base v2",
+                        "completed": 1,
+                        "user_id": "user-rust",
+                        "project_id": "p0",
+                        "server_version": 3,
+                        "image": null,
+                        "title_yjs_state": next_state_base64,
+                    })],
+                    chunks: None,
+                    artifacts: None,
+                    manifest: None,
+                    is_first_page: true,
+                    is_last_page: true,
+                    bootstrap_state_after: None,
+                }]),
+            }],
+        }),
+    });
 
     let app_schema = demo_todo_app_schema();
     let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
@@ -446,6 +486,26 @@ fn diesel_client_rejects_server_merge_crdt_diff_without_required_local_base() ->
 
     let rows: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(rows.as_array().map(Vec::len), Some(0));
+
+    let reset_count = client.force_subscriptions_bootstrap(&[])?;
+    assert!(reset_count > 0);
+    client.sync_http()?;
+
+    let rows: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(rows[0]["title"], "Missing base v2");
+    assert_eq!(rows[0]["completed"], 1);
+    assert_eq!(rows[0]["server_version"], 3);
+    assert!(rows[0]["title_yjs_state"].as_str().is_some());
+
+    let requests = handle.requests();
+    let recovered_subscription = requests
+        .iter()
+        .filter_map(|request| request.pull.as_ref())
+        .flat_map(|pull| pull.subscriptions.iter())
+        .rev()
+        .find(|subscription| subscription.id == "sub-tasks")
+        .expect("recovery pull subscription");
+    assert_eq!(recovered_subscription.cursor, -1);
 
     let _ = std::fs::remove_file(path);
     Ok(())

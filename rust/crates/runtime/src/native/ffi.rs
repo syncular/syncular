@@ -445,6 +445,21 @@ pub extern "C" fn syncular_native_client_set_subscriptions_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_force_subscriptions_bootstrap_json(
+    handle: *mut SyncularNativeHandle,
+    subscription_ids_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let subscription_ids_json = read_c_string(subscription_ids_json)?;
+        with_client(handle, |client| {
+            client.force_subscriptions_bootstrap_json(&subscription_ids_json)
+        })
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_set_field_encryption_json(
     handle: *mut SyncularNativeHandle,
     config_json: *const c_char,

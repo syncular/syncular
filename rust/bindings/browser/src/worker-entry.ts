@@ -157,6 +157,10 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return true;
     case 'setSubscriptions':
       return requireClient().setSubscriptions(request.subscriptions);
+    case 'forceSubscriptionsBootstrap':
+      return requireClient().forceSubscriptionsBootstrap(
+        request.subscriptionIds ?? []
+      );
     case 'setAuthHeaders':
       return requireClient().setAuthHeaders(request.headers);
     case 'setFieldEncryption':
@@ -405,6 +409,7 @@ function isDiagnosedSuccessRequest(
     type === 'setEncryptedCrdt' ||
     type === 'startRealtime' ||
     type === 'stopRealtime' ||
+    type === 'forceSubscriptionsBootstrap' ||
     type === 'syncPull' ||
     type === 'syncPush' ||
     type === 'syncOnce' ||
@@ -429,7 +434,8 @@ function requestDiagnosticSource(
     type === 'syncPull' ||
     type === 'syncPush' ||
     type === 'syncOnce' ||
-    type === 'setSubscriptions'
+    type === 'setSubscriptions' ||
+    type === 'forceSubscriptionsBootstrap'
   ) {
     return 'sync';
   }

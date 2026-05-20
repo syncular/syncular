@@ -121,6 +121,14 @@ Latest accepted slice:
   Direct Rust worker consumers can use `SyncWorkerEvent::requires_full_refresh()`
   for the same decision, and the browser worker includes `resyncRequired` in
   failed sync diagnostics/errors.
+- Rust/native/browser clients now expose a force-bootstrap helper that deletes
+  local subscription cursor/root state so the next pull re-enters canonical
+  snapshot bootstrap. Browser managed lifecycle automatically calls it and
+  resyncs when a sync diagnostic reports `resyncRequired`.
+- Native Diesel recovery coverage now exercises the full path: required-base
+  CRDT diff fails without local state, `force_subscriptions_bootstrap` resets
+  subscription state, and the next pull requests cursor `-1` and recovers from a
+  full snapshot row.
 
 Gate evidence:
 
@@ -166,6 +174,5 @@ Known local environment note:
 
 ## Next Action
 
-Add host-level recovery helpers that force a subscription bootstrap after
-`resyncRequired` events/diagnostics, then cover that recovery flow in native and
-browser worker tests.
+Mirror the `resyncRequired` -> force-bootstrap -> successful snapshot recovery
+flow in the browser Hono/worker test harness.

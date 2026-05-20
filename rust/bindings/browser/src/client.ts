@@ -1,7 +1,4 @@
-import {
-  createSyncularV2Database,
-  type SyncularV2Database,
-} from './database';
+import { createSyncularV2Database, type SyncularV2Database } from './database';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2Client,
@@ -38,6 +35,7 @@ type LifecycleClient = Pick<
   SyncularV2Client,
   | 'addDiagnosticListener'
   | 'connectionState'
+  | 'forceSubscriptionsBootstrap'
   | 'setSubscriptions'
   | 'startRealtime'
   | 'stopRealtime'
@@ -159,6 +157,13 @@ export class SyncularV2ClientLifecycle {
   }
 
   #handleDiagnostic(event: SyncularV2DiagnosticEvent): void {
+    if (event.source === 'sync' && event.details?.resyncRequired === true) {
+      void this.client
+        .forceSubscriptionsBootstrap()
+        .then(() => this.sync())
+        .catch(() => undefined);
+      return;
+    }
     if (
       event.source !== 'realtime' ||
       event.code !== 'realtime.state' ||
