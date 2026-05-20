@@ -388,6 +388,16 @@ impl Clone for SyncWorkerEvent {
     }
 }
 
+impl SyncWorkerEvent {
+    pub fn requires_full_refresh(&self) -> bool {
+        match self {
+            Self::SyncFailed { error, .. } => error.requires_full_snapshot_resync(),
+            Self::EventsOverflowed { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 fn clone_worker_error(error: &SyncularError) -> SyncularError {
     SyncularError::message(error.kind(), error.to_string())
 }

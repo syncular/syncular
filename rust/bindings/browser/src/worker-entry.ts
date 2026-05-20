@@ -99,15 +99,22 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
     postRequestSuccessDiagnostic(request, value, Date.now() - startedAt);
   } catch (err) {
     if (canceledRequests.delete(request.id)) return;
+    const source = requestDiagnosticSource(request.type);
+    const resyncRequired = errorRequiresFullRefresh(err);
     postDiagnostic({
       level: requestDiagnosticLevel(request.type, err),
-      source: requestDiagnosticSource(request.type),
-      code: `${requestDiagnosticSource(request.type)}.${request.type}.failed`,
-      message: `Syncular v2 worker request ${request.type} failed`,
+      source,
+      code: resyncRequired
+        ? `${source}.resync_required`
+        : `${source}.${request.type}.failed`,
+      message: resyncRequired
+        ? `Syncular v2 worker request ${request.type} requires full resync`
+        : `Syncular v2 worker request ${request.type} failed`,
       details: {
         requestType: request.type,
         durationMs: Date.now() - startedAt,
         error: errorMessage(err),
+        ...(resyncRequired ? { resyncRequired: true } : {}),
         ...diagnosticStatus(err),
       },
     });
@@ -181,10 +188,7 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
     case 'drainLiveQueryEvents':
       return requireClient().drainLiveQueryEvents();
     case 'applyMutation':
-      return requireClient().applyMutation(
-        request.operation,
-        request.localRow
-      );
+      return requireClient().applyMutation(request.operation, request.localRow);
     case 'applyMutationsBatch':
       return requireClient().applyMutationsBatch(request.operations);
     case 'applyMutationsCommit':
@@ -551,6 +555,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function errorRequiresFullRefresh(error: unknown): boolean {
+  return errorMessage(error).includes('full snapshot resync required');
+}
+
 function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
   if (isWorkerErrorPayload(error)) return error;
   if (error instanceof Error) {
@@ -583,6 +591,7 @@ function workerErrorDetails(error: Error): Record<string, unknown> | undefined {
   };
   const details: Record<string, unknown> = {
     ...(httpStatusFromMessage(error.message) ?? {}),
+    ...(errorRequiresFullRefresh(error) ? { resyncRequired: true } : {}),
     ...(typeof source.syncularKind === 'string'
       ? { syncularKind: source.syncularKind }
       : {}),

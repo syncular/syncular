@@ -9,7 +9,7 @@ use diesel::sql_query;
 use serde_json::{json, Value};
 use syncular_runtime::client::{BootstrapStatus, SyncChangedCrdtField, SyncChangedRow, SyncReport};
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
-use syncular_runtime::error::{ErrorKind, Result};
+use syncular_runtime::error::{ErrorKind, Result, SyncularError, FULL_SNAPSHOT_RESYNC_REQUIRED};
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
 use syncular_runtime::native::{
     native_event_json_from_worker_event, native_events_from_worker_event_with_observed_queries,
@@ -594,6 +594,28 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     assert_eq!(overflow["droppedCount"], 7);
     assert_eq!(overflow["resyncRequired"], true);
     assert_eq!(overflow["payload_json"]["resyncRequired"], true);
+    Ok(())
+}
+
+#[test]
+fn native_sync_failed_marks_required_crdt_resync() -> Result<()> {
+    let event = SyncWorkerEvent::SyncFailed {
+        command_id: Some("sync-crdt-resync".to_string()),
+        error: SyncularError::protocol_message(format!(
+            "Yjs diff envelope for table \"tasks\" row \"task-1\" field \"title\" requires local base state vector AQID, but no local state is available; {FULL_SNAPSHOT_RESYNC_REQUIRED}"
+        )),
+        retry_scheduled: false,
+        duration_ms: 17,
+    };
+    assert!(event.requires_full_refresh());
+
+    let events = native_event_json_from_worker_event(event)?;
+    let event: Value = serde_json::from_str(&events[0])?;
+    assert_eq!(event["kind"], "SyncFailed");
+    assert_eq!(event["resyncRequired"], true);
+    assert_eq!(event["payload_json"]["type"], "syncResyncRequired");
+    assert_eq!(event["diagnostic"]["code"], "sync.resync_required");
+    assert_eq!(event["diagnostic"]["details"]["resyncRequired"], true);
     Ok(())
 }
 

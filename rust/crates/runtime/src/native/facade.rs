@@ -2699,18 +2699,28 @@ fn sync_failed_event(
             event
         }
         None => {
+            let resync_required = error.requires_full_snapshot_resync();
             let mut event = native_event(
                 NativeEventKind::SyncFailed,
                 Vec::new(),
                 Some(native_diagnostic(
                     "error",
                     "sync",
-                    "sync.failed",
-                    "Native Syncular sync failed",
+                    if resync_required {
+                        "sync.resync_required"
+                    } else {
+                        "sync.failed"
+                    },
+                    if resync_required {
+                        "Native Syncular sync requires full resync"
+                    } else {
+                        "Native Syncular sync failed"
+                    },
                     [
                         ("errorKind", json!(format!("{:?}", error.kind()))),
                         ("retryScheduled", json!(retry_scheduled)),
                         ("durationMs", json!(duration_ms)),
+                        ("resyncRequired", json!(resync_required)),
                     ],
                 )),
             );
@@ -2718,6 +2728,14 @@ fn sync_failed_event(
             event.command_id = command_id;
             event.retry_scheduled = Some(retry_scheduled);
             event.duration_ms = Some(duration_ms);
+            if resync_required {
+                event.resync_required = Some(true);
+                event.payload_json = Some(json!({
+                    "type": "syncResyncRequired",
+                    "resyncRequired": true,
+                    "retryScheduled": retry_scheduled
+                }));
+            }
             event
         }
     }
