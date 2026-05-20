@@ -51,6 +51,11 @@ export interface ScopedSnapshotArtifactPageKey {
   compression: SyncSnapshotArtifactCompression;
 }
 
+export interface ScopedSnapshotArtifactPageCapacityKey
+  extends Omit<ScopedSnapshotArtifactPageKey, 'rowLimit'> {
+  maxRowLimit: number;
+}
+
 export interface ScopedSnapshotArtifactRef {
   id: string;
   byteLength: number;
@@ -408,6 +413,60 @@ export async function readScopedSnapshotArtifactRefByPageKey<
       and schema_version = ${args.schemaVersion}
       and compression = ${args.compression}
       and expires_at > ${nowIso}
+    limit 1
+  `.execute(db);
+  const row = rowResult.rows[0];
+  if (!row) return null;
+  const manifest = await coerceStoredManifest(row.manifest_json);
+  return artifactRefFromRow(row, manifest);
+}
+
+export async function readBestScopedSnapshotArtifactRefForPageCapacity<
+  DB extends SyncCoreDb,
+>(
+  db: Kysely<DB>,
+  args: ScopedSnapshotArtifactPageCapacityKey & { nowIso?: string }
+): Promise<ScopedSnapshotArtifactRef | null> {
+  const nowIso = args.nowIso ?? new Date().toISOString();
+  const rowCursorKey = args.rowCursor ?? '';
+  const rowResult = await sql<ScopedSnapshotArtifactDbRow>`
+    select
+      artifact_id,
+      partition_id,
+      scope_key,
+      subscription_id,
+      "table",
+      artifact_kind,
+      schema_version,
+      as_of_commit_seq,
+      row_cursor,
+      row_limit,
+      row_count,
+      next_row_cursor,
+      is_first_page,
+      is_last_page,
+      compression,
+      sha256,
+      byte_length,
+      manifest_digest,
+      feature_set_json,
+      manifest_json,
+      blob_hash,
+      expires_at
+    from ${sql.table('sync_snapshot_artifacts')}
+    where
+      partition_id = ${args.partitionId}
+      and scope_key = ${args.scopeKey}
+      and subscription_id = ${args.subscriptionId}
+      and "table" = ${args.table}
+      and as_of_commit_seq = ${args.asOfCommitSeq}
+      and row_cursor = ${rowCursorKey}
+      and row_limit <= ${args.maxRowLimit}
+      and artifact_kind = ${args.artifactKind}
+      and schema_version = ${args.schemaVersion}
+      and compression = ${args.compression}
+      and expires_at > ${nowIso}
+    order by row_limit desc
     limit 1
   `.execute(db);
   const row = rowResult.rows[0];

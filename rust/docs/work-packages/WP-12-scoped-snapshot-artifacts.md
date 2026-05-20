@@ -871,6 +871,34 @@ Retained artifact recovery coverage follow-up:
 - Correctness gate passed:
   `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"`.
 
+Retained artifact best-fit lookup follow-up:
+
+- Server pull now looks up the largest scoped snapshot artifact whose row limit
+  fits the current pull capacity instead of requiring an exact row-limit key.
+  This keeps one current artifact path while avoiding accidental row-chunk
+  fallback when a smaller verified artifact page exists.
+- Pull continuation now advances by the selected artifact manifest's row limit,
+  not the requested capacity, so smaller artifacts can fill the remaining
+  bootstrap pages in the same pull.
+- Correctness gates passed:
+  `bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`
+  and `bun run --cwd packages/server tsgo`.
+- Local 100k matched artifact guard stayed in band:
+  previous accepted `rust_bootstrap_ms=143.14`, current `144.56`;
+  `rust_snapshot_chunk_binary_count=0` stayed unchanged.
+- Local 100k mismatch guard with `25k` precomputed artifacts and `50k` Rust
+  page requests now reports `rust_bootstrap_ms=142.75`, `rust_pull_rounds=2`,
+  and `rust_snapshot_chunk_binary_count=0`. This proves the server no longer
+  silently drops to row chunks for smaller eligible artifacts.
+- External app-style matched 40k artifact guard stayed in band:
+  500k bootstrap `1142.29ms -> 1154.34ms`, derived schema
+  `672.43ms -> 673.26ms`, local apply `222ms -> 209ms`, peak memory
+  `667.59MB -> 662.03MB`, and `snapshotChunkCount=0`.
+- External app-style 20k artifact robustness guard also kept
+  `snapshotChunkCount=0` and reported 500k bootstrap `1024.78ms`, but response
+  bytes (`3,554,785`) and peak memory (`671.81MB`) are worse than the accepted
+  40k baseline, so this is not a page-size win.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
@@ -878,7 +906,10 @@ Continue artifact resource-state work, but keep it benchmark-gated.
 - The accepted scoped artifact baseline is now external Rust 500k bootstrap
   `1142.29ms`, derived schema `672.43ms`, local apply `222ms`, response bytes
   `3537756`, peak memory `667.59MB`, and `snapshotChunkCount=0`, with external
-  artifact precompute row limit `40000`.
+  artifact precompute row limit `40000`. Smaller artifact pages are now valid
+  only when the best-fit lookup keeps `snapshotChunkCount=0`; use this as a
+  robustness guard, not a reason to lower the accepted page size without a
+  benchmark win.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. Raising browser artifact pull

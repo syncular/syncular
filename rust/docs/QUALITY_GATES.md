@@ -158,8 +158,11 @@ For the normal row-chunk baseline, set
 default it on. For scoped artifact work, set it to `1` for both server startup
 and benchmark runs. With the current external Rust harness
 `limitSnapshotRows=20000` and the browser direct-artifact cap of `2` pages per
-pull, set `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000` so
-precomputed artifact page keys match the server's bundled artifact lookup keys.
+pull, the accepted baseline uses
+`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000`. Artifact lookup now
+selects the largest scoped artifact whose row limit fits the pull capacity, so
+smaller precomputed pages must stay on the artifact path instead of falling
+back to row chunks.
 
 ```bash
 cd /Users/bkniffler/GitHub/sync/offline-sync-bench

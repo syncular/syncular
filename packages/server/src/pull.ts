@@ -59,7 +59,7 @@ import {
 import type { SyncCoreDb } from './schema';
 import {
   createScopedSnapshotArtifactScopeCacheKey,
-  readScopedSnapshotArtifactRefByPageKey,
+  readBestScopedSnapshotArtifactRefForPageCapacity,
 } from './snapshot-artifacts';
 import {
   createSnapshotChunkScopeCacheKey,
@@ -1247,19 +1247,23 @@ export async function pull<
                           });
                         const artifactLookupStartedAt = Date.now();
                         const artifact =
-                          await readScopedSnapshotArtifactRefByPageKey(trx, {
-                            partitionId,
-                            scopeKey: artifactScopeKey,
-                            subscriptionId: sub.id,
-                            table: nextTableName,
-                            asOfCommitSeq: effectiveState.asOfCommitSeq,
-                            rowCursor: nextState.rowCursor,
-                            rowLimit: artifactRowLimit,
-                            artifactKind:
-                              snapshotArtifactSelection!.artifactKind,
-                            schemaVersion: snapshotArtifactSchemaVersion!,
-                            compression: snapshotArtifactSelection!.compression,
-                          });
+                          await readBestScopedSnapshotArtifactRefForPageCapacity(
+                            trx,
+                            {
+                              partitionId,
+                              scopeKey: artifactScopeKey,
+                              subscriptionId: sub.id,
+                              table: nextTableName,
+                              asOfCommitSeq: effectiveState.asOfCommitSeq,
+                              rowCursor: nextState.rowCursor,
+                              maxRowLimit: artifactRowLimit,
+                              artifactKind:
+                                snapshotArtifactSelection!.artifactKind,
+                              schemaVersion: snapshotArtifactSchemaVersion!,
+                              compression:
+                                snapshotArtifactSelection!.compression,
+                            }
+                          );
                         bootstrapTimings.artifactCacheLookupMs += Math.max(
                           0,
                           Date.now() - artifactLookupStartedAt
@@ -1283,10 +1287,14 @@ export async function pull<
                             }),
                           });
                           activeBundle = null;
+                          const selectedArtifactRowLimit =
+                            artifact.manifest.rowLimit;
                           pageIndex +=
                             Math.max(
                               1,
-                              Math.ceil(artifactRowLimit / limitSnapshotRows)
+                              Math.ceil(
+                                selectedArtifactRowLimit / limitSnapshotRows
+                              )
                             ) - 1;
 
                           nextState = snapshotBootstrapStateAfter({

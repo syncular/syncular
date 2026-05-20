@@ -141,6 +141,138 @@ Decision:
 - The sync/apply timings moved slightly upward in the external run, but total
   bootstrap and memory improved enough to keep the slice.
 
+## 2026-05-20 - Retained Scoped Artifact Best-Fit Lookup
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Server pull now selects the largest scoped artifact whose row limit fits the
+  current pull capacity, instead of requiring an exact row-limit key.
+- Pull continuation advances by the selected artifact manifest's row limit, so
+  smaller pages can continue through the same bootstrap window.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Browser release artifact guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-best-fit-100k.json
+```
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 100k Rust artifact bootstrap | `143.14ms` | `144.56ms` |
+| Rust pull rounds | `1` | `1` |
+| Rust request count | `3` | `3` |
+| Rust snapshot binary chunks | `0` | `0` |
+| Rust response bytes | `874,885` | `874,885` |
+
+Best-fit mismatch guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=25000 \
+  --rust-snapshot-rows-per-page=50000 \
+  --output=.context/benchmarks/wp12-artifact-best-fit-100k-25k-precompute.json
+```
+
+| Metric | Current |
+| --- | ---: |
+| 100k Rust artifact bootstrap | `142.75ms` |
+| Rust pull rounds | `2` |
+| Rust request count | `6` |
+| Rust snapshot binary chunks | `0` |
+| Rust response bytes | `878,868` |
+
+External app-style matched artifact guard:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T07-40-51-037Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 500k bootstrap | `1142.29ms` | `1154.34ms` |
+| 500k derived schema | `672.43ms` | `673.26ms` |
+| 500k local apply | `222ms` | `209ms` |
+| 500k response bytes | `3,537,756` | `3,537,717` |
+| 500k peak memory | `667.59MB` | `662.03MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style smaller-page robustness guard:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=20000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=20000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T07-41-51-480Z/syncular-rust/bootstrap.json`
+
+| Metric | Current |
+| --- | ---: |
+| 500k bootstrap | `1024.78ms` |
+| 500k derived schema | `579.65ms` |
+| 500k local apply | `195ms` |
+| 500k response bytes | `3,554,785` |
+| 500k peak memory | `671.81MB` |
+| 500k snapshot chunks | `0` |
+
+Decision:
+
+- Accepted. This is robustness rather than a speed win: the normal matched
+  artifact path stays neutral, while smaller eligible artifact pages no longer
+  fall back to row chunks. The 20k external probe is not a new page-size
+  recommendation because response bytes and peak memory are worse than the
+  accepted 40k baseline.
+
 ## 2026-05-20 - Rejected Artifact Page Cap 3
 
 Work package:
