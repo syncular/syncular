@@ -124,6 +124,14 @@ export interface SyncularV2DiagnosticEvent {
   source: SyncularV2DiagnosticSource;
   code: string;
   message: string;
+  syncAttemptId?: string;
+  traceId?: string;
+  spanId?: string;
+  clientId?: string;
+  subscriptionId?: string;
+  table?: string;
+  rowId?: string;
+  cursor?: number | string | null;
   details?: Record<string, unknown>;
 }
 
@@ -699,6 +707,35 @@ export interface SyncularV2ConnectionState {
   };
 }
 
+export interface SyncularV2DiagnosticSubscriptionSnapshot {
+  id: string;
+  table: string;
+  scopeKeys: string[];
+  scopeValueCount: number;
+  paramsKeys: string[];
+  paramsValueCount: number;
+  status: string | null;
+  ready: boolean;
+  phase: SyncularV2BootstrapSubscriptionPhase;
+  progressPercent: number;
+  cursor: number | null;
+  bootstrapPhase: number;
+  bootstrapState: SyncularV2BootstrapState | null;
+}
+
+export interface SyncularV2DiagnosticSnapshot {
+  generatedAt: number;
+  runtime: SyncularV2RuntimeInfo;
+  connection: SyncularV2ConnectionState;
+  subscriptions: SyncularV2DiagnosticSubscriptionSnapshot[];
+  recentDiagnostics: SyncularV2DiagnosticEvent[];
+  recentSyncTimings: SyncularV2SyncTimings[];
+  bootstrap?: SyncularV2BootstrapStatus;
+  transportStats?: SyncularV2TransportStats;
+  outboxStats?: SyncularV2OutboxStats;
+  conflictStats?: SyncularV2ConflictStats;
+}
+
 export interface SyncularV2SqlResult<
   Row extends Record<string, unknown> = Record<string, unknown>,
 > {
@@ -917,6 +954,7 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   ): Promise<unknown>;
   runtimeInfo(): Promise<SyncularV2RuntimeInfo>;
   connectionState(): SyncularV2ConnectionState;
+  diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
   addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void;
   addEventListener<T extends SyncularV2ClientEventType>(
     event: T,
