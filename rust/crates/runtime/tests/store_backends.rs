@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use diesel::prelude::*;
@@ -9,14 +10,17 @@ use syncular_runtime::app_schema::{
     app_schema_from_json, AppSchema, AppTableMetadata, CrdtYjsFieldMetadata,
 };
 use syncular_runtime::binary_snapshot::SnapshotChunkRows;
-use syncular_runtime::client::SyncularEncryptedCrdtMutationExecutor;
+use syncular_runtime::client::{SubscriptionSpec, SyncularEncryptedCrdtMutationExecutor};
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::compaction::{StorageCompactionOptions, StorageCompactionReport};
-use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs, YJS_PAYLOAD_KEY};
+use syncular_runtime::crdt_yjs::{
+    build_yjs_text_update, yjs_state_vector_base64, BuildYjsTextUpdateArgs, YJS_PAYLOAD_KEY,
+};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::encrypted_crdt::{
-    BuildEncryptedCrdtCheckpointArgs, BuildEncryptedCrdtTextUpdateArgs, EncryptedCrdt,
-    StaticEncryptedCrdtConfig, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE,
+    BuildEncryptedCrdtCheckpointArgs, BuildEncryptedCrdtTextUpdateArgs,
+    BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdt, StaticEncryptedCrdtConfig,
+    CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE,
 };
 use syncular_runtime::encryption::{key_to_base64url, FieldEncryptionContext};
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
@@ -556,6 +560,56 @@ fn diesel_client_decrypts_pulled_encrypted_crdt_checkpoint_without_updates() -> 
     assert_eq!(tasks[0].id, "encrypted-checkpoint-task");
     assert_eq!(tasks[0].title, "Checkpoint secret");
     assert!(tasks[0].title_yjs_state.as_deref().is_some());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_client_recovers_encrypted_crdt_update_after_required_base_resync() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-encrypted-crdt-resync");
+    let encryption = test_encrypted_crdt()?;
+    let (encrypted_update, recovery_checkpoint) =
+        encrypted_remote_title_update_requiring_base(&encryption, "encrypted-resync-task")?;
+    let transport =
+        EncryptedCrdtRequiredBaseRecoveryTransport::new(encrypted_update, recovery_checkpoint);
+    let store = DieselSqliteStore::open_with_schema(&path, encrypted_app_schema())?;
+    let mut client = SyncularClient::with_app_schema_parts(
+        test_config(&path),
+        store,
+        transport.clone(),
+        encrypted_app_schema(),
+    );
+    client.set_encrypted_crdt(Some(encryption));
+    client.set_subscriptions(encrypted_crdt_test_subscriptions());
+
+    let err = client
+        .sync_http()
+        .expect_err("missing encrypted CRDT base should require resync");
+    let message = err.to_string();
+    assert!(message.contains("encrypted-required-next"));
+    assert!(message.contains("full snapshot resync required"));
+
+    let reset_count = client.force_subscriptions_bootstrap(&[])?;
+    assert_eq!(reset_count, 3);
+    client.sync_http()?;
+
+    let tasks = client.list_tasks()?;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "encrypted-resync-task");
+    assert_eq!(tasks[0].title, "Encrypted recovered");
+    assert!(tasks[0].title_yjs_state.as_deref().is_some());
+
+    let requests = transport.requests();
+    let recovery_subscriptions = requests
+        .iter()
+        .filter_map(|request| request.pull.as_ref())
+        .flat_map(|pull| pull.subscriptions.iter())
+        .filter(|subscription| subscription.cursor == -1)
+        .map(|subscription| subscription.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(recovery_subscriptions.contains(&"sub-tasks-title-crdt-updates"));
+    assert!(recovery_subscriptions.contains(&"sub-tasks-title-crdt-checkpoints"));
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -1226,6 +1280,103 @@ fn encrypted_remote_title_checkpoint(
     Ok(mutation.payload.expect("encrypted checkpoint payload"))
 }
 
+fn encrypted_remote_title_update_requiring_base(
+    encryption: &EncryptedCrdt,
+    row_id: &str,
+) -> Result<(Value, Value)> {
+    let base = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: None,
+        next_text: "Encrypted base".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("encrypted-required-base".to_string()),
+    })?;
+    let next = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: Some(base.next_state_base64.clone()),
+        next_text: "Encrypted recovered".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("encrypted-required-next".to_string()),
+    })?;
+    let mut next_update = next.update;
+    next_update.requires_state_vector_base64 =
+        Some(yjs_state_vector_base64(Some(&base.next_state_base64))?);
+
+    let base_row = json!({
+        "id": row_id,
+        "title": "Encrypted base",
+        "completed": 0,
+        "user_id": "user-rust",
+        "project_id": "p0",
+        "server_version": 42,
+        "image": null,
+        "title_yjs_state": base.next_state_base64
+    });
+    let update = encryption.build_yjs_update_mutation(BuildEncryptedCrdtYjsUpdateArgs {
+        ctx: FieldEncryptionContext {
+            actor_id: "remote-user".to_string(),
+            client_id: "remote-client".to_string(),
+        },
+        metadata: &ENCRYPTED_TASKS_METADATA,
+        field: "title",
+        row_id,
+        existing_row: &base_row,
+        update: next_update,
+    })?;
+
+    let recovery_row = json!({
+        "id": row_id,
+        "title": "Encrypted recovered",
+        "completed": 0,
+        "user_id": "user-rust",
+        "project_id": "p0",
+        "server_version": 43,
+        "image": null,
+        "title_yjs_state": next.next_state_base64
+    });
+    let checkpoint = encryption.build_checkpoint_mutation(BuildEncryptedCrdtCheckpointArgs {
+        ctx: FieldEncryptionContext {
+            actor_id: "remote-user".to_string(),
+            client_id: "remote-client".to_string(),
+        },
+        metadata: &ENCRYPTED_TASKS_METADATA,
+        field: "title",
+        row_id,
+        existing_row: &recovery_row,
+        covers_seq: 2,
+    })?;
+
+    Ok((
+        update.payload.expect("encrypted update payload"),
+        checkpoint.payload.expect("encrypted checkpoint payload"),
+    ))
+}
+
+fn encrypted_crdt_test_subscriptions() -> Vec<SubscriptionSpec> {
+    vec![
+        SubscriptionSpec {
+            id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes: scopes(),
+            params: serde_json::Map::new(),
+            bootstrap_phase: 0,
+        },
+        encrypted_crdt_subscription("sub-tasks-title-crdt-updates", CRDT_UPDATES_TABLE),
+        encrypted_crdt_subscription("sub-tasks-title-crdt-checkpoints", CRDT_CHECKPOINTS_TABLE),
+    ]
+}
+
+fn encrypted_crdt_subscription(id: &str, table: &str) -> SubscriptionSpec {
+    let mut params = serde_json::Map::new();
+    params.insert("app_table".to_string(), json!("tasks"));
+    params.insert("field_name".to_string(), json!("title"));
+    SubscriptionSpec {
+        id: id.to_string(),
+        table: table.to_string(),
+        scopes: scopes(),
+        params,
+        bootstrap_phase: 0,
+    }
+}
+
 fn demo_client<S, T>(config: SyncularClientConfig, store: S, transport: T) -> SyncularClient<S, T>
 where
     S: SyncStore,
@@ -1241,6 +1392,171 @@ fn test_config(path: &str) -> SyncularClientConfig {
         client_id: "store-parity".to_string(),
         actor_id: "user-rust".to_string(),
         project_id: Some("p0".to_string()),
+    }
+}
+
+#[derive(Clone)]
+struct EncryptedCrdtRequiredBaseRecoveryTransport {
+    encrypted_update: Value,
+    recovery_checkpoint: Value,
+    requests: Arc<Mutex<Vec<CombinedRequest>>>,
+}
+
+impl EncryptedCrdtRequiredBaseRecoveryTransport {
+    fn new(encrypted_update: Value, recovery_checkpoint: Value) -> Self {
+        Self {
+            encrypted_update,
+            recovery_checkpoint,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn requests(&self) -> Vec<CombinedRequest> {
+        self.requests
+            .lock()
+            .expect("encrypted CRDT recovery requests lock")
+            .clone()
+    }
+
+    fn initial_task_row() -> Value {
+        json!({
+            "id": "encrypted-resync-task",
+            "title": "Remote initial",
+            "completed": 0,
+            "user_id": "user-rust",
+            "project_id": "p0",
+            "server_version": 42,
+            "image": null,
+            "title_yjs_state": null
+        })
+    }
+}
+
+impl SyncTransport for EncryptedCrdtRequiredBaseRecoveryTransport {
+    type Realtime = NoopRealtime;
+
+    fn post_sync(&self, request: &CombinedRequest) -> Result<CombinedResponse> {
+        let call = {
+            let mut requests = self
+                .requests
+                .lock()
+                .map_err(|_| SyncularError::protocol_message("encrypted CRDT requests lock"))?;
+            requests.push(request.clone());
+            requests.len()
+        };
+
+        let pull = if call == 1 {
+            Some(PullResponse {
+                ok: true,
+                subscriptions: vec![
+                    SubscriptionResponse {
+                        id: "sub-tasks".to_string(),
+                        status: "active".to_string(),
+                        scopes: scopes(),
+                        bootstrap: true,
+                        bootstrap_state: None,
+                        next_cursor: 1,
+                        integrity: None,
+                        commits: Vec::new(),
+                        snapshots: Some(vec![SyncSnapshot {
+                            table: "tasks".to_string(),
+                            rows: vec![Self::initial_task_row()],
+                            chunks: None,
+                            artifacts: None,
+                            manifest: None,
+                            is_first_page: true,
+                            is_last_page: true,
+                            bootstrap_state_after: None,
+                        }]),
+                    },
+                    SubscriptionResponse {
+                        id: "sub-tasks-title-crdt-updates".to_string(),
+                        status: "active".to_string(),
+                        scopes: scopes(),
+                        bootstrap: false,
+                        bootstrap_state: None,
+                        next_cursor: 2,
+                        integrity: None,
+                        snapshots: None,
+                        commits: vec![SyncCommit {
+                            commit_seq: 2,
+                            created_at: "2026-05-10T00:00:00.000Z".to_string(),
+                            actor_id: "remote-user".to_string(),
+                            changes: vec![SyncChange {
+                                table: CRDT_UPDATES_TABLE.to_string(),
+                                row_id: self.encrypted_update["update_id"]
+                                    .as_str()
+                                    .unwrap()
+                                    .to_string(),
+                                op: "upsert".to_string(),
+                                row_json: Some(self.encrypted_update.clone()),
+                                row_version: Some(2),
+                                scopes: scopes(),
+                            }],
+                        }],
+                    },
+                ],
+            })
+        } else {
+            request.pull.as_ref().map(|pull| PullResponse {
+                ok: true,
+                subscriptions: pull
+                    .subscriptions
+                    .iter()
+                    .map(|sub| {
+                        let rows = match sub.table.as_str() {
+                            "tasks" => vec![Self::initial_task_row()],
+                            CRDT_UPDATES_TABLE => Vec::new(),
+                            CRDT_CHECKPOINTS_TABLE => vec![self.recovery_checkpoint.clone()],
+                            _ => Vec::new(),
+                        };
+                        SubscriptionResponse {
+                            id: sub.id.clone(),
+                            status: "active".to_string(),
+                            scopes: sub.scopes.clone(),
+                            bootstrap: true,
+                            bootstrap_state: None,
+                            next_cursor: 3,
+                            integrity: None,
+                            commits: Vec::new(),
+                            snapshots: Some(vec![SyncSnapshot {
+                                table: sub.table.clone(),
+                                rows,
+                                chunks: None,
+                                artifacts: None,
+                                manifest: None,
+                                is_first_page: true,
+                                is_last_page: true,
+                                bootstrap_state_after: None,
+                            }]),
+                        }
+                    })
+                    .collect(),
+            })
+        };
+
+        Ok(CombinedResponse {
+            ok: true,
+            required_schema_version: None,
+            latest_schema_version: None,
+            push: None,
+            pull,
+        })
+    }
+
+    fn fetch_snapshot_chunk_rows(
+        &self,
+        _chunk: &SnapshotChunkRef,
+        _scopes: &ScopeValues,
+    ) -> Result<SnapshotChunkRows> {
+        Err(SyncularError::message(
+            ErrorKind::Internal,
+            "snapshot chunks are not used in encrypted CRDT recovery tests",
+        ))
+    }
+
+    fn connect_realtime(&self) -> Result<NoopRealtime> {
+        Ok(NoopRealtime)
     }
 }
 
