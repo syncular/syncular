@@ -69,4 +69,17 @@ describe('Syncular error responses', () => {
       recommendedAction: 'retryLater',
     });
   });
+
+  it('includes proxy websocket classifications', () => {
+    expect(createSyncularErrorResponse('proxy.auth_required')).toMatchObject({
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
+    expect(createSyncularErrorResponse('proxy.connection_limit')).toMatchObject({
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+  });
 });

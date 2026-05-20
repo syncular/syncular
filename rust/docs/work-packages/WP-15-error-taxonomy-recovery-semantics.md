@@ -120,9 +120,15 @@ string-only errors.
 - Relay server-role `/pull` and `/push` routes now return stable sync error
   envelopes for unauthenticated requests, malformed requests, and push
   operation-limit rejection instead of uppercase string-only errors.
+- Server-Hono proxy websocket pre-upgrade failures now use stable `proxy.*`
+  envelopes for forbidden origins, missing auth, and connection-limit
+  rejection.
 
 ## Latest Evidence
 
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts packages/server-hono/src/__tests__/proxy-routes.test.ts`
 - `bun run --cwd packages/relay tsgo`
 - `bun test packages/relay/src/__tests__/relay.test.ts`
 - `bun run --cwd packages/core tsgo`
