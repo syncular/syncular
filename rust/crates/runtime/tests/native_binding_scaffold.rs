@@ -27,6 +27,7 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains(
         "pub fn set_auth_headers_json(&self, headers_json: &str) -> Result<bool, String>"
     ));
+    assert!(source.contains("pub fn force_subscriptions_bootstrap_json"));
     assert!(source.contains("pub fn syncular_encryption_helper_json"));
     assert!(source.contains("pub fn set_field_encryption_json"));
     assert!(source.contains("pub fn set_encrypted_crdt_json"));
@@ -60,6 +61,7 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn compact_storage_json"));
     assert!(source.contains("pub fn enqueue_compact_storage_json"));
     assert!(source.contains("pub fn register_query_json"));
+    assert!(source.contains("pub fn diagnostic_snapshot_json"));
     assert!(source.contains("pub fn enqueue_resolve_conflict"));
     assert!(source.contains("pub fn start_event_stream"));
     assert!(source.contains("pub fn next_event_json"));
@@ -81,6 +83,9 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains("public final class SyncularBoltClient"));
     assert!(swift.contains("public func syncularTakeLastOpenError"));
     assert!(swift.contains("func setAuthHeadersJson(headersJson: String) throws -> Bool"));
+    assert!(swift.contains(
+        "func forceSubscriptionsBootstrapJson(subscriptionIdsJson: String) throws -> String"
+    ));
     assert!(swift.contains("func setFieldEncryptionJson(configJson: String) throws -> Bool"));
     assert!(swift.contains("func setEncryptedCrdtJson(configJson: String) throws -> Bool"));
     assert!(swift.contains("public func syncularEncryptionHelperJson"));
@@ -122,10 +127,14 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains("func nextEventJson() throws -> String?"));
     assert!(swift.contains("func nextEventJsonTimeout(timeoutMs: UInt64) throws -> String?"));
     assert!(swift.contains("func closeEventStream() throws -> Bool"));
+    assert!(swift.contains("func diagnosticSnapshotJson() throws -> String"));
     assert!(swift.contains("func shutdown() throws -> Bool"));
     assert!(kotlin.contains("class SyncularBoltClient"));
     assert!(kotlin.contains("fun syncularTakeLastOpenError(): String?"));
     assert!(kotlin.contains("fun setAuthHeadersJson(headersJson: String): Boolean"));
+    assert!(
+        kotlin.contains("fun forceSubscriptionsBootstrapJson(subscriptionIdsJson: String): String")
+    );
     assert!(kotlin.contains("fun setFieldEncryptionJson(configJson: String): Boolean"));
     assert!(kotlin.contains("fun setEncryptedCrdtJson(configJson: String): Boolean"));
     assert!(kotlin.contains("fun syncularEncryptionHelperJson"));
@@ -154,11 +163,15 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun nextEventJson(): String?"));
     assert!(kotlin.contains("fun nextEventJsonTimeout(timeoutMs: ULong): String?"));
     assert!(kotlin.contains("fun closeEventStream(): Boolean"));
+    assert!(kotlin.contains("fun diagnosticSnapshotJson(): String"));
     assert!(kotlin.contains("fun shutdown(): Boolean"));
     assert!(!kotlin.contains("fun close(): Boolean"));
     assert!(!kotlin.contains("1.toInt()"));
     assert!(java.contains("public final class SyncularBoltClient"));
     assert!(java.contains("public boolean setAuthHeadersJson(String headersJson)"));
+    assert!(
+        java.contains("public String forceSubscriptionsBootstrapJson(String subscriptionIdsJson)")
+    );
     assert!(java.contains("public boolean setFieldEncryptionJson(String configJson)"));
     assert!(java.contains("public boolean setEncryptedCrdtJson(String configJson)"));
     assert!(java_helpers.contains("public static String syncularEncryptionHelperJson"));
@@ -189,6 +202,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains("public java.util.Optional<String> nextEventJson()"));
     assert!(java.contains("public java.util.Optional<String> nextEventJsonTimeout(long timeoutMs)"));
     assert!(java.contains("public boolean closeEventStream()"));
+    assert!(java.contains("public String diagnosticSnapshotJson()"));
     assert!(java.contains("public boolean shutdown()"));
     assert!(!java.contains("public boolean close()"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_open"));
@@ -197,6 +211,8 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
     for output in [swift, kotlin, java] {
         assert!(!output.contains("tasks"));
         assert!(!output.contains("NewTask"));

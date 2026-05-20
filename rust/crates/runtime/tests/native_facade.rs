@@ -1861,6 +1861,93 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
 }
 
 #[test]
+fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
+    let path = temp_db_path("syncular-native-diagnostic-snapshot");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-diagnostic-snapshot"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    client.set_subscriptions_json(
+        &json!([
+            {
+                "id": "tasks-private",
+                "table": "tasks",
+                "scopes": {
+                    "project_id": ["secret-project-1", "secret-project-2"],
+                    "user_id": "secret-user"
+                },
+                "params": {
+                    "limit": 50
+                },
+                "bootstrapPhase": 1
+            }
+        ])
+        .to_string(),
+    )?;
+    client.register_query_json(
+        &json!({
+            "id": "task-diagnostics",
+            "tables": ["tasks"],
+            "label": "Task diagnostics"
+        })
+        .to_string(),
+    )?;
+    apply_task_upsert(&mut client, "diagnostic-task", "Diagnostic task")?;
+
+    let snapshot_json = client.diagnostic_snapshot_json()?;
+    let snapshot: Value = serde_json::from_str(&snapshot_json)?;
+    assert_eq!(snapshot["runtime"]["crate_name"], "syncular-runtime");
+    assert_eq!(snapshot["connection"]["syncWorkerRunning"], true);
+    assert_eq!(snapshot["connection"]["realtimeWorkerRunning"], false);
+    assert_eq!(snapshot["connection"]["autoSyncLocalWrites"], false);
+    assert_eq!(snapshot["connection"]["observedQueryCount"], 1);
+    assert!(snapshot["connection"]["eventSubscriberCount"]
+        .as_u64()
+        .is_some_and(|count| count >= 1));
+
+    assert_eq!(snapshot["subscriptions"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["subscriptions"][0]["id"], "tasks-private");
+    assert_eq!(snapshot["subscriptions"][0]["table"], "tasks");
+    assert_eq!(
+        snapshot["subscriptions"][0]["scopeKeys"],
+        json!(["project_id", "user_id"])
+    );
+    assert_eq!(snapshot["subscriptions"][0]["scopeValueCount"], 3);
+    assert_eq!(snapshot["subscriptions"][0]["paramsKeys"], json!(["limit"]));
+    assert_eq!(snapshot["subscriptions"][0]["paramsValueCount"], 1);
+    assert_eq!(snapshot["subscriptions"][0]["bootstrapPhase"], 1);
+
+    assert!(!snapshot_json.contains("secret-user"));
+    assert!(!snapshot_json.contains("secret-project-1"));
+    assert!(!snapshot_json.contains("secret-project-2"));
+    assert_eq!(snapshot["outboxStats"]["pending"], 1);
+    assert_eq!(snapshot["outboxStats"]["total"], 1);
+    assert_eq!(snapshot["conflictStats"]["total"], 0);
+    assert_eq!(
+        snapshot["observedQueries"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(snapshot["observedQueries"][0]["id"], "task-diagnostics");
+    assert!(snapshot["recentEvents"]
+        .as_array()
+        .is_some_and(|events| events.iter().any(|event| event["kind"] == "RowsChanged")));
+    assert!(snapshot["recentDiagnostics"]
+        .as_array()
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["code"] == "storage.rows_changed")
+        }));
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_replaces_duplicate_query_observer_dependencies() -> Result<()> {
     let path = temp_db_path("syncular-native-query-observer-replace");
     let mut client = open_demo_native_with_options(

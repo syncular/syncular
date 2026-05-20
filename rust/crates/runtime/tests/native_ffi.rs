@@ -12,8 +12,8 @@ use syncular_runtime::native_ffi::{
     syncular_native_client_blob_cache_stats_json,
     syncular_native_client_blob_upload_queue_stats_json, syncular_native_client_clear_blob_cache,
     syncular_native_client_close, syncular_native_client_compact_storage_json,
-    syncular_native_client_join_presence_handle, syncular_native_client_list_table_json,
-    syncular_native_client_materialize_crdt_field_json,
+    syncular_native_client_diagnostic_snapshot_json, syncular_native_client_join_presence_handle,
+    syncular_native_client_list_table_json, syncular_native_client_materialize_crdt_field_json,
     syncular_native_client_observed_queries_json, syncular_native_client_open,
     syncular_native_client_open_async, syncular_native_client_open_async_close,
     syncular_native_client_open_async_command_id, syncular_native_client_open_async_finish_timeout,
@@ -91,6 +91,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "blob-file-api",
             "background-worker-lifecycle",
             "structured-diagnostics",
+            "diagnostic-snapshot",
             "storage-compaction",
             "streaming-blob-file-api",
             "crdt-yjs",
@@ -357,6 +358,19 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     let outbox: Value = serde_json::from_str(&take_string(outbox_json)).unwrap();
     assert_eq!(outbox.as_array().map(Vec::len), Some(1));
     assert_eq!(outbox[0]["status"], "pending");
+
+    let snapshot_json = syncular_native_client_diagnostic_snapshot_json(handle, &mut error);
+    let snapshot: Value = serde_json::from_str(&take_string(snapshot_json)).unwrap();
+    assert_eq!(snapshot["runtime"]["crate_name"], "syncular-runtime");
+    assert_eq!(snapshot["connection"]["syncWorkerRunning"], true);
+    assert_eq!(snapshot["connection"]["observedQueryCount"], 1);
+    assert_eq!(snapshot["outboxStats"]["pending"], 1);
+    assert_eq!(snapshot["outboxStats"]["total"], 1);
+    assert_eq!(snapshot["observedQueries"][0]["id"], "ffi-task-list");
+    assert!(snapshot["recentEvents"]
+        .as_array()
+        .is_some_and(|events| events.iter().any(|event| event["kind"] == "RowsChanged")));
+    assert!(error.is_null());
 
     let local_event: Value =
         serde_json::from_str(&events.next_json(Duration::from_secs(1)).unwrap()).unwrap();

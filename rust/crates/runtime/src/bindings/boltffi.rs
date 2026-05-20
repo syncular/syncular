@@ -514,6 +514,10 @@ impl SyncularBoltClient {
         self.with_client(|client| client.observed_queries_json())
     }
 
+    pub fn diagnostic_snapshot_json(&self) -> Result<String, String> {
+        self.with_client_mut(|client| client.diagnostic_snapshot_json())
+    }
+
     pub fn outbox_summaries_json(&self) -> Result<String, String> {
         self.with_client_mut(|client| client.outbox_summaries_json())
     }

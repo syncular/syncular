@@ -181,6 +181,15 @@ public final class SyncularBoltClient {
         }
     }
 
+    public func forceSubscriptionsBootstrapJson(subscriptionIdsJson: String) throws -> String {
+        var subscriptionIdsJson = subscriptionIdsJson
+        return try subscriptionIdsJson.withUTF8 { subscriptionIdsJsonBuf in
+            let buf = boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json(handle, subscriptionIdsJsonBuf.baseAddress!, UInt(subscriptionIdsJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func setFieldEncryptionJson(configJson: String) throws -> Bool {
         var configJson = configJson
         return try configJson.withUTF8 { configJsonBuf in
@@ -681,6 +690,12 @@ public final class SyncularBoltClient {
 
     public func observedQueriesJson() throws -> String {
         let buf = boltffi_syncular_bolt_client_observed_queries_json(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func diagnosticSnapshotJson() throws -> String {
+        let buf = boltffi_syncular_bolt_client_diagnostic_snapshot_json(handle)
         defer { boltffi_free_buf(buf) }
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
     }
