@@ -1,7 +1,9 @@
 import {
   type ApplyOperationResult,
   ServerPushPluginPriority,
-  type SyncServerPushPlugin,
+  type SyncChange,
+  type SyncCrdtStateVectorHint,
+  type SyncServerPlugin,
 } from '@syncular/server';
 import { sql } from 'kysely';
 import * as Y from 'yjs';
@@ -113,6 +115,14 @@ export interface YjsServerMaterializeRowArgs {
   row: Record<string, unknown>;
 }
 
+export type YjsServerStateVectorHint = SyncCrdtStateVectorHint;
+
+export interface YjsServerTransformPullChangesArgs {
+  table: string;
+  changes: readonly SyncChange[];
+  crdtStateVectors: readonly YjsServerStateVectorHint[];
+}
+
 export interface YjsServerModule {
   name: string;
   rules: readonly YjsServerFieldRule[];
@@ -123,6 +133,9 @@ export interface YjsServerModule {
   materializeRow(
     args: YjsServerMaterializeRowArgs
   ): Promise<Record<string, unknown>>;
+  transformPullChanges(
+    args: YjsServerTransformPullChangesArgs
+  ): Promise<readonly SyncChange[]>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -206,6 +219,22 @@ function createDocFromState(stateValue: unknown): Y.Doc {
 
 function exportSnapshotBase64(doc: Y.Doc): string {
   return bytesToBase64(Y.encodeStateAsUpdate(doc));
+}
+
+function exportUpdateFromStateVectorBase64(
+  stateValue: unknown,
+  stateVectorBase64: string
+): string | null {
+  const stateBytes = stateValueToBytes(stateValue);
+  if (!stateBytes || stateBytes.length === 0) return null;
+  const stateVector = base64ToBytes(stateVectorBase64);
+  const doc = new Y.Doc();
+  try {
+    Y.applyUpdate(doc, stateBytes);
+    return bytesToBase64(Y.encodeStateAsUpdate(doc, stateVector));
+  } finally {
+    doc.destroy();
+  }
 }
 
 function ensureTextContainer(doc: Y.Doc, containerKey: string): string {
@@ -494,19 +523,24 @@ async function applyYjsEnvelopeToPayload(args: {
     return args.payload;
   }
 
-  let nextPayload: Record<string, unknown> | null = null;
-  const ensurePayload = (): Record<string, unknown> => {
-    if (nextPayload) return nextPayload;
-    nextPayload = { ...args.payload };
-    return nextPayload;
-  };
-
   const sourceEnvelope = rawEnvelope;
   if (sourceEnvelope !== undefined && !isRecord(sourceEnvelope)) {
     throw new Error(
       `Yjs payload key "${args.envelopeKey}" must be an object for table "${args.table}"`
     );
   }
+
+  const basePayload =
+    sourceEnvelope && args.existingRow
+      ? { ...args.existingRow, ...args.payload }
+      : args.payload;
+  let nextPayload: Record<string, unknown> | null =
+    basePayload === args.payload ? null : basePayload;
+  const ensurePayload = (): Record<string, unknown> => {
+    if (nextPayload) return nextPayload;
+    nextPayload = { ...basePayload };
+    return nextPayload;
+  };
 
   if (sourceEnvelope) {
     for (const [field, rawUpdateInput] of Object.entries(sourceEnvelope)) {
@@ -525,7 +559,7 @@ async function applyYjsEnvelopeToPayload(args: {
         `yjs.${args.table}.${field}`
       );
 
-      const source = nextPayload ?? args.payload;
+      const source = nextPayload ?? basePayload;
       const existingSource = args.existingRow ?? null;
       const baseState =
         (existingSource
@@ -556,7 +590,7 @@ async function applyYjsEnvelopeToPayload(args: {
   }
 
   if (args.stripEnvelope) {
-    const source = nextPayload ?? args.payload;
+    const source = nextPayload ?? basePayload;
     if (args.envelopeKey in source) {
       const target = ensurePayload();
       delete target[args.envelopeKey];
@@ -564,6 +598,118 @@ async function applyYjsEnvelopeToPayload(args: {
   }
 
   return nextPayload ?? args.payload;
+}
+
+function createHintKey(rowId: string, field: string, stateColumn: string) {
+  return `${rowId}\u001f${field}\u001f${stateColumn}`;
+}
+
+function indexStateVectorHints(
+  hints: readonly YjsServerStateVectorHint[]
+): Map<string, YjsServerStateVectorHint> {
+  const indexed = new Map<string, YjsServerStateVectorHint>();
+  for (const hint of hints) {
+    if (hint.syncMode !== 'server-merge') continue;
+    indexed.set(createHintKey(hint.rowId, hint.field, hint.stateColumn), hint);
+  }
+  return indexed;
+}
+
+function transformPullChangeWithStateVectorHints(args: {
+  table: string;
+  change: SyncChange;
+  index: RuleIndex;
+  hintsByKey: ReadonlyMap<string, YjsServerStateVectorHint>;
+  envelopeKey: string;
+}): SyncChange {
+  if (args.change.op !== 'upsert' || !isRecord(args.change.row_json)) {
+    return args.change;
+  }
+
+  const tableRules = args.index.get(args.table);
+  if (!tableRules) return args.change;
+
+  const row = args.change.row_json;
+  let nextRow: Record<string, unknown> | null = null;
+  let envelope: YjsServerPayloadEnvelope | undefined;
+
+  const ensureRow = (): Record<string, unknown> => {
+    if (nextRow) return nextRow;
+    nextRow = { ...row };
+    return nextRow;
+  };
+
+  const ensureEnvelope = (): YjsServerPayloadEnvelope => {
+    if (envelope) return envelope;
+    const target = ensureRow();
+    const existingEnvelope = target[args.envelopeKey];
+    envelope = {};
+    if (isRecord(existingEnvelope)) {
+      for (const [field, updateInput] of Object.entries(existingEnvelope)) {
+        envelope[field] = updateInput as YjsServerUpdateInput;
+      }
+    }
+    target[args.envelopeKey] = envelope;
+    return envelope;
+  };
+
+  for (const rule of tableRules.values()) {
+    const hint = args.hintsByKey.get(
+      createHintKey(args.change.row_id, rule.field, rule.stateColumn)
+    );
+    if (!hint) continue;
+
+    const serverState = row[rule.stateColumn];
+    const updateBase64 = exportUpdateFromStateVectorBase64(
+      serverState,
+      hint.stateVectorBase64
+    );
+    if (!updateBase64) continue;
+
+    const target = ensureRow();
+    delete target[rule.field];
+    delete target[rule.stateColumn];
+    ensureEnvelope()[rule.field] = {
+      updateId: `server:${args.table}:${args.change.row_id}:${rule.field}:${hint.updatedAt}`,
+      updateBase64,
+    };
+  }
+
+  if (!nextRow) return args.change;
+  return {
+    ...args.change,
+    row_json: nextRow,
+  };
+}
+
+async function transformPullChangesWithStateVectorHints(args: {
+  table: string;
+  changes: readonly SyncChange[];
+  index: RuleIndex;
+  envelopeKey: string;
+  crdtStateVectors: readonly YjsServerStateVectorHint[];
+}): Promise<readonly SyncChange[]> {
+  const tableRules = args.index.get(args.table);
+  if (!tableRules || args.crdtStateVectors.length === 0) {
+    return args.changes;
+  }
+  const hintsByKey = indexStateVectorHints(args.crdtStateVectors);
+  if (hintsByKey.size === 0) return args.changes;
+
+  let changed = false;
+  const nextChanges = args.changes.map((change) => {
+    const nextChange = transformPullChangeWithStateVectorHints({
+      table: args.table,
+      change,
+      index: args.index,
+      hintsByKey,
+      envelopeKey: args.envelopeKey,
+    });
+    if (nextChange !== change) changed = true;
+    return nextChange;
+  });
+
+  return changed ? nextChanges : args.changes;
 }
 
 export function createYjsServerModule(
@@ -604,6 +750,16 @@ export function createYjsServerModule(
         index,
         envelopeKey,
         stripEnvelope,
+      });
+    },
+
+    async transformPullChanges(args): Promise<readonly SyncChange[]> {
+      return await transformPullChangesWithStateVectorHints({
+        table: args.table,
+        changes: args.changes,
+        crdtStateVectors: args.crdtStateVectors,
+        index,
+        envelopeKey,
       });
     },
   };
@@ -686,7 +842,7 @@ async function materializeAppliedResult(
 
 export function createYjsServerPushPlugin(
   options: CreateYjsServerPushPluginOptions
-): SyncServerPushPlugin {
+): SyncServerPlugin {
   const yjsModule = createYjsServerModule(options);
   const tableRowIdFields = buildTableRowIdFieldIndex(options.rules);
 
@@ -736,6 +892,14 @@ export function createYjsServerPushPlugin(
         args.op.table,
         args.applied
       );
+    },
+
+    async transformPullChanges(args) {
+      return await yjsModule.transformPullChanges({
+        table: args.subscription.table,
+        changes: args.changes,
+        crdtStateVectors: args.subscription.crdtStateVectors,
+      });
     },
   };
 }

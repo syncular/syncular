@@ -24,11 +24,11 @@ import {
   SyncCombinedRequestSchema,
   type SyncCombinedResponse,
   SyncCombinedResponseSchema,
+  type SyncCommit,
+  type SyncPullSubscriptionResponse,
   type SyncPushCommitRequestSchema,
   SyncPushRequestSchema,
   type SyncPushResponse,
-  type SyncCommit,
-  type SyncPullSubscriptionResponse,
 } from '@syncular/core';
 import type {
   ScopeCacheBackend,
@@ -46,9 +46,9 @@ import type {
 } from '@syncular/server';
 import {
   type CompactOptions,
-  createWireSubscriptionIntegrity,
   createServerHandlerCollection,
   createSyncRealtimeShardKey,
+  createWireSubscriptionIntegrity,
   InvalidSubscriptionScopeError,
   maybeCompactChanges,
   maybePruneSync,
@@ -1448,7 +1448,10 @@ export function createSyncRoutes<
           changeRowEncoders: binarySyncPackChangeRowEncoders,
         }
       );
-      args.manager.updateConnectionSubscriptionRoots(args.ownerKey, rootUpdates);
+      args.manager.updateConnectionSubscriptionRoots(
+        args.ownerKey,
+        rootUpdates
+      );
       return bytes;
     } catch (error) {
       logAsyncFailureOnce('sync.realtime.binary_pack_encode_failed', {
@@ -2376,6 +2379,7 @@ export function createSyncRoutes<
             handlers: handlerRegistry,
             auth,
             request,
+            plugins: options.plugins,
             chunkStorage: options.chunkStorage,
             scopeCache: options.scopeCache,
             snapshotChunkGzipLevel: options.sync?.snapshotChunkGzipLevel,

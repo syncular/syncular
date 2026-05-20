@@ -353,7 +353,12 @@ pub fn transform_local_row_for_metadata(
                 return Ok(None);
             }
             if let Some(existing_row) = existing_row {
-                existing_row.clone()
+                merge_operation_payload_into_local_row(
+                    existing_row.clone(),
+                    operation_payload,
+                    metadata,
+                    YJS_PAYLOAD_KEY,
+                )
             } else {
                 let Value::Object(mut row) = operation_payload.clone() else {
                     return Ok(None);
@@ -820,6 +825,26 @@ fn with_operation_envelope(
     Value::Object(row)
 }
 
+fn merge_operation_payload_into_local_row(
+    local_row: Value,
+    operation_payload: &Value,
+    metadata: &AppTableMetadata,
+    envelope_key: &str,
+) -> Value {
+    match local_row {
+        Value::Object(mut row) => {
+            if let Value::Object(payload) = operation_payload {
+                for (key, value) in payload {
+                    row.insert(key.clone(), value.clone());
+                }
+            }
+            strip_enveloped_materialized_fields(&mut row, metadata, envelope_key);
+            Value::Object(row)
+        }
+        other => other,
+    }
+}
+
 fn strip_enveloped_materialized_fields(
     row: &mut Map<String, Value>,
     metadata: &AppTableMetadata,
@@ -984,6 +1009,67 @@ mod tests {
         assert_eq!(result.payload["title"], "Draft");
         assert!(result.payload["title_yjs_state"].as_str().is_some());
         assert!(result.payload.get(YJS_PAYLOAD_KEY).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn diff_envelope_remote_rows_preserve_non_crdt_payload_fields() -> Result<()> {
+        static CRDT_FIELDS: &[CrdtYjsFieldMetadata] = &[CrdtYjsFieldMetadata {
+            field: "title",
+            state_column: "title_yjs_state",
+            container_key: "title",
+            row_id_field: "id",
+            kind: "text",
+            sync_mode: "server-merge",
+        }];
+        static TABLE: AppTableMetadata = AppTableMetadata {
+            name: "tasks",
+            primary_key_column: "id",
+            server_version_column: "server_version",
+            soft_delete_column: None,
+            subscription_id: "tasks",
+            columns: &[],
+            blob_columns: &[],
+            crdt_yjs_fields: CRDT_FIELDS,
+            encrypted_fields: &[],
+            scopes: &[],
+        };
+
+        let base = build_yjs_text_update(BuildYjsTextUpdateArgs {
+            previous_state_base64: None,
+            next_text: "hello".to_string(),
+            container_key: Some("title".to_string()),
+            update_id: Some("base".to_string()),
+        })?;
+        let next = build_yjs_text_update(BuildYjsTextUpdateArgs {
+            previous_state_base64: Some(base.next_state_base64.clone()),
+            next_text: "hello world".to_string(),
+            container_key: Some("title".to_string()),
+            update_id: Some("next".to_string()),
+        })?;
+
+        let row = transform_local_row_for_metadata(
+            "tasks",
+            "task-1",
+            None,
+            Some(&json!({
+                "updated_at": 2,
+                "__yjs": { "title": next.update }
+            })),
+            Some(&json!({
+                "id": "task-1",
+                "title": "hello",
+                "title_yjs_state": base.next_state_base64,
+                "updated_at": 1
+            })),
+            &TABLE,
+        )?
+        .expect("diff envelope materializes existing row");
+
+        assert_eq!(row["title"], "hello world");
+        assert_eq!(row["updated_at"], 2);
+        assert!(row["title_yjs_state"].as_str().is_some());
+        assert!(row.get(YJS_PAYLOAD_KEY).is_none());
         Ok(())
     }
 }
