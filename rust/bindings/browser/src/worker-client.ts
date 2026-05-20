@@ -75,7 +75,10 @@ import type {
   SyncularV2WorkerResponse,
   SyncularV2WorkerRuntimeArtifact,
 } from './worker-protocol';
-import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import {
+  createSyncularV2WorkerErrorPayload,
+  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+} from './worker-protocol';
 
 type PendingRequest = {
   type: SyncularV2WorkerRequestInput['type'];
@@ -254,10 +257,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#handleWorkerMessage(event.data);
     };
     this.worker.onerror = (event) => {
-      const payload = {
-        code: 'worker_failed',
-        message: event.message || 'Syncular v2 worker failed',
-      } as const;
+      const payload = createSyncularV2WorkerErrorPayload(
+        'worker.failed',
+        event.message || 'Syncular v2 worker failed'
+      );
       this.#emitDiagnostic({
         level: 'error',
         source: 'worker',
@@ -267,10 +270,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#rejectAll(payload);
     };
     this.worker.onmessageerror = () => {
-      const payload = {
-        code: 'worker_failed',
-        message: 'Syncular v2 worker sent an unreadable message',
-      } as const;
+      const payload = createSyncularV2WorkerErrorPayload(
+        'worker.message_unreadable',
+        'Syncular v2 worker sent an unreadable message'
+      );
       this.#emitDiagnostic({
         level: 'error',
         source: 'worker',
@@ -886,7 +889,12 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       await this.#request({ type: 'close' });
     } finally {
       this.#flushRowsChanged();
-      this.#rejectAll(new Error('Syncular v2 worker client closed'));
+      this.#rejectAll(
+        createSyncularV2WorkerErrorPayload(
+          'worker.closed',
+          'Syncular v2 worker client closed'
+        )
+      );
       if (this.ownsWorker) this.worker.terminate();
     }
   }
@@ -1019,7 +1027,14 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   #request<T>(request: SyncularV2WorkerRequestInput): Promise<T> {
     if (this.#closed && request.type !== 'close') {
-      return Promise.reject(new Error('Syncular v2 worker client is closed'));
+      return Promise.reject(
+        new SyncularV2WorkerError(
+          createSyncularV2WorkerErrorPayload(
+            'worker.closed',
+            'Syncular v2 worker client is closed'
+          )
+        )
+      );
     }
     const id = this.#nextId++;
     const message = {
@@ -1044,11 +1059,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
                   timeoutMs: this.#requestTimeoutMs,
                 },
               });
-              const error = new SyncularV2WorkerError({
-                code: 'request_timeout',
-                message: `Syncular v2 worker request ${request.type} timed out after ${this.#requestTimeoutMs}ms`,
-                details: { requestId: id, requestType: request.type },
-              });
+              const error = new SyncularV2WorkerError(
+                createSyncularV2WorkerErrorPayload(
+                  'worker.request_timeout',
+                  `Syncular v2 worker request ${request.type} timed out after ${this.#requestTimeoutMs}ms`,
+                  { details: { requestId: id, requestType: request.type } }
+                )
+              );
               this.#lastError = {
                 message: error.message,
                 code: error.code,
@@ -1068,11 +1085,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   #handleWorkerMessage(message: SyncularV2WorkerOutboundMessage): void {
     if (message.protocolVersion !== SYNCULAR_V2_WORKER_PROTOCOL_VERSION) {
-      this.#rejectAll({
-        code: 'protocol_mismatch',
-        message: `Unsupported Syncular v2 worker protocol ${message.protocolVersion}`,
-        details: { supported: SYNCULAR_V2_WORKER_PROTOCOL_VERSION },
-      });
+      this.#rejectAll(
+        createSyncularV2WorkerErrorPayload(
+          'worker.protocol_mismatch',
+          `Unsupported Syncular v2 worker protocol ${message.protocolVersion}`,
+          { details: { supported: SYNCULAR_V2_WORKER_PROTOCOL_VERSION } }
+        )
+      );
       return;
     }
     if (isWorkerEvent(message)) {

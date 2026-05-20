@@ -1,4 +1,7 @@
-import type { SyncOperation } from '@syncular/core';
+import {
+  SYNCULAR_ERROR_DEFINITIONS,
+  type SyncOperation,
+} from '@syncular/core';
 import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
@@ -33,14 +36,7 @@ import type {
 export const SYNCULAR_V2_WORKER_PROTOCOL_VERSION = 1;
 
 export interface SyncularV2WorkerErrorPayload {
-  code:
-    | 'closed'
-    | 'not_open'
-    | 'protocol_mismatch'
-    | 'request_timeout'
-    | 'worker_error'
-    | 'worker_failed'
-    | SyncularV2ErrorCode;
+  code: SyncularV2ErrorCode;
   message: string;
   category?: SyncularV2ErrorCategory;
   retryable?: boolean;
@@ -48,6 +44,28 @@ export interface SyncularV2WorkerErrorPayload {
   name?: string;
   stack?: string;
   details?: unknown;
+}
+
+export function createSyncularV2WorkerErrorPayload(
+  code: SyncularV2ErrorCode,
+  message?: string,
+  options: {
+    name?: string;
+    stack?: string;
+    details?: unknown;
+  } = {}
+): SyncularV2WorkerErrorPayload {
+  const definition = SYNCULAR_ERROR_DEFINITIONS[code];
+  return {
+    code,
+    message: message ?? definition.message,
+    category: definition.category,
+    retryable: definition.retryable,
+    recommendedAction: definition.recommendedAction,
+    ...(options.name ? { name: options.name } : {}),
+    ...(options.stack ? { stack: options.stack } : {}),
+    ...(options.details !== undefined ? { details: options.details } : {}),
+  };
 }
 
 export type SyncularV2WorkerRealtimeOptions = Omit<

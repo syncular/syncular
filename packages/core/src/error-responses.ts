@@ -161,6 +161,42 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'inspectStorage',
     message: 'The local Syncular storage operation failed.',
   },
+  'worker.closed': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    message: 'The Syncular browser worker client is closed.',
+  },
+  'worker.not_open': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    message: 'The Syncular browser worker is not open.',
+  },
+  'worker.protocol_mismatch': {
+    category: 'schema-mismatch',
+    retryable: false,
+    recommendedAction: 'regenerateClient',
+    message: 'The Syncular browser worker protocol is incompatible.',
+  },
+  'worker.request_timeout': {
+    category: 'rate-limited',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'The Syncular browser worker request timed out.',
+  },
+  'worker.failed': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'recreateClient',
+    message: 'The Syncular browser worker failed.',
+  },
+  'worker.message_unreadable': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'recreateClient',
+    message: 'The Syncular browser worker sent an unreadable message.',
+  },
   'console.auth_required': {
     category: 'auth-required',
     retryable: true,

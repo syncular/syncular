@@ -138,6 +138,13 @@ or record a deliberate exception in the compatibility register.
   `sync.row_missing`, `sync.empty_commit`, `sync.unsupported_operation`,
   `sync.missing_scopes`, `sync.idempotency_cache_miss`, and
   `sync.constraint_violation`.
+- Browser worker public error payloads now use namespaced taxonomy codes
+  (`worker.closed`, `worker.not_open`, `worker.protocol_mismatch`,
+  `worker.request_timeout`, `worker.failed`, and
+  `worker.message_unreadable`) instead of underscore/local codes. The shared
+  core taxonomy owns those definitions, worker payload creation fills
+  category/retry/recovery metadata, and the Rust runtime classifier recognizes
+  the expanded shared code set when it sees server-style envelopes.
 
 ## Latest Evidence
 
@@ -173,6 +180,15 @@ or record a deliberate exception in the compatibility register.
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 - `rg -n "\\b(VERSION_CONFLICT|UNKNOWN_TABLE|ROW_MISSING|EMPTY_COMMIT|INVALID_SCOPE|UNSUPPORTED_OPERATION|FORBIDDEN|INVALID_REQUEST|READ_ONLY|MISSING_PROJECT_ID|MISSING_SCOPES|IDEMPOTENCY_CACHE_MISS|CONSTRAINT_VIOLATION|NOT_NULL_CONSTRAINT|UNIQUE_CONSTRAINT|FOREIGN_KEY_CONSTRAINT)\\b" packages/server packages/testkit packages/core apps/demo apps/docs rust/bindings/browser rust/crates/testkit rust/crates/runtime rust/examples/todo-app -g '!node_modules' -g '!target'`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error::tests --lib`
+- `bun test packages/core/src/__tests__/error-responses.test.ts`
+- `bun test rust/bindings/browser/src/worker-client.test.ts`
+- `bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/errors.test.ts`
+- `bun run --cwd packages/server-hono tsgo`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen native_modules_support_runtime_contract_and_operation_builders`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime generated_app_bindings_target_boltffi_layout --test native_binding_scaffold`
