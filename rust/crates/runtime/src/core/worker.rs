@@ -1,10 +1,12 @@
 #[cfg(feature = "native")]
+use crate::client::sync_changed_crdt_field_from_metadata;
+#[cfg(feature = "native")]
 use crate::client::BootstrapStatus;
 #[cfg(feature = "native")]
 use crate::client::CrdtFieldCompactionReceipt;
 use crate::client::{
-    sync_changed_crdt_field_from_metadata, sync_changed_row_for_local_operation, SubscriptionSpec,
-    SyncChangedRow, SyncReport, SyncularClient,
+    sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow, SyncReport,
+    SyncularClient,
 };
 #[cfg(feature = "native")]
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};

@@ -3940,3 +3940,48 @@ Decision:
   time (`1334.25ms -> 1396.01ms`) and local apply (`198ms -> 208ms`) but lower
   on peak memory (`707.92MB -> 695.97MB`). Treat this as fresh context, not a
   retained performance win.
+
+## 2026-05-20 - Browser WASM Size Gate After CRDT Recovery
+
+Work packages:
+
+- [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
+- [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+
+Reason:
+
+- The release browser WASM size gate failed while preparing the next WP-12
+  benchmark baseline. Measured a detached pre-CRDT-recovery worktree at
+  `c03ed9a1` to separate stale-budget debt from the retained CRDT recovery
+  additions.
+
+Commands:
+
+```bash
+git worktree add --detach .context/size-baseline-c03ed9a1 c03ed9a1
+bun run --cwd .context/size-baseline-c03ed9a1/rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser build:wasm
+bun rust/bindings/browser/scripts/size-syncular-v2-wasm.ts --json
+bun rust/bindings/browser/scripts/size-syncular-v2-wasm.ts --json \
+  --wasm .context/size-baseline-c03ed9a1/rust/bindings/browser/dist/wasm/syncular_v2_bg.wasm
+```
+
+Release WASM comparison:
+
+| Metric | Budget | `c03ed9a1` | Current |
+| --- | ---: | ---: | ---: |
+| Raw bytes | `3,460,301` | `3,480,934` | `3,491,832` |
+| Gzip bytes | `1,426,063` | `1,434,531` | `1,438,491` |
+| Raw over budget | `0` | `20,633` | `31,531` |
+| Gzip over budget | `0` | `8,468` | `12,428` |
+
+Decision:
+
+- Do not ratchet the package-size budget in this slice. The gate was already
+  stale before the CRDT recovery commits, and the retained recovery work added
+  about `10,898` raw bytes / `3,960` gzip bytes.
+- Removed one unnecessary host-store WASM export for
+  `forceSubscriptionsBootstrapJson`; it did not materially move the final
+  release artifact size, but it avoids carrying an unused public surface.
+- Track the budget failure as WP-10 package-size work before relying on
+  `bun run --cwd rust/bindings/browser build:wasm` as a green release gate.
