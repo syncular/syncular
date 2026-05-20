@@ -572,6 +572,8 @@ export interface SyncularV2SyncTimings {
   scopeClearMs: number;
   snapshotRowApplyMs: number;
   snapshotArtifactApplyMs: number;
+  snapshotArtifactCheckpointMs: number;
+  snapshotArtifactCheckpointCount: number;
   snapshotChunkApplyMs: number;
   snapshotChunkMaterializeMs: number;
   snapshotChunkResetMs: number;

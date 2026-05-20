@@ -4818,3 +4818,57 @@ Decision:
   bootstrap improved slightly, and peak memory moved up by `2.93MB` versus the
   previous artifact guard. Do not use this as evidence for raising artifact page
   caps without a separate memory benchmark win.
+
+## 2026-05-20 - WP-12 Artifact Checkpoint Metrics
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Browser Rust sync timings now expose `snapshotArtifactCheckpointMs` and
+  `snapshotArtifactCheckpointCount`.
+- Browser E2E output now records
+  `rust_snapshot_artifact_checkpoint_ms`,
+  `rust_snapshot_artifact_checkpoint_count`, and cached-run equivalents.
+- This is observability for the retained checkpointed artifact-page state model,
+  not a sync behavior change.
+
+Local 100k release artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts-checkpoint-metrics.json
+```
+
+| Metric | Previous checkpoint run | With explicit checkpoint metrics |
+| --- | ---: | ---: |
+| Rust bootstrap | `135.50ms` | `133.64ms` |
+| Rust pull apply | `124ms` | `123ms` |
+| Rust artifact apply | `110ms` | `111ms` |
+| Rust artifact checkpoints | n/a | `1` |
+| Rust artifact checkpoint time | n/a | `0ms` |
+| JS heap delta | `7.74MB` | `2.81MB` |
+| Release WASM bytes | `3,365,184` | `3,365,410` |
+| Snapshot chunks | `0` | `0` |
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "resumes after a committed SQLite snapshot artifact page|diagnostic|bootstrap|rows changed|realtime"
+```
+
+Decision:
+
+- Accepted. The metric surface is tiny (`+226` release WASM bytes), makes the
+  checkpoint path visible in benchmark output, and stayed neutral-to-better in
+  the local artifact gate.

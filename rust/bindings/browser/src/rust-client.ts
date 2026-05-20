@@ -111,6 +111,8 @@ type RawSyncResult = {
     scope_clear_ms?: number;
     snapshot_row_apply_ms?: number;
     snapshot_artifact_apply_ms?: number;
+    snapshot_artifact_checkpoint_ms?: number;
+    snapshot_artifact_checkpoint_count?: number;
     snapshot_chunk_apply_ms?: number;
     snapshot_chunk_materialize_ms?: number;
     snapshot_chunk_reset_ms?: number;
@@ -844,6 +846,10 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
       scopeClearMs: raw.timings?.scope_clear_ms ?? 0,
       snapshotRowApplyMs: raw.timings?.snapshot_row_apply_ms ?? 0,
       snapshotArtifactApplyMs: raw.timings?.snapshot_artifact_apply_ms ?? 0,
+      snapshotArtifactCheckpointMs:
+        raw.timings?.snapshot_artifact_checkpoint_ms ?? 0,
+      snapshotArtifactCheckpointCount:
+        raw.timings?.snapshot_artifact_checkpoint_count ?? 0,
       snapshotChunkApplyMs: raw.timings?.snapshot_chunk_apply_ms ?? 0,
       snapshotChunkMaterializeMs:
         raw.timings?.snapshot_chunk_materialize_ms ?? 0,

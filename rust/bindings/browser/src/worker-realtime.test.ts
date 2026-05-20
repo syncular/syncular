@@ -783,6 +783,8 @@ function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
     scopeClearMs: 0,
     snapshotRowApplyMs: 0,
     snapshotArtifactApplyMs: 0,
+    snapshotArtifactCheckpointMs: 0,
+    snapshotArtifactCheckpointCount: 0,
     snapshotChunkApplyMs: 0,
     snapshotChunkMaterializeMs: 0,
     snapshotChunkResetMs: 0,
