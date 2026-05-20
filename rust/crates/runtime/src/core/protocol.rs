@@ -6,8 +6,8 @@ use std::io::Read;
 pub use syncular_protocol::{
     validate_scoped_snapshot_artifact_ref, BlobDownloadUrlResponse, BlobRef,
     BlobUploadCompleteResponse, BlobUploadInitRequest, BlobUploadInitResponse, BootstrapState,
-    CombinedRequest, CombinedResponse, OperationResult, PullRequest, PullResponse,
-    PushBatchRequest, PushBatchResponse, PushCommitRequest, PushCommitResponse,
+    CombinedRequest, CombinedResponse, CrdtStateVectorHint, OperationResult, PullRequest,
+    PullResponse, PushBatchRequest, PushBatchResponse, PushCommitRequest, PushCommitResponse,
     RealtimePresenceEntry, RealtimePresenceEvent, RealtimePresenceRequest, RealtimePushRequest,
     RealtimePushResponseData, RealtimeServerMessage, ScopeValues, ScopedSnapshotArtifactManifest,
     ScopedSnapshotArtifactRef, SnapshotArtifactsRequest, SnapshotChunkRef, SnapshotManifest,

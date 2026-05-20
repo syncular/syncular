@@ -45,6 +45,15 @@ function decodeSnapshotRowsGzip(
   return decodeSnapshotRows(gunzipSync(bytes));
 }
 
+function snapshotBodyBytes(
+  bytes: Uint8Array | ReadableStream<Uint8Array>
+): Uint8Array {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new Error('Expected Uint8Array snapshot body in this test');
+  }
+  return bytes;
+}
+
 async function readSnapshotRows(
   db: Kysely<ServerDb>,
   snapshot: SyncSnapshot
@@ -178,6 +187,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -221,6 +231,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -234,8 +245,8 @@ describe('pull', () => {
 
     const chunk = await readSnapshotChunk(db, chunkRef!.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    expect(chunkRef!.sha256).toBe(await sha256Hex(chunk.body));
-    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+    expect(chunkRef!.sha256).toBe(await sha256Hex(snapshotBodyBytes(chunk.body)));
+    const decoded = decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(chunk.body)));
     expect(decoded.table).toBe('tasks');
     expect(decoded.columns.map((column) => column.name).sort()).toEqual([
       'id',
@@ -273,6 +284,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: 999999,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -338,6 +350,7 @@ describe('pull', () => {
               table: 'tasks',
               scopes: { user_id: 'u1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -358,7 +371,7 @@ describe('pull', () => {
     );
     const chunk = await readSnapshotChunk(db, chunkRef!.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+    const decoded = decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(chunk.body)));
     expect(decoded.rows).toHaveLength(5);
   });
 
@@ -412,6 +425,7 @@ describe('pull', () => {
               table: 'tasks',
               scopes: { user_id: 'u1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -455,6 +469,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -463,7 +478,7 @@ describe('pull', () => {
     const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
     const chunk = await readSnapshotChunk(db, chunkRef.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+    const decoded = decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(chunk.body)));
 
     expect(decoded.columns).toEqual([
       { name: 'id', type: 'string' },
@@ -502,7 +517,7 @@ describe('pull', () => {
             encoderCallCount += 1;
             return encodeBinarySnapshotTable({
               table: 'tasks',
-              columns,
+              columns: [...columns],
               rows: rows as Record<string, unknown>[],
             });
           },
@@ -527,6 +542,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -536,9 +552,11 @@ describe('pull', () => {
     const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
     const chunk = await readSnapshotChunk(db, chunkRef.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    const decoded = decodeBinarySnapshotTable(gunzipSync(chunk.body));
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
 
-    expect(decoded.columns).toEqual(columns);
+    expect(decoded.columns).toEqual([...columns]);
     expect(decoded.rows).toEqual([
       {
         id: 'task-1',
@@ -584,6 +602,7 @@ describe('pull', () => {
               table: 'tasks',
               scopes: { user_id: 'u1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -603,11 +622,11 @@ describe('pull', () => {
       .executeTakeFirstOrThrow();
 
     expect(Number(snapshotChunkCountRow.count)).toBe(2);
-    expect(uncompressedGzip.body.length).toBeGreaterThan(
-      compressed.body.length
-    );
+    const uncompressedBody = snapshotBodyBytes(uncompressedGzip.body);
+    const compressedBody = snapshotBodyBytes(compressed.body);
+    expect(uncompressedBody.length).toBeGreaterThan(compressedBody.length);
     expect(
-      decodeBinarySnapshotTable(gunzipSync(uncompressedGzip.body)).rows
+      decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(uncompressedGzip.body))).rows
     ).toHaveLength(40);
   });
 
@@ -633,6 +652,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -676,6 +696,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -702,6 +723,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: bootstrapCursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -735,6 +757,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -767,6 +790,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -797,6 +821,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -829,6 +854,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -875,6 +901,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -907,6 +934,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -929,6 +957,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -969,6 +998,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1030,6 +1060,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1071,6 +1102,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1097,6 +1129,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1140,6 +1173,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1166,6 +1200,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1203,6 +1238,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1229,6 +1265,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1261,6 +1298,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1282,6 +1320,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1303,6 +1342,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1358,12 +1398,14 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
           {
             id: 's2',
             table: 'tasks',
             scopes: { user_id: 'u2' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1411,6 +1453,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: 999999,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1470,6 +1513,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1495,12 +1539,14 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: cursor1,
+            crdtStateVectors: [],
           },
           {
             id: 's2',
             table: 'tasks',
             scopes: { user_id: 'u2' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1536,6 +1582,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },

@@ -62,6 +62,16 @@
             "includeDone": true
           },
           "cursor": 41,
+          "crdtStateVectors": [
+            {
+              "rowId": "task-local-1",
+              "field": "title",
+              "stateColumn": "title_yjs_state",
+              "stateVectorBase64": "AQID",
+              "syncMode": "server-merge",
+              "updatedAt": 1770000000000
+            }
+          ],
           "bootstrapState": {
             "asOfCommitSeq": 40,
             "tables": [

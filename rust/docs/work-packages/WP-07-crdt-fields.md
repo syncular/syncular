@@ -78,9 +78,21 @@ Latest accepted slice:
   before field decryption; the verified root is then persisted while applying
   the decrypted local row. This keeps encrypted fields compatible with canonical
   commit-root verification on native and browser clients.
+- Pull requests now carry explicit per-subscription `crdtStateVectors` hints.
+  Native Diesel and browser owned-SQLite collect hints from
+  `sync_crdt_documents`, scope-filter them against the app row, and attach
+  `(rowId, field, stateColumn, stateVectorBase64, syncMode, updatedAt)` to the
+  subscription. This keeps CRDT catch-up optimization aligned with scoped access
+  instead of whole-table or whole-partition assumptions.
 
 Gate evidence:
 
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `bun run tsgo` from `rust/bindings/browser`
+- `bun run build:wasm:dev` from `rust/bindings/browser`
+- `bun test src/__tests__/sync-hono.wasm.test.ts -t "applies a generated app server-merge CRDT field through the Rust WASM worker"` from `rust/bindings/browser`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract canonical_commit_integrity_verifies_wire_payload_before_decrypting_pull`
@@ -109,5 +121,6 @@ Known local environment note:
 
 ## Next Action
 
-Continue with state-vector pull hints and tighter CRDT observation coverage in
-the browser/native generated adapters.
+Continue with tighter CRDT observation coverage in browser/native generated
+adapters, then add server-side use of `crdtStateVectors` so pull responses can
+avoid sending already-known CRDT document state.

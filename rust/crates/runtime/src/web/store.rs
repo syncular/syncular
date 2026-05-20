@@ -3,7 +3,8 @@ use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::SyncChangedRow;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
-    BootstrapState, OperationResult, PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
+    BootstrapState, CrdtStateVectorHint, OperationResult, PushCommitResponse, ScopeValues,
+    SyncChange, SyncOperation,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{
@@ -166,6 +167,15 @@ pub trait AsyncWebStore {
         _subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn crdt_state_vector_hints<'a>(
+        &'a mut self,
+        _table: &'a str,
+        _scopes: &'a ScopeValues,
+        _limit: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CrdtStateVectorHint>>> + 'a>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 
     fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {

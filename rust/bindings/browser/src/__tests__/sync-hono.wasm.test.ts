@@ -1732,8 +1732,67 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
   });
 
   it('applies a generated app server-merge CRDT field through the Rust WASM worker', async () => {
+    const syncRequests: unknown[] = [];
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      edgeGate: async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === '/sync' && request.method === 'POST') {
+          const body = (await request.clone().json()) as {
+            push?: {
+              commits?: Array<{
+                clientCommitId: string;
+                operations?: Array<unknown>;
+              }>;
+            };
+            pull?: {
+              subscriptions?: Array<{
+                id: string;
+                scopes: Record<string, unknown>;
+              }>;
+            };
+          };
+          syncRequests.push(body);
+          return Response.json({
+            ok: true,
+            latestSchemaVersion: syncularGeneratedSchemaVersion,
+            push: body.push
+              ? {
+                  ok: true,
+                  commits: (body.push.commits ?? []).map((commit, index) => ({
+                    ok: true,
+                    clientCommitId: commit.clientCommitId,
+                    status: 'applied',
+                    commitSeq: index + 1,
+                    results: (commit.operations ?? []).map((_, opIndex) => ({
+                      opIndex,
+                      status: 'applied',
+                      serverVersion: index + 1,
+                    })),
+                  })),
+                }
+              : undefined,
+            pull: body.pull
+              ? {
+                  ok: true,
+                  subscriptions: (body.pull.subscriptions ?? []).map(
+                    (subscription) => ({
+                      id: subscription.id,
+                      status: 'active',
+                      scopes: subscription.scopes,
+                      bootstrap: false,
+                      bootstrapState: null,
+                      nextCursor: 0,
+                      commits: [],
+                      snapshots: [],
+                    })
+                  ),
+                }
+              : undefined,
+          });
+        }
+        return null;
+      },
     });
     harnesses.push(sync);
 
@@ -1742,6 +1801,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
     const field = {
       table: 'tasks',
       rowId: 'crdt-field-server-merge-task',
@@ -1765,7 +1825,8 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       })
     ).resolves.toMatchObject({ syncMode: 'server-merge' });
 
-    await expect(client.materializeCrdtField(field)).resolves.toMatchObject({
+    const materialized = await client.materializeCrdtField(field);
+    expect(materialized).toMatchObject({
       value: 'CRDT field title',
       stateBase64: expect.any(String),
       stateVectorBase64: expect.any(String),
@@ -1791,6 +1852,27 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         title_yjs_state: expect.any(String),
       })
     );
+
+    await client.syncOnce();
+    const taskSubscriptionRequest = syncRequests
+      .flatMap((request) =>
+        ((request as { pull?: { subscriptions?: unknown[] } }).pull
+          ?.subscriptions ?? []) as Array<{
+          id: string;
+          crdtStateVectors: Array<Record<string, unknown>>;
+        }>
+      )
+      .find((subscription) => subscription.id === 'sub-tasks');
+    expect(taskSubscriptionRequest?.crdtStateVectors).toEqual([
+      expect.objectContaining({
+        rowId: field.rowId,
+        field: field.field,
+        stateColumn: 'title_yjs_state',
+        stateVectorBase64: materialized.stateVectorBase64,
+        syncMode: 'server-merge',
+        updatedAt: expect.any(Number),
+      }),
+    ]);
   });
 
   it('applies an encrypted update-log CRDT field through the Rust WASM worker without plaintext outbox leakage', async () => {

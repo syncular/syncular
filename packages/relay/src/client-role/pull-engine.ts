@@ -186,6 +186,7 @@ export class PullEngine<DB extends RelayDatabase = RelayDatabase> {
         table,
         scopes: this.scopes,
         cursor: this.cursors.get(table) ?? -1,
+        crdtStateVectors: [],
       })
     );
 

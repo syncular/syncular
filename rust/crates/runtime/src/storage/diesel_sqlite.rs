@@ -2029,13 +2029,69 @@ fn current_app_row_json(
     let metadata = app_schema
         .table_metadata(table)
         .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
-    let rows = list_app_rows_json(conn, app_schema, table)?;
-    Ok(rows.into_iter().find(|row| {
-        row.get(metadata.primary_key_column)
-            .and_then(Value::as_str)
-            .map(|id| id == row_id)
-            .unwrap_or(false)
-    }))
+    get_app_row_json_generic(conn, metadata, row_id)
+}
+
+fn get_app_row_json_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    row_id: &str,
+) -> Result<Option<Value>> {
+    validate_app_table_metadata(metadata)?;
+    let projection = json_object_projection(metadata)?;
+    let sql = format!(
+        "select {projection} as row_json from {table} where {pk} = {row_id} limit 1",
+        table = metadata.name,
+        pk = metadata.primary_key_column,
+        row_id = sql_string(row_id)
+    );
+    Ok(rows_from_json_query(conn, sql)?.into_iter().next())
+}
+
+fn crdt_state_vector_hints_for_subscription(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    table: &str,
+    scopes: &ScopeValues,
+    limit: i64,
+) -> Result<Vec<CrdtStateVectorHint>> {
+    let metadata = app_schema
+        .table_metadata(table)
+        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
+    validate_app_table_metadata(metadata)?;
+    let rows = sql_query(
+        r#"
+        select document_key, app_table, row_id, field_name, state_column, sync_mode,
+               state_base64, state_vector_base64, pending_updates, flushed_updates,
+               acked_updates, log_updates, updated_at, compacted_at
+        from sync_crdt_documents
+        where app_table = ?1 and state_vector_base64 != ''
+        order by updated_at desc
+        limit ?2
+        "#,
+    )
+    .bind::<Text, _>(table)
+    .bind::<BigInt, _>(limit.max(0))
+    .load::<CrdtDocumentSnapshotRow>(conn)?;
+
+    let mut hints = Vec::new();
+    for row in rows {
+        let Some(app_row) = get_app_row_json_generic(conn, metadata, &row.row_id)? else {
+            continue;
+        };
+        if !row_matches_scope_values(metadata, &app_row, scopes) {
+            continue;
+        }
+        hints.push(CrdtStateVectorHint {
+            row_id: row.row_id,
+            field: row.field_name,
+            state_column: row.state_column,
+            state_vector_base64: row.state_vector_base64,
+            sync_mode: row.sync_mode,
+            updated_at: row.updated_at,
+        });
+    }
+    Ok(hints)
 }
 
 fn clear_encrypted_crdt_system_table_for_scopes(
@@ -2605,6 +2661,23 @@ fn scope_filter(column: &str, value: &Value) -> Result<String> {
     Ok(match value {
         Value::Null => format!("{column} is null"),
         value => format!("{column} = {}", sql_value(value)),
+    })
+}
+
+fn row_matches_scope_values(
+    metadata: &AppTableMetadata,
+    row: &Value,
+    scopes: &ScopeValues,
+) -> bool {
+    metadata.scopes.iter().all(|scope| {
+        let Some(expected) = scopes.get(scope.name) else {
+            return !scope.required;
+        };
+        let actual = row.get(scope.column);
+        match expected {
+            Value::Array(values) => actual.is_some_and(|actual| values.iter().any(|v| v == actual)),
+            value => actual == Some(value),
+        }
     })
 }
 
@@ -3284,6 +3357,15 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
         .bind::<Text, _>(subscription_id_value)
         .execute(self.conn)?;
         Ok(())
+    }
+
+    fn crdt_state_vector_hints(
+        &mut self,
+        table: &str,
+        scopes: &ScopeValues,
+        limit: i64,
+    ) -> Result<Vec<CrdtStateVectorHint>> {
+        crdt_state_vector_hints_for_subscription(self.conn, self.app_schema, table, scopes, limit)
     }
 
     fn clear_table_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<()> {

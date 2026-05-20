@@ -127,7 +127,9 @@ export interface CreateTestClientOptions {
 export interface CreateEngineTestClientOptions extends CreateTestClientOptions {
   clientDialect?: TestClientDialect;
   plugins?: SyncClientPlugin[];
-  subscriptions?: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions?: Array<
+    Omit<SyncSubscriptionRequest, 'cursor' | 'crdtStateVectors'>
+  >;
   pollIntervalMs?: number;
   realtimeEnabled?: boolean;
 }
@@ -136,7 +138,9 @@ export interface CreateSyncFixtureOptions {
   serverDialect: ServerDialect;
   defaultClientDialect?: TestClientDialect;
   defaultMode?: 'raw' | 'engine';
-  defaultSubscriptions?: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  defaultSubscriptions?: Array<
+    Omit<SyncSubscriptionRequest, 'cursor' | 'crdtStateVectors'>
+  >;
   pollIntervalMs?: number;
   realtimeEnabled?: boolean;
 }
@@ -147,7 +151,9 @@ export interface CreateSyncClientOptions {
   mode?: 'raw' | 'engine';
   clientDialect?: TestClientDialect;
   plugins?: SyncClientPlugin[];
-  subscriptions?: Array<Omit<SyncSubscriptionRequest, 'cursor'>>;
+  subscriptions?: Array<
+    Omit<SyncSubscriptionRequest, 'cursor' | 'crdtStateVectors'>
+  >;
 }
 
 export interface SyncFixture {
@@ -657,7 +663,9 @@ function createInProcessTransport(
 
 function defaultSubscriptions(
   actorId: string
-): Array<Omit<SyncSubscriptionRequest, 'cursor'>> {
+): Array<
+  Omit<SyncSubscriptionRequest, 'cursor' | 'crdtStateVectors'>
+> {
   return [{ id: 'my-tasks', table: 'tasks', scopes: { user_id: actorId } }];
 }
 

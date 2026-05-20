@@ -2362,6 +2362,7 @@ export function createSyncRoutes<
             cursor: Math.max(-1, sub.cursor),
             bootstrapState: sub.bootstrapState ?? null,
             verifiedRoot: sub.verifiedRoot,
+            crdtStateVectors: sub.crdtStateVectors,
           })),
         };
 
@@ -2629,6 +2630,7 @@ export function createSyncRoutes<
               table: chunk.scope,
               scopes: requestedChunkScopes,
               cursor: 0,
+              crdtStateVectors: [],
             },
           ],
           handlers: handlerRegistry,
@@ -2769,6 +2771,7 @@ export function createSyncRoutes<
               table: artifact.table,
               scopes: requestedArtifactScopes,
               cursor: 0,
+              crdtStateVectors: [],
             },
           ],
           handlers: handlerRegistry,

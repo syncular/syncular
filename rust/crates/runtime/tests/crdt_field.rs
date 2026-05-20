@@ -169,6 +169,61 @@ fn server_merge_crdt_field_persists_document_state_update_log_and_ack_status() -
 }
 
 #[test]
+fn server_merge_crdt_field_sends_scoped_state_vector_pull_hints() -> Result<()> {
+    let path = temp_db_path("syncular-crdt-state-vector-hints");
+    let server = AppTestServer::new(demo_todo_app_schema());
+    let app_schema = demo_todo_app_schema();
+    let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+    let mut client = SyncularClient::with_app_schema_parts(
+        test_config_with_client(&path, "crdt-state-vector-client"),
+        store,
+        server.clone(),
+        app_schema,
+    );
+
+    client.apply_mutation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "crdt-state-vector-task",
+            "op": "upsert",
+            "payload": {
+                "title": "",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let field =
+        client.open_crdt_field(CrdtFieldId::new("tasks", "crdt-state-vector-task", "title"))?;
+    client.apply_crdt_field_text(&field, "State vector hinted")?;
+    let snapshot = client.crdt_document_snapshot(&field)?;
+
+    client.sync_http()?;
+
+    let requests = server.requests();
+    let task_subscription = requests
+        .iter()
+        .filter_map(|request| request.pull.as_ref())
+        .flat_map(|pull| pull.subscriptions.iter())
+        .find(|subscription| subscription.id == "sub-tasks")
+        .expect("tasks subscription request");
+    assert_eq!(task_subscription.crdt_state_vectors.len(), 1);
+    let hint = &task_subscription.crdt_state_vectors[0];
+    assert_eq!(hint.row_id, "crdt-state-vector-task");
+    assert_eq!(hint.field, "title");
+    assert_eq!(hint.state_column, "title_yjs_state");
+    assert_eq!(hint.sync_mode, "server-merge");
+    assert_eq!(hint.state_vector_base64, snapshot.state_vector_base64);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn server_merge_crdt_field_enforces_bounded_pending_update_queue() -> Result<()> {
     let path = temp_db_path("syncular-crdt-document-backpressure");
     let app_schema = demo_todo_app_schema();

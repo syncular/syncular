@@ -165,6 +165,7 @@ describe('pull bootstrap behavior', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       };
@@ -270,6 +271,7 @@ describe('pull bootstrap behavior', () => {
             table: 'catalog_items',
             scopes: { catalog_id: requestedCatalogs },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       };
@@ -347,6 +349,7 @@ describe('pull bootstrap behavior', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       };

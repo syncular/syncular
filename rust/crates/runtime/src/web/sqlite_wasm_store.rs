@@ -36,8 +36,8 @@ use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef};
 use crate::protocol::{
-    OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange,
-    SyncOperation,
+    CrdtStateVectorHint, OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues,
+    SyncChange, SyncOperation,
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
@@ -2472,6 +2472,50 @@ impl SyncularRustOwnedSqlite {
         self.select_crdt_document_snapshot(&field.document_key())
     }
 
+    fn crdt_state_vector_hints_for_subscription(
+        &self,
+        table: &str,
+        scopes: &ScopeValues,
+        limit: i64,
+    ) -> Result<Vec<CrdtStateVectorHint>> {
+        let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+        validate_table_name(table)?;
+        let rows = self.query_rows(
+            &format!(
+                "SELECT row_id, field_name, state_column, sync_mode, state_vector_base64, updated_at \
+                 FROM sync_crdt_documents \
+                 WHERE app_table = {table} AND state_vector_base64 != '' \
+                 ORDER BY updated_at DESC LIMIT {limit}",
+                table = sql_string(table),
+                limit = limit.max(0)
+            ),
+            |row| {
+                Ok(CrdtStateVectorHint {
+                    row_id: row.string("row_id")?,
+                    field: row.string("field_name")?,
+                    state_column: row.string("state_column")?,
+                    state_vector_base64: row.string("state_vector_base64")?,
+                    sync_mode: row.string("sync_mode")?,
+                    updated_at: row.i64("updated_at")?,
+                })
+            },
+        )?;
+
+        let mut hints = Vec::new();
+        for hint in rows {
+            let Some(app_row) = self.current_row_json(metadata, table, &hint.row_id)? else {
+                continue;
+            };
+            if !row_matches_scope_values(metadata, &app_row, scopes) {
+                continue;
+            }
+            hints.push(hint);
+        }
+        Ok(hints)
+    }
+
     fn crdt_update_log(&self, field: &CrdtField, limit: i64) -> Result<Value> {
         let document_key = sql_string(&field.document_key());
         let rows = self.query_rows(
@@ -4636,6 +4680,15 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn crdt_state_vector_hints<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+        limit: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CrdtStateVectorHint>>> + 'a>> {
+        Box::pin(async move { self.crdt_state_vector_hints_for_subscription(table, scopes, limit) })
+    }
+
     fn clear_table_for_scopes<'a>(
         &'a mut self,
         table: &'a str,
@@ -5402,6 +5455,23 @@ fn parse_scope_values(value: &str) -> Result<ScopeValues> {
             "subscription scopes_json must be a JSON object",
         )),
     }
+}
+
+fn row_matches_scope_values(
+    metadata: &AppTableMetadata,
+    row: &Value,
+    scopes: &ScopeValues,
+) -> bool {
+    metadata.scopes.iter().all(|scope| {
+        let Some(expected) = scopes.get(scope.name) else {
+            return !scope.required;
+        };
+        let actual = row.get(scope.column);
+        match expected {
+            Value::Array(values) => actual.is_some_and(|actual| values.iter().any(|v| v == actual)),
+            value => actual == Some(value),
+        }
+    })
 }
 
 fn parse_params(params_json: &str) -> Result<Vec<Value>> {

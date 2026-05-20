@@ -321,6 +321,7 @@ export function createProjectScopedTasksSubscription(
     },
     cursor: options.cursor ?? 0,
     bootstrapState: null,
+    crdtStateVectors: [],
   };
 }
 
