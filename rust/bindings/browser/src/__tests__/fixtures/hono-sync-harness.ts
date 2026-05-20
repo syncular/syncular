@@ -60,6 +60,7 @@ export interface CreateHonoSyncHarnessOptions {
     asOfCommitSeq?: number;
     rowLimit?: number;
   };
+  recordRequestEvents?: boolean;
   requiredSchemaVersion?: number;
   latestSchemaVersion?: number;
 }
@@ -110,6 +111,9 @@ export async function createHonoSyncHarness(
 
   try {
     await ensureSyncSchema(db, serverDialect);
+    if (options.recordRequestEvents) {
+      await serverDialect.ensureConsoleSchema(db);
+    }
     await ensureBlobStorageSchemaSqlite(db);
     await ensureHonoSyncTasksTable(db);
     for (const task of options.seedTasks ?? []) {
@@ -220,6 +224,12 @@ export async function createHonoSyncHarness(
         requiredSchemaVersion: options.requiredSchemaVersion,
         latestSchemaVersion: options.latestSchemaVersion,
       },
+      consoleLiveEmitter: options.recordRequestEvents
+        ? { emit() {} }
+        : undefined,
+      consoleSchemaReady: options.recordRequestEvents
+        ? Promise.resolve()
+        : undefined,
     });
     let blobRoutes: ReturnType<typeof createBlobRoutes> | undefined;
 

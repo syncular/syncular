@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../../../../packages/dialect-bun-sqlite/src';
 import {
   createServerHandler,
@@ -19,7 +19,11 @@ import {
   syncularGeneratedCodecs,
   taskSubscription,
 } from '../../../../examples/todo-app/generated/typescript/syncular.generated';
-import type { SyncularV2Client, SyncularV2LiveQueryEvent } from '../types';
+import type {
+  SyncularV2Client,
+  SyncularV2DiagnosticEvent,
+  SyncularV2LiveQueryEvent,
+} from '../types';
 import {
   ensureHonoSyncTasksTable,
   type HonoAuthContext,
@@ -226,8 +230,8 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
   });
 
   it('recovers through HTTP pull when websocket delta payloads are too large', async () => {
-    const { baseUrl, connectionCount, httpPullCount } =
-      await openRealtimeServer();
+    const { baseUrl, connectionCount, db, httpPullCount } =
+      await openRealtimeServer({ recordRequestEvents: true });
     const clientA = await openClient({
       baseUrl,
       clientId: 'large-delta-client-a',
@@ -250,6 +254,10 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     await waitFor(() => connectionCount() === 1);
     const pullCountBeforeRealtimePush = httpPullCount();
     const liveEvent = waitForLiveEvent(clientA, snapshot.id);
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const removeDiagnostics = clientA.addDiagnosticListener((event) => {
+      diagnostics.push(event);
+    });
 
     const largeTitle = 'Large websocket fallback '.repeat(4096);
     const clientB = await openClient({
@@ -283,6 +291,29 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     expect(event.rows[0]?.id).toBe('large-delta-task');
     expect(event.rows[0]?.title).toHaveLength(largeTitle.length);
     expect(httpPullCount()).toBeGreaterThan(pullCountBeforeRealtimePush);
+
+    const pullRequired = await waitForDiagnostic(
+      clientA,
+      diagnostics,
+      (item) => item.code === 'realtime.pull_required'
+    );
+    expect(pullRequired?.syncAttemptId).toMatch(/^[0-9a-f]{32}$/);
+    expect(pullRequired?.traceId).toBe(pullRequired?.syncAttemptId);
+    removeDiagnostics();
+
+    const requestEvent = await waitForSyncRequestEventByTrace(
+      db,
+      pullRequired!.traceId!,
+      'pull'
+    );
+    expect(requestEvent).toMatchObject({
+      trace_id: pullRequired!.traceId,
+      span_id: pullRequired!.spanId,
+      event_type: 'pull',
+      client_id: 'large-delta-client-a',
+      actor_id: ACTOR_ID,
+      outcome: 'applied',
+    });
   });
 
   it('reconnects websocket with fresh params after auth headers change', async () => {
@@ -414,7 +445,10 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
   });
 
   async function openRealtimeServer(
-    options: { realtimeTokens?: readonly string[] } = {}
+    options: {
+      realtimeTokens?: readonly string[];
+      recordRequestEvents?: boolean;
+    } = {}
   ): Promise<RealtimeServerHarness> {
     const dialect = createSqliteServerDialect();
     const db = createDatabase<HonoSyncServerDb>({
@@ -423,6 +457,9 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     });
     dbs.push(db);
     await ensureSyncSchema(db, dialect);
+    if (options.recordRequestEvents) {
+      await dialect.ensureConsoleSchema(db);
+    }
     await ensureHonoSyncTasksTable(db);
     const realtimeTokens = new Set(options.realtimeTokens ?? [REALTIME_TOKEN]);
     const tokenActors = new Map<string, string>([
@@ -484,6 +521,12 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
           allowedOrigins: '*',
         },
       },
+      consoleLiveEmitter: options.recordRequestEvents
+        ? { emit() {} }
+        : undefined,
+      consoleSchemaReady: options.recordRequestEvents
+        ? Promise.resolve()
+        : undefined,
     });
     const connectionManager = getSyncWebSocketConnectionManager(routes);
     if (!connectionManager) {
@@ -521,6 +564,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
 
     return {
       baseUrl: `http://127.0.0.1:${server.port}/sync`,
+      db,
       connectionCount: () => connectionManager.getTotalConnections(),
       httpPullCount: () => httpPullCount,
       websocketAuthTokens,
@@ -555,6 +599,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
 
 interface RealtimeServerHarness {
   baseUrl: string;
+  db: Kysely<HonoSyncServerDb>;
   connectionCount(): number;
   httpPullCount(): number;
   websocketAuthTokens: string[];
@@ -576,6 +621,55 @@ function waitForLiveEvent(
       resolve(event);
     });
   });
+}
+
+async function waitForSyncRequestEventByTrace(
+  db: Kysely<HonoSyncServerDb>,
+  traceId: string,
+  eventType: 'pull' | 'push'
+): Promise<{
+  trace_id: string | null;
+  span_id: string | null;
+  event_type: string;
+  client_id: string;
+  actor_id: string;
+  outcome: string;
+}> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const result = await sql<{
+      trace_id: string | null;
+      span_id: string | null;
+      event_type: string;
+      client_id: string;
+      actor_id: string;
+      outcome: string;
+    }>`
+      SELECT trace_id, span_id, event_type, client_id, actor_id, outcome
+      FROM sync_request_events
+      WHERE trace_id = ${traceId}
+        AND event_type = ${eventType}
+      ORDER BY event_id DESC
+      LIMIT 1
+    `.execute(db);
+    const row = result.rows[0];
+    if (row) return row;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for sync_request_events trace ${traceId}`);
+}
+
+async function waitForDiagnostic(
+  client: SyncularV2Client,
+  observed: SyncularV2DiagnosticEvent[],
+  predicate: (event: SyncularV2DiagnosticEvent) => boolean
+): Promise<SyncularV2DiagnosticEvent> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const snapshot = await client.diagnosticSnapshot();
+    const event = [...observed, ...snapshot.recentDiagnostics].find(predicate);
+    if (event) return event;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Timed out waiting for diagnostic event');
 }
 
 async function toNativeBunResponse(response: Response): Promise<Response> {

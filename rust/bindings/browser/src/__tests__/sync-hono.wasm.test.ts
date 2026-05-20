@@ -5,6 +5,7 @@ import {
   type SyncCombinedRequest,
   type SyncCombinedResponse,
 } from '@syncular/core';
+import { sql } from 'kysely';
 import {
   newTaskOperation,
   syncularGeneratedAppSchema,
@@ -14,6 +15,7 @@ import {
 import type {
   SyncularV2AppSchema,
   SyncularV2Client,
+  SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryEvent,
   SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
@@ -162,6 +164,60 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     expect(refreshCount).toBe(scenario.expectedRefreshCount);
     expect(sync.syncRouteAuthHeaders).toEqual(scenario.expectedAuthHeaders);
+  });
+
+  it('correlates successful pull diagnostics with server request events', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      recordRequestEvents: true,
+      seedTasks: [
+        {
+          id: 'trace-pull-task',
+          title: 'Traceable pull task',
+          actorId: ACTOR_A,
+          serverVersion: 1,
+        },
+      ],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'trace-pull-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const removeDiagnostics = client.addDiagnosticListener((event) => {
+      diagnostics.push(event);
+    });
+
+    await expect(client.syncOnce()).resolves.toMatchObject({
+      pushedCommits: 0,
+    });
+    removeDiagnostics();
+
+    const snapshot = await client.diagnosticSnapshot();
+    const completed = [...diagnostics, ...snapshot.recentDiagnostics].find(
+      (event) => event.code === 'sync.syncOnce.completed'
+    );
+    expect(completed?.syncAttemptId).toMatch(/^[0-9a-f]{32}$/);
+    expect(completed?.traceId).toBe(completed?.syncAttemptId);
+    expect(completed?.spanId).toMatch(/^[0-9a-f]{16}$/);
+
+    const requestEvent = await waitForSyncRequestEventByTrace(
+      sync,
+      completed!.traceId!,
+      'pull'
+    );
+    expect(requestEvent).toMatchObject({
+      trace_id: completed!.traceId,
+      span_id: completed!.spanId,
+      event_type: 'pull',
+      client_id: 'trace-pull-client',
+      actor_id: ACTOR_A,
+      outcome: 'applied',
+    });
   });
 
   it('emits row-level change events for local worker writes', async () => {
@@ -2136,6 +2192,41 @@ async function pushTaskAndPull(
     pushedCommits: 1,
   });
   await target.syncPull();
+}
+
+async function waitForSyncRequestEventByTrace(
+  sync: HonoSyncHarness,
+  traceId: string,
+  eventType: 'pull' | 'push'
+): Promise<{
+  trace_id: string | null;
+  span_id: string | null;
+  event_type: string;
+  client_id: string;
+  actor_id: string;
+  outcome: string;
+}> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const result = await sql<{
+      trace_id: string | null;
+      span_id: string | null;
+      event_type: string;
+      client_id: string;
+      actor_id: string;
+      outcome: string;
+    }>`
+      SELECT trace_id, span_id, event_type, client_id, actor_id, outcome
+      FROM sync_request_events
+      WHERE trace_id = ${traceId}
+        AND event_type = ${eventType}
+      ORDER BY event_id DESC
+      LIMIT 1
+    `.execute(sync.db);
+    const row = result.rows[0];
+    if (row) return row;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for sync_request_events trace ${traceId}`);
 }
 
 function waitForRetryBackoff(): Promise<void> {
