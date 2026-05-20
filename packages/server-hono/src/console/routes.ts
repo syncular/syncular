@@ -33,9 +33,10 @@ import {
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { resolver, validator as zValidator } from 'hono-openapi';
+import { resolver } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
+import { consoleValidator as zValidator } from '../validation';
 import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   closeUnauthenticatedSocket,

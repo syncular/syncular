@@ -403,6 +403,9 @@ read-only review:
     typed `event.error` shape. Console gateway routes now return stable
     `console.*` envelopes for auth, forbidden origin, invalid selection,
     not-found, downstream unavailable, and invalid downstream response cases.
+    Hono request validation now uses Syncular-owned validators so sync, blob,
+    and console validation failures return stable envelopes before route
+    handlers run.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

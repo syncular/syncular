@@ -68,7 +68,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
 
 import type { UpgradeWebSocket } from 'hono/ws';
-import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
+import { describeRoute, resolver } from 'hono-openapi';
 import { type Kysely, sql } from 'kysely';
 import { z } from 'zod';
 import { isBenignConsoleSchemaError } from './console/schema-errors';
@@ -78,6 +78,7 @@ import {
   DEFAULT_SYNC_RATE_LIMITS,
   type SyncRateLimitConfig,
 } from './rate-limit';
+import { syncValidator as zValidator } from './validation';
 import {
   isWebSocketOriginAllowed,
   resolveAllowedOriginFromPatterns,

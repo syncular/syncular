@@ -257,6 +257,30 @@ describe('createBlobRoutes', () => {
     await db.destroy();
   });
 
+  it('returns a stable envelope for invalid upload initiation bodies', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+    });
+
+    const response = await app.request('http://localhost/sync/blobs/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.invalid_request',
+      code: 'blob.invalid_request',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+      details: { target: 'json' },
+    });
+  });
+
   it('rejects unauthenticated upload initiation', async () => {
     const app = buildApp({
       db,

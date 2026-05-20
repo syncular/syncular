@@ -6,7 +6,7 @@ import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { UpgradeWebSocket } from 'hono/ws';
-import { resolver, validator as zValidator } from 'hono-openapi';
+import { resolver } from 'hono-openapi';
 import { z } from 'zod';
 import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
@@ -66,6 +66,7 @@ import {
   TimeseriesStatsResponseSchema,
 } from './schemas';
 import type { ConsoleAuthResult } from './types';
+import { consoleValidator as zValidator } from '../validation';
 
 type ConsoleGatewayErrorStatus = 400 | 401 | 403 | 404 | 502;
 
