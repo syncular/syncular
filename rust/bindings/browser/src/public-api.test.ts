@@ -28,14 +28,16 @@ describe('@syncular/client-rust public API', () => {
     );
   });
 
-  it('orders packaged runtime artifacts from smallest compatible to full', () => {
+  it('orders packaged runtime artifacts from smallest compatible to full profiles', () => {
     const artifacts = getSyncularV2PackagedRuntimeArtifacts();
     expect(artifacts.map((artifact) => artifact.name)).toEqual([
       'core',
       'full',
+      'full-perf',
     ]);
     expect(artifacts[0]?.features).toEqual(['web-owned-sqlite-core']);
     expect(artifacts[1]?.features).toContain('crdt-yjs');
+    expect(artifacts[2]?.wasmUrl?.toString()).toContain('wasm-perf');
   });
 
   it('keeps the Rust SQLite alias wired to the v2 database constructor', () => {

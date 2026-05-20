@@ -816,13 +816,11 @@ Current notes:
   compatible WASM glue/WASM URL pair. The current package still defaults to the
   canonical full artifact unless an app/package provides additional built
   artifacts.
-- Direct Rust WebSocket transport was measured as a feature-boundary candidate
-  and rejected. Moving the browser Rust WebSocket imports behind a temporary
-  feature changed optimized size by only `-94` raw / `+49` gzip bytes for the
-  full artifact and `-2.6 KiB` raw / `+175` gzip bytes for the core artifact.
-  Browser app realtime already lives in the TypeScript Worker controller, so a
-  Rust `web-realtime` capability would add complexity without reducing shipped
-  WASM.
+- Direct Rust WebSocket transport is no longer a browser feature-boundary
+  candidate. Browser app realtime lives in the TypeScript Worker controller,
+  and Rust owns binary sync-pack decode/apply plus native WebSocket support.
+  Removing browser Rust WebSocket ownership is a product-boundary cleanup, not
+  a meaningful package-size lever.
 - Browser variant builds now write `syncular-v2-runtime-artifact.json` next to
   each optimized artifact and `dist/syncular-v2-runtime-artifacts.json` as an
   ordered catalog. The public browser package exposes
@@ -1388,10 +1386,10 @@ Progress:
   TypeScript app clients require `blobs` when schema metadata has blob columns,
   and core-variant tests now prove blob schemas are rejected against the core
   artifact.
-- Measured and rejected a direct Rust WebSocket feature boundary. The optimized
-  gzip result did not improve, and the browser package's app-facing realtime
-  path is the TypeScript Worker controller rather than Rust's direct WebSocket
-  helper.
+- Removed browser Rust WebSocket ownership as a browser package boundary. The
+  browser package's app-facing realtime path is the TypeScript Worker
+  controller, while Rust continues to own binary sync-pack decode/apply and
+  native WebSocket transport.
 - Added per-artifact manifests and catalog helpers. Each optimized artifact now
   writes `syncular-v2-runtime-artifact.json` with runtime features, Rust
   features, files, profile, raw size, and gzip size. `catalog:wasm` combines

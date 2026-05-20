@@ -7,28 +7,24 @@ use crate::protocol::{
     BlobUploadInitResponse,
 };
 use crate::protocol::{
-    CombinedRequest, CombinedResponse, PushCommitRequest, RealtimePushRequest, ScopeValues,
-    ScopedSnapshotArtifactRef, SnapshotChunkRef, SNAPSHOT_CHUNK_COMPRESSION_GZIP,
-    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+    CombinedRequest, CombinedResponse, ScopeValues, ScopedSnapshotArtifactRef, SnapshotChunkRef,
+    SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
-use flate2::read::GzDecoder;
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::future::Future;
-use std::io::Read;
 use std::pin::Pin;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    AbortSignal, BinaryType, Request, RequestInit, RequestMode, Response, Url, WebSocket,
-};
+use web_sys::{AbortSignal, Request, RequestInit, RequestMode, Response};
 
 #[derive(Debug, Clone)]
 pub struct WebSyncTransportConfig {
@@ -91,13 +87,7 @@ struct WebServerBootstrapTimings {
     chunk_persist_ms: f64,
 }
 
-pub struct WebRealtimeSocket {
-    socket: WebSocket,
-}
-
 pub trait AsyncSyncTransport {
-    type Realtime;
-
     fn post_sync<'a>(
         &'a self,
         request: &'a CombinedRequest,
@@ -120,8 +110,6 @@ pub trait AsyncSyncTransport {
             ))
         })
     }
-
-    fn connect_realtime(&self) -> Result<Self::Realtime>;
 }
 
 #[cfg(feature = "web-blobs")]
@@ -176,8 +164,6 @@ impl SyncAuthHeaderStore for WebSyncTransport {
 }
 
 impl AsyncSyncTransport for WebSyncTransport {
-    type Realtime = WebRealtimeSocket;
-
     fn post_sync<'a>(
         &'a self,
         request: &'a CombinedRequest,
@@ -272,10 +258,6 @@ impl AsyncSyncTransport for WebSyncTransport {
             );
             decode_snapshot_artifact_bytes(artifact, &bytes, &self.stats).await
         })
-    }
-
-    fn connect_realtime(&self) -> Result<Self::Realtime> {
-        WebRealtimeSocket::connect(&self.config)
     }
 }
 
@@ -384,35 +366,6 @@ impl WebSyncTransport {
         let response = fetch_json("GET", &url, None, &headers, self.abort_signal.as_ref()).await?;
         serde_wasm_bindgen::from_value(response)
             .map_err(|err| SyncularError::protocol(err).context("decode blob download url"))
-    }
-}
-
-impl WebRealtimeSocket {
-    pub fn connect(config: &WebSyncTransportConfig) -> Result<Self> {
-        let url = ws_url(&config.base_url, &config.client_id)?;
-        let socket = WebSocket::new(&url)
-            .map_err(|err| js_error(ErrorKind::Transport, "connect browser websocket", err))?;
-        socket.set_binary_type(BinaryType::Arraybuffer);
-        Ok(Self { socket })
-    }
-
-    pub fn socket(&self) -> &WebSocket {
-        &self.socket
-    }
-
-    pub fn send_push_commit(&self, commit: PushCommitRequest) -> Result<String> {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let message = RealtimePushRequest::from_commit(request_id.clone(), commit);
-        self.socket
-            .send_with_str(&serde_json::to_string(&message)?)
-            .map_err(|err| js_error(ErrorKind::Transport, "send browser websocket push", err))?;
-        Ok(request_id)
-    }
-
-    pub fn close(&self) -> Result<()> {
-        self.socket
-            .close()
-            .map_err(|err| js_error(ErrorKind::Transport, "close browser websocket", err))
     }
 }
 
@@ -865,15 +818,7 @@ async fn decode_snapshot_artifact_bytes(
         )));
     }
     let decompress_started_at = timing_now_ms();
-    let decoded = match decompress_gzip_with_browser(compressed).await {
-        Ok(Some(decoded)) => decoded,
-        Ok(None) | Err(_) => {
-            let mut decoder = GzDecoder::new(compressed);
-            let mut decoded = Vec::new();
-            decoder.read_to_end(&mut decoded)?;
-            decoded
-        }
-    };
+    let decoded = decompress_gzip_with_browser(compressed).await?;
     record_snapshot_artifact_decompress(stats, elapsed_ms_since(decompress_started_at));
     Ok(decoded)
 }
@@ -891,26 +836,21 @@ async fn decode_snapshot_chunk_bytes(
     syncular_protocol::validate_snapshot_chunk_hash_bytes(chunk, &actual_hash)?;
 
     let decompress_started_at = timing_now_ms();
-    let decoded = match decompress_gzip_with_browser(compressed).await {
-        Ok(Some(decoded)) => decoded,
-        Ok(None) | Err(_) => {
-            let mut decoder = GzDecoder::new(compressed);
-            let mut decoded = Vec::new();
-            decoder.read_to_end(&mut decoded)?;
-            decoded
-        }
-    };
+    let decoded = decompress_gzip_with_browser(compressed).await?;
     record_snapshot_chunk_decompress(stats, elapsed_ms_since(decompress_started_at));
 
     Ok(decoded)
 }
 
-async fn decompress_gzip_with_browser(compressed: &[u8]) -> Result<Option<Vec<u8>>> {
+async fn decompress_gzip_with_browser(compressed: &[u8]) -> Result<Vec<u8>> {
     let global = js_sys::global();
     let ctor = Reflect::get(&global, &JsValue::from_str("DecompressionStream"))
         .map_err(|err| js_error(ErrorKind::Transport, "read DecompressionStream", err))?;
     if !ctor.is_function() {
-        return Ok(None);
+        return Err(SyncularError::message(
+            ErrorKind::Config,
+            "browser DecompressionStream('gzip') is required for snapshot gzip decompression",
+        ));
     }
     let ctor = ctor
         .dyn_into::<Function>()
@@ -924,7 +864,10 @@ async fn decompress_gzip_with_browser(compressed: &[u8]) -> Result<Option<Vec<u8
     let body = Reflect::get(response.as_ref(), &JsValue::from_str("body"))
         .map_err(|err| js_error(ErrorKind::Transport, "read response body", err))?;
     if body.is_null() || body.is_undefined() {
-        return Ok(None);
+        return Err(SyncularError::message(
+            ErrorKind::Transport,
+            "browser Response body stream is required for snapshot gzip decompression",
+        ));
     }
     let pipe_through = Reflect::get(&body, &JsValue::from_str("pipeThrough"))
         .map_err(|err| js_error(ErrorKind::Transport, "read pipeThrough", err))?
@@ -948,7 +891,7 @@ async fn decompress_gzip_with_browser(compressed: &[u8]) -> Result<Option<Vec<u8
     let buffer = JsFuture::from(buffer)
         .await
         .map_err(|err| js_error(ErrorKind::Transport, "await gzip output array buffer", err))?;
-    Ok(Some(Uint8Array::new(&buffer).to_vec()))
+    Ok(Uint8Array::new(&buffer).to_vec())
 }
 
 fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
@@ -983,28 +926,6 @@ fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
 
 fn estimated_snapshot_row_count(byte_len: usize) -> usize {
     (byte_len / 160).clamp(1, 20_000)
-}
-
-fn ws_url(base_url: &str, client_id: &str) -> Result<String> {
-    let url = Url::new(base_url)
-        .map_err(|err| js_error(ErrorKind::Config, "parse websocket base url", err))?;
-    match url.protocol().as_str() {
-        "http:" => url.set_protocol("ws:"),
-        "https:" => url.set_protocol("wss:"),
-        "ws:" | "wss:" => {}
-        scheme => {
-            return Err(SyncularError::config(format!(
-                "unsupported websocket base url scheme: {scheme}"
-            )));
-        }
-    }
-    let path = url.pathname().trim_end_matches('/').to_string();
-    url.set_pathname(&format!("{path}/realtime"));
-    url.search_params().set("clientId", client_id);
-    url.search_params()
-        .set("schemaVersion", &runtime_schema_version().to_string());
-    url.search_params().set("transportPath", "direct");
-    Ok(url.href())
 }
 
 #[cfg(feature = "web-blobs")]

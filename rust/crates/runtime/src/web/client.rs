@@ -20,9 +20,7 @@ use crate::protocol::{
     SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
-use crate::transport::web::{
-    AsyncSyncTransport, WebRealtimeSocket, WebSyncTransport, WebSyncTransportConfig,
-};
+use crate::transport::web::{AsyncSyncTransport, WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use crate::web_store::{
     AsyncWebStore, WebMemoryStore, WebSnapshotArtifactApplyMode, WebStoreApplyTimings,
@@ -200,7 +198,7 @@ impl WebSyncularClient<WebSyncTransport, WebMemoryStore> {
 
 impl<T, S> WebSyncularClient<T, S>
 where
-    T: AsyncSyncTransport<Realtime = WebRealtimeSocket>,
+    T: AsyncSyncTransport,
     S: AsyncWebStore,
 {
     pub fn with_parts(config: WebSyncularClientConfig, transport: T, store: S) -> Self {
@@ -1195,28 +1193,6 @@ where
         self.store.list_table_json(table).await
     }
 
-    pub fn connect_realtime(&self) -> Result<WebRealtimeSocket> {
-        self.transport.connect_realtime()
-    }
-
-    pub fn send_push_commit_json(
-        &self,
-        socket: &WebRealtimeSocket,
-        commit_json: &str,
-    ) -> Result<String> {
-        let operation: SyncOperation = serde_json::from_str(commit_json)?;
-        let operations = if let Some(encryption) = &self.field_encryption {
-            encryption.transform_operations_for_push(&self.encryption_context(), vec![operation])?
-        } else {
-            vec![operation]
-        };
-        socket.send_push_commit(crate::protocol::PushCommitRequest {
-            client_commit_id: uuid::Uuid::new_v4().to_string(),
-            operations,
-            schema_version: self.schema_version(),
-        })
-    }
-
     fn subscription_bootstrap_phase(&self, subscription_id: &str) -> i64 {
         self.subscriptions
             .iter()
@@ -1450,7 +1426,7 @@ fn add_store_apply_timings(timings: &mut WebSyncTimings, store: WebStoreApplyTim
 
 impl<T, S> WebSyncularClient<T, S>
 where
-    T: AsyncSyncTransport<Realtime = WebRealtimeSocket> + SyncAuthHeaderStore,
+    T: AsyncSyncTransport + SyncAuthHeaderStore,
     S: AsyncWebStore,
 {
     pub fn set_auth_headers(&mut self, headers: SyncAuthHeaders) {
@@ -1748,7 +1724,6 @@ mod tests {
         SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
         SNAPSHOT_CHUNK_COMPRESSION_GZIP,
     };
-    use crate::transport::web::WebRealtimeSocket;
     use serde_json::{json, Map, Value};
     use std::future::Future;
     use std::pin::Pin;
@@ -2021,8 +1996,6 @@ mod tests {
     struct NoopTransport;
 
     impl AsyncSyncTransport for NoopTransport {
-        type Realtime = WebRealtimeSocket;
-
         fn post_sync<'a>(
             &'a self,
             _request: &'a CombinedRequest,
@@ -2047,17 +2020,11 @@ mod tests {
                 ))
             })
         }
-
-        fn connect_realtime(&self) -> Result<Self::Realtime> {
-            panic!("realtime socket not used in this test")
-        }
     }
 
     struct ArtifactTransport;
 
     impl AsyncSyncTransport for ArtifactTransport {
-        type Realtime = WebRealtimeSocket;
-
         fn post_sync<'a>(
             &'a self,
             _request: &'a CombinedRequest,
@@ -2107,17 +2074,11 @@ mod tests {
                 ))
             })
         }
-
-        fn connect_realtime(&self) -> Result<Self::Realtime> {
-            panic!("realtime not used in this test")
-        }
     }
 
     struct FailingChunkTransport;
 
     impl AsyncSyncTransport for FailingChunkTransport {
-        type Realtime = WebRealtimeSocket;
-
         fn post_sync<'a>(
             &'a self,
             _request: &'a CombinedRequest,
@@ -2175,10 +2136,6 @@ mod tests {
                 ))
             })
         }
-
-        fn connect_realtime(&self) -> Result<Self::Realtime> {
-            panic!("realtime not used in this test")
-        }
     }
 
     struct PhaseCaptureTransport {
@@ -2186,8 +2143,6 @@ mod tests {
     }
 
     impl AsyncSyncTransport for PhaseCaptureTransport {
-        type Realtime = WebRealtimeSocket;
-
         fn post_sync<'a>(
             &'a self,
             request: &'a CombinedRequest,
@@ -2244,10 +2199,6 @@ mod tests {
                     "phase transport does not fetch chunks",
                 ))
             })
-        }
-
-        fn connect_realtime(&self) -> Result<Self::Realtime> {
-            panic!("realtime not used in this test")
         }
     }
 

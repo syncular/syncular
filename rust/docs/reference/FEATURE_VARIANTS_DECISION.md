@@ -81,13 +81,25 @@ Variant build metadata now exists. The package `build` runs
 then writes `dist/syncular-v2-runtime-artifacts.json` with ordered artifact
 URLs, Rust features, runtime features, and raw/gzip sizes.
 
-Direct Rust WebSocket transport is not a useful WASM size boundary right now.
-A local split experiment that moved the browser Rust WebSocket imports behind a
-`web-realtime` feature changed the optimized full artifact by only `-94` raw
-bytes and `+49` gzip bytes, and changed the core artifact by `-2.6 KiB` raw but
-`+175` gzip bytes. Browser app realtime is already implemented in the
-TypeScript Worker controller, so keeping a separate Rust `web-realtime`
-capability would add confusion without a measured package-size win.
+Direct Rust WebSocket transport is no longer a browser artifact boundary. The
+browser artifact uses the TypeScript Worker controller as the single WebSocket
+owner because browser sockets are a JavaScript platform API and the worker is
+the right place for reconnect, heartbeat, presence, auth parameter refresh, and
+DevTools-visible diagnostics. Rust still owns binary sync-pack decode/apply and
+native WebSocket support. Removing browser Rust WebSocket ownership is a
+boundary cleanup, not a major size lever.
+
+Browser gzip fallback is also no longer a variant boundary. The browser
+artifact requires `DecompressionStream('gzip')` for snapshot chunks and
+snapshot artifacts. Native Rust keeps `flate2`; browser Rust does not link the
+`flate2` fallback.
+
+The package may include multiple optimization profiles for the same full
+feature set without creating a feature matrix. The default `full` artifact is
+size-optimized with release `opt-level=z`; `full-perf` is the same full feature
+set built with release `opt-level=3` and must be selected explicitly. Generated
+feature selection should continue to pick the smallest compatible artifact by
+default.
 
 ## What A Real Variant Requires
 
@@ -147,8 +159,8 @@ If the product decision changes, start with a measurement-only branch:
 1. Measure the already-proven `crdt-yjs` and `e2ee` boundaries in optimized
    WASM artifacts.
 2. Keep the measured `blobs` boundary in the internal core build.
-3. Do not split direct Rust WebSocket/realtime unless a future implementation
-   proves meaningful gzip savings.
+3. Do not split direct Rust WebSocket/realtime; browser realtime lifecycle is
+   TypeScript-owned and native realtime remains Rust-owned.
 4. Keep the default browser build unchanged.
 5. Add a non-published `web-owned-sqlite-basic` build script that compiles
    without those features.
