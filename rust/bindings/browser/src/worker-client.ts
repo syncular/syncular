@@ -48,6 +48,7 @@ import type {
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
+  SyncularV2LifecycleState,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
@@ -200,6 +201,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #storageFallback: SyncularV2StorageFallbackInfo | undefined;
   #lastDiagnostic: SyncularV2DiagnosticEvent | undefined;
   #lastError: { message: string; code?: string } | undefined;
+  #lastLifecycleState: SyncularV2LifecycleState | undefined;
+  #recoveryRequired = false;
+  #authRequired = false;
   #subscriptions: SyncularV2SubscriptionSpec[] = [];
   #lastBootstrap: SyncularV2BootstrapStatus | undefined;
   #recentDiagnostics: SyncularV2DiagnosticEvent[] = [];
@@ -700,6 +704,57 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
+  lifecycleState(): SyncularV2LifecycleState {
+    return this.#computeLifecycleState();
+  }
+
+  #computeLifecycleState(): SyncularV2LifecycleState {
+    const outbox = this.#lastOutboxStats;
+    const conflicts = this.#lastConflictStats;
+    const bootstrap = this.#lastBootstrap
+      ? {
+          complete: this.#lastBootstrap.complete,
+          criticalReady: this.#lastBootstrap.criticalReady,
+          interactiveReady: this.#lastBootstrap.interactiveReady,
+          isBootstrapping: this.#lastBootstrap.isBootstrapping,
+          progressPercent: this.#lastBootstrap.progressPercent,
+        }
+      : undefined;
+    const hasFailedOutbox = (outbox?.failed ?? 0) > 0;
+    const hasConflicts = (conflicts?.unresolved ?? 0) > 0;
+    const authRequired =
+      this.#authRequired || this.#lastError?.code === 'sync.auth_required';
+    const phase: SyncularV2LifecycleState['phase'] = this.#closed
+      ? 'closed'
+      : authRequired
+        ? 'authRequired'
+        : this.#recoveryRequired || bootstrap?.isBootstrapping === true
+          ? 'recovering'
+          : this.#pending.size > 0
+            ? 'syncing'
+            : this.#realtimeState === 'connecting'
+              ? 'connecting'
+              : hasFailedOutbox || hasConflicts
+                ? 'degraded'
+                : bootstrap?.complete === true
+                  ? 'complete'
+                  : 'offline';
+
+    return {
+      phase,
+      realtime: this.#realtimeState,
+      online: this.#realtimeState === 'connected',
+      requiresAction:
+        authRequired || hasFailedOutbox || hasConflicts,
+      pendingRequests: this.#pending.size,
+      ...(bootstrap ? { bootstrap } : {}),
+      ...(outbox ? { outbox } : {}),
+      ...(conflicts ? { conflicts } : {}),
+      ...(this.#lastDiagnostic ? { lastDiagnostic: this.#lastDiagnostic } : {}),
+      ...(this.#lastError ? { lastError: this.#lastError } : {}),
+    };
+  }
+
   async diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot> {
     const [runtime, transportStats] = await Promise.all([
       this.runtimeInfo(),
@@ -885,6 +940,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     if (this.#closed) return;
     this.#closed = true;
     this.#realtimeState = 'disconnected';
+    this.#emitLifecycleChanged();
     try {
       await this.#request({ type: 'close' });
     } finally {
@@ -1070,6 +1126,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
                 message: error.message,
                 code: error.code,
               };
+              this.#emitLifecycleChanged();
               reject(error);
             }, this.#requestTimeoutMs)
           : undefined;
@@ -1079,6 +1136,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         resolve: (value) => resolve(value as T),
         reject,
       });
+      this.#emitLifecycleChanged();
       this.worker.postMessage(message);
     });
   }
@@ -1116,6 +1174,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       };
       pending.reject(error);
     }
+    this.#emitLifecycleChanged();
   }
 
   #handleWorkerEvent(
@@ -1138,7 +1197,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     }
     if (event.type === 'bootstrapChanged') {
       this.#lastBootstrap = event.bootstrap;
+      if (event.bootstrap.complete) {
+        this.#recoveryRequired = false;
+        this.#authRequired = false;
+        this.#lastError = undefined;
+      }
       this.#emitClientEvent('bootstrapChanged', event.bootstrap);
+      this.#emitLifecycleChanged();
       return;
     }
     if (event.type === 'realtimeState') {
@@ -1153,6 +1218,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       if (event.state === 'connected') {
         this.#rejoinPresence();
       }
+      this.#emitLifecycleChanged();
       return;
     }
     if (event.type === 'presenceEvent') {
@@ -1177,6 +1243,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         // Client event listeners must never break sync control flow.
       }
     }
+  }
+
+  #emitLifecycleChanged(): void {
+    const state = this.#computeLifecycleState();
+    if (this.#lastLifecycleState && sameJson(this.#lastLifecycleState, state)) {
+      return;
+    }
+    this.#lastLifecycleState = state;
+    this.#emitClientEvent('lifecycleChanged', state);
   }
 
   #hasClientEventListeners(event: SyncularV2ClientEventType): boolean {
@@ -1242,14 +1317,19 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   #emitBootstrapChanged(result: SyncularV2SyncResult): void {
     this.#lastBootstrap = result.bootstrap;
+    this.#recoveryRequired = false;
+    this.#authRequired = false;
+    this.#lastError = undefined;
     appendSyncularV2SyncTimings(this.#recentSyncTimings, result.timings);
     this.#emitClientEvent('bootstrapChanged', result.bootstrap);
+    this.#emitLifecycleChanged();
   }
 
   async #emitOperationalState(): Promise<void> {
     if (
       !this.#hasClientEventListeners('outboxChanged') &&
-      !this.#hasClientEventListeners('conflictsChanged')
+      !this.#hasClientEventListeners('conflictsChanged') &&
+      !this.#hasClientEventListeners('lifecycleChanged')
     ) {
       return;
     }
@@ -1265,6 +1345,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#lastConflictStats = conflictStats;
       this.#emitClientEvent('conflictsChanged', conflictStats);
     }
+    this.#emitLifecycleChanged();
   }
 
   async #readOutboxStats(): Promise<SyncularV2OutboxStats> {
@@ -1473,8 +1554,22 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       ...(event.cursor !== undefined ? { cursor: event.cursor } : {}),
       ...(event.details ? { details: event.details } : {}),
     };
+    if (diagnostic.details?.resyncRequired === true) {
+      this.#recoveryRequired = true;
+    }
+    if (
+      diagnostic.code === 'auth.expired' ||
+      diagnostic.code === 'auth.refresh_failed' ||
+      diagnostic.code === 'sync.auth_required'
+    ) {
+      this.#authRequired = true;
+    }
+    if (diagnostic.code === 'auth.refresh_succeeded') {
+      this.#authRequired = false;
+    }
     this.#lastDiagnostic = diagnostic;
     appendSyncularV2DiagnosticEvent(this.#recentDiagnostics, diagnostic);
+    this.#emitLifecycleChanged();
     if (this.#diagnosticListeners.size === 0) return;
     for (const listener of this.#diagnosticListeners) {
       try {

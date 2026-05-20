@@ -58,9 +58,24 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Define a stable lifecycle event shape and wire one browser worker test covering
-offline mutation queueing, reconnect recovery, and final complete state.
+Extend lifecycle coverage from browser worker state derivation into a
+production-shaped browser/Hono scenario covering offline mutation queueing,
+reconnect recovery, and final complete state.
 
 ## Progress
 
 - Activated after WP-16 accepted the schema-evolution safety slice.
+- Added the first browser lifecycle surface: `lifecycleState()` plus
+  `lifecycleChanged` events. The state reports `offline`, `connecting`,
+  `syncing`, `recovering`, `authRequired`, `degraded`, `complete`, and
+  `closed` phases with realtime, bootstrap, outbox, conflict, diagnostic, and
+  pending-request context.
+- Worker client tests now prove lifecycle transitions for connecting,
+  resync-required recovery, auth-required action, and final complete state.
+
+## Latest Evidence
+
+- `bun test rust/bindings/browser/src/worker-client.test.ts -t "lifecycle"`
+- `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/client.test.ts`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `bun test rust/bindings/browser/src/public-api.test.ts rust/bindings/browser/src/react.test.ts`

@@ -536,8 +536,42 @@ export interface SyncularV2BlobUploadErrorEvent {
   error: string;
 }
 
+export type SyncularV2LifecyclePhase =
+  | 'closed'
+  | 'offline'
+  | 'connecting'
+  | 'syncing'
+  | 'recovering'
+  | 'authRequired'
+  | 'degraded'
+  | 'complete';
+
+export interface SyncularV2LifecycleState {
+  phase: SyncularV2LifecyclePhase;
+  realtime: SyncularV2RealtimeConnectionState;
+  online: boolean;
+  requiresAction: boolean;
+  pendingRequests: number;
+  bootstrap?: Pick<
+    SyncularV2BootstrapStatus,
+    | 'complete'
+    | 'criticalReady'
+    | 'interactiveReady'
+    | 'isBootstrapping'
+    | 'progressPercent'
+  >;
+  outbox?: SyncularV2OutboxStats;
+  conflicts?: SyncularV2ConflictStats;
+  lastDiagnostic?: SyncularV2DiagnosticEvent;
+  lastError?: {
+    message: string;
+    code?: string;
+  };
+}
+
 export interface SyncularV2ClientEventMap {
   rowsChanged: SyncularV2RowsChangedEvent;
+  lifecycleChanged: SyncularV2LifecycleState;
   bootstrapChanged: SyncularV2BootstrapStatus;
   outboxChanged: SyncularV2OutboxStats;
   conflictsChanged: SyncularV2ConflictStats;
@@ -983,6 +1017,7 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   ): Promise<unknown>;
   runtimeInfo(): Promise<SyncularV2RuntimeInfo>;
   connectionState(): SyncularV2ConnectionState;
+  lifecycleState(): SyncularV2LifecycleState;
   diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
   addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void;
   addEventListener<T extends SyncularV2ClientEventType>(

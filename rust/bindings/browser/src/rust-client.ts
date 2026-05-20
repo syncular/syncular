@@ -47,6 +47,7 @@ import type {
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
+  SyncularV2LifecycleState,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
@@ -639,6 +640,35 @@ export class SyncularV2RustClient {
       closed: this.#closed,
       pendingRequests: 0,
       realtime: 'disconnected',
+      ...(lastDiagnostic ? { lastDiagnostic } : {}),
+    };
+  }
+
+  lifecycleState(): SyncularV2LifecycleState {
+    const bootstrap = buildBootstrapStatus(
+      this.#subscriptions,
+      this.#bootstrapById,
+      this.pullOptions
+    );
+    const lastDiagnostic =
+      this.#recentDiagnostics[this.#recentDiagnostics.length - 1];
+    return {
+      phase: this.#closed
+        ? 'closed'
+        : bootstrap.complete
+          ? 'complete'
+          : 'offline',
+      realtime: 'disconnected',
+      online: false,
+      requiresAction: false,
+      pendingRequests: 0,
+      bootstrap: {
+        complete: bootstrap.complete,
+        criticalReady: bootstrap.criticalReady,
+        interactiveReady: bootstrap.interactiveReady,
+        isBootstrapping: bootstrap.isBootstrapping,
+        progressPercent: bootstrap.progressPercent,
+      },
       ...(lastDiagnostic ? { lastDiagnostic } : {}),
     };
   }
