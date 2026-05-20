@@ -705,6 +705,48 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
 }
 
 #[test]
+fn app_test_server_uploads_and_downloads_blobs() {
+    let app_schema = todo::app_schema();
+    let server = AppTestServer::new(app_schema);
+    let mut fixture = open_app_client_with_server(
+        app_schema,
+        server,
+        app_server_options("app-server-blob-client"),
+    )
+    .expect("blob fixture");
+    let bytes = vec![9u8, 8, 7, 6];
+
+    let blob = fixture
+        .client
+        .store_blob_bytes(&bytes, "application/testkit", false)
+        .expect("store blob bytes");
+    assert_blob_upload_queue(&mut fixture.client, 1, 0, 0);
+
+    let upload = fixture
+        .client
+        .process_blob_upload_queue()
+        .expect("process blob upload queue");
+    assert_eq!(upload.uploaded, 1);
+    assert_eq!(upload.failed, 0);
+    assert_blob_upload_queue(&mut fixture.client, 0, 0, 0);
+
+    fixture.client.clear_blob_cache().expect("clear blob cache");
+    assert!(!fixture
+        .client
+        .is_blob_local(&blob.hash)
+        .expect("blob local"));
+    let downloaded = fixture
+        .client
+        .retrieve_blob_bytes(&blob)
+        .expect("download blob bytes");
+    assert_eq!(downloaded, bytes);
+    assert!(fixture
+        .client
+        .is_blob_local(&blob.hash)
+        .expect("blob local"));
+}
+
+#[test]
 fn native_fixture_opens_with_direct_schema_and_waits_for_events() {
     let mut fixture = open_native_client_with_schema_options(
         todo::app_schema(),
