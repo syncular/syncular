@@ -424,7 +424,9 @@ read-only review:
     Rust runtime classifier recognizes the expanded shared taxonomy. Core now
     generates a checked-in error taxonomy fixture, with TS and Rust tests
     guarding against drift between `SYNCULAR_ERROR_DEFINITIONS` and the Rust
-    classifier.
+    classifier. Blob upload completion now carries stable manager-level error
+    codes through to Hono routes, so forbidden completion no longer depends on a
+    brittle message sentinel.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
