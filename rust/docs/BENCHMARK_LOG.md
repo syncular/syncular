@@ -3673,3 +3673,65 @@ bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterat
 Decision:
 
 - Accepted. Readiness metadata and events restore staged bootstrap semantics without a measurable 100k artifact regression. The first Rust aggregate-summary implementation was not retained because it pushed release WASM over budget by about `11.6KiB` raw / `5.4KiB` gzip; the accepted design keeps the aggregate in the TypeScript binding while preserving Rust-owned phase selection.
+
+## 2026-05-20 - WP-12 SQLite Artifact Memory Release Probe
+
+Change:
+
+- Tested `sqlite3_db_release_memory` after each direct attached-schema SQLite
+  artifact import in the browser Rust-owned SQLite path.
+- The probe did not change protocol, verification, artifact selection,
+  transaction boundaries, or app-visible semantics.
+
+Local release 500k artifact baseline:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=500000 --query-iterations=0 --wasm-profile=release --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 --output=.context/benchmarks/wp12-artifact-baseline-500k.json
+```
+
+Local release 500k artifact probe:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=500000 --query-iterations=0 --wasm-profile=release --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 --output=.context/benchmarks/wp12-artifact-release-memory-500k.json
+```
+
+| Metric | Baseline | Probe |
+| --- | ---: | ---: |
+| Rust bootstrap | `616.53ms` | `610.28ms` |
+| Rust local apply | `523ms` snapshot row apply | `522ms` snapshot row apply |
+| JS heap delta | `6.92MB` | `6.22MB` |
+| Rust WASM bytes | `3,450,376` | `3,450,488` |
+
+External app-style scoped artifact probe:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T00-34-48-808Z/syncular-rust/bootstrap.json`
+
+| Metric | Accepted WP-12 baseline | Probe |
+| --- | ---: | ---: |
+| 500k bootstrap | `1334.25ms` | `1418.34ms` |
+| 500k local apply | `198ms` | `212ms` |
+| 500k response bytes | `3,537,673` | `3,537,699` |
+| 500k peak memory | `707.92MB` | `704.72MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Rejected. External peak memory improved only `3.20MB` while bootstrap and
+  local apply regressed. Code was reverted; keep the result as evidence that a
+  generic SQLite memory-release call is not the artifact resource-state answer.

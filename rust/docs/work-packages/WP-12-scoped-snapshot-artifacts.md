@@ -710,6 +710,21 @@ Retained twenty-second slice:
   improves large local browser memory and external app-style peak memory
   without weakening artifact verification or copying rows.
 
+Rejected SQLite memory-release probe:
+
+- Tried calling `sqlite3_db_release_memory` after each direct attached-schema
+  artifact import. This was intentionally a low-complexity probe: no protocol
+  change, no transaction-shape change, and no hidden cache.
+- Local 500k release artifact benchmark moved `rust_bootstrap_ms`
+  `616.53 -> 610.28` and JS heap delta `6.92MB -> 6.22MB`, but this was not
+  enough evidence to retain.
+- External app-style scoped artifact gate rejected the probe: 500k bootstrap
+  regressed `1334.25ms -> 1418.34ms`, local apply regressed `198ms -> 212ms`,
+  and peak memory improved only `707.92MB -> 704.72MB`.
+- Decision: rejected. The memory win is too small for the wall-time regression.
+  Keep looking for an artifact state design that releases attached databases
+  earlier without row-copy staging or repeated commit boundaries.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
