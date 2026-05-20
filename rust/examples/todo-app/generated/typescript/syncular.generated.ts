@@ -170,6 +170,7 @@ export interface SyncularGeneratedLocalIndex {
   table: keyof SyncularAppDb;
   name: string;
   sql: string;
+  columns: readonly { name: string | null; descending: boolean }[];
 }
 
 export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = [

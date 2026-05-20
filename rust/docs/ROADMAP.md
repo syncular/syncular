@@ -159,7 +159,10 @@ read-only review:
     `38.88ms` read-model rebuild), so the next derived-schema experiments
     should target app-declared index shape/order with external proof. Snapshot
     artifact pages are now protocol-exclusive: a page with artifact refs cannot
-    also carry inline rows, chunk refs, or chunk manifests.
+    also carry inline rows, chunk refs, or chunk manifests. Generated schema
+    metadata now includes structured local-index columns, so future
+    derived-schema experiments can reason from generated metadata instead of
+    parsing index SQL.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
