@@ -12,8 +12,8 @@ Usage: run-conformance-gates.sh [--fast|--browser-hono|--native|--all]
 Runs the Rust-first conformance gates around the shared todo app fixtures.
 
 Modes:
-  --fast          Rust testkit, runtime protocol/blob, Rust generated app, and
-                  browser generated-app contract tests.
+  --fast          Rust testkit, runtime protocol/blob/CRDT, Rust generated app,
+                  and browser generated-app contract tests.
   --browser-hono  Fast gates plus browser/Hono WASM sync/auth/realtime/blob
                   conformance tests. Build the browser WASM first when needed.
   --native        Swift/Kotlin/JVM native smoke suite against the generated app.
@@ -55,7 +55,7 @@ run() {
 
 run_fast() {
   run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-testkit
-  run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-runtime --test protocol_contract --test blob_transport
+  run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-runtime --test protocol_contract --test blob_transport --test crdt_field
   run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-todo-app-example
   run bun test "${REPO_ROOT}/rust/bindings/browser/src/generated-app-conformance.test.ts"
 }

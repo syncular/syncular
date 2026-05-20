@@ -285,8 +285,10 @@ read-only review:
     longer couple through browser test internals. The Rust perf binary now uses
     the same fixture instead of maintaining its own private server copy.
     `bun run rust:conformance:fast` now runs the repeatable fast gate for the
-    shared testkit/runtime/generated-app/browser contract subset; heavier
-    browser-Hono and native lanes are available through the same runner.
+    shared testkit/runtime/generated-app/browser contract subset, including
+    runtime CRDT field coverage for convergence, encrypted fields, compaction,
+    and duplicate/reordered delivery; heavier browser-Hono and native lanes are
+    available through the same runner.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)

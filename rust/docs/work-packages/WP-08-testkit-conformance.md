@@ -110,8 +110,12 @@ tests.
 - Gate: `bun test ./rust/bindings/browser/src/generated-app-conformance.test.ts`
   passed with `5` browser generated-app conformance tests.
 - Gate: `bun run rust:conformance:fast` passed, covering `syncular-testkit`,
-  runtime protocol/blob tests, Rust generated app tests, and browser
+  runtime protocol/blob/CRDT tests, Rust generated app tests, and browser
   generated-app conformance tests.
+- Added runtime `crdt_field` to the fast conformance lane so CRDT text flow,
+  server-merge convergence, duplicate/reordered delivery, encrypted CRDT fields,
+  checkpoint compaction, and queue backpressure remain covered by the default
+  repeatable gate.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.
