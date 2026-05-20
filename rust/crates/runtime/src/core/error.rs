@@ -4,6 +4,8 @@ use std::fmt;
 
 pub type Result<T> = std::result::Result<T, SyncularError>;
 
+pub const FULL_SNAPSHOT_RESYNC_REQUIRED: &str = "full snapshot resync required";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorKind {
     Busy,
@@ -76,6 +78,10 @@ impl SyncularError {
 
     pub fn debug_text(&self) -> String {
         self.to_string()
+    }
+
+    pub fn requires_full_snapshot_resync(&self) -> bool {
+        self.message_text().contains(FULL_SNAPSHOT_RESYNC_REQUIRED)
     }
 
     pub fn context(self, context: impl fmt::Display) -> Self {

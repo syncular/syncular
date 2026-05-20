@@ -1,5 +1,5 @@
 use crate::app_schema::{AppTableMetadata, CrdtYjsFieldMetadata};
-use crate::error::{Result, SyncularError};
+use crate::error::{Result, SyncularError, FULL_SNAPSHOT_RESYNC_REQUIRED};
 #[cfg(feature = "crdt-yjs")]
 use crate::protocol::random_syncular_id;
 use crate::protocol::SyncOperation;
@@ -487,7 +487,7 @@ fn transform_payload(
                 .find_map(|update| required_state_vector(update))
             {
                 return Err(SyncularError::protocol_message(format!(
-                    "Yjs diff envelope for table \"{table}\" row \"{}\" field \"{field}\" requires local base state vector {required}, but no local state is available; full snapshot resync required",
+                    "Yjs diff envelope for table \"{table}\" row \"{}\" field \"{field}\" requires local base state vector {required}, but no local state is available; {FULL_SNAPSHOT_RESYNC_REQUIRED}",
                     row_id.unwrap_or("<unknown>")
                 )));
             }
@@ -704,7 +704,7 @@ fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
             let actual = encode_base64(&txn.state_vector().encode_v1());
             if actual != required {
                 return Err(SyncularError::protocol_message(format!(
-                    "Yjs update {} requires base state vector {required}, but current state vector is {actual}; full snapshot resync required",
+                    "Yjs update {} requires base state vector {required}, but current state vector is {actual}; {FULL_SNAPSHOT_RESYNC_REQUIRED}",
                     update.update_id
                 )));
             }

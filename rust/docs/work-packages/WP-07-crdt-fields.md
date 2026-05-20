@@ -116,6 +116,11 @@ Latest accepted slice:
   local CRDT state is missing or at a different state vector, with an explicit
   "full snapshot resync required" diagnostic instead of silently applying a
   partial document update.
+- Native `SyncFailed` events now set `resyncRequired` and use the
+  `sync.resync_required` diagnostic code for required-base CRDT diff failures.
+  Direct Rust worker consumers can use `SyncWorkerEvent::requires_full_refresh()`
+  for the same decision, and the browser worker includes `resyncRequired` in
+  failed sync diagnostics/errors.
 
 Gate evidence:
 
@@ -161,6 +166,6 @@ Known local environment note:
 
 ## Next Action
 
-Propagate required-base CRDT diff recovery into worker/native/browser events so
-hosts can automatically force resubscribe/bootstrap when the diagnostic is
-observed, then cover that event-driven recovery path.
+Add host-level recovery helpers that force a subscription bootstrap after
+`resyncRequired` events/diagnostics, then cover that recovery flow in native and
+browser worker tests.
