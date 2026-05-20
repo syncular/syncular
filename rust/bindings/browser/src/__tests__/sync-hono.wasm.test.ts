@@ -1897,6 +1897,56 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         requiresStateVectorBase64: readerSnapshot.stateVectorBase64,
       },
     });
+
+    const diagnostics: Array<{
+      code: string;
+      details?: Record<string, unknown>;
+    }> = [];
+    const removeDiagnostics = reader.addDiagnosticListener((event) => {
+      diagnostics.push(event);
+    });
+    const unsafeReader = reader as unknown as SyncularV2UnsafeSqlClient;
+    await unsafeReader.executeUnsafeSql(
+      'update tasks set title_yjs_state = null where id = ?',
+      [field.rowId]
+    );
+
+    await client.applyCrdtFieldText({
+      ...field,
+      nextText: 'CRDT field title v3',
+    });
+    await client.syncOnce();
+
+    await expect(reader.syncOnce()).rejects.toThrow(
+      /full snapshot resync required/
+    );
+    removeDiagnostics();
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'sync.resync_required',
+        details: expect.objectContaining({ resyncRequired: true }),
+      })
+    );
+
+    const resetCount = await reader.forceSubscriptionsBootstrap();
+    expect(resetCount).toBeGreaterThan(0);
+    await reader.syncOnce();
+    await expect(reader.listTable('tasks')).resolves.toContainEqual(
+      expect.objectContaining({
+        id: field.rowId,
+        title: 'CRDT field title v3',
+        title_yjs_state: expect.any(String),
+      })
+    );
+
+    const recoverySubscription = syncExchanges
+      .filter(
+        (exchange) =>
+          exchange.request.clientId === 'client-rust-crdt-field-server-merge-b'
+      )
+      .flatMap((exchange) => exchange.request.pull?.subscriptions ?? [])
+      .findLast((subscription) => subscription.id === 'sub-tasks');
+    expect(recoverySubscription?.cursor).toBe(-1);
   });
 
   it('applies an encrypted update-log CRDT field through the Rust WASM worker without plaintext outbox leakage', async () => {
