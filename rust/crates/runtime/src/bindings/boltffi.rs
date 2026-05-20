@@ -158,6 +158,15 @@ impl SyncularBoltClient {
         })
     }
 
+    pub fn force_subscriptions_bootstrap_json(
+        &self,
+        subscription_ids_json: &str,
+    ) -> Result<String, String> {
+        self.with_client_mut(|client| {
+            client.force_subscriptions_bootstrap_json(subscription_ids_json)
+        })
+    }
+
     pub fn set_field_encryption_json(&self, config_json: &str) -> Result<bool, String> {
         self.with_client_mut(|client| client.set_field_encryption_json(config_json).map(|_| true))
     }

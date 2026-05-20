@@ -219,6 +219,39 @@ where
         &self.subscriptions
     }
 
+    pub async fn force_subscriptions_bootstrap(
+        &mut self,
+        subscription_ids: &[String],
+    ) -> Result<usize> {
+        let ids = if subscription_ids.is_empty() {
+            self.subscriptions
+                .iter()
+                .map(|subscription| subscription.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            subscription_ids.to_vec()
+        };
+        for subscription_id in &ids {
+            self.store.delete_verified_root(subscription_id).await?;
+            self.store
+                .delete_subscription_state(subscription_id)
+                .await?;
+        }
+        Ok(ids.len())
+    }
+
+    pub async fn force_subscriptions_bootstrap_json(
+        &mut self,
+        subscription_ids_json: &str,
+    ) -> Result<String> {
+        let subscription_ids: Vec<String> = serde_json::from_str(subscription_ids_json)?;
+        Ok(serde_json::to_string(
+            &self
+                .force_subscriptions_bootstrap(&subscription_ids)
+                .await?,
+        )?)
+    }
+
     pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) {
         self.field_encryption = encryption;
     }

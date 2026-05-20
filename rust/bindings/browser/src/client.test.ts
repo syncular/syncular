@@ -60,6 +60,23 @@ describe('Syncular v2 browser client lifecycle', () => {
     await lifecycle.stop();
     expect(client.calls.at(-1)).toBe('stopRealtime');
   });
+
+  it('forces bootstrap and resyncs when sync diagnostics require resync', async () => {
+    const client = new FakeLifecycleClient();
+    const lifecycle = new SyncularV2ClientLifecycle(client);
+
+    await lifecycle.start();
+    client.emitSyncResyncRequired();
+
+    await waitFor(() => client.calls.includes('forceSubscriptionsBootstrap'));
+    await waitFor(() => client.syncCount === 2);
+    expect(client.calls).toEqual([
+      'syncOnce',
+      'startRealtime',
+      'forceSubscriptionsBootstrap',
+      'syncOnce',
+    ]);
+  });
 });
 
 function taskSubscription(actorId: string): SyncularV2SubscriptionSpec {
@@ -104,7 +121,14 @@ class FakeLifecycleClient {
     this.subscriptions = subscriptions;
   }
 
-  async startRealtime(options?: boolean | Record<string, unknown>): Promise<void> {
+  async forceSubscriptionsBootstrap(): Promise<number> {
+    this.calls.push('forceSubscriptionsBootstrap');
+    return this.subscriptions.length;
+  }
+
+  async startRealtime(
+    options?: boolean | Record<string, unknown>
+  ): Promise<void> {
     this.calls.push('startRealtime');
     this.realtimeOptions = options;
   }
@@ -149,6 +173,18 @@ class FakeLifecycleClient {
       code: 'realtime.state',
       message: `realtime ${state}`,
       details: { state },
+    };
+    for (const listener of this.#diagnosticListeners) listener(event);
+  }
+
+  emitSyncResyncRequired(): void {
+    const event: SyncularV2DiagnosticEvent = {
+      at: Date.now(),
+      level: 'error',
+      source: 'sync',
+      code: 'sync.resync_required',
+      message: 'sync requires resync',
+      details: { resyncRequired: true },
     };
     for (const listener of this.#diagnosticListeners) listener(event);
   }

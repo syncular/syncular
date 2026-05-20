@@ -835,10 +835,10 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   setSubscriptions(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
-  applyMutation(
-    operation: SyncOperation,
-    localRow?: unknown
-  ): Promise<string>;
+  forceSubscriptionsBootstrap(
+    subscriptionIds?: readonly string[]
+  ): Promise<number>;
+  applyMutation(operation: SyncOperation, localRow?: unknown): Promise<string>;
   applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]>;

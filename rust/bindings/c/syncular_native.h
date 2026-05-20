@@ -200,6 +200,12 @@ bool syncular_native_client_set_subscriptions_json(
     char **error_out
 );
 
+char *syncular_native_client_force_subscriptions_bootstrap_json(
+    SyncularNativeHandle *handle,
+    const char *subscription_ids_json,
+    char **error_out
+);
+
 bool syncular_native_client_set_field_encryption_json(
     SyncularNativeHandle *handle,
     const char *config_json,

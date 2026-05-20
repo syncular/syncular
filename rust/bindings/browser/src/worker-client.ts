@@ -13,18 +13,17 @@ import type {
   SyncularBuildYjsTextUpdateResult,
   SyncularV2AuthHeaders,
   SyncularV2BlobCacheStats,
-  SyncularV2BlobUploadErrorEvent,
-  SyncularV2BlobUploadEvent,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2Client,
+  SyncularV2ClientConfig,
   SyncularV2ClientEventMap,
   SyncularV2ClientEventSink,
   SyncularV2ClientEventType,
-  SyncularV2ClientConfig,
-  SyncularV2ConflictSummary,
   SyncularV2ConflictStats,
+  SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
+  SyncularV2CrdtDocumentSnapshot,
   SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldCompactionRequest,
   SyncularV2CrdtFieldDescriptor,
@@ -33,7 +32,6 @@ import type {
   SyncularV2CrdtFieldTextRequest,
   SyncularV2CrdtFieldWriteReceipt,
   SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtDocumentSnapshot,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSink,
@@ -353,6 +351,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
+  async forceSubscriptionsBootstrap(
+    subscriptionIds: readonly string[] = []
+  ): Promise<number> {
+    return this.#request({
+      type: 'forceSubscriptionsBootstrap',
+      subscriptionIds: [...subscriptionIds],
+    });
+  }
+
   async executeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(
@@ -505,7 +512,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return this.#request({ type: 'isBlobLocal', hash });
   }
 
-  async processBlobUploadQueue(): Promise<{ uploaded: number; failed: number }> {
+  async processBlobUploadQueue(): Promise<{
+    uploaded: number;
+    failed: number;
+  }> {
     const observeBlobEvents =
       this.#hasClientEventListeners('blobUploadCompleted') ||
       this.#hasClientEventListeners('blobUploadFailed');
@@ -1071,7 +1081,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     if (!listeners || listeners.size === 0) return;
     for (const listener of listeners) {
       try {
-        listener(payload as SyncularV2ClientEventMap[SyncularV2ClientEventType]);
+        listener(
+          payload as SyncularV2ClientEventMap[SyncularV2ClientEventType]
+        );
       } catch {
         // Client event listeners must never break sync control flow.
       }
@@ -1083,7 +1095,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   #emitRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
-    if (this.#rowsChangedDebounceMs === false || this.#rowsChangedDebounceMs <= 0) {
+    if (
+      this.#rowsChangedDebounceMs === false ||
+      this.#rowsChangedDebounceMs <= 0
+    ) {
       this.#deliverRowsChanged(event);
       return;
     }

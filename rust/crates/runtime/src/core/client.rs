@@ -1662,6 +1662,34 @@ where
         Ok(())
     }
 
+    pub fn force_subscriptions_bootstrap(&mut self, subscription_ids: &[String]) -> Result<usize> {
+        let ids = if subscription_ids.is_empty() {
+            self.subscriptions
+                .iter()
+                .map(|subscription| subscription.id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            subscription_ids.to_vec()
+        };
+        self.store.transaction(|tx| {
+            for subscription_id in &ids {
+                tx.delete_verified_root(DEFAULT_STATE_ID, subscription_id)?;
+                tx.delete_subscription_state(DEFAULT_STATE_ID, subscription_id)?;
+            }
+            Ok(ids.len())
+        })
+    }
+
+    pub fn force_subscriptions_bootstrap_json(
+        &mut self,
+        subscription_ids_json: &str,
+    ) -> Result<String> {
+        let subscription_ids: Vec<String> = serde_json::from_str(subscription_ids_json)?;
+        Ok(serde_json::to_string(
+            &self.force_subscriptions_bootstrap(&subscription_ids)?,
+        )?)
+    }
+
     #[cfg(feature = "native")]
     pub fn bootstrap_status(&mut self) -> Result<BootstrapStatus> {
         self.bootstrap_status_for_phases(0, 1)

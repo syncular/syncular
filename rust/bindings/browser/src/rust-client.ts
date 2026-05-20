@@ -18,6 +18,7 @@ import type {
   SyncularV2ChangedRow,
   SyncularV2ClientConfig,
   SyncularV2ConflictSummary,
+  SyncularV2CrdtDocumentSnapshot,
   SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldCompactionRequest,
   SyncularV2CrdtFieldDescriptor,
@@ -26,7 +27,6 @@ import type {
   SyncularV2CrdtFieldTextRequest,
   SyncularV2CrdtFieldWriteReceipt,
   SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtDocumentSnapshot,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
@@ -223,6 +223,22 @@ export class SyncularV2RustClient {
     this.#subscriptions = [...subscriptions];
     this.#bootstrapById.clear();
     this.raw.setSubscriptionsJson(JSON.stringify(subscriptions));
+  }
+
+  async forceSubscriptionsBootstrap(
+    subscriptionIds: readonly string[] = []
+  ): Promise<number> {
+    const count = parseJson<number>(
+      await this.raw.forceSubscriptionsBootstrapJson(
+        JSON.stringify(subscriptionIds)
+      )
+    );
+    for (const id of subscriptionIds.length > 0
+      ? subscriptionIds
+      : this.#subscriptions.map((subscription) => subscription.id)) {
+      this.#bootstrapById.delete(id);
+    }
+    return count;
   }
 
   setAuthHeaders(headers: SyncularV2AuthHeaders): void {
@@ -756,7 +772,9 @@ function buildBootstrapStatus(
       bootstrapPhase,
     };
   });
-  const expectedSubscriptionIds = subscriptions.map((subscription) => subscription.id);
+  const expectedSubscriptionIds = subscriptions.map(
+    (subscription) => subscription.id
+  );
   const readySubscriptionIds = subscriptions
     .filter((subscription) => subscription.ready)
     .map((subscription) => subscription.id);

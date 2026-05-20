@@ -668,6 +668,23 @@ impl NativeSyncularClient {
         self.set_subscriptions(subscriptions)
     }
 
+    pub fn force_subscriptions_bootstrap(
+        &mut self,
+        subscription_ids: Vec<String>,
+    ) -> Result<usize> {
+        self.writer.force_subscriptions_bootstrap(&subscription_ids)
+    }
+
+    pub fn force_subscriptions_bootstrap_json(
+        &mut self,
+        subscription_ids_json: &str,
+    ) -> Result<String> {
+        let subscription_ids: Vec<String> = serde_json::from_str(subscription_ids_json)?;
+        Ok(serde_json::to_string(
+            &self.force_subscriptions_bootstrap(subscription_ids)?,
+        )?)
+    }
+
     pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) -> Result<()> {
         self.field_encryption = encryption.clone();
         self.writer.set_field_encryption(encryption.clone());
