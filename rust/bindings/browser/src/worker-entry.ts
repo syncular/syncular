@@ -102,12 +102,16 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
     if (canceledRequests.delete(request.id)) return;
     const source = requestDiagnosticSource(request.type);
     const resyncRequired = errorRequiresFullRefresh(err);
+    const encodedError = encodeWorkerError(err);
+    const diagnosticCode = resyncRequired
+      ? `${source}.resync_required`
+      : encodedError.code.startsWith(`${source}.`)
+        ? encodedError.code
+        : `${source}.${request.type}.failed`;
     postDiagnostic({
       level: requestDiagnosticLevel(request.type, err),
       source,
-      code: resyncRequired
-        ? `${source}.resync_required`
-        : `${source}.${request.type}.failed`,
+      code: diagnosticCode,
       message: resyncRequired
         ? `Syncular v2 worker request ${request.type} requires full resync`
         : `Syncular v2 worker request ${request.type} failed`,
@@ -115,6 +119,14 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
         requestType: request.type,
         durationMs: Date.now() - startedAt,
         error: errorMessage(err),
+        errorCode: encodedError.code,
+        ...(encodedError.category ? { category: encodedError.category } : {}),
+        ...(encodedError.retryable != null
+          ? { retryable: encodedError.retryable }
+          : {}),
+        ...(encodedError.recommendedAction
+          ? { recommendedAction: encodedError.recommendedAction }
+          : {}),
         ...(resyncRequired ? { resyncRequired: true } : {}),
         ...diagnosticStatus(err),
       },
@@ -124,7 +136,7 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
       id: request.id,
       protocolVersion: request.protocolVersion,
       ok: false,
-      error: encodeWorkerError(err),
+      error: encodedError,
     });
   } finally {
     abortControllers.delete(request.id);
@@ -592,18 +604,91 @@ function errorRequiresFullRefresh(error: unknown): boolean {
 function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
   if (isWorkerErrorPayload(error)) return error;
   if (error instanceof Error) {
+    const details = workerErrorDetails(error);
+    const classification = classifyWorkerError(error, error.message, details);
     return {
-      code: 'worker_error',
+      code: classification?.code ?? 'worker_error',
       message: error.message,
+      ...(classification?.category
+        ? { category: classification.category }
+        : {}),
+      ...(classification ? { retryable: classification.retryable } : {}),
+      ...(classification?.recommendedAction
+        ? { recommendedAction: classification.recommendedAction }
+        : {}),
       name: error.name,
       stack: error.stack,
-      details: workerErrorDetails(error),
+      details,
     };
   }
+  const message = String(error);
+  const classification = classifyWorkerError(error, message);
   return {
-    code: 'worker_error',
-    message: String(error),
+    code: classification?.code ?? 'worker_error',
+    message,
+    ...(classification?.category ? { category: classification.category } : {}),
+    ...(classification ? { retryable: classification.retryable } : {}),
+    ...(classification?.recommendedAction
+      ? { recommendedAction: classification.recommendedAction }
+      : {}),
   };
+}
+
+function classifyWorkerError(
+  error: unknown,
+  message: string,
+  details: Record<string, unknown> | undefined = undefined
+): Pick<
+  SyncularV2WorkerErrorPayload,
+  'code' | 'category' | 'retryable' | 'recommendedAction'
+> | null {
+  const status =
+    details && 'status' in details && (details.status === 401 || details.status === 403)
+      ? details.status
+      : httpStatusFromMessage(message)?.status;
+  if (status) {
+    return {
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    };
+  }
+
+  const syncularKind =
+    details && typeof details.syncularKind === 'string'
+      ? details.syncularKind
+      : syncularKindFromError(error);
+  const debug =
+    details && typeof details.syncularDebug === 'string'
+      ? details.syncularDebug
+      : syncularDebugFromError(error);
+  const haystack = `${message}\n${debug ?? ''}`;
+
+  if (syncularKind === 'Schema' || /\bschema version\b/i.test(haystack)) {
+    return {
+      code: 'sync.schema_mismatch',
+      category: 'schema-mismatch',
+      retryable: false,
+      recommendedAction: 'regenerateClient',
+    };
+  }
+
+  if (
+    syncularKind === 'Protocol' &&
+    /(hash mismatch|sha256 mismatch|byte length mismatch|manifest .*mismatch|integrity|chain root|commit root|verified root)/i.test(
+      haystack
+    )
+  ) {
+    return {
+      code: 'sync.integrity_rejected',
+      category: 'integrity-rejected',
+      retryable: false,
+      recommendedAction: 'forceResync',
+    };
+  }
+
+  return null;
 }
 
 function httpStatusFromMessage(
@@ -630,6 +715,22 @@ function workerErrorDetails(error: Error): Record<string, unknown> | undefined {
       : {}),
   };
   return Object.keys(details).length > 0 ? details : undefined;
+}
+
+function syncularKindFromError(error: unknown): string | undefined {
+  return error instanceof Error &&
+    typeof (error as Error & { syncularKind?: unknown }).syncularKind ===
+      'string'
+    ? (error as Error & { syncularKind: string }).syncularKind
+    : undefined;
+}
+
+function syncularDebugFromError(error: unknown): string | undefined {
+  return error instanceof Error &&
+    typeof (error as Error & { syncularDebug?: unknown }).syncularDebug ===
+      'string'
+    ? (error as Error & { syncularDebug: string }).syncularDebug
+    : undefined;
 }
 
 function isWorkerErrorPayload(

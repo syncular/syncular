@@ -15,6 +15,9 @@ import type {
   SyncularV2DiagnosticEvent,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
+  SyncularV2ErrorCategory,
+  SyncularV2ErrorCode,
+  SyncularV2ErrorRecommendedAction,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
@@ -36,8 +39,12 @@ export interface SyncularV2WorkerErrorPayload {
     | 'protocol_mismatch'
     | 'request_timeout'
     | 'worker_error'
-    | 'worker_failed';
+    | 'worker_failed'
+    | SyncularV2ErrorCode;
   message: string;
+  category?: SyncularV2ErrorCategory;
+  retryable?: boolean;
+  recommendedAction?: SyncularV2ErrorRecommendedAction;
   name?: string;
   stack?: string;
   details?: unknown;

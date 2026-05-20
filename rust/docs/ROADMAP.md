@@ -384,7 +384,12 @@ read-only review:
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
 - `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
-- `[ ]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
+- `[~]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
+  - Browser worker error payloads now carry stable public error `code`,
+    `category`, `retryable`, and `recommendedAction` fields. The first mapped
+    recovery-critical cases are auth-required, schema mismatch, and integrity
+    rejection, and worker diagnostics use the same stable codes when
+    classified.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

@@ -1,6 +1,6 @@
 # WP-15 Error Taxonomy And Recovery Semantics
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -63,5 +63,27 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Define the initial error envelope and map one browser pull integrity rejection,
-one auth-required case, and one schema-mismatch case to stable public codes.
+Continue expanding the same stable error envelope beyond the browser worker:
+native facade/BoltFFI, direct browser Rust client errors, server JSON error
+responses, blob failures, and generated typed errors.
+
+## Progress
+
+- Browser worker error payloads now support stable public error `code`,
+  `category`, `retryable`, and `recommendedAction` fields.
+- `SyncularV2WorkerError` exposes those fields directly for app code.
+- Runtime errors surfaced through the browser worker now classify representative
+  recovery-critical failures:
+  `sync.auth_required`, `sync.schema_mismatch`, and
+  `sync.integrity_rejected`.
+- Worker diagnostics now use the stable classified code when available and copy
+  the error envelope fields into diagnostic details, so app tooling does not
+  parse message text.
+- Browser/Hono WASM tests assert exact error envelopes for auth-required,
+  server-required schema mismatch, and corrupted snapshot chunk integrity
+  rejection.
+
+## Latest Evidence
+
+- `bun run --cwd rust/bindings/browser tsgo`
+- `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`

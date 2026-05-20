@@ -20,6 +20,7 @@ import type {
   SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
 } from '../types';
+import { SyncularV2WorkerError } from '../worker-client';
 import {
   createHonoSyncHarness,
   type HonoSyncHarness,
@@ -341,9 +342,19 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
 
-    await expect(client.syncOnce()).rejects.toThrow(
-      new RegExp(scenario.expectedErrorPattern)
+    const error = await client.syncOnce().then(
+      () => null,
+      (err) => err
     );
+    expect(error).toBeInstanceOf(SyncularV2WorkerError);
+    expect(error).toMatchObject({
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+      details: { status: scenario.expectedStatus },
+    });
+    expect(error.message).toMatch(new RegExp(scenario.expectedErrorPattern));
     expect(refreshCount).toBe(scenario.expectedRefreshCount);
     expect(retryStatuses).toHaveLength(scenario.expectedRetryCount);
     expect(sync.syncRouteAuthHeaders).toEqual([scenario.authorization]);
@@ -364,10 +375,38 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const removeDiagnostics = client.addDiagnosticListener((event) => {
+      diagnostics.push(event);
+    });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
 
-    await expect(client.syncPull()).rejects.toThrow(
+    const error = await client.syncPull().then(
+      () => null,
+      (err) => err
+    );
+    expect(error).toBeInstanceOf(SyncularV2WorkerError);
+    expect(error).toMatchObject({
+      code: 'sync.schema_mismatch',
+      category: 'schema-mismatch',
+      retryable: false,
+      recommendedAction: 'regenerateClient',
+      details: { syncularKind: 'Schema' },
+    });
+    expect(error.message).toMatch(
       new RegExp(scenario.expectedRequiredErrorPattern)
+    );
+    removeDiagnostics();
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        source: 'sync',
+        code: 'sync.schema_mismatch',
+        details: expect.objectContaining({
+          errorCode: 'sync.schema_mismatch',
+          category: 'schema-mismatch',
+          recommendedAction: 'regenerateClient',
+        }),
+      })
     );
     expect(sync.syncRouteAuthHeaders).toContain(TOKEN_A);
   });
@@ -557,7 +596,19 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     );
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
 
-    await expect(client.syncPull()).rejects.toThrow(/hash mismatch/i);
+    const error = await client.syncPull().then(
+      () => null,
+      (err) => err
+    );
+    expect(error).toBeInstanceOf(SyncularV2WorkerError);
+    expect(error).toMatchObject({
+      code: 'sync.integrity_rejected',
+      category: 'integrity-rejected',
+      retryable: false,
+      recommendedAction: 'forceResync',
+      details: { syncularKind: 'Protocol' },
+    });
+    expect(error.message).toMatch(/hash mismatch/i);
 
     await expect(client.listTable('tasks')).resolves.toEqual([
       expect.objectContaining({
