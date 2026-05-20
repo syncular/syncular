@@ -321,6 +321,50 @@ public struct SyncularChangedRow: Decodable, Equatable {
     }
 }
 
+public struct SyncularBootstrapState: Decodable, Equatable {
+    public let asOfCommitSeq: Int64
+    public let tables: [String]
+    public let tableIndex: Int64
+    public let rowCursor: String?
+}
+
+public struct SyncularBootstrapSubscriptionStatus: Decodable, Equatable {
+    public let id: String
+    public let table: String
+    public let expected: Bool
+    public let ready: Bool
+    public let status: String?
+    public let phase: String
+    public let progressPercent: Int64
+    public let cursor: Int64?
+    public let bootstrapState: SyncularBootstrapState?
+    public let bootstrapPhase: Int64
+}
+
+public struct SyncularBootstrapPhaseStatus: Decodable, Equatable {
+    public let phase: Int64
+    public let expectedSubscriptionIds: [String]
+    public let readySubscriptionIds: [String]
+    public let pendingSubscriptionIds: [String]
+    public let isReady: Bool
+    public let progressPercent: Int64
+}
+
+public struct SyncularBootstrapStatus: Decodable, Equatable {
+    public let channelPhase: String
+    public let progressPercent: Int64
+    public let isBootstrapping: Bool
+    public let criticalReady: Bool
+    public let interactiveReady: Bool
+    public let complete: Bool
+    public let activePhase: Int64?
+    public let expectedSubscriptionIds: [String]
+    public let readySubscriptionIds: [String]
+    public let pendingSubscriptionIds: [String]
+    public let subscriptions: [SyncularBootstrapSubscriptionStatus]
+    public let phases: [SyncularBootstrapPhaseStatus]
+}
+
 public struct SyncularNativeEvent: Decodable, Equatable {
     public let eventSeq: UInt64
     public let kind: String
@@ -331,9 +375,10 @@ public struct SyncularNativeEvent: Decodable, Equatable {
     public let clientCommitId: String?
     public let durationMs: UInt64?
     public let droppedCount: UInt64?
+    public let bootstrap: SyncularBootstrapStatus?
     public let resyncRequired: Bool
 
-    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, resyncRequired: Bool = false) {
+    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {
         self.eventSeq = eventSeq
         self.kind = kind
         self.tables = tables
@@ -343,6 +388,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         self.clientCommitId = clientCommitId
         self.durationMs = durationMs
         self.droppedCount = droppedCount
+        self.bootstrap = bootstrap
         self.resyncRequired = resyncRequired
     }
 
@@ -356,6 +402,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         case clientCommitId = "client_commit_id"
         case durationMs = "duration_ms"
         case droppedCount
+        case bootstrap
         case resyncRequired
     }
 
@@ -370,6 +417,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         clientCommitId = try container.decodeIfPresent(String.self, forKey: .clientCommitId)
         durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)
         droppedCount = try container.decodeIfPresent(UInt64.self, forKey: .droppedCount)
+        bootstrap = try container.decodeIfPresent(SyncularBootstrapStatus.self, forKey: .bootstrap)
         resyncRequired = (try container.decodeIfPresent(Bool.self, forKey: .resyncRequired)) ?? (kind == "EventsOverflowed")
     }
 

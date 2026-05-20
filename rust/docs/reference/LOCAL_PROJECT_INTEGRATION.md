@@ -373,10 +373,9 @@ val subscriptionsJson = syncularDefaultSubscriptionsJson(
 ```
 
 Browser sync results expose aggregate readiness as `result.bootstrap` and emit
-`bootstrapChanged` events after worker/realtime syncs. Rust/native currently
-use the same phase-aware subscription contract and ordered sync events, but do
-not yet expose a stable aggregate readiness payload. Add that to the native
-event stream before app code depends on native-side staged readiness decisions.
+`bootstrapChanged` events after worker/realtime syncs. Native `SyncCompleted`
+worker events expose the same readiness shape as `bootstrap`; generated Swift
+and Kotlin clients decode it as `SyncularBootstrapStatus`.
 
 Do not render missing later-phase data as an empty result while
 `complete == false`. Gate each view on the relevant phase or subscription id.

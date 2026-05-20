@@ -139,7 +139,7 @@ read-only review:
     `10.40MB -> 2.60MB`; external app-style artifacts now use a `40k`
     precompute row limit and report 500k bootstrap `1334.25ms`, local apply
     `198ms`, and peak memory `707.92MB` with `snapshotChunkCount=0`.
-- `[~]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
+- `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
     now carry local-only `bootstrapPhase`; Rust native/web pull selection only
@@ -153,7 +153,11 @@ read-only review:
     local 100k release artifact guard stayed flat (`147.84ms -> 147.15ms`).
     Generated Rust/TypeScript/Swift/Kotlin app clients now expose ergonomic
     phase maps/helpers, and the browser/local integration docs show the
-    app-facing staged-bootstrap flow.
+    app-facing staged-bootstrap flow. Native `SyncCompleted` events now expose
+    the aggregate `bootstrap` readiness payload through Rust worker events,
+    facade JSON, and generated Swift/Kotlin event decoders. The native-only
+    status path is kept behind the `native` feature, so the release browser
+    WASM size gate remains under budget.
 - `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
     `syncular.codegen.json`. The generator now emits the read-model contract in
@@ -228,11 +232,7 @@ read-only review:
 
 ## Next
 
-- Continue [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md):
-  add app-facing staged-bootstrap docs and decide whether native Rust/FFI needs
-  a small aggregate bootstrap-status helper or whether phase-aware
-  subscriptions plus worker events are sufficient.
-- Then continue the larger bootstrap/performance architecture in
+- Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
   benchmark against the current external 500k artifact baseline (`1334.25ms`,
   `707.92MB` peak).
@@ -241,7 +241,7 @@ read-only review:
 
 - `[x]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 - `[x]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
-- `[ ]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
+- `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
 - `[ ]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
 - `[ ]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)

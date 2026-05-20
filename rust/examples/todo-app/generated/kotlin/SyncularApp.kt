@@ -214,6 +214,50 @@ data class SyncularChangedRow(
     val serverVersion: Long? = null,
 )
 
+data class SyncularBootstrapState(
+    val asOfCommitSeq: Long = 0,
+    val tables: List<String> = emptyList(),
+    val tableIndex: Long = 0,
+    val rowCursor: String? = null,
+)
+
+data class SyncularBootstrapSubscriptionStatus(
+    val id: String,
+    val table: String,
+    val expected: Boolean,
+    val ready: Boolean,
+    val status: String? = null,
+    val phase: String,
+    val progressPercent: Long,
+    val cursor: Long? = null,
+    val bootstrapState: SyncularBootstrapState? = null,
+    val bootstrapPhase: Long,
+)
+
+data class SyncularBootstrapPhaseStatus(
+    val phase: Long,
+    val expectedSubscriptionIds: List<String> = emptyList(),
+    val readySubscriptionIds: List<String> = emptyList(),
+    val pendingSubscriptionIds: List<String> = emptyList(),
+    val isReady: Boolean,
+    val progressPercent: Long,
+)
+
+data class SyncularBootstrapStatus(
+    val channelPhase: String,
+    val progressPercent: Long,
+    val isBootstrapping: Boolean,
+    val criticalReady: Boolean,
+    val interactiveReady: Boolean,
+    val complete: Boolean,
+    val activePhase: Long? = null,
+    val expectedSubscriptionIds: List<String> = emptyList(),
+    val readySubscriptionIds: List<String> = emptyList(),
+    val pendingSubscriptionIds: List<String> = emptyList(),
+    val subscriptions: List<SyncularBootstrapSubscriptionStatus> = emptyList(),
+    val phases: List<SyncularBootstrapPhaseStatus> = emptyList(),
+)
+
 data class SyncularNativeEvent(
     val eventSeq: Long = 0,
     val kind: String,
@@ -224,6 +268,7 @@ data class SyncularNativeEvent(
     val clientCommitId: String? = null,
     val durationMs: Long? = null,
     val droppedCount: Long? = null,
+    val bootstrap: SyncularBootstrapStatus? = null,
     val resyncRequired: Boolean = false,
 ) {
     val eventStreamLost: Boolean get() = kind == "EventsOverflowed" || resyncRequired
@@ -344,6 +389,70 @@ fun syncularDecodeChangedRow(row: JsonObject): SyncularChangedRow = SyncularChan
     serverVersion = row["serverVersion"]?.jsonPrimitive?.longOrNull,
 )
 
+private fun syncularOptionalString(value: JsonElement?): String? =
+    if (value == null || value is JsonNull) null else value.jsonPrimitive.content
+
+private fun syncularJsonStringList(value: JsonElement?): List<String> =
+    if (value == null || value is JsonNull) emptyList() else value.jsonArray.map { it.jsonPrimitive.content }
+
+private fun syncularDecodeBootstrapState(value: JsonElement?): SyncularBootstrapState? {
+    if (value == null || value is JsonNull) return null
+    val state = value.jsonObject
+    return SyncularBootstrapState(
+        asOfCommitSeq = state["asOfCommitSeq"]?.jsonPrimitive?.longOrNull ?: 0L,
+        tables = syncularJsonStringList(state["tables"]),
+        tableIndex = state["tableIndex"]?.jsonPrimitive?.longOrNull ?: 0L,
+        rowCursor = syncularOptionalString(state["rowCursor"]),
+    )
+}
+
+private fun syncularDecodeBootstrapSubscriptionStatus(value: JsonElement): SyncularBootstrapSubscriptionStatus {
+    val subscription = value.jsonObject
+    return SyncularBootstrapSubscriptionStatus(
+        id = subscription["id"]?.jsonPrimitive?.content ?: "",
+        table = subscription["table"]?.jsonPrimitive?.content ?: "",
+        expected = subscription["expected"]?.jsonPrimitive?.booleanOrNull ?: false,
+        ready = subscription["ready"]?.jsonPrimitive?.booleanOrNull ?: false,
+        status = syncularOptionalString(subscription["status"]),
+        phase = subscription["phase"]?.jsonPrimitive?.content ?: "pending",
+        progressPercent = subscription["progressPercent"]?.jsonPrimitive?.longOrNull ?: 0L,
+        cursor = subscription["cursor"]?.jsonPrimitive?.longOrNull,
+        bootstrapState = syncularDecodeBootstrapState(subscription["bootstrapState"]),
+        bootstrapPhase = subscription["bootstrapPhase"]?.jsonPrimitive?.longOrNull ?: 0L,
+    )
+}
+
+private fun syncularDecodeBootstrapPhaseStatus(value: JsonElement): SyncularBootstrapPhaseStatus {
+    val phase = value.jsonObject
+    return SyncularBootstrapPhaseStatus(
+        phase = phase["phase"]?.jsonPrimitive?.longOrNull ?: 0L,
+        expectedSubscriptionIds = syncularJsonStringList(phase["expectedSubscriptionIds"]),
+        readySubscriptionIds = syncularJsonStringList(phase["readySubscriptionIds"]),
+        pendingSubscriptionIds = syncularJsonStringList(phase["pendingSubscriptionIds"]),
+        isReady = phase["isReady"]?.jsonPrimitive?.booleanOrNull ?: false,
+        progressPercent = phase["progressPercent"]?.jsonPrimitive?.longOrNull ?: 0L,
+    )
+}
+
+private fun syncularDecodeBootstrapStatus(value: JsonElement?): SyncularBootstrapStatus? {
+    if (value == null || value is JsonNull) return null
+    val status = value.jsonObject
+    return SyncularBootstrapStatus(
+        channelPhase = status["channelPhase"]?.jsonPrimitive?.content ?: "idle",
+        progressPercent = status["progressPercent"]?.jsonPrimitive?.longOrNull ?: 0L,
+        isBootstrapping = status["isBootstrapping"]?.jsonPrimitive?.booleanOrNull ?: false,
+        criticalReady = status["criticalReady"]?.jsonPrimitive?.booleanOrNull ?: false,
+        interactiveReady = status["interactiveReady"]?.jsonPrimitive?.booleanOrNull ?: false,
+        complete = status["complete"]?.jsonPrimitive?.booleanOrNull ?: false,
+        activePhase = status["activePhase"]?.jsonPrimitive?.longOrNull,
+        expectedSubscriptionIds = syncularJsonStringList(status["expectedSubscriptionIds"]),
+        readySubscriptionIds = syncularJsonStringList(status["readySubscriptionIds"]),
+        pendingSubscriptionIds = syncularJsonStringList(status["pendingSubscriptionIds"]),
+        subscriptions = status["subscriptions"]?.jsonArray?.map { syncularDecodeBootstrapSubscriptionStatus(it) } ?: emptyList(),
+        phases = status["phases"]?.jsonArray?.map { syncularDecodeBootstrapPhaseStatus(it) } ?: emptyList(),
+    )
+}
+
 fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
     val event = Json.parseToJsonElement(eventJson).jsonObject
     return SyncularNativeEvent(
@@ -356,6 +465,7 @@ fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
         clientCommitId = event["client_commit_id"]?.jsonPrimitive?.content,
         durationMs = event["duration_ms"]?.jsonPrimitive?.longOrNull,
         droppedCount = event["droppedCount"]?.jsonPrimitive?.longOrNull,
+        bootstrap = syncularDecodeBootstrapStatus(event["bootstrap"]),
         resyncRequired = event["resyncRequired"]?.jsonPrimitive?.booleanOrNull ?: (event["kind"]?.jsonPrimitive?.content == "EventsOverflowed"),
     )
 }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use diesel::prelude::*;
 use diesel::sql_query;
 use serde_json::{json, Value};
-use syncular_runtime::client::{SyncChangedRow, SyncReport};
+use syncular_runtime::client::{BootstrapStatus, SyncChangedRow, SyncReport};
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
 use syncular_runtime::error::{ErrorKind, Result};
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
@@ -478,6 +478,7 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
             changed_rows: vec![changed_row.clone()],
             conflicts_changed: false,
         },
+        bootstrap: test_bootstrap_status(),
         outbox_count: 0,
         conflict_count: 0,
         duration_ms: 12,
@@ -495,6 +496,10 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     assert_eq!(events[0].event_seq, 1);
     assert_eq!(events[0].kind, NativeEventKind::SyncCompleted);
     assert_eq!(events[0].changed_rows, vec![changed_row.clone()]);
+    assert!(events[0]
+        .bootstrap
+        .as_ref()
+        .is_some_and(|status| status.complete));
     assert_eq!(events[1].event_seq, 2);
     assert_eq!(events[1].kind, NativeEventKind::RowsChanged);
     assert_eq!(events[1].changed_rows, vec![changed_row.clone()]);
@@ -520,6 +525,7 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     let first_json: Value = serde_json::from_str(&json_events[0])?;
     assert_eq!(first_json["kind"], "SyncCompleted");
     assert_eq!(first_json["changedRows"][0]["rowId"], "converter-task");
+    assert_eq!(first_json["bootstrap"]["complete"], true);
 
     let overflow_json = native_event_json_from_worker_event(SyncWorkerEvent::EventsOverflowed {
         dropped_count: 7,
@@ -530,6 +536,23 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     assert_eq!(overflow["resyncRequired"], true);
     assert_eq!(overflow["payload_json"]["resyncRequired"], true);
     Ok(())
+}
+
+fn test_bootstrap_status() -> BootstrapStatus {
+    BootstrapStatus {
+        channel_phase: "live".to_string(),
+        progress_percent: 100,
+        is_bootstrapping: false,
+        critical_ready: true,
+        interactive_ready: true,
+        complete: true,
+        active_phase: None,
+        expected_subscription_ids: Vec::new(),
+        ready_subscription_ids: Vec::new(),
+        pending_subscription_ids: Vec::new(),
+        subscriptions: Vec::new(),
+        phases: Vec::new(),
+    }
 }
 
 #[test]

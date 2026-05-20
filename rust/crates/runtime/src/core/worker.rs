@@ -1,3 +1,5 @@
+#[cfg(feature = "native")]
+use crate::client::BootstrapStatus;
 use crate::client::{
     sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow, SyncReport,
     SyncularClient,
@@ -152,6 +154,8 @@ pub enum SyncWorkerEvent {
     SyncCompleted {
         command_id: Option<String>,
         report: SyncReport,
+        #[cfg(feature = "native")]
+        bootstrap: BootstrapStatus,
         outbox_count: usize,
         conflict_count: usize,
         duration_ms: u64,
@@ -237,12 +241,16 @@ impl Clone for SyncWorkerEvent {
             Self::SyncCompleted {
                 command_id,
                 report,
+                #[cfg(feature = "native")]
+                bootstrap,
                 outbox_count,
                 conflict_count,
                 duration_ms,
             } => Self::SyncCompleted {
                 command_id: command_id.clone(),
                 report: report.clone(),
+                #[cfg(feature = "native")]
+                bootstrap: bootstrap.clone(),
                 outbox_count: *outbox_count,
                 conflict_count: *conflict_count,
                 duration_ms: *duration_ms,
@@ -2355,7 +2363,26 @@ fn run_sync<S, T>(
         WorkerSyncTransport::Http => client.sync_http(),
         WorkerSyncTransport::WebSocket => client.sync_ws(),
     };
+    #[cfg(feature = "native")]
+    let result = result.and_then(|report| {
+        let bootstrap = client.bootstrap_status()?;
+        Ok((report, bootstrap))
+    });
+
     match result {
+        #[cfg(feature = "native")]
+        Ok((report, bootstrap)) => {
+            let (outbox_count, conflict_count) = worker_counts(client).unwrap_or((0, 0));
+            let _ = event_tx.publish_event(SyncWorkerEvent::SyncCompleted {
+                command_id,
+                report,
+                bootstrap,
+                outbox_count,
+                conflict_count,
+                duration_ms: duration_ms(started),
+            });
+        }
+        #[cfg(not(feature = "native"))]
         Ok(report) => {
             let (outbox_count, conflict_count) = worker_counts(client).unwrap_or((0, 0));
             let _ = event_tx.publish_event(SyncWorkerEvent::SyncCompleted {

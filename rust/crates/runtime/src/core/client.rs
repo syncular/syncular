@@ -49,6 +49,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "native")]
 use serde_json::json;
 use serde_json::{Map, Value};
+#[cfg(feature = "native")]
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::fmt;
 #[cfg(feature = "native")]
@@ -207,6 +209,52 @@ pub struct SyncReport {
     pub changed_tables: Vec<String>,
     pub changed_rows: Vec<SyncChangedRow>,
     pub conflicts_changed: bool,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapStatus {
+    pub channel_phase: String,
+    pub progress_percent: i64,
+    pub is_bootstrapping: bool,
+    pub critical_ready: bool,
+    pub interactive_ready: bool,
+    pub complete: bool,
+    pub active_phase: Option<i64>,
+    pub expected_subscription_ids: Vec<String>,
+    pub ready_subscription_ids: Vec<String>,
+    pub pending_subscription_ids: Vec<String>,
+    pub subscriptions: Vec<BootstrapSubscriptionStatus>,
+    pub phases: Vec<BootstrapPhaseStatus>,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapSubscriptionStatus {
+    pub id: String,
+    pub table: String,
+    pub expected: bool,
+    pub ready: bool,
+    pub status: Option<String>,
+    pub phase: String,
+    pub progress_percent: i64,
+    pub cursor: Option<i64>,
+    pub bootstrap_state: Option<BootstrapState>,
+    pub bootstrap_phase: i64,
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapPhaseStatus {
+    pub phase: i64,
+    pub expected_subscription_ids: Vec<String>,
+    pub ready_subscription_ids: Vec<String>,
+    pub pending_subscription_ids: Vec<String>,
+    pub is_ready: bool,
+    pub progress_percent: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -955,7 +1003,188 @@ fn should_include_pull_subscription(
         || native_subscription_bootstrapping(state)
 }
 
-#[cfg(test)]
+#[cfg(feature = "native")]
+fn native_subscription_phase(
+    status: Option<&str>,
+    cursor: Option<i64>,
+    bootstrap_state: Option<&BootstrapState>,
+) -> String {
+    if status == Some("revoked") {
+        "error".to_string()
+    } else if bootstrap_state.is_some() {
+        "bootstrapping".to_string()
+    } else if status == Some("active") && cursor.is_some_and(|cursor| cursor >= 0) {
+        "live".to_string()
+    } else {
+        "pending".to_string()
+    }
+}
+
+#[cfg(feature = "native")]
+fn bootstrap_progress_percent(ready: bool, bootstrap_state: Option<&BootstrapState>) -> i64 {
+    if ready {
+        return 100;
+    }
+    let Some(state) = bootstrap_state else {
+        return 0;
+    };
+    let total = state.tables.len() as i64;
+    if total <= 0 {
+        return 0;
+    }
+    let processed = state.table_index.clamp(0, total);
+    ((processed * 100) / total).clamp(0, 100)
+}
+
+#[cfg(feature = "native")]
+fn parse_bootstrap_state_json(value: Option<&str>) -> Result<Option<BootstrapState>> {
+    value
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(Into::into)
+}
+
+#[cfg(feature = "native")]
+fn build_bootstrap_status(
+    subscriptions: &[SubscriptionSpec],
+    states: Vec<Option<SubscriptionState>>,
+    critical_phase: i64,
+    interactive_phase: i64,
+) -> Result<BootstrapStatus> {
+    let critical_phase = normalize_bootstrap_phase(critical_phase);
+    let interactive_phase = normalize_bootstrap_phase(interactive_phase).max(critical_phase);
+    let mut subscription_statuses = Vec::with_capacity(subscriptions.len());
+
+    for (spec, state) in subscriptions.iter().zip(states.into_iter()) {
+        let bootstrap_phase = normalize_bootstrap_phase(spec.bootstrap_phase);
+        let bootstrap_state = parse_bootstrap_state_json(
+            state
+                .as_ref()
+                .and_then(|state| state.bootstrap_state_json.as_deref()),
+        )?;
+        let ready = native_subscription_ready(state.as_ref());
+        let status = state.as_ref().map(|state| state.status.clone());
+        let cursor = state.as_ref().map(|state| state.cursor);
+        let phase = native_subscription_phase(status.as_deref(), cursor, bootstrap_state.as_ref());
+        let progress_percent = bootstrap_progress_percent(ready, bootstrap_state.as_ref());
+
+        subscription_statuses.push(BootstrapSubscriptionStatus {
+            id: spec.id.clone(),
+            table: spec.table.clone(),
+            expected: true,
+            ready,
+            status,
+            phase,
+            progress_percent,
+            cursor,
+            bootstrap_state,
+            bootstrap_phase,
+        });
+    }
+
+    let expected_subscription_ids = subscription_statuses
+        .iter()
+        .map(|subscription| subscription.id.clone())
+        .collect::<Vec<_>>();
+    let ready_subscription_ids = subscription_statuses
+        .iter()
+        .filter(|subscription| subscription.ready)
+        .map(|subscription| subscription.id.clone())
+        .collect::<Vec<_>>();
+    let pending_subscription_ids = subscription_statuses
+        .iter()
+        .filter(|subscription| !subscription.ready)
+        .map(|subscription| subscription.id.clone())
+        .collect::<Vec<_>>();
+    let complete = pending_subscription_ids.is_empty();
+    let critical_ready = subscription_statuses
+        .iter()
+        .all(|subscription| subscription.bootstrap_phase > critical_phase || subscription.ready);
+    let interactive_ready = subscription_statuses
+        .iter()
+        .all(|subscription| subscription.bootstrap_phase > interactive_phase || subscription.ready);
+    let active_phase = subscription_statuses
+        .iter()
+        .filter(|subscription| !subscription.ready)
+        .map(|subscription| subscription.bootstrap_phase)
+        .min();
+    let has_error = subscription_statuses
+        .iter()
+        .any(|subscription| subscription.phase == "error");
+    let is_bootstrapping = subscription_statuses
+        .iter()
+        .any(|subscription| !subscription.ready && subscription.phase != "error");
+    let channel_phase = if has_error {
+        "error"
+    } else if is_bootstrapping {
+        "bootstrapping"
+    } else if complete && !expected_subscription_ids.is_empty() {
+        "live"
+    } else {
+        "idle"
+    }
+    .to_string();
+    let progress_percent = if subscription_statuses.is_empty() {
+        100
+    } else {
+        let total = subscription_statuses
+            .iter()
+            .map(|subscription| subscription.progress_percent)
+            .sum::<i64>();
+        ((total as f64) / (subscription_statuses.len() as f64)).round() as i64
+    };
+
+    let mut phase_map = BTreeMap::<i64, (Vec<String>, Vec<String>, Vec<String>, i64)>::new();
+    for subscription in &subscription_statuses {
+        let entry = phase_map
+            .entry(subscription.bootstrap_phase)
+            .or_insert_with(|| (Vec::new(), Vec::new(), Vec::new(), 0));
+        entry.0.push(subscription.id.clone());
+        if subscription.ready {
+            entry.1.push(subscription.id.clone());
+        } else {
+            entry.2.push(subscription.id.clone());
+        }
+        entry.3 += subscription.progress_percent;
+    }
+    let phases = phase_map
+        .into_iter()
+        .map(
+            |(phase, (expected_ids, ready_ids, pending_ids, progress_total))| {
+                let progress_percent = if expected_ids.is_empty() {
+                    100
+                } else {
+                    ((progress_total as f64) / (expected_ids.len() as f64)).round() as i64
+                };
+                BootstrapPhaseStatus {
+                    phase,
+                    expected_subscription_ids: expected_ids,
+                    ready_subscription_ids: ready_ids,
+                    is_ready: pending_ids.is_empty(),
+                    pending_subscription_ids: pending_ids,
+                    progress_percent,
+                }
+            },
+        )
+        .collect();
+
+    Ok(BootstrapStatus {
+        channel_phase,
+        progress_percent,
+        is_bootstrapping,
+        critical_ready,
+        interactive_ready,
+        complete,
+        active_phase,
+        expected_subscription_ids,
+        ready_subscription_ids,
+        pending_subscription_ids,
+        subscriptions: subscription_statuses,
+        phases,
+    })
+}
+
+#[cfg(all(test, feature = "native"))]
 mod bootstrap_phase_tests {
     use super::*;
 
@@ -1009,6 +1238,60 @@ mod bootstrap_phase_tests {
             later_bootstrapping[1].1.as_ref(),
             active
         ));
+    }
+
+    #[test]
+    fn bootstrap_status_reports_staged_readiness() {
+        let subscriptions = vec![subscription("critical", 0), subscription("interactive", 1)];
+        let states = vec![
+            Some(subscription_state("critical", 1, None)),
+            Some(subscription_state(
+                "interactive",
+                -1,
+                Some(
+                    r#"{"asOfCommitSeq":10,"tables":["tasks","projects"],"tableIndex":1,"rowCursor":"tasks:10"}"#,
+                ),
+            )),
+        ];
+
+        let status = build_bootstrap_status(&subscriptions, states, 0, 1)
+            .expect("bootstrap status should parse");
+
+        assert_eq!(status.channel_phase, "bootstrapping");
+        assert_eq!(status.progress_percent, 75);
+        assert!(status.critical_ready);
+        assert!(!status.interactive_ready);
+        assert!(!status.complete);
+        assert_eq!(status.active_phase, Some(1));
+        assert_eq!(status.ready_subscription_ids, vec!["critical".to_string()]);
+        assert_eq!(
+            status.pending_subscription_ids,
+            vec!["interactive".to_string()]
+        );
+        assert_eq!(status.subscriptions[1].phase, "bootstrapping");
+        assert_eq!(status.subscriptions[1].progress_percent, 50);
+        assert_eq!(
+            status.subscriptions[1]
+                .bootstrap_state
+                .as_ref()
+                .and_then(|state| state.row_cursor.as_deref()),
+            Some("tasks:10")
+        );
+        assert_eq!(status.phases.len(), 2);
+        assert!(status.phases[0].is_ready);
+        assert!(!status.phases[1].is_ready);
+    }
+
+    #[test]
+    fn bootstrap_status_rejects_invalid_checkpoint_json() {
+        let subscriptions = vec![subscription("critical", 0)];
+        let states = vec![Some(subscription_state(
+            "critical",
+            -1,
+            Some("{not valid json"),
+        ))];
+
+        assert!(build_bootstrap_status(&subscriptions, states, 0, 1).is_err());
     }
 
     fn subscription(id: &str, bootstrap_phase: i64) -> SubscriptionSpec {
@@ -1326,6 +1609,36 @@ where
         let subscriptions: Vec<SubscriptionSpec> = serde_json::from_str(subscriptions_json)?;
         self.set_subscriptions(subscriptions);
         Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    pub fn bootstrap_status(&mut self) -> Result<BootstrapStatus> {
+        self.bootstrap_status_for_phases(0, 1)
+    }
+
+    #[cfg(feature = "native")]
+    pub fn bootstrap_status_for_phases(
+        &mut self,
+        critical_phase: i64,
+        interactive_phase: i64,
+    ) -> Result<BootstrapStatus> {
+        let states = self.store.transaction(|tx| {
+            self.subscriptions
+                .iter()
+                .map(|subscription| tx.subscription_state(DEFAULT_STATE_ID, &subscription.id))
+                .collect::<Result<Vec<_>>>()
+        })?;
+        build_bootstrap_status(
+            &self.subscriptions,
+            states,
+            critical_phase,
+            interactive_phase,
+        )
+    }
+
+    #[cfg(feature = "native")]
+    pub fn bootstrap_status_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.bootstrap_status()?)?)
     }
 
     pub fn sync_http(&mut self) -> Result<SyncReport> {

@@ -1,8 +1,8 @@
 use crate::app_schema::{app_schema_from_json, default_app_schema, AppSchema, AppTableMetadata};
 use crate::client::{
-    sync_changed_row_for_local_operation, CrdtFieldCompactionReceipt, CrdtFieldMaterialization,
-    CrdtFieldWriteReceipt, SubscriptionSpec, SyncChangedRow, SyncReport, SyncularClient,
-    SyncularClientConfig,
+    sync_changed_row_for_local_operation, BootstrapStatus, CrdtFieldCompactionReceipt,
+    CrdtFieldMaterialization, CrdtFieldWriteReceipt, SubscriptionSpec, SyncChangedRow, SyncReport,
+    SyncularClient, SyncularClientConfig,
 };
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
 use crate::crdt_yjs::YjsUpdateEnvelope;
@@ -188,6 +188,8 @@ pub struct NativeEvent {
     pub changed_rows: Vec<SyncChangedRow>,
     #[serde(default)]
     pub queries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<BootstrapStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_json: Option<Value>,
 }
@@ -1773,12 +1775,14 @@ impl NativeEventHub {
             SyncWorkerEvent::SyncCompleted {
                 command_id,
                 report,
+                bootstrap,
                 outbox_count,
                 conflict_count,
                 duration_ms,
             } => {
                 let mut events = vec![sync_completed_event(
                     report.clone(),
+                    bootstrap,
                     command_id,
                     outbox_count,
                     conflict_count,
@@ -2556,6 +2560,7 @@ fn sync_started_event(command_id: Option<String>) -> NativeEvent {
 
 fn sync_completed_event(
     report: SyncReport,
+    bootstrap: BootstrapStatus,
     command_id: Option<String>,
     outbox_count: usize,
     conflict_count: usize,
@@ -2574,6 +2579,7 @@ fn sync_completed_event(
                 ("changedTableCount", json!(report.changed_tables.len())),
                 ("changedRows", json!(report.changed_rows.clone())),
                 ("conflictsChanged", json!(report.conflicts_changed)),
+                ("bootstrap", json!(bootstrap.clone())),
                 ("outboxCount", json!(outbox_count)),
                 ("conflictCount", json!(conflict_count)),
                 ("durationMs", json!(duration_ms)),
@@ -2585,6 +2591,7 @@ fn sync_completed_event(
     event.conflict_count = Some(conflict_count);
     event.duration_ms = Some(duration_ms);
     event.changed_rows = report.changed_rows;
+    event.bootstrap = Some(bootstrap);
     event
 }
 
@@ -2855,6 +2862,7 @@ fn native_event(
         tables,
         changed_rows: Vec::new(),
         queries: Vec::new(),
+        bootstrap: None,
         payload_json: None,
     }
 }
