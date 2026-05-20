@@ -63,9 +63,10 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Continue expanding exact-code coverage to remaining runtime queue/blob/storage
-failure paths and any non-Hono server packages that still surface public
-string-only errors.
+Migrate public per-operation push result codes from legacy uppercase strings
+(`VERSION_CONFLICT`, `UNKNOWN_TABLE`, `INVALID_SCOPE`, etc.) to the stable
+Syncular taxonomy. This needs coordinated TS server, shared conformance fixture,
+Rust testkit/runtime expectations, and browser generated-client test updates.
 
 ## Progress
 
