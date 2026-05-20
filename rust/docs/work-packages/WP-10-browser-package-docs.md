@@ -1,6 +1,6 @@
 # WP-10 Browser Package And Docs
 
-Status: `[~]` needs package-size follow-up
+Status: `[x]` package-size gate restored
 
 ## Goal
 
@@ -42,20 +42,24 @@ Rust-first client clearly.
 The full Rust/WASM artifact and a smaller core artifact have been measured.
 Feature variants remain optional and should be driven by package-size evidence.
 
-The release full Rust-owned SQLite WASM size gate is currently failing:
+The release full Rust-owned SQLite WASM size gate is green again:
 
 - Budget: `3,460,301` raw bytes / `1,426,063` gzip bytes.
-- Current: `3,491,832` raw bytes / `1,438,491` gzip bytes.
-- A detached `c03ed9a1` baseline was already over budget by `20,633` raw bytes
-  / `8,468` gzip bytes, so the budget was stale before the latest CRDT recovery
-  additions. The retained CRDT recovery work adds about `10,898` raw bytes /
-  `3,960` gzip bytes.
-- Do not ratchet the budget until WP-10 either reduces size or explicitly
-  accepts the current shipped-byte cost with a measured reason.
+- Current retained profile: `3,363,132` raw bytes / `1,383,031` gzip bytes.
+- Headroom: `97,169` raw bytes / `43,032` gzip bytes.
+- The retained fix is the Rust workspace release profile:
+  `lto = true`, `codegen-units = 1`, and `panic = "abort"`.
+- A more aggressive `opt-level = "z"` probe produced a much smaller artifact,
+  but was not retained because the LTO/default-optimization profile already
+  restored the gate with less runtime risk.
+- Local release artifact guardrails stayed in band: 100k bootstrap
+  `147.16ms`, 500k bootstrap `623.02ms`. External app-style scoped artifact
+  sync/apply stayed flat versus the current derived-schema context:
+  `sync_total_ms_500000` `439ms -> 441ms`,
+  `local_apply_ms_500000` `208ms -> 207ms`.
 
 ## Next Action
 
-Investigate package size before the next release-gated browser change. Start
-with feature-boundary attribution for CRDT/encryption/blob code paths and remove
-unused exported WASM surfaces; only ratchet the budget if the retained features
-and measured shipped-byte cost are explicitly accepted.
+No immediate WP-10 package-size follow-up is required. Keep running
+`bun run --cwd rust/bindings/browser build:wasm` for every browser/WASM-facing
+change, and only ratchet the budget with a measured reason.
