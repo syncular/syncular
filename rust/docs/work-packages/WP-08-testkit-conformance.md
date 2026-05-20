@@ -62,10 +62,13 @@ tests.
 - Added smoke coverage proving HTTP push writes server state, WebSocket clients
   receive sync wakeups, and a second client pulls the committed row through the
   production native HTTP transport shape.
+- Added a stateful HTTP conflict smoke proving version conflicts are reported
+  through the production native HTTP transport shape while the same sync can
+  pull the server-winning row.
 - Replaced the Rust perf binary's private stateful HTTP/WebSocket server copy
   with the shared testkit fixture to keep performance and app tests aligned.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
-  passed with `22` smoke tests.
+  passed with `23` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.

@@ -267,8 +267,10 @@ read-only review:
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP
     pushes write server state, WebSocket listeners receive sync wakeups, and a
     second client pulls the committed row through the production native HTTP
-    transport shape. The Rust perf binary now uses the same fixture instead of
-    maintaining its own private server copy.
+    transport shape. Stateful HTTP conflict coverage now proves version
+    conflicts are reported while the same sync can pull the server-winning row.
+    The Rust perf binary now uses the same fixture instead of maintaining its
+    own private server copy.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
