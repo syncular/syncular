@@ -37,6 +37,24 @@ cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_back
 cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs
 ```
 
+## Rust-First Conformance
+
+Use this as the repeatable fast app-facing conformance gate when touching the
+testkit, runtime protocol/blob/CRDT behavior, generated Rust app API, or browser
+generated-app contract.
+
+```bash
+bun run rust:conformance:fast
+```
+
+Use the heavier lanes when the affected surface needs production-shaped
+browser/Hono sync or native binding proof.
+
+```bash
+bun run rust:conformance
+bun run rust:conformance:native
+```
+
 ## Browser / WASM
 
 ```bash
