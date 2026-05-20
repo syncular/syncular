@@ -113,6 +113,10 @@ string-only errors.
   forbidden websocket origins, invalid target selection, not found resources,
   downstream unavailability, and invalid downstream responses. Downstream
   failure metadata now lives under structured `details`.
+- Hono request validation now goes through Syncular-owned validators so sync,
+  blob, and console validation failures return stable `sync.invalid_request`,
+  `blob.invalid_request`, or `console.invalid_request` envelopes before route
+  handlers run.
 
 ## Latest Evidence
 
@@ -127,6 +131,9 @@ string-only errors.
 - `KOTLIN_CP=".context/native-smokes/kotlin-libs/kotlinx-serialization-json-jvm-1.9.0.jar:.context/native-smokes/kotlin-libs/kotlinx-serialization-core-jvm-1.9.0.jar" && kotlinc -cp "$KOTLIN_CP" rust/examples/todo-app/generated/kotlin/SyncularApp.kt rust/examples/todo-app/native-smokes/kotlin/GeneratedClientSmoke.kt -d .context/generated-kotlin-smoke.jar && kotlin -cp "$KOTLIN_CP:.context/generated-kotlin-smoke.jar" GeneratedClientSmokeKt rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
 - `javac -d .context/java-smoke rust/bindings/java/dev/syncular/client/SyncularNativeEvent.java`
 - `bun test packages/server-hono/src/__tests__/console-gateway-routes.test.ts packages/server-hono/src/__tests__/console-gateway-live-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`
+- `bun test packages/server-hono/src/__tests__/validation.test.ts`
+- `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
+- `bun test packages/server-hono/src/__tests__/pull-chunk-storage.test.ts --test-name-pattern "snapshot chunk|snapshot artifact|artifact"`
 - `bun test packages/server-hono/src/__tests__/blob-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/server-hono/src/__tests__/rate-limit.test.ts`
 - `bun test rust/bindings/browser/src/errors.test.ts rust/bindings/browser/src/worker-client.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "revoked sessions|server-required schema|corrupted snapshot chunk"`

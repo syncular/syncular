@@ -32,10 +32,11 @@ import {
 } from '@syncular/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
+import { describeRoute, resolver } from 'hono-openapi';
 import type { Kysely } from 'kysely';
 import { z } from 'zod';
 import { syncError } from './errors';
+import { blobValidator as zValidator } from './validation';
 
 interface BlobAuthResult {
   actorId: string;
