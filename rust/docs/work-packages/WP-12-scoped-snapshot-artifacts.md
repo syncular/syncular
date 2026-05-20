@@ -736,8 +736,8 @@ Generated derived-schema contract follow-up:
   read-model setup/rebuild phases so external adapters can consume the app
   schema contract directly instead of rebuilding derived SQL fixtures by hand.
   The default generated installer stayed in band on the 100k release artifact
-  gate (`147.84ms -> 146.94ms`), and the generated `liveSetup` install mode
-  stayed in band at `147.50ms` through the browser E2E schema-mode switch.
+  gate (`147.84ms -> 146.94ms`). A generated `liveSetup` mode was rejected
+  because 500k bootstrap regressed versus the default installer.
 
 ## Next Action
 
@@ -754,9 +754,8 @@ Continue artifact resource-state work, but keep it benchmark-gated.
 - Do not keep spending time on artifact memory micro-probes unless they change
   the bootstrap state model. The next useful app-style benchmark slice should
   consume the generated derived-schema phase contract and compare install
-  strategies: generated full schema before bootstrap, generated `liveSetup`
-  before bootstrap, and bulk load followed by explicit index/read-model setup
-  and rebuild.
+  strategies: generated full schema before bootstrap versus bulk load followed
+  by explicit index/read-model setup and rebuild.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows
