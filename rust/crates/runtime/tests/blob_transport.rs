@@ -2,14 +2,14 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use serde_json::Value;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::error::Result;
 use syncular_runtime::protocol::blob_hash;
 use syncular_runtime::transport::SyncAuthHeaders;
 use syncular_testkit::{
-    encoded_blob_hash, unique_temp_db_path, unique_temp_file_path, TestBlobServer,
-    TestBlobServerOptions,
+    encoded_blob_hash, sync_conformance_bytes, sync_conformance_i32, sync_conformance_i64,
+    sync_conformance_str, sync_conformance_usize, unique_temp_db_path, unique_temp_file_path,
+    TestBlobServer, TestBlobServerOptions,
 };
 
 #[test]
@@ -217,62 +217,29 @@ fn temp_file_path(prefix: &str) -> String {
     unique_temp_file_path(prefix)
 }
 
-fn blob_conformance() -> Value {
-    serde_json::from_str::<Value>(include_str!(
-        "../../../examples/todo-app/conformance/sync-scenarios.json"
-    ))
-    .expect("sync conformance JSON")
-    .get("blob")
-    .expect("blob conformance scenario")
-    .clone()
-}
-
 fn blob_conformance_str(path: &[&str]) -> String {
-    blob_conformance_value(path)
-        .as_str()
-        .unwrap_or_else(|| panic!("blob conformance path {path:?} must be a string"))
-        .to_string()
+    sync_conformance_str(&blob_conformance_path(path))
 }
 
 fn blob_conformance_i64(path: &[&str]) -> i64 {
-    blob_conformance_value(path)
-        .as_i64()
-        .unwrap_or_else(|| panic!("blob conformance path {path:?} must be an integer"))
+    sync_conformance_i64(&blob_conformance_path(path))
 }
 
 fn blob_conformance_i32(path: &[&str]) -> i32 {
-    blob_conformance_i64(path)
-        .try_into()
-        .unwrap_or_else(|_| panic!("blob conformance path {path:?} must fit in i32"))
+    sync_conformance_i32(&blob_conformance_path(path))
 }
 
 fn blob_conformance_usize(path: &[&str]) -> usize {
-    blob_conformance_i64(path)
-        .try_into()
-        .unwrap_or_else(|_| panic!("blob conformance path {path:?} must fit in usize"))
+    sync_conformance_usize(&blob_conformance_path(path))
 }
 
 fn blob_conformance_bytes(path: &[&str]) -> Vec<u8> {
-    blob_conformance_value(path)
-        .as_array()
-        .unwrap_or_else(|| panic!("blob conformance path {path:?} must be an array"))
-        .iter()
-        .map(|value| {
-            value
-                .as_u64()
-                .and_then(|byte| byte.try_into().ok())
-                .unwrap_or_else(|| panic!("blob conformance path {path:?} must contain bytes"))
-        })
-        .collect()
+    sync_conformance_bytes(&blob_conformance_path(path))
 }
 
-fn blob_conformance_value(path: &[&str]) -> Value {
-    let mut value = blob_conformance();
-    for segment in path {
-        value = value
-            .get(segment)
-            .unwrap_or_else(|| panic!("missing blob conformance path {path:?}"))
-            .clone();
-    }
-    value
+fn blob_conformance_path<'a>(path: &'a [&'a str]) -> Vec<&'a str> {
+    let mut full_path = Vec::with_capacity(path.len() + 1);
+    full_path.push("blob");
+    full_path.extend_from_slice(path);
+    full_path
 }
