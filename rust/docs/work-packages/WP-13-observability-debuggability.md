@@ -176,10 +176,12 @@ snapshot first:
 
 ## Next Action
 
-Continue first-slice correlation work:
+First-slice correlation work is complete enough for the current runtime/API
+surface.
 
-1. Add console/API affordances that query client/server diagnostics by
-   `syncAttemptId` once the console investigation views move forward.
+Next: move to the console investigation UI work only when we are ready to add
+dedicated diagnostic drilldowns. Until then, continue with the next work
+package from the Rust-first roadmap.
 
 ## Progress
 
@@ -227,3 +229,7 @@ Continue first-slice correlation work:
   worker sync outcome events. Native timing entries expose event sequence,
   kind, command id, total duration, success, retry scheduling, outbox count, and
   conflict count without inventing unavailable browser-only sub-buckets.
+- Added console/API `syncAttemptId` filtering as a first-class alias for the
+  persisted request trace id on timeline and request-event routes, including
+  federated gateway schemas, generated OpenAPI client types, and Stream search
+  token support.

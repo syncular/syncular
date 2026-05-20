@@ -375,6 +375,7 @@ const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
   clientId: z.string().optional(),
   requestId: z.string().optional(),
   traceId: z.string().optional(),
+  syncAttemptId: z.string().optional(),
   outcome: z.string().optional(),
 });
 
@@ -1341,12 +1342,14 @@ export function createConsoleRoutes<
         clientId,
         requestId,
         traceId,
+        syncAttemptId,
         table,
         outcome,
         search,
         from,
         to,
       } = c.req.valid('query');
+      const resolvedTraceId = traceId ?? syncAttemptId;
 
       const items: ConsoleTimelineItem[] = [];
       const normalizedSearchTerm = search?.trim().toLowerCase() || null;
@@ -1360,7 +1363,7 @@ export function createConsoleRoutes<
         !eventType &&
         !outcome &&
         !requestId &&
-        !traceId
+        !resolvedTraceId
       ) {
         let commitsQuery = db
           .selectFrom('sync_commits')
@@ -1452,8 +1455,8 @@ export function createConsoleRoutes<
         if (requestId) {
           eventsQuery = eventsQuery.where('request_id', '=', requestId);
         }
-        if (traceId) {
-          eventsQuery = eventsQuery.where('trace_id', '=', traceId);
+        if (resolvedTraceId) {
+          eventsQuery = eventsQuery.where('trace_id', '=', resolvedTraceId);
         }
         if (outcome) {
           eventsQuery = eventsQuery.where('outcome', '=', outcome);
@@ -2390,8 +2393,10 @@ export function createConsoleRoutes<
         clientId,
         requestId,
         traceId,
+        syncAttemptId,
         outcome,
       } = c.req.valid('query');
+      const resolvedTraceId = traceId ?? syncAttemptId;
 
       let query = db
         .selectFrom('sync_request_events')
@@ -2421,9 +2426,9 @@ export function createConsoleRoutes<
         query = query.where('request_id', '=', requestId);
         countQuery = countQuery.where('request_id', '=', requestId);
       }
-      if (traceId) {
-        query = query.where('trace_id', '=', traceId);
-        countQuery = countQuery.where('trace_id', '=', traceId);
+      if (resolvedTraceId) {
+        query = query.where('trace_id', '=', resolvedTraceId);
+        countQuery = countQuery.where('trace_id', '=', resolvedTraceId);
       }
       if (outcome) {
         query = query.where('outcome', '=', outcome);
