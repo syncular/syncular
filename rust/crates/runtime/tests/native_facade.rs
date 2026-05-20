@@ -1896,6 +1896,20 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
         .to_string(),
     )?;
     apply_task_upsert(&mut client, "diagnostic-task", "Diagnostic task")?;
+    client.trigger_sync()?;
+    let mut saw_sync_failed = false;
+    for _ in 0..4 {
+        if matches!(
+            client
+                .next_event_timeout(Duration::from_secs(5))
+                .map(|event| event.kind),
+            Some(NativeEventKind::SyncFailed)
+        ) {
+            saw_sync_failed = true;
+            break;
+        }
+    }
+    assert!(saw_sync_failed);
 
     let snapshot_json = client.diagnostic_snapshot_json()?;
     let snapshot: Value = serde_json::from_str(&snapshot_json)?;
@@ -1941,6 +1955,13 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
                 .iter()
                 .any(|item| item["code"] == "storage.rows_changed")
         }));
+    assert!(snapshot["recentSyncTimings"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| {
+            item["kind"] == "syncFailed"
+                && item["success"] == false
+                && item["totalMs"].as_u64().is_some()
+        })));
 
     client.close()?;
     let _ = std::fs::remove_file(path);

@@ -216,6 +216,7 @@ pub struct NativeDiagnosticSnapshot {
     pub subscriptions: Vec<NativeDiagnosticSubscriptionSnapshot>,
     pub recent_events: Vec<NativeEvent>,
     pub recent_diagnostics: Vec<NativeDiagnostic>,
+    pub recent_sync_timings: Vec<NativeSyncTimingSnapshot>,
     pub bootstrap: BootstrapStatus,
     pub outbox_stats: NativeOutboxStats,
     pub conflict_stats: NativeConflictStats,
@@ -268,6 +269,19 @@ pub struct NativeConflictStats {
     pub unresolved: usize,
     pub resolved: usize,
     pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSyncTimingSnapshot {
+    pub event_seq: u64,
+    pub kind: String,
+    pub command_id: Option<String>,
+    pub total_ms: u64,
+    pub success: bool,
+    pub retry_scheduled: Option<bool>,
+    pub outbox_count: Option<usize>,
+    pub conflict_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1290,6 +1304,7 @@ impl NativeSyncularClient {
             .iter()
             .filter_map(|event| event.diagnostic.clone())
             .collect();
+        let recent_sync_timings = native_sync_timing_snapshots(&recent_events);
         let connection = NativeDiagnosticConnectionSnapshot {
             sync_worker_running: self.sync_worker_running(),
             realtime_worker_running: self.realtime_worker.is_some(),
@@ -1307,6 +1322,7 @@ impl NativeSyncularClient {
             ),
             recent_events,
             recent_diagnostics,
+            recent_sync_timings,
             bootstrap,
             outbox_stats: native_outbox_stats(&outbox),
             conflict_stats: native_conflict_stats(&conflicts),
@@ -2301,6 +2317,31 @@ fn native_conflict_stats(conflicts: &[ConflictSummary]) -> NativeConflictStats {
         }
     }
     stats
+}
+
+fn native_sync_timing_snapshots(events: &[NativeEvent]) -> Vec<NativeSyncTimingSnapshot> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let total_ms = event.duration_ms?;
+            let (kind, success) = match event.kind {
+                NativeEventKind::SyncCompleted => ("syncCompleted", true),
+                NativeEventKind::SyncFailed => ("syncFailed", false),
+                NativeEventKind::AuthExpired => ("authExpired", false),
+                _ => return None,
+            };
+            Some(NativeSyncTimingSnapshot {
+                event_seq: event.event_seq,
+                kind: kind.to_string(),
+                command_id: event.command_id.clone(),
+                total_ms,
+                success,
+                retry_scheduled: event.retry_scheduled,
+                outbox_count: event.outbox_count,
+                conflict_count: event.conflict_count,
+            })
+        })
+        .collect()
 }
 
 fn crdt_field_descriptor(field: &CrdtField) -> Value {
