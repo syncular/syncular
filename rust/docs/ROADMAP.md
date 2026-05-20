@@ -405,7 +405,9 @@ read-only review:
     not-found, downstream unavailable, and invalid downstream response cases.
     Hono request validation now uses Syncular-owned validators so sync, blob,
     and console validation failures return stable envelopes before route
-    handlers run.
+    handlers run. Relay server-role `/pull` and `/push` routes now return the
+    same stable sync envelopes for auth, invalid request, and operation-limit
+    failures instead of uppercase string-only errors.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
