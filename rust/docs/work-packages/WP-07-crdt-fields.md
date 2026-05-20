@@ -1,6 +1,6 @@
 # WP-07 CRDT Fields
 
-Status: `[~]` in progress
+Status: `[x]` complete
 
 ## Goal
 
@@ -41,9 +41,8 @@ keeping editor adapters at app level.
 
 ## Current Evidence
 
-The Rust runtime already has a generic CRDT document-field primitive. Remaining
-work is polish: stream behavior, diagnostics, state-vector hints, and stronger
-encrypted/convergence coverage.
+The Rust runtime now has a generic CRDT document-field primitive with native,
+browser, encrypted update-log, diagnostics, recovery, and convergence coverage.
 
 Latest accepted slice:
 
@@ -191,6 +190,6 @@ Known local environment note:
 
 ## Next Action
 
-Move WP-07 through final documentation/contract review: verify public CRDT field
-APIs, recovery diagnostics, and subscription requirements are captured in the
-Rust client docs before marking the work package complete.
+WP-07 is complete. Related follow-up work should continue in WP-13 for richer
+CRDT observability diagnostics and WP-15 for broader error taxonomy/recovery
+semantics.
