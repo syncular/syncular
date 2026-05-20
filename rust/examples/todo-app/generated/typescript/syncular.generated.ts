@@ -175,6 +175,22 @@ export interface SyncularGeneratedLocalIndex {
 export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = [
 ];
 
+export interface SyncularGeneratedDerivedSchemaTimings {
+  totalMs: number;
+  metadataMs: number;
+  indexesMs: number;
+  readModelProbeMs: number;
+  readModelSetupMs: number;
+  readModelRebuildMs: number;
+  recordSchemaVersionMs: number;
+  rebuiltReadModels: string[];
+}
+
+export interface SyncularGeneratedSchemaInstallTimings extends SyncularGeneratedDerivedSchemaTimings {
+  baseSchemaMs: number;
+  derivedSchemaMs: number;
+}
+
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,
   tables: [
@@ -435,23 +451,57 @@ export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void
 
 }
 
-export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {
+function syncularGeneratedNowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+}
+
+export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedDerivedSchemaTimings> {
+  const syncularGeneratedTotalStartedAt = syncularGeneratedNowMs();
+  const syncularGeneratedTimings: SyncularGeneratedDerivedSchemaTimings = {
+    totalMs: 0,
+    metadataMs: 0,
+    indexesMs: 0,
+    readModelProbeMs: 0,
+    readModelSetupMs: 0,
+    readModelRebuildMs: 0,
+    recordSchemaVersionMs: 0,
+    rebuiltReadModels: [],
+  };
+  let syncularGeneratedStartedAt = syncularGeneratedNowMs();
   const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);
+  syncularGeneratedTimings.metadataMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
+  syncularGeneratedStartedAt = syncularGeneratedNowMs();
   await ensureSyncularAppIndexes(db);
+  syncularGeneratedTimings.indexesMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
+  syncularGeneratedStartedAt = syncularGeneratedNowMs();
   const syncularGeneratedReadModelWasInstalled = new Map<string, boolean>();
   for (const readModel of syncularGeneratedLocalReadModels) {
     syncularGeneratedReadModelWasInstalled.set(readModel.name, await syncularGeneratedTableExists(db, readModel.outputTable));
   }
+  syncularGeneratedTimings.readModelProbeMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
+  syncularGeneratedStartedAt = syncularGeneratedNowMs();
   await ensureSyncularAppReadModelSetup(db);
+  syncularGeneratedTimings.readModelSetupMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
+  syncularGeneratedStartedAt = syncularGeneratedNowMs();
   for (const readModel of syncularGeneratedLocalReadModels) {
     if (!syncularGeneratedReadModelWasInstalled.get(readModel.name) || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {
+      syncularGeneratedTimings.rebuiltReadModels.push(readModel.name);
       for (const statement of readModel.rebuildSql) {
         await sql.raw(statement).execute(db);
       }
     }
   }
 
+  syncularGeneratedTimings.readModelRebuildMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
+  syncularGeneratedStartedAt = syncularGeneratedNowMs();
   await recordSyncularAppSchemaVersion(db);
+  syncularGeneratedTimings.recordSchemaVersionMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
+  syncularGeneratedTimings.totalMs = syncularGeneratedNowMs() - syncularGeneratedTotalStartedAt;
+  return syncularGeneratedTimings;
+}
+
+export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {
+  await ensureSyncularAppDerivedSchemaWithTimings(db);
 }
 
 export async function ensureSyncularAppIndexes(db: Kysely<any>): Promise<void> {
@@ -488,8 +538,23 @@ async function recordSyncularAppSchemaVersion(db: Kysely<any>): Promise<void> {
 }
 
 export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
+  await ensureSyncularAppSchemaWithTimings(db);
+}
+
+export async function ensureSyncularAppSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedSchemaInstallTimings> {
+  const syncularGeneratedTotalStartedAt = syncularGeneratedNowMs();
+  const syncularGeneratedBaseStartedAt = syncularGeneratedNowMs();
   await ensureSyncularAppBaseSchema(db);
-  await ensureSyncularAppDerivedSchema(db);
+  const syncularGeneratedBaseSchemaMs = syncularGeneratedNowMs() - syncularGeneratedBaseStartedAt;
+  const syncularGeneratedDerivedStartedAt = syncularGeneratedNowMs();
+  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db);
+  const syncularGeneratedDerivedSchemaMs = syncularGeneratedNowMs() - syncularGeneratedDerivedStartedAt;
+  return {
+    ...syncularGeneratedDerivedTimings,
+    totalMs: syncularGeneratedNowMs() - syncularGeneratedTotalStartedAt,
+    baseSchemaMs: syncularGeneratedBaseSchemaMs,
+    derivedSchemaMs: syncularGeneratedDerivedSchemaMs,
+  };
 }
 
 interface SyncularGeneratedColumnInfo {

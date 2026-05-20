@@ -150,10 +150,14 @@ read-only review:
     external app-style scoped artifact 500k lane from `1430.17ms -> 1382.56ms`
     and derived-schema time from `976.02ms -> 930.41ms` without changing app
     semantics.
-    Browser E2E now reports Rust schema install time separately
-    (`5.42ms` cold, `2.55ms` cached on the 100k release artifact gate), so
-    local sync timing can be compared honestly with external app bootstrap
-    timing.
+    Browser E2E now reports Rust schema install time separately and also
+    records generated schema phases. The latest 100k release artifact gate
+    reports `rust_schema_install_ms=5.34`, `rust_schema_base_ms=1.64`,
+    `rust_schema_derived_ms=3.70`, `rust_schema_read_model_rebuild_ms=0.99`,
+    and cached schema install `1.91ms`. A local external-schema probe showed
+    500k derived work is index dominated (`1070.57ms` indexes versus
+    `38.88ms` read-model rebuild), so the next derived-schema experiments
+    should target app-declared index shape/order with external proof.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
