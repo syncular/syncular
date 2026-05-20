@@ -68,12 +68,11 @@ the correct sync path easy and make incorrect paths hard to reach.
 
 Continue tightening generated app surfaces:
 
-1. Add documentation examples that show diagnostics alongside typed reads,
-   subscriptions, mutations, conflicts, and live query refresh.
-2. Review native generated mutation naming for cross-platform consistency
+1. Review native generated mutation naming for cross-platform consistency
    without adding table-specific read/ORM helpers.
-3. Add explicit generated-client examples for CRDT field writes so app code uses
-   CRDT helpers instead of trying to write persistence columns.
+2. Add generated-client examples for conflict resolution and blob flows to the
+   concise API reference if app integration feedback shows the long integration
+   guide is not discoverable enough.
 
 ## Progress
 
@@ -99,6 +98,10 @@ Continue tightening generated app surfaces:
 - Added a generator regression test proving CRDT state columns remain readable
   while being removed from generated insert/patch mutation surfaces across Rust,
   TypeScript, Swift, and Kotlin.
+- Added `reference/GENERATED_CLIENT_API.md` as the concise cross-platform API
+  guide for generated Rust, Browser TypeScript, Swift, and Kotlin clients. It
+  documents typed query-builder reads, outbox-safe mutations, CRDT helper
+  writes, diagnostics, live queries, and row-delta routing in one place.
 
 ## Latest Evidence
 

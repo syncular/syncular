@@ -194,7 +194,9 @@ read-only review:
     the WP-13 runtime snapshot host method, covered by codegen assertions and
     native smokes. Generated Rust, TypeScript, Swift, and Kotlin mutation
     input/payload types now omit CRDT `stateColumn` fields while keeping those
-    fields visible for reads, metadata, and changed-row observation.
+    fields visible for reads, metadata, and changed-row observation. The new
+    `reference/GENERATED_CLIENT_API.md` page captures the cross-platform
+    generated-client surface and red lines in one concise guide.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
@@ -296,9 +298,9 @@ read-only review:
 
 ## Next
 
-- Continue WP-14 generated-client ergonomics by adding docs that show
-  diagnostics and CRDT helper writes beside typed reads, subscriptions,
-  mutations, conflicts, and live query refresh.
+- Continue WP-14 generated-client ergonomics by reviewing native mutation
+  naming consistency and filling any remaining app-flow doc gaps from real
+  integration feedback.
 - Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
   artifact apply is now fast enough that the remaining useful work is a larger

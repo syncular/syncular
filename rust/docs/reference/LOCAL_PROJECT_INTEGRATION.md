@@ -3,6 +3,10 @@
 This guide is for trying the current Rust-first Syncular client from another
 local Rust project before the crates are published.
 
+For a shorter cross-platform API reference, see
+[`GENERATED_CLIENT_API.md`](GENERATED_CLIENT_API.md). This file remains the full
+setup and integration checklist.
+
 The local Syncular repo root used in these examples is:
 
 ```text
