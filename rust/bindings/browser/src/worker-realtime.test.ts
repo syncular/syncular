@@ -3,6 +3,7 @@ import type {
   SyncularV2BootstrapStatus,
   SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryEvent,
+  SyncularV2SyncRequestOptions,
   SyncularV2SyncResult,
 } from './types';
 import type { SyncularV2WorkerEvent } from './worker-protocol';
@@ -197,6 +198,12 @@ describe('Syncular v2 worker realtime', () => {
     sockets[0]!.messageBytes({ event: 'sync' });
 
     await waitFor(() => client.syncPulls === 1);
+    expect(client.syncPullOptions[0]?.syncAttempt).toMatchObject({
+      syncAttemptId: expect.any(String),
+      traceId: expect.any(String),
+      spanId: expect.any(String),
+      traceparent: expect.any(String),
+    });
     client.resolvePull();
   });
 
@@ -300,6 +307,12 @@ describe('Syncular v2 worker realtime', () => {
           requiresPull: true,
           droppedCount: 2,
         }),
+      })
+    );
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'realtime.pull_required',
+        syncAttemptId: client.syncPullOptions[0]!.syncAttempt!.syncAttemptId,
       })
     );
   });
@@ -653,12 +666,16 @@ describe('Syncular v2 worker realtime', () => {
 
 class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
   syncPulls = 0;
+  syncPullOptions: SyncularV2SyncRequestOptions[] = [];
   realtimeSyncPacks: Uint8Array[] = [];
   #pullResolvers: Array<() => void> = [];
   #drains: Array<Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>> = [];
 
-  syncPull(): Promise<SyncularV2SyncResult> {
+  syncPull(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
     this.syncPulls += 1;
+    this.syncPullOptions.push(options);
     return new Promise((resolve) => {
       this.#pullResolvers.push(() =>
         resolve({

@@ -23,6 +23,7 @@ import type {
   SyncularV2RuntimeInfo,
   SyncularV2StorageCompactionOptions,
   SyncularV2SubscriptionSpec,
+  SyncularV2SyncAttempt,
   SyncularV2TransportStats,
 } from './types';
 
@@ -175,6 +176,7 @@ export type SyncularV2WorkerRequest =
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'syncPull' | 'syncPush' | 'syncOnce';
+      syncAttempt?: SyncularV2SyncAttempt;
     }
   | {
       id: number;

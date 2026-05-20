@@ -1,4 +1,5 @@
 import { resolveSyncularV2ClientConfig } from './client-config';
+import { syncularV2DiagnosticAttemptFields } from './diagnostics';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import {
   openSyncularV2RustClient,
@@ -117,6 +118,7 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
         ...(resyncRequired ? { resyncRequired: true } : {}),
         ...diagnosticStatus(err),
       },
+      ...requestSyncAttemptDiagnosticFields(request),
     });
     post({
       id: request.id,
@@ -198,11 +200,11 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
     case 'applyMutationsCommit':
       return requireClient().applyMutationsCommit(request.operations);
     case 'syncPull':
-      return requireClient().syncPull();
+      return requireClient().syncPull({ syncAttempt: request.syncAttempt });
     case 'syncPush':
-      return requireClient().syncPush();
+      return requireClient().syncPush({ syncAttempt: request.syncAttempt });
     case 'syncOnce':
-      return requireClient().syncOnce();
+      return requireClient().syncOnce({ syncAttempt: request.syncAttempt });
     case 'transportStats':
       return requireClient().transportStats();
     case 'resetTransportStats':
@@ -390,12 +392,26 @@ function postRequestSuccessDiagnostic(
     source: requestDiagnosticSource(request.type),
     code: `${requestDiagnosticSource(request.type)}.${request.type}.completed`,
     message: `Syncular v2 worker request ${request.type} completed`,
+    ...requestSyncAttemptDiagnosticFields(request),
     details: {
       requestType: request.type,
       durationMs,
       ...requestSuccessDetails(request, value),
     },
   });
+}
+
+function requestSyncAttemptDiagnosticFields(
+  request: SyncularV2WorkerRequest
+): Pick<SyncularV2DiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
+  if (
+    request.type !== 'syncPull' &&
+    request.type !== 'syncPush' &&
+    request.type !== 'syncOnce'
+  ) {
+    return {};
+  }
+  return syncularV2DiagnosticAttemptFields(request.syncAttempt);
 }
 
 function isDiagnosedSuccessRequest(

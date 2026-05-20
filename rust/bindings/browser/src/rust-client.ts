@@ -3,7 +3,10 @@ import { resolveSyncularV2ClientConfig } from './client-config';
 import {
   appendSyncularV2DiagnosticEvent,
   appendSyncularV2SyncTimings,
+  createSyncularV2SyncAttempt,
   summarizeSyncularV2DiagnosticSubscriptions,
+  syncularV2DiagnosticAttemptFields,
+  syncularV2SyncAttemptHeaders,
 } from './diagnostics';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
@@ -52,6 +55,8 @@ import type {
   SyncularV2StorageCompactionOptions,
   SyncularV2StorageCompactionReport,
   SyncularV2SubscriptionSpec,
+  SyncularV2SyncAttempt,
+  SyncularV2SyncRequestOptions,
   SyncularV2SyncResult,
   SyncularV2SyncTimings,
   SyncularV2TransportStats,
@@ -222,6 +227,7 @@ export class SyncularV2RustClient {
   #recentDiagnostics: SyncularV2DiagnosticEvent[] = [];
   #recentSyncTimings: SyncularV2SyncTimings[] = [];
   #subscriptions: SyncularV2SubscriptionSpec[] = [];
+  #authHeaders: SyncularV2AuthHeaders = {};
   #bootstrapById = new Map<
     string,
     SyncularV2BootstrapSubscriptionStatusEntry
@@ -265,7 +271,8 @@ export class SyncularV2RustClient {
   }
 
   setAuthHeaders(headers: SyncularV2AuthHeaders): void {
-    this.raw.setAuthHeadersJson(JSON.stringify(headers));
+    this.#authHeaders = { ...headers };
+    this.raw.setAuthHeadersJson(JSON.stringify(this.#authHeaders));
   }
 
   setFieldEncryption(config: SyncularV2FieldEncryptionConfig | null): void {
@@ -320,9 +327,14 @@ export class SyncularV2RustClient {
     return commitId;
   }
 
-  async syncPull(): Promise<SyncularV2SyncResult> {
-    const result = this.#decorateSyncResult(
-      parseSyncResult(await this.raw.syncPullJson())
+  async syncPull(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
+    const result = await this.#runTracedSync(
+      'syncPull',
+      options.syncAttempt,
+      async () =>
+        this.#decorateSyncResult(parseSyncResult(await this.raw.syncPullJson()))
     );
     this.#captureSyncTimings(result);
     this.#emitRowsChanged('remotePull', result);
@@ -340,10 +352,17 @@ export class SyncularV2RustClient {
     return result;
   }
 
-  async syncPush(): Promise<SyncularV2SyncResult> {
+  async syncPush(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
     try {
-      const result = this.#decorateSyncResult(
-        parseSyncResult(await this.raw.syncPushJson())
+      const result = await this.#runTracedSync(
+        'syncPush',
+        options.syncAttempt,
+        async () =>
+          this.#decorateSyncResult(
+            parseSyncResult(await this.raw.syncPushJson())
+          )
       );
       this.#captureSyncTimings(result);
       this.#emitRowsChanged('localWrite', result);
@@ -354,10 +373,17 @@ export class SyncularV2RustClient {
     }
   }
 
-  async syncOnce(): Promise<SyncularV2SyncResult> {
+  async syncOnce(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
     try {
-      const result = this.#decorateSyncResult(
-        parseSyncResult(await this.raw.syncOnceJson())
+      const result = await this.#runTracedSync(
+        'syncOnce',
+        options.syncAttempt,
+        async () =>
+          this.#decorateSyncResult(
+            parseSyncResult(await this.raw.syncOnceJson())
+          )
       );
       this.#captureSyncTimings(result);
       this.#emitRowsChanged('remotePull', result);
@@ -689,6 +715,58 @@ export class SyncularV2RustClient {
 
   #captureSyncTimings(result: SyncularV2SyncResult): void {
     appendSyncularV2SyncTimings(this.#recentSyncTimings, result.timings);
+  }
+
+  async #runTracedSync<T>(
+    requestType: 'syncPull' | 'syncPush' | 'syncOnce',
+    providedAttempt: SyncularV2SyncAttempt | undefined,
+    run: () => Promise<T>
+  ): Promise<T> {
+    const syncAttempt = providedAttempt ?? createSyncularV2SyncAttempt();
+    const startedAt = Date.now();
+    this.#emitDiagnostic({
+      at: startedAt,
+      level: 'debug',
+      source: 'sync',
+      code: `sync.${requestType}.started`,
+      message: `Syncular v2 ${requestType} started`,
+      ...syncularV2DiagnosticAttemptFields(syncAttempt),
+    });
+    this.raw.setAuthHeadersJson(
+      JSON.stringify({
+        ...this.#authHeaders,
+        ...syncularV2SyncAttemptHeaders(syncAttempt),
+      })
+    );
+    try {
+      const result = await run();
+      this.#emitDiagnostic({
+        at: Date.now(),
+        level: 'info',
+        source: 'sync',
+        code: `sync.${requestType}.completed`,
+        message: `Syncular v2 ${requestType} completed`,
+        ...syncularV2DiagnosticAttemptFields(syncAttempt),
+        details: { durationMs: Date.now() - startedAt },
+      });
+      return result;
+    } catch (error) {
+      this.#emitDiagnostic({
+        at: Date.now(),
+        level: 'warn',
+        source: 'sync',
+        code: `sync.${requestType}.failed`,
+        message: `Syncular v2 ${requestType} failed`,
+        ...syncularV2DiagnosticAttemptFields(syncAttempt),
+        details: {
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+      throw error;
+    } finally {
+      this.raw.setAuthHeadersJson(JSON.stringify(this.#authHeaders));
+    }
   }
 
   #emitDiagnostic(event: SyncularV2DiagnosticEvent): void {

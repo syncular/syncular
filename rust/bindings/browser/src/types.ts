@@ -139,6 +139,17 @@ export type SyncularV2DiagnosticSink = (
   event: SyncularV2DiagnosticEvent
 ) => void;
 
+export interface SyncularV2SyncAttempt {
+  syncAttemptId: string;
+  traceId: string;
+  spanId: string;
+  traceparent: string;
+}
+
+export interface SyncularV2SyncRequestOptions {
+  syncAttempt?: SyncularV2SyncAttempt;
+}
+
 export interface SyncularV2RealtimeOptions {
   enabled?: boolean;
   wsUrl?: string;
@@ -888,9 +899,15 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   applyMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string>;
-  syncPull(): Promise<SyncularV2SyncResult>;
-  syncPush(): Promise<SyncularV2SyncResult>;
-  syncOnce(): Promise<SyncularV2SyncResult>;
+  syncPull(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
+  syncPush(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
+  syncOnce(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
   conflictSummaries(): Promise<SyncularV2ConflictSummary[]>;
   retryConflictKeepLocal(id: string): Promise<string>;
   resolveConflict(

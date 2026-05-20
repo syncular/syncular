@@ -264,10 +264,16 @@ describe('createSyncServer console configuration', () => {
 
   async function waitForRequestEventRow(requestId: string): Promise<{
     payload_ref: string | null;
+    trace_id: string | null;
+    span_id: string | null;
   }> {
     for (let attempt = 0; attempt < 40; attempt++) {
-      const result = await sql<{ payload_ref: string | null }>`
-        SELECT payload_ref
+      const result = await sql<{
+        payload_ref: string | null;
+        trace_id: string | null;
+        span_id: string | null;
+      }>`
+        SELECT payload_ref, trace_id, span_id
         FROM sync_request_events
         WHERE request_id = ${requestId}
         ORDER BY event_id DESC
@@ -581,6 +587,9 @@ describe('createSyncServer console configuration', () => {
     expect(
       allowedPreflight.headers.get('Access-Control-Allow-Headers')
     ).toContain('x-syncular-client-id');
+    expect(
+      allowedPreflight.headers.get('Access-Control-Allow-Headers')
+    ).toContain('x-syncular-sync-attempt-id');
     expect(
       allowedPreflight.headers.get('Access-Control-Allow-Headers')
     ).toContain('x-custom-header');
@@ -1567,6 +1576,36 @@ describe('createSyncServer console configuration', () => {
     `.execute(db);
     const payloadCount = Number(payloadCountResult.rows[0]?.total ?? 0);
     expect(payloadCount).toBe(0);
+  });
+
+  it('records W3C trace context on sync request events', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-traceparent';
+    const traceId = '0123456789abcdef0123456789abcdef';
+    const spanId = '0123456789abcdef';
+    const response = await app.request(
+      createPushRequest({
+        requestId,
+        headers: {
+          traceparent: `00-${traceId}-${spanId}-01`,
+          'x-syncular-sync-attempt-id': traceId,
+        },
+      })
+    );
+    expect(response.status).toBe(200);
+
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(eventRow.trace_id).toBe(traceId);
+    expect(eventRow.span_id).toBe(spanId);
   });
 
   it('supports aggressively reducing stored payload snapshot size', async () => {

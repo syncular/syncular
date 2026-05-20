@@ -705,9 +705,20 @@ describe('Syncular v2 worker client', () => {
     });
 
     await waitForMessages(worker, 4);
-    expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
+    const syncRequest = worker.messages[3] as Extract<
+      SyncularV2WorkerRequest,
+      { type: 'syncOnce' }
+    >;
+    const syncAttempt = syncRequest.syncAttempt;
+    expect(syncRequest.type).toBe('syncOnce');
+    expect(syncAttempt?.syncAttemptId).toMatch(/^[0-9a-f]{32}$/);
+    expect(syncAttempt?.spanId).toMatch(/^[0-9a-f]{16}$/);
+    expect(syncAttempt?.syncAttemptId).toBe(syncAttempt?.traceId);
+    expect(syncAttempt?.traceparent).toBe(
+      `00-${syncAttempt?.traceId}-${syncAttempt?.spanId}-01`
+    );
     worker.respond({
-      id: worker.messages[3]!.id,
+      id: syncRequest.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
@@ -862,6 +873,12 @@ describe('Syncular v2 worker client', () => {
 
     await waitForMessages(worker, 4);
     expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
+    const failedAttempt = (
+      worker.messages[3] as Extract<
+        SyncularV2WorkerRequest,
+        { type: 'syncOnce' }
+      >
+    ).syncAttempt;
     worker.respond({
       id: worker.messages[3]!.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -887,6 +904,14 @@ describe('Syncular v2 worker client', () => {
 
     await waitForMessages(worker, 6);
     expect(worker.messages[5]).toMatchObject({ type: 'syncOnce' });
+    expect(
+      (
+        worker.messages[5] as Extract<
+          SyncularV2WorkerRequest,
+          { type: 'syncOnce' }
+        >
+      ).syncAttempt
+    ).toEqual(failedAttempt);
     worker.respond({
       id: worker.messages[5]!.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
