@@ -36,7 +36,8 @@ Initial scope:
   embedded schema JSON or direct app schemas, plus event waiters.
 - CRDT field helpers for applying text updates and asserting materialized
   Rust/native field values.
-- Assertions for outbox, conflicts, blob queue, and blob cache state.
+- Assertions for outbox, conflicts, stateful app server rows/commits/auth,
+  blob queue, and blob cache state.
 
 ## App Usage
 
@@ -86,8 +87,8 @@ assert app-specific fields:
 
 ```rust
 use syncular_testkit::{
-    AppFixtureOptions, AppTestServer, assert_table_has_row,
-    open_app_client_with_server,
+    AppFixtureOptions, AppTestServer, assert_app_server_commit_count,
+    assert_app_server_has_row, assert_table_has_row, open_app_client_with_server,
 };
 
 #[test]
@@ -123,6 +124,11 @@ fn two_clients_sync_through_stateful_test_server() {
         None,
     ).unwrap();
     writer.client.sync_http().unwrap();
+    assert_eq!(
+        assert_app_server_has_row(&server, "notes", "note-1")["title"],
+        "From writer"
+    );
+    assert_app_server_commit_count(&server, 1, std::time::Duration::from_secs(1));
 
     reader.client.sync_http().unwrap();
     assert_table_has_row(&mut reader.client, "notes", "id", "note-1");
@@ -171,7 +177,9 @@ To test app auth behavior without a private server mock, configure the stateful
 server with a required authorization header:
 
 ```rust
-use syncular_testkit::{AppTestHttpServer, AppTestServer, AppTestServerOptions};
+use syncular_testkit::{
+    AppTestHttpServer, AppTestServer, AppTestServerOptions, assert_app_server_auth_header,
+};
 
 let app_schema = my_app::generated::app_schema();
 let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
@@ -181,6 +189,8 @@ let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
 
 // Requests without `authorization: Bearer test-token` receive HTTP 401, and
 // WebSocket connections with the wrong token are rejected during the handshake.
+// After an authorized request:
+assert_app_server_auth_header(server.app_server(), "authorization", "Bearer test-token");
 ```
 
 For native-style tests, open a real native client with the same generated schema
