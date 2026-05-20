@@ -81,6 +81,10 @@ tests.
   so runtime, SDK, and app tests can share one conformance scenario source.
 - Updated native blob transport tests to consume the same `syncular-testkit`
   conformance loader instead of parsing a private fixture copy.
+- Added a shared TypeScript conformance loader next to
+  `sync-scenarios.json`, then pointed browser fixture tests and native Hono
+  smoke server setup at it so native smokes no longer import browser test
+  internals.
 - Added a stateful HTTP conflict smoke proving version conflicts are reported
   through the production native HTTP transport shape while the same sync can
   pull the server-winning row.
@@ -92,6 +96,10 @@ tests.
   protocol_contract` passed with `40` protocol tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   blob_transport` passed with `3` blob tests.
+- Gate: `bun -e "import('./rust/bindings/browser/src/__tests__/fixtures/sync-conformance.ts')..."`
+  passed and proved the browser fixture resolves the shared TypeScript loader.
+- Gate: `bun test ./rust/bindings/browser/src/__tests__/fixtures/sync-conformance.ts`
+  passed as a no-test import smoke.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.

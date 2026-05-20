@@ -1,14 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { syncConformance as untypedSyncConformance } from '../../../../../examples/todo-app/conformance/sync-conformance';
 
-export const syncConformance = JSON.parse(
-  readFileSync(
-    new URL(
-      '../../../../../examples/todo-app/conformance/sync-scenarios.json',
-      import.meta.url
-    ),
-    'utf8'
-  )
-) as SyncScenarioFixture;
+export const syncConformance = untypedSyncConformance as SyncScenarioFixture;
 
 export interface SyncScenarioFixture {
   actors: {

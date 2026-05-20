@@ -27,7 +27,9 @@ import {
   type HonoSyncClientDb,
   type HonoSyncServerDb,
 } from "../../../bindings/browser/src/__tests__/fixtures/hono-sync-harness";
-import { syncConformance } from "../../../bindings/browser/src/__tests__/fixtures/sync-conformance";
+import { syncConformance as untypedSyncConformance } from "../conformance/sync-conformance";
+
+const syncConformance = untypedSyncConformance as any;
 
 const infoPath = process.env.SYNCULAR_NATIVE_HONO_INFO_PATH;
 if (!infoPath) {
