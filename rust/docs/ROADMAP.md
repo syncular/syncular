@@ -140,9 +140,12 @@ read-only review:
     precompute row limit and report 500k bootstrap `1334.25ms`, local apply
     `198ms`, and peak memory `707.92MB` with `snapshotChunkCount=0`.
     Latest external evidence shows derived-schema setup is now a larger
-    app-harness cost than artifact apply, so the next benchmark slice should
-    use the generated derived-schema phase helpers from WP-06 to compare app
-    install strategies before more artifact-memory micro-probes.
+    app-harness cost than artifact apply. The external Rust adapter now
+    consumes the generated `localDerivedSchema` contract directly, and the
+    before-bootstrap derived-schema install probe was rejected because it
+    regressed 500k bootstrap (`1396.01ms -> 1827.83ms`), local apply
+    (`208ms -> 1525ms`), and peak memory (`695.97MB -> 761.14MB`). Keep
+    bulk-load-then-derived-rebuild as the app harness shape.
     Browser E2E now reports Rust schema install time separately
     (`5.42ms` cold, `2.55ms` cached on the 100k release artifact gate), so
     local sync timing can be compared honestly with external app bootstrap
@@ -250,8 +253,8 @@ read-only review:
 
 - Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
-  benchmark against the current external 500k artifact baseline (`1334.25ms`,
-  `707.92MB` peak).
+  artifact apply is now fast enough that the remaining useful work is a larger
+  bootstrap state model, not more local derived-schema/install micro-probes.
 
 ## Later
 

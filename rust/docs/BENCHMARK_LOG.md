@@ -3855,3 +3855,88 @@ Decision:
 - Rejected. External peak memory improved only `3.20MB` while bootstrap and
   local apply regressed. Code was reverted; keep the result as evidence that a
   generic SQLite memory-release call is not the artifact resource-state answer.
+
+## 2026-05-20 - WP-12 External Derived-Schema Contract And Install Strategy
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Regenerated the external `offline-sync-bench` Syncular app schema with the
+  current codegen so it includes the flattened `localDerivedSchema` contract.
+- Updated the external Rust adapter to read local index/read-model SQL from
+  `localDerivedSchema` directly, with no older-contract fallback.
+- Probed the remaining install-strategy question by comparing the current
+  bulk-load-then-derived-rebuild flow against a temporary benchmark-only
+  before-bootstrap derived-schema install.
+
+External setup:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+bun run --cwd rust/bindings/browser build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+```
+
+Current bulk-load-then-derived-rebuild run:
+
+```bash
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T01-13-20-325Z/syncular-rust/bootstrap.json`
+
+Temporary before-bootstrap derived-schema install run:
+
+```bash
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+SYNCULAR_RUST_DERIVED_SCHEMA_PHASE=before \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T01-14-48-771Z/syncular-rust/bootstrap.json`
+
+500k comparison:
+
+| Metric | Accepted WP-12 baseline | Bulk then rebuild | Derived before bootstrap |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `1334.25ms` | `1396.01ms` | `1827.83ms` |
+| Derived schema | n/a | `943.40ms` | `0.40ms` |
+| Sync total | n/a | `439ms` | `1808ms` |
+| Pull apply | n/a | `325ms` | `1646ms` |
+| Local apply | `198ms` | `208ms` | `1525ms` |
+| Response bytes | `3,537,673` | `3,537,713` | `3,537,708` |
+| Peak memory | `707.92MB` | `695.97MB` | `761.14MB` |
+| Snapshot chunks | `0` | `0` | `0` |
+
+Decision:
+
+- Keep bulk-load-then-derived-rebuild. Installing derived schema before the
+  snapshot import moves read-model/index work into every row write and heavily
+  regresses 500k apply time and peak memory.
+- Do not retain the benchmark-only phase switch. The accepted adapter shape is
+  base tables first, snapshot import, then generated local indexes/read-model
+  setup and rebuild from `localDerivedSchema`.
+- The bulk/rebuild run is slightly slower than the accepted baseline on wall
+  time (`1334.25ms -> 1396.01ms`) and local apply (`198ms -> 208ms`) but lower
+  on peak memory (`707.92MB -> 695.97MB`). Treat this as fresh context, not a
+  retained performance win.

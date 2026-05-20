@@ -146,6 +146,11 @@ precomputed artifact page keys match the server's bundled artifact lookup keys.
 ```bash
 cd /Users/bkniffler/GitHub/sync/offline-sync-bench
 
+cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/Cargo.toml \
+  -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
 bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
 
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
