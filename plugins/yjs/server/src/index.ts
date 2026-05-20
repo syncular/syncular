@@ -46,6 +46,7 @@ interface ResolvedYjsServerFieldRule extends YjsServerFieldRule {
 export interface YjsServerUpdateEnvelope {
   updateId: string;
   updateBase64: string;
+  requiresStateVectorBase64?: string;
 }
 
 export type YjsServerUpdateInput =
@@ -389,7 +390,12 @@ function normalizeUpdateEnvelope(
       `${context}.updateBase64 must be a non-empty base64 string`
     );
   }
-  return { updateId, updateBase64 };
+  const requiresStateVectorBase64 = readString(value.requiresStateVectorBase64);
+  return {
+    updateId,
+    updateBase64,
+    ...(requiresStateVectorBase64 ? { requiresStateVectorBase64 } : {}),
+  };
 }
 
 function normalizeUpdateEnvelopes(
@@ -568,6 +574,15 @@ async function applyYjsEnvelopeToPayload(args: {
         stateValueToBase64(source[rule.stateColumn]) ??
         null;
 
+      const requiredBase = updates.find(
+        (update) => update.requiresStateVectorBase64
+      )?.requiresStateVectorBase64;
+      if (!baseState && requiredBase) {
+        throw new Error(
+          `Yjs diff envelope for table "${args.table}" field "${field}" requires local base state vector ${requiredBase}, but no local state is available; full snapshot resync required`
+        );
+      }
+
       const doc = createDocFromState(baseState);
       try {
         if (!baseState) {
@@ -575,6 +590,16 @@ async function applyYjsEnvelopeToPayload(args: {
         }
 
         for (const update of updates) {
+          if (update.requiresStateVectorBase64) {
+            const actualStateVectorBase64 = bytesToBase64(
+              Y.encodeStateVector(doc)
+            );
+            if (actualStateVectorBase64 !== update.requiresStateVectorBase64) {
+              throw new Error(
+                `Yjs update ${update.updateId} requires base state vector ${update.requiresStateVectorBase64}, but current state vector is ${actualStateVectorBase64}; full snapshot resync required`
+              );
+            }
+          }
           Y.applyUpdate(doc, base64ToBytes(update.updateBase64));
         }
 
@@ -672,6 +697,7 @@ function transformPullChangeWithStateVectorHints(args: {
     ensureEnvelope()[rule.field] = {
       updateId: `server:${args.table}:${args.change.row_id}:${rule.field}:${hint.updatedAt}`,
       updateBase64,
+      requiresStateVectorBase64: hint.stateVectorBase64,
     };
   }
 

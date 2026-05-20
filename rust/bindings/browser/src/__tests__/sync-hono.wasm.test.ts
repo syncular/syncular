@@ -1892,7 +1892,10 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
           !('title_yjs_state' in row)
       );
     expect(serverDiffRow?.__yjs).toMatchObject({
-      title: { updateBase64: expect.any(String) },
+      title: {
+        updateBase64: expect.any(String),
+        requiresStateVectorBase64: readerSnapshot.stateVectorBase64,
+      },
     });
   });
 
