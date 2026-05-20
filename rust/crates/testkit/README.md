@@ -17,7 +17,7 @@ Initial scope:
   applies pushed commits, returns later pull snapshots/commits, merges
   server-merge CRDT/Yjs payloads, filters self commits, can reverse/duplicate
   delivery, preserves encrypted field payloads, and emits realtime sync
-  wakeups.
+  wakeups. It also implements `BlobTransport` for queued upload/download tests.
 - `AppTestHttpServer` for stateful HTTP/WebSocket app tests over the production
   native transport shape, including captured HTTP/WebSocket requests for auth
   and schema-version assertions.
