@@ -34,4 +34,22 @@ describe('Syncular error responses', () => {
     });
     expect(ErrorResponseSchema.parse(response)).toEqual(response);
   });
+
+  it('includes runtime and local storage classifications', () => {
+    expect(createSyncularErrorResponse('sync.transport_failed')).toMatchObject({
+      category: 'transport',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+    expect(createSyncularErrorResponse('storage.failed')).toMatchObject({
+      category: 'storage',
+      retryable: false,
+      recommendedAction: 'inspectStorage',
+    });
+    expect(createSyncularErrorResponse('runtime.internal')).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+  });
 });
