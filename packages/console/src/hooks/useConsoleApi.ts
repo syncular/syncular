@@ -57,6 +57,7 @@ type TimelineParams = ListParams & {
   clientId?: string;
   requestId?: string;
   traceId?: string;
+  syncAttemptId?: string;
   table?: string;
   outcome?: string;
   search?: string;
@@ -446,6 +447,7 @@ export function useTimeline(
       clientId: params.clientId,
       requestId: params.requestId,
       traceId: params.traceId,
+      syncAttemptId: params.syncAttemptId,
       table: params.table,
       outcome: params.outcome,
       search: params.search,

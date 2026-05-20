@@ -50,6 +50,7 @@ interface StreamSearchTokens {
   table?: string;
   requestId?: string;
   traceId?: string;
+  syncAttemptId?: string;
   search?: string;
 }
 
@@ -90,6 +91,13 @@ function parseStreamSearchTokens(value: string): StreamSearchTokens {
     }
     if (normalizedPrefix === 'trace') {
       parsed.traceId = tokenValue;
+      continue;
+    }
+    if (
+      normalizedPrefix === 'syncattempt' ||
+      normalizedPrefix === 'syncattemptid'
+    ) {
+      parsed.syncAttemptId = tokenValue;
       continue;
     }
 
@@ -216,6 +224,9 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
       ...(parsedSearch.clientId ? { clientId: parsedSearch.clientId } : {}),
       ...(parsedSearch.requestId ? { requestId: parsedSearch.requestId } : {}),
       ...(parsedSearch.traceId ? { traceId: parsedSearch.traceId } : {}),
+      ...(parsedSearch.syncAttemptId
+        ? { syncAttemptId: parsedSearch.syncAttemptId }
+        : {}),
       ...(parsedSearch.table ? { table: parsedSearch.table } : {}),
       ...(parsedSearch.search ? { search: parsedSearch.search } : {}),
       from,
@@ -443,7 +454,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
             <FilterBar
               groups={filterGroups}
               searchValue={searchValue}
-              searchPlaceholder="Use actor:, client:, table:, request:, trace: or free text..."
+              searchPlaceholder="Use actor:, client:, table:, request:, trace:, syncAttemptId: or free text..."
               onSearchChange={setSearchValue}
               actions={
                 <>

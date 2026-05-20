@@ -101,6 +101,17 @@ type TimelineResponse = {
   limit: number;
 };
 
+type EventsResponse = {
+  items: Array<{
+    eventId: number;
+    eventType: 'push' | 'pull';
+    traceId: string | null;
+  }>;
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 type OperationsResponse = {
   items: Array<{
     operationId: number;
@@ -288,6 +299,14 @@ describe('console timeline route filters', () => {
         headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
       }
     );
+  }
+
+  async function readEvents(
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<EventsResponse> {
+    const response = await requestEvents({ query });
+    expect(response.status).toBe(200);
+    return (await response.json()) as EventsResponse;
   }
 
   async function requestClearEvents(): Promise<Response> {
@@ -697,7 +716,7 @@ describe('console timeline route filters', () => {
     expect(eventTypeFiltered.items[0]?.event?.eventType).toBe('push');
   });
 
-  it('applies request-id and trace-id filters to event rows', async () => {
+  it('applies request-id, trace-id, and sync-attempt filters to event rows', async () => {
     const requestIdFiltered = await readTimeline({ requestId: 'req-2' });
     expect(requestIdFiltered.total).toBe(1);
     expect(requestIdFiltered.items[0]?.type).toBe('event');
@@ -707,6 +726,20 @@ describe('console timeline route filters', () => {
     expect(traceIdFiltered.total).toBe(1);
     expect(traceIdFiltered.items[0]?.type).toBe('event');
     expect(traceIdFiltered.items[0]?.event?.eventType).toBe('push');
+
+    const syncAttemptTimelineFiltered = await readTimeline({
+      syncAttemptId: 'trace-1',
+    });
+    expect(syncAttemptTimelineFiltered.total).toBe(1);
+    expect(syncAttemptTimelineFiltered.items[0]?.type).toBe('event');
+    expect(syncAttemptTimelineFiltered.items[0]?.event?.eventType).toBe('push');
+
+    const syncAttemptEventsFiltered = await readEvents({
+      syncAttemptId: 'trace-1',
+    });
+    expect(syncAttemptEventsFiltered.total).toBe(1);
+    expect(syncAttemptEventsFiltered.items[0]?.traceId).toBe('trace-1');
+    expect(syncAttemptEventsFiltered.items[0]?.eventType).toBe('push');
   });
 
   it('applies time-window and search filtering', async () => {

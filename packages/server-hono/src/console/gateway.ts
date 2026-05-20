@@ -200,6 +200,7 @@ const GatewayEventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend(
     clientId: z.string().optional(),
     requestId: z.string().optional(),
     traceId: z.string().optional(),
+    syncAttemptId: z.string().optional(),
     outcome: z.string().optional(),
   }
 );

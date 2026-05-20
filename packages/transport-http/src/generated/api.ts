@@ -84,6 +84,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sync/snapshot-artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download scoped snapshot artifact
+         * @description Download a verified, scoped bootstrap snapshot artifact
+         */
+        get: operations["getSyncSnapshotArtifactsByArtifactId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/console/stats": {
         parameters: {
             query?: never;
@@ -738,6 +758,7 @@ export interface operations {
             content: {
                 "application/json": {
                     clientId: string;
+                    syncPackEncodings?: ("json-v1" | "binary-sync-pack-v1")[];
                     push?: {
                         commits: {
                             clientCommitId: string;
@@ -760,6 +781,13 @@ export interface operations {
                         maxSnapshotPages?: number;
                         dedupeRows?: boolean;
                         snapshotEncodings?: ("json-row-frame-v1" | "binary-table-v1")[];
+                        snapshotArtifacts?: {
+                            schemaVersion: string;
+                            artifactKinds: "sqlite-snapshot-v1"[];
+                            compressions?: ("none" | "gzip")[];
+                            featureSet?: string[];
+                        };
+                        syncPackEncodings?: ("json-v1" | "binary-sync-pack-v1")[];
                         subscriptions: {
                             id: string;
                             table: string;
@@ -776,6 +804,15 @@ export interface operations {
                                 tableIndex: number;
                                 rowCursor: string | null;
                             } | null;
+                            verifiedRoot?: string;
+                            crdtStateVectors: {
+                                rowId: string;
+                                field: string;
+                                stateColumn: string;
+                                stateVectorBase64: string;
+                                syncMode: string;
+                                updatedAt: number;
+                            }[];
                         }[];
                     };
                 };
@@ -843,6 +880,12 @@ export interface operations {
                                     rowCursor: string | null;
                                 } | null;
                                 nextCursor: number;
+                                integrity?: {
+                                    partitionId: string;
+                                    previousChainRoot: string;
+                                    commitChainRoot: string;
+                                    commitSeq: number;
+                                };
                                 commits: {
                                     commitSeq: number;
                                     createdAt: string;
@@ -871,12 +914,77 @@ export interface operations {
                                         /** @constant */
                                         compression: "gzip";
                                     }[];
+                                    manifest?: {
+                                        /** @constant */
+                                        version: 1;
+                                        digest: string;
+                                        table: string;
+                                        asOfCommitSeq: number;
+                                        scopeDigest: string;
+                                        rowCursor: string | null;
+                                        rowLimit: number;
+                                        nextRowCursor: string | null;
+                                        isFirstPage: boolean;
+                                        isLastPage: boolean;
+                                        chunks: {
+                                            id: string;
+                                            byteLength: number;
+                                            sha256: string;
+                                            /** @enum {string} */
+                                            encoding: "json-row-frame-v1" | "binary-table-v1";
+                                            /** @constant */
+                                            compression: "gzip";
+                                        }[];
+                                    };
+                                    artifacts?: {
+                                        id: string;
+                                        byteLength: number;
+                                        sha256: string;
+                                        manifestDigest: string;
+                                        /** @constant */
+                                        artifactKind: "sqlite-snapshot-v1";
+                                        compression: "none" | "gzip";
+                                        rowCount: number;
+                                        nextRowCursor: string | null;
+                                        isFirstPage: boolean;
+                                        isLastPage: boolean;
+                                        manifest: {
+                                            /** @constant */
+                                            version: 1;
+                                            /** @constant */
+                                            artifactKind: "sqlite-snapshot-v1";
+                                            digest: string;
+                                            partitionId: string;
+                                            subscriptionId: string;
+                                            table: string;
+                                            schemaVersion: string;
+                                            asOfCommitSeq: number;
+                                            scopeDigest: string;
+                                            rowCursor: string | null;
+                                            rowLimit: number;
+                                            rowCount: number;
+                                            nextRowCursor: string | null;
+                                            isFirstPage: boolean;
+                                            isLastPage: boolean;
+                                            compression: "none" | "gzip";
+                                            byteLength: number;
+                                            sha256: string;
+                                            featureSet: string[];
+                                        };
+                                    }[];
                                     isFirstPage: boolean;
                                     isLastPage: boolean;
+                                    bootstrapStateAfter?: {
+                                        asOfCommitSeq: number;
+                                        tables: string[];
+                                        tableIndex: number;
+                                        rowCursor: string | null;
+                                    } | null;
                                 }[];
                             }[];
                         };
                     };
+                    "application/vnd.syncular.sync-pack.v1": string;
                 };
             };
             /** @description Invalid request */
@@ -921,6 +1029,76 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Snapshot chunk data (gzip-compressed framed JSON rows) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Not modified (cached) */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                    };
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                    };
+                };
+            };
+        };
+    };
+    getSyncSnapshotArtifactsByArtifactId: {
+        parameters: {
+            query?: {
+                scopes?: string;
+            };
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped snapshot artifact bytes */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1128,6 +1306,7 @@ export interface operations {
                 clientId?: string;
                 requestId?: string;
                 traceId?: string;
+                syncAttemptId?: string;
                 table?: string;
                 outcome?: string;
                 search?: string;
@@ -1711,6 +1890,7 @@ export interface operations {
                 clientId?: string;
                 requestId?: string;
                 traceId?: string;
+                syncAttemptId?: string;
                 outcome?: string;
             };
             header?: never;

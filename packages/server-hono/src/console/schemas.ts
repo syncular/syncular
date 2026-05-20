@@ -323,6 +323,7 @@ export const ConsoleTimelineQuerySchema =
     clientId: z.string().optional(),
     requestId: z.string().optional(),
     traceId: z.string().optional(),
+    syncAttemptId: z.string().optional(),
     table: z.string().optional(),
     outcome: z.string().optional(),
     search: z.string().optional(),
