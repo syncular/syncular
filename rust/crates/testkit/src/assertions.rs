@@ -6,6 +6,7 @@ use syncular_runtime::store::{ConflictSummary, OutboxSummary};
 use syncular_runtime::transport::{SyncAuthHeaders, SyncTransport};
 
 use crate::app_server::{AppTestServer, AppTestServerCommit};
+use crate::http::TestHttpRequest;
 use crate::transport::{BlobUploadRecord, TestTransportHandle};
 
 pub fn assert_outbox_empty<T>(
@@ -224,4 +225,31 @@ pub fn assert_app_server_auth_header(
         .into_iter()
         .find(|headers| headers.get(&name).map(String::as_str) == Some(expected))
         .unwrap_or_else(|| panic!("expected AppTestServer auth header {name}={expected}"))
+}
+
+pub fn assert_http_request_count(
+    requests: &[TestHttpRequest],
+    expected: usize,
+) -> &[TestHttpRequest] {
+    assert_eq!(
+        requests.len(),
+        expected,
+        "unexpected HTTP request count: {requests:?}"
+    );
+    requests
+}
+
+pub fn assert_http_request_header(
+    request: &TestHttpRequest,
+    name: &str,
+    expected: &str,
+) -> TestHttpRequest {
+    assert_eq!(
+        request.header(name),
+        Some(expected),
+        "unexpected HTTP request header {name} on {} {}",
+        request.method,
+        request.path
+    );
+    request.clone()
 }

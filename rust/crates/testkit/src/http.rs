@@ -438,6 +438,17 @@ impl AppTestHttpServer {
             .clone()
     }
 
+    pub fn wait_for_requests(&self, expected: usize, timeout: Duration) -> Vec<TestHttpRequest> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let requests = self.requests();
+            if requests.len() >= expected || Instant::now() >= deadline {
+                return requests;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     pub fn push_realtime_sync(&self) {
         broadcast_realtime_sync(&self.broadcaster);
     }
