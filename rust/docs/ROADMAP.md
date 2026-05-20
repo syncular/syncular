@@ -415,7 +415,10 @@ read-only review:
     invalid-request, and blob-storage configuration failures. Cloudflare
     scope-cache Durable Object and server-service-worker default handler
     failures now return stable envelope JSON instead of plaintext adapter
-    errors.
+    errors. Public per-operation push result codes now use the stable taxonomy
+    across the TS server, encrypted CRDT handler, testkit fixtures, Rust
+    runtime/testkit expectations, browser worker tests, demo handlers, docs, and
+    shared conformance fixtures instead of legacy uppercase strings.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

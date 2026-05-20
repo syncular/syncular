@@ -744,7 +744,7 @@ fn native_facade_rejected_push_emits_conflicts_changed() -> Result<()> {
     let conflicts = client.conflict_summaries()?;
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].result_status, "conflict");
-    assert_eq!(conflicts[0].code.as_deref(), Some("VERSION_CONFLICT"));
+    assert_eq!(conflicts[0].code.as_deref(), Some("sync.version_conflict"));
 
     client.close()?;
     let _ = std::fs::remove_file(path);
@@ -2290,7 +2290,7 @@ fn spawn_rejecting_push_server() -> Result<String> {
                             "status": "conflict",
                             "message": "version conflict",
                             "error": null,
-                            "code": "VERSION_CONFLICT",
+                            "code": "sync.version_conflict",
                             "retriable": false,
                             "server_version": 9,
                             "server_row": {

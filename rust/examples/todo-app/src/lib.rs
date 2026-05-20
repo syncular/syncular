@@ -439,7 +439,7 @@ mod tests {
 
         let pending = client.conflicts().pending().expect("pending conflicts");
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].code.as_deref(), Some("VERSION_CONFLICT"));
+        assert_eq!(pending[0].code.as_deref(), Some("sync.version_conflict"));
 
         let receipt = client
             .conflicts()
@@ -627,7 +627,7 @@ mod tests {
                             "status": "conflict",
                             "message": "version conflict",
                             "error": null,
-                            "code": "VERSION_CONFLICT",
+                            "code": "sync.version_conflict",
                             "retriable": false,
                             "server_version": 9,
                             "server_row": {

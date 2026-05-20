@@ -33,7 +33,7 @@ interface SyncError {
     | 'AUTH_FAILED'
     | 'SNAPSHOT_CHUNK_NOT_FOUND'
     | 'MIGRATION_FAILED'
-    | 'CONFLICT'
+    | 'sync.version_conflict'
     | 'SYNC_ERROR'
     | 'UNKNOWN';
   /** Human-readable error message */
@@ -57,7 +57,7 @@ interface SyncError {
 | `AUTH_FAILED` | Transport returned `401`/`403` |
 | `SNAPSHOT_CHUNK_NOT_FOUND` | Snapshot bootstrap chunk returned `404` |
 | `MIGRATION_FAILED` | Client migration function failed before sync start |
-| `CONFLICT` | Push operation rejected due to version conflict |
+| `sync.version_conflict` | Push operation rejected due to version conflict |
 | `SYNC_ERROR` | Generic sync error outside specific categories |
 | `UNKNOWN` | Unexpected error that does not match other categories |
 

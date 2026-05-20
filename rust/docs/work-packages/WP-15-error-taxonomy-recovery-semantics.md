@@ -63,10 +63,9 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Migrate public per-operation push result codes from legacy uppercase strings
-(`VERSION_CONFLICT`, `UNKNOWN_TABLE`, `INVALID_SCOPE`, etc.) to the stable
-Syncular taxonomy. This needs coordinated TS server, shared conformance fixture,
-Rust testkit/runtime expectations, and browser generated-client test updates.
+Audit any remaining package-specific error surfaces that still expose raw
+strings or route-local codes, then either migrate them into the stable taxonomy
+or record a deliberate exception in the compatibility register.
 
 ## Progress
 
@@ -131,6 +130,14 @@ Rust testkit/runtime expectations, and browser generated-client test updates.
   handler failures now return stable envelope JSON instead of plaintext
   adapter errors. The shared core error helper now typechecks under the
   Cloudflare Worker type profile.
+- Public per-operation push result codes now use the stable Syncular taxonomy
+  instead of legacy uppercase strings. Server handlers, encrypted CRDT
+  operations, testkit fixtures, Rust app-server fixtures, browser worker tests,
+  demo handlers, docs, generated protocol fixtures, and todo conformance
+  scenarios now agree on `sync.version_conflict`, `sync.unknown_table`,
+  `sync.row_missing`, `sync.empty_commit`, `sync.unsupported_operation`,
+  `sync.missing_scopes`, `sync.idempotency_cache_miss`, and
+  `sync.constraint_violation`.
 
 ## Latest Evidence
 
@@ -150,6 +157,22 @@ Rust testkit/runtime expectations, and browser generated-client test updates.
 - `bun run --cwd packages/server-hono tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
+- `bun run --cwd packages/core fixtures:protocol`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server tsgo`
+- `bun run --cwd packages/testkit tsgo`
+- `bun test packages/server/src/push-operation-codes.test.ts packages/core/src/__tests__/error-responses.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/encrypted-crdt.test.ts`
+- `bun run --cwd apps/demo tsgo`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit --test testkit_smoke`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade --features native,crdt-yjs`
+- `bun run --cwd packages/server-hono tsgo`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`
+- `rg -n "\\b(VERSION_CONFLICT|UNKNOWN_TABLE|ROW_MISSING|EMPTY_COMMIT|INVALID_SCOPE|UNSUPPORTED_OPERATION|FORBIDDEN|INVALID_REQUEST|READ_ONLY|MISSING_PROJECT_ID|MISSING_SCOPES|IDEMPOTENCY_CACHE_MISS|CONSTRAINT_VIOLATION|NOT_NULL_CONSTRAINT|UNIQUE_CONSTRAINT|FOREIGN_KEY_CONSTRAINT)\\b" packages/server packages/testkit packages/core apps/demo apps/docs rust/bindings/browser rust/crates/testkit rust/crates/runtime rust/examples/todo-app -g '!node_modules' -g '!target'`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen native_modules_support_runtime_contract_and_operation_builders`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime generated_app_bindings_target_boltffi_layout --test native_binding_scaffold`

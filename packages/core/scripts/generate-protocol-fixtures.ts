@@ -239,7 +239,7 @@ async function binarySyncPackFixture() {
               opIndex: 0,
               status: 'conflict',
               message: 'server row changed',
-              code: 'CONFLICT',
+              code: 'sync.version_conflict',
               server_version: 7,
               server_row: { id: 'task-2', title: 'Server' },
             },

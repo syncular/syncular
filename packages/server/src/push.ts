@@ -222,8 +222,8 @@ function validatePushRequest(
     return {
       opIndex: 0,
       status: 'error',
-      error: 'INVALID_REQUEST',
-      code: 'INVALID_REQUEST',
+      error: 'Invalid push request',
+      code: 'sync.invalid_request',
       retriable: false,
     };
   }
@@ -233,8 +233,8 @@ function validatePushRequest(
     return {
       opIndex: 0,
       status: 'error',
-      error: 'EMPTY_COMMIT',
-      code: 'EMPTY_COMMIT',
+      error: 'Empty commit',
+      code: 'sync.empty_commit',
       retriable: false,
     };
   }
@@ -396,8 +396,8 @@ async function loadExistingCommitResult<DB extends SyncCoreDb>(args: {
     return createRejectedPushResult({
       opIndex: 0,
       status: 'error',
-      error: 'IDEMPOTENCY_CACHE_MISS',
-      code: 'INTERNAL',
+      error: 'Idempotency cache miss',
+      code: 'sync.idempotency_cache_miss',
       retriable: true,
     });
   }
@@ -596,8 +596,8 @@ async function applyCommitOperations<
           const error: SyncPushResponse['results'][number] = {
             opIndex: applied.result.opIndex,
             status: 'error',
-            error: 'MISSING_SCOPES',
-            code: 'INVALID_SCOPE',
+            error: 'Missing scopes',
+            code: 'sync.missing_scopes',
             retriable: false,
           };
           results.push(error);

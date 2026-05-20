@@ -993,7 +993,7 @@ mod tests {
                 status: "conflict".to_string(),
                 message: Some("version conflict".to_string()),
                 error: None,
-                code: Some("VERSION_CONFLICT".to_string()),
+                code: Some("sync.version_conflict".to_string()),
                 retriable: Some(true),
                 server_version: Some(9),
                 server_row: Some(task_row("conflict-task", "p0")),
@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(summaries[0].op_index, 0);
         assert_eq!(summaries[0].result_status, "conflict");
         assert_eq!(summaries[0].message, "version conflict");
-        assert_eq!(summaries[0].code.as_deref(), Some("VERSION_CONFLICT"));
+        assert_eq!(summaries[0].code.as_deref(), Some("sync.version_conflict"));
         assert_eq!(summaries[0].server_version, Some(9));
 
         block_on(store.resolve_conflict(&summaries[0].id, "keep-server"))?;
@@ -1029,7 +1029,7 @@ mod tests {
                 status: "conflict".to_string(),
                 message: Some("version conflict".to_string()),
                 error: None,
-                code: Some("VERSION_CONFLICT".to_string()),
+                code: Some("sync.version_conflict".to_string()),
                 retriable: Some(true),
                 server_version: Some(12),
                 server_row: Some(task_row("retry-task", "p0")),
@@ -1067,7 +1067,7 @@ mod tests {
                 status: "conflict".to_string(),
                 message: Some("version conflict".to_string()),
                 error: None,
-                code: Some("VERSION_CONFLICT".to_string()),
+                code: Some("sync.version_conflict".to_string()),
                 retriable: Some(true),
                 server_version: None,
                 server_row: None,

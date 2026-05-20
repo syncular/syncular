@@ -117,7 +117,7 @@
     "serverTitle": "Server winner",
     "staleBaseVersion": 1,
     "serverVersion": 9,
-    "conflictCode": "VERSION_CONFLICT",
+    "conflictCode": "sync.version_conflict",
     "conflictMessage": "version conflict",
     "browserConflictMessage": "Version conflict: server=9, base=1",
     "keepServerResolution": "keep-server",

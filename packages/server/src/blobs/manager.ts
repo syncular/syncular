@@ -343,7 +343,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
         options?.actorId !== undefined &&
         upload.actor_id !== options.actorId
       ) {
-        return { ok: false, error: 'FORBIDDEN' };
+        return { ok: false, error: 'Forbidden' };
       }
 
       if (upload.status === 'complete') {

@@ -150,8 +150,8 @@ export function createProjectScopedTasksHandler<
           result: {
             opIndex,
             status: 'error',
-            error: `UNKNOWN_TABLE:${op.table}`,
-            code: 'UNKNOWN_TABLE',
+            error: `Unknown table: ${op.table}`,
+            code: 'sync.unknown_table',
             retriable: false,
           },
           emittedChanges: [],
@@ -216,6 +216,7 @@ export function createProjectScopedTasksHandler<
             opIndex,
             status: 'conflict',
             message: `Version conflict: server=${existing.server_version}, base=${op.base_version}`,
+            code: 'sync.version_conflict',
             server_version: existing.server_version,
             server_row: {
               id: existing.id,
@@ -236,8 +237,8 @@ export function createProjectScopedTasksHandler<
           result: {
             opIndex,
             status: 'error',
-            error: 'MISSING_PROJECT_ID',
-            code: 'INVALID_REQUEST',
+            error: 'Missing project id',
+            code: 'sync.invalid_request',
             retriable: false,
           },
           emittedChanges: [],

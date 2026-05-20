@@ -74,7 +74,7 @@ export const tasksHandler = createServerHandler({
     if (op.op === 'upsert') {
       const userId = op.payload?.user_id;
       if (userId !== ctx.actorId) {
-        return { error: 'Cannot create tasks for other users', code: 'FORBIDDEN' };
+        return { error: 'Cannot create tasks for other users', code: 'sync.forbidden' };
       }
     }
     return true;

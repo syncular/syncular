@@ -18,6 +18,7 @@ import {
   type ColumnCodecSource,
   createSingleVariableScopeMetadata,
   createTableColumnCodecsResolver,
+  type SyncularErrorCode,
   toTableColumnCodecs,
 } from '@syncular/core';
 import type {
@@ -50,14 +51,10 @@ import type {
  */
 type AuthorizeResult =
   | true
-  | { error: string; code: string; retriable?: boolean };
+  | { error: string; code: SyncularErrorCode; retriable?: boolean };
 
-function classifyConstraintViolationCode(message: string): string {
-  const normalized = message.toLowerCase();
-  if (normalized.includes('not null')) return 'NOT_NULL_CONSTRAINT';
-  if (normalized.includes('unique')) return 'UNIQUE_CONSTRAINT';
-  if (normalized.includes('foreign key')) return 'FOREIGN_KEY_CONSTRAINT';
-  return 'CONSTRAINT_VIOLATION';
+function classifyConstraintViolationCode(_message: string): SyncularErrorCode {
+  return 'sync.constraint_violation';
 }
 
 function isConstraintViolationError(message: string): boolean {
@@ -475,8 +472,8 @@ export function createServerHandler<
         result: {
           opIndex,
           status: 'error',
-          error: `UNKNOWN_TABLE:${op.table}`,
-          code: 'UNKNOWN_TABLE',
+          error: `Unknown table: ${op.table}`,
+          code: 'sync.unknown_table',
           retriable: false,
         },
         emittedChanges: [],
@@ -624,8 +621,8 @@ export function createServerHandler<
               result: {
                 opIndex,
                 status: 'error',
-                error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-                code: 'ROW_MISSING',
+                error: 'Row not found for base version',
+                code: 'sync.row_missing',
                 retriable: false,
               },
               emittedChanges: [],
@@ -640,7 +637,7 @@ export function createServerHandler<
                 opIndex,
                 status: 'conflict',
                 message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
-                code: 'VERSION_CONFLICT',
+                code: 'sync.version_conflict',
                 server_version: existingVersion,
                 server_row: applyOutboundTransform(
                   conflictRow as Selectable<ServerDB[TableName]>
@@ -699,8 +696,8 @@ export function createServerHandler<
             result: {
               opIndex,
               status: 'error',
-              error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-              code: 'ROW_MISSING',
+              error: 'Row not found for base version',
+              code: 'sync.row_missing',
               retriable: false,
             },
             emittedChanges: [],
