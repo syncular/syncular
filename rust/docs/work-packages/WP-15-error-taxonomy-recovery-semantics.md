@@ -63,9 +63,9 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Continue expanding the same stable error envelope beyond the browser worker:
-native facade/BoltFFI, direct browser Rust client errors, server JSON error
-responses, blob failures, and generated typed errors.
+Continue expanding the same stable error envelope beyond browser sync errors:
+native facade/BoltFFI, server JSON error responses, blob failures, and
+generated typed errors.
 
 ## Progress
 
@@ -82,8 +82,12 @@ responses, blob failures, and generated typed errors.
 - Browser/Hono WASM tests assert exact error envelopes for auth-required,
   server-required schema mismatch, and corrupted snapshot chunk integrity
   rejection.
+- The browser package now has a shared `SyncularV2ClientError` classifier used
+  by both the worker bridge and the direct Rust client sync path, so apps get
+  the same stable envelope without being forced through the worker.
 
 ## Latest Evidence
 
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`
+- `bun test rust/bindings/browser/src/errors.test.ts rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "browser errors|structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`
