@@ -123,9 +123,15 @@ string-only errors.
 - Server-Hono proxy websocket pre-upgrade failures now use stable `proxy.*`
   envelopes for forbidden origins, missing auth, and connection-limit
   rejection.
+- Direct Server-Hono console routes now use shared error-envelope schema and
+  stable `console.*` / `blob.*` codes for schema-unavailable, auth, not-found,
+  invalid request, and storage-not-configured failures.
 
 ## Latest Evidence
 
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server-hono tsgo`
 - `bun test packages/core/src/__tests__/error-responses.test.ts packages/server-hono/src/__tests__/proxy-routes.test.ts`

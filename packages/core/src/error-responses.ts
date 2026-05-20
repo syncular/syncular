@@ -131,6 +131,12 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'fixRequest',
     message: 'The console request is invalid.',
   },
+  'console.schema_unavailable': {
+    category: 'server',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'The console schema is not available.',
+  },
   'console.not_found': {
     category: 'not-found',
     retryable: false,
@@ -172,6 +178,12 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     retryable: false,
     recommendedAction: 'fixRequest',
     message: 'The blob request is invalid.',
+  },
+  'blob.storage_not_configured': {
+    category: 'blob',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    message: 'Blob storage is not configured.',
   },
   'blob.too_large': {
     category: 'blob',

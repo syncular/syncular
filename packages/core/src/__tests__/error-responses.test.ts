@@ -68,6 +68,13 @@ describe('Syncular error responses', () => {
       retryable: true,
       recommendedAction: 'retryLater',
     });
+    expect(
+      createSyncularErrorResponse('console.schema_unavailable')
+    ).toMatchObject({
+      category: 'server',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
   });
 
   it('includes proxy websocket classifications', () => {
@@ -80,6 +87,16 @@ describe('Syncular error responses', () => {
       category: 'rate-limited',
       retryable: true,
       recommendedAction: 'retryLater',
+    });
+  });
+
+  it('includes blob storage configuration classification', () => {
+    expect(
+      createSyncularErrorResponse('blob.storage_not_configured')
+    ).toMatchObject({
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'inspectServer',
     });
   });
 });
