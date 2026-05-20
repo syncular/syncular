@@ -6,6 +6,7 @@ import {
 import type {
   SyncularV2BootstrapStatus,
   SyncularV2DiagnosticEvent,
+  SyncularV2LifecycleState,
 } from './types';
 import {
   createSyncularV2WorkerClient,
@@ -450,6 +451,82 @@ describe('Syncular v2 worker client', () => {
         code: 'worker.failed',
         message: 'broken',
       },
+    });
+  });
+
+  it('emits lifecycle state for app UI surfaces', () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const events: SyncularV2LifecycleState[] = [];
+    client.addEventListener('lifecycleChanged', (event) => events.push(event));
+
+    expect(client.lifecycleState()).toMatchObject({
+      phase: 'offline',
+      realtime: 'disconnected',
+      online: false,
+      requiresAction: false,
+    });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'realtimeState',
+      state: 'connecting',
+    });
+    expect(events.at(-1)).toMatchObject({
+      phase: 'connecting',
+      realtime: 'connecting',
+    });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'diagnostic',
+      event: {
+        at: 123,
+        level: 'error',
+        source: 'sync',
+        code: 'sync.resync_required',
+        message: 'resync required',
+        details: { resyncRequired: true },
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      phase: 'recovering',
+      lastDiagnostic: { code: 'sync.resync_required' },
+    });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'diagnostic',
+      event: {
+        at: 124,
+        level: 'warn',
+        source: 'auth',
+        code: 'auth.refresh_failed',
+        message: 'auth refresh failed',
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      phase: 'authRequired',
+      requiresAction: true,
+    });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'realtimeState',
+      state: 'connected',
+    });
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'bootstrapChanged',
+      bootstrap: zeroBootstrapStatus(),
+    });
+    expect(events.at(-1)).toMatchObject({
+      phase: 'complete',
+      bootstrap: { complete: true, progressPercent: 100 },
+      requiresAction: false,
     });
   });
 
