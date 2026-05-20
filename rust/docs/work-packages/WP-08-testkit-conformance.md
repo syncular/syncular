@@ -76,6 +76,9 @@ tests.
 - Added configurable required/latest schema-version controls to the stateful
   app test server so rolling-deploy schema mismatch tests can use the reusable
   HTTP fixture instead of scripted responses.
+- Added native fixture schema-mismatch coverage proving the reusable stateful
+  HTTP server surfaces `sync.schema_mismatch` through public native events while
+  preserving the previously synced local replica.
 - Updated the public `syncular-testkit` README with required-auth usage, current
   conformance gate commands, and the correct native event subscription example.
 - Added app-facing `AppTestServer` assertions for server rows, missing rows,

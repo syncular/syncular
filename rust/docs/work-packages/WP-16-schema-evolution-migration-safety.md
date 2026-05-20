@@ -63,9 +63,9 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Extend the rolling-deploy coverage from the Rust/testkit HTTP path into the
-browser worker or native event-stream path, proving the same
-`sync.schema_mismatch` classification is visible through app-facing events.
+Extend the rolling-deploy coverage into the browser worker/runtime path, proving
+the same `sync.schema_mismatch` classification is visible through browser
+app-facing events and that worker-owned SQLite remains unchanged.
 
 ## Progress
 
@@ -76,10 +76,15 @@ browser worker or native event-stream path, proving the same
   the server then requires a future schema version and exposes another row, and
   the next sync fails closed with `sync.schema_mismatch` while local synced rows
   remain unchanged.
+- Added native fixture coverage for the same rolling-deploy failure path through
+  the public native event subscription: app-facing `SyncFailed` includes
+  `sync.schema_mismatch`, and the native local table keeps only the previously
+  accepted rows.
 
 ## Latest Evidence
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit app_test_http_server_schema_mismatch_fails_closed --test testkit_smoke`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit native_fixture_schema_mismatch_emits_sync_failed_without_local_mutation --test testkit_smoke`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
 - `bun run rust:conformance:fast`

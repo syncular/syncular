@@ -941,6 +941,80 @@ fn disposable_http_sync_server_captures_native_requests() {
 }
 
 #[test]
+fn native_fixture_schema_mismatch_emits_sync_failed_without_local_mutation() {
+    let app_schema = todo::app_schema();
+    let schema_version = app_schema.current_schema_version();
+    let server = AppTestHttpServer::start(app_schema).expect("stateful HTTP server");
+    server
+        .app_server()
+        .seed_row(
+            "tasks",
+            json!({
+                "id": "native-schema-stable",
+                "title": "Native stable schema row",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "server_version": 1
+            }),
+        )
+        .expect("seed stable row");
+
+    let mut fixture = open_native_client_with_schema_options(
+        todo::app_schema(),
+        NativeFixtureOptions {
+            base_url: server.url(),
+            client_id: "native-schema-rollout".to_string(),
+            ..NativeFixtureOptions::default()
+        },
+    )
+    .expect("native fixture");
+
+    fixture.client.trigger_sync().expect("initial native sync");
+    syncular_testkit::wait_native_event(
+        &fixture.events,
+        NativeEventKind::SyncCompleted,
+        Duration::from_secs(2),
+    );
+    let rows = assert_native_table_row_count(&mut fixture.client, "tasks", 1);
+    assert_eq!(rows[0]["id"], "native-schema-stable");
+
+    server
+        .app_server()
+        .require_schema_version(schema_version + 1);
+    server
+        .app_server()
+        .commit_row(
+            "tasks",
+            json!({
+                "id": "native-schema-future",
+                "title": "Native future schema row",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            }),
+        )
+        .expect("future server row");
+
+    fixture.client.trigger_sync().expect("future native sync");
+    let event = syncular_testkit::wait_native_event(
+        &fixture.events,
+        NativeEventKind::SyncFailed,
+        Duration::from_secs(2),
+    );
+    let error = event.error.as_ref().expect("schema error");
+    assert_eq!(error.kind, ErrorKind::Schema);
+    assert_eq!(error.code, "sync.schema_mismatch");
+    assert_eq!(error.category, "schema-mismatch");
+    assert_eq!(error.recommended_action, "regenerateClient");
+
+    let rows = assert_native_table_row_count(&mut fixture.client, "tasks", 1);
+    assert_eq!(rows[0]["id"], "native-schema-stable");
+    assert_app_server_has_row(server.app_server(), "tasks", "native-schema-future");
+    fixture.close().expect("close native fixture");
+}
+
+#[test]
 fn disposable_http_sync_server_covers_auth_expired() {
     let server = TestSyncServer::status(401, "Unauthorized", "expired token").expect("server");
     let fixture = open_native_client_with_schema_options(
