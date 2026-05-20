@@ -818,6 +818,17 @@ pub extern "C" fn syncular_native_client_app_table_metadata_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_app_schema_state_json(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        with_client(handle, |client| client.app_schema_state_json())
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_list_table_json(
     handle: *mut SyncularNativeHandle,
     table: *const c_char,

@@ -63,9 +63,10 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Extend the same persisted local schema-state assertion to the native facade/FFI
-surface so Swift/Kotlin/Java hosts can diagnose blocked startup or sync without
-parsing migration tables directly.
+Add a true browser app-schema migration replay path, or explicitly mark browser
+app-schema upgrades as blocked until generated migration replay exists. The
+native Diesel path now records and rejects future local schema state; browser
+still primarily validates generated schema state around the app-layer installer.
 
 ## Progress
 
@@ -87,6 +88,10 @@ parsing migration tables directly.
 - Tightened the generated browser client runtime assertion so it rejects a
   persisted `syncular_app_schema` version mismatch even when the configured
   runtime schema version matches the generated client.
+- Added native/Diesel app schema state persistence and host-facing JSON access
+  through `NativeSyncularClient`, C FFI, and generated Swift/Kotlin/Java BoltFFI
+  wrappers. Native open now rejects a persisted future local app schema version
+  before using the database.
 
 ## Latest Evidence
 
@@ -97,6 +102,8 @@ parsing migration tables directly.
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/generated-runtime.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test store_backends --test native_facade --test native_ffi --test native_binding_scaffold`
+- `bun run rust:conformance:native`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
 - `bun run rust:conformance:fast`

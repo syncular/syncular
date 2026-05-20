@@ -76,6 +76,39 @@ fn diesel_store_applies_migrations_and_stamps_outbox_schema_version() -> Result<
     let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_store_basics(&mut store)?;
+    let schema_state = store.app_schema_state()?;
+    assert_eq!(schema_state.schema_id, "syncular-app");
+    assert_eq!(schema_state.schema_version, Some(current_schema_version()));
+    assert_eq!(
+        schema_state.current_schema_version,
+        current_schema_version()
+    );
+    assert!(schema_state.updated_at.is_some());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_store_rejects_future_local_app_schema_state() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-future-app-schema");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    drop(store);
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query("update syncular_app_schema set schema_version = ? where schema_id = 'syncular-app'")
+        .bind::<Integer, _>(current_schema_version() + 1)
+        .execute(&mut conn)?;
+    drop(conn);
+
+    let error = match DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema()) {
+        Ok(_) => panic!("future local app schema version should be rejected"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), ErrorKind::Schema);
+    assert!(error
+        .message_text()
+        .contains("Syncular app schema version mismatch"));
 
     let _ = std::fs::remove_file(path);
     Ok(())

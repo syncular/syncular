@@ -441,6 +441,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "dynamic-subscriptions",
             "auth-expired-events",
             "generated-app-table-metadata",
+            "generated-app-schema-state",
             "generated-json-table-reads",
             "generated-json-local-operations",
             "generated-json-mutations",
@@ -1258,6 +1259,10 @@ impl NativeSyncularClient {
         Ok(serde_json::to_string(
             self.writer.app_schema().app_table_metadata,
         )?)
+    }
+
+    pub fn app_schema_state_json(&mut self) -> Result<String> {
+        self.writer.app_schema_state_json()
     }
 
     pub fn register_query_json(&self, query_json: &str) -> Result<String> {
