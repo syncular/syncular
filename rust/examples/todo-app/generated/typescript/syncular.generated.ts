@@ -170,6 +170,8 @@ export interface SyncularGeneratedLocalIndex {
   table: keyof SyncularAppDb;
   name: string;
   sql: string;
+  unique: boolean;
+  partial: boolean;
   columns: readonly { name: string | null; descending: boolean }[];
 }
 

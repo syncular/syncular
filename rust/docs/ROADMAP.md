@@ -162,13 +162,15 @@ read-only review:
     also carry inline rows, chunk refs, or chunk manifests. Generated schema
     metadata now includes structured local-index columns, so future
     derived-schema experiments can reason from generated metadata instead of
-    parsing index SQL. The generator now omits redundant generated local
-    indexes when a longer non-unique, non-partial, non-expression index covers
-    the shorter index's leading column sequence. External app-style scoped
-    artifact 500k bootstrap improved `1382.56ms -> 1142.29ms`, derived schema
-    improved `930.41ms -> 672.43ms`, and peak memory improved
-    `696.50MB -> 667.59MB`; the external local-query lane stayed healthy
-    (list p50 `0.16ms`, search p50 `0.22ms`).
+    parsing index SQL. Local-index metadata now also carries structured
+    `unique` and `partial` booleans. The generator now omits redundant
+    generated local indexes when a longer non-unique, non-partial,
+    non-expression index covers the shorter index's leading column sequence.
+    External app-style scoped artifact 500k bootstrap improved
+    `1382.56ms -> 1142.29ms`, derived schema improved
+    `930.41ms -> 672.43ms`, and peak memory improved `696.50MB -> 667.59MB`;
+    the external local-query lane stayed healthy (list p50 `0.16ms`, search
+    p50 `0.22ms`).
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
