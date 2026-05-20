@@ -17,6 +17,7 @@ import {
   insertScopedSnapshotArtifact,
   precomputeScopedSnapshotArtifact,
   precomputeScopedSnapshotArtifacts,
+  readBestScopedSnapshotArtifactRefForPageCapacity,
   readScopedSnapshotArtifact,
   readScopedSnapshotArtifactRefByPageKey,
   type SnapshotArtifactStorage,
@@ -177,6 +178,110 @@ describe('scoped snapshot artifacts', () => {
     expect(byPageKey?.nextRowCursor).toBe('task-12345');
     expect(byId?.blobHash).toBe('sha256:artifact-body');
     expect(byId?.featureSet).toEqual(['blobs']);
+  });
+
+  it('selects the largest scoped artifact that fits a page capacity', async () => {
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'workspace-1',
+      subscriptionId: 'sub-tasks',
+      scopes: { user_id: 'user-1' },
+      schemaVersion: 7,
+      features: [],
+    });
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+
+    await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-10',
+      partitionId: 'workspace-1',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 10,
+      rowCount: 10,
+      nextRowCursor: '10',
+      isFirstPage: true,
+      isLastPage: false,
+      sha256: '1'.repeat(64),
+      byteLength: 1024,
+      featureSet: [],
+      blobHash: 'sha256:artifact-10',
+      expiresAt,
+    });
+    await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-40',
+      partitionId: 'workspace-1',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 40,
+      rowCount: 40,
+      nextRowCursor: '40',
+      isFirstPage: true,
+      isLastPage: false,
+      sha256: '2'.repeat(64),
+      byteLength: 4096,
+      featureSet: [],
+      blobHash: 'sha256:artifact-40',
+      expiresAt,
+    });
+
+    const capacity50 = await readBestScopedSnapshotArtifactRefForPageCapacity(
+      db,
+      {
+        partitionId: 'workspace-1',
+        scopeKey,
+        subscriptionId: 'sub-tasks',
+        table: 'tasks',
+        asOfCommitSeq: 42,
+        rowCursor: null,
+        maxRowLimit: 50,
+        artifactKind: 'sqlite-snapshot-v1',
+        schemaVersion: '7',
+        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      }
+    );
+    const capacity30 = await readBestScopedSnapshotArtifactRefForPageCapacity(
+      db,
+      {
+        partitionId: 'workspace-1',
+        scopeKey,
+        subscriptionId: 'sub-tasks',
+        table: 'tasks',
+        asOfCommitSeq: 42,
+        rowCursor: null,
+        maxRowLimit: 30,
+        artifactKind: 'sqlite-snapshot-v1',
+        schemaVersion: '7',
+        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      }
+    );
+    const capacity5 = await readBestScopedSnapshotArtifactRefForPageCapacity(
+      db,
+      {
+        partitionId: 'workspace-1',
+        scopeKey,
+        subscriptionId: 'sub-tasks',
+        table: 'tasks',
+        asOfCommitSeq: 42,
+        rowCursor: null,
+        maxRowLimit: 5,
+        artifactKind: 'sqlite-snapshot-v1',
+        schemaVersion: '7',
+        compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      }
+    );
+
+    expect(capacity50?.id).toBe('artifact-40');
+    expect(capacity50?.manifest.rowLimit).toBe(40);
+    expect(capacity30?.id).toBe('artifact-10');
+    expect(capacity30?.manifest.rowLimit).toBe(10);
+    expect(capacity5).toBeNull();
   });
 
   it('binds manifest digest to the scoped page key', async () => {

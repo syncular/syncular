@@ -154,6 +154,120 @@ describe('pull scoped snapshot artifacts', () => {
     expect(result.response.subscriptions[0]?.bootstrapState).toBeNull();
   });
 
+  it('continues artifact bootstrap when the best artifact is smaller than the pull capacity', async () => {
+    await db
+      .insertInto('tasks')
+      .values([
+        { id: 'task-1', user_id: 'u1', title: 'One', server_version: 1 },
+        { id: 'task-2', user_id: 'u1', title: 'Two', server_version: 1 },
+      ])
+      .execute();
+    const external = await notifyExternalDataChange({
+      db,
+      dialect,
+      tables: ['tasks'],
+    });
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-tasks',
+      scopes: { user_id: 'u1' },
+      schemaVersion: 7,
+      artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      features: [],
+    });
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-page-1',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: external.commitSeq,
+      rowCursor: null,
+      rowLimit: 1,
+      rowCount: 1,
+      nextRowCursor: 'task-1',
+      isFirstPage: true,
+      isLastPage: false,
+      sha256: '1'.repeat(64),
+      byteLength: 1024,
+      blobHash: 'sha256:artifact-page-1',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      expiresAt,
+    });
+    await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-page-2',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: external.commitSeq,
+      rowCursor: 'task-1',
+      rowLimit: 1,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: false,
+      isLastPage: true,
+      sha256: '2'.repeat(64),
+      byteLength: 1024,
+      blobHash: 'sha256:artifact-page-2',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      expiresAt,
+    });
+
+    let snapshotCalls = 0;
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        snapshot: async () => {
+          snapshotCalls += 1;
+          return { rows: [], nextCursor: null };
+        },
+      }),
+    ]);
+
+    const result = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      snapshotChunkCacheSchemaVersion: 7,
+      request: {
+        clientId: 'client-1',
+        limitCommits: 1000,
+        limitSnapshotRows: 1,
+        maxSnapshotPages: 2,
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
+        snapshotArtifacts: {
+          schemaVersion: '7',
+          artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
+          compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
+        },
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    const snapshots = result.response.subscriptions[0]?.snapshots ?? [];
+    expect(snapshotCalls).toBe(0);
+    expect(snapshots.map((snapshot) => snapshot.artifacts?.[0]?.id)).toEqual([
+      'artifact-page-1',
+      'artifact-page-2',
+    ]);
+    expect(result.response.subscriptions[0]?.bootstrapState).toBeNull();
+  });
+
   it('uses the row snapshot path when the scoped artifact key does not match', async () => {
     await db
       .insertInto('tasks')

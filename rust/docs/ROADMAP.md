@@ -172,7 +172,14 @@ read-only review:
     the external local-query lane stayed healthy (list p50 `0.16ms`, search
     p50 `0.22ms`). Browser artifact recovery coverage now includes transient
     artifact download failures as well as corrupted artifact bytes, with
-    resource-specific byte-fetch diagnostics.
+    resource-specific byte-fetch diagnostics. Server artifact lookup now
+    selects the largest scoped artifact that fits the current pull capacity.
+    The matched 100k artifact guard stayed neutral (`143.14ms -> 144.56ms`),
+    and a 25k-precomputed / 50k-client-page probe kept
+    `rust_snapshot_chunk_binary_count=0` instead of falling back to row chunks.
+    The external 40k artifact guard stayed in band at 500k
+    (`1142.29ms -> 1154.34ms`, peak memory `667.59MB -> 662.03MB`), and the
+    external 20k artifact robustness probe also kept `snapshotChunkCount=0`.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
