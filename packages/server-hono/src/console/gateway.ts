@@ -1,3 +1,7 @@
+import {
+  createSyncularErrorResponse,
+  type SyncularErrorCode,
+} from '@syncular/core';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -62,6 +66,17 @@ import {
   TimeseriesStatsResponseSchema,
 } from './schemas';
 import type { ConsoleAuthResult } from './types';
+
+type ConsoleGatewayErrorStatus = 400 | 401 | 403 | 404 | 502;
+
+function consoleGatewayError(
+  c: Context,
+  status: ConsoleGatewayErrorStatus,
+  code: SyncularErrorCode,
+  options: { message?: string; details?: Record<string, unknown> } = {}
+): Response {
+  return c.json(createSyncularErrorResponse(code, options), status);
+}
 
 export interface ConsoleGatewayInstance {
   instanceId: string;
@@ -875,11 +890,20 @@ async function forwardDownstreamJsonRequest<T>(args: {
       return {
         ok: false,
         status: response.status,
-        body: normalizeDownstreamError({
-          body: payload,
-          status: response.status,
-          instanceId: args.instance.instanceId,
-        }),
+        body: createSyncularErrorResponse(
+          response.status === 404
+            ? 'console.not_found'
+            : 'console.downstream_unavailable',
+          {
+            details: {
+              downstream: normalizeDownstreamError({
+                body: payload,
+                status: response.status,
+                instanceId: args.instance.instanceId,
+              }),
+            },
+          }
+        ),
       };
     }
 
@@ -888,11 +912,13 @@ async function forwardDownstreamJsonRequest<T>(args: {
       return {
         ok: false,
         status: 502,
-        body: {
-          error: 'INVALID_DOWNSTREAM_RESPONSE',
-          message: 'Downstream response failed validation.',
-          instanceId: args.instance.instanceId,
-        },
+        body: createSyncularErrorResponse(
+          'console.downstream_invalid_response',
+          {
+            message: 'Downstream response failed validation.',
+            details: { instanceId: args.instance.instanceId },
+          }
+        ),
       };
     }
 
@@ -905,11 +931,10 @@ async function forwardDownstreamJsonRequest<T>(args: {
     return {
       ok: false,
       status: 502,
-      body: {
-        error: 'DOWNSTREAM_UNAVAILABLE',
+      body: createSyncularErrorResponse('console.downstream_unavailable', {
         message: toErrorMessage(error),
-        instanceId: args.instance.instanceId,
-      },
+        details: { instanceId: args.instance.instanceId },
+      }),
     };
   }
 }
@@ -1011,7 +1036,7 @@ async function checkDownstreamInstanceHealth(args: {
 }
 
 function unauthorizedResponse(c: Context): Response {
-  return c.json({ error: 'UNAUTHORIZED' }, 401);
+  return consoleGatewayError(c, 401, 'console.auth_required');
 }
 
 function jsonResponse(payload: unknown, status: number): Response {
@@ -1027,13 +1052,38 @@ function allInstancesFailedResponse(
   c: Context,
   failedInstances: GatewayFailure[]
 ): Response {
-  return c.json(
+  return consoleGatewayError(c, 502, 'console.downstream_unavailable', {
+    details: { failedInstances },
+  });
+}
+
+function consoleTargetErrorResponse(
+  c: Context,
+  target: { status: 400 | 404; error: string; message?: string }
+): Response {
+  return consoleGatewayError(
+    c,
+    target.status,
+    target.status === 404 ? 'console.not_found' : 'console.invalid_request',
     {
-      error: 'DOWNSTREAM_UNAVAILABLE',
-      failedInstances,
-    },
-    502
+      ...(target.message ? { message: target.message } : {}),
+      details: { consoleError: target.error },
+    }
   );
+}
+
+function downstreamFailureResponse(
+  c: Context,
+  failure: GatewayFailure
+): Response {
+  if (failure.status === 404) {
+    return consoleGatewayError(c, 404, 'console.not_found', {
+      details: { failure },
+    });
+  }
+  return consoleGatewayError(c, 502, 'console.downstream_unavailable', {
+    details: { failedInstances: [failure] },
+  });
 }
 
 export function createConsoleGatewayRoutes(
@@ -1086,13 +1136,7 @@ export function createConsoleGatewayRoutes(
       query: args.query,
     });
     if (!target.ok) {
-      return args.c.json(
-        {
-          error: target.error,
-          message: target.message,
-        },
-        target.status
-      );
+      return consoleTargetErrorResponse(args.c, target);
     }
 
     const forwardQuery = sanitizeForwardQueryParams(
@@ -1130,13 +1174,7 @@ export function createConsoleGatewayRoutes(
     const noInstanceError = noInstancesSelectedResponse();
     return {
       ok: false,
-      response: c.json(
-        {
-          error: noInstanceError.error,
-          message: noInstanceError.message,
-        },
-        noInstanceError.status
-      ),
+      response: consoleTargetErrorResponse(c, noInstanceError),
     };
   };
 
@@ -2152,13 +2190,7 @@ export function createConsoleGatewayRoutes(
         const query = c.req.valid('query');
         const target = resolveCommitTarget({ seq, instances, query });
         if (!target.ok) {
-          return c.json(
-            {
-              error: target.error,
-              ...(target.message ? { message: target.message } : {}),
-            },
-            target.status
-          );
+          return consoleTargetErrorResponse(c, target);
         }
 
         const forwardQuery = sanitizeForwardQueryParams(
@@ -2174,16 +2206,7 @@ export function createConsoleGatewayRoutes(
         });
 
         if (!result.ok) {
-          if (result.failure.status === 404) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
-          }
-          return c.json(
-            {
-              error: 'DOWNSTREAM_UNAVAILABLE',
-              failedInstances: [result.failure],
-            },
-            502
-          );
+          return downstreamFailureResponse(c, result.failure);
         }
 
         return c.json({
@@ -2859,7 +2882,7 @@ export function createConsoleGatewayRoutes(
 
     routes.get('/events/live', async (c, next) => {
       if (!isWebSocketOriginAllowed(c, options.websocket?.allowedOrigins)) {
-        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+        return consoleGatewayError(c, 403, 'console.forbidden_origin');
       }
       return liveEventsWebSocketRoute(c, next);
     });
@@ -2895,13 +2918,7 @@ export function createConsoleGatewayRoutes(
           query,
         });
         if (!target.ok) {
-          return c.json(
-            {
-              error: target.error,
-              ...(target.message ? { message: target.message } : {}),
-            },
-            target.status
-          );
+          return consoleTargetErrorResponse(c, target);
         }
 
         const forwardQuery = sanitizeForwardQueryParams(
@@ -2917,16 +2934,7 @@ export function createConsoleGatewayRoutes(
         });
 
         if (!result.ok) {
-          if (result.failure.status === 404) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
-          }
-          return c.json(
-            {
-              error: 'DOWNSTREAM_UNAVAILABLE',
-              failedInstances: [result.failure],
-            },
-            502
-          );
+          return downstreamFailureResponse(c, result.failure);
         }
 
         return c.json({
@@ -2969,13 +2977,7 @@ export function createConsoleGatewayRoutes(
           query,
         });
         if (!target.ok) {
-          return c.json(
-            {
-              error: target.error,
-              ...(target.message ? { message: target.message } : {}),
-            },
-            target.status
-          );
+          return consoleTargetErrorResponse(c, target);
         }
 
         const forwardQuery = sanitizeForwardQueryParams(
@@ -2991,16 +2993,7 @@ export function createConsoleGatewayRoutes(
         });
 
         if (!result.ok) {
-          if (result.failure.status === 404) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
-          }
-          return c.json(
-            {
-              error: 'DOWNSTREAM_UNAVAILABLE',
-              failedInstances: [result.failure],
-            },
-            502
-          );
+          return downstreamFailureResponse(c, result.failure);
         }
 
         return c.json({

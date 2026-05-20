@@ -52,4 +52,21 @@ describe('Syncular error responses', () => {
       recommendedAction: 'inspectServer',
     });
   });
+
+  it('includes console gateway classifications', () => {
+    expect(
+      createSyncularErrorResponse('console.forbidden_origin')
+    ).toMatchObject({
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
+    expect(
+      createSyncularErrorResponse('console.downstream_unavailable')
+    ).toMatchObject({
+      category: 'server',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+  });
 });

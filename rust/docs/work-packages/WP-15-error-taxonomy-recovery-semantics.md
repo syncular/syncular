@@ -64,8 +64,8 @@ error taxonomy so app code and console investigation do not parse message text.
 ## Next Action
 
 Continue expanding exact-code coverage to remaining runtime queue/blob/storage
-failure paths and console routes where public errors still surface as generic
-strings.
+failure paths and any non-Hono server packages that still surface public
+string-only errors.
 
 ## Progress
 
@@ -109,6 +109,10 @@ strings.
   `SyncularNativeErrorInfo` as `event.error`; the Java event parser exposes the
   same `ErrorInfo` shape. Swift/Kotlin generated-client smokes decode
   `sync.forbidden` from native event JSON instead of inspecting raw JSON.
+- Console gateway routes now use stable `console.*` error envelopes for auth,
+  forbidden websocket origins, invalid target selection, not found resources,
+  downstream unavailability, and invalid downstream responses. Downstream
+  failure metadata now lives under structured `details`.
 
 ## Latest Evidence
 
@@ -122,6 +126,7 @@ strings.
 - `swiftc rust/examples/todo-app/generated/swift/SyncularApp.swift rust/examples/todo-app/native-smokes/swift/GeneratedClientSmoke.swift -o .context/generated-swift-smoke && .context/generated-swift-smoke rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
 - `KOTLIN_CP=".context/native-smokes/kotlin-libs/kotlinx-serialization-json-jvm-1.9.0.jar:.context/native-smokes/kotlin-libs/kotlinx-serialization-core-jvm-1.9.0.jar" && kotlinc -cp "$KOTLIN_CP" rust/examples/todo-app/generated/kotlin/SyncularApp.kt rust/examples/todo-app/native-smokes/kotlin/GeneratedClientSmoke.kt -d .context/generated-kotlin-smoke.jar && kotlin -cp "$KOTLIN_CP:.context/generated-kotlin-smoke.jar" GeneratedClientSmokeKt rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
 - `javac -d .context/java-smoke rust/bindings/java/dev/syncular/client/SyncularNativeEvent.java`
+- `bun test packages/server-hono/src/__tests__/console-gateway-routes.test.ts packages/server-hono/src/__tests__/console-gateway-live-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`
 - `bun test packages/server-hono/src/__tests__/blob-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/server-hono/src/__tests__/rate-limit.test.ts`
 - `bun test rust/bindings/browser/src/errors.test.ts rust/bindings/browser/src/worker-client.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "revoked sessions|server-required schema|corrupted snapshot chunk"`
