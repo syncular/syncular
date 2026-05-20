@@ -1,6 +1,6 @@
 # WP-14 Developer Experience And Generated APIs
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -66,6 +66,25 @@ the correct sync path easy and make incorrect paths hard to reach.
 
 ## Next Action
 
-Pick one generated TypeScript example and improve its mutation/subscription
-surface without changing runtime semantics. Use that as the reference shape for
-native generated clients.
+Use the generated TypeScript mutation shape as the reference for the next native
+generated-client pass:
+
+1. Align Swift/Kotlin/JVM generated mutation entry points with the same
+   generated-input/public-patch shape where the native runtime already exposes
+   the required low-level JSON enqueue/apply calls.
+2. Add generated diagnostics helpers that surface WP-13 snapshots/events without
+   making apps parse raw JSON strings.
+3. Revisit CRDT state-column exposure in generated mutation input types so app
+   code cannot accidentally write CRDT persistence columns directly.
+
+## Progress
+
+- TypeScript generated app databases now expose generated mutation types on
+  `database.mutations`. Inserts accept `New{Table}` and updates accept
+  `{Table}Patch` instead of full app rows, so app code no longer has to provide
+  server-owned columns such as `server_version`.
+- The generated mutation type is a type-level wrapper over the existing
+  Rust-first mutation/outbox path; it does not add raw table-write escape
+  hatches or change runtime semantics.
+- Added browser generated-conformance coverage proving the typed generated
+  mutation surface produces the same clean outbox/local-row payloads.

@@ -1,26 +1,34 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import type { SyncOperation } from '@syncular/core';
 import { Kysely } from 'kysely';
-import { readFileSync } from 'node:fs';
 import { syncConformance } from '../../../examples/todo-app/conformance/sync-conformance';
 import {
   deleteTaskOperation,
   newTaskOperation,
   patchTaskOperation,
+  type SyncularAppDb,
+  type SyncularAppMutations,
   syncularAppChangedRows,
   syncularChangedRows,
-  type SyncularAppDb,
   syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedTableConfig,
   taskChangedRows,
   taskSubscription,
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
-import { createSyncularV2Commit, createSyncularV2Dialect } from './database';
+import {
+  createSyncularV2Commit,
+  createSyncularV2Dialect,
+  createSyncularV2Mutations,
+} from './database';
 import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
 
 const conformance = JSON.parse(
   readFileSync(
-    new URL('../../../examples/todo-app/conformance/generated-client.json', import.meta.url),
+    new URL(
+      '../../../examples/todo-app/conformance/generated-client.json',
+      import.meta.url
+    ),
     'utf8'
   )
 ) as {
@@ -45,11 +53,15 @@ const conformance = JSON.parse(
 
 describe('generated app conformance', () => {
   it('keeps TypeScript task operation semantics aligned with native generated clients', () => {
-    expect(newTaskOperation(conformance.task.newInput)).toEqual(conformance.task.newOperation);
+    expect(newTaskOperation(conformance.task.newInput)).toEqual(
+      conformance.task.newOperation
+    );
     expect(patchTaskOperation('task-native', { completed: 0 }, 11)).toEqual(
       conformance.task.patchOperation
     );
-    expect(deleteTaskOperation('task-native', 12)).toEqual(conformance.task.deleteOperation);
+    expect(deleteTaskOperation('task-native', 12)).toEqual(
+      conformance.task.deleteOperation
+    );
   });
 
   it('keeps TypeScript subscriptions and Kysely reads on the shared table contract', () => {
@@ -83,7 +95,9 @@ describe('generated app conformance', () => {
       .compile();
 
     expect(compiled.sql).toBe(conformance.task.typescriptKyselyQuery.sql);
-    expect(compiled.parameters).toEqual(conformance.task.typescriptKyselyQuery.params);
+    expect(compiled.parameters).toEqual(
+      conformance.task.typescriptKyselyQuery.params
+    );
   });
 
   it('keeps generated field-encryption config aligned with the shared sync scenarios', () => {
@@ -148,7 +162,9 @@ describe('generated app conformance', () => {
         stateColumn: 'title_yjs_state',
       }),
     ]);
-    expect(syncularChangedRows.tasks(event)[0]?.raw.commitId).toBe('commit-delta');
+    expect(syncularChangedRows.tasks(event)[0]?.raw.commitId).toBe(
+      'commit-delta'
+    );
     expect(syncularAppChangedRows(event)).toHaveLength(1);
   });
 
@@ -195,6 +211,59 @@ describe('generated app conformance', () => {
       id: 'task-yjs',
       title: 'Merged locally',
       title_yjs_state: 'state-base64',
+    });
+  });
+
+  it('types generated mutations around generated inputs instead of full rows', async () => {
+    let capturedBatch: Array<{
+      operation: SyncOperation;
+      localRow?: unknown | null;
+    }> | null = null;
+    const client = {
+      ...fakeClient(),
+      async applyMutationsCommit(batch) {
+        capturedBatch = batch;
+        return 'commit-generated';
+      },
+    } satisfies SyncularV2Client;
+
+    const mutations = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+    }) as unknown as SyncularAppMutations;
+
+    const insert = await mutations.tasks.insert({
+      id: 'task-typed-mutation',
+      title: 'Typed generated mutation',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: null,
+    });
+
+    expect(insert).toEqual({
+      commitId: 'commit-generated',
+      clientCommitId: 'commit-generated',
+      id: 'task-typed-mutation',
+    });
+    expect(capturedBatch).toHaveLength(1);
+    expect(capturedBatch?.[0]?.operation).toEqual({
+      table: 'tasks',
+      row_id: 'task-typed-mutation',
+      op: 'upsert',
+      payload: {
+        title: 'Typed generated mutation',
+        completed: 0,
+        user_id: 'user-rust',
+        project_id: null,
+      },
+      base_version: null,
+    });
+    expect(capturedBatch?.[0]?.localRow).toEqual({
+      id: 'task-typed-mutation',
+      title: 'Typed generated mutation',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: null,
     });
   });
 });
