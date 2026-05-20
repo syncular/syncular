@@ -746,6 +746,12 @@ Generated derived-schema contract follow-up:
   generated schema installation. The 100k release artifact gate stayed in band:
   `rust_bootstrap_ms=149.75`, `rust_schema_install_ms=5.42`, and
   `rust_cached_schema_install_ms=2.55`.
+- The external app-style benchmark has now consumed the generated
+  `localDerivedSchema` contract directly. The current bulk-load-then-rebuild
+  shape reported 500k bootstrap `1396.01ms`, local apply `208ms`, response
+  bytes `3537713`, and peak memory `695.97MB`. A temporary before-bootstrap
+  derived-schema install was rejected because it regressed 500k bootstrap to
+  `1827.83ms`, local apply to `1525ms`, and peak memory to `761.14MB`.
 
 ## Next Action
 
@@ -760,10 +766,9 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   segmented artifact apply were also rejected. These either regressed wall time
   or failed to improve external peak memory enough to justify their complexity.
 - Do not keep spending time on artifact memory micro-probes unless they change
-  the bootstrap state model. The next useful app-style benchmark slice should
-  consume `localDerivedSchema` and compare install strategies: generated full
-  schema before bootstrap versus bulk load followed by explicit
-  index/read-model setup and rebuild.
+  the bootstrap state model. The generated `localDerivedSchema` path is proven,
+  and the before-bootstrap install strategy is rejected; keep bulk load followed
+  by explicit index/read-model setup and rebuild.
 - Keep schema-install timing visible in local browser runs when comparing
   against external app-style benchmarks, because external reports derived
   schema as part of app bootstrap while local sync bootstrap intentionally does
