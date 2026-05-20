@@ -170,7 +170,9 @@ read-only review:
     `1382.56ms -> 1142.29ms`, derived schema improved
     `930.41ms -> 672.43ms`, and peak memory improved `696.50MB -> 667.59MB`;
     the external local-query lane stayed healthy (list p50 `0.16ms`, search
-    p50 `0.22ms`).
+    p50 `0.22ms`). Browser artifact recovery coverage now includes transient
+    artifact download failures as well as corrupted artifact bytes, with
+    resource-specific byte-fetch diagnostics.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
