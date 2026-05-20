@@ -64,6 +64,8 @@ pub struct YjsFieldRule {
 pub struct YjsUpdateEnvelope {
     pub update_id: String,
     pub update_base64: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_state_vector_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +182,7 @@ pub fn build_yjs_text_update(args: BuildYjsTextUpdateArgs) -> Result<BuildYjsTex
         update: YjsUpdateEnvelope {
             update_id: args.update_id.unwrap_or_else(random_syncular_id),
             update_base64: encode_base64(&update),
+            requires_state_vector_base64: None,
         },
         next_state_base64: encode_base64(&next_state),
         next_text,
@@ -425,7 +428,7 @@ fn rule_from_metadata(table: &str, field: &CrdtYjsFieldMetadata) -> Result<YjsFi
 #[cfg(feature = "crdt-yjs")]
 fn transform_payload(
     table: &str,
-    _row_id: Option<&str>,
+    row_id: Option<&str>,
     payload: Value,
     existing_row: Option<&Value>,
     rules: &[YjsFieldRule],
@@ -478,6 +481,17 @@ fn transform_payload(
         let base_state = existing_row
             .and_then(|row| state_value_to_base64(row.get(&rule.state_column)))
             .or_else(|| state_value_to_base64(payload.get(&rule.state_column)));
+        if base_state.is_none() {
+            if let Some(required) = updates
+                .iter()
+                .find_map(|update| required_state_vector(update))
+            {
+                return Err(SyncularError::protocol_message(format!(
+                    "Yjs diff envelope for table \"{table}\" row \"{}\" field \"{field}\" requires local base state vector {required}, but no local state is available; full snapshot resync required",
+                    row_id.unwrap_or("<unknown>")
+                )));
+            }
+        }
         let doc = create_doc_from_state(base_state.as_deref())?;
         if base_state.is_none() {
             seed_rule_value_from_rows(&doc, rule, &Map::new(), existing_row);
@@ -656,6 +670,15 @@ fn normalize_update_envelope(value: Value, context: &str) -> Result<YjsUpdateEnv
             "{context}.updateBase64 must be a non-empty base64 string"
         )));
     }
+    if envelope
+        .requires_state_vector_base64
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(SyncularError::protocol_message(format!(
+            "{context}.requiresStateVectorBase64 must be a non-empty base64 string when provided"
+        )));
+    }
     Ok(envelope)
 }
 
@@ -677,6 +700,15 @@ fn create_doc_from_state(state_base64: Option<&str>) -> Result<Doc> {
 fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
     let mut txn = doc.transact_mut();
     for update in updates {
+        if let Some(required) = required_state_vector(update) {
+            let actual = encode_base64(&txn.state_vector().encode_v1());
+            if actual != required {
+                return Err(SyncularError::protocol_message(format!(
+                    "Yjs update {} requires base state vector {required}, but current state vector is {actual}; full snapshot resync required",
+                    update.update_id
+                )));
+            }
+        }
         let bytes = decode_base64(&update.update_base64)?;
         let decoded = Update::decode_v1(bytes.as_slice()).map_err(|err| {
             SyncularError::protocol_message(format!(
@@ -689,6 +721,13 @@ fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+fn required_state_vector(update: &YjsUpdateEnvelope) -> Option<&str> {
+    update
+        .requires_state_vector_base64
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(feature = "crdt-yjs")]
@@ -1047,6 +1086,9 @@ mod tests {
             container_key: Some("title".to_string()),
             update_id: Some("next".to_string()),
         })?;
+        let mut next_update = next.update;
+        next_update.requires_state_vector_base64 =
+            Some(yjs_state_vector_base64(Some(&base.next_state_base64))?);
 
         let row = transform_local_row_for_metadata(
             "tasks",
@@ -1054,7 +1096,7 @@ mod tests {
             None,
             Some(&json!({
                 "updated_at": 2,
-                "__yjs": { "title": next.update }
+                "__yjs": { "title": next_update }
             })),
             Some(&json!({
                 "id": "task-1",
@@ -1070,6 +1112,65 @@ mod tests {
         assert_eq!(row["updated_at"], 2);
         assert!(row["title_yjs_state"].as_str().is_some());
         assert!(row.get(YJS_PAYLOAD_KEY).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn diff_envelope_without_required_local_base_requests_resync() -> Result<()> {
+        static CRDT_FIELDS: &[CrdtYjsFieldMetadata] = &[CrdtYjsFieldMetadata {
+            field: "title",
+            state_column: "title_yjs_state",
+            container_key: "title",
+            row_id_field: "id",
+            kind: "text",
+            sync_mode: "server-merge",
+        }];
+        static TABLE: AppTableMetadata = AppTableMetadata {
+            name: "tasks",
+            primary_key_column: "id",
+            server_version_column: "server_version",
+            soft_delete_column: None,
+            subscription_id: "tasks",
+            columns: &[],
+            blob_columns: &[],
+            crdt_yjs_fields: CRDT_FIELDS,
+            encrypted_fields: &[],
+            scopes: &[],
+        };
+
+        let base = build_yjs_text_update(BuildYjsTextUpdateArgs {
+            previous_state_base64: None,
+            next_text: "hello".to_string(),
+            container_key: Some("title".to_string()),
+            update_id: Some("base".to_string()),
+        })?;
+        let next = build_yjs_text_update(BuildYjsTextUpdateArgs {
+            previous_state_base64: Some(base.next_state_base64.clone()),
+            next_text: "hello world".to_string(),
+            container_key: Some("title".to_string()),
+            update_id: Some("next".to_string()),
+        })?;
+        let mut next_update = next.update;
+        next_update.requires_state_vector_base64 =
+            Some(yjs_state_vector_base64(Some(&base.next_state_base64))?);
+
+        let err = transform_local_row_for_metadata(
+            "tasks",
+            "task-1",
+            None,
+            Some(&json!({
+                "__yjs": { "title": next_update }
+            })),
+            None,
+            &TABLE,
+        )
+        .expect_err("server diff without local base must request resync");
+
+        let message = err.to_string();
+        assert!(message.contains("tasks"));
+        assert!(message.contains("task-1"));
+        assert!(message.contains("title"));
+        assert!(message.contains("full snapshot resync required"));
         Ok(())
     }
 }

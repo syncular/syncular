@@ -12,8 +12,8 @@ use syncular_runtime::crdt_field::{
     validate_crdt_field, CrdtFieldId, CrdtFieldSyncMode, CrdtUpdateStatus,
 };
 use syncular_runtime::crdt_yjs::{
-    build_yjs_text_update, transform_local_row_for_metadata, BuildYjsTextUpdateArgs,
-    YJS_PAYLOAD_KEY,
+    build_yjs_text_update, transform_local_row_for_metadata, yjs_state_vector_base64,
+    BuildYjsTextUpdateArgs, YJS_PAYLOAD_KEY,
 };
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::encrypted_crdt::{
@@ -241,6 +241,9 @@ fn diesel_client_applies_server_merge_crdt_diff_pull_with_row_fields() -> Result
         container_key: Some("title".to_string()),
         update_id: Some("native-diff-next".to_string()),
     })?;
+    let mut next_update = next.update;
+    next_update.requires_state_vector_base64 =
+        Some(yjs_state_vector_base64(Some(&base.next_state_base64))?);
 
     let transport = TestTransport::new();
     let handle = transport.handle();
@@ -308,7 +311,7 @@ fn diesel_client_applies_server_merge_crdt_diff_pull_with_row_fields() -> Result
                         row_json: Some(json!({
                             "completed": 1,
                             YJS_PAYLOAD_KEY: {
-                                "title": next.update
+                                "title": next_update
                             }
                         })),
                         row_version: Some(2),
@@ -357,6 +360,92 @@ fn diesel_client_applies_server_merge_crdt_diff_pull_with_row_fields() -> Result
     assert_eq!(hint.field, "title");
     assert_eq!(hint.state_column, "title_yjs_state");
     assert_eq!(hint.state_vector_base64, snapshot.state_vector_base64);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_client_rejects_server_merge_crdt_diff_without_required_local_base() -> Result<()> {
+    let path = temp_db_path("syncular-crdt-diff-missing-base");
+    let task_id = "crdt-diff-missing-base-task";
+    let base = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: None,
+        next_text: "Missing base v1".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("missing-base-base".to_string()),
+    })?;
+    let next = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: Some(base.next_state_base64.clone()),
+        next_text: "Missing base v2".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("missing-base-next".to_string()),
+    })?;
+    let mut next_update = next.update;
+    next_update.requires_state_vector_base64 =
+        Some(yjs_state_vector_base64(Some(&base.next_state_base64))?);
+
+    let transport = TestTransport::new();
+    transport.push_http_response(CombinedResponse {
+        ok: true,
+        required_schema_version: None,
+        latest_schema_version: None,
+        push: None,
+        pull: Some(PullResponse {
+            ok: true,
+            subscriptions: vec![SubscriptionResponse {
+                id: "sub-tasks".to_string(),
+                status: "active".to_string(),
+                scopes: scopes(),
+                bootstrap: false,
+                bootstrap_state: None,
+                next_cursor: 2,
+                integrity: None,
+                commits: vec![SyncCommit {
+                    commit_seq: 2,
+                    created_at: "2026-01-01T00:00:02Z".to_string(),
+                    actor_id: "server".to_string(),
+                    changes: vec![SyncChange {
+                        table: "tasks".to_string(),
+                        row_id: task_id.to_string(),
+                        op: "upsert".to_string(),
+                        row_json: Some(json!({
+                            "completed": 1,
+                            "user_id": "user-rust",
+                            "project_id": "p0",
+                            "server_version": 2,
+                            YJS_PAYLOAD_KEY: {
+                                "title": next_update
+                            }
+                        })),
+                        row_version: Some(2),
+                        scopes: scopes(),
+                    }],
+                }],
+                snapshots: None,
+            }],
+        }),
+    });
+
+    let app_schema = demo_todo_app_schema();
+    let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+    let mut client = SyncularClient::with_app_schema_parts(
+        test_config_with_client(&path, "crdt-diff-missing-base-client"),
+        store,
+        transport,
+        app_schema,
+    );
+
+    let err = client
+        .sync_http()
+        .expect_err("server diff without required local base should fail sync");
+    let message = err.to_string();
+    assert!(message.contains("crdt-diff-missing-base-task"));
+    assert!(message.contains("title"));
+    assert!(message.contains("full snapshot resync required"));
+
+    let rows: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(rows.as_array().map(Vec::len), Some(0));
 
     let _ = std::fs::remove_file(path);
     Ok(())

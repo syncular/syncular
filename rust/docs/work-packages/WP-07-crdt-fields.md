@@ -111,6 +111,11 @@ Latest accepted slice:
 - Any future snapshot CRDT optimization must be a separate side channel with an
   explicit local-state requirement and a full-state recovery path. It must not
   rewrite canonical snapshot rows or weaken scoped reset/revocation semantics.
+- Server-generated Yjs diff envelopes now carry `requiresStateVectorBase64`.
+  Rust and server-side Yjs materialization reject required-base diffs when the
+  local CRDT state is missing or at a different state vector, with an explicit
+  "full snapshot resync required" diagnostic instead of silently applying a
+  partial document update.
 
 Gate evidence:
 
@@ -156,6 +161,6 @@ Known local environment note:
 
 ## Next Action
 
-Add CRDT remote-observation diagnostics for missing-base diff envelopes and
-materialization failures, then cover recovery behavior in native and browser
-runtime tests.
+Propagate required-base CRDT diff recovery into worker/native/browser events so
+hosts can automatically force resubscribe/bootstrap when the diagnostic is
+observed, then cover that event-driven recovery path.

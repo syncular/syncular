@@ -539,6 +539,7 @@ pub fn apply_encrypted_crdt_plaintext_to_row(
                         .unwrap_or("encrypted-crdt-update")
                         .to_string(),
                     update_base64,
+                    requires_state_vector_base64: None,
                 }],
             })?
             .next_state_base64

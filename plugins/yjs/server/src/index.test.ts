@@ -324,7 +324,11 @@ describe('@syncular/server-plugin-crdt-yjs', () => {
       string,
       YjsServerUpdateEnvelope
     >;
+    const requiredStateVector = createStateVectorBase64(base.state);
     expect(envelope.content.updateBase64).toBeString();
+    expect(envelope.content.requiresStateVectorBase64).toBe(
+      requiredStateVector
+    );
     expect(
       applyTextUpdates({
         previousStateBase64: base.state,
@@ -332,6 +336,37 @@ describe('@syncular/server-plugin-crdt-yjs', () => {
         containerKey: 'content',
       })
     ).toBe('Hello world');
+  });
+
+  it('rejects required-base diff envelopes without local CRDT state', async () => {
+    const module = createYjsServerModule({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+        },
+      ],
+    });
+
+    const base = await createUpdate('Hello');
+    const next = await createUpdate('Hello world', base.state);
+
+    await expect(
+      module.applyPayload({
+        table: 'tasks',
+        rowId: 'task-1',
+        payload: {
+          [YJS_PAYLOAD_KEY]: {
+            content: {
+              ...next.update,
+              requiresStateVectorBase64: createStateVectorBase64(base.state),
+            },
+          },
+        },
+        existingRow: null,
+      })
+    ).rejects.toThrow('full snapshot resync required');
   });
 
   it('materializes xml-fragment kind from Yjs state snapshots', async () => {
