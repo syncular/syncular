@@ -6,9 +6,10 @@ use serde_json::json;
 use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
-use syncular_runtime::protocol::{PushCommitRequest, SyncOperation};
+use syncular_runtime::protocol::{CombinedRequest, PushCommitRequest, SyncOperation};
 use syncular_runtime::transport::{
-    HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncTransport, SyncTransportConfig,
+    HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders,
+    SyncTransport, SyncTransportConfig,
 };
 use syncular_testkit::{
     actor_project_scopes, apply_crdt_field_text, apply_native_crdt_field_text,
@@ -308,6 +309,69 @@ fn app_test_http_server_accepts_production_realtime_pushes() {
 
     writer_socket.close();
     reader_socket.close();
+}
+
+#[test]
+fn app_test_http_server_records_http_and_realtime_auth_headers() {
+    let app_schema = todo::app_schema();
+    let server = AppTestHttpServer::start(app_schema).expect("stateful HTTP server");
+    let schema_version = app_schema.current_schema_version();
+    let mut transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        "app-server-auth-client".to_string(),
+        "actor-auth".to_string(),
+    ))
+    .with_schema_version(schema_version);
+    let mut headers = SyncAuthHeaders::new();
+    headers.insert(
+        "authorization".to_string(),
+        "Bearer stateful-auth".to_string(),
+    );
+    headers.insert("x-syncular-tenant".to_string(), "tenant-1".to_string());
+    transport.set_auth_headers(headers);
+
+    transport
+        .post_sync(&CombinedRequest {
+            client_id: "app-server-auth-client".to_string(),
+            sync_pack_encodings: Vec::new(),
+            push: None,
+            pull: None,
+        })
+        .expect("HTTP sync");
+    let mut socket = transport.connect_realtime().expect("realtime connect");
+    socket.close();
+
+    let requests = server.requests();
+    let http_request = requests
+        .iter()
+        .find(|request| request.method == "POST")
+        .expect("captured HTTP request");
+    let ws_request = requests
+        .iter()
+        .find(|request| request.method == "GET")
+        .expect("captured websocket request");
+    let schema_version = schema_version.to_string();
+    assert_eq!(
+        http_request.header("authorization"),
+        Some("Bearer stateful-auth")
+    );
+    assert_eq!(http_request.header("x-syncular-tenant"), Some("tenant-1"));
+    assert_eq!(
+        http_request.header("x-syncular-schema-version"),
+        Some(schema_version.as_str())
+    );
+    assert_eq!(
+        ws_request.header("authorization"),
+        Some("Bearer stateful-auth")
+    );
+    assert_eq!(ws_request.header("x-syncular-tenant"), Some("tenant-1"));
+    assert_eq!(
+        ws_request.header("x-syncular-schema-version"),
+        Some(schema_version.as_str())
+    );
+    assert!(ws_request
+        .path
+        .starts_with("/sync/realtime?clientId=app-server-auth-client"));
 }
 
 #[test]

@@ -18,7 +18,8 @@ Initial scope:
   server-merge CRDT/Yjs payloads, filters self commits, can reverse/duplicate
   delivery, and emits realtime sync wakeups.
 - `AppTestHttpServer` for stateful HTTP/WebSocket app tests over the production
-  native transport shape.
+  native transport shape, including captured HTTP/WebSocket requests for auth
+  and schema-version assertions.
 - `TestBlobServer` for local HTTP blob upload/download integration tests.
 - `FaultTransport` for scripted transport failures and latency.
 - Protocol builders for snapshot pages/chunks, pull commits, conflict,

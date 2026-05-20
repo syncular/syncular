@@ -65,13 +65,16 @@ tests.
 - Added smoke coverage proving production `RealtimeTransport::push_commit`
   works against the reusable stateful HTTP server, writes server state, returns
   a websocket push response, and wakes other websocket subscribers.
+- Added stateful HTTP/WebSocket request capture so app tests can assert
+  production auth and schema-version headers without replacing the real
+  transport.
 - Added a stateful HTTP conflict smoke proving version conflicts are reported
   through the production native HTTP transport shape while the same sync can
   pull the server-winning row.
 - Replaced the Rust perf binary's private stateful HTTP/WebSocket server copy
   with the shared testkit fixture to keep performance and app tests aligned.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
-  passed with `24` smoke tests.
+  passed with `25` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.
