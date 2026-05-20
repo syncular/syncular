@@ -28,9 +28,11 @@ behavior instead of mocking the client everywhere.
 
 ## Required Gates
 
-- `syncular-testkit` tests.
-- Runtime tests using testkit helpers.
-- At least one app-style/stateful server convergence test.
+- Fast gate: `bun run rust:conformance:fast`.
+- Browser/Hono gate when browser sync behavior changes: `bun run
+  rust:conformance`.
+- Native gate when Swift/Kotlin/JVM bindings change: `bun run
+  rust:conformance:native`.
 
 ## Accept / Reject Rule
 
@@ -87,6 +89,9 @@ tests.
   internals.
 - Updated browser generated-app conformance tests to use the shared TypeScript
   sync scenario loader for field-encryption scenarios.
+- Added `rust/scripts/run-conformance-gates.sh` with `--fast`,
+  `--browser-hono`, `--native`, and `--all` modes, and pointed root
+  `rust:conformance*` package scripts at it.
 - Added a stateful HTTP conflict smoke proving version conflicts are reported
   through the production native HTTP transport shape while the same sync can
   pull the server-winning row.
@@ -104,6 +109,9 @@ tests.
   passed as a no-test import smoke.
 - Gate: `bun test ./rust/bindings/browser/src/generated-app-conformance.test.ts`
   passed with `5` browser generated-app conformance tests.
+- Gate: `bun run rust:conformance:fast` passed, covering `syncular-testkit`,
+  runtime protocol/blob tests, Rust generated app tests, and browser
+  generated-app conformance tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.
