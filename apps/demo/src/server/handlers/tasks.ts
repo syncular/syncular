@@ -153,7 +153,7 @@ export const tasksServerHandler = createServerHandler<
           result: {
             opIndex,
             status: 'error',
-            error: 'MISSING_USER_ID',
+            error: 'Missing task user_id.',
             code: 'sync.invalid_request',
             retriable: false,
           },
@@ -240,7 +240,7 @@ export const tasksServerHandler = createServerHandler<
         result: {
           opIndex,
           status: 'error',
-          error: 'CANNOT_MOVE_BETWEEN_USERS',
+          error: 'Cannot move task rows between users.',
           code: 'sync.invalid_request',
           retriable: false,
         },
@@ -254,7 +254,7 @@ export const tasksServerHandler = createServerHandler<
         result: {
           opIndex,
           status: 'error',
-          error: 'MISSING_USER_ID',
+          error: 'Missing task user_id.',
           code: 'sync.invalid_request',
           retriable: false,
         },

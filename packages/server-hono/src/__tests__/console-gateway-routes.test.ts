@@ -881,7 +881,7 @@ describe('createConsoleGatewayRoutes', () => {
       details: { consoleError: string };
     };
     expect(noMatchBody.error).toBe('console.invalid_request');
-    expect(noMatchBody.details.consoleError).toBe('NO_INSTANCES_SELECTED');
+    expect(noMatchBody.details.consoleError).toBe('no_instances_selected');
   });
 
   it('merges stats and reports partial failures', async () => {
@@ -1254,7 +1254,7 @@ describe('createConsoleGatewayRoutes', () => {
       details: { consoleError: string };
     };
     expect(pruneBody.error).toBe('console.invalid_request');
-    expect(pruneBody.details.consoleError).toBe('INSTANCE_REQUIRED');
+    expect(pruneBody.details.consoleError).toBe('instance_required');
 
     const handlersWithoutInstance = await app.request(
       'http://localhost/console/handlers',
@@ -1268,7 +1268,7 @@ describe('createConsoleGatewayRoutes', () => {
       details: { consoleError: string };
     };
     expect(handlersBody.error).toBe('console.invalid_request');
-    expect(handlersBody.details.consoleError).toBe('INSTANCE_REQUIRED');
+    expect(handlersBody.details.consoleError).toBe('instance_required');
   });
 
   it('proxies single-instance mutation and config endpoints', async () => {

@@ -451,13 +451,13 @@ function parseLocalNumericId(value: string): number | null {
 function noInstancesSelectedResponse(): {
   ok: false;
   status: 400;
-  error: 'NO_INSTANCES_SELECTED';
+  error: 'no_instances_selected';
   message: string;
 } {
   return {
     ok: false,
     status: 400,
-    error: 'NO_INSTANCES_SELECTED',
+    error: 'no_instances_selected',
     message: 'No enabled instances matched the provided instance filter.',
   };
 }
@@ -509,7 +509,7 @@ function resolveFederatedOrLocalNumericTarget(args: {
       return {
         ok: false,
         status: 404,
-        error: 'NOT_FOUND',
+        error: 'not_found',
         message: 'Instance not found',
       };
     }
@@ -521,7 +521,7 @@ function resolveFederatedOrLocalNumericTarget(args: {
     return {
       ok: false,
       status: 400,
-      error: 'INVALID_FEDERATED_ID',
+      error: 'invalid_federated_id',
       message: args.invalidMessage,
     };
   }
@@ -552,7 +552,7 @@ function resolveEventTarget(args: {
     query: args.query,
     invalidMessage:
       'Expected either "<instanceId>:<eventId>" or "<eventId>" with an explicit instance filter.',
-    ambiguousError: 'AMBIGUOUS_EVENT_ID',
+    ambiguousError: 'ambiguous_event_id',
     ambiguousMessage:
       'Local event IDs are ambiguous across multiple instances. Use "<instanceId>:<eventId>" or select one instance.',
   });
@@ -577,7 +577,7 @@ function resolveCommitTarget(args: {
     query: args.query,
     invalidMessage:
       'Expected either "<instanceId>:<commitSeq>" or "<commitSeq>" with an explicit instance filter.',
-    ambiguousError: 'AMBIGUOUS_COMMIT_ID',
+    ambiguousError: 'ambiguous_commit_id',
     ambiguousMessage:
       'Local commit IDs are ambiguous across multiple instances. Use "<instanceId>:<commitSeq>" or select one instance.',
   });
@@ -598,7 +598,7 @@ function resolveSingleInstanceTarget(args: {
   return resolveSingleSelectedInstance({
     ...args,
     onMultiple: {
-      error: 'INSTANCE_REQUIRED',
+      error: 'instance_required',
       message:
         'This endpoint requires exactly one target instance. Provide `instanceId` or a single-value `instanceIds` filter.',
     },
@@ -830,14 +830,14 @@ function normalizeDownstreamError(args: {
 
   if (typeof args.body === 'string' && args.body.trim().length > 0) {
     return {
-      error: 'DOWNSTREAM_ERROR',
+      error: 'downstream_error',
       message: args.body,
       instanceId: args.instanceId,
     };
   }
 
   return {
-    error: 'DOWNSTREAM_ERROR',
+    error: 'downstream_error',
     status: args.status,
     instanceId: args.instanceId,
   };
@@ -2645,8 +2645,11 @@ export function createConsoleGatewayRoutes(
             ws.send(
               JSON.stringify({
                 type: 'error',
-                message:
-                  'No enabled instances matched the provided instance filter.',
+                ...createSyncularErrorResponse('console.invalid_request', {
+                  message:
+                    'No enabled instances matched the provided instance filter.',
+                  details: { consoleError: 'no_instances_selected' },
+                }),
               })
             );
             ws.close(4004, 'No instances selected');

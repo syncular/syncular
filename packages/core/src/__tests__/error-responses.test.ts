@@ -114,6 +114,11 @@ describe('Syncular error responses', () => {
       retryable: true,
       recommendedAction: 'retryLater',
     });
+    expect(createSyncularErrorResponse('console.internal')).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
   });
 
   it('includes proxy websocket classifications', () => {

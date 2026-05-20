@@ -456,10 +456,7 @@ export function createConsoleRoutes<
       error instanceof Error ? error.message : 'Unknown console error';
     console.error('[console] route error', error);
     return context.json(
-      {
-        error: 'CONSOLE_ROUTE_ERROR',
-        message,
-      },
+      createSyncularErrorResponse('console.internal', { message }),
       500
     );
   });
