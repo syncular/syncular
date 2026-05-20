@@ -180,6 +180,10 @@ read-only review:
     The external 40k artifact guard stayed in band at 500k
     (`1142.29ms -> 1154.34ms`, peak memory `667.59MB -> 662.03MB`), and the
     external 20k artifact robustness probe also kept `snapshotChunkCount=0`.
+    Browser artifact benchmark output now reports direct artifact count, bytes,
+    fetch, hash, decompress, and apply timings; the 100k guard stayed in band
+    at `136.33ms`, and the external 500k guard stayed healthy at `1002.06ms`
+    with `snapshotChunkCount=0`.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin

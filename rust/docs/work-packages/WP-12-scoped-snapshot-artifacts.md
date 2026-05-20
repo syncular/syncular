@@ -899,6 +899,32 @@ Retained artifact best-fit lookup follow-up:
   bytes (`3,554,785`) and peak memory (`671.81MB`) are worse than the accepted
   40k baseline, so this is not a page-size win.
 
+Retained browser artifact timing counters follow-up:
+
+- Browser Rust transport stats now report artifact count, compressed artifact
+  bytes, artifact fetch, artifact hash, and artifact decompression. Browser
+  sync timings now report direct SQLite artifact apply separately from the
+  broad snapshot row apply total.
+- This is measurement infrastructure for the next artifact state changes, not
+  a runtime caching path.
+- Correctness gates passed:
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun run --cwd tests/runtime tsgo`,
+  `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`, and
+  `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"`.
+- Local 100k release artifact guard stayed in band:
+  `rust_bootstrap_ms=136.33`, `rust_snapshot_artifact_count=2`,
+  `rust_snapshot_artifact_bytes=872794`,
+  `rust_snapshot_artifact_fetch_ms=4`,
+  `rust_snapshot_artifact_decompress_ms=6`,
+  `rust_snapshot_artifact_hash_ms=2`, and
+  `rust_snapshot_artifact_apply_ms=111`.
+- External app-style 40k artifact guard stayed healthy:
+  500k bootstrap `1154.34ms -> 1002.06ms`, local apply `209ms -> 198ms`,
+  response bytes `3,537,717 -> 3,537,647`, peak memory
+  `662.03MB -> 668.20MB`, and `snapshotChunkCount=0`.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.

@@ -119,6 +119,11 @@ matches the requested limit, `benchmark_rust_observed_snapshot_artifacts=1`,
 `rust_snapshot_chunk_binary_count=0`, and the retained run beats the previous
 compact artifact baseline. The 100k probe on May 19, 2026 failed this gate by
 falling back to `10` binary chunks.
+For direct SQLite artifact changes, also report
+`rust_snapshot_artifact_count`, `rust_snapshot_artifact_bytes`,
+`rust_snapshot_artifact_fetch_ms`, `rust_snapshot_artifact_decompress_ms`,
+`rust_snapshot_artifact_hash_ms`, and `rust_snapshot_artifact_apply_ms` so the
+artifact path is not hidden inside broad snapshot totals.
 
 ```bash
 bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
