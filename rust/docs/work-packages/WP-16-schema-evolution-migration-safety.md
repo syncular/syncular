@@ -63,9 +63,9 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Add generated migration metadata and local store assertions so browser/native
-clients can explain blocked startup or sync when the on-disk SQLite schema does
-not match the generated client schema.
+Extend the same persisted local schema-state assertion to the native facade/FFI
+surface so Swift/Kotlin/Java hosts can diagnose blocked startup or sync without
+parsing migration tables directly.
 
 ## Progress
 
@@ -84,6 +84,9 @@ not match the generated client schema.
   local row and the server exposes a snapshot row when a future required schema
   arrives. The public error/diagnostic surface reports `sync.schema_mismatch`,
   and worker-owned SQLite remains unchanged.
+- Tightened the generated browser client runtime assertion so it rejects a
+  persisted `syncular_app_schema` version mismatch even when the configured
+  runtime schema version matches the generated client.
 
 ## Latest Evidence
 
@@ -92,6 +95,8 @@ not match the generated client schema.
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "rejects server-required schema versions newer than the Rust WASM client"`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`
 - `bun run --cwd rust/bindings/browser tsgo`
+- `bun test rust/bindings/browser/src/generated-runtime.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
 - `bun run rust:conformance:fast`

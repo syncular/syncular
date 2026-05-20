@@ -720,6 +720,9 @@ export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabas
   if (schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion) {
     throw new Error(`Syncular Rust app schema version mismatch: ${schemaState.currentSchemaVersion}, expected ${syncularGeneratedSchemaVersion}`);
   }
+  if (schemaState.schemaVersion !== null && schemaState.schemaVersion !== syncularGeneratedSchemaVersion) {
+    throw new Error(`Syncular Rust local app schema version mismatch: local ${schemaState.schemaVersion}, generated ${syncularGeneratedSchemaVersion}`);
+  }
 }
 
 export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularV2RuntimeInfo): void {

@@ -448,7 +448,9 @@ read-only review:
     classification and fail-closed behavior through public native events.
     Browser Hono/WASM coverage now proves the public worker error/diagnostic
     surface rejects future required schemas without mutating worker-owned
-    SQLite.
+    SQLite. Generated browser clients now reject persisted local
+    `syncular_app_schema` version mismatches separately from configured runtime
+    version mismatches.
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
