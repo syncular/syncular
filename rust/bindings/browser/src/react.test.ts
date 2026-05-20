@@ -54,12 +54,14 @@ describe('@syncular/client-rust/react', () => {
 
   it('filters row change events by table', () => {
     const fake = new FakeManagedClient();
-    const { SyncularProvider, useRowsChanged } = createSyncularV2React<TestDb>();
+    const { SyncularProvider, useRowsChanged } =
+      createSyncularV2React<TestDb>();
     const wrapper = createWrapper(SyncularProvider, fake.client);
     const events: SyncularV2RowsChangedEvent[] = [];
 
     renderHook(
-      () => useRowsChanged((event) => events.push(event), { tables: ['tasks'] }),
+      () =>
+        useRowsChanged((event) => events.push(event), { tables: ['tasks'] }),
       { wrapper }
     );
 
@@ -237,10 +239,8 @@ class FakeManagedClient {
       getPresence: <TMetadata extends Record<string, unknown>>(
         scopeKey: string
       ) => this.getPresence<TMetadata>(scopeKey),
-      joinPresence: (
-        scopeKey: string,
-        metadata?: Record<string, unknown>
-      ) => this.joinPresence(scopeKey, metadata),
+      joinPresence: (scopeKey: string, metadata?: Record<string, unknown>) =>
+        this.joinPresence(scopeKey, metadata),
       leavePresence: (scopeKey: string) => this.leavePresence(scopeKey),
       updatePresenceMetadata: (
         scopeKey: string,
@@ -295,6 +295,7 @@ class FakeManagedClient {
         pullApplyMs: 0,
         scopeClearMs: 0,
         snapshotRowApplyMs: 0,
+        snapshotArtifactApplyMs: 0,
         snapshotChunkApplyMs: 0,
         snapshotChunkMaterializeMs: 0,
         commitApplyMs: 0,

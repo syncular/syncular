@@ -60,6 +60,11 @@ pub struct WebTransportStats {
     pub snapshot_chunk_decompress_ms: f64,
     pub snapshot_chunk_hash_ms: f64,
     pub snapshot_chunk_decode_ms: f64,
+    pub snapshot_artifact_count: u64,
+    pub snapshot_artifact_bytes: u64,
+    pub snapshot_artifact_fetch_ms: f64,
+    pub snapshot_artifact_decompress_ms: f64,
+    pub snapshot_artifact_hash_ms: f64,
     pub sync_pack_decode_ms: f64,
     pub server_bootstrap_snapshot_query_ms: f64,
     pub server_bootstrap_row_frame_encode_ms: f64,
@@ -251,6 +256,7 @@ impl AsyncSyncTransport for WebSyncTransport {
                 serde_json::to_string(scopes)?,
             )];
             headers.extend(effective_auth_headers(&self.auth_headers));
+            let fetch_started_at = timing_now_ms();
             let bytes = fetch_bytes_metered(
                 "snapshot artifact",
                 &url,
@@ -259,7 +265,12 @@ impl AsyncSyncTransport for WebSyncTransport {
                 &self.stats,
             )
             .await?;
-            decode_snapshot_artifact_bytes(artifact, &bytes).await
+            record_snapshot_artifact_fetch(
+                &self.stats,
+                bytes.len(),
+                elapsed_ms_since(fetch_started_at),
+            );
+            decode_snapshot_artifact_bytes(artifact, &bytes, &self.stats).await
         })
     }
 
@@ -627,6 +638,25 @@ fn record_snapshot_chunk_decode(stats: &Rc<RefCell<WebTransportStats>>, elapsed_
     stats.borrow_mut().snapshot_chunk_decode_ms += elapsed_ms;
 }
 
+fn record_snapshot_artifact_fetch(
+    stats: &Rc<RefCell<WebTransportStats>>,
+    bytes: usize,
+    elapsed_ms: f64,
+) {
+    let mut stats = stats.borrow_mut();
+    stats.snapshot_artifact_count += 1;
+    stats.snapshot_artifact_bytes += bytes as u64;
+    stats.snapshot_artifact_fetch_ms += elapsed_ms;
+}
+
+fn record_snapshot_artifact_decompress(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    stats.borrow_mut().snapshot_artifact_decompress_ms += elapsed_ms;
+}
+
+fn record_snapshot_artifact_hash(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
+    stats.borrow_mut().snapshot_artifact_hash_ms += elapsed_ms;
+}
+
 fn record_sync_pack_decode(stats: &Rc<RefCell<WebTransportStats>>, elapsed_ms: f64) {
     stats.borrow_mut().sync_pack_decode_ms += elapsed_ms;
 }
@@ -799,6 +829,7 @@ async fn decode_snapshot_rows(
 async fn validate_snapshot_artifact_bytes(
     artifact: &ScopedSnapshotArtifactRef,
     bytes: &[u8],
+    stats: &Rc<RefCell<WebTransportStats>>,
 ) -> Result<()> {
     syncular_protocol::validate_scoped_snapshot_artifact_ref(artifact)?;
     if bytes.len() as i64 != artifact.byte_length {
@@ -808,7 +839,9 @@ async fn validate_snapshot_artifact_bytes(
             bytes.len()
         )));
     }
+    let hash_started_at = timing_now_ms();
     let actual_hash = sha256_digest(bytes).await?;
+    record_snapshot_artifact_hash(stats, elapsed_ms_since(hash_started_at));
     let actual_hash = hex::encode(actual_hash);
     if actual_hash != artifact.sha256 {
         return Err(SyncularError::protocol_message(format!(
@@ -822,23 +855,27 @@ async fn validate_snapshot_artifact_bytes(
 async fn decode_snapshot_artifact_bytes(
     artifact: &ScopedSnapshotArtifactRef,
     compressed: &[u8],
+    stats: &Rc<RefCell<WebTransportStats>>,
 ) -> Result<Vec<u8>> {
-    validate_snapshot_artifact_bytes(artifact, compressed).await?;
+    validate_snapshot_artifact_bytes(artifact, compressed, stats).await?;
     if artifact.compression != SNAPSHOT_CHUNK_COMPRESSION_GZIP {
         return Err(SyncularError::protocol_message(format!(
             "unsupported snapshot artifact compression {}",
             artifact.compression
         )));
     }
-    match decompress_gzip_with_browser(compressed).await {
-        Ok(Some(decoded)) => Ok(decoded),
+    let decompress_started_at = timing_now_ms();
+    let decoded = match decompress_gzip_with_browser(compressed).await {
+        Ok(Some(decoded)) => decoded,
         Ok(None) | Err(_) => {
             let mut decoder = GzDecoder::new(compressed);
             let mut decoded = Vec::new();
             decoder.read_to_end(&mut decoded)?;
-            Ok(decoded)
+            decoded
         }
-    }
+    };
+    record_snapshot_artifact_decompress(stats, elapsed_ms_since(decompress_started_at));
+    Ok(decoded)
 }
 
 async fn decode_snapshot_chunk_bytes(

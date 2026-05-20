@@ -48,6 +48,11 @@ export interface SyncularV2TransportStats {
   snapshotChunkDecompressMs: number;
   snapshotChunkHashMs: number;
   snapshotChunkDecodeMs: number;
+  snapshotArtifactCount: number;
+  snapshotArtifactBytes: number;
+  snapshotArtifactFetchMs: number;
+  snapshotArtifactDecompressMs: number;
+  snapshotArtifactHashMs: number;
   syncPackDecodeMs: number;
   serverBootstrapSnapshotQueryMs: number;
   serverBootstrapRowFrameEncodeMs: number;
@@ -547,6 +552,7 @@ export interface SyncularV2SyncTimings {
   pullApplyMs: number;
   scopeClearMs: number;
   snapshotRowApplyMs: number;
+  snapshotArtifactApplyMs: number;
   snapshotChunkApplyMs: number;
   snapshotChunkMaterializeMs: number;
   snapshotChunkResetMs: number;

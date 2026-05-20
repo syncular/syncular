@@ -273,6 +273,88 @@ Decision:
   recommendation because response bytes and peak memory are worse than the
   accepted 40k baseline.
 
+## 2026-05-20 - Retained Browser Artifact Timing Counters
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Added explicit browser Rust artifact counters/timings for artifact count,
+  compressed artifact bytes, artifact fetch, artifact hash, artifact
+  decompression, and direct SQLite artifact apply.
+- The existing broad `snapshotFetchMs` and `snapshotRowApplyMs` totals remain,
+  but page-size/memory experiments can now see artifact costs directly.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Browser release artifact guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-instrumentation-100k.json
+```
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 100k Rust artifact bootstrap | `144.56ms` | `136.33ms` |
+| Rust artifact count | n/a | `2` |
+| Rust artifact bytes | n/a | `872,794` |
+| Rust artifact fetch | n/a | `4ms` |
+| Rust artifact decompress | n/a | `6ms` |
+| Rust artifact hash | n/a | `2ms` |
+| Rust artifact apply | n/a | `111ms` |
+| Browser entry JS bytes | `1,279,706` | `1,280,998` |
+| Served Rust WASM bytes | `3,364,012` | `3,364,676` |
+
+External app-style scoped artifact guard:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T07-51-53-764Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 500k bootstrap | `1154.34ms` | `1002.06ms` |
+| 500k derived schema | `673.26ms` | `581.85ms` |
+| 500k local apply | `209ms` | `198ms` |
+| 500k response bytes | `3,537,717` | `3,537,647` |
+| 500k peak memory | `662.03MB` | `668.20MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Accepted. This is benchmark instrumentation and the local/external guards do
+  not show an overhead regression. The browser bundle size increase is small
+  enough to keep because future artifact state work needs these counters.
+
 ## 2026-05-20 - Rejected Artifact Page Cap 3
 
 Work package:

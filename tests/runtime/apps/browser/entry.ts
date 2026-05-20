@@ -203,6 +203,11 @@ interface RustE2eTransportStats {
   snapshotChunkDecompressMs: number;
   snapshotChunkHashMs: number;
   snapshotChunkDecodeMs: number;
+  snapshotArtifactCount: number;
+  snapshotArtifactBytes: number;
+  snapshotArtifactFetchMs: number;
+  snapshotArtifactDecompressMs: number;
+  snapshotArtifactHashMs: number;
   syncPackDecodeMs: number;
   serverBootstrapSnapshotQueryMs: number;
   serverBootstrapRowFrameEncodeMs: number;
@@ -900,6 +905,7 @@ const rustTimingKeys: Array<keyof SyncularV2SyncTimings> = [
   'pullApplyMs',
   'scopeClearMs',
   'snapshotRowApplyMs',
+  'snapshotArtifactApplyMs',
   'snapshotChunkApplyMs',
   'snapshotChunkMaterializeMs',
   'snapshotChunkResetMs',
@@ -923,6 +929,7 @@ function emptyRustTimings(): SyncularV2SyncTimings {
     pullApplyMs: 0,
     scopeClearMs: 0,
     snapshotRowApplyMs: 0,
+    snapshotArtifactApplyMs: 0,
     snapshotChunkApplyMs: 0,
     snapshotChunkMaterializeMs: 0,
     snapshotChunkResetMs: 0,
@@ -1250,6 +1257,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       rustRun.timings.snapshotRowApplyMs
     );
     pushMetric(
+      'rust_snapshot_artifact_apply_ms',
+      rustRun.timings.snapshotArtifactApplyMs
+    );
+    pushMetric(
       'rust_snapshot_chunk_apply_ms',
       rustRun.timings.snapshotChunkApplyMs
     );
@@ -1284,6 +1295,28 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_snapshot_chunk_decode_ms',
       rustStats.snapshotChunkDecodeMs
+    );
+    pushMetric(
+      'rust_snapshot_artifact_count',
+      rustStats.snapshotArtifactCount,
+      'count'
+    );
+    pushMetric(
+      'rust_snapshot_artifact_bytes',
+      rustStats.snapshotArtifactBytes,
+      'bytes'
+    );
+    pushMetric(
+      'rust_snapshot_artifact_fetch_ms',
+      rustStats.snapshotArtifactFetchMs
+    );
+    pushMetric(
+      'rust_snapshot_artifact_decompress_ms',
+      rustStats.snapshotArtifactDecompressMs
+    );
+    pushMetric(
+      'rust_snapshot_artifact_hash_ms',
+      rustStats.snapshotArtifactHashMs
     );
     pushMetric('rust_sync_pack_decode_ms', rustStats.syncPackDecodeMs);
     pushMetric(
@@ -1398,6 +1431,10 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       cachedRustRun.timings.snapshotRowApplyMs
     );
     pushMetric(
+      'rust_cached_snapshot_artifact_apply_ms',
+      cachedRustRun.timings.snapshotArtifactApplyMs
+    );
+    pushMetric(
       'rust_cached_snapshot_chunk_apply_ms',
       cachedRustRun.timings.snapshotChunkApplyMs
     );
@@ -1437,6 +1474,28 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_cached_snapshot_chunk_decode_ms',
       cachedRustStats.snapshotChunkDecodeMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_count',
+      cachedRustStats.snapshotArtifactCount,
+      'count'
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_bytes',
+      cachedRustStats.snapshotArtifactBytes,
+      'bytes'
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_fetch_ms',
+      cachedRustStats.snapshotArtifactFetchMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_decompress_ms',
+      cachedRustStats.snapshotArtifactDecompressMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_hash_ms',
+      cachedRustStats.snapshotArtifactHashMs
     );
     pushMetric(
       'rust_cached_sync_pack_decode_ms',
@@ -1654,7 +1713,9 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
           const liveMs = nextLiveCount.at - realtimeStartedAt;
           realtimePushSamples.push(realtimePush.pushMs);
           realtimeLiveSamples.push(liveMs);
-          realtimeOverheadSamples.push(Math.max(0, liveMs - realtimePush.pushMs));
+          realtimeOverheadSamples.push(
+            Math.max(0, liveMs - realtimePush.pushMs)
+          );
           pushedRealtimeCommits += realtimePush.pushedCommits;
           liveCount = nextLiveCount;
         }
@@ -1719,7 +1780,11 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         pushMetric('rust_realtime_live_p95_ms', realtimeLive.p95);
         pushMetric('rust_realtime_live_min_ms', realtimeLive.min);
         pushMetric('rust_realtime_live_max_ms', realtimeLive.max);
-        emitTimedSamples(pushMetric, 'rust_realtime_overhead', realtimeOverhead);
+        emitTimedSamples(
+          pushMetric,
+          'rust_realtime_overhead',
+          realtimeOverhead
+        );
         pushMetric(
           'rust_realtime_http_request_count',
           realtimeRustStats.requestCount,

@@ -150,6 +150,7 @@ pub struct WebSyncTimings {
     pub pull_apply_ms: f64,
     pub scope_clear_ms: f64,
     pub snapshot_row_apply_ms: f64,
+    pub snapshot_artifact_apply_ms: f64,
     pub snapshot_chunk_apply_ms: f64,
     pub snapshot_chunk_materialize_ms: f64,
     pub snapshot_chunk_reset_ms: f64,
@@ -497,8 +498,9 @@ where
                             self.store
                                 .apply_sqlite_snapshot_artifact_rows(&snapshot_table, bytes, mode)
                                 .await?;
-                            result.timings.snapshot_row_apply_ms +=
-                                elapsed_ms_since(artifact_apply_started_at);
+                            let artifact_apply_ms = elapsed_ms_since(artifact_apply_started_at);
+                            result.timings.snapshot_row_apply_ms += artifact_apply_ms;
+                            result.timings.snapshot_artifact_apply_ms += artifact_apply_ms;
                         }
                         for rows in chunk_batches {
                             let chunk_apply_started_at = timing_now_ms();
