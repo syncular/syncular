@@ -6,7 +6,10 @@ use serde_json::json;
 use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
-use syncular_runtime::transport::{HttpSyncTransport, RealtimeEvent, SyncTransportConfig};
+use syncular_runtime::protocol::{PushCommitRequest, SyncOperation};
+use syncular_runtime::transport::{
+    HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncTransport, SyncTransportConfig,
+};
 use syncular_testkit::{
     actor_project_scopes, apply_crdt_field_text, apply_native_crdt_field_text,
     apply_native_todo_task_upsert, assert_blob_upload_queue, assert_conflict_count,
@@ -245,6 +248,69 @@ fn app_test_http_server_serves_stateful_sync_and_realtime_wakeups() {
 }
 
 #[test]
+fn app_test_http_server_accepts_production_realtime_pushes() {
+    let app_schema = todo::app_schema();
+    let server = AppTestHttpServer::start(app_schema).expect("stateful HTTP server");
+    let schema_version = app_schema.current_schema_version();
+
+    let writer_transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        "app-server-ws-push-writer".to_string(),
+        "actor-writer".to_string(),
+    ))
+    .with_schema_version(schema_version);
+    let reader_transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        "app-server-ws-push-reader".to_string(),
+        "actor-reader".to_string(),
+    ))
+    .with_schema_version(schema_version);
+    let mut writer_socket = writer_transport
+        .connect_realtime()
+        .expect("writer websocket");
+    let mut reader_socket = reader_transport
+        .connect_realtime()
+        .expect("reader websocket");
+
+    let response = writer_socket
+        .push_commit(PushCommitRequest {
+            client_commit_id: "app-server-ws-push-commit".to_string(),
+            operations: vec![SyncOperation {
+                table: "tasks".to_string(),
+                row_id: "app-server-ws-push-task".to_string(),
+                op: "upsert".to_string(),
+                payload: Some(json!({
+                    "id": "app-server-ws-push-task",
+                    "title": "WebSocket pushed task",
+                    "completed": 0,
+                    "user_id": "user-rust",
+                    "project_id": "p0"
+                })),
+                base_version: Some(0),
+            }],
+            schema_version,
+        })
+        .expect("websocket push");
+
+    assert_eq!(response.status, "applied");
+    assert_eq!(response.commit_seq, Some(1));
+    assert_eq!(
+        server
+            .app_server()
+            .row("tasks", "app-server-ws-push-task")
+            .expect("server row")["title"],
+        "WebSocket pushed task"
+    );
+    assert_eq!(
+        next_realtime_event(&mut reader_socket, Duration::from_secs(2)),
+        Some("Sync".to_string())
+    );
+
+    writer_socket.close();
+    reader_socket.close();
+}
+
+#[test]
 fn app_test_http_server_reports_stateful_version_conflicts() {
     let server = AppTestHttpServer::start(todo::app_schema()).expect("stateful HTTP server");
     server
@@ -321,6 +387,22 @@ fn app_test_http_server_reports_stateful_version_conflicts() {
         "app-server-http-conflict",
     );
     assert_eq!(row["title"], "Server edit");
+}
+
+fn next_realtime_event(
+    socket: &mut syncular_runtime::transport::RealtimeSocket,
+    timeout: Duration,
+) -> Option<String> {
+    let started_at = std::time::Instant::now();
+    while started_at.elapsed() < timeout {
+        match socket.read_event().expect("read realtime event") {
+            Some(RealtimeEvent::Sync) => return Some("Sync".to_string()),
+            Some(RealtimeEvent::Presence(_)) => return Some("Presence".to_string()),
+            Some(RealtimeEvent::Other(event)) => return Some(event),
+            None => {}
+        }
+    }
+    None
 }
 
 #[test]
