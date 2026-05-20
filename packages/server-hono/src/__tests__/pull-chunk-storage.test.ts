@@ -219,6 +219,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -304,6 +305,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -453,6 +455,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -532,6 +535,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -795,6 +799,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u2' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -803,8 +808,12 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(reusedClientResponse.status).toBe(400);
-    expect(await reusedClientResponse.json()).toEqual({
-      error: 'INVALID_CLIENT_ID',
+    expect(await reusedClientResponse.json()).toMatchObject({
+      error: 'sync.invalid_client_id',
+      code: 'sync.invalid_client_id',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'resetClientId',
       message: 'clientId is already bound to a different actor',
     });
   });
@@ -886,6 +895,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -997,6 +1007,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                   table: 'tasks',
                   scopes: { user_id: 'u1' },
                   cursor: -1,
+                  crdtStateVectors: [],
                 },
               ],
             },

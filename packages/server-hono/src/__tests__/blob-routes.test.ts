@@ -277,7 +277,13 @@ describe('createBlobRoutes', () => {
     });
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'UNAUTHENTICATED' });
+    expect(await response.json()).toMatchObject({
+      error: 'sync.auth_required',
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
   });
 
   it('rejects invalid direct-upload tokens', async () => {
@@ -296,7 +302,13 @@ describe('createBlobRoutes', () => {
     );
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'INVALID_TOKEN' });
+    expect(await response.json()).toMatchObject({
+      error: 'blob.invalid_token',
+      code: 'blob.invalid_token',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
   });
 
   it('rejects direct upload when body size does not match metadata', async () => {
@@ -331,8 +343,13 @@ describe('createBlobRoutes', () => {
     );
 
     expect(response.status).toBe(400);
-    const payload = (await response.json()) as { error: string };
-    expect(payload.error).toBe('SIZE_MISMATCH');
+    expect(await response.json()).toMatchObject({
+      error: 'blob.size_mismatch',
+      code: 'blob.size_mismatch',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
   });
 
   it('rejects direct upload when body hash does not match route hash', async () => {
@@ -367,8 +384,13 @@ describe('createBlobRoutes', () => {
     );
 
     expect(response.status).toBe(400);
-    const payload = (await response.json()) as { error: string };
-    expect(payload.error).toBe('HASH_MISMATCH');
+    expect(await response.json()).toMatchObject({
+      error: 'blob.hash_mismatch',
+      code: 'blob.hash_mismatch',
+      category: 'integrity-rejected',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
   });
 
   it('returns 404 for invalid hash format and 403 for forbidden actor access', async () => {
@@ -386,7 +408,13 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(invalidHashResponse.status).toBe(404);
-    expect(await invalidHashResponse.json()).toEqual({ error: 'NOT_FOUND' });
+    expect(await invalidHashResponse.json()).toMatchObject({
+      error: 'blob.not_found',
+      code: 'blob.not_found',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
 
     const validHash = `sha256:${'b'.repeat(64)}`;
     const forbiddenResponse = await app.request(
@@ -396,7 +424,13 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(forbiddenResponse.status).toBe(403);
-    expect(await forbiddenResponse.json()).toEqual({ error: 'FORBIDDEN' });
+    expect(await forbiddenResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
   });
 
   it('rejects upload completion from a different actor', async () => {
@@ -431,7 +465,10 @@ describe('createBlobRoutes', () => {
     );
 
     expect(completeResponse.status).toBe(403);
-    expect(await completeResponse.json()).toEqual({ error: 'FORBIDDEN' });
+    expect(await completeResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
   });
 
   it('uploads and downloads blobs through adapter put/get branches', async () => {
@@ -555,8 +592,9 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(uploadResponse.status).toBe(400);
-    expect(await uploadResponse.json()).toEqual({
-      error: 'HASH_MISMATCH',
+    expect(await uploadResponse.json()).toMatchObject({
+      error: 'blob.hash_mismatch',
+      code: 'blob.hash_mismatch',
       message: 'Content hash does not match',
     });
 
@@ -687,6 +725,9 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(otherPartitionUrl.status).toBe(404);
-    expect(await otherPartitionUrl.json()).toEqual({ error: 'NOT_FOUND' });
+    expect(await otherPartitionUrl.json()).toMatchObject({
+      error: 'blob.not_found',
+      code: 'blob.not_found',
+    });
   });
 });

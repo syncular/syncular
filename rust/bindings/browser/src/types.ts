@@ -2,6 +2,9 @@ import type {
   BlobRef,
   ColumnCodecSource,
   SyncAuthLifecycle,
+  SyncularErrorCategory as CoreSyncularErrorCategory,
+  SyncularErrorCode as CoreSyncularErrorCode,
+  SyncularErrorRecommendedAction as CoreSyncularErrorRecommendedAction,
   SyncOperation,
 } from '@syncular/core';
 import type { CompiledQuery } from 'kysely';
@@ -549,20 +552,12 @@ export type SyncularV2ClientEventSink<T extends SyncularV2ClientEventType> = (
   event: SyncularV2ClientEventMap[T]
 ) => void;
 
-export type SyncularV2ErrorCode =
-  | 'sync.auth_required'
-  | 'sync.schema_mismatch'
-  | 'sync.integrity_rejected';
+export type SyncularV2ErrorCode = CoreSyncularErrorCode;
 
-export type SyncularV2ErrorCategory =
-  | 'auth-required'
-  | 'schema-mismatch'
-  | 'integrity-rejected';
+export type SyncularV2ErrorCategory = CoreSyncularErrorCategory;
 
 export type SyncularV2ErrorRecommendedAction =
-  | 'refreshAuth'
-  | 'regenerateClient'
-  | 'forceResync';
+  CoreSyncularErrorRecommendedAction;
 
 export interface SyncularV2SyncResult {
   changedTables: string[];

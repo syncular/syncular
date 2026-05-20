@@ -20,6 +20,8 @@ export * from './conflict';
 export * from './database';
 // Database dialect descriptors
 export * from './dialect';
+// Public error response envelopes
+export * from './error-responses';
 // Kysely plugin for applying column codecs in generic queries
 export * from './kysely-column-codecs';
 // Logging utilities

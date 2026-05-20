@@ -216,6 +216,7 @@ describe('createSyncServer console configuration', () => {
               table: 'tasks',
               scopes: { user_id: args.subscriptionUserId },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -492,8 +493,12 @@ describe('createSyncServer console configuration', () => {
       'http://localhost/sync/realtime?clientId=client-1'
     );
     expect(response.status).toBe(429);
-    expect(await response.json()).toEqual({
-      error: 'WEBSOCKET_CONNECTION_LIMIT_CLIENT',
+    expect(await response.json()).toMatchObject({
+      error: 'sync.websocket_connection_limit',
+      code: 'sync.websocket_connection_limit',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
     });
   });
 
@@ -518,8 +523,12 @@ describe('createSyncServer console configuration', () => {
       'http://localhost/sync/realtime?clientId=client-3'
     );
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      error: 'FORBIDDEN_ORIGIN',
+    expect(await response.json()).toMatchObject({
+      error: 'sync.forbidden',
+      code: 'sync.forbidden',
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
     });
   });
 
@@ -721,8 +730,12 @@ describe('createSyncServer console configuration', () => {
     );
 
     expect(hijackResponse.status).toBe(400);
-    expect(await hijackResponse.json()).toEqual({
-      error: 'INVALID_CLIENT_ID',
+    expect(await hijackResponse.json()).toMatchObject({
+      error: 'sync.invalid_client_id',
+      code: 'sync.invalid_client_id',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'resetClientId',
       message: 'clientId is already bound to a different actor',
     });
     expect(capturedEvents).toBeNull();
@@ -1685,8 +1698,12 @@ describe('createSyncServer console configuration', () => {
       'http://localhost/sync/realtime?clientId=client-2'
     );
     expect(response.status).toBe(429);
-    expect(await response.json()).toEqual({
-      error: 'WEBSOCKET_CONNECTION_LIMIT_TOTAL',
+    expect(await response.json()).toMatchObject({
+      error: 'sync.websocket_connection_limit',
+      code: 'sync.websocket_connection_limit',
+      category: 'rate-limited',
+      retryable: true,
+      recommendedAction: 'retryLater',
     });
   });
 

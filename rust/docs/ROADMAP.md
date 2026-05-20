@@ -390,7 +390,10 @@ read-only review:
     recovery-critical cases are auth-required, schema mismatch, and integrity
     rejection, and worker diagnostics use the same stable codes when
     classified. The browser package now shares the same classifier with the
-    direct Rust client sync path through `SyncularV2ClientError`.
+    direct Rust client sync path through `SyncularV2ClientError`. Core now owns
+    the public error response taxonomy, and Hono sync/blob/rate-limit/auth
+    routes emit stable JSON error envelopes that the browser classifier can
+    consume from Rust transport failures.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

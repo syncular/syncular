@@ -63,9 +63,9 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Continue expanding the same stable error envelope beyond browser sync errors:
-native facade/BoltFFI, server JSON error responses, blob failures, and
-generated typed errors.
+Continue expanding the same stable error envelope into native facade/BoltFFI
+errors, generated typed errors, console route errors, and remaining runtime
+storage/blob queue failures.
 
 ## Progress
 
@@ -85,9 +85,25 @@ generated typed errors.
 - The browser package now has a shared `SyncularV2ClientError` classifier used
   by both the worker bridge and the direct Rust client sync path, so apps get
   the same stable envelope without being forced through the worker.
+- `@syncular/core` now owns the public error response taxonomy and JSON schema
+  extensions for `code`, `category`, `retryable`, `recommendedAction`, and
+  structured `details`.
+- Hono sync, snapshot chunk/artifact, realtime connection-limit, rate-limit,
+  API-key auth, and blob HTTP failures now return stable error envelopes
+  instead of string-only public error bodies.
+- Browser error classification now recognizes server error envelopes embedded
+  in Rust transport failures, so server-side `sync.forbidden`,
+  `sync.rate_limited`, blob errors, and future codes do not depend on parsing
+  message text.
 
 ## Latest Evidence
 
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server-hono tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts`
+- `bun test packages/server-hono/src/__tests__/blob-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/server-hono/src/__tests__/rate-limit.test.ts`
+- `bun test rust/bindings/browser/src/errors.test.ts rust/bindings/browser/src/worker-client.test.ts`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "revoked sessions|server-required schema|corrupted snapshot chunk"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`
 - `bun test rust/bindings/browser/src/errors.test.ts rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "browser errors|structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`
