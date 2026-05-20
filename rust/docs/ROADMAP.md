@@ -444,7 +444,8 @@ read-only review:
     simulate `requiredSchemaVersion` and `latestSchemaVersion`. The rolling
     deploy smoke proves a client can bootstrap existing rows, then reject a
     future required server schema with `sync.schema_mismatch` while leaving the
-    local synced replica unchanged.
+    local synced replica unchanged. Native fixture coverage now proves the same
+    classification and fail-closed behavior through public native events.
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
