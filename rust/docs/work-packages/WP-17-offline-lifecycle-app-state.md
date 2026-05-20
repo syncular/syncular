@@ -1,6 +1,6 @@
 # WP-17 Offline Lifecycle And App State Integration
 
-Status: `[ ]` planned
+Status: `[~]` started
 
 ## Goal
 
@@ -60,3 +60,7 @@ mechanics into app-state APIs that developers can render and test.
 
 Define a stable lifecycle event shape and wire one browser worker test covering
 offline mutation queueing, reconnect recovery, and final complete state.
+
+## Progress
+
+- Activated after WP-16 accepted the schema-evolution safety slice.

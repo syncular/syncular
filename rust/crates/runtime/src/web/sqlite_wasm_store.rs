@@ -1791,12 +1791,14 @@ impl SyncularRustOwnedSqlite {
         )?;
         if let Some(local_version) = rows.first().copied() {
             let current = self.schema_version;
-            if local_version != current {
+            if local_version > current {
                 return Err(SyncularError::schema(format!(
                     "Syncular app schema version mismatch: local {local_version}, configured {current}"
                 )));
             }
-            self.validate_generated_app_schema()?;
+            if local_version == current {
+                self.validate_generated_app_schema()?;
+            }
         }
         Ok(())
     }

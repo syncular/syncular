@@ -1,6 +1,6 @@
 # WP-16 Schema Evolution And Migration Safety
 
-Status: `[~]` started
+Status: `[x]` accepted
 
 ## Goal
 
@@ -63,9 +63,9 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Design the future browser app-schema migration replay path around app-only
-migrations. Current todo migrations still mix app tables with Syncular runtime
-system tables, while Rust WASM already owns the runtime system schema.
+Move to WP-17. Future schema work should add app-specific migration fixtures
+when a real app release needs table-shape changes beyond the todo runtime
+system migration history.
 
 ## Progress
 
@@ -84,17 +84,22 @@ system tables, while Rust WASM already owns the runtime system schema.
   local row and the server exposes a snapshot row when a future required schema
   arrives. The public error/diagnostic surface reports `sync.schema_mismatch`,
   and worker-owned SQLite remains unchanged.
-- Tightened the generated browser client runtime assertion so it rejects a
-  persisted `syncular_app_schema` version mismatch even when the configured
-  runtime schema version matches the generated client.
+- Tightened the generated browser client runtime assertion so it rejects future
+  persisted `syncular_app_schema` versions while allowing older versions to
+  proceed into generated app migration replay.
 - Added native/Diesel app schema state persistence and host-facing JSON access
   through `NativeSyncularClient`, C FFI, and generated Swift/Kotlin/Java BoltFFI
   wrappers. Native open now rejects a persisted future local app schema version
   before using the database.
-- Made the generated browser installer fail closed with an explicit message
-  when persisted app schema state differs from the generated client: browser
-  app-schema migration replay is not currently available for this generated
-  client.
+- Split generated app migrations from Syncular runtime system migrations.
+  Runtime-owned stores now install system tables themselves, generated Rust,
+  Swift, Kotlin, and TypeScript app schemas carry only app-owned migration SQL,
+  and the generated TypeScript installer replays pending app migration
+  statements before validating and stamping the current app schema version.
+- Kept the current mixed todo migration history usable by stripping system DDL
+  at generation time. The app migration splitter preserves app columns such as
+  `sync_status` while removing system objects with reserved `sync_`,
+  `syncular_`, and `idx_sync_` object identifiers.
 
 ## Latest Evidence
 
@@ -105,9 +110,14 @@ system tables, while Rust WASM already owns the runtime system schema.
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/generated-runtime.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test store_backends --test native_facade --test native_ffi --test native_binding_scaffold`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture --test store_backends`
 - `bun run rust:conformance:native`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `bun test rust/bindings/browser/src/generated-runtime.test.ts rust/bindings/browser/src/database.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
+- `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
+- `bun run --cwd rust/bindings/browser build:wasm:dev`
 - `bun run rust:conformance:fast`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`

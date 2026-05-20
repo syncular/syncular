@@ -47,7 +47,7 @@ describe('generated Syncular v2 runtime assertions', () => {
     ).rejects.toThrow('Syncular Rust app schema version mismatch');
   });
 
-  it('rejects mismatched persisted local app schema versions', async () => {
+  it('allows older persisted local app schema versions for generated migration replay', async () => {
     await expect(
       assertSyncularAppRuntime({
         client: {
@@ -58,6 +58,26 @@ describe('generated Syncular v2 runtime assertions', () => {
             return {
               schemaId: 'syncular-app',
               schemaVersion: syncularGeneratedSchemaVersion - 1,
+              currentSchemaVersion: syncularGeneratedSchemaVersion,
+              updatedAt: Date.now(),
+            };
+          },
+        },
+      } as any)
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects future persisted local app schema versions', async () => {
+    await expect(
+      assertSyncularAppRuntime({
+        client: {
+          async runtimeInfo() {
+            return runtimeInfo();
+          },
+          async generatedSchemaState() {
+            return {
+              schemaId: 'syncular-app',
+              schemaVersion: syncularGeneratedSchemaVersion + 1,
               currentSchemaVersion: syncularGeneratedSchemaVersion,
               updatedAt: Date.now(),
             };
