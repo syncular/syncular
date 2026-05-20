@@ -755,6 +755,9 @@ export class SyncularV2RustClient {
         ...syncularV2DiagnosticAttemptFields(syncAttempt),
         details: { durationMs: Date.now() - startedAt },
       });
+      if (isSyncularV2SyncResult(result)) {
+        this.#emitScopeRevokedDiagnostic(requestType, result, syncAttempt);
+      }
       return result;
     } catch (error) {
       const classifiedError = toSyncularV2ClientError(error);
@@ -830,6 +833,39 @@ export class SyncularV2RustClient {
     this.#closed = true;
     this.raw.close();
   }
+
+  #emitScopeRevokedDiagnostic(
+    requestType: 'syncPull' | 'syncPush' | 'syncOnce',
+    result: SyncularV2SyncResult,
+    syncAttempt: SyncularV2SyncAttempt
+  ): void {
+    const revokedSubscriptionIds = result.subscriptions
+      .filter((subscription) => subscription.status === 'revoked')
+      .map((subscription) => subscription.id);
+    if (revokedSubscriptionIds.length === 0) return;
+
+    this.#emitDiagnostic({
+      at: Date.now(),
+      level: 'warn',
+      source: 'sync',
+      code: 'sync.scope_revoked',
+      message: 'Syncular v2 subscription scope revoked',
+      ...syncularV2DiagnosticAttemptFields(syncAttempt),
+      details: {
+        requestType,
+        revokedSubscriptionIds,
+        revokedSubscriptionCount: revokedSubscriptionIds.length,
+      },
+    });
+  }
+}
+
+function isSyncularV2SyncResult(value: unknown): value is SyncularV2SyncResult {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Array.isArray((value as { subscriptions?: unknown }).subscriptions)
+  );
 }
 
 function parseSyncResult(value: string): SyncularV2SyncResult {

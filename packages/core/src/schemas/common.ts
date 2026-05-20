@@ -12,6 +12,8 @@ export const SyncularErrorCategorySchema = z.enum([
   'auth-required',
   'forbidden',
   'conflict',
+  'scope-revoked',
+  'offline',
   'invalid-request',
   'not-found',
   'schema-mismatch',

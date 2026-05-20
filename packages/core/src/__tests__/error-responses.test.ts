@@ -73,6 +73,16 @@ describe('Syncular error responses', () => {
       retryable: false,
       recommendedAction: 'regenerateClient',
     });
+    expect(createSyncularErrorResponse('sync.scope_revoked')).toMatchObject({
+      category: 'scope-revoked',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
+    expect(createSyncularErrorResponse('sync.offline')).toMatchObject({
+      category: 'offline',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
     expect(
       createSyncularErrorResponse('sync.idempotency_cache_miss')
     ).toMatchObject({

@@ -417,6 +417,7 @@ function postRequestSuccessDiagnostic(
   durationMs: number
 ): void {
   if (!isDiagnosedSuccessRequest(request.type)) return;
+  const syncRevocation = syncScopeRevocationDetails(value);
   postDiagnostic({
     level: 'info',
     source: requestDiagnosticSource(request.type),
@@ -429,6 +430,24 @@ function postRequestSuccessDiagnostic(
       ...requestSuccessDetails(request, value),
     },
   });
+  if (
+    syncRevocation &&
+    (request.type === 'syncPull' ||
+      request.type === 'syncPush' ||
+      request.type === 'syncOnce')
+  ) {
+    postDiagnostic({
+      level: 'warn',
+      source: 'sync',
+      code: 'sync.scope_revoked',
+      message: 'Syncular v2 subscription scope revoked',
+      ...requestSyncAttemptDiagnosticFields(request),
+      details: {
+        requestType: request.type,
+        ...syncRevocation,
+      },
+    });
+  }
 }
 
 function requestSyncAttemptDiagnosticFields(
@@ -573,6 +592,32 @@ function syncResultDetails(value: unknown): Record<string, unknown> {
     pushedCommits:
       typeof result.pushedCommits === 'number' ? result.pushedCommits : 0,
   };
+}
+
+function syncScopeRevocationDetails(
+  value: unknown
+): { revokedSubscriptionIds: string[]; revokedSubscriptionCount: number } | null {
+  const result = objectRecord(value);
+  const subscriptions = Array.isArray(result.subscriptions)
+    ? result.subscriptions
+    : [];
+  const revokedSubscriptionIds = subscriptions
+    .filter((subscription): subscription is { id: string; status: string } => {
+      return (
+        subscription !== null &&
+        typeof subscription === 'object' &&
+        (subscription as { status?: unknown }).status === 'revoked' &&
+        typeof (subscription as { id?: unknown }).id === 'string'
+      );
+    })
+    .map((subscription) => subscription.id);
+
+  return revokedSubscriptionIds.length > 0
+    ? {
+        revokedSubscriptionIds,
+        revokedSubscriptionCount: revokedSubscriptionIds.length,
+      }
+    : null;
 }
 
 function diagnosticStatus(error: unknown): Record<string, unknown> {
