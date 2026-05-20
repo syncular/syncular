@@ -57,13 +57,23 @@ Latest accepted slice:
   generated Swift/Kotlin clients.
 - Runtime tests assert server-merge compaction timestamps, encrypted checkpoint
   stream stats, and no state-vector/content blanking.
+- Native event streams now expose bounded timeout reads through BoltFFI and
+  generated Swift/Kotlin/Java wrappers. Native smokes use these reads so missing
+  events fail with diagnostics instead of hanging the lane.
+- Pull integrity verification now runs against the encrypted wire response
+  before field decryption; the verified root is then persisted while applying
+  the decrypted local row. This keeps encrypted fields compatible with canonical
+  commit-root verification on native and browser clients.
 
 Gate evidence:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
-- `bun --cwd rust/bindings/crdt-adapters test`
-- `bun --cwd rust/bindings/browser tsgo`
-- `bun --cwd rust/bindings/crdt-adapters tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract canonical_commit_integrity_verifies_wire_payload_before_decrypting_pull`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,boltffi-bindings`
+- `bun run --cwd rust/bindings/crdt-adapters test`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `bun run --cwd rust/bindings/crdt-adapters tsgo`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs`
 - `swiftc rust/examples/todo-app/generated/swift/SyncularApp.swift rust/examples/todo-app/native-smokes/swift/GeneratedClientSmoke.swift -o .context/native-smokes/generated-swift-smoke && .context/native-smokes/generated-swift-smoke rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
@@ -71,12 +81,15 @@ Gate evidence:
 - `bun run --cwd rust/bindings/browser build:wasm:dev`
 - `bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts`
 - `bun run rust:conformance:fast`
-- `bash rust/examples/todo-app/native-smokes/run-local.sh` progressed through
-  generated Swift/Kotlin clients, BoltFFI hosts, lifecycle shells, and JVM
-  package creation, then hung in the Swift server-sync executable. Treat this
-  extended native lane as not accepted until the server-sync hang is isolated.
+- `bash rust/examples/todo-app/native-smokes/run-local.sh`
+
+Known local environment note:
+
+- Direct `cargo check --target wasm32-unknown-unknown --features
+  web-owned-sqlite` failed in this workspace because the default `clang` cannot
+  compile `sqlite-wasm-rs` for `wasm32-unknown-unknown`. The repo browser build
+  script succeeds and remains the active WASM gate here.
 
 ## Next Action
 
-Isolate the Swift server-sync native smoke hang, then continue with state-vector
-pull hints or remote update observation diagnostics.
+Continue with state-vector pull hints or remote update observation diagnostics.

@@ -952,6 +952,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_presence_json(long handle, byte[] scopeKey);
     static native byte[] boltffi_syncular_bolt_client_start_event_stream(long handle, long capacity);
     static native byte[] boltffi_syncular_bolt_client_next_event_json(long handle);
+    static native byte[] boltffi_syncular_bolt_client_next_event_json_timeout(long handle, long timeoutMs);
     static native byte[] boltffi_syncular_bolt_client_close_event_stream(long handle);
     static native byte[] boltffi_syncular_bolt_client_apply_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
     static native byte[] boltffi_syncular_bolt_client_enqueue_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);

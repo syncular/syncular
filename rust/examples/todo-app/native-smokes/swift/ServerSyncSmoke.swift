@@ -218,15 +218,17 @@ private func waitForEventJson(
     timeoutMs: UInt64 = 5_000
 ) throws -> (event: SyncularNativeEvent, json: String) {
     let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1_000.0)
+    var seen: [String] = []
     repeat {
-        if let eventJson = try client.nextEventJson() {
+        if let eventJson = try client.nextEventJsonTimeout(timeoutMs: 50) {
             let event = try syncularDecodeNativeEvent(eventJson)
+            seen.append("\(event.kind):\(event.commandId ?? "-"):\(eventJson)")
             if event.kind == kind && (commandId == nil || event.commandId == commandId) {
                 return (event, eventJson)
             }
         }
     } while Date() < deadline
-    fatalError("Timed out waiting for \(kind)")
+    fatalError("Timed out waiting for \(kind) command \(commandId ?? "-"); seen \(seen.joined(separator: ", "))")
 }
 
 private func createServerConflict(

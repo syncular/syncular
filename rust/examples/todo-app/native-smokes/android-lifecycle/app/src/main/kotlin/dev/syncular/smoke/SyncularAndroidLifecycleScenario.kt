@@ -91,7 +91,7 @@ private fun waitForEvent(
     val deadline = System.currentTimeMillis() + timeoutMs
     val seen = mutableListOf<String>()
     while (System.currentTimeMillis() < deadline) {
-        val eventJson = client.nextEventJson() ?: continue
+        val eventJson = client.nextEventJsonTimeout(50uL) ?: continue
         val event = syncularDecodeNativeEvent(eventJson)
         val json = lifecycleJson.parseToJsonElement(eventJson).jsonObject
         seen += "${event.kind}:${event.commandId ?: "-"}"

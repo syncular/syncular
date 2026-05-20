@@ -120,6 +120,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains("func queryJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func startEventStream(capacity: UInt64) throws -> Bool"));
     assert!(swift.contains("func nextEventJson() throws -> String?"));
+    assert!(swift.contains("func nextEventJsonTimeout(timeoutMs: UInt64) throws -> String?"));
     assert!(swift.contains("func closeEventStream() throws -> Bool"));
     assert!(swift.contains("func shutdown() throws -> Bool"));
     assert!(kotlin.contains("class SyncularBoltClient"));
@@ -151,6 +152,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
     assert!(kotlin.contains("fun startEventStream(capacity: ULong): Boolean"));
     assert!(kotlin.contains("fun nextEventJson(): String?"));
+    assert!(kotlin.contains("fun nextEventJsonTimeout(timeoutMs: ULong): String?"));
     assert!(kotlin.contains("fun closeEventStream(): Boolean"));
     assert!(kotlin.contains("fun shutdown(): Boolean"));
     assert!(!kotlin.contains("fun close(): Boolean"));
@@ -185,6 +187,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains("public String queryJson(String requestJson)"));
     assert!(java.contains("public boolean startEventStream(long capacity)"));
     assert!(java.contains("public java.util.Optional<String> nextEventJson()"));
+    assert!(java.contains("public java.util.Optional<String> nextEventJsonTimeout(long timeoutMs)"));
     assert!(java.contains("public boolean closeEventStream()"));
     assert!(java.contains("public boolean shutdown()"));
     assert!(!java.contains("public boolean close()"));
@@ -192,6 +195,8 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_open"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
     for output in [swift, kotlin, java] {
         assert!(!output.contains("tasks"));
         assert!(!output.contains("NewTask"));

@@ -270,6 +270,19 @@ impl SyncularBoltClient {
             .map_err(binding_error)
     }
 
+    pub fn next_event_json_timeout(&self, timeout_ms: u64) -> Result<Option<String>, String> {
+        let subscription = self
+            .events
+            .lock()
+            .map_err(|_| "syncular event stream mutex is poisoned".to_string())?
+            .clone()
+            .ok_or_else(|| "syncular event stream is not started".to_string())?;
+        subscription
+            .next_event_json_timeout(Duration::from_millis(timeout_ms))
+            .transpose()
+            .map_err(binding_error)
+    }
+
     pub fn close_event_stream(&self) -> Result<bool, String> {
         let subscription = self
             .events
