@@ -84,10 +84,34 @@ Latest accepted slice:
   `(rowId, field, stateColumn, stateVectorBase64, syncMode, updatedAt)` to the
   subscription. This keeps CRDT catch-up optimization aligned with scoped access
   instead of whole-table or whole-partition assumptions.
+- Server-side pull resolution preserves those scoped CRDT state-vector hints
+  through authorization/scope intersection and exposes a generic pull-change
+  plugin hook before wire integrity is calculated.
+- `@syncular/server-plugin-yjs` now uses the hints for incremental pulls:
+  eligible server-merge CRDT fields are emitted as `__yjs` update envelopes
+  instead of full state columns, while non-CRDT row fields remain in the row
+  payload.
+- The Yjs server plugin now also carries existing row columns forward for
+  CRDT-only mutation payloads, so default upsert handlers do not reject
+  existing-row updates on required non-CRDT columns.
+- Rust remote apply now merges non-CRDT fields from a diff-envelope row into
+  the existing local row before applying the CRDT update, so server-side Yjs
+  diffs do not drop ordinary row changes.
+- Browser/Hono coverage now runs the actual Yjs server plugin instead of a fake
+  sync-route response, verifies a second Rust WASM client sends a state-vector
+  hint after snapshotting the CRDT field, and confirms the server returns an
+  incremental `__yjs` diff row without the full state column.
 
 Gate evidence:
 
+- `bun test plugins/yjs/server/src/index.test.ts`
+- `bun test packages/server/src/pull-plugins.test.ts`
+- `bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts -t "applies a generated app server-merge CRDT field through the Rust WASM worker"`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features crdt-yjs diff_envelope_remote_rows_preserve_non_crdt_payload_fields`
+- `bun run tsgo`
+- `bunx biome check packages/server/src/plugins/types.ts packages/server/src/pull.ts packages/server/src/subscriptions/resolve.ts packages/server/src/pull-plugins.test.ts packages/server-hono/src/routes.ts plugins/yjs/server/src/index.ts plugins/yjs/server/src/index.test.ts`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
 - `bun run tsgo` from `rust/bindings/browser`
@@ -121,6 +145,6 @@ Known local environment note:
 
 ## Next Action
 
-Continue with tighter CRDT observation coverage in browser/native generated
-adapters, then add server-side use of `crdtStateVectors` so pull responses can
-avoid sending already-known CRDT document state.
+Add native Diesel/Hono-style coverage for server-side CRDT state-vector diff
+pulls, then decide whether snapshot/rebootstrap can use a separate safe CRDT
+delta side channel without weakening bootstrap reset semantics.

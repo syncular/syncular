@@ -22,6 +22,7 @@ import {
   type SyncBootstrapState,
   type SyncChange,
   type SyncCommit,
+  type SyncCrdtStateVectorHint,
   type SyncPullRequest,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
@@ -49,8 +50,12 @@ import {
   getServerBootstrapOrderFor,
   type ServerHandlerCollection,
 } from './handlers/collection';
-import type { SyncServerAuth } from './handlers/types';
+import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
+import {
+  type SyncServerPullPlugin,
+  sortServerPullPlugins,
+} from './plugins/types';
 import type { SyncCoreDb } from './schema';
 import {
   createScopedSnapshotArtifactScopeCacheKey,
@@ -501,6 +506,71 @@ interface PullResponseStats {
   snapshotPageCount: number;
 }
 
+function assertPullChangeIdentityUnchanged(
+  pluginName: string,
+  before: SyncChange,
+  after: SyncChange
+): void {
+  if (before.table !== after.table) {
+    throw new Error(
+      `Server pull plugin "${pluginName}" cannot change change.table (${before.table} -> ${after.table})`
+    );
+  }
+  if (before.row_id !== after.row_id) {
+    throw new Error(
+      `Server pull plugin "${pluginName}" cannot change change.row_id (${before.row_id} -> ${after.row_id})`
+    );
+  }
+  if (before.op !== after.op) {
+    throw new Error(
+      `Server pull plugin "${pluginName}" cannot change change.op (${before.op} -> ${after.op})`
+    );
+  }
+}
+
+async function transformPullChanges<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
+  plugins: readonly SyncServerPullPlugin<DB, Auth>[];
+  ctx: { db: DbExecutor<DB>; actorId: string; auth: Auth };
+  tableHandler: ServerTableHandler<DB, Auth>;
+  subscription: {
+    id: string;
+    table: string;
+    scopes: ScopeValues;
+    params: Record<string, unknown> | undefined;
+    cursor: number;
+    crdtStateVectors: readonly SyncCrdtStateVectorHint[];
+  };
+  changes: readonly SyncChange[];
+}): Promise<SyncChange[]> {
+  let changes = [...args.changes];
+  for (const plugin of args.plugins) {
+    if (!plugin.transformPullChanges) continue;
+    const nextChanges = await plugin.transformPullChanges({
+      ctx: args.ctx,
+      tableHandler: args.tableHandler,
+      subscription: args.subscription,
+      changes,
+    });
+    if (nextChanges.length !== changes.length) {
+      throw new Error(
+        `Server pull plugin "${plugin.name}" cannot change pull change count (${changes.length} -> ${nextChanges.length})`
+      );
+    }
+    for (let i = 0; i < changes.length; i += 1) {
+      assertPullChangeIdentityUnchanged(
+        plugin.name,
+        changes[i]!,
+        nextChanges[i]!
+      );
+    }
+    changes = [...nextChanges];
+  }
+  return changes;
+}
+
 function summarizePullResponse(response: SyncPullResponse): PullResponseStats {
   const subscriptions = response.subscriptions ?? [];
   let activeSubscriptionCount = 0;
@@ -666,9 +736,14 @@ export async function pull<
    * requiring table data to change.
    */
   snapshotChunkCacheSchemaVersion?: number | string | null;
+  /**
+   * Optional server plugins for protocol-level pull transforms.
+   */
+  plugins?: readonly SyncServerPullPlugin<DB, Auth>[];
 }): Promise<PullResult> {
   const { request, dialect } = args;
   const db = args.db;
+  const pullPlugins = sortServerPullPlugins(args.plugins);
   const partitionId = args.auth.partitionId ?? 'default';
   const snapshotChunkGzipLevel = sanitizeGzipLevel(args.snapshotChunkGzipLevel);
   const requestedSubscriptionCount = Array.isArray(request.subscriptions)
@@ -1503,6 +1578,48 @@ export async function pull<
                     }
                   }
 
+                  const incrementalItems = incrementalRows.map((r) => ({
+                    commitSeq: r.commit_seq,
+                    createdAt: r.created_at,
+                    actorId: r.actor_id,
+                    change: {
+                      table: r.table,
+                      row_id: r.row_id,
+                      op: r.op,
+                      row_json: r.row_json,
+                      row_version: r.row_version,
+                      scopes: r.scopes,
+                    } satisfies SyncChange,
+                  }));
+
+                  if (pullPlugins.length > 0 && incrementalItems.length > 0) {
+                    const tableHandler = args.handlers.byTable.get(sub.table);
+                    if (!tableHandler) {
+                      throw new Error(`Unknown table: ${sub.table}`);
+                    }
+                    const transformedChanges = await transformPullChanges({
+                      plugins: pullPlugins,
+                      ctx: {
+                        db: trx,
+                        actorId: args.auth.actorId,
+                        auth: args.auth,
+                      },
+                      tableHandler,
+                      subscription: {
+                        id: sub.id,
+                        table: sub.table,
+                        scopes: effectiveScopes,
+                        params: sub.params,
+                        cursor,
+                        crdtStateVectors: sub.crdtStateVectors,
+                      },
+                      changes: incrementalItems.map((item) => item.change),
+                    });
+                    for (let i = 0; i < incrementalItems.length; i += 1) {
+                      incrementalItems[i]!.change = transformedChanges[i]!;
+                    }
+                  }
+
                   let nextCursor = cursor;
 
                   if (dedupeRows) {
@@ -1516,17 +1633,9 @@ export async function pull<
                       }
                     >();
 
-                    for (const r of incrementalRows) {
-                      nextCursor = Math.max(nextCursor, r.commit_seq);
-                      const rowKey = `${r.table}\u0000${r.row_id}`;
-                      const change: SyncChange = {
-                        table: r.table,
-                        row_id: r.row_id,
-                        op: r.op,
-                        row_json: r.row_json,
-                        row_version: r.row_version,
-                        scopes: r.scopes,
-                      };
+                    for (const item of incrementalItems) {
+                      nextCursor = Math.max(nextCursor, item.commitSeq);
+                      const rowKey = `${item.change.table}\u0000${item.change.row_id}`;
 
                       // Move row keys to insertion tail so Map iteration yields
                       // "latest change wins" order without a full array sort.
@@ -1534,10 +1643,10 @@ export async function pull<
                         latestByRowKey.delete(rowKey);
                       }
                       latestByRowKey.set(rowKey, {
-                        commitSeq: r.commit_seq,
-                        createdAt: r.created_at,
-                        actorId: r.actor_id,
-                        change,
+                        commitSeq: item.commitSeq,
+                        createdAt: item.createdAt,
+                        actorId: item.actorId,
+                        change: item.change,
                       });
                     }
 
@@ -1598,29 +1707,21 @@ export async function pull<
 
                   const commits: SyncCommit[] = [];
 
-                  for (const r of incrementalRows) {
-                    nextCursor = Math.max(nextCursor, r.commit_seq);
-                    const seq = r.commit_seq;
+                  for (const item of incrementalItems) {
+                    nextCursor = Math.max(nextCursor, item.commitSeq);
+                    const seq = item.commitSeq;
                     let commit = commits[commits.length - 1];
                     if (!commit || commit.commitSeq !== seq) {
                       commit = {
                         commitSeq: seq,
-                        createdAt: r.created_at,
-                        actorId: r.actor_id,
+                        createdAt: item.createdAt,
+                        actorId: item.actorId,
                         changes: [],
                       };
                       commits.push(commit);
                     }
 
-                    const change: SyncChange = {
-                      table: r.table,
-                      row_id: r.row_id,
-                      op: r.op,
-                      row_json: r.row_json,
-                      row_version: r.row_version,
-                      scopes: r.scopes,
-                    };
-                    commit.changes.push(change);
+                    commit.changes.push(item.change);
                   }
 
                   const integrity = await createWireSubscriptionIntegrity({

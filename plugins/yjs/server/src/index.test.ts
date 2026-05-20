@@ -61,6 +61,14 @@ function createXmlInsert(
   };
 }
 
+function createStateVectorBase64(stateBase64: string): string {
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, new Uint8Array(Buffer.from(stateBase64, 'base64')));
+  const stateVector = bytesToBase64(Y.encodeStateVector(doc));
+  doc.destroy();
+  return stateVector;
+}
+
 function applyTextUpdates(args: {
   previousStateBase64?: string;
   updates: readonly YjsServerUpdateEnvelope[];
@@ -132,12 +140,14 @@ describe('@syncular/server-plugin-crdt-yjs', () => {
       payload,
       existingRow: {
         id: 'task-1',
+        user_id: 'user-1',
         content: 'Hello',
         content_yjs_state: base.state,
       },
     });
 
     expect(nextPayload.title).toBe('Task title');
+    expect(nextPayload.user_id).toBe('user-1');
     expect(nextPayload.content).toBe('Hello world');
     expect(typeof nextPayload.content_yjs_state).toBe('string');
     expect(YJS_PAYLOAD_KEY in nextPayload).toBe(false);
@@ -262,6 +272,66 @@ describe('@syncular/server-plugin-crdt-yjs', () => {
     expect(nextPayload.content).toContain('from other client');
     expect(nextPayload.content).toContain('from this client');
     expect(nextPayload.content_yjs_state).not.toBe(localUpdate.state);
+  });
+
+  it('transforms incremental pull rows into Yjs diff envelopes from state-vector hints', async () => {
+    const module = createYjsServerModule({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+        },
+      ],
+    });
+
+    const base = await createUpdate('Hello');
+    const next = await createUpdate('Hello world', base.state);
+    const changes = await module.transformPullChanges({
+      table: 'tasks',
+      changes: [
+        {
+          table: 'tasks',
+          row_id: 'task-1',
+          op: 'upsert',
+          row_json: {
+            id: 'task-1',
+            content: 'Hello world',
+            content_yjs_state: next.state,
+            updated_at: 2,
+          },
+          row_version: 2,
+          scopes: { user_id: 'user-1' },
+        },
+      ],
+      crdtStateVectors: [
+        {
+          rowId: 'task-1',
+          field: 'content',
+          stateColumn: 'content_yjs_state',
+          stateVectorBase64: createStateVectorBase64(base.state),
+          syncMode: 'server-merge',
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    const row = changes[0]?.row_json as Record<string, unknown>;
+    expect(row.content).toBeUndefined();
+    expect(row.content_yjs_state).toBeUndefined();
+    expect(row.updated_at).toBe(2);
+    const envelope = row[YJS_PAYLOAD_KEY] as Record<
+      string,
+      YjsServerUpdateEnvelope
+    >;
+    expect(envelope.content.updateBase64).toBeString();
+    expect(
+      applyTextUpdates({
+        previousStateBase64: base.state,
+        updates: [envelope.content],
+        containerKey: 'content',
+      })
+    ).toBe('Hello world');
   });
 
   it('materializes xml-fragment kind from Yjs state snapshots', async () => {

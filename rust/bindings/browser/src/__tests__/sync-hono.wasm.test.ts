@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import {
+  decodeBinarySyncPack,
+  isBinarySyncPackContentType,
+  type SyncCombinedRequest,
+  type SyncCombinedResponse,
+} from '@syncular/core';
+import {
   newTaskOperation,
   syncularGeneratedAppSchema,
   syncularGeneratedSchemaVersion,
@@ -22,6 +28,15 @@ const ACTOR_A = syncConformance.actors.ownerA.actorId;
 const ACTOR_B = syncConformance.actors.ownerB.actorId;
 const TOKEN_A = syncConformance.actors.ownerA.token;
 const TOKEN_B = syncConformance.actors.ownerB.token;
+
+async function readCombinedResponse(
+  response: Response
+): Promise<SyncCombinedResponse> {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+  return (await response.json()) as SyncCombinedResponse;
+}
 
 describe('Syncular v2 worker sync protocol against Hono routes', () => {
   const harnesses: HonoSyncHarness[] = [];
@@ -840,10 +855,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       ],
       edgeGate: (request) => {
         const url = new URL(request.url);
-        if (
-          failNextArtifact &&
-          url.pathname.includes('/snapshot-artifacts/')
-        ) {
+        if (failNextArtifact && url.pathname.includes('/snapshot-artifacts/')) {
           failNextArtifact = false;
           return new Response(new Uint8Array([1, 2, 3, 4]), {
             status: 200,
@@ -1732,72 +1744,24 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
   });
 
   it('applies a generated app server-merge CRDT field through the Rust WASM worker', async () => {
-    const syncRequests: unknown[] = [];
+    const syncExchanges: Array<{
+      request: SyncCombinedRequest;
+      response: SyncCombinedResponse;
+    }> = [];
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      edgeGate: async (request) => {
-        const url = new URL(request.url);
-        if (url.pathname === '/sync' && request.method === 'POST') {
-          const body = (await request.clone().json()) as {
-            push?: {
-              commits?: Array<{
-                clientCommitId: string;
-                operations?: Array<unknown>;
-              }>;
-            };
-            pull?: {
-              subscriptions?: Array<{
-                id: string;
-                scopes: Record<string, unknown>;
-              }>;
-            };
-          };
-          syncRequests.push(body);
-          return Response.json({
-            ok: true,
-            latestSchemaVersion: syncularGeneratedSchemaVersion,
-            push: body.push
-              ? {
-                  ok: true,
-                  commits: (body.push.commits ?? []).map((commit, index) => ({
-                    ok: true,
-                    clientCommitId: commit.clientCommitId,
-                    status: 'applied',
-                    commitSeq: index + 1,
-                    results: (commit.operations ?? []).map((_, opIndex) => ({
-                      opIndex,
-                      status: 'applied',
-                      serverVersion: index + 1,
-                    })),
-                  })),
-                }
-              : undefined,
-            pull: body.pull
-              ? {
-                  ok: true,
-                  subscriptions: (body.pull.subscriptions ?? []).map(
-                    (subscription) => ({
-                      id: subscription.id,
-                      status: 'active',
-                      scopes: subscription.scopes,
-                      bootstrap: false,
-                      bootstrapState: null,
-                      nextCursor: 0,
-                      commits: [],
-                      snapshots: [],
-                    })
-                  ),
-                }
-              : undefined,
-          });
-        }
-        return null;
+      observeSyncExchange: async ({ request, response }) => {
+        if (request.method !== 'POST') return;
+        syncExchanges.push({
+          request: (await request.json()) as SyncCombinedRequest,
+          response: await readCombinedResponse(response),
+        });
       },
     });
     harnesses.push(sync);
 
     const client = await sync.openWorkerClient({
-      clientId: 'client-rust-crdt-field-server-merge',
+      clientId: 'client-rust-crdt-field-server-merge-a',
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
@@ -1808,6 +1772,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       field: 'title',
     };
     await insertBlankTask(client, field.rowId);
+    await client.syncOnce();
 
     await expect(client.openCrdtField(field)).resolves.toMatchObject({
       ...field,
@@ -1821,13 +1786,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     await expect(
       client.applyCrdtFieldText({
         ...field,
-        nextText: 'CRDT field title',
+        nextText: 'CRDT field title v1',
       })
     ).resolves.toMatchObject({ syncMode: 'server-merge' });
 
     const materialized = await client.materializeCrdtField(field);
     expect(materialized).toMatchObject({
-      value: 'CRDT field title',
+      value: 'CRDT field title v1',
       stateBase64: expect.any(String),
       stateVectorBase64: expect.any(String),
     });
@@ -1848,31 +1813,87 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     await expect(client.listTable('tasks')).resolves.toContainEqual(
       expect.objectContaining({
         id: field.rowId,
-        title: 'CRDT field title',
+        title: 'CRDT field title v1',
         title_yjs_state: expect.any(String),
       })
     );
 
     await client.syncOnce();
-    const taskSubscriptionRequest = syncRequests
-      .flatMap((request) =>
-        ((request as { pull?: { subscriptions?: unknown[] } }).pull
-          ?.subscriptions ?? []) as Array<{
-          id: string;
-          crdtStateVectors: Array<Record<string, unknown>>;
-        }>
+
+    const reader = await sync.openWorkerClient({
+      clientId: 'client-rust-crdt-field-server-merge-b',
+      actorId: ACTOR_A,
+      fileName: 'reader.sqlite',
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await reader.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    await reader.syncOnce();
+    const readerMaterialized = await reader.materializeCrdtField(field);
+    expect(readerMaterialized).toMatchObject({
+      value: 'CRDT field title v1',
+      stateVectorBase64: expect.any(String),
+    });
+    const readerSnapshot = await reader.crdtDocumentSnapshot(field);
+    expect(readerSnapshot).toMatchObject({
+      stateVectorBase64: readerMaterialized.stateVectorBase64,
+    });
+
+    await client.applyCrdtFieldText({
+      ...field,
+      nextText: 'CRDT field title v2',
+    });
+    await client.syncOnce();
+    await reader.syncOnce();
+
+    await expect(reader.listTable('tasks')).resolves.toContainEqual(
+      expect.objectContaining({
+        id: field.rowId,
+        title: 'CRDT field title v2',
+        title_yjs_state: expect.any(String),
+      })
+    );
+
+    const readerPullRequests = syncExchanges
+      .filter(
+        (exchange) =>
+          exchange.request.clientId === 'client-rust-crdt-field-server-merge-b'
       )
-      .find((subscription) => subscription.id === 'sub-tasks');
+      .flatMap((exchange) => exchange.request.pull?.subscriptions ?? []);
+    const taskSubscriptionRequest = readerPullRequests.find(
+      (subscription) =>
+        subscription.id === 'sub-tasks' &&
+        subscription.crdtStateVectors.length > 0
+    );
     expect(taskSubscriptionRequest?.crdtStateVectors).toEqual([
       expect.objectContaining({
         rowId: field.rowId,
         field: field.field,
         stateColumn: 'title_yjs_state',
-        stateVectorBase64: materialized.stateVectorBase64,
+        stateVectorBase64: readerSnapshot.stateVectorBase64,
         syncMode: 'server-merge',
         updatedAt: expect.any(Number),
       }),
     ]);
+
+    const serverDiffRow = syncExchanges
+      .filter(
+        (exchange) =>
+          exchange.request.clientId === 'client-rust-crdt-field-server-merge-b'
+      )
+      .flatMap((exchange) => exchange.response.pull?.subscriptions ?? [])
+      .flatMap((subscription) => subscription.commits ?? [])
+      .flatMap((commit) => commit.changes ?? [])
+      .map((change) => change.row_json)
+      .find(
+        (row): row is Record<string, unknown> =>
+          typeof row === 'object' &&
+          row !== null &&
+          '__yjs' in row &&
+          !('title_yjs_state' in row)
+      );
+    expect(serverDiffRow?.__yjs).toMatchObject({
+      title: { updateBase64: expect.any(String) },
+    });
   });
 
   it('applies an encrypted update-log CRDT field through the Rust WASM worker without plaintext outbox leakage', async () => {

@@ -24,6 +24,7 @@ import {
   closeNodeServer,
   createNodeHonoServer,
 } from '../../../../../../packages/testkit/src/hono-node-server';
+import { createYjsServerPushPlugin } from '../../../../../../plugins/yjs/server/src';
 import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
@@ -48,6 +49,10 @@ export interface CreateHonoSyncHarnessOptions {
   actors: readonly HonoSyncActor[];
   seedTasks?: readonly HonoTaskSeed[];
   edgeGate?: (request: Request) => Response | Promise<Response> | null;
+  observeSyncExchange?: (exchange: {
+    request: Request;
+    response: Response;
+  }) => Promise<void> | void;
   snapshotBundleMaxBytes?: number;
   precomputedTaskSnapshotArtifact?: {
     actorId: string;
@@ -148,6 +153,17 @@ export async function createHonoSyncHarness(
           row.scopes.user_id === ctx.actorId,
       }),
     ];
+    const yjsServerPlugin = createYjsServerPushPlugin({
+      rules: [
+        {
+          table: 'tasks',
+          field: 'title',
+          stateColumn: 'title_yjs_state',
+          containerKey: 'title',
+          kind: 'text',
+        },
+      ],
+    });
     const handlerCollection = createServerHandlerCollection<
       HonoSyncServerDb,
       HonoAuthContext
@@ -190,6 +206,7 @@ export async function createHonoSyncHarness(
       db,
       dialect: serverDialect,
       handlers: handlerCollection.handlers,
+      plugins: [yjsServerPlugin],
       snapshotBinary: syncularGeneratedServerSnapshotBinary,
       snapshotArtifactStorage,
       authenticate: async (c) => {
@@ -219,7 +236,13 @@ export async function createHonoSyncHarness(
           if (!blobRoutes) return new Response('not ready', { status: 503 });
           return blobRoutes.fetch(new Request(url, request));
         }
-        return syncRoutes.fetch(new Request(url, request));
+        const observerRequest = request.clone();
+        const response = await syncRoutes.fetch(new Request(url, request));
+        await options.observeSyncExchange?.({
+          request: observerRequest,
+          response: response.clone(),
+        });
+        return response;
       },
     } as Parameters<typeof createNodeHonoServer>[0];
     server = createNodeHonoServer(app);
