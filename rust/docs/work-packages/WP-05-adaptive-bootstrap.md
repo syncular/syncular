@@ -1,6 +1,6 @@
 # WP-05 Adaptive Bootstrap
 
-Status: `[~]` started
+Status: `[x]` accepted
 
 ## Goal
 
@@ -72,20 +72,41 @@ Retained docs/API slice:
   `result.bootstrap` readiness object, and the `bootstrapChanged` event. The
   docs explicitly warn that incomplete later phases are not empty data.
 
+Retained native event slice:
+
+- Rust runtime exposes `bootstrap_status()` / `bootstrap_status_json()` from
+  the configured subscriptions plus persisted subscription checkpoint state.
+- Worker `SyncCompleted` events now carry the same aggregate bootstrap
+  readiness payload instead of requiring native apps to infer readiness from
+  table-level events.
+- Native facade JSON includes `bootstrap` on `SyncCompleted`, and generated
+  Swift/Kotlin clients decode it as `SyncularBootstrapStatus`.
+- Bootstrap status read failures are surfaced as sync failures; the worker does
+  not synthesize a fallback readiness payload.
+
 Correctness gates passed:
 
 ```bash
 cargo test --manifest-path rust/Cargo.toml -p syncular-runtime bootstrap_phase_tests::staged_pull_selection_matches_subscription_readiness
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime bootstrap_phase_tests --features native,crdt-yjs,demo-todo-native-fixture
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade --features native,crdt-yjs,demo-todo-native-fixture
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
 cargo test --manifest-path rust/Cargo.toml -p syncular-codegen generated_outputs_are_current
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example
 CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
 cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture
 bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/generated-app-conformance.test.ts
 bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
 bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "surfaces server client-id ownership conflicts|SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+swiftc rust/examples/todo-app/generated/swift/SyncularApp.swift rust/examples/todo-app/native-smokes/swift/GeneratedClientSmoke.swift -o .context/native-smokes/generated-swift-smoke && .context/native-smokes/generated-swift-smoke rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json
+kotlinc rust/examples/todo-app/generated/kotlin/SyncularApp.kt rust/examples/todo-app/native-smokes/kotlin/GeneratedClientSmoke.kt -cp .context/native-smokes/kotlin-libs/kotlinx-serialization-core-jvm-1.9.0.jar:.context/native-smokes/kotlin-libs/kotlinx-serialization-json-jvm-1.9.0.jar -d .context/native-smokes/kotlin-classes && kotlin -cp .context/native-smokes/kotlin-classes:.context/native-smokes/kotlin-libs/kotlinx-serialization-core-jvm-1.9.0.jar:.context/native-smokes/kotlin-libs/kotlinx-serialization-json-jvm-1.9.0.jar GeneratedClientSmokeKt rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json
 ```
 
 Release WASM package gate passed after moving aggregate readiness calculation
-out of Rust:
+out of browser/WASM Rust and keeping native-only aggregate status behind the
+`native` feature:
 
 - raw `3.29 MiB` / budget `3.30 MiB` (`9.7 KiB` headroom)
 - gzip `1.36 MiB` / budget `1.36 MiB` (`2.4 KiB` headroom)
@@ -99,6 +120,5 @@ Benchmark guard:
 
 ## Next Action
 
-Decide whether native Rust/FFI should expose an aggregate bootstrap status
-event/helper, or whether phase-aware generated subscriptions plus ordered sync
-events are enough for the first real app integration.
+Accepted. Continue the larger bootstrap/performance architecture in
+`WP-12 Scoped Snapshot Artifacts`.

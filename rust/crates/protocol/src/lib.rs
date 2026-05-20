@@ -82,7 +82,7 @@ pub struct PushBatchRequest {
     pub commits: Vec<PushCommitRequest>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootstrapState {
     #[serde(rename = "asOfCommitSeq")]
     pub as_of_commit_seq: i64,

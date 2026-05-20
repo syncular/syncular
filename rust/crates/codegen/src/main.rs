@@ -6003,6 +6003,46 @@ fn generate_swift_module(
     out.push_str("        case serverVersion\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularBootstrapState: Decodable, Equatable {\n");
+    out.push_str("    public let asOfCommitSeq: Int64\n");
+    out.push_str("    public let tables: [String]\n");
+    out.push_str("    public let tableIndex: Int64\n");
+    out.push_str("    public let rowCursor: String?\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularBootstrapSubscriptionStatus: Decodable, Equatable {\n");
+    out.push_str("    public let id: String\n");
+    out.push_str("    public let table: String\n");
+    out.push_str("    public let expected: Bool\n");
+    out.push_str("    public let ready: Bool\n");
+    out.push_str("    public let status: String?\n");
+    out.push_str("    public let phase: String\n");
+    out.push_str("    public let progressPercent: Int64\n");
+    out.push_str("    public let cursor: Int64?\n");
+    out.push_str("    public let bootstrapState: SyncularBootstrapState?\n");
+    out.push_str("    public let bootstrapPhase: Int64\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularBootstrapPhaseStatus: Decodable, Equatable {\n");
+    out.push_str("    public let phase: Int64\n");
+    out.push_str("    public let expectedSubscriptionIds: [String]\n");
+    out.push_str("    public let readySubscriptionIds: [String]\n");
+    out.push_str("    public let pendingSubscriptionIds: [String]\n");
+    out.push_str("    public let isReady: Bool\n");
+    out.push_str("    public let progressPercent: Int64\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularBootstrapStatus: Decodable, Equatable {\n");
+    out.push_str("    public let channelPhase: String\n");
+    out.push_str("    public let progressPercent: Int64\n");
+    out.push_str("    public let isBootstrapping: Bool\n");
+    out.push_str("    public let criticalReady: Bool\n");
+    out.push_str("    public let interactiveReady: Bool\n");
+    out.push_str("    public let complete: Bool\n");
+    out.push_str("    public let activePhase: Int64?\n");
+    out.push_str("    public let expectedSubscriptionIds: [String]\n");
+    out.push_str("    public let readySubscriptionIds: [String]\n");
+    out.push_str("    public let pendingSubscriptionIds: [String]\n");
+    out.push_str("    public let subscriptions: [SyncularBootstrapSubscriptionStatus]\n");
+    out.push_str("    public let phases: [SyncularBootstrapPhaseStatus]\n");
+    out.push_str("}\n\n");
     out.push_str("public struct SyncularNativeEvent: Decodable, Equatable {\n");
     out.push_str("    public let eventSeq: UInt64\n");
     out.push_str("    public let kind: String\n");
@@ -6013,9 +6053,10 @@ fn generate_swift_module(
     out.push_str("    public let clientCommitId: String?\n");
     out.push_str("    public let durationMs: UInt64?\n");
     out.push_str("    public let droppedCount: UInt64?\n");
+    out.push_str("    public let bootstrap: SyncularBootstrapStatus?\n");
     out.push_str("    public let resyncRequired: Bool\n\n");
     out.push_str(
-        "    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, resyncRequired: Bool = false) {\n",
+        "    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {\n",
     );
     out.push_str("        self.eventSeq = eventSeq\n");
     out.push_str("        self.kind = kind\n");
@@ -6026,6 +6067,7 @@ fn generate_swift_module(
     out.push_str("        self.clientCommitId = clientCommitId\n");
     out.push_str("        self.durationMs = durationMs\n");
     out.push_str("        self.droppedCount = droppedCount\n");
+    out.push_str("        self.bootstrap = bootstrap\n");
     out.push_str("        self.resyncRequired = resyncRequired\n");
     out.push_str("    }\n\n");
     out.push_str("    private enum CodingKeys: String, CodingKey {\n");
@@ -6038,6 +6080,7 @@ fn generate_swift_module(
     out.push_str("        case clientCommitId = \"client_commit_id\"\n");
     out.push_str("        case durationMs = \"duration_ms\"\n");
     out.push_str("        case droppedCount\n");
+    out.push_str("        case bootstrap\n");
     out.push_str("        case resyncRequired\n");
     out.push_str("    }\n\n");
     out.push_str("    public init(from decoder: Decoder) throws {\n");
@@ -6063,6 +6106,7 @@ fn generate_swift_module(
         "        durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)\n",
     );
     out.push_str("        droppedCount = try container.decodeIfPresent(UInt64.self, forKey: .droppedCount)\n");
+    out.push_str("        bootstrap = try container.decodeIfPresent(SyncularBootstrapStatus.self, forKey: .bootstrap)\n");
     out.push_str("        resyncRequired = (try container.decodeIfPresent(Bool.self, forKey: .resyncRequired)) ?? (kind == \"EventsOverflowed\")\n");
     out.push_str("    }\n");
     out.push_str("\n");
@@ -7543,6 +7587,48 @@ fn generate_kotlin_module(
     out.push_str("    val subscriptionId: String? = null,\n");
     out.push_str("    val serverVersion: Long? = null,\n");
     out.push_str(")\n\n");
+    out.push_str("data class SyncularBootstrapState(\n");
+    out.push_str("    val asOfCommitSeq: Long = 0,\n");
+    out.push_str("    val tables: List<String> = emptyList(),\n");
+    out.push_str("    val tableIndex: Long = 0,\n");
+    out.push_str("    val rowCursor: String? = null,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularBootstrapSubscriptionStatus(\n");
+    out.push_str("    val id: String,\n");
+    out.push_str("    val table: String,\n");
+    out.push_str("    val expected: Boolean,\n");
+    out.push_str("    val ready: Boolean,\n");
+    out.push_str("    val status: String? = null,\n");
+    out.push_str("    val phase: String,\n");
+    out.push_str("    val progressPercent: Long,\n");
+    out.push_str("    val cursor: Long? = null,\n");
+    out.push_str("    val bootstrapState: SyncularBootstrapState? = null,\n");
+    out.push_str("    val bootstrapPhase: Long,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularBootstrapPhaseStatus(\n");
+    out.push_str("    val phase: Long,\n");
+    out.push_str("    val expectedSubscriptionIds: List<String> = emptyList(),\n");
+    out.push_str("    val readySubscriptionIds: List<String> = emptyList(),\n");
+    out.push_str("    val pendingSubscriptionIds: List<String> = emptyList(),\n");
+    out.push_str("    val isReady: Boolean,\n");
+    out.push_str("    val progressPercent: Long,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularBootstrapStatus(\n");
+    out.push_str("    val channelPhase: String,\n");
+    out.push_str("    val progressPercent: Long,\n");
+    out.push_str("    val isBootstrapping: Boolean,\n");
+    out.push_str("    val criticalReady: Boolean,\n");
+    out.push_str("    val interactiveReady: Boolean,\n");
+    out.push_str("    val complete: Boolean,\n");
+    out.push_str("    val activePhase: Long? = null,\n");
+    out.push_str("    val expectedSubscriptionIds: List<String> = emptyList(),\n");
+    out.push_str("    val readySubscriptionIds: List<String> = emptyList(),\n");
+    out.push_str("    val pendingSubscriptionIds: List<String> = emptyList(),\n");
+    out.push_str(
+        "    val subscriptions: List<SyncularBootstrapSubscriptionStatus> = emptyList(),\n",
+    );
+    out.push_str("    val phases: List<SyncularBootstrapPhaseStatus> = emptyList(),\n");
+    out.push_str(")\n\n");
     out.push_str("data class SyncularNativeEvent(\n");
     out.push_str("    val eventSeq: Long = 0,\n");
     out.push_str("    val kind: String,\n");
@@ -7553,6 +7639,7 @@ fn generate_kotlin_module(
     out.push_str("    val clientCommitId: String? = null,\n");
     out.push_str("    val durationMs: Long? = null,\n");
     out.push_str("    val droppedCount: Long? = null,\n");
+    out.push_str("    val bootstrap: SyncularBootstrapStatus? = null,\n");
     out.push_str("    val resyncRequired: Boolean = false,\n");
     out.push_str(") {\n");
     out.push_str(
@@ -7695,6 +7782,84 @@ fn generate_kotlin_module(
     out.push_str("    subscriptionId = row[\"subscriptionId\"]?.jsonPrimitive?.content,\n");
     out.push_str("    serverVersion = row[\"serverVersion\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str(")\n\n");
+    out.push_str("private fun syncularOptionalString(value: JsonElement?): String? =\n");
+    out.push_str(
+        "    if (value == null || value is JsonNull) null else value.jsonPrimitive.content\n\n",
+    );
+    out.push_str("private fun syncularJsonStringList(value: JsonElement?): List<String> =\n");
+    out.push_str("    if (value == null || value is JsonNull) emptyList() else value.jsonArray.map { it.jsonPrimitive.content }\n\n");
+    out.push_str("private fun syncularDecodeBootstrapState(value: JsonElement?): SyncularBootstrapState? {\n");
+    out.push_str("    if (value == null || value is JsonNull) return null\n");
+    out.push_str("    val state = value.jsonObject\n");
+    out.push_str("    return SyncularBootstrapState(\n");
+    out.push_str(
+        "        asOfCommitSeq = state[\"asOfCommitSeq\"]?.jsonPrimitive?.longOrNull ?: 0L,\n",
+    );
+    out.push_str("        tables = syncularJsonStringList(state[\"tables\"]),\n");
+    out.push_str("        tableIndex = state[\"tableIndex\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("        rowCursor = syncularOptionalString(state[\"rowCursor\"]),\n");
+    out.push_str("    )\n");
+    out.push_str("}\n\n");
+    out.push_str("private fun syncularDecodeBootstrapSubscriptionStatus(value: JsonElement): SyncularBootstrapSubscriptionStatus {\n");
+    out.push_str("    val subscription = value.jsonObject\n");
+    out.push_str("    return SyncularBootstrapSubscriptionStatus(\n");
+    out.push_str("        id = subscription[\"id\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("        table = subscription[\"table\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str(
+        "        expected = subscription[\"expected\"]?.jsonPrimitive?.booleanOrNull ?: false,\n",
+    );
+    out.push_str(
+        "        ready = subscription[\"ready\"]?.jsonPrimitive?.booleanOrNull ?: false,\n",
+    );
+    out.push_str("        status = syncularOptionalString(subscription[\"status\"]),\n");
+    out.push_str(
+        "        phase = subscription[\"phase\"]?.jsonPrimitive?.content ?: \"pending\",\n",
+    );
+    out.push_str("        progressPercent = subscription[\"progressPercent\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("        cursor = subscription[\"cursor\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str("        bootstrapState = syncularDecodeBootstrapState(subscription[\"bootstrapState\"]),\n");
+    out.push_str("        bootstrapPhase = subscription[\"bootstrapPhase\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("    )\n");
+    out.push_str("}\n\n");
+    out.push_str("private fun syncularDecodeBootstrapPhaseStatus(value: JsonElement): SyncularBootstrapPhaseStatus {\n");
+    out.push_str("    val phase = value.jsonObject\n");
+    out.push_str("    return SyncularBootstrapPhaseStatus(\n");
+    out.push_str("        phase = phase[\"phase\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("        expectedSubscriptionIds = syncularJsonStringList(phase[\"expectedSubscriptionIds\"]),\n");
+    out.push_str(
+        "        readySubscriptionIds = syncularJsonStringList(phase[\"readySubscriptionIds\"]),\n",
+    );
+    out.push_str("        pendingSubscriptionIds = syncularJsonStringList(phase[\"pendingSubscriptionIds\"]),\n");
+    out.push_str("        isReady = phase[\"isReady\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str(
+        "        progressPercent = phase[\"progressPercent\"]?.jsonPrimitive?.longOrNull ?: 0L,\n",
+    );
+    out.push_str("    )\n");
+    out.push_str("}\n\n");
+    out.push_str("private fun syncularDecodeBootstrapStatus(value: JsonElement?): SyncularBootstrapStatus? {\n");
+    out.push_str("    if (value == null || value is JsonNull) return null\n");
+    out.push_str("    val status = value.jsonObject\n");
+    out.push_str("    return SyncularBootstrapStatus(\n");
+    out.push_str(
+        "        channelPhase = status[\"channelPhase\"]?.jsonPrimitive?.content ?: \"idle\",\n",
+    );
+    out.push_str(
+        "        progressPercent = status[\"progressPercent\"]?.jsonPrimitive?.longOrNull ?: 0L,\n",
+    );
+    out.push_str("        isBootstrapping = status[\"isBootstrapping\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str("        criticalReady = status[\"criticalReady\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str("        interactiveReady = status[\"interactiveReady\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str(
+        "        complete = status[\"complete\"]?.jsonPrimitive?.booleanOrNull ?: false,\n",
+    );
+    out.push_str("        activePhase = status[\"activePhase\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str("        expectedSubscriptionIds = syncularJsonStringList(status[\"expectedSubscriptionIds\"]),\n");
+    out.push_str("        readySubscriptionIds = syncularJsonStringList(status[\"readySubscriptionIds\"]),\n");
+    out.push_str("        pendingSubscriptionIds = syncularJsonStringList(status[\"pendingSubscriptionIds\"]),\n");
+    out.push_str("        subscriptions = status[\"subscriptions\"]?.jsonArray?.map { syncularDecodeBootstrapSubscriptionStatus(it) } ?: emptyList(),\n");
+    out.push_str("        phases = status[\"phases\"]?.jsonArray?.map { syncularDecodeBootstrapPhaseStatus(it) } ?: emptyList(),\n");
+    out.push_str("    )\n");
+    out.push_str("}\n\n");
     out.push_str("fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {\n");
     out.push_str("    val event = Json.parseToJsonElement(eventJson).jsonObject\n");
     out.push_str("    return SyncularNativeEvent(\n");
@@ -7707,6 +7872,7 @@ fn generate_kotlin_module(
     out.push_str("        clientCommitId = event[\"client_commit_id\"]?.jsonPrimitive?.content,\n");
     out.push_str("        durationMs = event[\"duration_ms\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str("        droppedCount = event[\"droppedCount\"]?.jsonPrimitive?.longOrNull,\n");
+    out.push_str("        bootstrap = syncularDecodeBootstrapStatus(event[\"bootstrap\"]),\n");
     out.push_str("        resyncRequired = event[\"resyncRequired\"]?.jsonPrimitive?.booleanOrNull ?: (event[\"kind\"]?.jsonPrimitive?.content == \"EventsOverflowed\"),\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
@@ -9764,10 +9930,12 @@ mod tests {
         assert!(swift.contains("public func and(_ other: SyncularQueryPredicate)"));
         assert!(swift.contains("public struct SyncularLiveQueryRegistration"));
         assert!(swift.contains("public struct SyncularChangedRow"));
+        assert!(swift.contains("public struct SyncularBootstrapStatus"));
         assert!(swift.contains("public struct SyncularNativeEvent"));
         assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
         assert!(swift.contains("public let commandId: String?"));
         assert!(swift.contains("public let droppedCount: UInt64?"));
+        assert!(swift.contains("public let bootstrap: SyncularBootstrapStatus?"));
         assert!(swift.contains("public let resyncRequired: Bool"));
         assert!(swift.contains("public var eventStreamLost: Bool"));
         assert!(swift.contains("public func syncularNativeEventRequiresFullRefresh"));
@@ -9854,10 +10022,12 @@ mod tests {
         assert!(kotlin.contains("infix fun and(other: SyncularQueryPredicate)"));
         assert!(kotlin.contains("data class SyncularLiveQueryRegistration"));
         assert!(kotlin.contains("data class SyncularChangedRow"));
+        assert!(kotlin.contains("data class SyncularBootstrapStatus"));
         assert!(kotlin.contains("data class SyncularNativeEvent"));
         assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
         assert!(kotlin.contains("val commandId: String? = null"));
         assert!(kotlin.contains("val droppedCount: Long? = null"));
+        assert!(kotlin.contains("val bootstrap: SyncularBootstrapStatus? = null"));
         assert!(kotlin.contains("val resyncRequired: Boolean = false"));
         assert!(kotlin.contains("val eventStreamLost: Boolean"));
         assert!(kotlin.contains("fun syncularNativeEventRequiresFullRefresh"));
