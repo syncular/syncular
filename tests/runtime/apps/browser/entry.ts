@@ -41,7 +41,6 @@ import {
   newProjectOperation,
   newTaskOperation,
   type SyncularAppDatabase,
-  type SyncularAppSchemaInstallMode,
   syncularGeneratedAppSchema,
   syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedSchemaVersion,
@@ -182,7 +181,6 @@ interface E2eScoreboardOptions {
   rustMaxSnapshotChangedRows?: number | null;
   rustSnapshotRowsPerPage?: number | null;
   rustMaxSnapshotPages?: number | null;
-  rustSchemaInstallMode?: SyncularAppSchemaInstallMode;
 }
 
 interface E2eScoreboardMetric {
@@ -1185,7 +1183,6 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       getHeaders: () => ({ 'x-actor-id': actorId }),
       diagnostics: (event) => rustDiagnosticEvents.push(event),
       subscriptions: false,
-      schemaInstallMode: options.rustSchemaInstallMode ?? 'full',
       config: {
         baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
         actorId,
@@ -1315,7 +1312,6 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         }),
       getHeaders: () => ({ 'x-actor-id': actorId }),
       subscriptions: false,
-      schemaInstallMode: options.rustSchemaInstallMode ?? 'full',
       config: {
         baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
         actorId,

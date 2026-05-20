@@ -9,8 +9,6 @@ import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/
 import { createServerHandler } from '../../../../packages/server/src/handlers';
 import type { SyncCoreDb } from '../../../../packages/server/src/schema';
 import {
-  ensureSyncularAppBaseSchema,
-  ensureSyncularAppLiveSchema,
   type SyncularAppDb,
   syncularGeneratedCodecs,
   syncularGeneratedSchemaVersion,
@@ -181,52 +179,6 @@ describe('Syncular v2 blobs', () => {
 });
 
 describe('generated Syncular v2 codecs', () => {
-  it('prepares generated live schema only when read models can be maintained by triggers', async () => {
-    const db = createDatabase<SyncularAppDb>({
-      dialect: createBunSqliteDialect({ path: ':memory:' }),
-      family: 'sqlite',
-    });
-    const dirtyDb = createDatabase<SyncularAppDb>({
-      dialect: createBunSqliteDialect({ path: ':memory:' }),
-      family: 'sqlite',
-    });
-    try {
-      await ensureSyncularAppLiveSchema(db);
-      await sql`
-        insert into tasks (id, title, completed, user_id, server_version)
-        values ('task-live', 'Live schema task', 0, 'user-live', 1)
-      `.execute(db);
-
-      const liveReadModelRows = await sql<{ task_count: number }>`
-        select task_count
-        from syncular_task_counts
-        where user_id = 'user-live' and completed = 0
-      `.execute(db);
-      const schemaRows = await sql<{ schema_version: number }>`
-        select schema_version
-        from syncular_app_schema
-        limit 1
-      `.execute(db);
-      expect(Number(liveReadModelRows.rows[0]?.task_count)).toBe(1);
-      expect(Number(schemaRows.rows[0]?.schema_version)).toBe(
-        syncularGeneratedSchemaVersion
-      );
-
-      await ensureSyncularAppBaseSchema(dirtyDb);
-      await sql`
-        insert into tasks (id, title, completed, user_id, server_version)
-        values ('task-dirty', 'Dirty schema task', 0, 'user-dirty', 1)
-      `.execute(dirtyDb);
-
-      await expect(ensureSyncularAppLiveSchema(dirtyDb)).rejects.toThrow(
-        'cannot skip read-model rebuild'
-      );
-    } finally {
-      await db.destroy();
-      await dirtyDb.destroy();
-    }
-  });
-
   it('let server handlers store BlobRef columns as SQLite text and emit app-shaped rows', async () => {
     const db = createDatabase<ServerDb>({
       dialect: createBunSqliteDialect({ path: ':memory:' }),

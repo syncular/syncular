@@ -38,7 +38,6 @@ interface ScoreboardWindow {
       rustMaxSnapshotChangedRows?: number | null;
       rustSnapshotRowsPerPage?: number | null;
       rustMaxSnapshotPages?: number | null;
-      rustSchemaInstallMode?: 'full' | 'base' | 'liveSetup' | 'none';
     }): Promise<ScoreboardResult>;
   };
 }
@@ -119,10 +118,6 @@ const realtimeIterations = numberArg(
 );
 const queryIterations = nonNegativeNumberArg('--query-iterations', 25);
 const rustStorage = storageArg('--rust-storage', 'memory');
-const rustSchemaInstallMode = schemaInstallModeArg(
-  '--rust-schema-install-mode',
-  'full'
-);
 const rustIncludeSnapshotRows = booleanArg(
   '--rust-include-snapshot-rows',
   false
@@ -338,7 +333,6 @@ try {
       rustMaxSnapshotChangedRows,
       rustSnapshotRowsPerPage: effectiveRustSnapshotRowsPerPage,
       rustMaxSnapshotPages,
-      rustSchemaInstallMode,
     }
   );
 
@@ -416,7 +410,6 @@ try {
       rustIncludeSnapshotRows,
       rustCollectChangedRows,
       rustMaxSnapshotChangedRows,
-      rustSchemaInstallMode,
       rustSnapshotRowsPerPage: effectiveRustSnapshotRowsPerPage,
       syncSnapshotArtifacts,
       syncSnapshotArtifactRowLimit: effectiveSyncSnapshotArtifactRowLimit,
@@ -448,7 +441,7 @@ try {
     console.log('');
     console.log('Browser E2E TS vs Rust scoreboard');
     console.log(
-      `rows=${rows} incremental-rows=${incrementalRows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage} rust-schema-install-mode=${rustSchemaInstallMode}`
+      `rows=${rows} incremental-rows=${incrementalRows} query-iterations=${queryIterations} wasm-profile=${wasmProfile} rust-storage=${rustStorage}`
     );
     if (incrementalRows > 0) {
       console.log(`realtime-iterations=${realtimeIterations}`);
@@ -1096,24 +1089,6 @@ function storageArg(
   const value = raw?.slice(name.length + 1);
   if (value == null) return fallback;
   if (value === 'memory' || value === 'indexedDb' || value === 'opfsSahPool') {
-    return value;
-  }
-  throw new Error(`Invalid ${name}: ${raw}`);
-}
-
-function schemaInstallModeArg(
-  name: string,
-  fallback: 'full' | 'base' | 'liveSetup' | 'none'
-): 'full' | 'base' | 'liveSetup' | 'none' {
-  const raw = process.argv.find((arg) => arg.startsWith(`${name}=`));
-  const value = raw?.slice(name.length + 1);
-  if (value == null) return fallback;
-  if (
-    value === 'full' ||
-    value === 'base' ||
-    value === 'liveSetup' ||
-    value === 'none'
-  ) {
     return value;
   }
   throw new Error(`Invalid ${name}: ${raw}`);
