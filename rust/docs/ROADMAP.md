@@ -143,6 +143,10 @@ read-only review:
     app-harness cost than artifact apply, so the next benchmark slice should
     use the generated derived-schema phase helpers from WP-06 to compare app
     install strategies before more artifact-memory micro-probes.
+    Browser E2E now reports Rust schema install time separately
+    (`5.42ms` cold, `2.55ms` cached on the 100k release artifact gate), so
+    local sync timing can be compared honestly with external app bootstrap
+    timing.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin

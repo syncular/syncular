@@ -195,6 +195,59 @@ Rejected follow-up:
   keeping another generated install mode is not justified without a measured
   win.
 
+## 2026-05-20 - Retained Schema Install Benchmark Metrics
+
+Commit: retained slice
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser E2E scoreboard now records generated Rust schema installation
+  separately as `rust_schema_install_ms` and
+  `rust_cached_schema_install_ms`.
+- The Rust app database is opened with `schemaInstallMode: 'none'`, then the
+  benchmark explicitly runs `ensureSyncularAppSchema(...)` through the schema
+  write helper before subscribing. This keeps bootstrap timing focused on sync
+  and makes schema-install costs visible beside it.
+
+Correctness gates:
+
+```bash
+bun run --cwd tests/runtime tsgo
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-schema-install-metric-100k.json
+```
+
+Comparison:
+
+| Metric | Previous phase-helper run | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `146.94ms` | `149.75ms` |
+| Rust schema install | n/a | `5.42ms` |
+| Rust cached schema install | n/a | `2.55ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.04ms` |
+| Browser entry JS bytes | `1,273,894` | `1,274,435` |
+
+Decision:
+
+- Retained. The bootstrap lane stayed in the accepted band, and future local
+  browser runs now expose schema-install cost instead of hiding it outside the
+  sync timing.
+
 ## 2026-05-19 - WP-04 Release Realtime Guard
 
 Commit: measurement only

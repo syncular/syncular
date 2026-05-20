@@ -169,6 +169,7 @@ const regressionThresholdCount = nonNegativeNumberArg(
 
 const baselineComparisonMetrics = [
   'ts_bootstrap_ms',
+  'rust_schema_install_ms',
   'rust_bootstrap_ms',
   'rust_request_count',
   'rust_response_bytes',
@@ -183,6 +184,7 @@ const baselineComparisonMetrics = [
   'rust_server_bootstrap_row_frame_encode_ms',
   'rust_server_bootstrap_snapshot_binary_encode_ms',
   'rust_cached_bootstrap_ms',
+  'rust_cached_schema_install_ms',
   'rust_server_bootstrap_artifact_cache_lookup_ms',
   'rust_cached_request_count',
   'rust_cached_response_bytes',
