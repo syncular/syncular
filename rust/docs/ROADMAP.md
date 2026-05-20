@@ -439,7 +439,12 @@ read-only review:
     current Rust-first public surfaces; remaining uppercase strings are
     downstream/test fixtures or old JS-client cleanup debt already tracked in
     the compatibility register.
-- `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
+- `[~]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
+  - First retained testkit slice lets `AppTestServer` / `AppTestHttpServer`
+    simulate `requiredSchemaVersion` and `latestSchemaVersion`. The rolling
+    deploy smoke proves a client can bootstrap existing rows, then reject a
+    future required server schema with `sync.schema_mismatch` while leaving the
+    local synced replica unchanged.
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)

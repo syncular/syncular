@@ -73,6 +73,9 @@ tests.
 - Added configurable required authorization to the stateful app test server so
   app suites can exercise unauthorized HTTP sync and WebSocket connection
   failures against the reusable fixture instead of building private auth mocks.
+- Added configurable required/latest schema-version controls to the stateful
+  app test server so rolling-deploy schema mismatch tests can use the reusable
+  HTTP fixture instead of scripted responses.
 - Updated the public `syncular-testkit` README with required-auth usage, current
   conformance gate commands, and the correct native event subscription example.
 - Added app-facing `AppTestServer` assertions for server rows, missing rows,
