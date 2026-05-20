@@ -104,6 +104,13 @@ Latest accepted slice:
 - Native Diesel coverage applies the same incremental diff-envelope shape,
   verifies ordinary row fields in the payload are preserved, and confirms the
   native pull request includes the CRDT state-vector hint.
+- CRDT state-vector hints intentionally affect incremental pull changes only.
+  Bootstrap/rebootstrap snapshots remain full-state rows because reset paths may
+  clear scoped local rows before apply, and cached snapshot chunks/artifacts are
+  scope/table/version artifacts, not per-client CRDT-state artifacts.
+- Any future snapshot CRDT optimization must be a separate side channel with an
+  explicit local-state requirement and a full-state recovery path. It must not
+  rewrite canonical snapshot rows or weaken scoped reset/revocation semantics.
 
 Gate evidence:
 
@@ -149,5 +156,6 @@ Known local environment note:
 
 ## Next Action
 
-Decide whether snapshot/rebootstrap can use a separate safe CRDT delta side
-channel without weakening bootstrap reset semantics.
+Add CRDT remote-observation diagnostics for missing-base diff envelopes and
+materialization failures, then cover recovery behavior in native and browser
+runtime tests.

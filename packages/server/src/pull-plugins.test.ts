@@ -12,6 +12,7 @@ interface TasksTable {
   id: string;
   user_id: string;
   title: string;
+  title_yjs_state?: string | null;
   server_version: number;
 }
 
@@ -39,6 +40,7 @@ describe('server pull plugins', () => {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('user_id', 'text', (col) => col.notNull())
       .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('title_yjs_state', 'text')
       .addColumn('server_version', 'integer', (col) =>
         col.notNull().defaultTo(0)
       )
@@ -128,5 +130,102 @@ describe('server pull plugins', () => {
     expect(subscription.commits[0]?.changes[0]?.row_json).toMatchObject({
       title: 'Transformed',
     });
+  });
+
+  it('does not apply incremental pull transforms to bootstrap snapshots', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'Full state',
+        title_yjs_state: 'full-yjs-state',
+        server_version: 1,
+      })
+      .execute();
+
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      }),
+    ]);
+
+    let transformCalls = 0;
+    const result = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'reader',
+        limitCommits: 10,
+        limitSnapshotRows: 10,
+        maxSnapshotPages: 1,
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            bootstrapState: {
+              asOfCommitSeq: 0,
+              tables: ['tasks'],
+              tableIndex: 0,
+              rowCursor: null,
+            },
+            crdtStateVectors: [
+              {
+                rowId: 'task-1',
+                field: 'title',
+                stateColumn: 'title_yjs_state',
+                stateVectorBase64: 'AQID',
+                syncMode: 'server-merge',
+                updatedAt: 1770000000000,
+              },
+            ],
+          },
+        ],
+      },
+      plugins: [
+        {
+          name: 'test-transform',
+          transformPullChanges(args) {
+            transformCalls += 1;
+            return args.changes.map((change): SyncChange => {
+              if (
+                change.op !== 'upsert' ||
+                typeof change.row_json !== 'object' ||
+                change.row_json === null
+              ) {
+                return change;
+              }
+              return {
+                ...change,
+                row_json: {
+                  ...(change.row_json as Record<string, unknown>),
+                  __yjs: { title: { updateBase64: 'diff' } },
+                  title_yjs_state: undefined,
+                },
+              };
+            });
+          },
+        },
+      ],
+    });
+
+    const subscription = result.response.subscriptions[0]!;
+    expect(transformCalls).toBe(0);
+    expect(subscription.bootstrap).toBe(true);
+    expect(subscription.commits).toEqual([]);
+    expect(subscription.snapshots?.[0]?.rows).toEqual([
+      expect.objectContaining({
+        id: 'task-1',
+        title: 'Full state',
+        title_yjs_state: 'full-yjs-state',
+      }),
+    ]);
+    expect(JSON.stringify(subscription.snapshots)).not.toContain('__yjs');
   });
 });
