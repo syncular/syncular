@@ -63,10 +63,9 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Add a true browser app-schema migration replay path, or explicitly mark browser
-app-schema upgrades as blocked until generated migration replay exists. The
-native Diesel path now records and rejects future local schema state; browser
-still primarily validates generated schema state around the app-layer installer.
+Design the future browser app-schema migration replay path around app-only
+migrations. Current todo migrations still mix app tables with Syncular runtime
+system tables, while Rust WASM already owns the runtime system schema.
 
 ## Progress
 
@@ -92,6 +91,10 @@ still primarily validates generated schema state around the app-layer installer.
   through `NativeSyncularClient`, C FFI, and generated Swift/Kotlin/Java BoltFFI
   wrappers. Native open now rejects a persisted future local app schema version
   before using the database.
+- Made the generated browser installer fail closed with an explicit message
+  when persisted app schema state differs from the generated client: browser
+  app-schema migration replay is not currently available for this generated
+  client.
 
 ## Latest Evidence
 
@@ -101,9 +104,9 @@ still primarily validates generated schema state around the app-layer installer.
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/generated-runtime.test.ts`
-- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test store_backends --test native_facade --test native_ffi --test native_binding_scaffold`
 - `bun run rust:conformance:native`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
 - `bun run rust:conformance:fast`

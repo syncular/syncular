@@ -452,7 +452,9 @@ read-only review:
     `syncular_app_schema` version mismatches separately from configured runtime
     version mismatches. Native Diesel now persists app schema state, rejects
     future local schema versions, and exposes the state through the native
-    facade, C FFI, and Swift/Kotlin/Java BoltFFI wrappers.
+    facade, C FFI, and Swift/Kotlin/Java BoltFFI wrappers. Browser generated
+    installers now fail closed with an explicit message instead of pretending
+    mixed app/runtime migrations can be replayed safely in WASM.
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)

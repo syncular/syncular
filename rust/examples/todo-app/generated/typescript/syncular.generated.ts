@@ -586,7 +586,7 @@ async function ensureSyncularAppSchemaMetadata(db: Kysely<any>): Promise<number 
   if (version == null) return null;
   const localVersion = Number(version);
   if (localVersion !== syncularGeneratedSchemaVersion) {
-    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}`);
+    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}. Browser app schema migration replay is not available for this generated client; recreate the local database or provide an app migration path before opening Syncular.`);
   }
   return localVersion;
 }
