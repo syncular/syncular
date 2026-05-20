@@ -1,8 +1,13 @@
+import {
+  createSyncularV2SyncAttempt,
+  syncularV2DiagnosticAttemptFields,
+} from './diagnostics';
 import type {
   SyncularV2ClientConfig,
   SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
+  SyncularV2SyncRequestOptions,
   SyncularV2SyncResult,
 } from './types';
 import type {
@@ -12,7 +17,9 @@ import type {
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export interface SyncularV2WorkerRealtimeClient {
-  syncPull(): Promise<SyncularV2SyncResult>;
+  syncPull(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
   applyRealtimeSyncPack?(bytes: Uint8Array): Promise<SyncularV2SyncResult>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
@@ -128,7 +135,8 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'warn',
         code: 'realtime.presence_not_connected',
-        message: 'Syncular v2 realtime presence send skipped while disconnected',
+        message:
+          'Syncular v2 realtime presence send skipped while disconnected',
         details: { action, scopeKey },
       });
       return;
@@ -386,17 +394,19 @@ export class SyncularV2WorkerRealtimeController {
   ): Promise<SyncularV2SyncResult> {
     const client = this.controllerOptions.getClient();
     if (message && realtimeMessageRequiresPull(message)) {
+      const syncAttempt = createSyncularV2SyncAttempt();
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.pull_required',
         message: 'Syncular v2 realtime event requires HTTP pull recovery',
+        ...syncularV2DiagnosticAttemptFields(syncAttempt),
         details: {
           cursor: message.cursor ?? null,
           reason: message.reason ?? null,
           droppedCount: message.droppedCount ?? 0,
         },
       });
-      return client.syncPull();
+      return client.syncPull({ syncAttempt });
     }
     if (
       message?.syncPackBytes &&
@@ -437,7 +447,19 @@ export class SyncularV2WorkerRealtimeController {
         });
       }
     }
-    return client.syncPull();
+    const syncAttempt = createSyncularV2SyncAttempt();
+    this.#diagnostic({
+      level: 'debug',
+      code: 'realtime.pull_required',
+      message: 'Syncular v2 realtime event requires HTTP pull recovery',
+      ...syncularV2DiagnosticAttemptFields(syncAttempt),
+      details: {
+        cursor: message?.cursor ?? null,
+        reason: message?.syncPackBytes ? 'binary-fallback' : null,
+        droppedCount: message?.droppedCount ?? 0,
+      },
+    });
+    return client.syncPull({ syncAttempt });
   }
 
   #clearReconnectTimer(): void {

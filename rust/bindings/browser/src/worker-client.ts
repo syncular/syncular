@@ -6,6 +6,7 @@ import {
 import {
   appendSyncularV2DiagnosticEvent,
   appendSyncularV2SyncTimings,
+  createSyncularV2SyncAttempt,
   summarizeSyncularV2DiagnosticSubscriptions,
 } from './diagnostics';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
@@ -60,6 +61,7 @@ import type {
   SyncularV2StorageCompactionReport,
   SyncularV2StorageFallbackInfo,
   SyncularV2SubscriptionSpec,
+  SyncularV2SyncRequestOptions,
   SyncularV2SyncResult,
   SyncularV2SyncTimings,
   SyncularV2TransportStats,
@@ -455,16 +457,31 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  async syncPull(): Promise<SyncularV2SyncResult> {
-    return this.#syncWithAuthRetry({ type: 'syncPull' });
+  async syncPull(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
+    return this.#syncWithAuthRetry({
+      type: 'syncPull',
+      syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+    });
   }
 
-  async syncPush(): Promise<SyncularV2SyncResult> {
-    return this.#syncWithAuthRetry({ type: 'syncPush' });
+  async syncPush(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
+    return this.#syncWithAuthRetry({
+      type: 'syncPush',
+      syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+    });
   }
 
-  async syncOnce(): Promise<SyncularV2SyncResult> {
-    return this.#syncWithAuthRetry({ type: 'syncOnce' });
+  async syncOnce(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
+    return this.#syncWithAuthRetry({
+      type: 'syncOnce',
+      syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+    });
   }
 
   transportStats(): Promise<SyncularV2TransportStats> {

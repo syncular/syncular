@@ -175,12 +175,12 @@ snapshot first:
 
 Continue first-slice correlation work:
 
-1. Thread generated `syncAttemptId` through browser `syncPull`, `syncPush`,
-   `syncOnce`, realtime pull-required recovery, and server request events.
-2. Add tests that prove a successful pull and a realtime pull-required recovery
+1. Add tests that prove a successful pull and a realtime pull-required recovery
    can be correlated across client diagnostics and server request records.
-3. Add native/runtime diagnostic snapshot parity after the browser shape has
+2. Add native/runtime diagnostic snapshot parity after the browser shape has
    settled.
+3. Decide whether native sync should use the same W3C trace header injection
+   directly in the Rust transport or via facade-level sync attempt options.
 
 ## Progress
 
@@ -193,3 +193,11 @@ Continue first-slice correlation work:
   client and direct Rust browser client.
 - Added worker-client snapshot coverage for diagnostics, bootstrap cursor
   state, transport stats, outbox stats, conflict stats, and redaction.
+- Added generated browser `syncAttemptId`/W3C trace context propagation through
+  `syncPull`, `syncPush`, `syncOnce`, worker diagnostics, direct Rust browser
+  client sync diagnostics, and realtime HTTP pull recovery.
+- Added `x-syncular-sync-attempt-id` to server CORS defaults so apps can send
+  the attempt id alongside `traceparent` when needed.
+- Added server coverage proving `traceparent` is persisted to
+  `sync_request_events` and browser worker/realtime coverage proving sync
+  attempts are attached to sync calls and recovery diagnostics.

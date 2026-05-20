@@ -3,6 +3,7 @@ import type {
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSubscriptionSnapshot,
   SyncularV2SubscriptionSpec,
+  SyncularV2SyncAttempt,
   SyncularV2SyncTimings,
 } from './types';
 
@@ -53,6 +54,39 @@ export function summarizeSyncularV2DiagnosticSubscriptions(
   });
 }
 
+export function createSyncularV2SyncAttempt(): SyncularV2SyncAttempt {
+  const traceId = randomHex(16);
+  const spanId = randomHex(8);
+  return {
+    syncAttemptId: traceId,
+    traceId,
+    spanId,
+    traceparent: `00-${traceId}-${spanId}-01`,
+  };
+}
+
+export function syncularV2SyncAttemptHeaders(
+  attempt: SyncularV2SyncAttempt
+): Record<string, string> {
+  return {
+    traceparent: attempt.traceparent,
+    'sentry-trace': `${attempt.traceId}-${attempt.spanId}-1`,
+    'x-syncular-sync-attempt-id': attempt.syncAttemptId,
+  };
+}
+
+export function syncularV2DiagnosticAttemptFields(
+  attempt: SyncularV2SyncAttempt | undefined
+): Pick<SyncularV2DiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
+  return attempt
+    ? {
+        syncAttemptId: attempt.syncAttemptId,
+        traceId: attempt.traceId,
+        spanId: attempt.spanId,
+      }
+    : {};
+}
+
 function countRedactedValues(values: Record<string, unknown>): number {
   let count = 0;
   for (const value of Object.values(values)) {
@@ -64,4 +98,19 @@ function countRedactedValues(values: Record<string, unknown>): number {
 function trimRing<T>(items: T[], limit: number): void {
   if (items.length <= limit) return;
   items.splice(0, items.length - limit);
+}
+
+function randomHex(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  const cryptoSource = globalThis.crypto;
+  if (cryptoSource?.getRandomValues) {
+    cryptoSource.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
+    ''
+  );
 }

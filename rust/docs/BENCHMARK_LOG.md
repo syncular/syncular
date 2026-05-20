@@ -18,6 +18,52 @@ Decision:
 Notes:
 ```
 
+## 2026-05-20 - Retained Browser Sync Attempt Trace Plumbing
+
+Commit: retained slice
+
+Work package:
+[`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser worker sync calls now generate a `syncAttemptId` backed by W3C
+  `traceparent`/`sentry-trace` fields.
+- Realtime HTTP pull recovery gets the same attempt envelope.
+- Direct Rust browser sync temporarily injects the trace headers for the HTTP
+  sync request and restores app auth headers after the request finishes.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --rust-max-snapshot-pages=2 \
+  --baseline=.context/benchmarks/wp12-artifact-instrumentation-100k.json \
+  --output=.context/benchmarks/wp13-sync-attempt-trace-100k-rerun.json
+```
+
+First run was noisy (`rust_bootstrap_ms 146.68ms`, `rust_pull_apply_ms
+135ms`) without request/response byte changes. Reran before accepting.
+
+| Metric | Previous accepted | Current rerun |
+| --- | ---: | ---: |
+| 100k Rust bootstrap | `136.33ms` | `135.75ms` |
+| 100k Rust pull request | `7ms` | `6ms` |
+| 100k Rust pull apply | `125ms` | `125ms` |
+| 100k Rust snapshot artifact apply | `111ms` | `112ms` |
+| Rust request count | `3` | `3` |
+| Rust response bytes | `874,885` | `874,885` |
+| Served asset total | `7,785,033 bytes` | `7,801,499 bytes` |
+
+Decision: retained. The accepted rerun shows no meaningful sync performance
+regression. The browser JS asset size increase is visible (`+16,466 bytes`) and
+is acceptable for the diagnostic surface.
+
 ## 2026-05-20 - Retained Redundant Local Index Prefix Omission
 
 Commit: retained slice
