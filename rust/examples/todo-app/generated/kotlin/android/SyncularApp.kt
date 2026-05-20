@@ -750,6 +750,7 @@ interface SyncularNativeJsonClient {
     fun queryJson(requestJson: String): String
     fun registerQueryJson(queryJson: String): String
     fun unregisterQuery(id: String): Boolean
+    fun diagnosticSnapshotJson(): String
 }
 
 fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =
@@ -757,6 +758,9 @@ fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation, localR
 
 fun SyncularNativeJsonClient.enqueue(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =
     enqueueMutationJson(operation.toJsonString(), localRowJson)
+
+fun SyncularNativeJsonClient.diagnosticSnapshot(): JsonObject =
+    Json.parseToJsonElement(diagnosticSnapshotJson()).jsonObject
 
 fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor =
     syncularDecodeCrdtFieldDescriptor(openCrdtFieldJson(request.toJsonString()))
