@@ -994,6 +994,7 @@ impl NativeSyncularClient {
             let extra_payload_json = crdt_field_compaction_event_payload(
                 &mut self.writer,
                 &field,
+                &receipt,
                 receipt.checkpoint_created,
                 request.min_uncheckpointed_updates.unwrap_or(1),
             );
@@ -2289,6 +2290,7 @@ fn crdt_field_event_payload(
 fn crdt_field_compaction_event_payload(
     client: &mut SyncularClient<DieselSqliteStore, HttpSyncTransport>,
     field: &CrdtField,
+    receipt: &CrdtFieldCompactionReceipt,
     checkpoint_created: bool,
     min_uncheckpointed_updates: i64,
 ) -> Option<Value> {
@@ -2299,6 +2301,16 @@ fn crdt_field_compaction_event_payload(
     payload.insert(
         "minUncheckpointedUpdates".to_string(),
         json!(min_uncheckpointed_updates),
+    );
+    payload.insert("before".to_string(), json!(&receipt.before));
+    payload.insert("after".to_string(), json!(&receipt.after));
+    payload.insert(
+        "encryptedStreamBefore".to_string(),
+        json!(&receipt.encrypted_stream_before),
+    );
+    payload.insert(
+        "encryptedStreamAfter".to_string(),
+        json!(&receipt.encrypted_stream_after),
     );
     Some(Value::Object(payload))
 }

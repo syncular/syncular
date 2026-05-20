@@ -31,6 +31,20 @@ const field = {
   field: 'title',
 } satisfies SyncularV2CrdtFieldRequest;
 
+function compactionStatsFromSnapshot(
+  snapshot: SyncularV2CrdtDocumentSnapshot
+): SyncularV2CrdtFieldCompactionReceipt['before'] {
+  return {
+    pendingUpdates: snapshot.pendingUpdates,
+    flushedUpdates: snapshot.flushedUpdates,
+    ackedUpdates: snapshot.ackedUpdates,
+    logUpdates: snapshot.logUpdates,
+    stateVectorBase64: snapshot.stateVectorBase64,
+    updatedAt: snapshot.updatedAt,
+    compactedAt: snapshot.compactedAt,
+  };
+}
+
 describe('createYjsDocumentFieldAdapter', () => {
   it('flushes local Yjs updates through the Syncular host', async () => {
     const host = new FakeCrdtFieldHost();
@@ -705,8 +719,16 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
     });
   }
 
-  compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
-    return Promise.resolve({ checkpointCreated: true });
+  async compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+    const stats = compactionStatsFromSnapshot(await this.crdtDocumentSnapshot());
+    return {
+      checkpointCreated: true,
+      clientCommitId: 'compact-1',
+      before: stats,
+      after: stats,
+      encryptedStreamBefore: null,
+      encryptedStreamAfter: null,
+    };
   }
 
   addRowsChangedListener(

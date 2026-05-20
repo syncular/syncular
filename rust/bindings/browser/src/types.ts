@@ -361,9 +361,31 @@ export interface SyncularV2CrdtUpdateLogEntry {
   ackedAt?: number | null;
 }
 
+export interface SyncularV2CrdtFieldCompactionStats {
+  pendingUpdates: number;
+  flushedUpdates: number;
+  ackedUpdates: number;
+  logUpdates: number;
+  stateVectorBase64: string;
+  updatedAt: number;
+  compactedAt?: number | null;
+}
+
+export interface SyncularV2EncryptedCrdtStreamStats {
+  updateCount: number;
+  checkpointCount: number;
+  checkpointableUpdateCount: number;
+  maxServerSeq?: number | null;
+  latestCheckpointCoversSeq?: number | null;
+}
+
 export interface SyncularV2CrdtFieldCompactionReceipt {
   checkpointCreated: boolean;
   clientCommitId?: string | null;
+  before: SyncularV2CrdtFieldCompactionStats;
+  after: SyncularV2CrdtFieldCompactionStats;
+  encryptedStreamBefore?: SyncularV2EncryptedCrdtStreamStats | null;
+  encryptedStreamAfter?: SyncularV2EncryptedCrdtStreamStats | null;
 }
 
 export interface SyncularBuildYjsTextUpdateArgs {

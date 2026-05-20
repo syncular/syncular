@@ -69,7 +69,7 @@ private final class MockNativeClient: SyncularNativeJsonClient {
 
     func compactCrdtFieldJson(requestJson: String) throws -> String {
         crdtCompactionRequests.append(requestJson)
-        return #"{"checkpointCreated":false,"clientCommitId":null}"#
+        return #"{"checkpointCreated":false,"clientCommitId":null,"before":{"pendingUpdates":0,"flushedUpdates":0,"ackedUpdates":0,"logUpdates":0,"stateVectorBase64":"vector","updatedAt":1,"compactedAt":null},"after":{"pendingUpdates":0,"flushedUpdates":0,"ackedUpdates":0,"logUpdates":0,"stateVectorBase64":"vector","updatedAt":2,"compactedAt":2},"encryptedStreamBefore":null,"encryptedStreamAfter":null}"#
     }
 
     func queryJson(requestJson: String) throws -> String {

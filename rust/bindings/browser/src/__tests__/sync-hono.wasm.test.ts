@@ -1767,9 +1767,16 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     await expect(client.snapshotCrdtFieldStateVector(field)).resolves.toEqual({
       stateVectorBase64: expect.any(String),
     });
-    await expect(client.compactCrdtField(field)).resolves.toEqual({
+    await expect(client.compactCrdtField(field)).resolves.toMatchObject({
       checkpointCreated: false,
       clientCommitId: null,
+      before: {
+        stateVectorBase64: expect.any(String),
+      },
+      after: {
+        stateVectorBase64: expect.any(String),
+        compactedAt: expect.any(Number),
+      },
     });
     await expect(client.listTable('tasks')).resolves.toContainEqual(
       expect.objectContaining({

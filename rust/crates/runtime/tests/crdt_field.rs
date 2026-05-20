@@ -86,6 +86,18 @@ fn rust_client_exposes_generic_crdt_field_text_flow() -> Result<()> {
     let compaction = client.compact_crdt_field(&field, 1)?;
     assert!(!compaction.checkpoint_created);
     assert!(compaction.client_commit_id.is_none());
+    assert_eq!(
+        compaction.before.state_vector_base64,
+        materialized.state_vector_base64
+    );
+    assert_eq!(
+        compaction.after.state_vector_base64,
+        materialized.state_vector_base64
+    );
+    assert!(compaction.before.compacted_at.is_none());
+    assert!(compaction.after.compacted_at.is_some());
+    assert!(compaction.encrypted_stream_before.is_none());
+    assert!(compaction.encrypted_stream_after.is_none());
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -825,6 +837,24 @@ fn encrypted_crdt_checkpoint_compaction_prunes_updates_without_blanking_content(
     let checkpoint = client_b.compact_crdt_field(&field_b, 1)?;
     assert!(checkpoint.checkpoint_created);
     assert!(checkpoint.client_commit_id.is_some());
+    assert!(!checkpoint.before.state_vector_base64.is_empty());
+    assert_eq!(
+        checkpoint.before.state_vector_base64,
+        checkpoint.after.state_vector_base64
+    );
+    let encrypted_before = checkpoint
+        .encrypted_stream_before
+        .expect("encrypted stream stats before checkpoint");
+    let encrypted_after = checkpoint
+        .encrypted_stream_after
+        .expect("encrypted stream stats after checkpoint");
+    assert_eq!(encrypted_before.checkpointable_update_count, 1);
+    assert_eq!(encrypted_before.checkpoint_count, 0);
+    assert_eq!(encrypted_after.checkpoint_count, 1);
+    assert_eq!(
+        encrypted_after.latest_checkpoint_covers_seq,
+        encrypted_after.max_server_seq
+    );
     client_b.sync_http()?;
 
     let options = StorageCompactionOptions {

@@ -261,7 +261,16 @@ read-only review:
 - `[x]` [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
 - `[x]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
-- `[ ]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
+- `[~]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
+  - Generic CRDT compaction now returns before/after diagnostic stats through
+    Rust, native JSON, browser WASM, and generated Swift/Kotlin clients. The
+    receipt exposes counters and state-vector metadata without embedding the
+    full state blob, and encrypted update-log fields include before/after
+    stream checkpoint stats. Runtime CRDT tests and browser Hono WASM CRDT
+    coverage pass. The full native smoke currently hangs in the Swift
+    server-sync executable after generated Swift/Kotlin, BoltFFI host,
+    lifecycle, and JVM packaging smokes pass; isolate that before treating the
+    native lane as fully green.
 - `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
   - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP

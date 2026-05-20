@@ -372,9 +372,31 @@ data class SyncularCrdtFieldStateVector(
     val stateVectorBase64: String,
 )
 
+data class SyncularCrdtFieldCompactionStats(
+    val pendingUpdates: Long,
+    val flushedUpdates: Long,
+    val ackedUpdates: Long,
+    val logUpdates: Long,
+    val stateVectorBase64: String,
+    val updatedAt: Long,
+    val compactedAt: Long?,
+)
+
+data class SyncularEncryptedCrdtStreamStats(
+    val updateCount: Long,
+    val checkpointCount: Long,
+    val checkpointableUpdateCount: Long,
+    val maxServerSeq: Long?,
+    val latestCheckpointCoversSeq: Long?,
+)
+
 data class SyncularCrdtFieldCompactionReceipt(
     val checkpointCreated: Boolean,
     val clientCommitId: String?,
+    val before: SyncularCrdtFieldCompactionStats,
+    val after: SyncularCrdtFieldCompactionStats,
+    val encryptedStreamBefore: SyncularEncryptedCrdtStreamStats?,
+    val encryptedStreamAfter: SyncularEncryptedCrdtStreamStats?,
 )
 
 fun syncularDecodeChangedRow(row: JsonObject): SyncularChangedRow = SyncularChangedRow(
@@ -655,11 +677,39 @@ fun syncularDecodeCrdtFieldStateVector(json: String): SyncularCrdtFieldStateVect
     )
 }
 
+fun syncularDecodeCrdtFieldCompactionStats(value: JsonElement?): SyncularCrdtFieldCompactionStats {
+    val stats = value?.takeUnless { it is JsonNull }?.jsonObject ?: error("missing CRDT compaction stats")
+    return SyncularCrdtFieldCompactionStats(
+        pendingUpdates = stats["pendingUpdates"]?.jsonPrimitive?.longOrNull ?: error("missing CRDT compaction pendingUpdates"),
+        flushedUpdates = stats["flushedUpdates"]?.jsonPrimitive?.longOrNull ?: error("missing CRDT compaction flushedUpdates"),
+        ackedUpdates = stats["ackedUpdates"]?.jsonPrimitive?.longOrNull ?: error("missing CRDT compaction ackedUpdates"),
+        logUpdates = stats["logUpdates"]?.jsonPrimitive?.longOrNull ?: error("missing CRDT compaction logUpdates"),
+        stateVectorBase64 = stats["stateVectorBase64"]?.jsonPrimitive?.content ?: error("missing CRDT compaction stateVectorBase64"),
+        updatedAt = stats["updatedAt"]?.jsonPrimitive?.longOrNull ?: error("missing CRDT compaction updatedAt"),
+        compactedAt = stats["compactedAt"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.longOrNull,
+    )
+}
+
+fun syncularDecodeEncryptedCrdtStreamStats(value: JsonElement?): SyncularEncryptedCrdtStreamStats? {
+    val stats = value?.takeUnless { it is JsonNull }?.jsonObject ?: return null
+    return SyncularEncryptedCrdtStreamStats(
+        updateCount = stats["updateCount"]?.jsonPrimitive?.longOrNull ?: error("missing encrypted CRDT updateCount"),
+        checkpointCount = stats["checkpointCount"]?.jsonPrimitive?.longOrNull ?: error("missing encrypted CRDT checkpointCount"),
+        checkpointableUpdateCount = stats["checkpointableUpdateCount"]?.jsonPrimitive?.longOrNull ?: error("missing encrypted CRDT checkpointableUpdateCount"),
+        maxServerSeq = stats["maxServerSeq"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.longOrNull,
+        latestCheckpointCoversSeq = stats["latestCheckpointCoversSeq"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.longOrNull,
+    )
+}
+
 fun syncularDecodeCrdtFieldCompactionReceipt(json: String): SyncularCrdtFieldCompactionReceipt {
     val value = Json.parseToJsonElement(json).jsonObject
     return SyncularCrdtFieldCompactionReceipt(
         checkpointCreated = value["checkpointCreated"]?.jsonPrimitive?.booleanOrNull ?: false,
         clientCommitId = value["clientCommitId"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content,
+        before = syncularDecodeCrdtFieldCompactionStats(value["before"]),
+        after = syncularDecodeCrdtFieldCompactionStats(value["after"]),
+        encryptedStreamBefore = syncularDecodeEncryptedCrdtStreamStats(value["encryptedStreamBefore"]),
+        encryptedStreamAfter = syncularDecodeEncryptedCrdtStreamStats(value["encryptedStreamAfter"]),
     )
 }
 

@@ -65,6 +65,18 @@ pub struct CrdtDocumentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CrdtFieldCompactionStats {
+    pub pending_updates: i64,
+    pub flushed_updates: i64,
+    pub acked_updates: i64,
+    pub log_updates: i64,
+    pub state_vector_base64: String,
+    pub updated_at: i64,
+    pub compacted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CrdtUpdateLogEntry {
     pub id: i64,
     pub document_key: String,
@@ -77,6 +89,20 @@ pub struct CrdtUpdateLogEntry {
     pub created_at: i64,
     pub flushed_at: Option<i64>,
     pub acked_at: Option<i64>,
+}
+
+impl From<&CrdtDocumentSnapshot> for CrdtFieldCompactionStats {
+    fn from(snapshot: &CrdtDocumentSnapshot) -> Self {
+        Self {
+            pending_updates: snapshot.pending_updates,
+            flushed_updates: snapshot.flushed_updates,
+            acked_updates: snapshot.acked_updates,
+            log_updates: snapshot.log_updates,
+            state_vector_base64: snapshot.state_vector_base64.clone(),
+            updated_at: snapshot.updated_at,
+            compacted_at: snapshot.compacted_at,
+        }
+    }
 }
 
 impl CrdtFieldId {
