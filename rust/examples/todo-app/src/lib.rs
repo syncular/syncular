@@ -265,6 +265,7 @@ mod tests {
                 commit_seq: Some(7),
                 subscription_id: Some("sub-tasks".to_string()),
                 server_version: Some(11),
+                ..SyncChangedRow::default()
             },
             SyncChangedRow {
                 table: "projects".to_string(),
