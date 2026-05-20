@@ -6,6 +6,8 @@
  * 2) `ScopeCacheDurableObject` - Durable Object class that stores scope entries in DO storage
  */
 
+import { createSyncularErrorResponse } from '@syncular/core';
+
 type ScopeValues = Record<string, string | string[]>;
 
 interface ScopeCacheContext {
@@ -180,12 +182,22 @@ export class ScopeCacheDurableObject {
 
   async fetch(request: Request): Promise<Response> {
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return Response.json(
+        createSyncularErrorResponse('sync.invalid_request', {
+          message: 'Method not allowed',
+        }),
+        { status: 405, headers: { allow: 'POST' } }
+      );
     }
 
     const payload = await parseRequestBody(request);
     if (!payload) {
-      return new Response('Invalid scope cache request', { status: 400 });
+      return Response.json(
+        createSyncularErrorResponse('sync.invalid_request', {
+          message: 'Invalid scope cache request',
+        }),
+        { status: 400 }
+      );
     }
 
     if (payload.action === 'get') {

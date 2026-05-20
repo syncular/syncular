@@ -126,9 +126,17 @@ string-only errors.
 - Direct Server-Hono console routes now use shared error-envelope schema and
   stable `console.*` / `blob.*` codes for schema-unavailable, auth, not-found,
   invalid request, and storage-not-configured failures.
+- Cloudflare scope-cache Durable Object and server-service-worker default
+  handler failures now return stable envelope JSON instead of plaintext
+  adapter errors. The shared core error helper now typechecks under the
+  Cloudflare Worker type profile.
 
 ## Latest Evidence
 
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server-cloudflare tsgo`
+- `bun run --cwd packages/server-service-worker tsgo`
+- `bun test packages/server-cloudflare/src/scope-cache.test.ts packages/server-service-worker/src/index.test.ts packages/core/src/__tests__/error-responses.test.ts`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server-hono tsgo`
 - `bun test packages/core/src/__tests__/error-responses.test.ts packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`

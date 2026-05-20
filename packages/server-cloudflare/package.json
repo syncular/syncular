@@ -73,6 +73,9 @@
   "peerDependencies": {
     "hono": "^4.0.0"
   },
+  "dependencies": {
+    "@syncular/core": "workspace:*"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "*",
     "@syncular/config": "workspace:*"
