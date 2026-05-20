@@ -281,9 +281,9 @@ read-only review:
     The Rust conformance fixture loader now lives in `syncular-testkit`, and
     runtime protocol and blob transport tests consume it instead of private
     copies. The TypeScript conformance loader now lives next to the shared JSON
-    fixture, so browser tests and native Hono smoke setup no longer couple
-    through browser test internals. The Rust perf binary now uses the same
-    fixture instead of maintaining its own private server copy.
+    fixture, so browser generated-app tests and native Hono smoke setup no
+    longer couple through browser test internals. The Rust perf binary now uses
+    the same fixture instead of maintaining its own private server copy.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)

@@ -85,6 +85,8 @@ tests.
   `sync-scenarios.json`, then pointed browser fixture tests and native Hono
   smoke server setup at it so native smokes no longer import browser test
   internals.
+- Updated browser generated-app conformance tests to use the shared TypeScript
+  sync scenario loader for field-encryption scenarios.
 - Added a stateful HTTP conflict smoke proving version conflicts are reported
   through the production native HTTP transport shape while the same sync can
   pull the server-winning row.
@@ -100,6 +102,8 @@ tests.
   passed and proved the browser fixture resolves the shared TypeScript loader.
 - Gate: `bun test ./rust/bindings/browser/src/__tests__/fixtures/sync-conformance.ts`
   passed as a no-test import smoke.
+- Gate: `bun test ./rust/bindings/browser/src/generated-app-conformance.test.ts`
+  passed with `5` browser generated-app conformance tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.
