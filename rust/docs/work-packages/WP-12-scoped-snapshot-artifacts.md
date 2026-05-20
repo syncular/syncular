@@ -753,6 +753,17 @@ Generated derived-schema contract follow-up:
   derived-schema install was rejected because it regressed 500k bootstrap to
   `1827.83ms`, local apply to `1525ms`, and peak memory to `761.14MB`.
 
+Retained derived-schema storage-shape follow-up:
+
+- Generated `countBy` read-model tables now use `WITHOUT ROWID` because their
+  dimension columns already form the primary key and are validated non-null.
+- This keeps the generated query/read-model contract unchanged while using the
+  canonical SQLite storage shape for composite-key aggregate tables.
+- External app-style scoped artifacts improved on the 500k lane:
+  bootstrap `1430.17ms -> 1382.56ms`, derived schema
+  `976.02ms -> 930.41ms`, and local apply `207ms -> 202ms`, with
+  `snapshotChunkCount=0`.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
@@ -773,6 +784,9 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   against external app-style benchmarks, because external reports derived
   schema as part of app bootstrap while local sync bootstrap intentionally does
   not.
+- Derived-schema setup is now a first-class performance input for app-style
+  bootstrap comparisons. Keep optimizing only generated, app-declared local
+  indexes/read models; do not introduce hidden runtime caches.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows

@@ -4085,3 +4085,66 @@ Decision:
   local artifact regression. In the external harness, the Rust sync/apply path
   stayed flat and the total-bootstrap delta came from derived-schema timing,
   not snapshot artifact transfer/apply.
+
+## 2026-05-20 - WP-12 CountBy Read Models Use WITHOUT ROWID
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Generated `countBy` read-model setup SQL now creates the aggregate table with
+  `WITHOUT ROWID`.
+- The dimensions already form a validated non-null primary key, so this keeps
+  the generated read/query semantics unchanged while using the leaner SQLite
+  storage shape for composite-key aggregate tables.
+- While running the example gate, the todo app's manual changed-row test helper
+  was updated to use `SyncChangedRow::default()` for newly added optional
+  fields.
+
+External app-style scoped artifact benchmark:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T05-47-15-646Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous retained profile run | WITHOUT ROWID read model |
+| --- | ---: | ---: |
+| 500k bootstrap | `1430.17ms` | `1382.56ms` |
+| 500k derived schema | `976.02ms` | `930.41ms` |
+| 500k sync total | `441ms` | `437ms` |
+| 500k pull apply | `323ms` | `326ms` |
+| 500k local apply | `207ms` | `202ms` |
+| 500k response bytes | `3,537,739` | `3,537,756` |
+| 500k peak memory | `688.56MB` | `696.50MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Correctness gates:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Decision:
+
+- Accepted. The improvement is modest but measurable, and the implementation is
+  a simpler SQLite table-shape correction rather than a cache or protocol
+  branch. Peak memory moved up by `7.94MB` in the external run, but remains
+  below the recent `707.92MB` accepted scoped-artifact baseline while bootstrap
+  and derived-schema time improve.

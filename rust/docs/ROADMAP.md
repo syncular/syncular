@@ -145,7 +145,11 @@ read-only review:
     before-bootstrap derived-schema install probe was rejected because it
     regressed 500k bootstrap (`1396.01ms -> 1827.83ms`), local apply
     (`208ms -> 1525ms`), and peak memory (`695.97MB -> 761.14MB`). Keep
-    bulk-load-then-derived-rebuild as the app harness shape.
+    bulk-load-then-derived-rebuild as the app harness shape. Generated
+    `countBy` read-model tables now use `WITHOUT ROWID`, improving the
+    external app-style scoped artifact 500k lane from `1430.17ms -> 1382.56ms`
+    and derived-schema time from `976.02ms -> 930.41ms` without changing app
+    semantics.
     Browser E2E now reports Rust schema install time separately
     (`5.42ms` cold, `2.55ms` cached on the 100k release artifact gate), so
     local sync timing can be compared honestly with external app bootstrap

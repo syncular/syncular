@@ -122,7 +122,7 @@ export const syncularGeneratedLocalReadModels: readonly SyncularGeneratedLocalRe
   "completed" INTEGER NOT NULL,
   "task_count" INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY ("user_id", "completed")
-)`,
+) WITHOUT ROWID`,
       `CREATE TRIGGER IF NOT EXISTS "syncular_rm_taskCountsByUserCompletion_insert"
 AFTER INSERT ON "tasks"
 BEGIN

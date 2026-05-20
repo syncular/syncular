@@ -2668,7 +2668,7 @@ fn count_by_read_model_sql(
 
     let setup_sql = vec![
         format!(
-            "CREATE TABLE IF NOT EXISTS {output} (\n{dimension_defs},\n  {count_column} INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY ({dimension_csv})\n)"
+            "CREATE TABLE IF NOT EXISTS {output} (\n{dimension_defs},\n  {count_column} INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY ({dimension_csv})\n) WITHOUT ROWID"
         ),
         format!(
             "CREATE TRIGGER IF NOT EXISTS {}\nAFTER INSERT ON {source}\nBEGIN\n  INSERT INTO {output} ({dimension_csv}, {count_column})\n  VALUES ({new_values}, 1)\n  ON CONFLICT({dimension_csv}) DO UPDATE SET\n    {count_column} = {count_column} + 1;\nEND",
@@ -9516,7 +9516,7 @@ mod tests {
         assert_eq!(json["localReadModels"][0]["dimensions"][0], "deleted");
         assert_eq!(
             json["localReadModels"][0]["setupSql"][0],
-            "CREATE TABLE IF NOT EXISTS \"syncular_task_counts_by_deleted\" (\n  \"deleted\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"deleted\")\n)"
+            "CREATE TABLE IF NOT EXISTS \"syncular_task_counts_by_deleted\" (\n  \"deleted\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"deleted\")\n) WITHOUT ROWID"
         );
         assert_eq!(
             json["localReadModels"][0]["rebuildSql"][1],
@@ -9529,7 +9529,7 @@ mod tests {
         );
         assert_eq!(
             json["localDerivedSchema"]["readModelSetupSql"][0],
-            "CREATE TABLE IF NOT EXISTS \"syncular_task_counts_by_deleted\" (\n  \"deleted\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"deleted\")\n)"
+            "CREATE TABLE IF NOT EXISTS \"syncular_task_counts_by_deleted\" (\n  \"deleted\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"deleted\")\n) WITHOUT ROWID"
         );
         assert_eq!(
             json["localDerivedSchema"]["readModelRebuildSql"][1],
