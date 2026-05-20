@@ -1,5 +1,7 @@
 #[cfg(feature = "native")]
 use crate::client::BootstrapStatus;
+#[cfg(feature = "native")]
+use crate::client::CrdtFieldCompactionReceipt;
 use crate::client::{
     sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow, SyncReport,
     SyncularClient,
@@ -579,7 +581,7 @@ where
             .and_then(|identity| self.open_crdt_field(identity.id()).ok());
         let receipt = self.apply_encrypted_crdt_checkpoint_json(request_json)?;
         let crdt_event_payload_json = field.as_ref().and_then(|field| {
-            crdt_field_compaction_payload_for_worker(
+            crdt_field_compaction_payload_for_worker_current(
                 self,
                 field,
                 true,
@@ -628,6 +630,7 @@ where
         let crdt_event_payload_json = crdt_field_compaction_payload_for_worker(
             self,
             &field,
+            &receipt,
             receipt.checkpoint_created,
             request.min_uncheckpointed_updates.unwrap_or(1),
         );
@@ -3362,6 +3365,38 @@ where
 
 #[cfg(feature = "native")]
 fn crdt_field_compaction_payload_for_worker<T>(
+    client: &mut SyncularClient<DieselSqliteStore, T>,
+    field: &CrdtField,
+    receipt: &CrdtFieldCompactionReceipt,
+    checkpoint_created: bool,
+    min_uncheckpointed_updates: i64,
+) -> Option<Value>
+where
+    T: SyncTransport,
+{
+    let mut payload = crdt_field_event_payload_for_worker(client, field)
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_else(|| crdt_field_base_payload_for_worker(field));
+    payload.insert("checkpointCreated".to_string(), json!(checkpoint_created));
+    payload.insert(
+        "minUncheckpointedUpdates".to_string(),
+        json!(min_uncheckpointed_updates),
+    );
+    payload.insert("before".to_string(), json!(&receipt.before));
+    payload.insert("after".to_string(), json!(&receipt.after));
+    payload.insert(
+        "encryptedStreamBefore".to_string(),
+        json!(&receipt.encrypted_stream_before),
+    );
+    payload.insert(
+        "encryptedStreamAfter".to_string(),
+        json!(&receipt.encrypted_stream_after),
+    );
+    Some(Value::Object(payload))
+}
+
+#[cfg(feature = "native")]
+fn crdt_field_compaction_payload_for_worker_current<T>(
     client: &mut SyncularClient<DieselSqliteStore, T>,
     field: &CrdtField,
     checkpoint_created: bool,

@@ -1,6 +1,6 @@
 # WP-07 CRDT Fields
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -45,7 +45,38 @@ The Rust runtime already has a generic CRDT document-field primitive. Remaining
 work is polish: stream behavior, diagnostics, state-vector hints, and stronger
 encrypted/convergence coverage.
 
+Latest accepted slice:
+
+- `compact_crdt_field` now returns a structured diagnostic receipt with
+  before/after compaction stats instead of only `checkpointCreated`.
+- Compaction stats intentionally omit the full CRDT state blob and include
+  counters, state-vector, update timestamp, and compacted timestamp.
+- Encrypted update-log fields include before/after stream checkpoint stats so
+  hosts can see whether a checkpoint was actually useful.
+- The same receipt shape is exposed through native JSON, browser WASM, and
+  generated Swift/Kotlin clients.
+- Runtime tests assert server-merge compaction timestamps, encrypted checkpoint
+  stream stats, and no state-vector/content blanking.
+
+Gate evidence:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `bun --cwd rust/bindings/crdt-adapters test`
+- `bun --cwd rust/bindings/browser tsgo`
+- `bun --cwd rust/bindings/crdt-adapters tsgo`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs`
+- `swiftc rust/examples/todo-app/generated/swift/SyncularApp.swift rust/examples/todo-app/native-smokes/swift/GeneratedClientSmoke.swift -o .context/native-smokes/generated-swift-smoke && .context/native-smokes/generated-swift-smoke rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
+- `kotlinc ... rust/examples/todo-app/generated/kotlin/SyncularApp.kt rust/examples/todo-app/native-smokes/kotlin/GeneratedClientSmoke.kt ... && kotlin ... GeneratedClientSmokeKt rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
+- `bun run --cwd rust/bindings/browser build:wasm:dev`
+- `bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts`
+- `bun run rust:conformance:fast`
+- `bash rust/examples/todo-app/native-smokes/run-local.sh` progressed through
+  generated Swift/Kotlin clients, BoltFFI hosts, lifecycle shells, and JVM
+  package creation, then hung in the Swift server-sync executable. Treat this
+  extended native lane as not accepted until the server-sync hang is isolated.
+
 ## Next Action
 
-Add one focused CRDT stream-polish slice: state-vector pull hints or compaction
-diagnostics, with convergence and no-blanking tests.
+Isolate the Swift server-sync native smoke hang, then continue with state-vector
+pull hints or remote update observation diagnostics.

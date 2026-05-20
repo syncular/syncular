@@ -1307,9 +1307,12 @@ impl SyncularRustOwnedSqliteClient {
         request: RustOwnedCrdtFieldCompactionRequest,
     ) -> Result<Value> {
         let field = self.open_validated_crdt_field(request.id())?;
+        let before_snapshot = self.inner.store().crdt_document_snapshot(&field)?;
+        let before = crdt_compaction_stats_from_snapshot(&before_snapshot);
+        let encrypted_stream_before = self.encrypted_crdt_stream_stats_for_field(&field)?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
-                self.inner.store().compact_crdt_document(&field)?;
+                let after_snapshot = self.inner.store().compact_crdt_document(&field)?;
                 self.inner
                     .store_mut()
                     .notify_local_tables_changed_with_rows(
@@ -1318,7 +1321,11 @@ impl SyncularRustOwnedSqliteClient {
                     )?;
                 Ok(json!({
                     "checkpointCreated": false,
-                    "clientCommitId": Value::Null
+                    "clientCommitId": Value::Null,
+                    "before": before,
+                    "after": crdt_compaction_stats_from_snapshot(&after_snapshot),
+                    "encryptedStreamBefore": encrypted_stream_before,
+                    "encryptedStreamAfter": self.encrypted_crdt_stream_stats_for_field(&field)?
                 }))
             }
             CrdtFieldSyncMode::EncryptedUpdateLog => {
@@ -1338,24 +1345,39 @@ impl SyncularRustOwnedSqliteClient {
                     .store()
                     .encrypted_crdt_stream_stats(encryption.partition_id(), &stream_id)?;
                 if stats.checkpointable_update_count < min_uncheckpointed_updates {
+                    let after_snapshot = self.inner.store().crdt_document_snapshot(&field)?;
                     return Ok(json!({
                         "checkpointCreated": false,
-                        "clientCommitId": Value::Null
+                        "clientCommitId": Value::Null,
+                        "before": before,
+                        "after": crdt_compaction_stats_from_snapshot(&after_snapshot),
+                        "encryptedStreamBefore": encrypted_stream_before,
+                        "encryptedStreamAfter": self.encrypted_crdt_stream_stats_for_field(&field)?
                     }));
                 }
                 let Some(covers_seq) = stats.max_server_seq else {
+                    let after_snapshot = self.inner.store().crdt_document_snapshot(&field)?;
                     return Ok(json!({
                         "checkpointCreated": false,
-                        "clientCommitId": Value::Null
+                        "clientCommitId": Value::Null,
+                        "before": before,
+                        "after": crdt_compaction_stats_from_snapshot(&after_snapshot),
+                        "encryptedStreamBefore": encrypted_stream_before,
+                        "encryptedStreamAfter": self.encrypted_crdt_stream_stats_for_field(&field)?
                     }));
                 };
                 if stats
                     .latest_checkpoint_covers_seq
                     .is_some_and(|latest| latest >= covers_seq)
                 {
+                    let after_snapshot = self.inner.store().crdt_document_snapshot(&field)?;
                     return Ok(json!({
                         "checkpointCreated": false,
-                        "clientCommitId": Value::Null
+                        "clientCommitId": Value::Null,
+                        "before": before,
+                        "after": crdt_compaction_stats_from_snapshot(&after_snapshot),
+                        "encryptedStreamBefore": encrypted_stream_before,
+                        "encryptedStreamAfter": self.encrypted_crdt_stream_stats_for_field(&field)?
                     }));
                 }
                 let existing_row = self.require_crdt_field_row(&field)?;
@@ -1372,12 +1394,34 @@ impl SyncularRustOwnedSqliteClient {
                     .inner
                     .store_mut()
                     .apply_pending_mutation_commit(mutation, &[field.table()])?;
+                let after_snapshot = self.inner.store().crdt_document_snapshot(&field)?;
                 Ok(json!({
                     "checkpointCreated": true,
-                    "clientCommitId": client_commit_id
+                    "clientCommitId": client_commit_id,
+                    "before": before,
+                    "after": crdt_compaction_stats_from_snapshot(&after_snapshot),
+                    "encryptedStreamBefore": encrypted_stream_before,
+                    "encryptedStreamAfter": self.encrypted_crdt_stream_stats_for_field(&field)?
                 }))
             }
         }
+    }
+
+    fn encrypted_crdt_stream_stats_for_field(
+        &self,
+        field: &CrdtField,
+    ) -> Result<Option<EncryptedCrdtStreamStats>> {
+        if field.sync_mode() != CrdtFieldSyncMode::EncryptedUpdateLog {
+            return Ok(None);
+        }
+        let Some(encryption) = self.inner.encrypted_crdt() else {
+            return Ok(None);
+        };
+        let stream_id = encrypted_crdt_stream_id(field.table(), field.row_id(), field.field());
+        self.inner
+            .store()
+            .encrypted_crdt_stream_stats(encryption.partition_id(), &stream_id)
+            .map(Some)
     }
 
     fn require_crdt_field_row(&self, field: &CrdtField) -> Result<Value> {
@@ -5221,6 +5265,18 @@ fn crdt_field_write_receipt(client_commit_id: &str, sync_mode: CrdtFieldSyncMode
     json!({
         "clientCommitId": client_commit_id,
         "syncMode": sync_mode,
+    })
+}
+
+fn crdt_compaction_stats_from_snapshot(snapshot: &Value) -> Value {
+    json!({
+        "pendingUpdates": snapshot.get("pendingUpdates").cloned().unwrap_or(Value::Null),
+        "flushedUpdates": snapshot.get("flushedUpdates").cloned().unwrap_or(Value::Null),
+        "ackedUpdates": snapshot.get("ackedUpdates").cloned().unwrap_or(Value::Null),
+        "logUpdates": snapshot.get("logUpdates").cloned().unwrap_or(Value::Null),
+        "stateVectorBase64": snapshot.get("stateVectorBase64").cloned().unwrap_or(Value::Null),
+        "updatedAt": snapshot.get("updatedAt").cloned().unwrap_or(Value::Null),
+        "compactedAt": snapshot.get("compactedAt").cloned().unwrap_or(Value::Null),
     })
 }
 

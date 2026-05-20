@@ -7,8 +7,8 @@ use crate::binary_snapshot::{
 };
 #[cfg(feature = "native")]
 use crate::crdt_field::{
-    validate_crdt_field, CrdtDocumentSnapshot, CrdtField, CrdtFieldId, CrdtFieldSyncMode,
-    CrdtUpdateLogEntry,
+    validate_crdt_field, CrdtDocumentSnapshot, CrdtField, CrdtFieldCompactionStats, CrdtFieldId,
+    CrdtFieldSyncMode, CrdtUpdateLogEntry,
 };
 #[cfg(feature = "native")]
 use crate::crdt_yjs::{
@@ -21,7 +21,7 @@ use crate::encrypted_crdt::EncryptedCrdt;
 #[cfg(feature = "native")]
 use crate::encrypted_crdt::{
     encrypted_crdt_stream_id, encrypted_field_metadata, BuildEncryptedCrdtCheckpointArgs,
-    BuildEncryptedCrdtTextUpdateArgs, BuildEncryptedCrdtYjsUpdateArgs,
+    BuildEncryptedCrdtTextUpdateArgs, BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdtStreamStats,
 };
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
@@ -145,6 +145,10 @@ pub struct CrdtFieldMaterialization {
 pub struct CrdtFieldCompactionReceipt {
     pub checkpoint_created: bool,
     pub client_commit_id: Option<String>,
+    pub before: CrdtFieldCompactionStats,
+    pub after: CrdtFieldCompactionStats,
+    pub encrypted_stream_before: Option<EncryptedCrdtStreamStats>,
+    pub encrypted_stream_after: Option<EncryptedCrdtStreamStats>,
 }
 
 #[cfg(feature = "native")]
@@ -2917,12 +2921,18 @@ where
         field: &CrdtField,
         min_uncheckpointed_updates: i64,
     ) -> Result<CrdtFieldCompactionReceipt> {
+        let before = self.store.crdt_document_snapshot(field)?;
+        let encrypted_stream_before = self.encrypted_crdt_stream_stats_for_field(field)?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
-                self.store.compact_crdt_document(field)?;
+                let after = self.store.compact_crdt_document(field)?;
                 Ok(CrdtFieldCompactionReceipt {
                     checkpoint_created: false,
                     client_commit_id: None,
+                    before: CrdtFieldCompactionStats::from(&before),
+                    after: CrdtFieldCompactionStats::from(&after),
+                    encrypted_stream_before,
+                    encrypted_stream_after: self.encrypted_crdt_stream_stats_for_field(field)?,
                 })
             }
             CrdtFieldSyncMode::EncryptedUpdateLog => {
@@ -2932,12 +2942,33 @@ where
                     field.row_id(),
                     min_uncheckpointed_updates,
                 )?;
+                let after = self.store.crdt_document_snapshot(field)?;
                 Ok(CrdtFieldCompactionReceipt {
                     checkpoint_created: receipt.is_some(),
                     client_commit_id: receipt.map(|receipt| receipt.client_commit_id),
+                    before: CrdtFieldCompactionStats::from(&before),
+                    after: CrdtFieldCompactionStats::from(&after),
+                    encrypted_stream_before,
+                    encrypted_stream_after: self.encrypted_crdt_stream_stats_for_field(field)?,
                 })
             }
         }
+    }
+
+    fn encrypted_crdt_stream_stats_for_field(
+        &mut self,
+        field: &CrdtField,
+    ) -> Result<Option<EncryptedCrdtStreamStats>> {
+        if field.sync_mode() != CrdtFieldSyncMode::EncryptedUpdateLog {
+            return Ok(None);
+        }
+        let Some(encryption) = &self.encrypted_crdt else {
+            return Ok(None);
+        };
+        let stream_id = encrypted_crdt_stream_id(field.table(), field.row_id(), field.field());
+        self.store
+            .encrypted_crdt_stream_stats(encryption.partition_id(), &stream_id)
+            .map(Some)
     }
 
     fn encrypted_crdt_metadata_field(

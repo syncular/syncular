@@ -844,9 +844,31 @@ public struct SyncularCrdtFieldStateVector: Codable, Equatable {
     public let stateVectorBase64: String
 }
 
+public struct SyncularCrdtFieldCompactionStats: Codable, Equatable {
+    public let pendingUpdates: Int64
+    public let flushedUpdates: Int64
+    public let ackedUpdates: Int64
+    public let logUpdates: Int64
+    public let stateVectorBase64: String
+    public let updatedAt: Int64
+    public let compactedAt: Int64?
+}
+
+public struct SyncularEncryptedCrdtStreamStats: Codable, Equatable {
+    public let updateCount: Int64
+    public let checkpointCount: Int64
+    public let checkpointableUpdateCount: Int64
+    public let maxServerSeq: Int64?
+    public let latestCheckpointCoversSeq: Int64?
+}
+
 public struct SyncularCrdtFieldCompactionReceipt: Codable, Equatable {
     public let checkpointCreated: Bool
     public let clientCommitId: String?
+    public let before: SyncularCrdtFieldCompactionStats
+    public let after: SyncularCrdtFieldCompactionStats
+    public let encryptedStreamBefore: SyncularEncryptedCrdtStreamStats?
+    public let encryptedStreamAfter: SyncularEncryptedCrdtStreamStats?
 }
 
 public protocol SyncularNativeJsonClient {

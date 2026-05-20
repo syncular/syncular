@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import type {
   SyncularV2ChangedRow,
   SyncularV2CrdtDocumentSnapshot,
+  SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldDescriptor,
   SyncularV2CrdtFieldMaterialization,
   SyncularV2CrdtFieldRequest,
@@ -25,6 +26,20 @@ import {
   extractProseMirrorText,
   prosemirrorJsonProjection,
 } from './yjs-prosemirror-bridge';
+
+function compactionStatsFromSnapshot(
+  snapshot: SyncularV2CrdtDocumentSnapshot
+): SyncularV2CrdtFieldCompactionReceipt['before'] {
+  return {
+    pendingUpdates: snapshot.pendingUpdates,
+    flushedUpdates: snapshot.flushedUpdates,
+    ackedUpdates: snapshot.ackedUpdates,
+    logUpdates: snapshot.logUpdates,
+    stateVectorBase64: snapshot.stateVectorBase64,
+    updatedAt: snapshot.updatedAt,
+    compactedAt: snapshot.compactedAt,
+  };
+}
 
 describe('createYjsProseMirrorBridge', () => {
   it('emits local Yjs updates from the ProseMirror XML fragment', () => {
@@ -473,11 +488,20 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
     });
   }
 
-  async compactCrdtField(): Promise<{ checkpointCreated: false }> {
+  async compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+    const before = compactionStatsFromSnapshot(await this.crdtDocumentSnapshot());
     this.#persistState();
     this.#store.compactedAt = this.#store.updatedAt;
+    const after = compactionStatsFromSnapshot(await this.crdtDocumentSnapshot());
     this.#emitRowsChanged('localWrite', { operation: 'compact' });
-    return { checkpointCreated: false };
+    return {
+      checkpointCreated: false,
+      clientCommitId: null,
+      before,
+      after,
+      encryptedStreamBefore: null,
+      encryptedStreamAfter: null,
+    };
   }
 
   addRowsChangedListener(

@@ -6432,9 +6432,29 @@ fn generate_swift_module(
         out.push_str("public struct SyncularCrdtFieldStateVector: Codable, Equatable {\n");
         out.push_str("    public let stateVectorBase64: String\n");
         out.push_str("}\n\n");
+        out.push_str("public struct SyncularCrdtFieldCompactionStats: Codable, Equatable {\n");
+        out.push_str("    public let pendingUpdates: Int64\n");
+        out.push_str("    public let flushedUpdates: Int64\n");
+        out.push_str("    public let ackedUpdates: Int64\n");
+        out.push_str("    public let logUpdates: Int64\n");
+        out.push_str("    public let stateVectorBase64: String\n");
+        out.push_str("    public let updatedAt: Int64\n");
+        out.push_str("    public let compactedAt: Int64?\n");
+        out.push_str("}\n\n");
+        out.push_str("public struct SyncularEncryptedCrdtStreamStats: Codable, Equatable {\n");
+        out.push_str("    public let updateCount: Int64\n");
+        out.push_str("    public let checkpointCount: Int64\n");
+        out.push_str("    public let checkpointableUpdateCount: Int64\n");
+        out.push_str("    public let maxServerSeq: Int64?\n");
+        out.push_str("    public let latestCheckpointCoversSeq: Int64?\n");
+        out.push_str("}\n\n");
         out.push_str("public struct SyncularCrdtFieldCompactionReceipt: Codable, Equatable {\n");
         out.push_str("    public let checkpointCreated: Bool\n");
         out.push_str("    public let clientCommitId: String?\n");
+        out.push_str("    public let before: SyncularCrdtFieldCompactionStats\n");
+        out.push_str("    public let after: SyncularCrdtFieldCompactionStats\n");
+        out.push_str("    public let encryptedStreamBefore: SyncularEncryptedCrdtStreamStats?\n");
+        out.push_str("    public let encryptedStreamAfter: SyncularEncryptedCrdtStreamStats?\n");
         out.push_str("}\n\n");
     }
     if has_native_encrypted_crdt {
@@ -7818,9 +7838,29 @@ fn generate_kotlin_module(
         out.push_str("data class SyncularCrdtFieldStateVector(\n");
         out.push_str("    val stateVectorBase64: String,\n");
         out.push_str(")\n\n");
+        out.push_str("data class SyncularCrdtFieldCompactionStats(\n");
+        out.push_str("    val pendingUpdates: Long,\n");
+        out.push_str("    val flushedUpdates: Long,\n");
+        out.push_str("    val ackedUpdates: Long,\n");
+        out.push_str("    val logUpdates: Long,\n");
+        out.push_str("    val stateVectorBase64: String,\n");
+        out.push_str("    val updatedAt: Long,\n");
+        out.push_str("    val compactedAt: Long?,\n");
+        out.push_str(")\n\n");
+        out.push_str("data class SyncularEncryptedCrdtStreamStats(\n");
+        out.push_str("    val updateCount: Long,\n");
+        out.push_str("    val checkpointCount: Long,\n");
+        out.push_str("    val checkpointableUpdateCount: Long,\n");
+        out.push_str("    val maxServerSeq: Long?,\n");
+        out.push_str("    val latestCheckpointCoversSeq: Long?,\n");
+        out.push_str(")\n\n");
         out.push_str("data class SyncularCrdtFieldCompactionReceipt(\n");
         out.push_str("    val checkpointCreated: Boolean,\n");
         out.push_str("    val clientCommitId: String?,\n");
+        out.push_str("    val before: SyncularCrdtFieldCompactionStats,\n");
+        out.push_str("    val after: SyncularCrdtFieldCompactionStats,\n");
+        out.push_str("    val encryptedStreamBefore: SyncularEncryptedCrdtStreamStats?,\n");
+        out.push_str("    val encryptedStreamAfter: SyncularEncryptedCrdtStreamStats?,\n");
         out.push_str(")\n\n");
     }
     if has_native_encrypted_crdt {
@@ -8022,11 +8062,51 @@ fn generate_kotlin_module(
         out.push_str("        stateVectorBase64 = value[\"stateVectorBase64\"]?.jsonPrimitive?.content ?: \"\",\n");
         out.push_str("    )\n");
         out.push_str("}\n\n");
+        out.push_str("fun syncularDecodeCrdtFieldCompactionStats(value: JsonElement?): SyncularCrdtFieldCompactionStats {\n");
+        out.push_str(
+            "    val stats = value?.takeUnless { it is JsonNull }?.jsonObject ?: error(\"missing CRDT compaction stats\")\n",
+        );
+        out.push_str("    return SyncularCrdtFieldCompactionStats(\n");
+        out.push_str("        pendingUpdates = stats[\"pendingUpdates\"]?.jsonPrimitive?.longOrNull ?: error(\"missing CRDT compaction pendingUpdates\"),\n");
+        out.push_str("        flushedUpdates = stats[\"flushedUpdates\"]?.jsonPrimitive?.longOrNull ?: error(\"missing CRDT compaction flushedUpdates\"),\n");
+        out.push_str(
+            "        ackedUpdates = stats[\"ackedUpdates\"]?.jsonPrimitive?.longOrNull ?: error(\"missing CRDT compaction ackedUpdates\"),\n",
+        );
+        out.push_str(
+            "        logUpdates = stats[\"logUpdates\"]?.jsonPrimitive?.longOrNull ?: error(\"missing CRDT compaction logUpdates\"),\n",
+        );
+        out.push_str("        stateVectorBase64 = stats[\"stateVectorBase64\"]?.jsonPrimitive?.content ?: error(\"missing CRDT compaction stateVectorBase64\"),\n");
+        out.push_str(
+            "        updatedAt = stats[\"updatedAt\"]?.jsonPrimitive?.longOrNull ?: error(\"missing CRDT compaction updatedAt\"),\n",
+        );
+        out.push_str("        compactedAt = stats[\"compactedAt\"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.longOrNull,\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
+        out.push_str("fun syncularDecodeEncryptedCrdtStreamStats(value: JsonElement?): SyncularEncryptedCrdtStreamStats? {\n");
+        out.push_str(
+            "    val stats = value?.takeUnless { it is JsonNull }?.jsonObject ?: return null\n",
+        );
+        out.push_str("    return SyncularEncryptedCrdtStreamStats(\n");
+        out.push_str(
+            "        updateCount = stats[\"updateCount\"]?.jsonPrimitive?.longOrNull ?: error(\"missing encrypted CRDT updateCount\"),\n",
+        );
+        out.push_str("        checkpointCount = stats[\"checkpointCount\"]?.jsonPrimitive?.longOrNull ?: error(\"missing encrypted CRDT checkpointCount\"),\n");
+        out.push_str("        checkpointableUpdateCount = stats[\"checkpointableUpdateCount\"]?.jsonPrimitive?.longOrNull ?: error(\"missing encrypted CRDT checkpointableUpdateCount\"),\n");
+        out.push_str("        maxServerSeq = stats[\"maxServerSeq\"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.longOrNull,\n");
+        out.push_str("        latestCheckpointCoversSeq = stats[\"latestCheckpointCoversSeq\"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.longOrNull,\n");
+        out.push_str("    )\n");
+        out.push_str("}\n\n");
         out.push_str("fun syncularDecodeCrdtFieldCompactionReceipt(json: String): SyncularCrdtFieldCompactionReceipt {\n");
         out.push_str("    val value = Json.parseToJsonElement(json).jsonObject\n");
         out.push_str("    return SyncularCrdtFieldCompactionReceipt(\n");
         out.push_str("        checkpointCreated = value[\"checkpointCreated\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
         out.push_str("        clientCommitId = value[\"clientCommitId\"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.content,\n");
+        out.push_str(
+            "        before = syncularDecodeCrdtFieldCompactionStats(value[\"before\"]),\n",
+        );
+        out.push_str("        after = syncularDecodeCrdtFieldCompactionStats(value[\"after\"]),\n");
+        out.push_str("        encryptedStreamBefore = syncularDecodeEncryptedCrdtStreamStats(value[\"encryptedStreamBefore\"]),\n");
+        out.push_str("        encryptedStreamAfter = syncularDecodeEncryptedCrdtStreamStats(value[\"encryptedStreamAfter\"]),\n");
         out.push_str("    )\n");
         out.push_str("}\n\n");
     }

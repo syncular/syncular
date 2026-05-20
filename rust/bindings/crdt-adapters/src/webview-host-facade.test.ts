@@ -32,6 +32,20 @@ const field = {
   field: 'body',
 } satisfies SyncularV2CrdtFieldRequest;
 
+function compactionStatsFromSnapshot(
+  snapshot: SyncularV2CrdtDocumentSnapshot
+): SyncularV2CrdtFieldCompactionReceipt['before'] {
+  return {
+    pendingUpdates: snapshot.pendingUpdates,
+    flushedUpdates: snapshot.flushedUpdates,
+    ackedUpdates: snapshot.ackedUpdates,
+    logUpdates: snapshot.logUpdates,
+    stateVectorBase64: snapshot.stateVectorBase64,
+    updatedAt: snapshot.updatedAt,
+    compactedAt: snapshot.compactedAt,
+  };
+}
+
 describe('createSyncularCrdtWebViewHost', () => {
   it('proxies CRDT persistence requests to a host-owned responder', async () => {
     const transports = createTransportPair();
@@ -250,9 +264,13 @@ describe('createSyncularCrdtWebViewHost', () => {
       minUncheckpointedUpdates: 25,
     });
 
-    await expect(dispatchSyncularCrdtHostRequest(host, request)).resolves.toEqual({
+    await expect(
+      dispatchSyncularCrdtHostRequest(host, request)
+    ).resolves.toMatchObject({
       checkpointCreated: true,
       clientCommitId: 'compact-1',
+      before: compactionStatsFromSnapshot(host.snapshot),
+      after: compactionStatsFromSnapshot(host.snapshot),
     });
     await expect(
       createSyncularCrdtHostResponseMessage(host, request)
@@ -483,9 +501,14 @@ class FakeProjectionHost implements SyncularCrdtProjectionHost {
   }
 
   compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+    const stats = compactionStatsFromSnapshot(this.snapshot);
     return Promise.resolve({
       checkpointCreated: true,
       clientCommitId: 'compact-1',
+      before: stats,
+      after: stats,
+      encryptedStreamBefore: null,
+      encryptedStreamAfter: null,
     });
   }
 
