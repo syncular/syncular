@@ -378,6 +378,14 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
       requiredSchemaVersion,
+      seedTasks: [
+        {
+          id: 'future-schema-server-task',
+          title: 'Blocked future schema task',
+          actorId: ACTOR_A,
+          serverVersion: 1,
+        },
+      ],
     });
     harnesses.push(sync);
 
@@ -391,6 +399,20 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       diagnostics.push(event);
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    const localRow = {
+      id: 'future-schema-local-task',
+      title: 'Local row before schema mismatch',
+      completed: 0,
+      user_id: ACTOR_A,
+      project_id: null,
+      server_version: 0,
+      image: null,
+      title_yjs_state: null,
+    };
+    await client.applyMutation(newTaskOperation(localRow), localRow);
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({ id: localRow.id, title: localRow.title }),
+    ]);
 
     const error = await client.syncPull().then(
       () => null,
@@ -419,6 +441,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         }),
       })
     );
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({ id: localRow.id, title: localRow.title }),
+    ]);
     expect(sync.syncRouteAuthHeaders).toContain(TOKEN_A);
   });
 

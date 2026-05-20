@@ -63,9 +63,9 @@ state. This WP turns those pieces into a complete app-release safety story.
 
 ## Next Action
 
-Extend the rolling-deploy coverage into the browser worker/runtime path, proving
-the same `sync.schema_mismatch` classification is visible through browser
-app-facing events and that worker-owned SQLite remains unchanged.
+Add generated migration metadata and local store assertions so browser/native
+clients can explain blocked startup or sync when the on-disk SQLite schema does
+not match the generated client schema.
 
 ## Progress
 
@@ -80,11 +80,18 @@ app-facing events and that worker-owned SQLite remains unchanged.
   the public native event subscription: app-facing `SyncFailed` includes
   `sync.schema_mismatch`, and the native local table keeps only the previously
   accepted rows.
+- Strengthened the browser Hono/WASM schema-mismatch smoke so the worker has a
+  local row and the server exposes a snapshot row when a future required schema
+  arrives. The public error/diagnostic surface reports `sync.schema_mismatch`,
+  and worker-owned SQLite remains unchanged.
 
 ## Latest Evidence
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit app_test_http_server_schema_mismatch_fails_closed --test testkit_smoke`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit native_fixture_schema_mismatch_emits_sync_failed_without_local_mutation --test testkit_smoke`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "rejects server-required schema versions newer than the Rust WASM client"`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`
+- `bun run --cwd rust/bindings/browser tsgo`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime server_required_schema_version_newer_than_client_is_rejected --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
 - `bun run rust:conformance:fast`
