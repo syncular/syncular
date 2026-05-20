@@ -178,10 +178,10 @@ snapshot first:
 
 Continue first-slice correlation work:
 
-1. Add tests that prove a successful pull and a realtime pull-required recovery
-   can be correlated across client diagnostics and server request records.
-2. Add native sync timing buckets to the diagnostic snapshot if apps need the
+1. Add native sync timing buckets to the diagnostic snapshot if apps need the
    same timing breakdown currently exposed by the browser worker snapshot.
+2. Add console/API affordances that query client/server diagnostics by
+   `syncAttemptId` once the console investigation views move forward.
 
 ## Progress
 
@@ -220,3 +220,8 @@ Continue first-slice correlation work:
 - Added native transport unit coverage for generated trace context, existing
   traceparent adoption, and stable attempt reuse across sync POST and snapshot
   chunk fetch.
+- Worker diagnostic forwarding now preserves `syncAttemptId`, `traceId`,
+  `spanId`, client/subscription/table/row/cursor fields, and details.
+- Added browser/Hono integration coverage proving a normal sync pull and a
+  realtime pull-required HTTP recovery can be correlated from client
+  diagnostics to persisted server `sync_request_events` by trace id.
