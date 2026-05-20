@@ -25,10 +25,10 @@ use syncular_testkit::{
     open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
-    snapshot_combined_response, todo_app_schema_json, todo_snapshot_response, todo_task_row,
-    AppFixtureOptions, AppTestHttpServer, AppTestServer, FaultOperation, FaultPhase, FaultStep,
-    FaultTransport, NativeFixtureOptions, TestBlobServer, TestBlobServerOptions, TestSyncServer,
-    TestTransport, TodoFixtureOptions,
+    snapshot_combined_response, sync_conformance_str, sync_conformance_value, todo_app_schema_json,
+    todo_snapshot_response, todo_task_row, AppFixtureOptions, AppTestHttpServer, AppTestServer,
+    FaultOperation, FaultPhase, FaultStep, FaultTransport, NativeFixtureOptions, TestBlobServer,
+    TestBlobServerOptions, TestSyncServer, TestTransport, TodoFixtureOptions,
 };
 use tungstenite::{connect, stream::MaybeTlsStream, Message};
 
@@ -696,7 +696,7 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
         .as_str()
         .expect("encrypted title")
         .to_string();
-    assert!(encrypted_title.starts_with("dgsync:e2ee:1:"));
+    assert!(encrypted_title.starts_with(&sync_conformance_str(&["e2ee", "envelopePrefix"])));
     assert_ne!(encrypted_title, "Encrypted stateful title");
 
     reader.client.sync_http().expect("reader pull");
@@ -1162,23 +1162,29 @@ fn app_server_options(client_id: &str) -> AppFixtureOptions {
 }
 
 fn stateful_test_field_encryption() -> FieldEncryption {
+    let rule = sync_conformance_value(&["e2ee", "rule"]);
     let keys = [(
         "default".to_string(),
-        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc".to_string(),
+        sync_conformance_str(&["e2ee", "keyBase64"]),
     )]
     .into_iter()
     .collect();
     FieldEncryption::from_static_config(StaticFieldEncryptionConfig {
         rules: vec![FieldEncryptionRule {
-            scope: "tasks".to_string(),
-            table: Some("tasks".to_string()),
-            fields: vec!["title".to_string()],
+            scope: rule["scope"].as_str().expect("e2ee scope").to_string(),
+            table: Some(rule["table"].as_str().expect("e2ee table").to_string()),
+            fields: rule["fields"]
+                .as_array()
+                .expect("e2ee fields")
+                .iter()
+                .map(|field| field.as_str().expect("e2ee field").to_string())
+                .collect(),
             row_id_field: None,
         }],
         keys,
         encryption_kid: None,
         decryption_error_mode: None,
-        envelope_prefix: Some("dgsync:e2ee:1:".to_string()),
+        envelope_prefix: Some(sync_conformance_str(&["e2ee", "envelopePrefix"])),
     })
     .expect("stateful test field encryption")
 }
