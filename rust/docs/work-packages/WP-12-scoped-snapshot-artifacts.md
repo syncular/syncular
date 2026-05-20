@@ -806,6 +806,21 @@ Retained artifact protocol hardening follow-up:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture`, and
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_rejects_snapshot_artifacts_before_mutating_store --features native,crdt-yjs,demo-todo-native-fixture`.
 
+Retained generated index metadata follow-up:
+
+- The Rust code generator now introspects SQLite index columns through
+  `PRAGMA index_xinfo(...)`.
+- `syncular.schema.json`, `localDerivedSchema.indexes`, and generated
+  TypeScript `syncularGeneratedLocalIndexes` now expose structured index
+  columns with `name` and `descending` metadata alongside the executable SQL.
+- This does not change install behavior. It gives future derived-schema
+  experiments reliable generated input for index-shape/order decisions instead
+  of parsing SQL strings.
+- Correctness gates passed:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
+  `bun run --cwd rust/examples/todo-app tsgo`, and
+  `bun run --cwd rust/bindings/browser tsgo`.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.

@@ -45,6 +45,24 @@ struct IndexRow {
 struct TableIndex {
     name: String,
     sql: String,
+    columns: Vec<TableIndexColumn>,
+}
+
+#[derive(Clone)]
+struct TableIndexColumn {
+    name: Option<String>,
+    descending: bool,
+}
+
+#[derive(QueryableByName)]
+struct IndexColumnRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    name: Option<String>,
+    #[diesel(sql_type = Integer)]
+    #[diesel(column_name = "desc")]
+    descending: i32,
+    #[diesel(sql_type = Integer)]
+    key: i32,
 }
 
 #[derive(Clone)]
@@ -399,6 +417,17 @@ fn sqlite_index_create_if_not_exists(sql: &str) -> String {
     trimmed.to_string()
 }
 
+fn schema_json_index_columns(index: &TableIndex) -> Vec<SchemaJsonIndexColumn> {
+    index
+        .columns
+        .iter()
+        .map(|column| SchemaJsonIndexColumn {
+            name: column.name.clone(),
+            descending: column.descending,
+        })
+        .collect()
+}
+
 fn sqlite_column_decl_type(column: &ColumnRow) -> String {
     let trimmed = column.sql_type.trim();
     if trimmed.is_empty() {
@@ -602,11 +631,19 @@ struct SchemaJsonTable {
     sqlite_without_rowid: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SchemaJsonIndex {
     name: String,
     sql: String,
+    columns: Vec<SchemaJsonIndexColumn>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonIndexColumn {
+    name: Option<String>,
+    descending: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -623,6 +660,7 @@ struct SchemaJsonLocalDerivedIndex {
     table: String,
     name: String,
     sql: String,
+    columns: Vec<SchemaJsonIndexColumn>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -782,6 +820,7 @@ fn generate_schema_json(
                 .map(|index| SchemaJsonIndex {
                     name: index.name.clone(),
                     sql: sqlite_index_create_if_not_exists(&index.sql),
+                    columns: schema_json_index_columns(index),
                 })
                 .collect(),
             blob_columns: table_config.blob_columns.clone(),
@@ -860,6 +899,7 @@ fn generate_schema_json(
                         table: table.name.clone(),
                         name: index.name.clone(),
                         sql: index.sql.clone(),
+                        columns: index.columns.clone(),
                     })
             })
             .collect(),
@@ -1090,6 +1130,14 @@ fn schema_backed_codegen_inputs(
                 .map(|index| TableIndex {
                     name: index.name,
                     sql: sqlite_index_create_if_not_exists(&index.sql),
+                    columns: index
+                        .columns
+                        .into_iter()
+                        .map(|column| TableIndexColumn {
+                            name: column.name,
+                            descending: column.descending,
+                        })
+                        .collect(),
                 })
                 .collect(),
         });
@@ -2001,11 +2049,32 @@ fn load_indexes(conn: &mut SqliteConnection, table_name: &str) -> Result<Vec<Tab
         .load::<IndexRow>(conn)
         .with_context(|| format!("load table indexes for {table_name}"))?;
 
+    rows.into_iter()
+        .map(|row| {
+            let columns = load_index_columns(conn, &row.name)?;
+            Ok(TableIndex {
+                name: row.name,
+                sql: sqlite_index_create_if_not_exists(&row.sql),
+                columns,
+            })
+        })
+        .collect()
+}
+
+fn load_index_columns(
+    conn: &mut SqliteConnection,
+    index_name: &str,
+) -> Result<Vec<TableIndexColumn>> {
+    let query = format!("PRAGMA index_xinfo({})", quote_sqlite_ident(index_name));
+    let rows = sql_query(query)
+        .load::<IndexColumnRow>(conn)
+        .with_context(|| format!("load index columns for {index_name}"))?;
     Ok(rows
         .into_iter()
-        .map(|row| TableIndex {
+        .filter(|row| row.key != 0)
+        .map(|row| TableIndexColumn {
             name: row.name,
-            sql: sqlite_index_create_if_not_exists(&row.sql),
+            descending: row.descending != 0,
         })
         .collect())
 }
@@ -4859,6 +4928,7 @@ fn generate_typescript_module(
     out.push_str("  table: keyof SyncularAppDb;\n");
     out.push_str("  name: string;\n");
     out.push_str("  sql: string;\n");
+    out.push_str("  columns: readonly { name: string | null; descending: boolean }[];\n");
     out.push_str("}\n\n");
     out.push_str(
         "export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = [\n",
@@ -4873,6 +4943,22 @@ fn generate_typescript_module(
                 &sqlite_index_create_if_not_exists(&index.sql),
             ));
             out.push_str("`,\n");
+            out.push_str("    columns: [");
+            for (column_index, column) in index.columns.iter().enumerate() {
+                if column_index > 0 {
+                    out.push_str(", ");
+                }
+                let name = column
+                    .name
+                    .as_deref()
+                    .map(ts_string)
+                    .unwrap_or_else(|| "null".to_string());
+                out.push_str(&format!(
+                    "{{ name: {}, descending: {} }}",
+                    name, column.descending
+                ));
+            }
+            out.push_str("],\n");
             out.push_str("  },\n");
         }
     }
@@ -9511,6 +9597,16 @@ mod tests {
         tasks.indexes.push(TableIndex {
             name: "idx_tasks_project_id".to_string(),
             sql: "CREATE INDEX idx_tasks_project_id ON tasks (project_id, id)".to_string(),
+            columns: vec![
+                TableIndexColumn {
+                    name: Some("project_id".to_string()),
+                    descending: false,
+                },
+                TableIndexColumn {
+                    name: Some("id".to_string()),
+                    descending: false,
+                },
+            ],
         });
         let tables = vec![tasks];
         let mut tasks_config = table_config(
@@ -9562,6 +9658,9 @@ mod tests {
         assert_eq!(table["scopes"][0]["name"], "project_id");
         assert_eq!(table["scopes"][0]["source"], "projectId");
         assert_eq!(table["indexes"][0]["name"], "idx_tasks_project_id");
+        assert_eq!(table["indexes"][0]["columns"][0]["name"], "project_id");
+        assert_eq!(table["indexes"][0]["columns"][0]["descending"], false);
+        assert_eq!(table["indexes"][0]["columns"][1]["name"], "id");
         assert_eq!(
             table["indexes"][0]["sql"],
             "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id, id)"
@@ -9582,6 +9681,10 @@ mod tests {
             "INSERT INTO \"syncular_task_counts_by_deleted\" (\"deleted\", \"task_count\")\nSELECT \"deleted\", count(*)\nFROM \"tasks\"\nGROUP BY \"deleted\""
         );
         assert_eq!(json["localDerivedSchema"]["indexes"][0]["table"], "tasks");
+        assert_eq!(
+            json["localDerivedSchema"]["indexes"][0]["columns"][0]["name"],
+            "project_id"
+        );
         assert_eq!(
             json["localDerivedSchema"]["indexes"][0]["sql"],
             "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id, id)"
@@ -10039,6 +10142,20 @@ mod tests {
             name: "idx_tasks_user_project_id".to_string(),
             sql: "CREATE INDEX idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
                 .to_string(),
+            columns: vec![
+                TableIndexColumn {
+                    name: Some("user_id".to_string()),
+                    descending: false,
+                },
+                TableIndexColumn {
+                    name: Some("project_id".to_string()),
+                    descending: false,
+                },
+                TableIndexColumn {
+                    name: Some("id".to_string()),
+                    descending: false,
+                },
+            ],
         });
         let mut table_configs = BTreeMap::new();
         table_configs.insert(
@@ -10063,6 +10180,9 @@ mod tests {
         assert!(output.contains("name: 'idx_tasks_user_project_id'"));
         assert!(output.contains(
             "CREATE INDEX IF NOT EXISTS idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
+        ));
+        assert!(output.contains(
+            "columns: [{ name: 'user_id', descending: false }, { name: 'project_id', descending: false }, { name: 'id', descending: false }]"
         ));
         assert!(output.contains("await ensureSyncularAppIndexes(db);"));
         assert!(!output.contains("async function syncularGeneratedTableExists"));
