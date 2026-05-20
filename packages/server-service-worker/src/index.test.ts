@@ -211,6 +211,27 @@ describe('createServiceWorkerServer', () => {
     expect(wakeMessage?.cursor).toBe(7);
     expect(wakeMessage?.sourceClientId).toBe('client-x');
   });
+
+  test('returns a stable envelope for default handler errors', async () => {
+    const server = createServiceWorkerServer({
+      handleRequest: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    const response = await server.handleRequest(
+      new Request('https://demo.local/api/sync')
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: 'runtime.internal',
+      code: 'runtime.internal',
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+  });
 });
 
 describe('service worker registration helpers', () => {

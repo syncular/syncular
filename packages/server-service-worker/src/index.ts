@@ -1,4 +1,4 @@
-import type { SyncTransport } from '@syncular/core';
+import { createSyncularErrorResponse, type SyncTransport } from '@syncular/core';
 import {
   type ClientOptions,
   createHttpTransport,
@@ -385,9 +385,8 @@ export function createServiceWorkerServer(
   const onError =
     options.onError ??
     (() =>
-      new Response('Service worker server failed', {
+      Response.json(createSyncularErrorResponse('runtime.internal'), {
         status: 500,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
       }));
 
   return {

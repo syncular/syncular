@@ -1,5 +1,15 @@
 export function generateId(): string {
-  const cryptoObj = typeof crypto !== 'undefined' ? crypto : globalThis.crypto;
+  type SyncularCryptoSource = {
+    randomUUID?: () => string;
+    getRandomValues?: <T extends ArrayBufferView>(array: T) => T;
+  };
+  const globalWithCrypto = globalThis as typeof globalThis & {
+    crypto?: SyncularCryptoSource;
+  };
+  const cryptoObj: SyncularCryptoSource | undefined =
+    typeof crypto !== 'undefined'
+      ? (crypto as SyncularCryptoSource)
+      : globalWithCrypto.crypto;
   if (cryptoObj && typeof cryptoObj.randomUUID === 'function') {
     return cryptoObj.randomUUID();
   }

@@ -412,7 +412,10 @@ read-only review:
     forbidden origin, missing auth, and connection-limit rejection. Direct
     console routes now use the shared error-envelope schema and stable
     `console.*` / `blob.*` codes for schema-unavailable, auth, not-found,
-    invalid-request, and blob-storage configuration failures.
+    invalid-request, and blob-storage configuration failures. Cloudflare
+    scope-cache Durable Object and server-service-worker default handler
+    failures now return stable envelope JSON instead of plaintext adapter
+    errors.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
