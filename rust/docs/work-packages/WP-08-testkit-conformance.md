@@ -73,6 +73,8 @@ tests.
 - Added configurable required authorization to the stateful app test server so
   app suites can exercise unauthorized HTTP sync and WebSocket connection
   failures against the reusable fixture instead of building private auth mocks.
+- Updated the public `syncular-testkit` README with required-auth usage, current
+  conformance gate commands, and the correct native event subscription example.
 - Added a scoped stateful server smoke proving bootstrap rows, later commits,
   and deletes are all filtered by the generated app schema scopes.
 - Added stateful encrypted-field sync coverage proving server-side stored rows
