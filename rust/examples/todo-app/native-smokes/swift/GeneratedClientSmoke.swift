@@ -271,6 +271,14 @@ private enum GeneratedClientSmoke {
         expect(rows[0].image?.size == jsonInt(blobImage, "size"), "Swift fetch should decode blob ref size")
         expect(rows[0].image?.mimeType == jsonString(blobImage, "mimeType"), "Swift fetch should decode blob ref MIME type")
 
+        let errorEvent = try syncularDecodeNativeEvent(
+            #"{"kind":"SyncFailed","error":{"kind":"Transport","code":"sync.forbidden","category":"forbidden","retryable":false,"recommendedAction":"checkPermissions","message":"Forbidden","debug":"Transport: Forbidden"}}"#
+        )
+        expect(errorEvent.error?.code == "sync.forbidden", "Swift native event should decode error code")
+        expect(errorEvent.error?.category == "forbidden", "Swift native event should decode error category")
+        expect(errorEvent.error?.retryable == false, "Swift native event should decode retryable")
+        expect(errorEvent.error?.recommendedAction == "checkPermissions", "Swift native event should decode recommended action")
+
         let rowDeltaEvent = SyncularNativeEvent(
             kind: "RowsChanged",
             changedRows: [

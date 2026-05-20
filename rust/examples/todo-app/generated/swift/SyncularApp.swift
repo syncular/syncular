@@ -400,9 +400,20 @@ public struct SyncularBootstrapStatus: Decodable, Equatable {
     public let phases: [SyncularBootstrapPhaseStatus]
 }
 
+public struct SyncularNativeErrorInfo: Decodable, Equatable {
+    public let kind: String
+    public let code: String
+    public let category: String
+    public let retryable: Bool
+    public let recommendedAction: String
+    public let message: String
+    public let debug: String?
+}
+
 public struct SyncularNativeEvent: Decodable, Equatable {
     public let eventSeq: UInt64
     public let kind: String
+    public let error: SyncularNativeErrorInfo?
     public let tables: [String]
     public let queries: [String]
     public let changedRows: [SyncularChangedRow]
@@ -413,9 +424,10 @@ public struct SyncularNativeEvent: Decodable, Equatable {
     public let bootstrap: SyncularBootstrapStatus?
     public let resyncRequired: Bool
 
-    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {
+    public init(eventSeq: UInt64 = 0, kind: String, error: SyncularNativeErrorInfo? = nil, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {
         self.eventSeq = eventSeq
         self.kind = kind
+        self.error = error
         self.tables = tables
         self.queries = queries
         self.changedRows = changedRows
@@ -430,6 +442,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case eventSeq = "event_seq"
         case kind
+        case error
         case tables
         case queries
         case changedRows
@@ -445,6 +458,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         eventSeq = try container.decodeIfPresent(UInt64.self, forKey: .eventSeq) ?? 0
         kind = try container.decode(String.self, forKey: .kind)
+        error = try container.decodeIfPresent(SyncularNativeErrorInfo.self, forKey: .error)
         tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []
         queries = try container.decodeIfPresent([String].self, forKey: .queries) ?? []
         changedRows = try container.decodeIfPresent([SyncularChangedRow].self, forKey: .changedRows) ?? []
