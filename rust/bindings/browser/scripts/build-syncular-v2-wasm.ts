@@ -37,6 +37,7 @@ const dev = process.argv.includes('--dev');
 const wasmFeatures = readArgValue('--features') ?? 'web-owned-sqlite';
 const wasmVariant = readArgValue('--variant') ?? inferWasmVariant(wasmFeatures);
 const artifactName = readArgValue('--artifact-name') ?? wasmVariant;
+const releaseOptLevel = readArgValue('--release-opt-level');
 const wasmClang =
   process.env.CC_wasm32_unknown_unknown ??
   [
@@ -94,6 +95,9 @@ const result = Bun.spawnSync(['wasm-pack', ...args], {
   env: {
     ...process.env,
     ...(wasmClang ? { CC_wasm32_unknown_unknown: wasmClang } : {}),
+    ...(releaseOptLevel
+      ? { CARGO_PROFILE_RELEASE_OPT_LEVEL: releaseOptLevel }
+      : {}),
   },
   stdout: 'pipe',
   stderr: 'pipe',

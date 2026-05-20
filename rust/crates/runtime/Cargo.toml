@@ -38,7 +38,6 @@ native = [
     "dep:tungstenite",
 ]
 web-transport = [
-    "dep:flate2",
     "dep:js-sys",
     "dep:serde-wasm-bindgen",
     "dep:wasm-bindgen",
@@ -84,16 +83,12 @@ wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 web-sys = { version = "0.3", features = [
     "AbortSignal",
-    "BinaryType",
     "Headers",
     "MessageEvent",
     "Request",
     "RequestInit",
     "RequestMode",
     "Response",
-    "Url",
-    "UrlSearchParams",
-    "WebSocket",
     "Window",
     "console",
 ], optional = true }

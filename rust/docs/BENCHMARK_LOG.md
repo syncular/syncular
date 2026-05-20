@@ -4872,3 +4872,128 @@ Decision:
 - Accepted. The metric surface is tiny (`+226` release WASM bytes), makes the
   checkpoint path visible in benchmark output, and stayed neutral-to-better in
   the local artifact gate.
+
+## 2026-05-20 - WP-10 Browser Fallback Cleanup And Size Probe
+
+Work package: [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+
+Change:
+
+- Removed browser `web-transport`'s `flate2` dependency. Browser snapshot
+  chunks and snapshot artifacts now require `DecompressionStream('gzip')`;
+  native transport keeps `flate2`.
+- Removed browser Rust `WebRealtimeSocket` ownership. Browser WebSocket
+  lifecycle stays in the TypeScript Worker controller, while Rust continues to
+  decode/apply binary realtime sync-pack frames.
+- Retained `opt-level = "z"` in the Rust workspace release profile and added a
+  `full-perf` artifact built with release `opt-level=3`.
+- Kept the full browser artifact as the default package shape; no feature
+  package matrix was introduced.
+
+Package-size gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+bun rust/bindings/browser/scripts/size-syncular-v2-wasm.ts --json
+```
+
+| Metric | Previous retained full | Fallback cleanup | Cleanup + `opt-level=z` |
+| --- | ---: | ---: | ---: |
+| Raw WASM bytes | `3,365,410` | `3,316,614` | `2,220,519` |
+| Gzip WASM bytes | `1,383,462` | `1,351,931` | `1,001,184` |
+| Raw budget | `3,460,301` | `3,460,301` | `3,460,301` |
+| Gzip budget | `1,426,063` | `1,426,063` | `1,426,063` |
+
+Retained `opt-level=z` browser E2E guardrails:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-normal-100k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-normal-500k.json
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-retained-100k.json
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-retained-500k.json
+```
+
+| Metric | Normal cleanup profile | `opt-level=z` profile |
+| --- | ---: | ---: |
+| 100k Rust bootstrap | `214.88ms` | `217.86ms` |
+| 100k cached bootstrap | `136.38ms` | `143.84ms` |
+| 100k pull apply | `141ms` | `151ms` |
+| 100k snapshot chunk apply | `130ms` | `138ms` |
+| 500k Rust bootstrap | `969.87ms` | `1,034.91ms` |
+| 500k cached bootstrap | `664.84ms` | `721.38ms` |
+| 500k pull apply | `663ms` | `725ms` |
+| 500k snapshot chunk apply | `612ms` | `672ms` |
+| Served Rust WASM bytes | `3,316,614` | `2,220,519` |
+| Served asset total bytes | `7,789,159` | `6,693,063` |
+
+Dual full-artifact packaging:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:variants
+```
+
+Decision: ship both full optimization profiles in one package for now.
+`dist/wasm` remains the default size-optimized full artifact. `dist/wasm-perf`
+ships the same full feature set with release `opt-level=3` and is selected only
+when callers explicitly provide `getSyncularV2RuntimeArtifact('full-perf')` or
+that catalog entry. This keeps the default under 1 MiB while preserving the old
+runtime profile for consumers that prefer it.
+
+Catalog output:
+
+| Artifact | Raw WASM bytes | Gzip WASM bytes |
+| --- | ---: | ---: |
+| `core` | `1,719,643` | `775,688` |
+| `full` | `2,220,519` | `1,001,184` |
+| `full-perf` | `3,316,614` | `1,351,931` |
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --target wasm32-unknown-unknown --no-default-features \
+  --features web-owned-sqlite
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/worker-realtime.test.ts \
+  rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts \
+  rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts
+```
+
+Result: cargo check passed, package-size build passed, and `53` browser tests
+passed.
+
+Attempted direct cargo gate:
+
+```bash
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --target wasm32-unknown-unknown --no-default-features \
+  --features web-owned-sqlite
+```
+
+Result: failed before compiling runtime changes because the direct cargo path
+used default `clang` and `sqlite-wasm-rs` could not create the
+`wasm32-unknown-unknown` target. The browser build script path succeeded
+because it supplies the existing wasm clang configuration. Rerunning the cargo
+gate with `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang` passed.
+
+Decision:
+
+- Accepted the browser fallback cleanup. It removes unused browser fallback
+  behavior, clarifies ownership, and saves `31,531` gzip bytes.
+- Accepted `opt-level=z` as the default full artifact. The retained profile
+  saves another `350,747` gzip bytes versus the fallback-cleanup profile and
+  stays under 1 MiB, while the observed 500k bootstrap regression stayed within
+  the acceptable tradeoff for the shipped-size win. Also accepted shipping the
+  `full-perf` artifact in the same package so consumers can opt into the old
+  runtime profile without a separate package.

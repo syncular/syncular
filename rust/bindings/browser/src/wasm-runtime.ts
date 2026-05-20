@@ -98,7 +98,7 @@ export interface RawSyncularV2RustClient {
 
 let modulePromise: Promise<SyncularV2WasmGlue> | undefined;
 
-export type SyncularV2WasmArtifactVariant = 'full' | 'core';
+export type SyncularV2WasmArtifactVariant = 'full' | 'full-perf' | 'core';
 
 export function getSyncularV2WasmGlueUrl(): URL {
   return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE);
@@ -122,7 +122,12 @@ export function getSyncularV2RuntimeArtifactCatalogUrl(): URL {
 export function getSyncularV2RuntimeArtifact(
   variant: SyncularV2WasmArtifactVariant = 'full'
 ): SyncularV2RuntimeArtifactCandidate {
-  const dir = variant === 'core' ? 'wasm-core' : 'wasm';
+  const dir =
+    variant === 'core'
+      ? 'wasm-core'
+      : variant === 'full-perf'
+        ? 'wasm-perf'
+        : 'wasm';
   const features =
     variant === 'core'
       ? SYNCULAR_V2_CORE_RUNTIME_FEATURES
@@ -139,6 +144,7 @@ export function getSyncularV2PackagedRuntimeArtifacts(): readonly SyncularV2Runt
   return [
     getSyncularV2RuntimeArtifact('core'),
     getSyncularV2RuntimeArtifact('full'),
+    getSyncularV2RuntimeArtifact('full-perf'),
   ];
 }
 

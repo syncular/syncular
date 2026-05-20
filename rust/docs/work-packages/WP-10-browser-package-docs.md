@@ -1,6 +1,6 @@
 # WP-10 Browser Package And Docs
 
-Status: `[x]` package-size gate restored
+Status: `[x]` browser fallback cleanup retained; size and perf full artifacts shipped
 
 ## Goal
 
@@ -10,7 +10,12 @@ Rust-first client clearly.
 ## Scope
 
 - WASM package size measurement.
-- Optional feature variants only if measured size wins justify them.
+- Full browser artifact remains the default package shape; optional feature
+  variants only if measured size wins justify them.
+- Full browser optimization-profile artifacts can ship together when the
+  default stays obvious and artifact selection remains explicit.
+- Browser-only fallback removal when platform primitives are now required.
+- Browser realtime ownership boundary.
 - Browser worker docs.
 - Rust client docs section.
 - Local project integration instructions.
@@ -20,6 +25,13 @@ Rust-first client clearly.
 - Package size changes are measured.
 - Variant builds are not introduced unless they produce useful shipped-byte
   reductions.
+- The size-optimized full artifact is the default compatible full artifact.
+- The performance-optimized full artifact is available explicitly as
+  `full-perf`.
+- Browser snapshot gzip decompression uses `DecompressionStream` as the single
+  browser path, with clear capability errors instead of Rust gzip fallback.
+- Browser WebSocket lifecycle is owned by the TypeScript Worker controller;
+  Rust owns realtime frame decode/apply and native WebSocket support.
 - Docs cover schema generation, Diesel reads, mutations, live queries,
   worker events, CRDT fields, encryption, blobs, and testkit.
 
@@ -33,33 +45,58 @@ Rust-first client clearly.
 
 - Retain package variants only when measured shipped-byte savings justify the
   selection and maintenance complexity.
+- Retain stronger compression profiles only after size wins are paired with
+  acceptable runtime benchmark evidence.
 - Reject compatibility branches or parallel JS-client product paths.
+- Reject browser fallback paths for modern platform APIs unless the product
+  explicitly needs old-browser support.
 - Docs changes should keep Rust-first docs separate from legacy JS client docs
   unless explicitly describing migration or conceptual continuity.
 
 ## Current Evidence
 
 The full Rust/WASM artifact and a smaller core artifact have been measured.
-Feature variants remain optional and should be driven by package-size evidence.
+Feature variants remain optional and should be driven by package-size evidence;
+the current product decision is to ship the full artifact by default rather than
+publish a feature-package matrix.
 
-The release full Rust-owned SQLite WASM size gate is green again:
+The release full Rust-owned SQLite WASM size gate remains green after removing
+browser-only fallback paths and retaining the stronger size profile as the
+default:
 
 - Budget: `3,460,301` raw bytes / `1,426,063` gzip bytes.
-- Current retained profile: `3,363,132` raw bytes / `1,383,031` gzip bytes.
-- Headroom: `97,169` raw bytes / `43,032` gzip bytes.
-- The retained fix is the Rust workspace release profile:
+- Previous retained profile: `3,365,410` raw bytes / `1,383,462` gzip bytes.
+- Fallback-cleanup profile: `3,316,614` raw bytes / `1,351,931` gzip bytes.
+- Current retained profile: `2,220,519` raw bytes / `1,001,184` gzip bytes.
+- Headroom: `1,239,782` raw bytes / `424,879` gzip bytes.
+- Retained size change versus fallback cleanup: `-1,096,095` raw bytes /
+  `-350,747` gzip bytes.
+- The retained Rust workspace release profile is `opt-level = "z"`,
   `lto = true`, `codegen-units = 1`, and `panic = "abort"`.
-- A more aggressive `opt-level = "z"` probe produced a much smaller artifact,
-  but was not retained because the LTO/default-optimization profile already
-  restored the gate with less runtime risk.
-- Local release artifact guardrails stayed in band: 100k bootstrap
-  `147.16ms`, 500k bootstrap `623.02ms`. External app-style scoped artifact
-  sync/apply stayed flat versus the current derived-schema context:
-  `sync_total_ms_500000` `439ms -> 441ms`,
-  `local_apply_ms_500000` `208ms -> 207ms`.
+- Browser `web-transport` no longer enables `flate2`. Snapshot chunks and
+  artifacts require `DecompressionStream('gzip')` in browser runtimes and fail
+  with a capability error when it is unavailable. Native transport keeps
+  `flate2`.
+- Browser Rust no longer exposes a direct `WebRealtimeSocket` path. The
+  TypeScript Worker owns browser WebSocket lifecycle, reconnect, heartbeat,
+  presence, and URL/auth parameter refresh; Rust still owns binary sync-pack
+  decode/apply and native WebSocket support.
+- The retained artifact is under 1 MiB but just over decimal 1 MB.
+- The package also ships a `full-perf` artifact built with release
+  `opt-level=3` for apps that prefer the old runtime profile over shipped
+  bytes. It has the same runtime feature set as `full` and is selected only
+  when callers pass that artifact explicitly. Current catalog sizes are:
+  `core` `1,719,643` raw / `775,688` gzip bytes, `full` `2,220,519` raw /
+  `1,001,184` gzip bytes, and `full-perf` `3,316,614` raw / `1,351,931` gzip
+  bytes.
+- Local browser E2E guardrails with `query-iterations=0` accepted the tradeoff:
+  100k bootstrap `214.88ms -> 217.86ms`, 100k cached bootstrap
+  `136.38ms -> 143.84ms`, 500k bootstrap `969.87ms -> 1,034.91ms`, and 500k
+  cached bootstrap `664.84ms -> 721.38ms`.
 
 ## Next Action
 
-No immediate WP-10 package-size follow-up is required. Keep running
-`bun run --cwd rust/bindings/browser build:wasm` for every browser/WASM-facing
-change, and only ratchet the budget with a measured reason.
+Keep running `bun run --cwd rust/bindings/browser build:wasm` for every
+browser/WASM-facing change. Run `bun run --cwd rust/bindings/browser
+build:wasm:variants` before package changes so `dist/wasm`, `dist/wasm-perf`,
+`dist/wasm-core`, and the artifact catalog stay aligned.

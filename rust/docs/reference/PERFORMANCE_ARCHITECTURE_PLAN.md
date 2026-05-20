@@ -760,12 +760,15 @@ Measured scoped-server lane:
   in-memory path. The 100k guardrail moved Rust bootstrap
   `190.61ms -> 194.12ms` and local apply `103ms -> 107ms`, so the runtime
   pragma change was discarded.
-- Retained change: browser snapshot chunks now use the native
-  `DecompressionStream` gzip path when available, with the existing Rust
-  `GzDecoder` path as fallback. At 100k, decompression moved `13ms -> 7ms`
-  and snapshot fetch `15ms -> 9ms`. At 500k, Rust bootstrap moved
-  `869.34ms -> 836.25ms`, snapshot fetch `61ms -> 37ms`, decompression
-  `57ms -> 34ms`, and cached bootstrap `492.42ms -> 459.25ms`.
+- Retained change: browser snapshot chunks use the native
+  `DecompressionStream` gzip path. The later WP-10 package cleanup removed the
+  Rust browser `GzDecoder` fallback entirely, so browser runtimes now require
+  `DecompressionStream('gzip')` and fail with a capability error when it is
+  unavailable. At 100k, the original browser-native decompression change moved
+  decompression `13ms -> 7ms` and snapshot fetch `15ms -> 9ms`. At 500k, Rust
+  bootstrap moved `869.34ms -> 836.25ms`, snapshot fetch `61ms -> 37ms`,
+  decompression `57ms -> 34ms`, and cached bootstrap
+  `492.42ms -> 459.25ms`.
 - Retained change: generated browser SQLite schema installers can opt tables
   into `sqliteWithoutRowid`, which emits `CREATE TABLE ... WITHOUT ROWID` for
   app tables whose primary key is a text id. The todo example opts in. In the
