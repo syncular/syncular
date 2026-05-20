@@ -149,6 +149,10 @@ or record a deliberate exception in the compatibility register.
   `error-taxonomy-v1.json` fixture consumed by Rust runtime tests. Core tests
   fail if the checked-in fixture drifts from `SYNCULAR_ERROR_DEFINITIONS`, and
   Rust tests fail if its classifier stops matching any shared code.
+- Blob upload completion now carries stable manager-level error codes instead
+  of requiring Hono routes to compare message strings. Completion failures map
+  through `blob.invalid_request`, `blob.not_found`, `blob.forbidden`, or
+  `blob.size_mismatch`; the route preserves `blob.forbidden` as a 403.
 
 ## Latest Evidence
 
@@ -198,6 +202,10 @@ or record a deliberate exception in the compatibility register.
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server tsgo`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen native_modules_support_runtime_contract_and_operation_builders`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime generated_app_bindings_target_boltffi_layout --test native_binding_scaffold`

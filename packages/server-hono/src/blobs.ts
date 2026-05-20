@@ -248,10 +248,9 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
       });
 
       if (!result.ok) {
-        if (result.error === 'FORBIDDEN') {
-          return syncError(c, 403, 'blob.forbidden');
-        }
-        return syncError(c, 400, 'blob.upload_failed', result.error);
+        const code = result.code ?? 'blob.upload_failed';
+        const status = code === 'blob.forbidden' ? 403 : 400;
+        return syncError(c, status, code, result.error);
       }
 
       return c.json(result, 200);

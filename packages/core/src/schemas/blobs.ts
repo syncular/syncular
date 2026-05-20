@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import type { SyncularErrorCode } from '../error-responses';
 
 // ============================================================================
 // Blob Reference Schema
@@ -72,11 +73,19 @@ export const BlobUploadCompleteResponseSchema = z.object({
   ok: z.boolean(),
   metadata: BlobMetadataSchema.optional(),
   error: z.string().optional(),
+  code: z.string().optional(),
 });
 
-export type BlobUploadCompleteResponse = z.infer<
+type BlobUploadCompleteResponseBase = z.infer<
   typeof BlobUploadCompleteResponseSchema
 >;
+
+export type BlobUploadCompleteResponse = Omit<
+  BlobUploadCompleteResponseBase,
+  'code'
+> & {
+  code?: SyncularErrorCode;
+};
 
 // ============================================================================
 // Download URL Request/Response Schemas
