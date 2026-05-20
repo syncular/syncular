@@ -17,8 +17,10 @@
 
 import {
   createSyncularErrorResponse,
+  ErrorResponseSchema,
   logSyncEvent,
   sha256Hex,
+  type SyncularErrorCode,
 } from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
@@ -360,14 +362,33 @@ function calculatePercentiles(latencies: number[]): LatencyPercentiles {
   };
 }
 
+function consoleRouteError(
+  c: Context,
+  status: 400 | 401 | 403 | 404 | 501 | 503,
+  code: SyncularErrorCode,
+  message?: string,
+  details?: Record<string, unknown>
+): Response {
+  return c.json(
+    createSyncularErrorResponse(code, {
+      ...(message ? { message } : {}),
+      ...(details ? { details } : {}),
+    }),
+    status
+  );
+}
+
+function consoleNotFound(c: Context, message?: string): Response {
+  return consoleRouteError(c, 404, 'console.not_found', message);
+}
+
+function blobStorageNotConfigured(c: Context): Response {
+  return consoleRouteError(c, 501, 'blob.storage_not_configured');
+}
+
 // ============================================================================
 // Route Schemas
 // ============================================================================
-
-const ErrorResponseSchema = z.object({
-  error: z.string(),
-  message: z.string().optional(),
-});
 
 const commitSeqParamSchema = z.object({ seq: z.coerce.number().int() });
 const clientIdParamSchema = z.object({ id: z.string().min(1) });
@@ -593,7 +614,7 @@ export function createConsoleRoutes<
       await consoleSchemaReadyPromise;
       return null;
     } catch {
-      return c.json({ error: 'CONSOLE_SCHEMA_UNAVAILABLE' }, 503);
+      return consoleRouteError(c, 503, 'console.schema_unavailable');
     }
   };
 
@@ -622,7 +643,7 @@ export function createConsoleRoutes<
 
     const auth = await options.authenticate(c);
     if (!auth) {
-      return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      return consoleRouteError(c, 401, 'console.auth_required');
     }
 
     c.set('consoleAuth', auth);
@@ -1732,7 +1753,7 @@ export function createConsoleRoutes<
       const commitRow = await commitQuery.executeTakeFirst();
 
       if (!commitRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       let changesQuery = db
@@ -2783,7 +2804,7 @@ export function createConsoleRoutes<
       const row = await eventQuery.executeTakeFirst();
 
       if (!row) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       return c.json(mapRequestEvent(row), 200);
@@ -2845,15 +2866,12 @@ export function createConsoleRoutes<
       const eventRow = await eventQuery.executeTakeFirst();
 
       if (!eventRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       const payloadRef = eventRow.payload_ref;
       if (!payloadRef) {
-        return c.json(
-          { error: 'NOT_FOUND', message: 'No payload snapshot recorded' },
-          404
-        );
+        return consoleNotFound(c, 'No payload snapshot recorded');
       }
 
       const payloadRow = await db
@@ -2870,10 +2888,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!payloadRow) {
-        return c.json(
-          { error: 'NOT_FOUND', message: 'Payload snapshot not available' },
-          404
-        );
+        return consoleNotFound(c, 'Payload snapshot not available');
       }
 
       const payload: ConsoleRequestPayload = {
@@ -3252,7 +3267,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!row) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       const key: ConsoleApiKey = {
@@ -3361,9 +3376,11 @@ export function createConsoleRoutes<
         .slice(0, 200);
 
       if (keyIds.length === 0) {
-        return c.json(
-          { error: 'INVALID_REQUEST', message: 'No API key IDs provided' },
-          400
+        return consoleRouteError(
+          c,
+          400,
+          'console.invalid_request',
+          'No API key IDs provided'
         );
       }
 
@@ -3479,7 +3496,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!existingRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       const newKeyId = generateKeyId();
@@ -3587,7 +3604,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!existingRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       // Revoke old key
@@ -3681,7 +3698,7 @@ export function createConsoleRoutes<
     zValidator('query', ConsoleBlobListQuerySchema),
     async (c) => {
       if (!bucket) {
-        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+        return blobStorageNotConfigured(c);
       }
 
       const { prefix, cursor, limit } = c.req.valid('query');
@@ -3731,13 +3748,13 @@ export function createConsoleRoutes<
     }),
     async (c) => {
       if (!bucket) {
-        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+        return blobStorageNotConfigured(c);
       }
 
       const key = decodeURIComponent(c.req.param('key'));
       const object = await bucket.get(key);
       if (!object) {
-        return c.json({ error: 'BLOB_NOT_FOUND' }, 404);
+        return consoleRouteError(c, 404, 'blob.not_found');
       }
 
       const headers = new Headers();
@@ -3782,7 +3799,7 @@ export function createConsoleRoutes<
     }),
     async (c) => {
       if (!bucket) {
-        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+        return blobStorageNotConfigured(c);
       }
 
       const key = decodeURIComponent(c.req.param('key'));

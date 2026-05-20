@@ -383,8 +383,12 @@ describe('createSyncServer console configuration', () => {
         headers: { Authorization: 'Bearer console-token' },
       });
       expect(response.status).toBe(501);
-      expect(await response.json()).toEqual({
-        error: 'BLOB_STORAGE_NOT_CONFIGURED',
+      expect(await response.json()).toMatchObject({
+        error: 'blob.storage_not_configured',
+        code: 'blob.storage_not_configured',
+        category: 'blob',
+        retryable: false,
+        recommendedAction: 'inspectServer',
       });
       expect(consoleErrorCalls).toEqual([]);
     } finally {
@@ -409,8 +413,12 @@ describe('createSyncServer console configuration', () => {
     });
 
     expect(response.status).toBe(501);
-    expect(await response.json()).toEqual({
-      error: 'BLOB_STORAGE_NOT_CONFIGURED',
+    expect(await response.json()).toMatchObject({
+      error: 'blob.storage_not_configured',
+      code: 'blob.storage_not_configured',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'inspectServer',
     });
   });
 

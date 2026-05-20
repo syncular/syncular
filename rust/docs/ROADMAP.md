@@ -409,7 +409,10 @@ read-only review:
     same stable sync envelopes for auth, invalid request, and operation-limit
     failures instead of uppercase string-only errors. Server-Hono proxy
     websocket pre-upgrade failures now return stable `proxy.*` envelopes for
-    forbidden origin, missing auth, and connection-limit rejection.
+    forbidden origin, missing auth, and connection-limit rejection. Direct
+    console routes now use the shared error-envelope schema and stable
+    `console.*` / `blob.*` codes for schema-unavailable, auth, not-found,
+    invalid-request, and blob-storage configuration failures.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

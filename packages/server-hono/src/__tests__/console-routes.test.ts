@@ -1544,7 +1544,13 @@ describe('console timeline route filters', () => {
   it('rejects unauthenticated timeline requests', async () => {
     const response = await requestTimeline({ authenticated: false });
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'UNAUTHENTICATED' });
+    expect(await response.json()).toMatchObject({
+      error: 'console.auth_required',
+      code: 'console.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
   });
 
   it('returns payload snapshots for events with payload refs', async () => {
