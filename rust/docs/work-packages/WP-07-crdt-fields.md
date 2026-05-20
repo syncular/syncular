@@ -134,6 +134,17 @@ Latest accepted slice:
   produces a `sync.resync_required` diagnostic, then
   `forceSubscriptionsBootstrap()` resets the subscription and the next worker
   sync restores the row from snapshot.
+- Encrypted update-log CRDT updates now carry required-base state vectors inside
+  the encrypted plaintext envelope. Missing or mismatched local base state fails
+  with the same full-snapshot-resync diagnostic instead of applying a partial
+  encrypted update against an empty document.
+- Pull request construction now skips CRDT state-vector hints for encrypted CRDT
+  system-table subscriptions. Those subscriptions bootstrap/recover through
+  `sync_crdt_updates` and `sync_crdt_checkpoints`, not app-row Yjs diff hints.
+- Native Diesel coverage now proves encrypted update-log recovery: a required
+  encrypted update fails without the base, `force_subscriptions_bootstrap`
+  resets the app/update/checkpoint subscriptions, and a checkpoint snapshot
+  rematerializes the encrypted field without plaintext wire leakage.
 
 Gate evidence:
 
@@ -141,6 +152,7 @@ Gate evidence:
 - `bun test packages/server/src/pull-plugins.test.ts`
 - `bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts -t "applies a generated app server-merge CRDT field through the Rust WASM worker"`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field diesel_client_applies_server_merge_crdt_diff_pull_with_row_fields`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features crdt-yjs diff_envelope_remote_rows_preserve_non_crdt_payload_fields`
 - `bun run tsgo`
@@ -179,6 +191,6 @@ Known local environment note:
 
 ## Next Action
 
-Review whether encrypted-update-log CRDT recovery should expose a similarly
-explicit resync diagnostic for missing checkpoint/update bases, or whether its
-append-only system table path already has enough recovery coverage.
+Move WP-07 through final documentation/contract review: verify public CRDT field
+APIs, recovery diagnostics, and subscription requirements are captured in the
+Rust client docs before marking the work package complete.

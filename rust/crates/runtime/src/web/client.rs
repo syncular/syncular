@@ -1232,10 +1232,17 @@ where
                     .await?
                     .map(|root| root.root)
             };
-            let crdt_state_vectors = self
-                .store
-                .crdt_state_vector_hints(&spec.table, &spec.scopes, CRDT_STATE_VECTOR_HINT_LIMIT)
-                .await?;
+            let crdt_state_vectors = if is_encrypted_crdt_system_table(&spec.table) {
+                Vec::new()
+            } else {
+                self.store
+                    .crdt_state_vector_hints(
+                        &spec.table,
+                        &spec.scopes,
+                        CRDT_STATE_VECTOR_HINT_LIMIT,
+                    )
+                    .await?
+            };
             subscriptions.push(SubscriptionRequest {
                 id: spec.id.clone(),
                 table: spec.table.clone(),

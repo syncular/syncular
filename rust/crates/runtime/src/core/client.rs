@@ -17,12 +17,12 @@ use crate::crdt_yjs::{
 use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 #[cfg(feature = "native")]
 use crate::diesel_sqlite::{DieselSqliteStore, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
-use crate::encrypted_crdt::EncryptedCrdt;
 #[cfg(feature = "native")]
 use crate::encrypted_crdt::{
     encrypted_crdt_stream_id, encrypted_field_metadata, BuildEncryptedCrdtCheckpointArgs,
     BuildEncryptedCrdtTextUpdateArgs, BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdtStreamStats,
 };
+use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
@@ -2139,11 +2139,15 @@ where
                     tx.verified_root(DEFAULT_STATE_ID, &spec.id)?
                         .map(|root| root.root)
                 };
-                let crdt_state_vectors = tx.crdt_state_vector_hints(
-                    &spec.table,
-                    &spec.scopes,
-                    CRDT_STATE_VECTOR_HINT_LIMIT,
-                )?;
+                let crdt_state_vectors = if is_encrypted_crdt_system_table(&spec.table) {
+                    Vec::new()
+                } else {
+                    tx.crdt_state_vector_hints(
+                        &spec.table,
+                        &spec.scopes,
+                        CRDT_STATE_VECTOR_HINT_LIMIT,
+                    )?
+                };
                 subscriptions.push(SubscriptionRequest {
                     id: spec.id,
                     table: spec.table,

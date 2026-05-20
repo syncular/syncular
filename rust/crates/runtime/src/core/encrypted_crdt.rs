@@ -1,8 +1,8 @@
 use crate::app_schema::{AppTableMetadata, CrdtYjsFieldMetadata};
 use crate::crdt_yjs::{
     apply_yjs_updates_to_state, build_yjs_text_update, materialize_yjs_state,
-    ApplyYjsUpdatesToStateArgs, BuildYjsTextUpdateArgs, YjsFieldKind, YjsFieldRule,
-    YjsUpdateEnvelope,
+    yjs_state_vector_base64, ApplyYjsUpdatesToStateArgs, BuildYjsTextUpdateArgs, YjsFieldKind,
+    YjsFieldRule, YjsUpdateEnvelope,
 };
 use crate::encryption::{
     random_bytes, validate_32_bytes, xchacha_decrypt, xchacha_encrypt, FieldEncryptionContext,
@@ -245,12 +245,17 @@ impl EncryptedCrdt {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let update = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        let requires_state_vector_base64 = previous_state_base64
+            .as_deref()
+            .map(|state| yjs_state_vector_base64(Some(state)))
+            .transpose()?;
+        let mut update = build_yjs_text_update(BuildYjsTextUpdateArgs {
             previous_state_base64,
             next_text: args.next_text.to_string(),
             container_key: Some(field.container_key.to_string()),
             update_id: None,
         })?;
+        update.update.requires_state_vector_base64 = requires_state_vector_base64;
         self.build_yjs_update_mutation(BuildEncryptedCrdtYjsUpdateArgs {
             ctx: args.ctx,
             metadata: args.metadata,
@@ -292,6 +297,7 @@ impl EncryptedCrdt {
         validate_32_bytes("encrypted CRDT key", &key)?;
         let plaintext = serde_json::to_vec(&EncryptedCrdtPlaintext::YjsUpdateV1 {
             update_base64: args.update.update_base64.clone(),
+            requires_state_vector_base64: args.update.requires_state_vector_base64.clone(),
         })?;
         let aad = encrypted_crdt_aad(
             CRDT_UPDATES_TABLE,
@@ -318,6 +324,9 @@ impl EncryptedCrdt {
         });
         let mut local_row = payload.clone();
         local_row["update_base64"] = Value::String(args.update.update_base64);
+        if let Some(required) = &args.update.requires_state_vector_base64 {
+            local_row["requires_state_vector_base64"] = Value::String(required.clone());
+        }
 
         Ok(PendingSyncularMutation {
             kind: SyncularMutationKind::Upsert,
@@ -438,13 +447,22 @@ impl EncryptedCrdt {
         );
         let plaintext = decrypt_payload(&key, &aad, &ciphertext)?;
         match serde_json::from_slice::<EncryptedCrdtPlaintext>(&plaintext)? {
-            EncryptedCrdtPlaintext::YjsUpdateV1 { update_base64 } => {
+            EncryptedCrdtPlaintext::YjsUpdateV1 {
+                update_base64,
+                requires_state_vector_base64,
+            } => {
                 if table != CRDT_UPDATES_TABLE {
                     return Err(SyncularError::protocol_message(
                         "encrypted CRDT update plaintext cannot be stored in checkpoint table",
                     ));
                 }
                 row.insert("update_base64".to_string(), Value::String(update_base64));
+                if let Some(required) = requires_state_vector_base64 {
+                    row.insert(
+                        "requires_state_vector_base64".to_string(),
+                        Value::String(required),
+                    );
+                }
             }
             EncryptedCrdtPlaintext::YjsStateV1 { state_base64 } => {
                 if table != CRDT_CHECKPOINTS_TABLE {
@@ -495,6 +513,13 @@ pub fn encrypted_crdt_plaintext_update_base64(row: &Map<String, Value>) -> Optio
         .map(str::to_string)
 }
 
+pub fn encrypted_crdt_required_state_vector_base64(row: &Map<String, Value>) -> Option<String> {
+    row.get("requires_state_vector_base64")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 pub fn encrypted_crdt_plaintext_state_base64(row: &Map<String, Value>) -> Option<String> {
     row.get("state_base64")
         .and_then(Value::as_str)
@@ -539,7 +564,9 @@ pub fn apply_encrypted_crdt_plaintext_to_row(
                         .unwrap_or("encrypted-crdt-update")
                         .to_string(),
                     update_base64,
-                    requires_state_vector_base64: None,
+                    requires_state_vector_base64: encrypted_crdt_required_state_vector_base64(
+                        system_row,
+                    ),
                 }],
             })?
             .next_state_base64
@@ -602,7 +629,11 @@ fn required_string(row: &Map<String, Value>, field: &str) -> Result<String> {
 #[serde(tag = "type")]
 enum EncryptedCrdtPlaintext {
     #[serde(rename = "yjs-update-v1", rename_all = "camelCase")]
-    YjsUpdateV1 { update_base64: String },
+    YjsUpdateV1 {
+        update_base64: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requires_state_vector_base64: Option<String>,
+    },
     #[serde(rename = "yjs-state-v1", rename_all = "camelCase")]
     YjsStateV1 { state_base64: String },
 }
