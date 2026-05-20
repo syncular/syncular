@@ -3985,3 +3985,103 @@ Decision:
   release artifact size, but it avoids carrying an unused public surface.
 - Track the budget failure as WP-10 package-size work before relying on
   `bun run --cwd rust/bindings/browser build:wasm` as a green release gate.
+
+## 2026-05-20 - WP-10 Release Profile Restores WASM Size Gate
+
+Work package: [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+
+Change:
+
+- Retained a Rust workspace release profile with `lto = true`,
+  `codegen-units = 1`, and `panic = "abort"`.
+- Rejected the more aggressive `opt-level = "z"` probe because the default
+  optimization level with LTO already restored the size gate with less runtime
+  risk.
+
+Release WASM size:
+
+| Metric | Previous failing current | Retained profile | Budget |
+| --- | ---: | ---: | ---: |
+| Raw bytes | `3,491,832` | `3,363,132` | `3,460,301` |
+| Gzip bytes | `1,438,491` | `1,383,031` | `1,426,063` |
+
+Commands:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp10-lto-release-100k-artifacts.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp10-lto-release-500k-artifacts.json
+```
+
+Local release artifact guard:
+
+| Metric | Previous same-shape context | Retained profile |
+| --- | ---: | ---: |
+| 100k bootstrap | `147.15ms` | `147.16ms` |
+| 100k pull apply | `137ms` | `135ms` |
+| 100k snapshot row apply | `121ms` | `121ms` |
+| 500k bootstrap | `616.53ms` | `623.02ms` |
+| 500k snapshot row apply | `523ms` | `527ms` |
+| Release raw WASM bytes | `3,491,832` | `3,363,132` |
+
+External app-style scoped artifact check:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T05-39-04-769Z/syncular-rust/bootstrap.json`
+
+| Metric | Current derived-schema context | Retained profile |
+| --- | ---: | ---: |
+| 500k bootstrap | `1396.01ms` | `1430.17ms` |
+| 500k derived schema | `943.40ms` | `976.02ms` |
+| 500k sync total | `439ms` | `441ms` |
+| 500k pull apply | `325ms` | `323ms` |
+| 500k local apply | `208ms` | `207ms` |
+| 500k response bytes | `3,537,713` | `3,537,739` |
+| 500k peak memory | `695.97MB` | `688.56MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+The same-session external TS bootstrap run failed without useful metrics:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T05-39-59-769Z/syncular/bootstrap.json`.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+```
+
+Decision:
+
+- Accepted. The release profile fixes the package-size gate without a meaningful
+  local artifact regression. In the external harness, the Rust sync/apply path
+  stayed flat and the total-bootstrap delta came from derived-schema timing,
+  not snapshot artifact transfer/apply.

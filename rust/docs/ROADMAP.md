@@ -315,12 +315,13 @@ read-only review:
     and duplicate/reordered delivery; heavier browser-Hono and native lanes are
     available through the same runner.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
-- `[~]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
-  - The release full Rust-owned SQLite WASM size gate is failing. Current size
-    is `3,491,832` raw bytes / `1,438,491` gzip bytes versus the configured
-    `3,460,301` / `1,426,063` budget. A detached `c03ed9a1` baseline was
-    already over budget, so do not ratchet until package-size work either
-    removes enough shipped bytes or explicitly accepts the current feature cost.
+- `[x]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+  - The release full Rust-owned SQLite WASM size gate is green again after
+    retaining the Rust release profile with LTO, one codegen unit, and
+    `panic = "abort"`. Current size is `3,363,132` raw bytes / `1,383,031`
+    gzip bytes versus the configured `3,460,301` / `1,426,063` budget.
+    Local and external artifact guards stayed in band; keep measuring package
+    size and performance for every browser/WASM-facing change.
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
 - `[ ]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
 - `[ ]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
